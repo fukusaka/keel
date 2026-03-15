@@ -3,10 +3,22 @@ plugins {
 }
 
 kotlin {
-    jvm()
-    linuxX64()
-    macosArm64()
+    macosArm64 {
+        compilations["main"].cinterops {
+            create("kqueue") {
+                defFile("src/nativeInterop/cinterop/kqueue.def")
+            }
+        }
+    }
+    macosX64 {
+        compilations["main"].cinterops {
+            create("kqueue") {
+                defFile("src/nativeInterop/cinterop/kqueue.def")
+            }
+        }
+    }
 
+    // Creates macosMain intermediate source set shared by macosArm64 and macosX64
     applyDefaultHierarchyTemplate()
 
     sourceSets {
