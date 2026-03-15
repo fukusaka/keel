@@ -20,4 +20,5 @@ include(
     ":engine-nio",
     ":engine-netty",
     ":engine-nodejs",
+    ":engine-nwconnection",
 )
