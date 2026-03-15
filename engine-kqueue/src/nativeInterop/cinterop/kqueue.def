@@ -22,3 +22,7 @@ void keel_ev_set(struct kevent *kev, uintptr_t ident,
  */
 uint16_t keel_htons(uint16_t x) { return htons(x); }
 uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
+uint32_t keel_htonl(uint32_t x) { return htonl(x); }
+
+/* 127.0.0.1 in network byte order */
+uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
