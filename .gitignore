@@ -1,0 +1,23 @@
+# Build outputs
+build/
+*/build/
+.gradle/
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+
+# Project docs (managed outside git for now)
+CLAUDE.md
+design.md
+plan.md
+status.md
+
+# Claude Code session data
+.claude/
