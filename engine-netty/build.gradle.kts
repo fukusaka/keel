@@ -4,15 +4,21 @@ plugins {
 
 kotlin {
     jvm()
-    linuxX64()
-    macosArm64()
-
-    applyDefaultHierarchyTemplate()
 
     sourceSets {
         commonMain {
             dependencies {
                 implementation(project(":core"))
+            }
+        }
+        jvmMain {
+            dependencies {
+                implementation(libs.netty.all)
+            }
+        }
+        jvmTest {
+            dependencies {
+                implementation(kotlin("test"))
             }
         }
     }
