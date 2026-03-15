@@ -4,6 +4,7 @@ plugins {
 
 kotlin {
     jvm()
+    js(IR) { nodejs() }
     linuxX64()
     linuxArm64()
     macosArm64()
