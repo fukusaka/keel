@@ -9,6 +9,7 @@ kotlin {
     // Native targets
     linuxX64()
     macosArm64()
+    macosX64()
 
     // Intermediate source set shared by all native targets
     applyDefaultHierarchyTemplate()
