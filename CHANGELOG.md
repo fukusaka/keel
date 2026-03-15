@@ -12,6 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:codec-websocket`: WebSocket フレーミングコーデック（RFC 6455）
+  - `WsOpcode`: 4-bit opcode フィールド（CONTINUATION / TEXT / BINARY / CLOSE / PING / PONG）、未知 opcode で例外
+  - `WsCloseCode`: Close ステータスコード（RFC 6455 §7.4.1）、有効範囲 1000–4999、`isReserved` / `isPrivateUse`
+  - `WsFrame`: フレーム型（FIN / RSV1-3 / opcode / maskKey / payload）、コントロールフレームの制約を `init` で検証
+  - `parseFrame(Source): WsFrame`: 7 / 16 / 64-bit ペイロード長、自動デマスク、RSV 非ゼロ／未知 opcode で例外
+  - `writeFrame(WsFrame, Sink)`: マスキング（XOR）、ペイロード長に応じた拡張長フィールドを自動選択
+  - `computeAcceptKey(String): String`: RFC 6455 §1.3 ハンドシェイクキー計算（SHA-1 純 Kotlin 実装 + stdlib Base64）
+  - `validateClientKey(String): Boolean`: 16-byte Base64 キーの検証
+  - テスト: 61 件（jvm / macosArm64 / JS nodejs 各ターゲットで PASS）
+
 - `IoEngine` and `NativeBuf` as `expect class` in `commonMain`
   - JVM actual: `NativeBuf` backed by `ByteBuffer.allocateDirect`
   - Native actual: `NativeBuf` backed by `nativeHeap.allocArray<ByteVar>`
