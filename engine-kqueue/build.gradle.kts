@@ -27,5 +27,10 @@ kotlin {
                 implementation(project(":core"))
             }
         }
+        val macosTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }

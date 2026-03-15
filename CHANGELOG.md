@@ -24,3 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `keel_ev_set()` wrapper for `EV_SET` C macro via cinterop glue code
   - Targets restricted to `macosArm64` / `macosX64`
 - `gradle.properties`: `kotlin.mpp.enableCInteropCommonization=true` to expose kqueue types in `macosMain`
+- `engine-kqueue`: `KqueueEngine` — standalone TCP echo server using kqueue on macosArm64/macosX64
+  - `bind(port)`: TCP server socket (SO_REUSEADDR, O_NONBLOCK) registered with kqueue
+  - `runEchoLoop(serverFd, maxEvents)`: accept → EVFILT_READ → read → echo event loop
+  - `close()`: releases kqueue fd
+- `engine-kqueue`: `KqueueEngineTest` — 4 unit tests including loopback echo test
+- `kqueue.def`: `keel_htons`, `keel_ntohs`, `keel_htonl`, `keel_loopback_addr` wrappers (Darwin byte-order macros)
+- `core`: added `macosX64` target to unblock cinterop commonization
