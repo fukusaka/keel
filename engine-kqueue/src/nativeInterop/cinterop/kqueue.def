@@ -1,0 +1,16 @@
+headers = sys/event.h sys/types.h
+compilerOpts = -D_DARWIN_C_SOURCE
+
+---
+
+#include <sys/event.h>
+
+/*
+ * EV_SET is a C macro and cannot be bound directly by cinterop.
+ * This wrapper exposes it as a regular function.
+ */
+void keel_ev_set(struct kevent *kev, uintptr_t ident,
+                 int16_t filter, uint16_t flags,
+                 uint32_t fflags, intptr_t data, void *udata) {
+    EV_SET(kev, ident, filter, flags, fflags, data, udata);
+}
