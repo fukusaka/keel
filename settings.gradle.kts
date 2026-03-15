@@ -19,4 +19,5 @@ include(
     ":engine-kqueue",
     ":engine-nio",
     ":engine-netty",
+    ":engine-nodejs",
 )
