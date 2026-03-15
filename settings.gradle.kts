@@ -22,4 +22,5 @@ include(
     ":engine-nodejs",
     ":engine-nwconnection",
     ":codec-http",
+    ":codec-websocket",
 )
