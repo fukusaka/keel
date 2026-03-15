@@ -1,0 +1,59 @@
+language = Objective-C
+headers = Network/Network.h netinet/in.h
+
+---
+
+#include <Network/Network.h>
+#include <netinet/in.h>
+
+/*
+ * NW_PARAMETERS_DISABLE_PROTOCOL and NW_PARAMETERS_DEFAULT_CONFIGURATION are
+ * C macros that cast extern block constants. They cannot be bound directly by
+ * cinterop; this wrapper creates plain TCP parameters without TLS.
+ */
+nw_parameters_t keel_nw_create_tcp_params(void) {
+    return nw_parameters_create_secure_tcp(
+        NW_PARAMETERS_DISABLE_PROTOCOL,
+        NW_PARAMETERS_DEFAULT_CONFIGURATION
+    );
+}
+
+/* 127.0.0.1 in network byte order */
+uint32_t keel_nw_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * nw_connection_receive_completion_t contains a C `bool` parameter which
+ * Kotlin/Native cannot convert to/from ObjC block form. The receive-and-echo
+ * loop is therefore implemented entirely in C, avoiding that limitation.
+ */
+static void keel_nw_schedule_receive(nw_connection_t conn);
+
+static void keel_nw_schedule_receive(nw_connection_t conn) {
+    // ARC retains conn inside the block; explicit nw_retain/nw_release are not needed.
+    nw_connection_receive(conn, 1, 65536,
+        ^(dispatch_data_t content, nw_content_context_t context,
+          bool is_complete, nw_error_t error) {
+            if (error) { nw_connection_cancel(conn); return; }
+            if (content) {
+                nw_connection_send(conn, content,
+                    NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false,
+                    ^(nw_error_t e) {});
+            }
+            if (is_complete) nw_connection_cancel(conn);
+            else keel_nw_schedule_receive(conn);
+        });
+}
+
+/*
+ * Attach a per-connection serial queue, register an empty state handler,
+ * start the connection, and kick off the receive-echo loop.
+ */
+void keel_nw_start_connection(nw_connection_t conn) {
+    dispatch_queue_t queue = dispatch_queue_create(
+        "io.github.keel.nwconnection.conn", DISPATCH_QUEUE_SERIAL);
+    nw_connection_set_queue(conn, queue);
+    nw_connection_set_state_changed_handler(conn,
+        ^(nw_connection_state_t state, nw_error_t error) {});
+    nw_connection_start(conn);
+    keel_nw_schedule_receive(conn);
+}
