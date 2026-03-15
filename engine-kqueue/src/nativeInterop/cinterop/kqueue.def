@@ -1,9 +1,10 @@
-headers = sys/event.h sys/types.h
+headers = sys/event.h sys/types.h sys/socket.h netinet/in.h
 compilerOpts = -D_DARWIN_C_SOURCE
 
 ---
 
 #include <sys/event.h>
+#include <netinet/in.h>
 
 /*
  * EV_SET is a C macro and cannot be bound directly by cinterop.
@@ -14,3 +15,10 @@ void keel_ev_set(struct kevent *kev, uintptr_t ident,
                  uint32_t fflags, intptr_t data, void *udata) {
     EV_SET(kev, ident, filter, flags, fflags, data, udata);
 }
+
+/*
+ * htons/ntohs are C macros (byte-swap builtins) on Darwin and cannot
+ * be bound directly by cinterop. These wrappers expose them as functions.
+ */
+uint16_t keel_htons(uint16_t x) { return htons(x); }
+uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
