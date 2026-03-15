@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- CI trigger on PRs changed from every push to label-based: `needs-pr-check` label required to run CI
+
 ### Added
 
 - `IoEngine` and `NativeBuf` as `expect class` in `commonMain`
