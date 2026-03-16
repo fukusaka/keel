@@ -61,7 +61,7 @@ const features = [
   {
     title: 'Ktor Compatible',
     description:
-      'Designed as a Ktor Native engine. Bring Ktor's DSL to Native binaries ' +
+      "Designed as a Ktor Native engine. Bring Ktor's DSL to Native binaries " +
       'without the JVM.',
   },
 ];

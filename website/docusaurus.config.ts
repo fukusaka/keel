@@ -11,8 +11,8 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://keel-kt.github.io',
-  baseUrl: '/keel/',
+  url: process.env.SITE_URL ?? 'https://keel-kt.github.io',
+  baseUrl: process.env.BASE_URL ?? '/keel/',
 
   organizationName: 'keel-kt',
   projectName: 'keel',
