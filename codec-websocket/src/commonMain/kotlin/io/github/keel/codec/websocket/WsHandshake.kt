@@ -5,12 +5,20 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 
 private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+/**
+ * Computes the `Sec-WebSocket-Accept` value from a client's `Sec-WebSocket-Key`
+ * header (RFC 6455 §4.2.2, step 5.4).
+ */
 @OptIn(ExperimentalEncodingApi::class)
 fun computeAcceptKey(clientKey: String): String {
     val input = (clientKey + WS_GUID).encodeToByteArray()
     return Base64.encode(sha1(input))
 }
 
+/**
+ * Returns true if [key] is a valid `Sec-WebSocket-Key` value:
+ * a Base64-encoded 16-byte nonce (RFC 6455 §4.2.1, step 3).
+ */
 @OptIn(ExperimentalEncodingApi::class)
 fun validateClientKey(key: String): Boolean {
     return try {

@@ -3,6 +3,14 @@ package io.github.keel.codec.websocket
 import kotlinx.io.Sink
 import kotlinx.io.write
 
+/**
+ * Writes [frame] to [sink] according to RFC 6455 §5.2.
+ *
+ * If [WsFrame.maskKey] is set, the payload is masked before writing.
+ * Payload length extension (16-bit / 64-bit) is selected automatically.
+ *
+ * @throws IllegalArgumentException if a control frame payload exceeds 125 bytes.
+ */
 fun writeFrame(frame: WsFrame, sink: Sink) {
     require(!(frame.opcode.isControl && frame.payload.size > 125)) {
         "Control frame payload must not exceed 125 bytes, got ${frame.payload.size}"

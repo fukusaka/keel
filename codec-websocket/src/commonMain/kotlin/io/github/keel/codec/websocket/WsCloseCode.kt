@@ -1,11 +1,20 @@
 package io.github.keel.codec.websocket
 
+/**
+ * WebSocket close status code as defined in RFC 6455 §7.4.
+ *
+ * @param code Status code in the range 1000–4999.
+ * @throws IllegalArgumentException if [code] is outside 1000–4999.
+ */
 data class WsCloseCode(val code: Int) {
     init {
         require(code in 1000..4999) { "Invalid close code: $code (must be 1000–4999)" }
     }
 
+    /** True if this code is in the private-use range (4000–4999). */
     val isPrivateUse: Boolean get() = code in 4000..4999
+
+    /** True if this code is reserved and must not be set in a Close frame. */
     val isReserved: Boolean get() = code in RESERVED_CODES
 
     companion object {
