@@ -1,5 +1,16 @@
 package io.github.keel.codec.websocket
 
+/**
+ * A WebSocket frame as defined in RFC 6455 §5.2.
+ *
+ * @param fin True if this is the final fragment in a message.
+ * @param rsv1 Reserved bit 1; must be false unless an extension is negotiated.
+ * @param rsv2 Reserved bit 2; must be false unless an extension is negotiated.
+ * @param rsv3 Reserved bit 3; must be false unless an extension is negotiated.
+ * @param opcode Frame type.
+ * @param maskKey 32-bit masking key; non-null for client-to-server frames.
+ * @param payload Unmasked payload data.
+ */
 data class WsFrame(
     val fin: Boolean,
     val rsv1: Boolean = false,

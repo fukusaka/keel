@@ -3,6 +3,14 @@ package io.github.keel.codec.websocket
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
 
+/**
+ * Reads one WebSocket frame from [source] (RFC 6455 §5.2).
+ *
+ * Masked payloads are automatically unmasked. Reserved bits (RSV1–3) must be
+ * zero; a non-zero value causes [IllegalArgumentException].
+ *
+ * @throws IllegalArgumentException if the frame is malformed.
+ */
 fun parseFrame(source: Source): WsFrame {
     val byte0 = source.readByte().toInt() and 0xFF
     val byte1 = source.readByte().toInt() and 0xFF
