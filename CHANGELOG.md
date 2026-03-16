@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
+- `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
+- `website/`: Docusaurus 3.9.2 site scaffold (intro / architecture / codecs documentation)
+- KDoc: `WsOpcode`, `WsCloseCode`, `WsFrame`, `WsFrameParser`, `WsFrameWriter`, `WsHandshake` (`:codec-websocket`)
+- KDoc: `IoEngine`, `NativeBuf` (`:core`)
+
 - `:codec-websocket`: WebSocket フレーミングコーデック（RFC 6455）
   - `WsOpcode`: 4-bit opcode フィールド（CONTINUATION / TEXT / BINARY / CLOSE / PING / PONG）、未知 opcode で例外
   - `WsCloseCode`: Close ステータスコード（RFC 6455 §7.4.1）、有効範囲 1000–4999、`isReserved` / `isPrivateUse`
