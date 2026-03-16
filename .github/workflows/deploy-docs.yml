@@ -1,8 +1,8 @@
 name: Deploy Docs
 
+# GitHub Pages deployment — currently disabled (using Cloudflare Pages).
+# To enable: add `push: branches: [main]` and configure Pages in repo Settings.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
