@@ -1,7 +1,8 @@
 [versions]
-kotlin = "2.1.10"
-kotlinx-io = "0.6.0"
+kotlin = "2.3.20"
+kotlinx-io = "0.9.0"
 netty = "4.1.119.Final"
+dokka = "2.2.0-Beta"
 
 [libraries]
 kotlinx-io-core = { module = "org.jetbrains.kotlinx:kotlinx-io-core", version.ref = "kotlinx-io" }
@@ -9,3 +10,4 @@ netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
 
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+dokka = { id = "org.jetbrains.dokka", version.ref = "dokka" }
