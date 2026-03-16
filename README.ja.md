@@ -1,33 +1,45 @@
-# keel
+# keel — KMP Native ネットワーク I/O エンジン
 
 [![CI](https://github.com/keel-kt/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/keel-kt/keel/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1.10-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.3.20-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![KMP](https://img.shields.io/badge/Kotlin%20Multiplatform-✓-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/docs/multiplatform.html)
-[![kotlinx.io](https://img.shields.io/badge/kotlinx.io-0.6.0-orange)](https://github.com/Kotlin/kotlinx-io)
+[![kotlinx.io](https://img.shields.io/badge/kotlinx.io-0.9.0-orange)](https://github.com/Kotlin/kotlinx-io)
 [![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20JVM%20%7C%20JS-informational)](#ターゲット)
 [![Status](https://img.shields.io/badge/Status-Pre--release-yellow)](#ロードマップ)
 
-> [English README](README.md)
+Linux の epoll、macOS の kqueue、JVM の Netty — プラットフォームごとに異なるネイティブ非同期 I/O を、keel が単一の Kotlin Multiplatform インターフェースに統一します。
+KMP 上でネットワークプロトコルを実装するための適切な基盤を提供します。
 
-**KMP Native ネットワーク I/O エンジンライブラリ。**
-epoll / kqueue を Kotlin Native から直接駆動し、JVM では Netty に委譲する。
-最終目標は Ktor の Native エンジンとして採用されること。
+- **Native ファースト**: epoll（Linux）・kqueue（macOS）を Kotlin Native から直接駆動
+- **非同期イベントループ**: 全ターゲットでスレッドをブロックしない I/O
+- **プラットフォーム最適**: Native=epoll/kqueue · JVM=Netty · Node.js=net モジュール
+- **コーデック層**: kotlinx.io プリミティブのみで構成した HTTP/1.1・WebSocket
+
+```
+  ┌──────┬──────┬────────────┬──────┬───────────────┐
+  │epoll │kqueue│  io_uring  │ NIO  │ NWConnection  │
+  │Linux │macOS │ Linux 5.1+ │ JVM  │   Apple       │
+  └──┬───┴──┬───┴─────┬──────┴──┬───┴───────┬───────┘
+     └──────┴─────────┴─────────┴───────────┘
+                           │
+               ┌───────────┴───────────┐
+               │          keel         │
+               │   非同期 I/O エンジン  │
+               └───────────┬───────────┘
+                           │
+  ┌────────────────────────┴─────────────────────────┐
+  │      アプリケーション / Ktor / gRPC KMP           │
+  └──────────────────────────────────────────────────┘
+```
 
 ---
 
-## 概要
+## ドキュメント
 
-```
-アプリケーション / Ktor DSL / gRPC KMP
-        ↑
-   keel（I/O の「速さ・制御」を提供）
-        ↑
-epoll / kqueue / io_uring / NIO / NWConnection
-```
-
-Ktor の「何を作るか」フレームワークに対し、keel は「どう繋ぐか」のエンジン。
-競合ではなく補完関係。
+- [Web サイト](https://keel-kt.github.io/keel/) — アーキテクチャガイド・How-to・コーデックドキュメント
+- [API リファレンス](https://keel-kt.github.io/keel/api/) — Dokka 生成 KDoc
+- [English README](README.md)
 
 ---
 
@@ -50,28 +62,63 @@ keel/
 
 ## ターゲット
 
-| ターゲット | エンジン |
-|---|---|
-| `linuxX64`, `linuxArm64` | epoll |
-| `macosArm64`, `macosX64` | kqueue / NWConnection |
-| `jvm` | NIO / Netty |
-| `js (nodejs())` | Node.js net |
+| ターゲット | エンジン | 状態 | 備考 |
+|---|---|---|---|
+| `linuxX64`, `linuxArm64` | epoll | ✅ | |
+| `macosArm64` | kqueue / NWConnection | ✅ | |
+| `macosX64` | kqueue / NWConnection | ✅ | Kotlin 2.3 で deprecated（Tier 3） |
+| `jvm` | NIO / Netty | ✅ | |
+| `js (nodejs())` | Node.js net | ✅ | |
+| `iosArm64`, `iosSimulatorArm64` | NWConnection | 🔲 予定 | クライアント限定 |
+| `mingwX64` | IOCP | 🔲 保留 | |
+| `androidNativeArm64`, `androidNativeX64` | epoll | 🔲 保留 | |
+| `tvosArm64`, `watchosArm64` | — | ❌ 対象外 | サンドボックス制約により対応困難 |
+| `wasmJs`, `wasmWasi` | — | ❌ 対象外 | syscall 直接アクセス不可 |
 
 ---
 
 ## ロードマップ
 
-| フェーズ | 内容 | 状態 |
-|---|---|---|
-| Phase 0 | プロジェクト骨格 | ✅ |
-| Phase 1 | kqueue エンジン | ✅ |
-| Phase 2 | epoll エンジン | ✅ |
-| Phase 3 | NIO / Netty / Node.js / NWConnection エンジン | ✅ |
-| Phase 4 | HTTP/1.1 コーデック・WebSocket コーデック | ✅ |
-| Phase 4.5 | OSS 公開前整備（LICENSE / README / KDoc / Dokka / Docusaurus）| 🔄 |
-| Phase 5 | IoEngine 再設計 / BufferAllocator / Ktor アダプタ | 🔲 |
-| Phase 6 | TLS（Mbed TLS）/ io_uring | 🔲 |
-| Phase 7 | UDP / MQTT / HTTP2 / gRPC など | 🔲 |
+| 状態 | 内容 |
+|---|---|
+| ✅ 完了 | プロジェクト骨格・CI |
+| ✅ 完了 | kqueue エンジン（macOS） |
+| ✅ 完了 | epoll エンジン（Linux） |
+| ✅ 完了 | NIO / Netty / Node.js / NWConnection エンジン |
+| ✅ 完了 | HTTP/1.1 コーデック・WebSocket コーデック |
+| 🔄 進行中 | OSS 公開前整備（LICENSE / README / KDoc / Dokka / Docusaurus） |
+| 🔲 予定 | IoEngine 再設計 / BufferAllocator / Ktor アダプタ |
+| 🔲 予定 | TLS（Mbed TLS）/ io_uring |
+| 🔲 予定 | UDP / MQTT / HTTP2 / gRPC |
+
+---
+
+## インストール
+
+> **注意:** keel はまだ Maven Central に公開されていません。0.1.0 リリースまでは、ソースからビルドしてローカル Maven リポジトリに公開して使用してください。
+
+```bash
+git clone https://github.com/keel-kt/keel.git
+cd keel
+./gradlew publishToMavenLocal
+```
+
+プロジェクトへの依存関係の追加:
+
+```kotlin
+// build.gradle.kts
+repositories {
+    mavenLocal()
+}
+
+dependencies {
+    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // 任意
+    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // 任意
+}
+```
+
+Maven Central への公開は 0.1.0 リリース時を予定しています。
 
 ---
 
@@ -79,11 +126,11 @@ keel/
 
 ### 前提
 
-- Java 21+（Temurin 推奨）
+- Java 21+
 - Gradle 9.4+（wrapper 同梱）
 - macOS ビルド：M1/M2 Mac 推奨
 
-### ローカルビルド・テスト
+### テスト実行
 
 ```bash
 # JVM テスト
@@ -100,7 +147,7 @@ docker run --rm --platform linux/amd64 \
   ./gradlew :engine-epoll:linuxX64Test
 
 # API ドキュメント生成（Dokka）
-./gradlew dokkaHtmlMultiModule
+./gradlew dokkaGeneratePublicationHtml
 ```
 
 ---
