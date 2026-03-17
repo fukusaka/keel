@@ -13,6 +13,9 @@ build/
 # OS
 .DS_Store
 
+# Cloudflare
+.wrangler/
+
 # Project docs (managed outside git for now)
 CLAUDE.md
 design.md
