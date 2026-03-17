@@ -19,6 +19,7 @@ build/
 # Project docs (managed outside git for now)
 CLAUDE.md
 design.md
+research.md
 plan.md
 status.md
 
