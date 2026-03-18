@@ -18,11 +18,13 @@ interface BufferAllocator {
 }
 
 /**
- * Allocates a fresh [NativeBuf] on every call and frees it immediately on [release].
+ * Allocates a fresh [NativeBuf] on every call.
+ * [release] delegates to [NativeBuf.release] so the buffer is freed
+ * only when its reference count reaches zero.
  *
  * Works on all targets. Intended for tests and environments where pooling is unnecessary.
  */
 object HeapAllocator : BufferAllocator {
     override fun allocate(capacity: Int): NativeBuf = NativeBuf(capacity)
-    override fun release(buf: NativeBuf) = buf.close()
+    override fun release(buf: NativeBuf) { buf.release() }
 }
