@@ -37,7 +37,7 @@ class KqueueEngine : AutoCloseable {
     }
 
     fun bind(port: Int): Int {
-        val serverFd = SocketUtils.createServerSocket(port)
+        val serverFd = SocketUtils.createServerSocket("0.0.0.0", port)
 
         memScoped {
             val kev = alloc<kevent>()
