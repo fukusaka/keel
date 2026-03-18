@@ -33,6 +33,15 @@ import platform.posix.timespec
  * (5-second timeout per iteration). The accepted client socket is set to
  * non-blocking mode and wrapped in a [KqueueChannel].
  *
+ * ```
+ * accept() flow:
+ *   kevent(kqFd, timeout=5s)  -- wait for EVFILT_READ on serverFd
+ *     --> filter by ident == serverFd (ignore client channel events)
+ *   accept(serverFd)          -- POSIX accept
+ *   setNonBlocking(clientFd)  -- for kqueue-based read wait
+ *   --> KqueueChannel(clientFd, kqFd, allocator)
+ * ```
+ *
  * @param serverFd  The listening server socket fd.
  * @param kqFd      The kqueue fd shared from [KqueueEngine].
  * @param allocator Passed to accepted [KqueueChannel]s.

@@ -54,6 +54,29 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * Phase (a): all suspend methods delegate to internal blocking counterparts.
  *
+ * ```
+ * Read path (zero-copy):
+ *   POSIX read(fd) --> NativeBuf.unsafePointer + writerIndex
+ *                      (data lands directly in native memory)
+ *
+ * Write path (buffered, zero-copy flush):
+ *   write(buf)  --> retain buf, record offset/length in PendingWrite
+ *   write(buf2) --> retain buf2, append to pendingWrites
+ *   flush()     --> POSIX write(fd, buf.unsafePointer + offset, length)
+ *                   POSIX write(fd, buf2.unsafePointer + offset, length)
+ *                   release buf, release buf2
+ *
+ * Read wait (EAGAIN handling):
+ *   read(fd) returns EAGAIN
+ *     --> register fd with kqueue (EVFILT_READ, lazy)
+ *     --> kevent(kqFd, timeout=5s)
+ *     --> retry read(fd)
+ *
+ * Codec bridge (byte-by-byte copy, acceptable for codec layer):
+ *   asSource() --> ChannelSource --> NativeBuf --> kotlinx-io Buffer
+ *   asSink()   --> ChannelSink   --> kotlinx-io Buffer --> NativeBuf
+ * ```
+ *
  * @param fd        The connected socket file descriptor.
  * @param kqFd      The kqueue file descriptor shared from [KqueueEngine],
  *                   used for EAGAIN read-wait and future event-driven I/O.

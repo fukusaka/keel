@@ -30,6 +30,16 @@ import platform.posix.strerror
  * [close] is called. All [ServerChannel]s and [Channel]s created by
  * this engine share this kqueue fd for event notification.
  *
+ * ```
+ * KqueueEngine (owns kqFd)
+ *   |
+ *   +-- bind() --> KqueueServerChannel (serverFd registered on kqFd)
+ *   |                |
+ *   |                +-- accept() --> KqueueChannel (clientFd, shares kqFd)
+ *   |
+ *   +-- connect() --> KqueueChannel (clientFd, shares kqFd)
+ * ```
+ *
  * @param config Engine-wide configuration (allocator, threads).
  */
 @OptIn(ExperimentalForeignApi::class)
