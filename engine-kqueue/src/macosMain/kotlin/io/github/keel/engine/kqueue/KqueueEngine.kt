@@ -19,6 +19,19 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.strerror
 
+/**
+ * macOS kqueue-based [IoEngine] implementation.
+ *
+ * Phase (a): synchronous I/O. All suspend functions block internally.
+ * A single kqueue fd is shared across all channels created by this engine
+ * for read-readiness notification (EAGAIN → kevent wait → retry).
+ *
+ * The kqueue fd is created at construction time and closed when
+ * [close] is called. All [ServerChannel]s and [Channel]s created by
+ * this engine share this kqueue fd for event notification.
+ *
+ * @param config Engine-wide configuration (allocator, threads).
+ */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
@@ -38,6 +51,8 @@ class KqueueEngine(
 
         val serverFd = SocketUtils.createServerSocket(host, port)
 
+        // Register server fd with kqueue so that KqueueServerChannel.accept()
+        // can wait for incoming connections via kevent().
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -57,6 +72,11 @@ class KqueueEngine(
         return KqueueServerChannel(serverFd, kqFd, localAddr, config.allocator)
     }
 
+    /**
+     * Phase (a): blocking connect. The socket is created in blocking mode,
+     * connected synchronously, then switched to non-blocking for subsequent
+     * read/write operations.
+     */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
 
