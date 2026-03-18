@@ -2,6 +2,21 @@ package io.github.keel.core
 
 /**
  * A server-side channel that listens for incoming connections.
+ *
+ * Created by [IoEngine.bind]. Each call to [accept] suspends until
+ * a new client connects, then returns a [Channel] for that connection.
+ *
+ * ```
+ * val server = engine.bind("0.0.0.0", 8080)
+ * while (server.isActive) {
+ *     val conn = server.accept()
+ *     launch { handleConnection(conn) }
+ * }
+ * ```
+ *
+ * A `connections(): Flow<Channel>` convenience is intentionally omitted.
+ * Callers who need Flow semantics can write an extension function wrapping
+ * the accept loop above.
  */
 interface ServerChannel : AutoCloseable {
 
@@ -14,9 +29,11 @@ interface ServerChannel : AutoCloseable {
     /**
      * Accepts the next incoming connection.
      * Suspends until a connection is available.
+     *
+     * @return a [Channel] for the accepted connection.
      */
     suspend fun accept(): Channel
 
-    /** Stops listening and releases resources. */
+    /** Stops listening and releases the server socket. */
     override fun close()
 }
