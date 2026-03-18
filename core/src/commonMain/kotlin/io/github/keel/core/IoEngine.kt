@@ -1,20 +1,27 @@
 package io.github.keel.core
 
 /**
- * Platform-specific I/O event loop engine.
+ * Platform-agnostic I/O engine.
  *
- * Implementations: epoll (Linux), kqueue (macOS), NIO (JVM), Netty (JVM),
- * Node.js net (JS), NWConnection (Apple).
+ * Each engine module (epoll, kqueue, NIO, Netty, Node.js, NWConnection)
+ * provides its own implementation.
  */
-expect class IoEngine() {
+interface IoEngine : AutoCloseable {
+
     /**
-     * Polls for I/O events and processes them.
+     * Binds a server socket and starts listening for connections.
      *
-     * @param timeoutMs Maximum wait time in milliseconds; 0 returns immediately.
-     * @return Number of events processed.
+     * @return a [ServerChannel] that accepts incoming connections.
      */
-    fun poll(timeoutMs: Long): Int
+    suspend fun bind(host: String, port: Int): ServerChannel
+
+    /**
+     * Opens an outbound connection to a remote peer.
+     *
+     * @return a [Channel] ready for read/write.
+     */
+    suspend fun connect(host: String, port: Int): Channel
 
     /** Closes the engine and releases all resources. */
-    fun close()
+    override fun close()
 }
