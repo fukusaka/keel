@@ -56,7 +56,7 @@ internal object SocketUtils {
             addr.sin_family = AF_INET.convert()
             addr.sin_port = keel_htons(port.toUShort())
             if (host == "0.0.0.0") {
-                addr.sin_addr.s_addr = INADDR_ANY.toUInt()
+                addr.sin_addr.s_addr = INADDR_ANY
             } else {
                 val rc = inet_pton(AF_INET, host, addr.sin_addr.ptr)
                 check(rc == 1) { "Invalid address: $host" }
