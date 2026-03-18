@@ -1,14 +1,30 @@
 package io.github.keel.core
 
 /**
- * A fixed-capacity byte buffer backed by native memory.
+ * A fixed-capacity byte buffer backed by platform-native memory.
  *
  * On JVM, backed by a direct [java.nio.ByteBuffer].
  * On Native targets, backed by memory allocated from [kotlinx.cinterop.nativeHeap].
  *
- * Supports reference counting: newly created buffers start with `refCount = 1`.
+ * ```
+ * +-------------------+------------------+------------------+
+ * | discardable bytes | readable bytes   | writable bytes   |
+ * +-------------------+------------------+------------------+
+ * |                   |                  |                  |
+ * 0      <=      readerIndex   <=   writerIndex    <=    capacity
+ * ```
+ *
+ * **Reference counting**: newly created buffers start with `refCount = 1`.
  * Call [retain] to increment and [release] to decrement.
  * When the count reaches zero, the underlying memory is freed.
+ * Thread safety: single-threaded (EventLoop model). AtomicInt deferred
+ * to Phase (b) if needed.
+ *
+ * **Engine-layer zero-copy access**: platform-specific actual classes
+ * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or
+ * `unsafeBuffer` (JVM: `ByteBuffer`) for passing directly to OS syscalls.
+ * These are not in the expect declaration because the types are
+ * platform-specific.
  *
  * @param capacity Buffer size in bytes.
  */
@@ -46,6 +62,9 @@ expect class NativeBuf(capacity: Int) {
      */
     fun release(): Boolean
 
-    /** Releases the underlying native memory immediately, ignoring the reference count. */
+    /**
+     * Releases the underlying native memory immediately, ignoring the reference count.
+     * Prefer [release] for normal lifecycle management.
+     */
     fun close()
 }
