@@ -8,7 +8,7 @@ package io.github.keel.core
  * Node.js net (JS), NWConnection (Apple).
  *
  * ```
- * Application / Ktor
+ * Application
  *       |
  *   IoEngine  (bind / connect)
  *       |
