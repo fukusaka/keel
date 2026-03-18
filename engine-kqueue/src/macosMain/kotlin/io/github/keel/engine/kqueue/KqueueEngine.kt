@@ -1,34 +1,54 @@
 package io.github.keel.engine.kqueue
 
+import io.github.keel.core.Channel
+import io.github.keel.core.IoEngine
+import io.github.keel.core.IoEngineConfig
+import io.github.keel.core.ServerChannel
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.usePinned
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
-import platform.darwin.EV_EOF
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
 import platform.darwin.kqueue
-import platform.posix.EINTR
-import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
-import platform.posix.read
 import platform.posix.strerror
-import platform.posix.timespec
-import platform.posix.write
 
+/**
+ * macOS kqueue-based [IoEngine] implementation.
+ *
+ * Phase (a): synchronous I/O. All suspend functions block internally.
+ * A single kqueue fd is shared across all channels created by this engine
+ * for read-readiness notification (EAGAIN → kevent wait → retry).
+ *
+ * The kqueue fd is created at construction time and closed when
+ * [close] is called. All [ServerChannel]s and [Channel]s created by
+ * this engine share this kqueue fd for event notification.
+ *
+ * ```
+ * KqueueEngine (owns kqFd)
+ *   |
+ *   +-- bind() --> KqueueServerChannel (serverFd registered on kqFd)
+ *   |                |
+ *   |                +-- accept() --> KqueueChannel (clientFd, shares kqFd)
+ *   |
+ *   +-- connect() --> KqueueChannel (clientFd, shares kqFd)
+ * ```
+ *
+ * @param config Engine-wide configuration (allocator, threads).
+ */
 @OptIn(ExperimentalForeignApi::class)
-class KqueueEngine : AutoCloseable {
+class KqueueEngine(
+    private val config: IoEngineConfig = IoEngineConfig(),
+) : IoEngine {
 
     private val kqFd: Int
+    private var closed = false
 
     init {
         val fd = kqueue()
@@ -36,9 +56,13 @@ class KqueueEngine : AutoCloseable {
         kqFd = fd
     }
 
-    fun bind(port: Int): Int {
-        val serverFd = SocketUtils.createServerSocket(port)
+    override suspend fun bind(host: String, port: Int): ServerChannel {
+        check(!closed) { "Engine is closed" }
 
+        val serverFd = SocketUtils.createServerSocket(host, port)
+
+        // Register server fd with kqueue so that KqueueServerChannel.accept()
+        // can wait for incoming connections via kevent().
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -48,81 +72,35 @@ class KqueueEngine : AutoCloseable {
                 EV_ADD.convert(),
                 0u,
                 0,
-                null
+                null,
             )
             val result = kevent(kqFd, kev.ptr, 1, null, 0, null)
             check(result >= 0) { "kevent(EV_ADD server) failed: ${strerror(errno)?.toKString()}" }
         }
 
-        return serverFd
+        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        return KqueueServerChannel(serverFd, kqFd, localAddr, config.allocator)
     }
 
-    fun runEchoLoop(serverFd: Int, maxEvents: Int = Int.MAX_VALUE) {
-        val maxBatch = 64
-        val buf = ByteArray(4096)
-        var processed = 0
+    /**
+     * Phase (a): blocking connect. The socket is created in blocking mode,
+     * connected synchronously, then switched to non-blocking for subsequent
+     * read/write operations.
+     */
+    override suspend fun connect(host: String, port: Int): Channel {
+        check(!closed) { "Engine is closed" }
 
-        memScoped {
-            val eventList = allocArray<kevent>(maxBatch)
-            val timeout = alloc<timespec>()
-            timeout.tv_sec = 1
-            timeout.tv_nsec = 0
+        val clientFd = SocketUtils.createClientSocket(host, port)
+        val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
+        val localAddr = SocketUtils.getLocalAddress(clientFd)
 
-            while (processed < maxEvents) {
-                val n = kevent(kqFd, null, 0, eventList, maxBatch, timeout.ptr)
-                if (n < 0) {
-                    if (errno == EINTR) continue
-                    error("kevent() failed: ${strerror(errno)?.toKString()}")
-                }
-                for (i in 0 until n) {
-                    val ev = eventList[i]
-                    val fd = ev.ident.toInt()
-
-                    when {
-                        fd == serverFd -> acceptAndRegister(serverFd)
-                        ev.flags.toInt() and EV_EOF != 0 -> close(fd)
-                        else -> echoOnce(fd, buf)
-                    }
-                    processed++
-                    if (processed >= maxEvents) break
-                }
-            }
-        }
-    }
-
-    private fun acceptAndRegister(serverFd: Int) {
-        val clientFd = accept(serverFd, null, null)
-        if (clientFd < 0) return // EAGAIN
-
-        SocketUtils.setNonBlocking(clientFd)
-
-        memScoped {
-            val kev = alloc<kevent>()
-            keel_ev_set(
-                kev.ptr,
-                clientFd.convert(),
-                EVFILT_READ.convert(),
-                EV_ADD.convert(),
-                0u,
-                0,
-                null
-            )
-            kevent(kqFd, kev.ptr, 1, null, 0, null)
-        }
-    }
-
-    private fun echoOnce(clientFd: Int, buf: ByteArray) {
-        buf.usePinned { pinned ->
-            val n = read(clientFd, pinned.addressOf(0), buf.size.convert())
-            when {
-                n > 0 -> write(clientFd, pinned.addressOf(0), n.convert())
-                n == 0L -> close(clientFd)
-                // n < 0: EAGAIN — kqueue will re-notify, skip
-            }
-        }
+        return KqueueChannel(clientFd, kqFd, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
-        close(kqFd)
+        if (!closed) {
+            closed = true
+            close(kqFd)
+        }
     }
 }

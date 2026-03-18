@@ -4,6 +4,9 @@ import java.nio.ByteBuffer
 
 actual class NativeBuf actual constructor(actual val capacity: Int) {
     private val buf: ByteBuffer = ByteBuffer.allocateDirect(capacity)
+
+    /** Direct ByteBuffer for engine-layer zero-copy I/O. */
+    val unsafeBuffer: ByteBuffer get() = buf
     private var refCount = 1
 
     actual var readerIndex: Int = 0

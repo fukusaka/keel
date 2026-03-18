@@ -1,5 +1,6 @@
 package io.github.keel.core
 
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.ByteVar
@@ -10,6 +11,9 @@ import kotlinx.cinterop.nativeHeap
 @OptIn(ExperimentalForeignApi::class)
 actual class NativeBuf actual constructor(actual val capacity: Int) {
     private val ptr = nativeHeap.allocArray<ByteVar>(capacity)
+
+    /** Raw pointer to the underlying native memory. For engine-layer zero-copy I/O. */
+    val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
 
