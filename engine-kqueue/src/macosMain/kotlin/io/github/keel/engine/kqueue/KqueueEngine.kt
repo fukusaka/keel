@@ -64,7 +64,7 @@ class KqueueEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
         val localAddr = SocketUtils.getLocalAddress(clientFd)
 
-        return KqueueChannel(clientFd, config.allocator, remoteAddr, localAddr)
+        return KqueueChannel(clientFd, kqFd, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {

@@ -62,7 +62,7 @@ internal class KqueueServerChannel(
         val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
         val localAddr = SocketUtils.getLocalAddress(clientFd)
 
-        return KqueueChannel(clientFd, allocator, remoteAddr, localAddr)
+        return KqueueChannel(clientFd, kqFd, allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
