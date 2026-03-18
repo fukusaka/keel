@@ -4,6 +4,16 @@ import io.github.keel.core.BufferAllocator
 import kotlinx.io.Buffer
 import kotlinx.io.RawSource
 
+/**
+ * Bridges [KqueueChannel] to kotlinx-io [RawSource] for codec layer integration.
+ *
+ * Allocates a temporary [NativeBuf][io.github.keel.core.NativeBuf] for each
+ * read, copies bytes into the kotlinx-io [Buffer], then releases the native buffer.
+ * This introduces one byte-by-byte copy per read, which is acceptable for
+ * codec-layer usage where kotlinx-io's Source/Sink abstraction is needed.
+ *
+ * Engine-layer code should use [KqueueChannel.read] directly for zero-copy I/O.
+ */
 internal class ChannelSource(
     private val channel: KqueueChannel,
     private val allocator: BufferAllocator,
@@ -17,6 +27,8 @@ internal class ChannelSource(
             if (n <= 0) {
                 n.toLong()
             } else {
+                // Copy from NativeBuf to kotlinx-io Buffer byte-by-byte.
+                // Acceptable overhead for codec layer; engine layer uses zero-copy.
                 for (i in 0 until n) {
                     sink.writeByte(buf.readByte())
                 }
@@ -27,7 +39,6 @@ internal class ChannelSource(
         }
     }
 
-    override fun close() {
-        // Channel lifecycle is managed externally
-    }
+    /** No-op: channel lifecycle is managed by the caller, not by this source. */
+    override fun close() {}
 }

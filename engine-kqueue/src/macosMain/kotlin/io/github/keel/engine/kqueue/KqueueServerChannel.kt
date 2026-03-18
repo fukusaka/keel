@@ -22,6 +22,21 @@ import platform.posix.errno
 import platform.posix.strerror
 import platform.posix.timespec
 
+/**
+ * kqueue-based [ServerChannel] implementation for macOS.
+ *
+ * Listens on [serverFd] and uses kqueue ([kqFd]) to wait for incoming
+ * connections. The server fd is registered with kqueue by [KqueueEngine.bind]
+ * before this object is created.
+ *
+ * Phase (a): [accept] blocks on kevent until a connection arrives
+ * (5-second timeout per iteration). The accepted client socket is set to
+ * non-blocking mode and wrapped in a [KqueueChannel].
+ *
+ * @param serverFd  The listening server socket fd.
+ * @param kqFd      The kqueue fd shared from [KqueueEngine].
+ * @param allocator Passed to accepted [KqueueChannel]s.
+ */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueServerChannel(
     private val serverFd: Int,
@@ -34,10 +49,18 @@ internal class KqueueServerChannel(
 
     override val isActive: Boolean get() = _active
 
+    /**
+     * Waits for an incoming connection via kqueue, then accepts it.
+     *
+     * The kqueue wait filters for events on [serverFd] specifically,
+     * ignoring events for other fds registered on the same kqueue
+     * (e.g. client channel read events).
+     */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
 
-        // Wait for a readable event on serverFd (incoming connection)
+        // Wait for a readable event on serverFd (incoming connection).
+        // Other fds may also fire on this kqueue — filter by ident.
         memScoped {
             val eventList = allocArray<kevent>(1)
             val timeout = alloc<timespec>()
@@ -57,6 +80,7 @@ internal class KqueueServerChannel(
         val clientFd = accept(serverFd, null, null)
         check(clientFd >= 0) { "accept() failed: ${strerror(errno)?.toKString()}" }
 
+        // Set non-blocking for kqueue-based read wait in KqueueChannel
         SocketUtils.setNonBlocking(clientFd)
 
         val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
