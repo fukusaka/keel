@@ -22,5 +22,10 @@ external interface Server : NodeEventEmitter {
 
 external interface Socket : NodeEventEmitter {
     fun write(data: dynamic): Boolean
+    fun end(): Socket
     fun destroy(): Socket
+    val remoteAddress: String?
+    val remotePort: Int?
+    val localAddress: String?
+    val localPort: Int?
 }
