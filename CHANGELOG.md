@@ -16,6 +16,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `BufferAllocator` interface and `HeapAllocator` (pluggable buffer allocation)
+- `core`: `NativeBuf` reference counting (`retain`/`release`) and dual-pointer index management (`readerIndex`/`writerIndex`)
+- `core`: `NativeBuf.unsafePointer` (Native) / `unsafeBuffer` (JVM) for engine-layer zero-copy I/O
+- `core`: `IoEngine` redesigned as `interface` with `suspend fun bind/connect`, `Channel`, `ServerChannel`, `SocketAddress`
+- `core`: `IoEngineConfig` (allocator, threads)
+- `core`: comprehensive KDoc on all public interfaces
+- `engine-kqueue`: `KqueueEngine` IoEngine implementation (bind/connect, KqueueChannel with zero-copy read/write, PendingWrite buffering, kqueue read-wait, shutdownOutput, asSource/asSink bridge, 22 tests)
+- `engine-nwconnection`: `NwEngine` IoEngine implementation (Apple Network.framework)
+  - C wrappers: `keel_nw_read` (dispatch_data_t → NativeBuf copy via dispatch_data_apply), `keel_nw_write`, `keel_nw_shutdown_output`, `keel_nw_start_conn`
+  - `NwChannel`: Channel wrapping nw_connection_t with PendingWrite buffering
+  - `NwServerChannel`: semaphore-based accept queue wrapping nw_listener_t
+  - `ChannelSource`/`ChannelSink`: kotlinx-io RawSource/RawSink bridges
+  - 21 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
+
 - `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
 - `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
 - `website/`: Docusaurus 3.9.2 site scaffold (intro / architecture / codecs documentation)
