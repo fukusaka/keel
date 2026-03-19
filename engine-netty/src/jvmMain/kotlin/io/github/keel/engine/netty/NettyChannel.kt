@@ -91,7 +91,10 @@ internal class NettyChannel(
     internal fun readBlocking(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
 
-        val byteBuf = readQueue.take()
+        // Poll with timeout to avoid indefinite blocking (e.g. if channel
+        // is closed concurrently). 5-second timeout matches kqueue/epoll pattern.
+        val byteBuf = readQueue.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+            ?: return -1 // Timeout: treat as EOF
 
         // EOF sentinel: empty buffer from channelInactive
         if (!byteBuf.isReadable) {
@@ -164,7 +167,9 @@ internal class NettyChannel(
                 pw.buf.release()
             }
             pendingWrites.clear()
-            nettyChannel.close().sync()
+            // Do not call sync() — it deadlocks if called from the EventLoop thread.
+            // Async close is sufficient; the channel will be closed by Netty's EventLoop.
+            nettyChannel.close()
         }
     }
 
