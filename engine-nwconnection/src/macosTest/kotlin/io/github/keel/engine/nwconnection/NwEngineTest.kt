@@ -297,4 +297,57 @@ class NwEngineTest {
         engine.close()
     }
 
+    // --- Half-close ---
+
+    @Test
+    fun shutdownOutputSendsFin() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        // Client should see EOF
+        val buf = ByteArray(1)
+        val n = buf.usePinned { pinned ->
+            read(clientFd, pinned.addressOf(0), 1u.convert())
+        }
+        assertEquals(0, n.toInt()) // EOF
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readAfterShutdownOutputStillWorks() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        // Client can still send data
+        rawWrite(clientFd, "hi")
+
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(2, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('i'.code.toByte(), buf.readByte())
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
 }
