@@ -30,6 +30,22 @@ fun writeResponse(response: HttpResponse, sink: Sink) {
     response.body?.let { writeBodyWithContentLength(it, sink) }
 }
 
+/**
+ * Writes only the response head (status line + headers) to [sink].
+ *
+ * The body is not written; callers stream it separately.
+ * The empty-line terminator after the last header is included.
+ */
+fun writeResponseHead(
+    status: HttpStatus,
+    version: HttpVersion,
+    headers: HttpHeaders,
+    sink: Sink,
+) {
+    sink.writeString("${version.text} ${status.code} ${status.reasonPhrase()}\r\n")
+    writeHeaders(headers, sink)
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers — exposed as `internal` for unit testing
 // ---------------------------------------------------------------------------
