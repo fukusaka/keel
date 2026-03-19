@@ -125,18 +125,33 @@ internal class NioChannel(
     /**
      * Sends all buffered writes to the network via SocketChannel.
      *
-     * Each [PendingWrite] is written using zero-copy ByteBuffer access.
-     * The ByteBuffer's position/limit are set to the recorded offset/length
-     * before each [SocketChannel.write] call.
+     * Uses [GatheringByteChannel.write] to send all pending buffers in a
+     * single syscall when multiple writes are buffered, reducing context
+     * switches compared to individual write() calls per buffer.
+     * Falls back to single write() for one-buffer flushes.
      */
     internal fun flushBlocking() {
         check(_open) { "Channel is closed" }
-        for (pw in pendingWrites) {
+        if (pendingWrites.isEmpty()) return
+
+        if (pendingWrites.size == 1) {
+            val pw = pendingWrites[0]
             val bb = pw.buf.unsafeBuffer
             bb.position(pw.offset)
             bb.limit(pw.offset + pw.length)
             socketChannel.write(bb)
             pw.buf.release()
+        } else {
+            // Gather write: send all buffers in one syscall via GatheringByteChannel
+            val bbArray = Array(pendingWrites.size) { i ->
+                val pw = pendingWrites[i]
+                pw.buf.unsafeBuffer.duplicate().apply {
+                    position(pw.offset)
+                    limit(pw.offset + pw.length)
+                }
+            }
+            socketChannel.write(bbArray)
+            for (pw in pendingWrites) pw.buf.release()
         }
         pendingWrites.clear()
     }
