@@ -389,4 +389,70 @@ class NwEngineTest {
         engine.close()
     }
 
+    // --- asSource/asSink ---
+
+    @Test
+    fun asSourceReadsData() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        rawWrite(clientFd, "test")
+
+        val source = ch.asSource().buffered()
+        val data = source.readByteArray(4)
+        assertEquals("test", data.decodeToString())
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun asSinkWritesData() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val sink = ch.asSink().buffered()
+        sink.write("data".encodeToByteArray())
+        sink.flush()
+
+        val received = rawRead(clientFd, 4)
+        assertEquals("data", received)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun asSourceEofReturnsMinusOne() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        close(clientFd)
+
+        val source = ch.asSource()
+        val buf = kotlinx.io.Buffer()
+        val n = source.readAtMostTo(buf, 64)
+        assertEquals(-1L, n)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
 }
