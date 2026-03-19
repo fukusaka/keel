@@ -1,6 +1,7 @@
 package io.github.keel.codec.http
 
 import kotlinx.io.Buffer
+import kotlinx.io.readString
 import kotlinx.io.writeString
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -237,6 +238,61 @@ class HttpParserTest {
         // Second request is still unread in the source
         val second = parseRequest(src)
         assertEquals("/second", second.uri)
+    }
+
+    // --- parseRequestHead ---
+
+    @Test
+    fun requestHeadParsesMethodUriVersionHeaders() {
+        val src = buffer("POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello")
+        val head = parseRequestHead(src)
+        assertEquals(HttpMethod.POST, head.method)
+        assertEquals("/submit", head.uri)
+        assertEquals(HttpVersion.HTTP_1_1, head.version)
+        assertEquals("example.com", head.headers["Host"])
+        assertEquals("5", head.headers["Content-Length"])
+        // Body remains in source
+        assertEquals("hello", src.readString())
+    }
+
+    @Test
+    fun requestHeadLeavesChunkedBodyInSource() {
+        val src = buffer("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+        val head = parseRequestHead(src)
+        assertEquals(HttpMethod.POST, head.method)
+        assertTrue(head.headers.isChunked())
+        // Chunked body remains unread
+        assertEquals("5\r\nhello\r\n0\r\n\r\n", src.readString())
+    }
+
+    @Test
+    fun requestHeadWithoutBody() {
+        val src = buffer("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+        val head = parseRequestHead(src)
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals("/", head.uri)
+        assertTrue(src.exhausted())
+    }
+
+    // --- parseResponseHead ---
+
+    @Test
+    fun responseHeadParsesStatusAndHeaders() {
+        val src = buffer("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+        val head = parseResponseHead(src)
+        assertEquals(HttpStatus.OK, head.status)
+        assertEquals(HttpVersion.HTTP_1_1, head.version)
+        assertEquals("5", head.headers["Content-Length"])
+        // Body remains in source
+        assertEquals("hello", src.readString())
+    }
+
+    @Test
+    fun responseHeadNoContent() {
+        val src = buffer("HTTP/1.1 204 No Content\r\n\r\n")
+        val head = parseResponseHead(src)
+        assertEquals(HttpStatus.NO_CONTENT, head.status)
+        assertTrue(src.exhausted())
     }
 
     // --- parseResponse (integration) ---
