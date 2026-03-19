@@ -256,4 +256,52 @@ class NettyEngineTest {
         engine.close()
     }
 
+    // --- Half-close ---
+
+    @Test
+    fun shutdownOutputSendsFin() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        val n = client.getInputStream().read()
+        assertEquals(-1, n)
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readAfterShutdownOutputStillWorks() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        rawWrite(client, "hi")
+
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(2, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('i'.code.toByte(), buf.readByte())
+
+        buf.release()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
 }
