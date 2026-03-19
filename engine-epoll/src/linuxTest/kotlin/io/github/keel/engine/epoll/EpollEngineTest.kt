@@ -1,5 +1,7 @@
 package io.github.keel.engine.epoll
 
+import io.github.keel.core.NativeBuf
+import epoll.keel_htons
 import epoll.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -10,16 +12,15 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.io.buffered
+import kotlinx.io.readByteArray
 import platform.posix.AF_INET
-import platform.posix.F_GETFL
-import platform.posix.O_NONBLOCK
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_RCVTIMEO
 import platform.posix.close
 import platform.posix.connect
-import platform.posix.fcntl
-import platform.posix.getsockname
 import platform.posix.read
 import platform.posix.setsockopt
 import platform.posix.socket
@@ -28,85 +29,107 @@ import platform.posix.timeval
 import platform.posix.write
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineTest {
 
-    @Test
-    fun epollFdIsValid() {
-        val engine = EpollEngine()
-        engine.close()
-    }
+    // --- Helper ---
 
-    @Test
-    fun bindReturnsValidServerFd() {
-        val engine = EpollEngine()
-        val serverFd = engine.bind(0)
-        assertTrue(serverFd >= 0)
-        close(serverFd)
-        engine.close()
-    }
-
-    @Test
-    fun serverSocketIsNonBlocking() {
-        val engine = EpollEngine()
-        val serverFd = engine.bind(0)
-        val flags = fcntl(serverFd, F_GETFL, 0)
-        assertTrue(flags and O_NONBLOCK != 0, "server socket must be O_NONBLOCK")
-        close(serverFd)
-        engine.close()
-    }
-
-    @Test
-    fun echoServerEchoesDataOverLoopback() {
-        val engine = EpollEngine()
-        val serverFd = engine.bind(0)
-
-        // Get port in network byte order directly from getsockname
-        val portNetworkOrder: UShort = memScoped {
-            val addr = alloc<sockaddr_in>()
-            uintArrayOf(sizeOf<sockaddr_in>().toUInt()).usePinned { len ->
-                getsockname(serverFd, addr.ptr.reinterpret(), len.addressOf(0).reinterpret())
-            }
-            addr.sin_port
-        }
-
-        // Connect blocking client with SO_RCVTIMEO to prevent hang
-        val clientFd = socket(AF_INET, SOCK_STREAM, 0)
+    private fun connectRawClient(port: Int): Int {
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        check(fd >= 0)
         memScoped {
             val tv = alloc<timeval>()
             tv.tv_sec = 5
             tv.tv_usec = 0
-            setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, tv.ptr, sizeOf<timeval>().convert())
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv.ptr, sizeOf<timeval>().convert())
 
             val addr = alloc<sockaddr_in>()
             addr.sin_family = AF_INET.convert()
-            addr.sin_port = portNetworkOrder
-            addr.sin_addr.s_addr = keel_loopback_addr()  // 127.0.0.1 in network byte order
-            connect(clientFd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+            addr.sin_port = keel_htons(port.toUShort())
+            addr.sin_addr.s_addr = keel_loopback_addr()
+            connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
         }
+        return fd
+    }
 
-        // Send "hello"
-        val msg = "hello"
-        msg.encodeToByteArray().usePinned { pinned ->
-            write(clientFd, pinned.addressOf(0), msg.length.convert())
+    private fun rawWrite(fd: Int, data: String) {
+        data.encodeToByteArray().usePinned { pinned ->
+            write(fd, pinned.addressOf(0), data.length.convert())
         }
+    }
 
-        // Event loop: event 1 = accept, event 2 = echo
-        engine.runEchoLoop(serverFd, maxEvents = 2)
-
-        // Read echoed data
-        val buf = ByteArray(5)
-        val n = buf.usePinned { pinned ->
-            read(clientFd, pinned.addressOf(0), buf.size.convert())
+    private fun rawRead(fd: Int, size: Int): String {
+        val buf = ByteArray(size)
+        var total = 0
+        while (total < size) {
+            val n = buf.usePinned { pinned ->
+                read(fd, pinned.addressOf(total), (size - total).convert())
+            }
+            if (n <= 0) break
+            total += n.toInt()
         }
+        return buf.decodeToString(0, total)
+    }
 
-        assertEquals(5, n.toInt())
-        assertEquals(msg, buf.decodeToString())
+    // --- Lifecycle ---
 
-        close(clientFd)
-        close(serverFd)
+    @Test
+    fun engineCreateAndClose() {
+        val engine = EpollEngine()
         engine.close()
     }
+
+    @Test
+    fun bindReturnsActiveServerChannel() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        assertTrue(server.isActive)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun serverChannelLocalAddress() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        assertEquals("0.0.0.0", server.localAddress.host)
+        assertTrue(server.localAddress.port > 0)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun serverChannelCloseStopsListening() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        server.close()
+        assertFalse(server.isActive)
+        engine.close()
+    }
+
+    @Test
+    fun channelLifecycleAfterClose() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        assertTrue(ch.isOpen)
+        assertTrue(ch.isActive)
+
+        ch.close()
+        assertFalse(ch.isOpen)
+        assertFalse(ch.isActive)
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
 }
