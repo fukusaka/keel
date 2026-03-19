@@ -53,14 +53,21 @@ class NettyEngine(
 
         // Accept queue shared between ChannelInitializer and NettyServerChannel.
         // Created upfront so the closure can capture it before bind completes.
-        val acceptQueue = LinkedBlockingQueue<io.netty.channel.Channel>()
+        // Queue of fully-initialized NettyChannels (with handler already in pipeline).
+        // The handler is added in initChannel to avoid the race condition where
+        // channelRead fires before accept() adds the handler.
+        val acceptQueue = LinkedBlockingQueue<NettyChannel>()
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    acceptQueue.put(ch)
+                    val remoteAddr = NettyChannel.toSocketAddress(ch.remoteAddress())
+                    val localAddr = NettyChannel.toSocketAddress(ch.localAddress())
+                    val keelChannel = NettyChannel(ch, config.allocator, remoteAddr, localAddr)
+                    ch.pipeline().addLast(keelChannel.handler)
+                    acceptQueue.put(keelChannel)
                 }
             })
 
@@ -70,7 +77,7 @@ class NettyEngine(
             ?: error("Failed to get local address")
 
         // Pass the shared acceptQueue to the ServerChannel
-        return NettyServerChannel(nettyServerCh, localAddr, config.allocator, acceptQueue)
+        return NettyServerChannel(nettyServerCh, localAddr, acceptQueue)
     }
 
     /**
@@ -102,8 +109,11 @@ class NettyEngine(
     override fun close() {
         if (!closed) {
             closed = true
-            workerGroup.shutdownGracefully().sync()
-            bossGroup.shutdownGracefully().sync()
+            // Short quiet period (0) and timeout (2s) to avoid hanging on shutdown.
+            // Default shutdownGracefully() uses 2s quiet + 15s timeout which
+            // causes CI timeouts when channels are not fully drained.
+            workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
+            bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
         }
     }
 }
