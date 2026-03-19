@@ -44,6 +44,8 @@ internal class NioServerChannel(
         check(_active) { "ServerChannel is closed" }
 
         val client = serverChannel.accept()
+        // 5-second read timeout on accepted connections to prevent test hangs
+        client.socket().soTimeout = 5000
         val remoteAddr = NioChannel.toSocketAddress(client.remoteAddress)
         val localAddr = NioChannel.toSocketAddress(client.localAddress)
 

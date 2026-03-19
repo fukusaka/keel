@@ -40,6 +40,8 @@ class NioEngine(
         // Phase (a): blocking mode for simple accept()
         serverChannel.configureBlocking(true)
         serverChannel.bind(InetSocketAddress(host, port))
+        // 5-second accept timeout to prevent indefinite blocking in tests
+        serverChannel.socket().soTimeout = 5000
 
         val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
@@ -58,6 +60,8 @@ class NioEngine(
         // Phase (a): blocking mode
         socketChannel.configureBlocking(true)
         socketChannel.connect(InetSocketAddress(host, port))
+        // 5-second read timeout to prevent indefinite blocking
+        socketChannel.socket().soTimeout = 5000
 
         val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
         val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
