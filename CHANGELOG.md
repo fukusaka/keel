@@ -34,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `NioServerChannel`: blocking `ServerSocketChannel.accept()`
   - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
   - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
+- `engine-netty`: `NettyEngine` IoEngine implementation (JVM Netty 4.1)
+  - `NettyChannel`: push-to-pull bridge via LinkedBlockingQueue (ByteBuf → NativeBuf copy), PendingWrite buffering, zero-copy write via Unpooled.wrappedBuffer
+  - `NettyServerChannel`: accept queue via LinkedBlockingQueue
+  - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
+  - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
 
 - `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
 - `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
