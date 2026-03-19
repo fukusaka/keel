@@ -46,7 +46,8 @@ internal class NettyServerChannel(
     override suspend fun accept(): KeelChannel {
         check(_active) { "ServerChannel is closed" }
 
-        val ch = acceptQueue.take()
+        val ch = acceptQueue.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("accept() timed out — no connection within 5 seconds")
 
         val remoteAddr = NettyChannel.toSocketAddress(ch.remoteAddress())
         val localAddr = NettyChannel.toSocketAddress(ch.localAddress())
