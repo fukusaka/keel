@@ -455,4 +455,53 @@ class NwEngineTest {
         engine.close()
     }
 
+    // --- Error ---
+
+    @Test
+    fun readOnClosedChannelThrows() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.read(NativeBuf(8))
+        }
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeOnClosedChannelThrows() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.write(NativeBuf(8))
+        }
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun bindOnClosedEngineThrows() {
+        val engine = NwEngine()
+        engine.close()
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { engine.bind("127.0.0.1", 0) }
+        }
+    }
 }
