@@ -1,6 +1,5 @@
 package io.github.keel.engine.netty
 
-import io.github.keel.core.BufferAllocator
 import io.github.keel.core.ServerChannel
 import io.github.keel.core.SocketAddress
 import java.util.concurrent.LinkedBlockingQueue
@@ -31,8 +30,7 @@ import io.netty.channel.Channel as NettyNativeChannel
 internal class NettyServerChannel(
     private val serverChannel: NettyNativeChannel,
     override val localAddress: SocketAddress,
-    private val allocator: BufferAllocator,
-    internal val acceptQueue: LinkedBlockingQueue<NettyNativeChannel> = LinkedBlockingQueue(),
+    internal val acceptQueue: LinkedBlockingQueue<NettyChannel> = LinkedBlockingQueue(),
 ) : ServerChannel {
 
     private var _active = true
@@ -40,23 +38,16 @@ internal class NettyServerChannel(
     override val isActive: Boolean get() = _active
 
     /**
-     * Blocks until a client connects, then wraps the Netty channel
-     * in a [NettyChannel].
+     * Blocks until a client connects, then returns the pre-initialized
+     * [NettyChannel]. The handler is already in the Netty pipeline
+     * (added in [NettyEngine.bind]'s ChannelInitializer) to avoid the
+     * race condition where channelRead fires before accept() returns.
      */
     override suspend fun accept(): KeelChannel {
         check(_active) { "ServerChannel is closed" }
 
-        val ch = acceptQueue.poll(5, java.util.concurrent.TimeUnit.SECONDS)
+        return acceptQueue.poll(5, java.util.concurrent.TimeUnit.SECONDS)
             ?: error("accept() timed out — no connection within 5 seconds")
-
-        val remoteAddr = NettyChannel.toSocketAddress(ch.remoteAddress())
-        val localAddr = NettyChannel.toSocketAddress(ch.localAddress())
-
-        val keelChannel = NettyChannel(ch, allocator, remoteAddr, localAddr)
-        // Add the push-to-pull handler to the Netty pipeline
-        ch.pipeline().addLast(keelChannel.handler)
-
-        return keelChannel
     }
 
     override fun close() {
