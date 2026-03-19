@@ -61,7 +61,7 @@ internal class NettyServerChannel(
     override fun close() {
         if (_active) {
             _active = false
-            serverChannel.close().sync()
+            serverChannel.close()
         }
     }
 }

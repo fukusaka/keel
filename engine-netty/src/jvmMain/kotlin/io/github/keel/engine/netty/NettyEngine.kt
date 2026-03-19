@@ -102,8 +102,11 @@ class NettyEngine(
     override fun close() {
         if (!closed) {
             closed = true
-            workerGroup.shutdownGracefully().sync()
-            bossGroup.shutdownGracefully().sync()
+            // Short quiet period (0) and timeout (2s) to avoid hanging on shutdown.
+            // Default shutdownGracefully() uses 2s quiet + 15s timeout which
+            // causes CI timeouts when channels are not fully drained.
+            workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
+            bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
         }
     }
 }
