@@ -1,64 +1,73 @@
 package io.github.keel.engine.nio
 
+import io.github.keel.core.Channel
+import io.github.keel.core.IoEngine
+import io.github.keel.core.IoEngineConfig
+import io.github.keel.core.ServerChannel
 import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.nio.channels.SelectionKey
-import java.nio.channels.Selector
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 
-class NioEngine : AutoCloseable {
+/**
+ * JVM NIO-based [IoEngine] implementation.
+ *
+ * Uses [java.nio.channels.ServerSocketChannel] and [SocketChannel] for TCP I/O.
+ * Phase (a): blocking mode. All channels operate in blocking mode; no Selector
+ * is used. Phase (b) will introduce non-blocking mode + Selector for async I/O.
+ *
+ * ```
+ * NioEngine
+ *   |
+ *   +-- bind() --> NioServerChannel (wraps ServerSocketChannel)
+ *   |                |
+ *   |                +-- accept() --> NioChannel (wraps SocketChannel)
+ *   |
+ *   +-- connect() --> NioChannel (wraps SocketChannel)
+ * ```
+ *
+ * @param config Engine-wide configuration (allocator, threads).
+ */
+class NioEngine(
+    private val config: IoEngineConfig = IoEngineConfig(),
+) : IoEngine {
 
-    private val selector: Selector = Selector.open()
+    private var closed = false
 
-    fun bind(port: Int): ServerSocketChannel {
-        val ch = ServerSocketChannel.open()
-        ch.configureBlocking(false)
-        ch.bind(InetSocketAddress(port))
-        ch.register(selector, SelectionKey.OP_ACCEPT)
-        return ch
+    override suspend fun bind(host: String, port: Int): ServerChannel {
+        check(!closed) { "Engine is closed" }
+
+        val serverChannel = ServerSocketChannel.open()
+        // Phase (a): blocking mode for simple accept()
+        serverChannel.configureBlocking(true)
+        serverChannel.bind(InetSocketAddress(host, port))
+
+        val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
+            ?: error("Failed to get local address")
+
+        return NioServerChannel(serverChannel, localAddr, config.allocator)
     }
 
-    fun runEchoLoop(serverChannel: ServerSocketChannel, maxEvents: Int = Int.MAX_VALUE) {
-        val buf = ByteBuffer.allocate(4096)
-        var processed = 0
+    /**
+     * Phase (a): blocking connect. Opens a SocketChannel, connects
+     * synchronously, and returns an [NioChannel].
+     */
+    override suspend fun connect(host: String, port: Int): Channel {
+        check(!closed) { "Engine is closed" }
 
-        while (processed < maxEvents) {
-            val n = selector.select(1000)
-            if (n == 0) continue
+        val socketChannel = SocketChannel.open()
+        // Phase (a): blocking mode
+        socketChannel.configureBlocking(true)
+        socketChannel.connect(InetSocketAddress(host, port))
 
-            val iter = selector.selectedKeys().iterator()
-            while (iter.hasNext()) {
-                val key = iter.next()
-                iter.remove()
+        val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
+        val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
 
-                when {
-                    key.isAcceptable -> acceptAndRegister(serverChannel)
-                    key.isReadable   -> echoOnce(key, buf)
-                }
-                processed++
-                if (processed >= maxEvents) break
-            }
-        }
-    }
-
-    private fun acceptAndRegister(serverChannel: ServerSocketChannel) {
-        val client = serverChannel.accept() ?: return
-        client.configureBlocking(false)
-        client.register(selector, SelectionKey.OP_READ)
-    }
-
-    private fun echoOnce(key: SelectionKey, buf: ByteBuffer) {
-        val ch = key.channel() as SocketChannel
-        buf.clear()
-        val n = ch.read(buf)
-        when {
-            n > 0 -> { buf.flip(); ch.write(buf) }
-            n < 0 -> { key.cancel(); ch.close() }
-        }
+        return NioChannel(socketChannel, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
-        selector.close()
+        if (!closed) {
+            closed = true
+        }
     }
 }
