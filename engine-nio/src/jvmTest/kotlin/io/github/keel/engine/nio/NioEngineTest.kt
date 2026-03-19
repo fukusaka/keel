@@ -256,4 +256,53 @@ class NioEngineTest {
         engine.close()
     }
 
+    // --- Half-close ---
+
+    @Test
+    fun shutdownOutputSendsFin() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        // Client should see EOF
+        val n = client.getInputStream().read()
+        assertEquals(-1, n) // EOF
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readAfterShutdownOutputStillWorks() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        rawWrite(client, "hi")
+
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(2, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('i'.code.toByte(), buf.readByte())
+
+        buf.release()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
 }
