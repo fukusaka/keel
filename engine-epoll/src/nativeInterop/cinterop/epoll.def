@@ -1,9 +1,10 @@
-headers = sys/epoll.h sys/socket.h netinet/in.h
+headers = sys/epoll.h sys/socket.h netinet/in.h arpa/inet.h
 
 ---
 
 #include <sys/epoll.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 /*
  * htons is sometimes a macro/inline on Linux; expose as wrapper for safety.
@@ -14,3 +15,16 @@ uint32_t keel_htonl(uint32_t x) { return htonl(x); }
 
 /* 127.0.0.1 in network byte order */
 uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * inet_pton / inet_ntop wrappers for Kotlin/Native cinterop.
+ * On Linux, these are in arpa/inet.h but may not be directly
+ * bindable via platform.posix on all Kotlin/Native versions.
+ */
+int keel_inet_pton(int af, const char *src, void *dst) {
+    return inet_pton(af, src, dst);
+}
+
+const char *keel_inet_ntop(int af, const void *src, char *dst, uint32_t size) {
+    return inet_ntop(af, src, dst, (socklen_t)size);
+}
