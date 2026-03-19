@@ -45,6 +45,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
   - `SocketUtils`: add `createServerSocket(host,port)`, `createClientSocket`, `getLocalAddress`, `getRemoteAddress`; `keel_inet_pton`/`keel_inet_ntop` C wrappers for Linux
   - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
+- `engine-nodejs`: `NodeEngine` IoEngine implementation (JS Node.js)
+  - `NodeChannel`: push-to-pull bridge via ArrayDeque + suspendCoroutine (Node.js Buffer → NativeBuf copy)
+  - `NodeServerChannel`: accept queue via ArrayDeque + suspendCoroutine
+  - asSource/asSink deferred to Phase (b) — JS single-threaded, RawSource/RawSink require synchronous I/O
+  - 17 tests (lifecycle, read/write, half-close, connect, error)
 
 - `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
 - `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
