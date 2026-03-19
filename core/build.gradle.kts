@@ -6,6 +6,11 @@ kotlin {
     // JVM target
     jvm()
 
+    // JS target (Node.js)
+    js(IR) {
+        nodejs()
+    }
+
     // Native targets
     linuxX64()
     linuxArm64()
