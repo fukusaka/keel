@@ -92,7 +92,9 @@ class NwEngine(
         nw_listener_set_new_connection_handler(lsnr) { _ -> }
 
         nw_listener_start(lsnr)
-        dispatch_semaphore_wait(readySem, DISPATCH_TIME_FOREVER)
+        val timeout = platform.darwin.dispatch_time(platform.darwin.DISPATCH_TIME_NOW, 5L * 1_000_000_000L)
+        val waitResult = dispatch_semaphore_wait(readySem, timeout)
+        check(waitResult == 0L) { "NWListener bind timed out" }
 
         check(assignedPort > 0) { "NWListener failed to start (port=$assignedPort)" }
 

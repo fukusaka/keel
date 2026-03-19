@@ -73,7 +73,11 @@ internal class NwServerChannel(
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
 
-        dispatch_semaphore_wait(acceptSem, DISPATCH_TIME_FOREVER)
+        // 5-second timeout to prevent indefinite blocking in tests.
+        // dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)
+        val timeout = platform.darwin.dispatch_time(platform.darwin.DISPATCH_TIME_NOW, 5L * 1_000_000_000L)
+        val result = dispatch_semaphore_wait(acceptSem, timeout)
+        if (result != 0L) error("accept() timed out — no connection within 5 seconds")
         check(_active) { "ServerChannel closed while waiting for accept" }
 
         // Thread safety: the semaphore guarantees at least one element exists.
