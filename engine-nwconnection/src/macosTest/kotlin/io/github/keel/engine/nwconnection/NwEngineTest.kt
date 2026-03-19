@@ -350,4 +350,43 @@ class NwEngineTest {
         engine.close()
     }
 
+    // --- connect ---
+
+    @Test
+    fun connectToListeningServer() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        assertTrue(ch.isOpen)
+        assertTrue(ch.isActive)
+
+        // Accept server side to complete handshake
+        val serverCh = server.accept()
+
+        ch.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun connectRemoteAddress() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        server.accept().close()
+
+        assertNotNull(ch.remoteAddress)
+        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
+        assertEquals(port, ch.remoteAddress!!.port)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
 }
