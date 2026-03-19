@@ -1,10 +1,11 @@
-headers = sys/event.h sys/types.h sys/socket.h netinet/in.h
+headers = sys/event.h sys/types.h sys/socket.h netinet/in.h sys/uio.h
 compilerOpts = -D_DARWIN_C_SOURCE
 
 ---
 
 #include <sys/event.h>
 #include <netinet/in.h>
+#include <sys/uio.h>
 
 /*
  * EV_SET is a C macro and cannot be bound directly by cinterop.
@@ -26,3 +27,20 @@ uint32_t keel_htonl(uint32_t x) { return htonl(x); }
 
 /* 127.0.0.1 in network byte order */
 uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * writev wrapper for gather-write optimization.
+ * Accepts parallel arrays of base pointers and lengths, builds
+ * iovec internally, and calls writev in a single syscall.
+ *
+ * This avoids exposing struct iovec to Kotlin/Native (not available
+ * in platform.posix on Darwin).
+ */
+ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+    struct iovec iov[count];
+    for (int i = 0; i < count; i++) {
+        iov[i].iov_base = (void *)bases[i];
+        iov[i].iov_len = lens[i];
+    }
+    return writev(fd, iov, count);
+}
