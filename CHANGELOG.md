@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-kqueue`: use `writev()` in flush for gather-write optimization (single syscall for multiple pending buffers via `keel_writev` C wrapper)
+- `engine-epoll`: use `writev()` in flush for gather-write optimization (same pattern as kqueue)
 - `engine-nio`: use `GatheringByteChannel.write(ByteBuffer[])` in flush for gather-write optimization (single syscall for multiple pending buffers)
 
 - CI trigger on PRs changed from every push to label-based: `needs-pr-check` label required to run CI
