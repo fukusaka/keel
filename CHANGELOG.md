@@ -29,6 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `NwServerChannel`: semaphore-based accept queue wrapping nw_listener_t
   - `ChannelSource`/`ChannelSink`: kotlinx-io RawSource/RawSink bridges
   - 21 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
+- `engine-nio`: `NioEngine` IoEngine implementation (JVM java.nio)
+  - `NioChannel`: zero-copy read/write via `NativeBuf.unsafeBuffer` (DirectByteBuffer) + PendingWrite buffering
+  - `NioServerChannel`: blocking `ServerSocketChannel.accept()`
+  - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
+  - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
 
 - `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
 - `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
