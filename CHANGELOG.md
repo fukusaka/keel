@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: `parseRequestHead`/`parseResponseHead` — parse only the request/response head (request line + headers) without consuming the body, enabling streaming body consumption for server engines
+- `codec-http`: `HttpRequestHead`/`HttpResponseHead` data classes for head-only representations
+- `codec-http`: `writeResponseHead` — write only status line + headers to a Sink (body written separately)
 - `core`: `BufferAllocator` interface and `HeapAllocator` (pluggable buffer allocation)
 - `core`: `NativeBuf` reference counting (`retain`/`release`) and dual-pointer index management (`readerIndex`/`writerIndex`)
 - `core`: `NativeBuf.unsafePointer` (Native) / `unsafeBuffer` (JVM) for engine-layer zero-copy I/O
