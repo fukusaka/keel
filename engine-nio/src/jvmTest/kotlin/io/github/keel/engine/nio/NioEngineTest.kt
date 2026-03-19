@@ -427,4 +427,53 @@ class NioEngineTest {
         engine.close()
     }
 
+    // --- Error ---
+
+    @Test
+    fun readOnClosedChannelThrows() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.read(NativeBuf(8))
+        }
+
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeOnClosedChannelThrows() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.write(NativeBuf(8))
+        }
+
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun bindOnClosedEngineThrows() {
+        val engine = NioEngine()
+        engine.close()
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { engine.bind("0.0.0.0", 0) }
+        }
+    }
 }
