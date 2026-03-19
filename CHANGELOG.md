@@ -39,6 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `NettyServerChannel`: accept queue via LinkedBlockingQueue
   - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
   - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
+- `engine-epoll`: `EpollEngine` IoEngine implementation (Linux epoll)
+  - `EpollChannel`: zero-copy read/write via `NativeBuf.unsafePointer` + epoll_wait EAGAIN handling, PendingWrite buffering
+  - `EpollServerChannel`: epoll_wait-based accept with fd filtering
+  - `ChannelSource`/`ChannelSink`: kotlinx-io bridges
+  - `SocketUtils`: add `createServerSocket(host,port)`, `createClientSocket`, `getLocalAddress`, `getRemoteAddress`; `keel_inet_pton`/`keel_inet_ntop` C wrappers for Linux
+  - 22 tests (lifecycle, read/write, half-close, connect, asSource/asSink, error)
 
 - `LICENSE`: Apache License 2.0 (copyright `The keel-kt Authors`)
 - `README.md` (English) and `README.ja.md` (Japanese, primary): badges, module table, KMP target table, roadmap
