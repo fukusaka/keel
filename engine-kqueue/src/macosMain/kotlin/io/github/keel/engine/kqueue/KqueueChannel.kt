@@ -26,6 +26,12 @@ import platform.posix.read
 import platform.posix.shutdown
 import platform.posix.timespec
 import platform.posix.write
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
+import kotlinx.cinterop.ULongVar
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
+import kqueue.keel_writev
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -193,16 +199,34 @@ internal class KqueueChannel(
      * Each [PendingWrite] is written using zero-copy pointer access,
      * then the retained [NativeBuf] is released.
      *
-     * Phase (b) will replace individual write() calls with writev()
-     * for gather-write optimisation.
+     * Uses POSIX `writev()` to send all pending buffers in a single
+     * syscall (gather write) when multiple writes are buffered,
+     * reducing context switches compared to individual `write()` calls.
+     * Falls back to single `write()` for one-buffer flushes.
      */
     internal fun flushBlocking() {
         check(_open) { "Channel is closed" }
-        for (pw in pendingWrites) {
-            // Zero-copy: read directly from NativeBuf's backing memory
+        if (pendingWrites.isEmpty()) return
+
+        if (pendingWrites.size == 1) {
+            val pw = pendingWrites[0]
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
             write(fd, ptr, pw.length.convert())
             pw.buf.release()
+        } else {
+            // Gather write: send all buffers in one writev syscall via C wrapper.
+            // keel_writev accepts parallel arrays of base pointers and lengths,
+            // builds iovec internally to avoid exposing struct iovec to Kotlin.
+            memScoped {
+                val bases = allocArray<CPointerVar<ByteVar>>(pendingWrites.size)
+                val lens = allocArray<ULongVar>(pendingWrites.size)
+                for ((i, pw) in pendingWrites.withIndex()) {
+                    bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+                    lens[i] = pw.length.convert()
+                }
+                keel_writev(fd, bases.reinterpret(), lens.reinterpret(), pendingWrites.size)
+            }
+            for (pw in pendingWrites) pw.buf.release()
         }
         pendingWrites.clear()
     }
