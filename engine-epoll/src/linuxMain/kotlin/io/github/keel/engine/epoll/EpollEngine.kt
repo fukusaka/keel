@@ -1,36 +1,53 @@
 package io.github.keel.engine.epoll
 
+import io.github.keel.core.Channel
+import io.github.keel.core.IoEngine
+import io.github.keel.core.IoEngineConfig
+import io.github.keel.core.ServerChannel
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.usePinned
-import platform.linux.EPOLLERR
-import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
-import platform.linux.EPOLLRDHUP
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_create1
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
-import platform.linux.epoll_wait
-import platform.posix.EINTR
-import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
-import platform.posix.read
 import platform.posix.strerror
-import platform.posix.write
 
+/**
+ * Linux epoll-based [IoEngine] implementation.
+ *
+ * Phase (a): synchronous I/O. All suspend functions block internally.
+ * A single epoll fd is shared across all channels created by this engine
+ * for read-readiness notification (EAGAIN -> epoll_wait -> retry).
+ *
+ * The epoll fd is created at construction time and closed when
+ * [close] is called. All [ServerChannel]s and [Channel]s created by
+ * this engine share this epoll fd for event notification.
+ *
+ * ```
+ * EpollEngine (owns epFd)
+ *   |
+ *   +-- bind() --> EpollServerChannel (serverFd registered on epFd)
+ *   |                |
+ *   |                +-- accept() --> EpollChannel (clientFd, shares epFd)
+ *   |
+ *   +-- connect() --> EpollChannel (clientFd, shares epFd)
+ * ```
+ *
+ * @param config Engine-wide configuration (allocator, threads).
+ */
 @OptIn(ExperimentalForeignApi::class)
-class EpollEngine : AutoCloseable {
+class EpollEngine(
+    private val config: IoEngineConfig = IoEngineConfig(),
+) : IoEngine {
 
     private val epFd: Int
+    private var closed = false
 
     init {
         val fd = epoll_create1(0)
@@ -38,9 +55,13 @@ class EpollEngine : AutoCloseable {
         epFd = fd
     }
 
-    fun bind(port: Int): Int {
-        val serverFd = SocketUtils.createServerSocket(port)
+    override suspend fun bind(host: String, port: Int): ServerChannel {
+        check(!closed) { "Engine is closed" }
 
+        val serverFd = SocketUtils.createServerSocket(host, port)
+
+        // Register server fd with epoll so that EpollServerChannel.accept()
+        // can wait for incoming connections via epoll_wait().
         memScoped {
             val ev = alloc<epoll_event>()
             ev.events = EPOLLIN.toUInt()
@@ -49,66 +70,29 @@ class EpollEngine : AutoCloseable {
             check(result >= 0) { "epoll_ctl(ADD server) failed: ${strerror(errno)?.toKString()}" }
         }
 
-        return serverFd
+        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        return EpollServerChannel(serverFd, epFd, localAddr, config.allocator)
     }
 
-    fun runEchoLoop(serverFd: Int, maxEvents: Int = Int.MAX_VALUE) {
-        val maxBatch = 64
-        val buf = ByteArray(4096)
-        var processed = 0
+    /**
+     * Phase (a): blocking connect. The socket is created in blocking mode,
+     * connected synchronously, then switched to non-blocking for subsequent
+     * read/write operations.
+     */
+    override suspend fun connect(host: String, port: Int): Channel {
+        check(!closed) { "Engine is closed" }
 
-        memScoped {
-            val eventList = allocArray<epoll_event>(maxBatch)
+        val clientFd = SocketUtils.createClientSocket(host, port)
+        val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
+        val localAddr = SocketUtils.getLocalAddress(clientFd)
 
-            while (processed < maxEvents) {
-                val n = epoll_wait(epFd, eventList, maxBatch, 1000)
-                if (n < 0) {
-                    if (errno == EINTR) continue
-                    error("epoll_wait() failed: ${strerror(errno)?.toKString()}")
-                }
-                for (i in 0 until n) {
-                    val ev = eventList[i]
-                    val fd = ev.data.fd
-                    val events = ev.events.toInt()
-
-                    when {
-                        fd == serverFd -> acceptAndRegister(serverFd)
-                        events and (EPOLLRDHUP or EPOLLHUP or EPOLLERR) != 0 -> close(fd)
-                        else -> echoOnce(fd, buf)
-                    }
-                    processed++
-                    if (processed >= maxEvents) break
-                }
-            }
-        }
-    }
-
-    private fun acceptAndRegister(serverFd: Int) {
-        val clientFd = accept(serverFd, null, null)
-        if (clientFd < 0) return // EAGAIN
-
-        SocketUtils.setNonBlocking(clientFd)
-
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = EPOLLIN.toUInt()
-            ev.data.fd = clientFd
-            epoll_ctl(epFd, EPOLL_CTL_ADD, clientFd, ev.ptr)
-        }
-    }
-
-    private fun echoOnce(clientFd: Int, buf: ByteArray) {
-        buf.usePinned { pinned ->
-            val n = read(clientFd, pinned.addressOf(0), buf.size.convert())
-            when {
-                n > 0 -> write(clientFd, pinned.addressOf(0), n.convert())
-                n == 0L -> close(clientFd)
-                // n < 0: EAGAIN — epoll will re-notify, skip
-            }
-        }
+        return EpollChannel(clientFd, epFd, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
-        close(epFd)
+        if (!closed) {
+            closed = true
+            close(epFd)
+        }
     }
 }
