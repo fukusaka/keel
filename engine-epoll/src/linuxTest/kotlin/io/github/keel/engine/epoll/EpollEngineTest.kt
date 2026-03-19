@@ -293,4 +293,55 @@ class EpollEngineTest {
         engine.close()
     }
 
+    // --- Half-close ---
+
+    @Test
+    fun shutdownOutputSendsFin() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        val buf = ByteArray(1)
+        val n = buf.usePinned { pinned ->
+            read(clientFd, pinned.addressOf(0), 1u.convert())
+        }
+        assertEquals(0, n.toInt())
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readAfterShutdownOutputStillWorks() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.shutdownOutput()
+
+        rawWrite(clientFd, "hi")
+
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(2, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('i'.code.toByte(), buf.readByte())
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
 }
