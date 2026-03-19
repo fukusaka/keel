@@ -426,4 +426,53 @@ class NettyEngineTest {
         engine.close()
     }
 
+    // --- Error ---
+
+    @Test
+    fun readOnClosedChannelThrows() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.read(NativeBuf(8))
+        }
+
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeOnClosedChannelThrows() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.write(NativeBuf(8))
+        }
+
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun bindOnClosedEngineThrows() {
+        val engine = NettyEngine()
+        engine.close()
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { engine.bind("127.0.0.1", 0) }
+        }
+    }
 }
