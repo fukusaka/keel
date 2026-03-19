@@ -133,6 +133,35 @@ class HttpWriterTest {
         assertEquals("0\r\n\r\n", out.readString())
     }
 
+    // --- writeResponseHead ---
+
+    @Test
+    fun writeResponseHeadOnly() {
+        val out = buf()
+        val headers = HttpHeaders()
+            .add("Content-Type", "text/plain")
+            .add("Content-Length", "5")
+        writeResponseHead(HttpStatus.OK, HttpVersion.HTTP_1_1, headers, out)
+        assertEquals(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
+            out.readString()
+        )
+    }
+
+    @Test
+    fun writeResponseHeadNoHeaders() {
+        val out = buf()
+        writeResponseHead(HttpStatus.NO_CONTENT, HttpVersion.HTTP_1_1, HttpHeaders(), out)
+        assertEquals("HTTP/1.1 204 No Content\r\n\r\n", out.readString())
+    }
+
+    @Test
+    fun writeResponseHeadHttp10() {
+        val out = buf()
+        writeResponseHead(HttpStatus.OK, HttpVersion.HTTP_1_0, HttpHeaders(), out)
+        assertEquals("HTTP/1.0 200 OK\r\n\r\n", out.readString())
+    }
+
     // --- writeRequest / writeResponse (integration) ---
 
     @Test

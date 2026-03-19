@@ -15,20 +15,52 @@ import kotlinx.io.readLine
  * which naturally supports pipelining.
  */
 
+/**
+ * Parses a complete HTTP request (head + body) from [source].
+ *
+ * Use [parseRequestHead] when you want to defer body consumption
+ * (e.g. streaming the body into a separate channel).
+ */
 fun parseRequest(source: Source): HttpRequest {
+    val head = parseRequestHead(source)
+    val body = readBody(source, head.headers)
+    return HttpRequest(head.method, head.uri, head.version, head.headers, body)
+}
+
+/**
+ * Parses a complete HTTP response (head + body) from [source].
+ *
+ * Use [parseResponseHead] when you want to defer body consumption.
+ */
+fun parseResponse(source: Source): HttpResponse {
+    val head = parseResponseHead(source)
+    val body = readBody(source, head.headers)
+    return HttpResponse(head.status, head.version, head.headers, body)
+}
+
+/**
+ * Parses only the request head (request line + headers) from [source].
+ *
+ * The body bytes remain in [source] for streaming consumption
+ * based on Content-Length or Transfer-Encoding headers.
+ */
+fun parseRequestHead(source: Source): HttpRequestHead {
     val line = source.readLine() ?: throw IllegalArgumentException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
-    val body = readBody(source, headers)
-    return HttpRequest(method, uri, version, headers, body)
+    return HttpRequestHead(method, uri, version, headers)
 }
 
-fun parseResponse(source: Source): HttpResponse {
+/**
+ * Parses only the response head (status line + headers) from [source].
+ *
+ * The body bytes remain in [source] for streaming consumption.
+ */
+fun parseResponseHead(source: Source): HttpResponseHead {
     val line = source.readLine() ?: throw IllegalArgumentException("Unexpected EOF reading status line")
     val (version, status, _) = parseStatusLine(line)
     val headers = parseHeaders(source)
-    val body = readBody(source, headers)
-    return HttpResponse(status, version, headers, body)
+    return HttpResponseHead(status, version, headers)
 }
 
 // ---------------------------------------------------------------------------
