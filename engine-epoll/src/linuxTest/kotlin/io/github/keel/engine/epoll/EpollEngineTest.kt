@@ -466,4 +466,53 @@ class EpollEngineTest {
         engine.close()
     }
 
+    // --- Error ---
+
+    @Test
+    fun readOnClosedChannelThrows() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.read(NativeBuf(8))
+        }
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeOnClosedChannelThrows() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        ch.close()
+
+        assertFailsWith<IllegalStateException> {
+            ch.write(NativeBuf(8))
+        }
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun bindOnClosedEngineThrows() {
+        val engine = EpollEngine()
+        engine.close()
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { engine.bind("0.0.0.0", 0) }
+        }
+    }
 }
