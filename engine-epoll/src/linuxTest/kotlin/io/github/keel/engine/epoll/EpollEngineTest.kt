@@ -132,4 +132,165 @@ class EpollEngineTest {
         engine.close()
     }
 
+    // --- read/write ---
+
+    @Test
+    fun echoRoundTrip() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val serverCh = server.accept()
+
+        rawWrite(clientFd, "hello")
+
+        val readBuf = NativeBuf(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(5, n)
+
+        serverCh.write(readBuf)
+        serverCh.flush()
+
+        val echo = rawRead(clientFd, 5)
+        assertEquals("hello", echo)
+
+        readBuf.release()
+        serverCh.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readReturnsMinusOneOnEof() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        close(clientFd)
+
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(-1, n)
+
+        buf.release()
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeAndFlush() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val buf = NativeBuf(8)
+        buf.writeByte(0x41)
+        buf.writeByte(0x42)
+
+        val written = ch.write(buf)
+        assertEquals(2, written)
+
+        ch.flush()
+
+        val received = rawRead(clientFd, 2)
+        assertEquals("AB", received)
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun multipleWritesSingleFlush() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val buf1 = NativeBuf(4)
+        buf1.writeByte(0x41)
+        buf1.writeByte(0x42)
+
+        val buf2 = NativeBuf(4)
+        buf2.writeByte(0x43)
+        buf2.writeByte(0x44)
+
+        ch.write(buf1)
+        ch.write(buf2)
+        ch.flush()
+
+        val received = rawRead(clientFd, 4)
+        assertEquals("ABCD", received)
+
+        buf1.release()
+        buf2.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun readAdvancesNativeBufWriterIndex() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        rawWrite(clientFd, "abc")
+
+        val buf = NativeBuf(64)
+        assertEquals(0, buf.writerIndex)
+        ch.read(buf)
+        assertEquals(3, buf.writerIndex)
+        assertEquals(3, buf.readableBytes)
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun writeAdvancesNativeBufReaderIndex() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val buf = NativeBuf(8)
+        buf.writeByte(0x41)
+        buf.writeByte(0x42)
+        assertEquals(0, buf.readerIndex)
+
+        ch.write(buf)
+        assertEquals(2, buf.readerIndex)
+
+        ch.flush()
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
 }
