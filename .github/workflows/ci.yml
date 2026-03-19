@@ -14,6 +14,7 @@ jobs:
   build:
     name: Build & Test (JVM + linuxX64)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.event.label.name == 'needs-pr-check')
@@ -40,3 +41,6 @@ jobs:
 
       - name: Test (JVM)
         run: ./gradlew jvmTest
+
+      - name: Test (linuxX64)
+        run: ./gradlew linuxX64Test
