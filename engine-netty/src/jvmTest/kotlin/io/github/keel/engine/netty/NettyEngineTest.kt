@@ -304,4 +304,60 @@ class NettyEngineTest {
         engine.close()
     }
 
+    // --- connect ---
+
+    @Test
+    fun connectToListeningServer() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        assertTrue(ch.isOpen)
+        assertTrue(ch.isActive)
+
+        val serverCh = server.accept()
+
+        ch.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun connectRemoteAddress() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        server.accept().close()
+
+        assertNotNull(ch.remoteAddress)
+        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
+        assertEquals(port, ch.remoteAddress!!.port)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun connectLocalAddress() = runBlocking {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        server.accept().close()
+
+        assertNotNull(ch.localAddress)
+        assertEquals("127.0.0.1", ch.localAddress!!.host)
+        assertTrue(ch.localAddress!!.port > 0)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
 }
