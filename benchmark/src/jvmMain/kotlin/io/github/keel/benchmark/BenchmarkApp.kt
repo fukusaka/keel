@@ -12,7 +12,7 @@ import io.ktor.server.netty.Netty as KtorNetty
  * CLI entry point for benchmark servers.
  *
  * Usage:
- *   --engine=keel-nio|keel-netty|ktor-cio|ktor-netty|spring|vertx
+ *   --engine=keel-nio|keel-netty|ktor-cio|ktor-netty|netty-raw|spring|vertx
  *   --port=8080
  *   --profile=default|tuned|keel-equiv-0.1
  *   --connection-close=true       Force Connection: close
@@ -33,6 +33,17 @@ import io.ktor.server.netty.Netty as KtorNetty
  *   keel-equiv-0.1   — match keel 0.1.x Phase (a): Connection: close, sync I/O
  *   keel-equiv-0.2   — match keel 0.2.x Phase (b): keep-alive, async I/O (future)
  */
+/** Registry of all available engine launchers. Add new engines here. */
+private val ENGINES: Map<String, (BenchmarkConfig) -> Unit> = mapOf(
+    "keel-nio" to ::startKeel,
+    "keel-netty" to ::startKeelNetty,
+    "ktor-cio" to ::startCio,
+    "ktor-netty" to ::startKtorNetty,
+    "netty-raw" to ::startNettyRaw,
+    "spring" to ::startSpring,
+    "vertx" to ::startVertx,
+)
+
 fun main(args: Array<String>) {
     val config = BenchmarkConfig.parse(args)
 
@@ -43,19 +54,13 @@ fun main(args: Array<String>) {
 
     println("Starting benchmark server: ${config.summary()}")
 
-    when (config.engine) {
-        "keel-nio" -> startKeel(config)
-        "keel-netty" -> startKeelNetty(config)
-        "ktor-cio" -> startCio(config)
-        "ktor-netty" -> startKtorNetty(config)
-        "spring" -> startSpring(config)
-        "vertx" -> startVertx(config)
-        else -> {
-            System.err.println("Unknown engine: ${config.engine}")
-            System.err.println("Available: keel-nio, keel-netty, ktor-cio, ktor-netty, spring, vertx")
-            kotlin.system.exitProcess(1)
-        }
+    val launcher = ENGINES[config.engine]
+    if (launcher == null) {
+        System.err.println("Unknown engine: ${config.engine}")
+        System.err.println("Available: ${ENGINES.keys.joinToString(", ")}")
+        kotlin.system.exitProcess(1)
     }
+    launcher(config)
 }
 
 private fun startKeel(config: BenchmarkConfig) {
