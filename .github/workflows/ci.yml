@@ -24,7 +24,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
-       contains(vars.CI_ALLOWED_USERS || 'fukusaka', github.event.sender.login))
+       contains(format(',{0},', vars.CI_ALLOWED_USERS || 'fukusaka'), format(',{0},', github.event.sender.login)))
 
     steps:
       - uses: actions/checkout@v6
