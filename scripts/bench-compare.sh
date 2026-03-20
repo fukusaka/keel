@@ -3,8 +3,9 @@
 # bench-compare.sh — Compare wrk benchmark results across engines
 #
 # Usage:
-#   ./scripts/bench-compare.sh                     # Latest results
-#   ./scripts/bench-compare.sh 20260320-143000     # Specific timestamp
+#   ./scripts/bench-compare.sh                                   # Latest results, default profile
+#   ./scripts/bench-compare.sh 20260320-143000                   # Specific timestamp
+#   ./scripts/bench-compare.sh 20260320-143000 tuned             # Specific timestamp + profile
 #
 # Reads wrk output files from benchmark/results/ and produces a comparison table.
 
@@ -67,21 +68,25 @@ extract_metric() {
 
 ENGINES=("keel-nio" "keel-netty" "ktor-cio" "ktor-netty" "netty-raw" "spring" "vertx")
 SCENARIOS=("hello" "large")
-PROFILES=("low" "high" "ultra")
-PROFILE_LABELS=("2t/10c/10s" "4t/100c/10s" "4t/500c/10s")
+WRK_PROFILES=("low" "high" "ultra")
+WRK_PROFILE_LABELS=("2t/10c/10s" "4t/100c/10s" "4t/500c/10s")
+SERVER_PROFILE="${2:-default}"
+
+echo "Server profile: $SERVER_PROFILE"
+echo ""
 
 for i in "${!SCENARIOS[@]}"; do
     scenario="${SCENARIOS[$i]}"
-    for j in "${!PROFILES[@]}"; do
-        profile="${PROFILES[$j]}"
-        label="${PROFILE_LABELS[$j]}"
+    for j in "${!WRK_PROFILES[@]}"; do
+        wrk_profile="${WRK_PROFILES[$j]}"
+        label="${WRK_PROFILE_LABELS[$j]}"
 
         echo "Scenario: /${scenario} (${label})"
         printf "%-14s %12s %10s %10s %s\n" "Engine" "Req/sec" "Lat p50" "Lat p99" "Errors"
         printf "%-14s %12s %10s %10s %s\n" "--------------" "------------" "----------" "----------" "------"
 
         for engine in "${ENGINES[@]}"; do
-            file="${RESULTS_DIR}/${engine}-${scenario}-${profile}-${TIMESTAMP}.txt"
+            file="${RESULTS_DIR}/${engine}-${scenario}-${wrk_profile}-${SERVER_PROFILE}-${TIMESTAMP}.txt"
             rps=$(extract_metric "$file" "rps")
             lat50=$(extract_metric "$file" "lat50")
             lat99=$(extract_metric "$file" "lat99")

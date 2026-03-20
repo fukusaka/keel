@@ -90,6 +90,8 @@ data class BenchmarkConfig(
          * remaining nulls. This means `--profile=tuned --threads=2` uses 2
          * threads (CLI wins), not the auto-calculated CPU count.
          */
+        private val VALID_PROFILES = setOf("default", "tuned")
+
         private fun BenchmarkConfig.applyProfile(): BenchmarkConfig = when {
             profile == "default" -> this
             profile == "tuned" -> applyTuned()
@@ -97,7 +99,11 @@ data class BenchmarkConfig(
                 val version = profile.removePrefix("keel-equiv").removePrefix("-")
                 applyKeelEquiv(version)
             }
-            else -> this
+            else -> {
+                System.err.println("Unknown profile: $profile")
+                System.err.println("Available: ${VALID_PROFILES.joinToString(", ")}, keel-equiv-<version>")
+                kotlin.system.exitProcess(1)
+            }
         }
 
         /**
@@ -419,7 +425,7 @@ data class OsSocketDefaults(
  *
  * CLI arguments not recognised as common socket options are collected into a
  * `Map<String, String>` and dispatched to the appropriate variant by
- * [EngineConfig.parse]. Unknown keys for a given engine are silently ignored.
+ * [EngineConfig.merge]. Unknown keys for a given engine are silently ignored.
  *
  * To add a new engine (e.g., for Phase 2 Native benchmarks):
  * 1. Add a new `data class` variant (e.g., `GoGin`, `RustAxum`)
@@ -607,7 +613,5 @@ sealed interface EngineConfig {
             }
         }
 
-        /** Parse engine args with no base config (used when no profile sets engine config). */
-        fun parse(engine: String, args: Map<String, String>): EngineConfig = merge(engine, None, args)
     }
 }

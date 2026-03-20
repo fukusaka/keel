@@ -3,10 +3,10 @@
 # bench-run.sh — wrk benchmark runner for keel HTTP servers
 #
 # Usage:
-#   ./scripts/bench-run.sh                              # Run all engines, default profile
-#   ./scripts/bench-run.sh --engine=keel                # Run specific engine
-#   ./scripts/bench-run.sh --profile=keel-equiv         # All engines with Connection: close
-#   ./scripts/bench-run.sh --engine=cio --profile=tuned # CIO with tuned settings
+#   ./scripts/bench-run.sh                                       # Run all engines, default profile
+#   ./scripts/bench-run.sh --engine=keel-nio                     # Run specific engine
+#   ./scripts/bench-run.sh --profile=keel-equiv-0.1              # All engines with Connection: close
+#   ./scripts/bench-run.sh --engine=ktor-cio --profile=tuned     # CIO with tuned settings
 #
 # Prerequisites: wrk (brew install wrk)
 
