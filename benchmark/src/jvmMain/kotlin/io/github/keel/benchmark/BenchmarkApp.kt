@@ -37,7 +37,7 @@ fun main(args: Array<String>) {
         else -> {
             System.err.println("Unknown engine: $engineName")
             System.err.println("Available: keel, keel-netty, cio, ktor-netty, spring, vertx")
-            System.exit(1)
+            kotlin.system.exitProcess(1)
         }
     }
 }
