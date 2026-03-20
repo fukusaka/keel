@@ -74,7 +74,13 @@ data class BenchmarkConfig(
 
             config = config.copy(socket = socket)
             config = config.applyProfile()
-            config = config.copy(engineConfig = EngineConfig.parse(config.engine, engineArgs))
+            // CLI engine args override profile-set tuned values.
+            // Always parse to ensure the correct EngineConfig variant is set,
+            // even with no engine-specific CLI args (to get proper display).
+            val parsed = EngineConfig.parse(config.engine, engineArgs)
+            if (engineArgs.isNotEmpty() || config.engineConfig is EngineConfig.None) {
+                config = config.copy(engineConfig = parsed)
+            }
             return config
         }
 
@@ -108,7 +114,7 @@ data class BenchmarkConfig(
          */
         private fun BenchmarkConfig.applyTuned(): BenchmarkConfig {
             val s = socket
-            return copy(
+            var config = copy(
                 socket = s.copy(
                     tcpNoDelay = s.tcpNoDelay ?: true,
                     backlog = s.backlog ?: 1024,
@@ -116,6 +122,32 @@ data class BenchmarkConfig(
                     threads = s.threads ?: cpuCores,
                 ),
             )
+            // Engine-specific tuned defaults (applied after EngineConfig.parse,
+            // but applyTuned runs before parse — so we set tuned values that
+            // parse will later override if CLI args are present)
+            config = when (engine) {
+                "ktor-netty" -> config.copy(
+                    engineConfig = EngineConfig.KtorNetty(
+                        runningLimit = cpuCores * 16,
+                        shareWorkGroup = false,
+                    )
+                )
+                "cio" -> config.copy(
+                    engineConfig = EngineConfig.Cio(idleTimeout = 10)
+                )
+                "vertx" -> config.copy(
+                    engineConfig = EngineConfig.Vertx(
+                        decoderInitialBufferSize = 256,
+                    )
+                )
+                "spring" -> config.copy(
+                    engineConfig = EngineConfig.Spring(
+                        validateHeaders = false,
+                    )
+                )
+                else -> config
+            }
+            return config
         }
 
         private fun BenchmarkConfig.applyKeelEquiv(version: String): BenchmarkConfig = when (version) {
@@ -142,7 +174,7 @@ data class BenchmarkConfig(
         appendLine("--- Connection ---")
         appendLine("  connection-close: $connectionClose")
         appendLine()
-        socket.displayTo(this)
+        socket.displayTo(this, engine)
         appendLine()
         engineConfig.displayTo(this, engine)
     }
@@ -182,15 +214,77 @@ data class SocketConfig(
         threads?.let { sb.append(", threads=$it") }
     }
 
-    fun displayTo(sb: StringBuilder) {
+    /**
+     * Display socket options with engine-specific default values shown in parentheses.
+     */
+    fun displayTo(sb: StringBuilder, engine: String = "") {
+        val defaults = engineDefaults(engine)
         sb.appendLine("--- Socket Options ---")
-        sb.appendLine("  tcp-nodelay:    ${tcpNoDelay ?: "(engine default)"}")
-        sb.appendLine("  reuse-address:  ${reuseAddress ?: "(engine default)"}")
-        sb.appendLine("  backlog:        ${backlog ?: "(engine default)"}")
-        sb.appendLine("  send-buffer:    ${sendBuffer?.let { "$it bytes" } ?: "(engine default)"}")
-        sb.appendLine("  receive-buffer: ${receiveBuffer?.let { "$it bytes" } ?: "(engine default)"}")
-        sb.appendLine("  threads:        ${threads ?: "(engine default)"}")
+        sb.appendLine("  tcp-nodelay:    ${tcpNoDelay ?: defaults.tcpNoDelay}")
+        sb.appendLine("  reuse-address:  ${reuseAddress ?: defaults.reuseAddress}")
+        sb.appendLine("  backlog:        ${backlog ?: defaults.backlog}")
+        sb.appendLine("  send-buffer:    ${sendBuffer?.let { "$it bytes" } ?: defaults.sendBuffer}")
+        sb.appendLine("  receive-buffer: ${receiveBuffer?.let { "$it bytes" } ?: defaults.receiveBuffer}")
+        sb.appendLine("  threads:        ${threads ?: defaults.threads}")
     }
+
+    companion object {
+        /**
+         * Known default values per engine, displayed when user hasn't overridden.
+         */
+        fun engineDefaults(engine: String): SocketDefaults = when (engine) {
+            "keel" -> SocketDefaults(
+                tcpNoDelay = "false (OS default)",
+                reuseAddress = "false (OS default)",
+                backlog = "128 (OS default)",
+                sendBuffer = "(OS default)",
+                receiveBuffer = "(OS default)",
+                threads = "64 (Dispatchers.IO)",
+            )
+            "cio" -> SocketDefaults(
+                tcpNoDelay = "(not configurable)",
+                reuseAddress = "false",
+                backlog = "(not configurable)",
+                sendBuffer = "(not configurable)",
+                receiveBuffer = "(not configurable)",
+                threads = "(coroutine-based, no thread pool)",
+            )
+            "ktor-netty" -> SocketDefaults(
+                tcpNoDelay = "false",
+                reuseAddress = "false",
+                backlog = "128 (OS default)",
+                sendBuffer = "(OS default)",
+                receiveBuffer = "(OS default)",
+                threads = "${BenchmarkConfig.cpuCores / 2 + 1} (workerGroupSize)",
+            )
+            "spring" -> SocketDefaults(
+                tcpNoDelay = "true (Reactor Netty default)",
+                reuseAddress = "true (Reactor Netty default)",
+                backlog = "(OS default)",
+                sendBuffer = "(OS default)",
+                receiveBuffer = "(OS default)",
+                threads = "${BenchmarkConfig.cpuCores} (ioWorkerCount)",
+            )
+            "vertx" -> SocketDefaults(
+                tcpNoDelay = "true",
+                reuseAddress = "false",
+                backlog = "1024",
+                sendBuffer = "(OS default)",
+                receiveBuffer = "(OS default)",
+                threads = "${BenchmarkConfig.cpuCores} (eventLoopPoolSize)",
+            )
+            else -> SocketDefaults()
+        }
+    }
+
+    data class SocketDefaults(
+        val tcpNoDelay: String = "(engine default)",
+        val reuseAddress: String = "(engine default)",
+        val backlog: String = "(engine default)",
+        val sendBuffer: String = "(engine default)",
+        val receiveBuffer: String = "(engine default)",
+        val threads: String = "(engine default)",
+    )
 }
 
 /**
