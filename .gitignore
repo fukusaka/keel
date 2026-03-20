@@ -27,5 +27,14 @@ daily/
 # Benchmark results (raw wrk output)
 benchmark/results/
 
+# Benchmark native server build artifacts
+benchmark/rust-hello/target/
+benchmark/rust-hello/Cargo.lock
+benchmark/go-hello/go-hello
+benchmark/go-hello/go.sum
+benchmark/swift-hello/.build/
+benchmark/zig-hello/zig-out/
+benchmark/zig-hello/.zig-cache/
+
 # Claude Code session data
 .claude/
