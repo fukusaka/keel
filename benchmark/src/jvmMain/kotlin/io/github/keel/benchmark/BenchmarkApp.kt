@@ -11,55 +11,69 @@ import io.ktor.server.netty.Netty as KtorNetty
  * CLI entry point for benchmark servers.
  *
  * Usage:
- *   --engine=keel          keel Ktor adapter with NioEngine (default)
- *   --engine=keel-netty    keel Ktor adapter with NettyEngine
- *   --engine=cio           Ktor CIO engine
- *   --engine=ktor-netty    Ktor Netty engine
- *   --engine=spring        Spring Boot WebFlux (Netty)
- *   --engine=vertx         Vert.x HTTP server
- *   --port=8080            Server port (default: 8080)
+ *   --engine=keel|keel-netty|cio|ktor-netty|spring|vertx
+ *   --port=8080
+ *   --profile=default|tuned|keel-equiv
+ *   --connection-close=true|false
+ *   --tcp-nodelay=true|false
+ *   --backlog=1024
+ *   --threads=N
+ *
+ * Profiles:
+ *   default    — each engine's out-of-box settings
+ *   tuned      — maximum performance (TCP_NODELAY, higher backlog)
+ *   keel-equiv — all engines constrained to match keel Phase (a) (Connection: close)
  */
 fun main(args: Array<String>) {
-    val engineName = args.firstOrNull { it.startsWith("--engine=") }
-        ?.substringAfter("=") ?: "keel"
-    val port = args.firstOrNull { it.startsWith("--port=") }
-        ?.substringAfter("=")?.toInt() ?: 8080
+    val config = BenchmarkConfig.parse(args)
+    println("Starting benchmark server: ${config.summary()}")
 
-    println("Starting benchmark server: engine=$engineName, port=$port")
-
-    when (engineName) {
-        "keel" -> startKeel(port)
-        "keel-netty" -> startKeelNetty(port)
-        "cio" -> startCio(port)
-        "ktor-netty" -> startKtorNetty(port)
-        "spring" -> startSpring(port)
-        "vertx" -> startVertx(port)
+    when (config.engine) {
+        "keel" -> startKeel(config)
+        "keel-netty" -> startKeelNetty(config)
+        "cio" -> startCio(config)
+        "ktor-netty" -> startKtorNetty(config)
+        "spring" -> startSpring(config)
+        "vertx" -> startVertx(config)
         else -> {
-            System.err.println("Unknown engine: $engineName")
+            System.err.println("Unknown engine: ${config.engine}")
             System.err.println("Available: keel, keel-netty, cio, ktor-netty, spring, vertx")
             kotlin.system.exitProcess(1)
         }
     }
 }
 
-private fun startKeel(port: Int) {
-    embeddedServer(Keel, port = port) { benchmarkModule() }.start(wait = true)
+private fun startKeel(config: BenchmarkConfig) {
+    embeddedServer(Keel, port = config.port) {
+        benchmarkModule(config.connectionClose)
+    }.start(wait = true)
 }
 
-private fun startKeelNetty(port: Int) {
+private fun startKeelNetty(config: BenchmarkConfig) {
     val rootConfig = serverConfig {
-        module { benchmarkModule() }
+        module { benchmarkModule(config.connectionClose) }
     }
     embeddedServer(Keel, rootConfig) {
-        connector { this.port = port }
+        connector { this.port = config.port }
         engine = NettyEngine()
     }.start(wait = true)
 }
 
-private fun startCio(port: Int) {
-    embeddedServer(CIO, port = port) { benchmarkModule() }.start(wait = true)
+private fun startCio(config: BenchmarkConfig) {
+    embeddedServer(CIO, port = config.port) {
+        benchmarkModule(config.connectionClose)
+    }.start(wait = true)
 }
 
-private fun startKtorNetty(port: Int) {
-    embeddedServer(KtorNetty, port = port) { benchmarkModule() }.start(wait = true)
+private fun startKtorNetty(config: BenchmarkConfig) {
+    val rootConfig = serverConfig {
+        module { benchmarkModule(config.connectionClose) }
+    }
+    embeddedServer(KtorNetty, rootConfig) {
+        connector { this.port = config.port }
+        config.threads?.let {
+            workerGroupSize = it
+            callGroupSize = it
+        }
+    }.start(wait = true)
 }

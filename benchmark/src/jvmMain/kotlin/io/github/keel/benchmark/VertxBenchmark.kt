@@ -1,6 +1,8 @@
 package io.github.keel.benchmark
 
 import io.vertx.core.Vertx
+import io.vertx.core.VertxOptions
+import io.vertx.core.http.HttpServerOptions
 import io.vertx.ext.web.Router
 import java.util.concurrent.CountDownLatch
 
@@ -12,26 +14,34 @@ import java.util.concurrent.CountDownLatch
  */
 private val vertxLargePayload = "x".repeat(102_400)
 
-fun startVertx(port: Int) {
-    val vertx = Vertx.vertx()
+fun startVertx(config: BenchmarkConfig) {
+    val vertxOptions = VertxOptions()
+    config.threads?.let { vertxOptions.eventLoopPoolSize = it }
+
+    val vertx = Vertx.vertx(vertxOptions)
     val router = Router.router(vertx)
 
     router.get("/hello").handler { ctx ->
-        ctx.response()
-            .putHeader("Content-Type", "text/plain")
-            .end("Hello, World!")
+        val response = ctx.response().putHeader("Content-Type", "text/plain")
+        if (config.connectionClose) response.putHeader("Connection", "close")
+        response.end("Hello, World!")
     }
 
     router.get("/large").handler { ctx ->
-        ctx.response()
-            .putHeader("Content-Type", "text/plain")
-            .end(vertxLargePayload)
+        val response = ctx.response().putHeader("Content-Type", "text/plain")
+        if (config.connectionClose) response.putHeader("Connection", "close")
+        response.end(vertxLargePayload)
     }
 
+    val serverOptions = HttpServerOptions()
+        .setPort(config.port)
+    config.tcpNoDelay?.let { serverOptions.setTcpNoDelay(it) }
+    config.backlog?.let { serverOptions.setAcceptBacklog(it) }
+
     val latch = CountDownLatch(1)
-    vertx.createHttpServer()
+    vertx.createHttpServer(serverOptions)
         .requestHandler(router)
-        .listen(port)
+        .listen()
         .onSuccess { server ->
             println("Vert.x server started on port ${server.actualPort()}")
         }

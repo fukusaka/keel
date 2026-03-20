@@ -31,8 +31,20 @@ open class SpringBenchmarkApp {
 
 private val springLargePayload = "x".repeat(102_400)
 
-fun startSpring(port: Int) {
+fun startSpring(config: BenchmarkConfig) {
+    val props = mutableMapOf<String, Any>(
+        "server.port" to config.port.toString(),
+    )
+    if (config.connectionClose) {
+        // Reactor Netty does not have a direct "connection close" setting,
+        // but we can set idle timeout to 0 to force close after each response.
+        props["server.netty.idle-timeout"] = "0s"
+    }
+    config.threads?.let {
+        props["reactor.netty.ioWorkerCount"] = it.toString()
+    }
+
     val app = SpringApplication(SpringBenchmarkApp::class.java)
-    app.setDefaultProperties(mapOf("server.port" to port.toString()))
+    app.setDefaultProperties(props)
     app.run()
 }
