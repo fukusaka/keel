@@ -25,6 +25,7 @@ import io.ktor.server.netty.Netty as KtorNetty
  *   --running-limit=32            Ktor Netty concurrent request limit
  *   --share-work-group=true       Ktor Netty share connection/worker groups
  *   --idle-timeout=45             CIO idle connection timeout (seconds)
+ *   --show-config                 Display resolved config and exit
  *
  * Profiles:
  *   default          — each engine's out-of-box settings
@@ -34,6 +35,12 @@ import io.ktor.server.netty.Netty as KtorNetty
  */
 fun main(args: Array<String>) {
     val config = BenchmarkConfig.parse(args)
+
+    if (config.showConfig) {
+        print(config.display())
+        return
+    }
+
     println("Starting benchmark server: ${config.summary()}")
 
     when (config.engine) {
