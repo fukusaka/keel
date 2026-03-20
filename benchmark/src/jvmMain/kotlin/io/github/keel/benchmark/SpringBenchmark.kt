@@ -32,16 +32,32 @@ open class SpringBenchmarkApp {
 private val springLargePayload = "x".repeat(102_400)
 
 fun startSpring(config: BenchmarkConfig) {
+    val sp = config.engineConfig as? EngineConfig.Spring ?: EngineConfig.Spring()
     val props = mutableMapOf<String, Any>(
         "server.port" to config.port.toString(),
     )
     if (config.connectionClose) {
-        // Reactor Netty does not have a direct "connection close" setting,
-        // but we can set idle timeout to 0 to force close after each response.
         props["server.netty.idle-timeout"] = "0s"
     }
+    // Common socket → Spring properties
     config.socket.threads?.let {
         props["reactor.netty.ioWorkerCount"] = it.toString()
+    }
+    // Spring-specific
+    sp.maxKeepAliveRequests?.let {
+        props["server.netty.max-keep-alive-requests"] = it.toString()
+    }
+    sp.maxChunkSize?.let {
+        props["server.netty.max-chunk-size"] = it.toString()
+    }
+    sp.maxInitialLineLength?.let {
+        props["server.netty.max-initial-line-length"] = it.toString()
+    }
+    sp.validateHeaders?.let {
+        props["server.netty.validate-headers"] = it.toString()
+    }
+    sp.maxInMemorySize?.let {
+        props["spring.codec.max-in-memory-size"] = it.toString()
     }
 
     val app = SpringApplication(SpringBenchmarkApp::class.java)
