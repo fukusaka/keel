@@ -103,34 +103,74 @@ data class BenchmarkConfig(
         /**
          * Auto-calculate optimal values for maximum throughput.
          *
-         * Common settings applied to all engines:
-         * - tcpNoDelay=true (disable Nagle for low latency)
-         * - backlog=1024 (handle burst connections)
-         * - reuseAddress=true (fast port recycling)
-         * - threads=CPU cores (saturate available parallelism)
+         * **NOTE**: These tuned values are initial estimates based on documentation
+         * and source code analysis. They have NOT been validated by systematic
+         * benchmarking yet. After running benchmarks across all engines, some values
+         * may need adjustment (e.g., thread counts, backlog sizes). Use `--show-config`
+         * to inspect resolved values and override via CLI if needed.
+         *
+         * Each engine gets only the overrides that differ from its built-in defaults:
+         * - **spring/vertx**: Already set tcpNoDelay=true and reuseAddress=true internally,
+         *   so tuned only adds backlog and threads.
+         * - **ktor-netty**: Inherits OS defaults (tcpNoDelay=false); overrides all socket
+         *   options plus runningLimit for pipeline concurrency.
+         * - **netty-raw**: Same OS default overrides but keeps Netty's cpu*2 thread count,
+         *   which is designed for EventLoop model and likely already optimal.
+         * - **ktor-cio**: Only reuseAddress is configurable at socket level.
+         *   Thread count is governed by Dispatchers.IO, not CIO.
+         * - **keel-nio/keel-netty**: No socket option API in Phase (a).
          *
          * CLI arguments already parsed into [socket] take precedence via `?:`.
          */
         private fun BenchmarkConfig.applyTuned(): BenchmarkConfig {
             val s = socket
-            // Only set socket options the engine actually supports.
-            // keel/keel-netty have no socket option API in Phase (a).
-            // CIO only supports reuseAddress and idleTimeout.
             val tunedSocket = when (engine) {
                 "keel-nio", "keel-netty" -> s // no tunable socket options
+
                 "ktor-cio" -> s.copy(
                     reuseAddress = s.reuseAddress ?: true,
                 )
-                else -> s.copy(
+
+                // Netty-based engines inherit OS defaults; override all for max performance
+                "ktor-netty" -> s.copy(
                     tcpNoDelay = s.tcpNoDelay ?: true,
                     backlog = s.backlog ?: 1024,
                     reuseAddress = s.reuseAddress ?: true,
                     threads = s.threads ?: cpuCores,
                 )
+                // netty-raw: Netty default cpu*2 is already optimal for EventLoop model
+                "netty-raw" -> s.copy(
+                    tcpNoDelay = s.tcpNoDelay ?: true,
+                    backlog = s.backlog ?: 1024,
+                    reuseAddress = s.reuseAddress ?: true,
+                )
+
+                // Reactor Netty already sets tcpNoDelay=true, reuseAddress=true
+                "spring" -> s.copy(
+                    backlog = s.backlog ?: 1024,
+                    threads = s.threads ?: cpuCores,
+                )
+
+                // Vert.x already sets tcpNoDelay=true, reuseAddress=true
+                "vertx" -> s.copy(
+                    backlog = s.backlog ?: 1024,
+                    threads = s.threads ?: cpuCores,
+                )
+
+                else -> s
             }
             var config = copy(socket = tunedSocket)
 
-            // Engine-specific tuned defaults
+            // Engine-specific tuned defaults.
+            // Rationale for each value:
+            //   ktor-netty runningLimit: default 32 may bottleneck under high concurrency;
+            //     cpu*16 allows deeper pipelining. shareWorkGroup=false keeps boss/worker separate.
+            //   ktor-cio idleTimeout: default 45s holds idle connections too long under load;
+            //     10s frees resources faster.
+            //   vertx decoderInitialBufferSize: default 128 causes frequent reallocation for
+            //     typical HTTP requests; 256 reduces allocations.
+            //   spring validateHeaders: disabling skips per-header validation overhead.
+            // TODO: validate these choices with actual benchmark data.
             config = when (engine) {
                 "ktor-netty" -> config.copy(
                     engineConfig = EngineConfig.KtorNetty(
