@@ -24,5 +24,8 @@ plan.md
 status.md
 daily/
 
+# Benchmark results (raw wrk output)
+benchmark/results/
+
 # Claude Code session data
 .claude/

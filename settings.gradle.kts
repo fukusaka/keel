@@ -24,4 +24,6 @@ include(
     ":codec-http",
     ":codec-websocket",
     ":ktor-engine",
+    ":benchmark",
+    ":sample",
 )
