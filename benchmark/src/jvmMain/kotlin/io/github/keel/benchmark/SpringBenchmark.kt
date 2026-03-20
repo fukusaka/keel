@@ -40,7 +40,7 @@ fun startSpring(config: BenchmarkConfig) {
         // but we can set idle timeout to 0 to force close after each response.
         props["server.netty.idle-timeout"] = "0s"
     }
-    config.threads?.let {
+    config.socket.threads?.let {
         props["reactor.netty.ioWorkerCount"] = it.toString()
     }
 

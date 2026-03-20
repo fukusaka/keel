@@ -15,8 +15,9 @@ import java.util.concurrent.CountDownLatch
 private val vertxLargePayload = "x".repeat(102_400)
 
 fun startVertx(config: BenchmarkConfig) {
+    val s = config.socket
     val vertxOptions = VertxOptions()
-    config.threads?.let { vertxOptions.eventLoopPoolSize = it }
+    s.threads?.let { vertxOptions.eventLoopPoolSize = it }
 
     val vertx = Vertx.vertx(vertxOptions)
     val router = Router.router(vertx)
@@ -35,11 +36,11 @@ fun startVertx(config: BenchmarkConfig) {
 
     val serverOptions = HttpServerOptions()
         .setPort(config.port)
-    config.tcpNoDelay?.let { serverOptions.setTcpNoDelay(it) }
-    config.backlog?.let { serverOptions.setAcceptBacklog(it) }
-    config.sendBuffer?.let { serverOptions.setSendBufferSize(it) }
-    config.receiveBuffer?.let { serverOptions.setReceiveBufferSize(it) }
-    config.reuseAddress?.let { serverOptions.setReuseAddress(it) }
+    s.tcpNoDelay?.let { serverOptions.setTcpNoDelay(it) }
+    s.backlog?.let { serverOptions.setAcceptBacklog(it) }
+    s.sendBuffer?.let { serverOptions.setSendBufferSize(it) }
+    s.receiveBuffer?.let { serverOptions.setReceiveBufferSize(it) }
+    s.reuseAddress?.let { serverOptions.setReuseAddress(it) }
 
     val latch = CountDownLatch(1)
     vertx.createHttpServer(serverOptions)

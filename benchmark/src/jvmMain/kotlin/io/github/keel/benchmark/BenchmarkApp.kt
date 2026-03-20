@@ -75,34 +75,37 @@ private fun startKeelNetty(config: BenchmarkConfig) {
 }
 
 private fun startCio(config: BenchmarkConfig) {
+    val cio = config.engineConfig as? EngineConfig.Cio ?: EngineConfig.Cio()
     val rootConfig = serverConfig {
         module { benchmarkModule(config.connectionClose) }
     }
     embeddedServer(CIO, rootConfig) {
         connector { this.port = config.port }
-        config.reuseAddress?.let { reuseAddress = it }
-        config.idleTimeout?.let { connectionIdleTimeoutSeconds = it }
+        config.socket.reuseAddress?.let { reuseAddress = it }
+        cio.idleTimeout?.let { connectionIdleTimeoutSeconds = it }
     }.start(wait = true)
 }
 
 private fun startKtorNetty(config: BenchmarkConfig) {
+    val netty = config.engineConfig as? EngineConfig.KtorNetty ?: EngineConfig.KtorNetty()
+    val s = config.socket
     val rootConfig = serverConfig {
         module { benchmarkModule(config.connectionClose) }
     }
     embeddedServer(KtorNetty, rootConfig) {
         connector { this.port = config.port }
-        config.threads?.let {
+        s.threads?.let {
             workerGroupSize = it
             callGroupSize = it
         }
-        config.runningLimit?.let { runningLimit = it }
-        config.shareWorkGroup?.let { shareWorkGroup = it }
+        netty.runningLimit?.let { runningLimit = it }
+        netty.shareWorkGroup?.let { shareWorkGroup = it }
         configureBootstrap = {
-            config.tcpNoDelay?.let { childOption(ChannelOption.TCP_NODELAY, it) }
-            config.backlog?.let { option(ChannelOption.SO_BACKLOG, it) }
-            config.sendBuffer?.let { childOption(ChannelOption.SO_SNDBUF, it) }
-            config.receiveBuffer?.let { childOption(ChannelOption.SO_RCVBUF, it) }
-            config.reuseAddress?.let { option(ChannelOption.SO_REUSEADDR, it) }
+            s.tcpNoDelay?.let { childOption(ChannelOption.TCP_NODELAY, it) }
+            s.backlog?.let { option(ChannelOption.SO_BACKLOG, it) }
+            s.sendBuffer?.let { childOption(ChannelOption.SO_SNDBUF, it) }
+            s.receiveBuffer?.let { childOption(ChannelOption.SO_RCVBUF, it) }
+            s.reuseAddress?.let { option(ChannelOption.SO_REUSEADDR, it) }
         }
     }.start(wait = true)
 }

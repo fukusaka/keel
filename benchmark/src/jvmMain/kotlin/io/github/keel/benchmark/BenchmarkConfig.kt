@@ -3,97 +3,64 @@ package io.github.keel.benchmark
 /**
  * Configuration for benchmark servers.
  *
+ * Structure:
+ * - [BenchmarkConfig]: top-level (engine name, port, profile)
+ * - [SocketConfig]: common socket options shared by all engines
+ * - [EngineConfig]: sealed hierarchy for engine-specific tuning
+ *
  * Three built-in profile families:
- * - **default**: Each engine's out-of-box settings (what users experience first)
- * - **tuned**: Maximum performance settings auto-calculated for the runtime environment
- * - **keel-equiv-{version}**: Constrain all engines to match a specific keel version's limitations
+ * - **default**: Each engine's out-of-box settings
+ * - **tuned**: Maximum performance, auto-calculated for the runtime
+ * - **keel-equiv-{version}**: Constrain all engines to match keel limitations
  *
- * The tuned profile auto-detects CPU cores and calculates optimal thread counts,
- * backlog, and buffer sizes per engine. CLI arguments override auto-calculated values.
- *
- * The keel-equiv profile is versioned to track keel's evolution:
- * - `keel-equiv-0.1` = Phase (a): Connection: close, sync I/O, no keep-alive
- * - `keel-equiv-0.2` = Phase (b): keep-alive, async I/O (future)
- *
- * Engine-specific parameters are passed through [extras] for extensibility.
- * Any `--key=value` argument not matched by a known key is stored in extras
- * and can be consumed by engine launchers (including future Native engines).
- *
- * Use `--show-config` to display the resolved configuration without starting a server.
+ * Use `--show-config` to display the resolved configuration.
  */
 data class BenchmarkConfig(
     val engine: String = "keel",
     val port: Int = 8080,
     val profile: String = "default",
-    /** Display resolved config and exit without starting the server. */
     val showConfig: Boolean = false,
-    /** Force Connection: close on all engines. */
     val connectionClose: Boolean = false,
-    /** Set TCP_NODELAY on server sockets. */
-    val tcpNoDelay: Boolean? = null,
-    /** SO_REUSEADDR on server sockets. */
-    val reuseAddress: Boolean? = null,
-    /** Listen backlog size (SO_BACKLOG). */
-    val backlog: Int? = null,
-    /** SO_SNDBUF size in bytes. */
-    val sendBuffer: Int? = null,
-    /** SO_RCVBUF size in bytes. */
-    val receiveBuffer: Int? = null,
-    /** Thread count for engines that support it. */
-    val threads: Int? = null,
-    /** Ktor Netty: maximum concurrent requests in pipeline. */
-    val runningLimit: Int? = null,
-    /** Ktor Netty: share connection/worker groups (reduces threads). */
-    val shareWorkGroup: Boolean? = null,
-    /** CIO: idle connection timeout in seconds. */
-    val idleTimeout: Int? = null,
-    /** Engine-specific extras not covered by typed fields. */
-    val extras: Map<String, String> = emptyMap(),
+    val socket: SocketConfig = SocketConfig(),
+    val engineConfig: EngineConfig = EngineConfig.None,
 ) {
     companion object {
-        private val cpuCores = Runtime.getRuntime().availableProcessors()
+        val cpuCores: Int = Runtime.getRuntime().availableProcessors()
 
         fun parse(args: Array<String>): BenchmarkConfig {
             var config = BenchmarkConfig()
-            val extras = mutableMapOf<String, String>()
+            var socket = SocketConfig()
+            val engineArgs = mutableMapOf<String, String>()
 
             for (arg in args) {
-                if (arg == "--show-config") {
-                    config = config.copy(showConfig = true)
-                    continue
-                }
+                if (arg == "--show-config") { config = config.copy(showConfig = true); continue }
                 val (key, value) = if ("=" in arg) {
                     arg.substringBefore("=").removePrefix("--") to arg.substringAfter("=")
                 } else continue
 
-                config = when (key) {
-                    "engine" -> config.copy(engine = value)
-                    "port" -> config.copy(port = value.toInt())
-                    "profile" -> config.copy(profile = value)
-                    "connection-close" -> config.copy(connectionClose = value.toBooleanStrict())
-                    "tcp-nodelay" -> config.copy(tcpNoDelay = value.toBooleanStrict())
-                    "reuse-address" -> config.copy(reuseAddress = value.toBooleanStrict())
-                    "backlog" -> config.copy(backlog = value.toInt())
-                    "send-buffer" -> config.copy(sendBuffer = value.toInt())
-                    "receive-buffer" -> config.copy(receiveBuffer = value.toInt())
-                    "threads" -> config.copy(threads = value.toInt())
-                    "running-limit" -> config.copy(runningLimit = value.toInt())
-                    "share-work-group" -> config.copy(shareWorkGroup = value.toBooleanStrict())
-                    "idle-timeout" -> config.copy(idleTimeout = value.toInt())
-                    else -> {
-                        extras[key] = value
-                        config
-                    }
+                when (key) {
+                    "engine" -> config = config.copy(engine = value)
+                    "port" -> config = config.copy(port = value.toInt())
+                    "profile" -> config = config.copy(profile = value)
+                    "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
+                    // Socket options
+                    "tcp-nodelay" -> socket = socket.copy(tcpNoDelay = value.toBooleanStrict())
+                    "reuse-address" -> socket = socket.copy(reuseAddress = value.toBooleanStrict())
+                    "backlog" -> socket = socket.copy(backlog = value.toInt())
+                    "send-buffer" -> socket = socket.copy(sendBuffer = value.toInt())
+                    "receive-buffer" -> socket = socket.copy(receiveBuffer = value.toInt())
+                    "threads" -> socket = socket.copy(threads = value.toInt())
+                    // Engine-specific (collected, applied later)
+                    else -> engineArgs[key] = value
                 }
             }
 
-            return config.copy(extras = extras).applyProfile()
+            config = config.copy(socket = socket)
+            config = config.applyProfile()
+            config = config.copy(engineConfig = EngineConfig.parse(config.engine, engineArgs))
+            return config
         }
 
-        /**
-         * Apply profile presets. Explicit CLI arguments (already parsed) take
-         * precedence over profile defaults via the `?:` (elvis) pattern.
-         */
         private fun BenchmarkConfig.applyProfile(): BenchmarkConfig = when {
             profile == "default" -> this
             profile == "tuned" -> applyTuned()
@@ -105,51 +72,21 @@ data class BenchmarkConfig(
         }
 
         /**
-         * Auto-calculate optimal values based on runtime environment and engine.
-         *
-         * Tuning strategy per engine:
-         * - Ktor Netty: high thread counts, TCP_NODELAY, large backlog
-         * - Ktor CIO: limited knobs — reuseAddress and shorter idle timeout
-         * - Spring WebFlux: I/O worker count = CPU cores
-         * - Vert.x: event loop = CPU cores, TCP_NODELAY (already default true)
-         * - keel: limited knobs in Phase (a)
+         * Auto-calculate optimal values based on CPU cores and engine type.
+         * CLI arguments (already parsed into [socket]) take precedence via `?:`.
          */
         private fun BenchmarkConfig.applyTuned(): BenchmarkConfig {
-            // Common optimisations across all engines
-            var config = copy(
-                tcpNoDelay = tcpNoDelay ?: true,
-                backlog = backlog ?: 1024,
-                reuseAddress = reuseAddress ?: true,
+            val s = socket
+            return copy(
+                socket = s.copy(
+                    tcpNoDelay = s.tcpNoDelay ?: true,
+                    backlog = s.backlog ?: 1024,
+                    reuseAddress = s.reuseAddress ?: true,
+                    threads = s.threads ?: cpuCores,
+                ),
             )
-
-            // Engine-specific auto-tuning
-            config = when (engine) {
-                "ktor-netty" -> config.copy(
-                    threads = config.threads ?: cpuCores,
-                    runningLimit = config.runningLimit ?: (cpuCores * 16),
-                    shareWorkGroup = config.shareWorkGroup ?: false,
-                )
-                "cio" -> config.copy(
-                    idleTimeout = config.idleTimeout ?: 10,
-                )
-                "vertx" -> config.copy(
-                    threads = config.threads ?: cpuCores,
-                )
-                "spring" -> config.copy(
-                    threads = config.threads ?: cpuCores,
-                )
-                else -> config
-            }
-
-            return config
         }
 
-        /**
-         * Apply keel-equivalent constraints for a specific version.
-         *
-         * - 0.1 (Phase (a)): Connection: close, sync I/O, no keep-alive
-         * - 0.2 (Phase (b)): keep-alive, async I/O (future — placeholder)
-         */
         private fun BenchmarkConfig.applyKeelEquiv(version: String): BenchmarkConfig = when (version) {
             "", "0.1" -> copy(connectionClose = true)
             "0.2" -> this
@@ -157,82 +94,168 @@ data class BenchmarkConfig(
         }
     }
 
-    /** One-line summary for log output. */
     fun summary(): String = buildString {
         append("engine=$engine, port=$port, profile=$profile")
         if (connectionClose) append(", connection=close")
-        tcpNoDelay?.let { append(", tcpNoDelay=$it") }
-        reuseAddress?.let { append(", reuseAddress=$it") }
-        backlog?.let { append(", backlog=$it") }
-        sendBuffer?.let { append(", sendBuffer=$it") }
-        receiveBuffer?.let { append(", receiveBuffer=$it") }
-        threads?.let { append(", threads=$it") }
-        runningLimit?.let { append(", runningLimit=$it") }
-        shareWorkGroup?.let { append(", shareWorkGroup=$it") }
-        idleTimeout?.let { append(", idleTimeout=$it") }
-        if (extras.isNotEmpty()) append(", extras=$extras")
+        socket.appendTo(this)
+        if (engineConfig !is EngineConfig.None) append(", $engineConfig")
     }
 
-    /**
-     * Detailed multi-line display of all resolved settings.
-     * Shows which values were auto-calculated vs explicitly set.
-     */
     fun display(): String = buildString {
-        val cpus = Runtime.getRuntime().availableProcessors()
         appendLine("=== Benchmark Configuration ===")
-        appendLine("Engine:          $engine")
-        appendLine("Port:            $port")
-        appendLine("Profile:         $profile")
-        appendLine("CPU cores:       $cpus")
+        appendLine("Engine:     $engine")
+        appendLine("Port:       $port")
+        appendLine("Profile:    $profile")
+        appendLine("CPU cores:  $cpuCores")
         appendLine()
         appendLine("--- Connection ---")
         appendLine("  connection-close: $connectionClose")
-        appendLine("  idle-timeout:     ${idleTimeout ?: "(engine default)"}")
         appendLine()
-        appendLine("--- Socket Options ---")
-        appendLine("  tcp-nodelay:      ${tcpNoDelay ?: "(engine default)"}")
-        appendLine("  reuse-address:    ${reuseAddress ?: "(engine default)"}")
-        appendLine("  backlog:          ${backlog ?: "(engine default)"}")
-        appendLine("  send-buffer:      ${sendBuffer?.let { "$it bytes" } ?: "(engine default)"}")
-        appendLine("  receive-buffer:   ${receiveBuffer?.let { "$it bytes" } ?: "(engine default)"}")
+        socket.displayTo(this)
         appendLine()
-        appendLine("--- Threading ---")
-        appendLine("  threads:          ${threads ?: "(engine default)"}")
-        appendLine("  running-limit:    ${runningLimit ?: "(engine default)"}")
-        appendLine("  share-work-group: ${shareWorkGroup ?: "(engine default)"}")
-        appendLine()
-        appendLine("--- Engine Defaults (when not overridden) ---")
-        when (engine) {
-            "keel" -> {
-                appendLine("  Connection: close (always, Phase (a))")
-                appendLine("  I/O: Dispatchers.IO (max 64 threads)")
-            }
-            "cio" -> {
-                appendLine("  connectionIdleTimeoutSeconds: 45")
-                appendLine("  reuseAddress: false")
-                appendLine("  No TCP_NODELAY/backlog/threads control")
-            }
-            "ktor-netty" -> {
-                appendLine("  workerGroupSize: ${cpus / 2 + 1}")
-                appendLine("  callGroupSize: $cpus")
-                appendLine("  runningLimit: 32")
-                appendLine("  tcpKeepAlive: false")
-                appendLine("  TCP_NODELAY/SO_BACKLOG: via configureBootstrap")
-            }
-            "spring" -> {
-                appendLine("  reactor.netty.ioWorkerCount: $cpus")
-                appendLine("  Limited socket-level control via properties")
-            }
-            "vertx" -> {
-                appendLine("  eventLoopPoolSize: $cpus")
-                appendLine("  tcpNoDelay: true (Vert.x default)")
-                appendLine("  soBacklog: 1024")
+        engineConfig.displayTo(this, engine)
+    }
+}
+
+/**
+ * Common socket options applicable to all engines.
+ * Values are nullable — null means "use engine default".
+ */
+data class SocketConfig(
+    val tcpNoDelay: Boolean? = null,
+    val reuseAddress: Boolean? = null,
+    val backlog: Int? = null,
+    val sendBuffer: Int? = null,
+    val receiveBuffer: Int? = null,
+    val threads: Int? = null,
+) {
+    fun appendTo(sb: StringBuilder) {
+        tcpNoDelay?.let { sb.append(", tcpNoDelay=$it") }
+        reuseAddress?.let { sb.append(", reuseAddress=$it") }
+        backlog?.let { sb.append(", backlog=$it") }
+        sendBuffer?.let { sb.append(", sendBuffer=$it") }
+        receiveBuffer?.let { sb.append(", receiveBuffer=$it") }
+        threads?.let { sb.append(", threads=$it") }
+    }
+
+    fun displayTo(sb: StringBuilder) {
+        sb.appendLine("--- Socket Options ---")
+        sb.appendLine("  tcp-nodelay:    ${tcpNoDelay ?: "(engine default)"}")
+        sb.appendLine("  reuse-address:  ${reuseAddress ?: "(engine default)"}")
+        sb.appendLine("  backlog:        ${backlog ?: "(engine default)"}")
+        sb.appendLine("  send-buffer:    ${sendBuffer?.let { "$it bytes" } ?: "(engine default)"}")
+        sb.appendLine("  receive-buffer: ${receiveBuffer?.let { "$it bytes" } ?: "(engine default)"}")
+        sb.appendLine("  threads:        ${threads ?: "(engine default)"}")
+    }
+}
+
+/**
+ * Engine-specific configuration, type-safe per engine.
+ *
+ * Each engine variant declares only the parameters it supports.
+ * Unknown CLI arguments for an engine are silently ignored.
+ * Native engines (Phase 2) add new variants here.
+ */
+sealed interface EngineConfig {
+
+    fun displayTo(sb: StringBuilder, engine: String)
+
+    /** No engine-specific settings (keel, keel-netty, or unrecognised engine). */
+    data object None : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            sb.appendLine("--- Engine-Specific ($engine) ---")
+            when (engine) {
+                "keel" -> {
+                    sb.appendLine("  Connection: close (always, Phase (a))")
+                    sb.appendLine("  I/O: Dispatchers.IO (max 64 threads)")
+                    sb.appendLine("  No tunable parameters in Phase (a)")
+                }
+                "keel-netty" -> {
+                    sb.appendLine("  Delegates to keel NettyEngine")
+                    sb.appendLine("  No tunable parameters in Phase (a)")
+                }
+                else -> sb.appendLine("  (no engine-specific parameters)")
             }
         }
-        if (extras.isNotEmpty()) {
-            appendLine()
-            appendLine("--- Extras ---")
-            extras.forEach { (k, v) -> appendLine("  $k: $v") }
+    }
+
+    /** Ktor Netty engine settings. */
+    data class KtorNetty(
+        /** Maximum concurrent requests in pipeline (default: 32). */
+        val runningLimit: Int? = null,
+        /** Share connection/worker EventLoopGroup (default: false). */
+        val shareWorkGroup: Boolean? = null,
+    ) : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            sb.appendLine("--- Engine-Specific (ktor-netty) ---")
+            sb.appendLine("  running-limit:    ${runningLimit ?: "32 (default)"}")
+            sb.appendLine("  share-work-group: ${shareWorkGroup ?: "false (default)"}")
+            sb.appendLine("  configureBootstrap: TCP_NODELAY/SO_BACKLOG from socket config")
+            sb.appendLine("  Defaults: workerGroupSize=${BenchmarkConfig.cpuCores / 2 + 1}, callGroupSize=${BenchmarkConfig.cpuCores}")
+        }
+
+        override fun toString(): String = buildString {
+            runningLimit?.let { append("runningLimit=$it") }
+            shareWorkGroup?.let { if (isNotEmpty()) append(", "); append("shareWorkGroup=$it") }
+        }
+    }
+
+    /** Ktor CIO engine settings. */
+    data class Cio(
+        /** Idle connection timeout in seconds (default: 45). */
+        val idleTimeout: Int? = null,
+    ) : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            sb.appendLine("--- Engine-Specific (cio) ---")
+            sb.appendLine("  idle-timeout:     ${idleTimeout ?: "45 (default)"} seconds")
+            sb.appendLine("  Defaults: reuseAddress=false")
+            sb.appendLine("  No TCP_NODELAY/backlog control (CIO limitation)")
+        }
+
+        override fun toString(): String = idleTimeout?.let { "idleTimeout=$it" } ?: ""
+    }
+
+    /** Vert.x-specific settings (most are in SocketConfig, this captures overflows). */
+    data object Vertx : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            sb.appendLine("--- Engine-Specific (vertx) ---")
+            sb.appendLine("  Defaults: tcpNoDelay=true, soBacklog=1024, eventLoopPoolSize=${BenchmarkConfig.cpuCores}")
+            sb.appendLine("  All socket options applied via HttpServerOptions")
+        }
+
+        override fun toString(): String = ""
+    }
+
+    /** Spring WebFlux settings. */
+    data object Spring : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            sb.appendLine("--- Engine-Specific (spring) ---")
+            sb.appendLine("  Defaults: reactor.netty.ioWorkerCount=${BenchmarkConfig.cpuCores}")
+            sb.appendLine("  Limited socket-level control via application properties")
+        }
+
+        override fun toString(): String = ""
+    }
+
+    // Future: Native engines
+    // data class GoGin(val gomaxprocs: Int? = null) : EngineConfig { ... }
+    // data class RustAxum(val workerThreads: Int? = null) : EngineConfig { ... }
+
+    companion object {
+        /**
+         * Parse engine-specific arguments into the appropriate [EngineConfig] variant.
+         */
+        fun parse(engine: String, args: Map<String, String>): EngineConfig = when (engine) {
+            "ktor-netty" -> KtorNetty(
+                runningLimit = args["running-limit"]?.toInt(),
+                shareWorkGroup = args["share-work-group"]?.toBooleanStrict(),
+            )
+            "cio" -> Cio(
+                idleTimeout = args["idle-timeout"]?.toInt(),
+            )
+            "vertx" -> Vertx
+            "spring" -> Spring
+            else -> None
         }
     }
 }
