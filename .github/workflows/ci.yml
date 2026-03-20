@@ -7,9 +7,8 @@ on:
     types: [ labeled, synchronize ]
 
 # Comma-separated list of users allowed to trigger CI via needs-pr-check label.
-# Override per-repo: Settings > Secrets and variables > Actions > Variables > CI_ALLOWED_USERS
-env:
-  CI_ALLOWED_USERS: ${{ vars.CI_ALLOWED_USERS || 'fukusaka' }}
+# Set in: Settings > Secrets and variables > Actions > Variables > CI_ALLOWED_USERS
+# If not set, label-triggered CI is disabled for all users.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,7 +23,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
-       contains(format(',{0},', vars.CI_ALLOWED_USERS || 'fukusaka'), format(',{0},', github.event.sender.login)))
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
 
     steps:
       - uses: actions/checkout@v6
