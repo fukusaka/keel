@@ -6,9 +6,9 @@ HTTP throughput benchmark comparing keel against mainstream JVM server engines.
 
 | Engine | Framework | I/O Model |
 |---|---|---|
-| `keel` | keel Ktor adapter + NioEngine | Sync (Phase (a)) |
+| `keel-nio` | keel Ktor adapter + NioEngine | Sync (Phase (a)) |
 | `keel-netty` | keel Ktor adapter + NettyEngine | Sync (Phase (a)) |
-| `cio` | Ktor CIO | Async (coroutines) |
+| `ktor-cio` | Ktor CIO | Async (coroutines) |
 | `ktor-netty` | Ktor Netty | Async (Netty EventLoop) |
 | `spring` | Spring Boot WebFlux | Async (Reactor Netty) |
 | `vertx` | Vert.x | Async (EventLoop) |
@@ -17,7 +17,7 @@ HTTP throughput benchmark comparing keel against mainstream JVM server engines.
 
 ```bash
 # Start a benchmark server
-./gradlew -Pbenchmark :benchmark:run --args="--engine=keel --port=8080"
+./gradlew -Pbenchmark :benchmark:run --args="--engine=keel-nio --port=8080"
 
 # In another terminal
 wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
@@ -37,7 +37,7 @@ wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
 ./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --profile=tuned"
 
 # keel-equivalent (forces Connection: close)
-./gradlew -Pbenchmark :benchmark:run --args="--engine=cio --profile=keel-equiv-0.1"
+./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-cio --profile=keel-equiv-0.1"
 ```
 
 ## CLI Arguments
@@ -46,7 +46,7 @@ wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
 
 | Argument | Description | Default |
 |---|---|---|
-| `--engine=NAME` | Engine to run | `keel` |
+| `--engine=NAME` | Engine to run | `keel-nio` |
 | `--port=N` | Listen port | `8080` |
 | `--profile=NAME` | Profile preset | `default` |
 | `--show-config` | Display resolved config and exit | — |
@@ -114,7 +114,7 @@ Display resolved settings without starting the server:
 ./scripts/bench-run.sh
 
 # Specific engine and profile
-./scripts/bench-run.sh --engine=cio --profile=keel-equiv-0.1
+./scripts/bench-run.sh --engine=ktor-cio --profile=keel-equiv-0.1
 
 # Compare results
 ./scripts/bench-compare.sh
