@@ -3,9 +3,10 @@
 # bench-run.sh — wrk benchmark runner for keel HTTP servers
 #
 # Usage:
-#   ./scripts/bench-run.sh                    # Run all engines
-#   ./scripts/bench-run.sh --engine=keel      # Run specific engine
-#   ./scripts/bench-run.sh --engine=cio --port=9090
+#   ./scripts/bench-run.sh                                       # Run all engines, default profile
+#   ./scripts/bench-run.sh --engine=keel-nio                     # Run specific engine
+#   ./scripts/bench-run.sh --profile=keel-equiv-0.1              # All engines with Connection: close
+#   ./scripts/bench-run.sh --engine=ktor-cio --profile=tuned     # CIO with tuned settings
 #
 # Prerequisites: wrk (brew install wrk)
 
@@ -13,10 +14,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-ENGINES="${1:---engine=all}"
-ENGINE_NAME="${ENGINES#--engine=}"
-PORT="${2:---port=8080}"
-PORT_NUM="${PORT#--port=}"
+ENGINE_NAME="all"
+PORT_NUM="8080"
+PROFILE="default"
+
+for arg in "$@"; do
+    case "$arg" in
+        --engine=*) ENGINE_NAME="${arg#--engine=}" ;;
+        --port=*) PORT_NUM="${arg#--port=}" ;;
+        --profile=*) PROFILE="${arg#--profile=}" ;;
+    esac
+done
 RESULTS_DIR="benchmark/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 WRK_CMD="wrk"
@@ -32,7 +40,7 @@ mkdir -p "$RESULTS_DIR"
 declare -a SCENARIOS=("/hello" "/large")
 declare -a PROFILES=("low:2:10:10s" "high:4:100:10s" "ultra:4:500:10s")
 
-ALL_ENGINES=("keel" "keel-netty" "cio" "ktor-netty" "spring" "vertx")
+ALL_ENGINES=("keel-nio" "keel-netty" "ktor-cio" "ktor-netty" "netty-raw" "spring" "vertx")
 
 run_benchmark() {
     local engine="$1"
@@ -43,7 +51,7 @@ run_benchmark() {
     local duration="$6"
     local endpoint="${scenario##*/}"
 
-    local outfile="${RESULTS_DIR}/${engine}-${endpoint}-${profile_name}-${TIMESTAMP}.txt"
+    local outfile="${RESULTS_DIR}/${engine}-${endpoint}-${profile_name}-${PROFILE}-${TIMESTAMP}.txt"
 
     echo "  wrk -t${threads} -c${connections} -d${duration} --latency http://127.0.0.1:${PORT_NUM}${scenario}"
     $WRK_CMD -t"$threads" -c"$connections" -d"$duration" --latency \
@@ -65,7 +73,7 @@ run_engine() {
     # Start server in background
     # --no-daemon ensures the server JVM is a direct child process,
     # so kill reliably stops it (daemon mode spawns a separate JVM).
-    ./gradlew -Pbenchmark --no-daemon -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM" &
+    ./gradlew -Pbenchmark --no-daemon -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM --profile=$PROFILE" &
     local server_pid=$!
 
     # Wait for server to be ready
@@ -101,6 +109,7 @@ run_engine() {
 
 echo "=== keel benchmark runner ==="
 echo "Timestamp: $TIMESTAMP"
+echo "Profile:   $PROFILE"
 echo "Results:   $RESULTS_DIR/"
 
 if [ "$ENGINE_NAME" = "all" ]; then
