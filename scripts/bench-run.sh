@@ -63,7 +63,9 @@ run_engine() {
     echo "Starting server..."
 
     # Start server in background
-    ./gradlew -Pbenchmark -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM" &
+    # --no-daemon ensures the server JVM is a direct child process,
+    # so kill reliably stops it (daemon mode spawns a separate JVM).
+    ./gradlew -Pbenchmark --no-daemon -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM" &
     local server_pid=$!
 
     # Wait for server to be ready
