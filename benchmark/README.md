@@ -40,14 +40,31 @@ All defaults are read at runtime. Use `--show-config` to see resolved values.
 
 ### Socket Options per Engine
 
-| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx | tuned |
-|---|---|---|---|---|---|---|---|---|
-| tcp-nodelay | n/a | n/a | n/a | OS | OS | true* | true** | true |
-| reuse-address | n/a | n/a | false** | OS | OS | true* | true** | true |
-| backlog | n/a | n/a | n/a | OS | OS | OS | -1** | 1024 |
-| threads | 64 (IO) | 64 (IO) | 64 (IO) | cpu/2+1** | cpu*2** | cpu* | cpu** | cpu |
+| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx |
+|---|---|---|---|---|---|---|---|
+| tcp-nodelay | n/a | n/a | n/a | OS | OS | true* | true** |
+| reuse-address | n/a | n/a | false** | OS | OS | true* | true** |
+| backlog | n/a | n/a | n/a | OS | OS | OS | -1** |
+| threads | 64 (IO) | 64 (IO) | 64 (IO) | cpu/2+1** | cpu*2** | cpu* | cpu** |
 
 n/a = not configurable by benchmark. OS = read from `java.net.Socket`. * = by Reactor Netty. ** = by engine class.
+
+### Tuned Socket Overrides per Engine
+
+> **Note**: Tuned values are initial estimates based on documentation and source code
+> analysis, not yet validated by systematic benchmarking. Use `--show-config` to inspect
+> and override via CLI as needed.
+
+Only values that differ from the engine's built-in default are overridden:
+
+| Option | ktor-cio | ktor-netty | netty-raw | spring | vertx |
+|---|---|---|---|---|---|
+| tcp-nodelay | — | true | true | — | — |
+| reuse-address | true | true | true | — | — |
+| backlog | — | 1024 | 1024 | 1024 | 1024 |
+| threads | — | cpu | — | cpu | cpu |
+
+— = already optimal or not configurable. keel-nio/keel-netty have no tunable socket options. netty-raw keeps Netty default (cpu\*2) as it is optimal for EventLoop model.
 
 ### Engine-Specific Tuned Values
 
