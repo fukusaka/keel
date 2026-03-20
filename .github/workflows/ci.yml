@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    types: [ labeled ]
+    types: [ labeled, synchronize ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 15
     if: |
       github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'needs-pr-check')
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'needs-pr-check'))
 
     steps:
       - uses: actions/checkout@v6
