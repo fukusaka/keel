@@ -63,7 +63,7 @@ run_engine() {
     echo "Starting server..."
 
     # Start server in background
-    ./gradlew -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM" &
+    ./gradlew -Pbenchmark -q :benchmark:run --args="--engine=$engine --port=$PORT_NUM" &
     local server_pid=$!
 
     # Wait for server to be ready

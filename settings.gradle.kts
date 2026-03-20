@@ -24,6 +24,12 @@ include(
     ":codec-http",
     ":codec-websocket",
     ":ktor-engine",
-    ":benchmark",
-    ":sample",
 )
+
+// Benchmark and sample modules are opt-in to avoid downloading
+// Spring Boot, Vert.x, etc. during normal builds.
+//   ./gradlew -Pbenchmark :benchmark:run --args="--engine=keel"
+//   ./gradlew -Pbenchmark :sample:run
+if (providers.gradleProperty("benchmark").isPresent) {
+    include(":benchmark", ":sample")
+}
