@@ -9,6 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.io.Sink
 import kotlin.coroutines.CoroutineContext
 
+/**
+ * Ktor [BaseApplicationCall] backed by a single keel [Channel][io.github.keel.core.Channel] connection.
+ *
+ * Bridges the parsed [HttpRequestHead] and raw I/O streams ([ByteReadChannel] for request body,
+ * [Sink] for response output) into Ktor's request/response hierarchy.
+ */
 internal class KeelApplicationCall(
     application: Application,
     head: HttpRequestHead,

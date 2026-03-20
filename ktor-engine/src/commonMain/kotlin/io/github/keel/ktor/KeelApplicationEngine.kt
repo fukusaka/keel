@@ -126,6 +126,27 @@ public class KeelApplicationEngine(
         }
     }
 
+    /**
+     * Handle a single HTTP request on the accepted [channel].
+     *
+     * Data flow (Phase (a) — single request, no keep-alive):
+     * ```
+     * Channel ──asSource()──► RawSource ──parseRequestHead()──► HttpRequestHead
+     *                              │                                    │
+     *                              ▼                                    ▼
+     *                   body bytes (pull)                     KeelApplicationCall
+     *                              │                                    │
+     *                              ▼                                    ▼
+     *                     ByteReadChannel ◄── bridge coroutine   Ktor pipeline
+     *                                                                   │
+     *                                                                   ▼
+     *                   Channel ◄──asSink()──◄── writeResponseHead + body
+     * ```
+     *
+     * Request body bridging: keel's pull-based [RawSource] is piped into Ktor's
+     * push-based [ByteReadChannel] via a dedicated coroutine. This copy is
+     * unavoidable because Ktor expects a channel interface.
+     */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.keel.core.Channel) {
         try {
             val source = channel.asSource().buffered()
@@ -133,7 +154,7 @@ public class KeelApplicationEngine(
 
             val head = parseRequestHead(source)
 
-            // Bridge request body: remaining bytes in Source → ByteReadChannel
+            // Bridge request body: pull from RawSource → push to ByteReadChannel
             val contentLength = head.headers.contentLength()
             val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
                 val bodyChannel = ByteChannel()

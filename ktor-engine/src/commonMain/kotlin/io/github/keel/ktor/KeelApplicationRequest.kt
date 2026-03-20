@@ -7,6 +7,12 @@ import io.ktor.server.engine.*
 import io.ktor.server.request.*
 import io.ktor.utils.io.*
 
+/**
+ * Ktor [BaseApplicationRequest] that reads request metadata from a keel [HttpRequestHead].
+ *
+ * Query parameters are lazily parsed from the raw URI.
+ * Headers are adapted via [KeelHeaders].
+ */
 internal class KeelApplicationRequest(
     call: KeelApplicationCall,
     private val head: HttpRequestHead,

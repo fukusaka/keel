@@ -3,6 +3,12 @@ package io.github.keel.ktor
 import io.github.keel.core.SocketAddress
 import io.ktor.http.*
 
+/**
+ * Ktor [RequestConnectionPoint] derived from keel [SocketAddress] and the HTTP request head.
+ *
+ * Local/remote address information comes from the keel [Channel][io.github.keel.core.Channel].
+ * Server host/port fall back to the Host header value when socket address is unavailable.
+ */
 internal class KeelConnectionPoint(
     private val localAddr: SocketAddress?,
     private val remoteAddr: SocketAddress?,
