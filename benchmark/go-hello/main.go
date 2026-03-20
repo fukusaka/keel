@@ -205,12 +205,6 @@ func optOrDefault(v *bool, def string) string {
 	return def
 }
 
-func optOrDefaultInt(v *int, def string) string {
-	if v != nil {
-		return strconv.Itoa(*v)
-	}
-	return def
-}
 
 func optOrDefaultBytes(v *int, def string) string {
 	if v != nil {

@@ -100,9 +100,9 @@ All servers accept the same `--key=value` CLI format.
 | `--backlog=N` | SO_BACKLOG | o | o | \* | o | o |
 | `--send-buffer=N` | SO_SNDBUF (bytes) | o | o | o | \* | o |
 | `--receive-buffer=N` | SO_RCVBUF (bytes) | o | o | o | \* | o |
-| `--threads=N` | Worker thread count | o | o | o | o | o |
+| `--threads=N` | Worker thread count | o | o | o | o | \* |
 
-o = applied. \* = accepted and displayed in show-config but not applied by framework (swift: tcp-nodelay/send-buffer/receive-buffer managed by SwiftNIO; go: backlog uses SOMAXCONN).
+o = applied. \* = accepted and displayed in show-config but not applied by framework (swift: tcp-nodelay/send-buffer/receive-buffer managed by SwiftNIO; go: backlog uses SOMAXCONN; zig: thread-per-connection model, no thread pool).
 
 ### Engine-Specific (JVM)
 

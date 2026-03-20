@@ -48,11 +48,12 @@ fn main() {
             .unwrap_or(1)
     });
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(threads)
-        .enable_all()
-        .build()
-        .expect("failed to build tokio runtime");
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(threads).enable_all();
+    if let Some(bt) = config.tokio_blocking_threads {
+        builder.max_blocking_threads(bt);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
 
     rt.block_on(async move {
         let app = Router::new()
