@@ -215,26 +215,68 @@ sealed interface EngineConfig {
         override fun toString(): String = idleTimeout?.let { "idleTimeout=$it" } ?: ""
     }
 
-    /** Vert.x-specific settings (most are in SocketConfig, this captures overflows). */
-    data object Vertx : EngineConfig {
+    /** Vert.x HttpServerOptions beyond common socket config. */
+    data class Vertx(
+        /** Maximum HTTP chunk size in bytes (default: 8192). */
+        val maxChunkSize: Int? = null,
+        /** Maximum length of all headers (default: 8192). */
+        val maxHeaderSize: Int? = null,
+        /** Maximum length of initial HTTP line (default: 4096). */
+        val maxInitialLineLength: Int? = null,
+        /** HTTP decoder initial buffer size (default: 128). */
+        val decoderInitialBufferSize: Int? = null,
+        /** Enable gzip/deflate compression (default: false). */
+        val compressionSupported: Boolean? = null,
+        /** Compression level 1-9 (default: 6). */
+        val compressionLevel: Int? = null,
+        /** Idle timeout in seconds (default: 0 = no timeout). */
+        val idleTimeout: Int? = null,
+    ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             sb.appendLine("--- Engine-Specific (vertx) ---")
+            sb.appendLine("  max-chunk-size:             ${maxChunkSize ?: "8192 (default)"}")
+            sb.appendLine("  max-header-size:            ${maxHeaderSize ?: "8192 (default)"}")
+            sb.appendLine("  max-initial-line-length:    ${maxInitialLineLength ?: "4096 (default)"}")
+            sb.appendLine("  decoder-initial-buffer-size:${decoderInitialBufferSize ?: "128 (default)"}")
+            sb.appendLine("  compression-supported:      ${compressionSupported ?: "false (default)"}")
+            sb.appendLine("  compression-level:          ${compressionLevel ?: "6 (default)"}")
+            sb.appendLine("  idle-timeout:               ${idleTimeout ?: "0 (default)"} seconds")
             sb.appendLine("  Defaults: tcpNoDelay=true, soBacklog=1024, eventLoopPoolSize=${BenchmarkConfig.cpuCores}")
-            sb.appendLine("  All socket options applied via HttpServerOptions")
         }
 
-        override fun toString(): String = ""
+        override fun toString(): String = buildString {
+            maxChunkSize?.let { append("maxChunkSize=$it") }
+            compressionSupported?.let { if (isNotEmpty()) append(", "); append("compression=$it") }
+        }
     }
 
-    /** Spring WebFlux settings. */
-    data object Spring : EngineConfig {
+    /** Spring Boot WebFlux / Reactor Netty settings. */
+    data class Spring(
+        /** Maximum keep-alive requests per connection (default: unlimited). */
+        val maxKeepAliveRequests: Int? = null,
+        /** Maximum chunk size (default: 8192). */
+        val maxChunkSize: Int? = null,
+        /** Maximum initial line length (default: 4096). */
+        val maxInitialLineLength: Int? = null,
+        /** Enable/disable header validation (default: true). Disabling improves throughput. */
+        val validateHeaders: Boolean? = null,
+        /** Maximum in-memory buffer size in bytes (default: 262144 = 256KB). */
+        val maxInMemorySize: Int? = null,
+    ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             sb.appendLine("--- Engine-Specific (spring) ---")
+            sb.appendLine("  max-keep-alive-requests:  ${maxKeepAliveRequests ?: "(unlimited)"}")
+            sb.appendLine("  max-chunk-size:           ${maxChunkSize ?: "8192 (default)"}")
+            sb.appendLine("  max-initial-line-length:  ${maxInitialLineLength ?: "4096 (default)"}")
+            sb.appendLine("  validate-headers:         ${validateHeaders ?: "true (default)"}")
+            sb.appendLine("  max-in-memory-size:       ${maxInMemorySize?.let { "$it bytes" } ?: "262144 (default)"}")
             sb.appendLine("  Defaults: reactor.netty.ioWorkerCount=${BenchmarkConfig.cpuCores}")
-            sb.appendLine("  Limited socket-level control via application properties")
         }
 
-        override fun toString(): String = ""
+        override fun toString(): String = buildString {
+            maxKeepAliveRequests?.let { append("maxKeepAliveRequests=$it") }
+            validateHeaders?.let { if (isNotEmpty()) append(", "); append("validateHeaders=$it") }
+        }
     }
 
     // Future: Native engines
@@ -242,9 +284,6 @@ sealed interface EngineConfig {
     // data class RustAxum(val workerThreads: Int? = null) : EngineConfig { ... }
 
     companion object {
-        /**
-         * Parse engine-specific arguments into the appropriate [EngineConfig] variant.
-         */
         fun parse(engine: String, args: Map<String, String>): EngineConfig = when (engine) {
             "ktor-netty" -> KtorNetty(
                 runningLimit = args["running-limit"]?.toInt(),
@@ -253,8 +292,22 @@ sealed interface EngineConfig {
             "cio" -> Cio(
                 idleTimeout = args["idle-timeout"]?.toInt(),
             )
-            "vertx" -> Vertx
-            "spring" -> Spring
+            "vertx" -> Vertx(
+                maxChunkSize = args["max-chunk-size"]?.toInt(),
+                maxHeaderSize = args["max-header-size"]?.toInt(),
+                maxInitialLineLength = args["max-initial-line-length"]?.toInt(),
+                decoderInitialBufferSize = args["decoder-initial-buffer-size"]?.toInt(),
+                compressionSupported = args["compression-supported"]?.toBooleanStrict(),
+                compressionLevel = args["compression-level"]?.toInt(),
+                idleTimeout = args["idle-timeout"]?.toInt(),
+            )
+            "spring" -> Spring(
+                maxKeepAliveRequests = args["max-keep-alive-requests"]?.toInt(),
+                maxChunkSize = args["max-chunk-size"]?.toInt(),
+                maxInitialLineLength = args["max-initial-line-length"]?.toInt(),
+                validateHeaders = args["validate-headers"]?.toBooleanStrict(),
+                maxInMemorySize = args["max-in-memory-size"]?.toInt(),
+            )
             else -> None
         }
     }

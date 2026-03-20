@@ -34,13 +34,23 @@ fun startVertx(config: BenchmarkConfig) {
         response.end(vertxLargePayload)
     }
 
+    val v = config.engineConfig as? EngineConfig.Vertx ?: EngineConfig.Vertx()
     val serverOptions = HttpServerOptions()
         .setPort(config.port)
+    // Common socket options
     s.tcpNoDelay?.let { serverOptions.setTcpNoDelay(it) }
     s.backlog?.let { serverOptions.setAcceptBacklog(it) }
     s.sendBuffer?.let { serverOptions.setSendBufferSize(it) }
     s.receiveBuffer?.let { serverOptions.setReceiveBufferSize(it) }
     s.reuseAddress?.let { serverOptions.setReuseAddress(it) }
+    // Vert.x-specific
+    v.maxChunkSize?.let { serverOptions.setMaxChunkSize(it) }
+    v.maxHeaderSize?.let { serverOptions.setMaxHeaderSize(it) }
+    v.maxInitialLineLength?.let { serverOptions.setMaxInitialLineLength(it) }
+    v.decoderInitialBufferSize?.let { serverOptions.setDecoderInitialBufferSize(it) }
+    v.compressionSupported?.let { serverOptions.setCompressionSupported(it) }
+    v.compressionLevel?.let { serverOptions.setCompressionLevel(it) }
+    v.idleTimeout?.let { serverOptions.setIdleTimeout(it) }
 
     val latch = CountDownLatch(1)
     vertx.createHttpServer(serverOptions)
