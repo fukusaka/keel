@@ -9,8 +9,16 @@ import io.ktor.server.routing.*
  *
  * Provides identical endpoints across all engine configurations
  * so throughput differences reflect only engine overhead.
+ *
+ * @param connectionClose if true, add `Connection: close` header to force
+ *   per-request TCP connections (used by keel-equiv profile)
  */
-fun Application.benchmarkModule() {
+fun Application.benchmarkModule(connectionClose: Boolean = false) {
+    if (connectionClose) {
+        intercept(ApplicationCallPipeline.Plugins) {
+            call.response.headers.append("Connection", "close")
+        }
+    }
     routing {
         get("/hello") {
             call.respondText("Hello, World!")
