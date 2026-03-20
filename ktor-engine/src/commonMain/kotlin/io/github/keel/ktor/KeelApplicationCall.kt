@@ -1,0 +1,40 @@
+package io.github.keel.ktor
+
+import io.github.keel.codec.http.HttpRequestHead
+import io.github.keel.core.SocketAddress
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.utils.io.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.io.Sink
+import kotlin.coroutines.CoroutineContext
+
+internal class KeelApplicationCall(
+    application: Application,
+    head: HttpRequestHead,
+    localAddress: SocketAddress?,
+    remoteAddress: SocketAddress?,
+    requestBody: ByteReadChannel,
+    sink: Sink,
+    scope: CoroutineScope,
+    override val coroutineContext: CoroutineContext,
+) : BaseApplicationCall(application), CoroutineScope {
+
+    override val request = KeelApplicationRequest(
+        call = this,
+        head = head,
+        localAddress = localAddress,
+        remoteAddress = remoteAddress,
+        engineReceiveChannel = requestBody,
+    )
+
+    override val response = KeelApplicationResponse(
+        call = this,
+        sink = sink,
+        scope = scope,
+    )
+
+    init {
+        putResponseAttribute()
+    }
+}
