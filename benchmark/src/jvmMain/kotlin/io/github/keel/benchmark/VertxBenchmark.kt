@@ -37,6 +37,9 @@ fun startVertx(config: BenchmarkConfig) {
         .setPort(config.port)
     config.tcpNoDelay?.let { serverOptions.setTcpNoDelay(it) }
     config.backlog?.let { serverOptions.setAcceptBacklog(it) }
+    config.sendBuffer?.let { serverOptions.setSendBufferSize(it) }
+    config.receiveBuffer?.let { serverOptions.setReceiveBufferSize(it) }
+    config.reuseAddress?.let { serverOptions.setReuseAddress(it) }
 
     val latch = CountDownLatch(1)
     vertx.createHttpServer(serverOptions)
