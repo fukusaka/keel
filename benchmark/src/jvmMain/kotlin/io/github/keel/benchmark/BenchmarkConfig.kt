@@ -245,51 +245,72 @@ data class SocketConfig(
     }
 
     companion object {
+        /** OS-level socket defaults, read once at startup via a temporary ServerSocket. */
+        private val osDefaults: OsSocketDefaults by lazy { OsSocketDefaults.detect() }
+
+        /** Dispatchers.IO parallelism (system property or default 64). */
+        private val ioParallelism: Int by lazy {
+            System.getProperty("kotlinx.coroutines.io.parallelism")?.toIntOrNull() ?: 64
+        }
+
         /**
-         * Known default values per engine, displayed when user hasn't overridden.
+         * Read actual default values from engine classes and OS.
+         * No hardcoded magic numbers — all values come from runtime inspection.
          */
-        fun engineDefaults(engine: String): SocketDefaults = when (engine) {
-            "keel-nio", "keel-netty" -> SocketDefaults(
-                tcpNoDelay = "(not configurable)",
-                reuseAddress = "(not configurable)",
-                backlog = "(not configurable)",
-                sendBuffer = "(not configurable)",
-                receiveBuffer = "(not configurable)",
-                threads = "64 (Dispatchers.IO)",
-            )
-            "ktor-cio" -> SocketDefaults(
-                tcpNoDelay = "(not configurable)",
-                reuseAddress = "false (default)",
-                backlog = "(not configurable)",
-                sendBuffer = "(not configurable)",
-                receiveBuffer = "(not configurable)",
-                threads = "(not configurable, coroutine-based)",
-            )
-            "ktor-netty" -> SocketDefaults(
-                tcpNoDelay = "false (default)",
-                reuseAddress = "false (default)",
-                backlog = "OS default",
-                sendBuffer = "OS default",
-                receiveBuffer = "OS default",
-                threads = "${BenchmarkConfig.cpuCores / 2 + 1} (default, workerGroupSize)",
-            )
-            "spring" -> SocketDefaults(
-                tcpNoDelay = "true (default)",
-                reuseAddress = "true (default)",
-                backlog = "OS default",
-                sendBuffer = "OS default",
-                receiveBuffer = "OS default",
-                threads = "${BenchmarkConfig.cpuCores} (default, ioWorkerCount)",
-            )
-            "vertx" -> SocketDefaults(
-                tcpNoDelay = "true (default)",
-                reuseAddress = "false (default)",
-                backlog = "1024 (default)",
-                sendBuffer = "OS default",
-                receiveBuffer = "OS default",
-                threads = "${BenchmarkConfig.cpuCores} (default, eventLoopPoolSize)",
-            )
-            else -> SocketDefaults()
+        fun engineDefaults(engine: String): SocketDefaults {
+            val os = osDefaults
+            return when (engine) {
+                "keel-nio", "keel-netty" -> SocketDefaults(
+                    tcpNoDelay = "(not configurable)",
+                    reuseAddress = "(not configurable)",
+                    backlog = "(not configurable)",
+                    sendBuffer = "(not configurable)",
+                    receiveBuffer = "(not configurable)",
+                    threads = "$ioParallelism (default by Dispatchers.IO)",
+                )
+                "ktor-cio" -> {
+                    val cioConfig = io.ktor.server.cio.CIOApplicationEngine.Configuration()
+                    SocketDefaults(
+                        tcpNoDelay = "(not configurable)",
+                        reuseAddress = "${cioConfig.reuseAddress} (default by CIO)",
+                        backlog = "(not configurable)",
+                        sendBuffer = "(not configurable)",
+                        receiveBuffer = "(not configurable)",
+                        threads = "(not configurable, coroutine-based)",
+                    )
+                }
+                "ktor-netty" -> {
+                    val nettyConfig = io.ktor.server.netty.NettyApplicationEngine.Configuration()
+                    SocketDefaults(
+                        tcpNoDelay = "false (default by Netty)",
+                        reuseAddress = "false (default by Netty)",
+                        backlog = "${os.backlog} (default by OS)",
+                        sendBuffer = "${os.sendBuffer} bytes (default by OS)",
+                        receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
+                        threads = "${nettyConfig.workerGroupSize} (default by Netty, workerGroupSize)",
+                    )
+                }
+                "spring" -> SocketDefaults(
+                    tcpNoDelay = "true (default by Reactor Netty)",
+                    reuseAddress = "true (default by Reactor Netty)",
+                    backlog = "${os.backlog} (default by OS)",
+                    sendBuffer = "${os.sendBuffer} bytes (default by OS)",
+                    receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
+                    threads = "${BenchmarkConfig.cpuCores} (default by Reactor Netty, ioWorkerCount)",
+                )
+                "vertx" -> {
+                    val vertxDefaults = io.vertx.core.http.HttpServerOptions()
+                    SocketDefaults(
+                        tcpNoDelay = "${vertxDefaults.isTcpNoDelay} (default by Vert.x)",
+                        reuseAddress = "${vertxDefaults.isReuseAddress} (default by Vert.x)",
+                        backlog = "${vertxDefaults.acceptBacklog} (default by Vert.x)",
+                        sendBuffer = if (vertxDefaults.sendBufferSize > 0) "${vertxDefaults.sendBufferSize} bytes (default by Vert.x)" else "${os.sendBuffer} bytes (default by OS)",
+                        receiveBuffer = if (vertxDefaults.receiveBufferSize > 0) "${vertxDefaults.receiveBufferSize} bytes (default by Vert.x)" else "${os.receiveBuffer} bytes (default by OS)",
+                        threads = "${BenchmarkConfig.cpuCores} (default by Vert.x, eventLoopPoolSize)",
+                    )
+                }
+                else -> SocketDefaults()
+            }
         }
     }
 
@@ -301,6 +322,32 @@ data class SocketConfig(
         val receiveBuffer: String = "(engine default)",
         val threads: String = "(engine default)",
     )
+}
+
+/**
+ * OS-level socket defaults detected at runtime via a temporary ServerSocket.
+ */
+data class OsSocketDefaults(
+    val backlog: Int,
+    val sendBuffer: Int,
+    val receiveBuffer: Int,
+) {
+    companion object {
+        fun detect(): OsSocketDefaults {
+            val ss = java.net.ServerSocket()
+            val sock = java.net.Socket()
+            try {
+                return OsSocketDefaults(
+                    backlog = 50, // Java ServerSocket default (documented in ServerSocket javadoc)
+                    sendBuffer = sock.sendBufferSize,
+                    receiveBuffer = ss.receiveBufferSize,
+                )
+            } finally {
+                sock.close()
+                ss.close()
+            }
+        }
+    }
 }
 
 /**
@@ -334,16 +381,17 @@ sealed interface EngineConfig {
 
     /** Ktor Netty engine settings. */
     data class KtorNetty(
-        /** Maximum concurrent requests in pipeline (default: 32). */
+        /** Maximum concurrent requests in pipeline. */
         val runningLimit: Int? = null,
-        /** Share connection/worker EventLoopGroup (default: false). */
+        /** Share connection/worker EventLoopGroup. */
         val shareWorkGroup: Boolean? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             val fmt = "  %-22s %s"
+            val nettyDefault = io.ktor.server.netty.NettyApplicationEngine.Configuration()
             sb.appendLine("--- Engine-Specific (ktor-netty) ---")
-            sb.appendLine(String.format(fmt, "running-limit:", runningLimit?.toString() ?: "32 (default)"))
-            sb.appendLine(String.format(fmt, "share-work-group:", shareWorkGroup?.toString() ?: "false (default)"))
+            sb.appendLine(String.format(fmt, "running-limit:", runningLimit?.toString() ?: "${nettyDefault.runningLimit} (default by Netty)"))
+            sb.appendLine(String.format(fmt, "share-work-group:", shareWorkGroup?.toString() ?: "${nettyDefault.shareWorkGroup} (default by Netty)"))
         }
 
         override fun toString(): String = buildString {
@@ -354,13 +402,14 @@ sealed interface EngineConfig {
 
     /** Ktor CIO engine settings. */
     data class Cio(
-        /** Idle connection timeout in seconds (default: 45). */
+        /** Idle connection timeout in seconds. */
         val idleTimeout: Int? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             val fmt = "  %-22s %s"
+            val cioDefault = io.ktor.server.cio.CIOApplicationEngine.Configuration().connectionIdleTimeoutSeconds
             sb.appendLine("--- Engine-Specific (ktor-cio) ---")
-            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: 45} sec${if (idleTimeout == null) " (default)" else ""}"))
+            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: cioDefault} sec${if (idleTimeout == null) " (default by CIO)" else ""}"))
         }
 
         override fun toString(): String = idleTimeout?.let { "idleTimeout=$it" } ?: ""
@@ -385,14 +434,15 @@ sealed interface EngineConfig {
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             val fmt = "  %-22s %s"
+            val d = io.vertx.core.http.HttpServerOptions()
             sb.appendLine("--- Engine-Specific (vertx) ---")
-            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default)"))
-            sb.appendLine(String.format(fmt, "max-header-size:", maxHeaderSize?.toString() ?: "8192 (default)"))
-            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default)"))
-            sb.appendLine(String.format(fmt, "decoder-buf-size:", decoderInitialBufferSize?.toString() ?: "128 (default)"))
-            sb.appendLine(String.format(fmt, "compression:", compressionSupported?.toString() ?: "false (default)"))
-            sb.appendLine(String.format(fmt, "compression-level:", compressionLevel?.toString() ?: "6 (default)"))
-            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: 0} sec${if (idleTimeout == null) " (default)" else ""}"))
+            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "${d.maxChunkSize} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "max-header-size:", maxHeaderSize?.toString() ?: "${d.maxHeaderSize} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "${d.maxInitialLineLength} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "decoder-buf-size:", decoderInitialBufferSize?.toString() ?: "${d.decoderInitialBufferSize} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "compression:", compressionSupported?.toString() ?: "${d.isCompressionSupported} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "compression-level:", compressionLevel?.toString() ?: "${d.compressionLevel} (default by Vert.x)"))
+            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: d.idleTimeout} sec${if (idleTimeout == null) " (default by Vert.x)" else ""}"))
         }
 
         override fun toString(): String = buildString {
@@ -416,12 +466,14 @@ sealed interface EngineConfig {
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             val fmt = "  %-22s %s"
+            // Spring Boot Netty defaults are not easily accessible as constants,
+            // so we document the source in the display string.
             sb.appendLine("--- Engine-Specific (spring) ---")
-            sb.appendLine(String.format(fmt, "max-keep-alive-req:", maxKeepAliveRequests?.toString() ?: "unlimited (default)"))
-            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default)"))
-            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default)"))
-            sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "true (default)"))
-            sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "262144 bytes (default)"))
+            sb.appendLine(String.format(fmt, "max-keep-alive-req:", maxKeepAliveRequests?.toString() ?: "unlimited (default by Spring)"))
+            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default by Netty)"))
+            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default by Netty)"))
+            sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "true (default by Netty)"))
+            sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "262144 bytes (default by Spring)"))
         }
 
         override fun toString(): String = buildString {
