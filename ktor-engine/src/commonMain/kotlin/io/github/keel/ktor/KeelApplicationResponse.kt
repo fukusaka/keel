@@ -98,6 +98,9 @@ internal class KeelApplicationResponse(
                 keelHeaders.add(name, value)
             }
         }
+        // Phase (a): no keep-alive support — always signal client to close after response.
+        // Ktor pipeline may set "Connection: keep-alive" but keel does not support it yet.
+        keelHeaders["Connection"] = "close"
         writeResponseHead(
             status = KeelHttpStatus(statusCode.value),
             version = KeelHttpVersion.HTTP_1_1,
