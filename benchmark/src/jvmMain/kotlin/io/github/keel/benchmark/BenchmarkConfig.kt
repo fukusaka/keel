@@ -3,17 +3,34 @@ package io.github.keel.benchmark
 /**
  * Configuration for benchmark servers.
  *
- * Structure:
- * - [BenchmarkConfig]: top-level (engine name, port, profile)
- * - [SocketConfig]: common socket options shared by all engines
- * - [EngineConfig]: sealed hierarchy for engine-specific tuning
+ * ```
+ * BenchmarkConfig
+ * ├── engine: String               "keel" | "cio" | "ktor-netty" | "spring" | "vertx"
+ * ├── port: Int                    server listen port
+ * ├── profile: String              "default" | "tuned" | "keel-equiv-0.1"
+ * ├── connectionClose: Boolean     force Connection: close on all engines
+ * ├── socket: SocketConfig         common socket options (all engines)
+ * │   ├── tcpNoDelay               TCP_NODELAY
+ * │   ├── reuseAddress             SO_REUSEADDR
+ * │   ├── backlog                  SO_BACKLOG
+ * │   ├── sendBuffer               SO_SNDBUF
+ * │   ├── receiveBuffer            SO_RCVBUF
+ * │   └── threads                  worker thread count
+ * └── engineConfig: EngineConfig   sealed per-engine settings
+ *     ├── KtorNetty                runningLimit, shareWorkGroup
+ *     ├── Cio                      idleTimeout
+ *     ├── Vertx                    maxChunkSize, compression, ...
+ *     ├── Spring                   validateHeaders, maxKeepAliveRequests, ...
+ *     └── None                     keel, keel-netty (no tunable params)
+ * ```
  *
  * Three built-in profile families:
- * - **default**: Each engine's out-of-box settings
- * - **tuned**: Maximum performance, auto-calculated for the runtime
- * - **keel-equiv-{version}**: Constrain all engines to match keel limitations
+ * - **default**: Each engine's out-of-box settings (what users experience first)
+ * - **tuned**: Maximum performance, auto-calculated from CPU cores and engine type
+ * - **keel-equiv-{version}**: Constrain all engines to match a specific keel version
  *
- * Use `--show-config` to display the resolved configuration.
+ * Resolution order: CLI arguments > profile presets > engine defaults.
+ * Use `--show-config` to display the fully resolved configuration.
  */
 data class BenchmarkConfig(
     val engine: String = "keel",
@@ -61,6 +78,13 @@ data class BenchmarkConfig(
             return config
         }
 
+        /**
+         * Apply profile presets after CLI parsing.
+         *
+         * Resolution: CLI args are parsed first, then profile fills in any
+         * remaining nulls. This means `--profile=tuned --threads=2` uses 2
+         * threads (CLI wins), not the auto-calculated CPU count.
+         */
         private fun BenchmarkConfig.applyProfile(): BenchmarkConfig = when {
             profile == "default" -> this
             profile == "tuned" -> applyTuned()
@@ -72,8 +96,15 @@ data class BenchmarkConfig(
         }
 
         /**
-         * Auto-calculate optimal values based on CPU cores and engine type.
-         * CLI arguments (already parsed into [socket]) take precedence via `?:`.
+         * Auto-calculate optimal values for maximum throughput.
+         *
+         * Common settings applied to all engines:
+         * - tcpNoDelay=true (disable Nagle for low latency)
+         * - backlog=1024 (handle burst connections)
+         * - reuseAddress=true (fast port recycling)
+         * - threads=CPU cores (saturate available parallelism)
+         *
+         * CLI arguments already parsed into [socket] take precedence via `?:`.
          */
         private fun BenchmarkConfig.applyTuned(): BenchmarkConfig {
             val s = socket
@@ -118,15 +149,28 @@ data class BenchmarkConfig(
 }
 
 /**
- * Common socket options applicable to all engines.
- * Values are nullable — null means "use engine default".
+ * Common TCP/IP socket options shared by all engines.
+ *
+ * All values are nullable: `null` means "use the engine's built-in default".
+ * This allows the `tuned` profile to set values via `?:` without overriding
+ * explicit CLI arguments that were already parsed.
+ *
+ * Not all engines support all options. For example, Ktor CIO only honours
+ * [reuseAddress]; TCP_NODELAY and backlog are not configurable.
+ * See [EngineConfig] for engine-specific parameters.
  */
 data class SocketConfig(
+    /** Disable Nagle's algorithm for lower latency (TCP_NODELAY). */
     val tcpNoDelay: Boolean? = null,
+    /** Allow binding to a port in TIME_WAIT state (SO_REUSEADDR). */
     val reuseAddress: Boolean? = null,
+    /** Maximum length of the pending connection queue (SO_BACKLOG). */
     val backlog: Int? = null,
+    /** Kernel send buffer size in bytes (SO_SNDBUF). */
     val sendBuffer: Int? = null,
+    /** Kernel receive buffer size in bytes (SO_RCVBUF). */
     val receiveBuffer: Int? = null,
+    /** Worker thread count. Meaning varies by engine (event loops, I/O workers, etc.). */
     val threads: Int? = null,
 ) {
     fun appendTo(sb: StringBuilder) {
@@ -152,9 +196,18 @@ data class SocketConfig(
 /**
  * Engine-specific configuration, type-safe per engine.
  *
- * Each engine variant declares only the parameters it supports.
- * Unknown CLI arguments for an engine are silently ignored.
- * Native engines (Phase 2) add new variants here.
+ * Each sealed variant declares only the parameters that engine actually supports.
+ * This ensures compile-time safety: you cannot accidentally pass a Vert.x-only
+ * option to Ktor Netty.
+ *
+ * CLI arguments not recognised as common socket options are collected into a
+ * `Map<String, String>` and dispatched to the appropriate variant by
+ * [EngineConfig.parse]. Unknown keys for a given engine are silently ignored.
+ *
+ * To add a new engine (e.g., for Phase 2 Native benchmarks):
+ * 1. Add a new `data class` variant (e.g., `GoGin`, `RustAxum`)
+ * 2. Add a case in [parse] to construct it from the args map
+ * 3. Apply the config in the engine's start function
  */
 sealed interface EngineConfig {
 
