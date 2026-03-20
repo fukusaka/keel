@@ -119,7 +119,8 @@ public class KeelApplicationEngine(
                 launch(engineDispatcher) {
                     handleConnection(channel)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 if (!server.isActive || !isActive) break
             }
         }
