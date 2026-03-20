@@ -3,13 +3,17 @@ package io.github.keel.benchmark
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.context.annotation.Bean
+import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.web.reactive.function.server.*
+import org.springframework.web.server.WebFilter
 
 /**
  * Spring Boot WebFlux benchmark server.
  *
  * Uses functional routing with Reactor Netty for minimal framework overhead.
+ * Connection: close is controlled via the `benchmark.connection-close` system property,
+ * which is set by [startSpring] before launching the application.
  */
 @SpringBootApplication
 open class SpringBenchmarkApp {
@@ -27,6 +31,15 @@ open class SpringBenchmarkApp {
                 .bodyValue(springLargePayload)
         }
     }
+
+    /** Add Connection: close header to all responses when enabled. */
+    @Bean
+    open fun connectionCloseFilter(): WebFilter = WebFilter { exchange, chain ->
+        if (System.getProperty("benchmark.connection-close") == "true") {
+            exchange.response.headers.set(HttpHeaders.CONNECTION, "close")
+        }
+        chain.filter(exchange)
+    }
 }
 
 private val springLargePayload = "x".repeat(102_400)
@@ -38,6 +51,7 @@ fun startSpring(config: BenchmarkConfig) {
     )
     if (config.connectionClose) {
         props["server.netty.idle-timeout"] = "0s"
+        System.setProperty("benchmark.connection-close", "true")
     }
     // Common socket → Spring properties
     config.socket.threads?.let {
