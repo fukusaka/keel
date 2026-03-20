@@ -6,6 +6,8 @@ kotlin {
     jvm()
     macosArm64()
     macosX64()
+    linuxX64()
+    linuxArm64()
 
     applyDefaultHierarchyTemplate()
 
@@ -26,6 +28,11 @@ kotlin {
         macosMain {
             dependencies {
                 implementation(project(":engine-kqueue"))
+            }
+        }
+        linuxMain {
+            dependencies {
+                implementation(project(":engine-epoll"))
             }
         }
         commonTest {
