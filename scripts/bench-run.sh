@@ -40,7 +40,7 @@ mkdir -p "$RESULTS_DIR"
 declare -a SCENARIOS=("/hello" "/large")
 declare -a PROFILES=("low:2:10:10s" "high:4:100:10s" "ultra:4:500:10s")
 
-ALL_ENGINES=("keel" "keel-netty" "cio" "ktor-netty" "spring" "vertx")
+ALL_ENGINES=("keel-nio" "keel-netty" "ktor-cio" "ktor-netty" "spring" "vertx")
 
 run_benchmark() {
     local engine="$1"

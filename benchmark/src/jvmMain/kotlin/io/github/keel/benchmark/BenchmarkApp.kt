@@ -12,7 +12,7 @@ import io.ktor.server.netty.Netty as KtorNetty
  * CLI entry point for benchmark servers.
  *
  * Usage:
- *   --engine=keel|keel-netty|cio|ktor-netty|spring|vertx
+ *   --engine=keel-nio|keel-netty|ktor-cio|ktor-netty|spring|vertx
  *   --port=8080
  *   --profile=default|tuned|keel-equiv-0.1
  *   --connection-close=true       Force Connection: close
@@ -44,15 +44,15 @@ fun main(args: Array<String>) {
     println("Starting benchmark server: ${config.summary()}")
 
     when (config.engine) {
-        "keel" -> startKeel(config)
+        "keel-nio" -> startKeel(config)
         "keel-netty" -> startKeelNetty(config)
-        "cio" -> startCio(config)
+        "ktor-cio" -> startCio(config)
         "ktor-netty" -> startKtorNetty(config)
         "spring" -> startSpring(config)
         "vertx" -> startVertx(config)
         else -> {
             System.err.println("Unknown engine: ${config.engine}")
-            System.err.println("Available: keel, keel-netty, cio, ktor-netty, spring, vertx")
+            System.err.println("Available: keel-nio, keel-netty, ktor-cio, ktor-netty, spring, vertx")
             kotlin.system.exitProcess(1)
         }
     }

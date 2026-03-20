@@ -5,7 +5,7 @@ package io.github.keel.benchmark
  *
  * ```
  * BenchmarkConfig
- * ├── engine: String               "keel" | "cio" | "ktor-netty" | "spring" | "vertx"
+ * ├── engine: String               "keel-nio" | "ktor-cio" | "ktor-netty" | "spring" | "vertx"
  * ├── port: Int                    server listen port
  * ├── profile: String              "default" | "tuned" | "keel-equiv-0.1"
  * ├── connectionClose: Boolean     force Connection: close on all engines
@@ -18,10 +18,10 @@ package io.github.keel.benchmark
  * │   └── threads                  worker thread count
  * └── engineConfig: EngineConfig   sealed per-engine settings
  *     ├── KtorNetty                runningLimit, shareWorkGroup
- *     ├── Cio                      idleTimeout
+ *     ├── KtorCio                  idleTimeout
  *     ├── Vertx                    maxChunkSize, compression, ...
  *     ├── Spring                   validateHeaders, maxKeepAliveRequests, ...
- *     └── None                     keel, keel-netty (no tunable params)
+ *     └── None                     keel-nio, keel-netty (no tunable params)
  * ```
  *
  * Three built-in profile families:
@@ -33,7 +33,7 @@ package io.github.keel.benchmark
  * Use `--show-config` to display the fully resolved configuration.
  */
 data class BenchmarkConfig(
-    val engine: String = "keel",
+    val engine: String = "keel-nio",
     val port: Int = 8080,
     val profile: String = "default",
     val showConfig: Boolean = false,
@@ -117,8 +117,8 @@ data class BenchmarkConfig(
             // keel/keel-netty have no socket option API in Phase (a).
             // CIO only supports reuseAddress and idleTimeout.
             val tunedSocket = when (engine) {
-                "keel", "keel-netty" -> s // no tunable socket options
-                "cio" -> s.copy(
+                "keel-nio", "keel-netty" -> s // no tunable socket options
+                "ktor-cio" -> s.copy(
                     reuseAddress = s.reuseAddress ?: true,
                 )
                 else -> s.copy(
@@ -138,7 +138,7 @@ data class BenchmarkConfig(
                         shareWorkGroup = false,
                     )
                 )
-                "cio" -> config.copy(
+                "ktor-cio" -> config.copy(
                     engineConfig = EngineConfig.Cio(idleTimeout = 10)
                 )
                 "vertx" -> config.copy(
@@ -170,18 +170,23 @@ data class BenchmarkConfig(
         if (engineConfig !is EngineConfig.None) append(", $engineConfig")
     }
 
+    /**
+     * Detailed multi-line display of all resolved settings.
+     * Fixed column width: `  %-22s %s` for consistent alignment across all sections.
+     */
     fun display(): String = buildString {
+        val fmt = "  %-22s %s"
         appendLine("=== Benchmark Configuration ===")
-        appendLine("Engine:     $engine")
-        appendLine("Port:       $port")
-        appendLine("Profile:    $profile")
-        appendLine("CPU cores:  $cpuCores")
+        appendLine(String.format(fmt, "engine:", engine))
+        appendLine(String.format(fmt, "port:", port))
+        appendLine(String.format(fmt, "profile:", profile))
+        appendLine(String.format(fmt, "cpu-cores:", cpuCores))
         appendLine()
         appendLine("--- Connection ---")
-        if (engine == "keel" || engine == "keel-netty") {
-            appendLine("  connection-close: true (always, keel Phase (a) enforces Connection: close)")
+        if (engine == "keel-nio" || engine == "keel-netty") {
+            appendLine(String.format(fmt, "connection-close:", "true (always enforced by keel)"))
         } else {
-            appendLine("  connection-close: $connectionClose")
+            appendLine(String.format(fmt, "connection-close:", connectionClose))
         }
         appendLine()
         socket.displayTo(this, engine)
@@ -228,14 +233,15 @@ data class SocketConfig(
      * Display socket options with engine-specific default values shown in parentheses.
      */
     fun displayTo(sb: StringBuilder, engine: String = "") {
-        val defaults = engineDefaults(engine)
+        val d = engineDefaults(engine)
+        val fmt = "  %-22s %s"
         sb.appendLine("--- Socket Options ---")
-        sb.appendLine("  tcp-nodelay:    ${tcpNoDelay ?: defaults.tcpNoDelay}")
-        sb.appendLine("  reuse-address:  ${reuseAddress ?: defaults.reuseAddress}")
-        sb.appendLine("  backlog:        ${backlog ?: defaults.backlog}")
-        sb.appendLine("  send-buffer:    ${sendBuffer?.let { "$it bytes" } ?: defaults.sendBuffer}")
-        sb.appendLine("  receive-buffer: ${receiveBuffer?.let { "$it bytes" } ?: defaults.receiveBuffer}")
-        sb.appendLine("  threads:        ${threads ?: defaults.threads}")
+        sb.appendLine(String.format(fmt, "tcp-nodelay:", tcpNoDelay?.toString() ?: d.tcpNoDelay))
+        sb.appendLine(String.format(fmt, "reuse-address:", reuseAddress?.toString() ?: d.reuseAddress))
+        sb.appendLine(String.format(fmt, "backlog:", backlog?.toString() ?: d.backlog))
+        sb.appendLine(String.format(fmt, "send-buffer:", sendBuffer?.let { "$it bytes" } ?: d.sendBuffer))
+        sb.appendLine(String.format(fmt, "receive-buffer:", receiveBuffer?.let { "$it bytes" } ?: d.receiveBuffer))
+        sb.appendLine(String.format(fmt, "threads:", threads?.toString() ?: d.threads))
     }
 
     companion object {
@@ -243,45 +249,45 @@ data class SocketConfig(
          * Known default values per engine, displayed when user hasn't overridden.
          */
         fun engineDefaults(engine: String): SocketDefaults = when (engine) {
-            "keel", "keel-netty" -> SocketDefaults(
-                tcpNoDelay = "(not configurable in Phase (a))",
-                reuseAddress = "(not configurable in Phase (a))",
-                backlog = "(not configurable in Phase (a))",
-                sendBuffer = "(not configurable in Phase (a))",
-                receiveBuffer = "(not configurable in Phase (a))",
-                threads = "64 (Dispatchers.IO)",
-            )
-            "cio" -> SocketDefaults(
+            "keel-nio", "keel-netty" -> SocketDefaults(
                 tcpNoDelay = "(not configurable)",
-                reuseAddress = "false",
+                reuseAddress = "(not configurable)",
                 backlog = "(not configurable)",
                 sendBuffer = "(not configurable)",
                 receiveBuffer = "(not configurable)",
-                threads = "(coroutine-based, no thread pool)",
+                threads = "64 (Dispatchers.IO)",
+            )
+            "ktor-cio" -> SocketDefaults(
+                tcpNoDelay = "(not configurable)",
+                reuseAddress = "false (default)",
+                backlog = "(not configurable)",
+                sendBuffer = "(not configurable)",
+                receiveBuffer = "(not configurable)",
+                threads = "(not configurable, coroutine-based)",
             )
             "ktor-netty" -> SocketDefaults(
-                tcpNoDelay = "false",
-                reuseAddress = "false",
-                backlog = "128 (OS default)",
-                sendBuffer = "(OS default)",
-                receiveBuffer = "(OS default)",
-                threads = "${BenchmarkConfig.cpuCores / 2 + 1} (workerGroupSize)",
+                tcpNoDelay = "false (default)",
+                reuseAddress = "false (default)",
+                backlog = "OS default",
+                sendBuffer = "OS default",
+                receiveBuffer = "OS default",
+                threads = "${BenchmarkConfig.cpuCores / 2 + 1} (default, workerGroupSize)",
             )
             "spring" -> SocketDefaults(
-                tcpNoDelay = "true (Reactor Netty default)",
-                reuseAddress = "true (Reactor Netty default)",
-                backlog = "(OS default)",
-                sendBuffer = "(OS default)",
-                receiveBuffer = "(OS default)",
-                threads = "${BenchmarkConfig.cpuCores} (ioWorkerCount)",
+                tcpNoDelay = "true (default)",
+                reuseAddress = "true (default)",
+                backlog = "OS default",
+                sendBuffer = "OS default",
+                receiveBuffer = "OS default",
+                threads = "${BenchmarkConfig.cpuCores} (default, ioWorkerCount)",
             )
             "vertx" -> SocketDefaults(
-                tcpNoDelay = "true",
-                reuseAddress = "false",
-                backlog = "1024",
-                sendBuffer = "(OS default)",
-                receiveBuffer = "(OS default)",
-                threads = "${BenchmarkConfig.cpuCores} (eventLoopPoolSize)",
+                tcpNoDelay = "true (default)",
+                reuseAddress = "false (default)",
+                backlog = "1024 (default)",
+                sendBuffer = "OS default",
+                receiveBuffer = "OS default",
+                threads = "${BenchmarkConfig.cpuCores} (default, eventLoopPoolSize)",
             )
             else -> SocketDefaults()
         }
@@ -317,22 +323,12 @@ sealed interface EngineConfig {
 
     fun displayTo(sb: StringBuilder, engine: String)
 
-    /** No engine-specific settings (keel, keel-netty, or unrecognised engine). */
+    /** No engine-specific settings (keel-nio, keel-netty, or unrecognised engine). */
     data object None : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
+            val fmt = "  %-22s %s"
             sb.appendLine("--- Engine-Specific ($engine) ---")
-            when (engine) {
-                "keel" -> {
-                    sb.appendLine("  Connection: close (always, Phase (a))")
-                    sb.appendLine("  I/O: Dispatchers.IO (max 64 threads)")
-                    sb.appendLine("  No tunable parameters in Phase (a)")
-                }
-                "keel-netty" -> {
-                    sb.appendLine("  Delegates to keel NettyEngine")
-                    sb.appendLine("  No tunable parameters in Phase (a)")
-                }
-                else -> sb.appendLine("  (no engine-specific parameters)")
-            }
+            sb.appendLine(String.format(fmt, "(no tunable parameters)", ""))
         }
     }
 
@@ -344,11 +340,10 @@ sealed interface EngineConfig {
         val shareWorkGroup: Boolean? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
+            val fmt = "  %-22s %s"
             sb.appendLine("--- Engine-Specific (ktor-netty) ---")
-            sb.appendLine("  running-limit:    ${runningLimit ?: "32 (default)"}")
-            sb.appendLine("  share-work-group: ${shareWorkGroup ?: "false (default)"}")
-            sb.appendLine("  configureBootstrap: TCP_NODELAY/SO_BACKLOG from socket config")
-            sb.appendLine("  Defaults: workerGroupSize=${BenchmarkConfig.cpuCores / 2 + 1}, callGroupSize=${BenchmarkConfig.cpuCores}")
+            sb.appendLine(String.format(fmt, "running-limit:", runningLimit?.toString() ?: "32 (default)"))
+            sb.appendLine(String.format(fmt, "share-work-group:", shareWorkGroup?.toString() ?: "false (default)"))
         }
 
         override fun toString(): String = buildString {
@@ -363,10 +358,9 @@ sealed interface EngineConfig {
         val idleTimeout: Int? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
-            sb.appendLine("--- Engine-Specific (cio) ---")
-            sb.appendLine("  idle-timeout:     ${idleTimeout ?: "45 (default)"} seconds")
-            sb.appendLine("  Defaults: reuseAddress=false")
-            sb.appendLine("  No TCP_NODELAY/backlog control (CIO limitation)")
+            val fmt = "  %-22s %s"
+            sb.appendLine("--- Engine-Specific (ktor-cio) ---")
+            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: 45} sec${if (idleTimeout == null) " (default)" else ""}"))
         }
 
         override fun toString(): String = idleTimeout?.let { "idleTimeout=$it" } ?: ""
@@ -390,15 +384,15 @@ sealed interface EngineConfig {
         val idleTimeout: Int? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
+            val fmt = "  %-22s %s"
             sb.appendLine("--- Engine-Specific (vertx) ---")
-            sb.appendLine("  max-chunk-size:             ${maxChunkSize ?: "8192 (default)"}")
-            sb.appendLine("  max-header-size:            ${maxHeaderSize ?: "8192 (default)"}")
-            sb.appendLine("  max-initial-line-length:    ${maxInitialLineLength ?: "4096 (default)"}")
-            sb.appendLine("  decoder-initial-buffer-size:${decoderInitialBufferSize ?: "128 (default)"}")
-            sb.appendLine("  compression-supported:      ${compressionSupported ?: "false (default)"}")
-            sb.appendLine("  compression-level:          ${compressionLevel ?: "6 (default)"}")
-            sb.appendLine("  idle-timeout:               ${idleTimeout ?: "0 (default)"} seconds")
-            sb.appendLine("  Defaults: tcpNoDelay=true, soBacklog=1024, eventLoopPoolSize=${BenchmarkConfig.cpuCores}")
+            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default)"))
+            sb.appendLine(String.format(fmt, "max-header-size:", maxHeaderSize?.toString() ?: "8192 (default)"))
+            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default)"))
+            sb.appendLine(String.format(fmt, "decoder-buf-size:", decoderInitialBufferSize?.toString() ?: "128 (default)"))
+            sb.appendLine(String.format(fmt, "compression:", compressionSupported?.toString() ?: "false (default)"))
+            sb.appendLine(String.format(fmt, "compression-level:", compressionLevel?.toString() ?: "6 (default)"))
+            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: 0} sec${if (idleTimeout == null) " (default)" else ""}"))
         }
 
         override fun toString(): String = buildString {
@@ -421,13 +415,13 @@ sealed interface EngineConfig {
         val maxInMemorySize: Int? = null,
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
+            val fmt = "  %-22s %s"
             sb.appendLine("--- Engine-Specific (spring) ---")
-            sb.appendLine("  max-keep-alive-requests:  ${maxKeepAliveRequests ?: "(unlimited)"}")
-            sb.appendLine("  max-chunk-size:           ${maxChunkSize ?: "8192 (default)"}")
-            sb.appendLine("  max-initial-line-length:  ${maxInitialLineLength ?: "4096 (default)"}")
-            sb.appendLine("  validate-headers:         ${validateHeaders ?: "true (default)"}")
-            sb.appendLine("  max-in-memory-size:       ${maxInMemorySize?.let { "$it bytes" } ?: "262144 (default)"}")
-            sb.appendLine("  Defaults: reactor.netty.ioWorkerCount=${BenchmarkConfig.cpuCores}")
+            sb.appendLine(String.format(fmt, "max-keep-alive-req:", maxKeepAliveRequests?.toString() ?: "unlimited (default)"))
+            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default)"))
+            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default)"))
+            sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "true (default)"))
+            sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "262144 bytes (default)"))
         }
 
         override fun toString(): String = buildString {
@@ -456,7 +450,7 @@ sealed interface EngineConfig {
                         shareWorkGroup = args["share-work-group"]?.toBooleanStrict() ?: b.shareWorkGroup,
                     )
                 }
-                "cio" -> {
+                "ktor-cio" -> {
                     val b = base as? Cio ?: Cio()
                     Cio(idleTimeout = args["idle-timeout"]?.toInt() ?: b.idleTimeout)
                 }
