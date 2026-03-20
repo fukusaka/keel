@@ -24,7 +24,7 @@ import io.ktor.server.netty.Netty as KtorNetty
  *   --threads=N                   Worker thread count
  *   --running-limit=32            Ktor Netty concurrent request limit
  *   --share-work-group=true       Ktor Netty share connection/worker groups
- *   --idle-timeout=45             CIO idle connection timeout (seconds)
+ *   --connection-idle-timeout=45   CIO idle connection timeout (seconds)
  *   --show-config                 Display resolved config and exit
  *
  * Profiles:

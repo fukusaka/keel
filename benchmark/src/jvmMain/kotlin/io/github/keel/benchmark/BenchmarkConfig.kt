@@ -241,7 +241,12 @@ data class SocketConfig(
         sb.appendLine(String.format(fmt, "backlog:", backlog?.toString() ?: d.backlog))
         sb.appendLine(String.format(fmt, "send-buffer:", sendBuffer?.let { "$it bytes" } ?: d.sendBuffer))
         sb.appendLine(String.format(fmt, "receive-buffer:", receiveBuffer?.let { "$it bytes" } ?: d.receiveBuffer))
-        sb.appendLine(String.format(fmt, "threads:", threads?.toString() ?: d.threads))
+        val threadsDisplay = when {
+            threads != null && threads == BenchmarkConfig.cpuCores -> "$threads (tuned: cpu-cores)"
+            threads != null -> "$threads"
+            else -> d.threads
+        }
+        sb.appendLine(String.format(fmt, "threads:", threadsDisplay))
     }
 
     companion object {
@@ -261,22 +266,22 @@ data class SocketConfig(
             val os = osDefaults
             return when (engine) {
                 "keel-nio", "keel-netty" -> SocketDefaults(
-                    tcpNoDelay = "(not configurable)",
-                    reuseAddress = "(not configurable)",
-                    backlog = "(not configurable)",
-                    sendBuffer = "(not configurable)",
-                    receiveBuffer = "(not configurable)",
+                    tcpNoDelay = "(not configurable, OS: ${os.tcpNoDelay})",
+                    reuseAddress = "(not configurable, OS: ${os.reuseAddress})",
+                    backlog = "(not configurable, OS: ${os.backlog})",
+                    sendBuffer = "(not configurable, OS: ${os.sendBuffer} bytes)",
+                    receiveBuffer = "(not configurable, OS: ${os.receiveBuffer} bytes)",
                     threads = "$ioParallelism (default by Dispatchers.IO)",
                 )
                 "ktor-cio" -> {
                     val cioConfig = io.ktor.server.cio.CIOApplicationEngine.Configuration()
                     SocketDefaults(
-                        tcpNoDelay = "(not configurable)",
+                        tcpNoDelay = "(not configurable, OS: ${os.tcpNoDelay})",
                         reuseAddress = "${cioConfig.reuseAddress} (default by CIO)",
-                        backlog = "(not configurable)",
-                        sendBuffer = "(not configurable)",
-                        receiveBuffer = "(not configurable)",
-                        threads = "(not configurable, coroutine-based)",
+                        backlog = "(not configurable, OS: ${os.backlog})",
+                        sendBuffer = "(not configurable, OS: ${os.sendBuffer} bytes)",
+                        receiveBuffer = "(not configurable, OS: ${os.receiveBuffer} bytes)",
+                        threads = "$ioParallelism (default by Dispatchers.IO)",
                     )
                 }
                 "ktor-netty" -> {
@@ -328,6 +333,8 @@ data class SocketConfig(
  * OS-level socket defaults detected at runtime via a temporary ServerSocket.
  */
 data class OsSocketDefaults(
+    val tcpNoDelay: Boolean,
+    val reuseAddress: Boolean,
     val backlog: Int,
     val sendBuffer: Int,
     val receiveBuffer: Int,
@@ -338,6 +345,8 @@ data class OsSocketDefaults(
             val sock = java.net.Socket()
             try {
                 return OsSocketDefaults(
+                    tcpNoDelay = sock.tcpNoDelay,
+                    reuseAddress = ss.reuseAddress,
                     backlog = 50, // Java ServerSocket default (documented in ServerSocket javadoc)
                     sendBuffer = sock.sendBufferSize,
                     receiveBuffer = ss.receiveBufferSize,
@@ -409,7 +418,7 @@ sealed interface EngineConfig {
             val fmt = "  %-22s %s"
             val cioDefault = io.ktor.server.cio.CIOApplicationEngine.Configuration().connectionIdleTimeoutSeconds
             sb.appendLine("--- Engine-Specific (ktor-cio) ---")
-            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: cioDefault} sec${if (idleTimeout == null) " (default by CIO)" else ""}"))
+            sb.appendLine(String.format(fmt, "connection-idle-timeout:", "${idleTimeout ?: cioDefault} sec${if (idleTimeout == null) " (default by CIO)" else ""}"))
         }
 
         override fun toString(): String = idleTimeout?.let { "idleTimeout=$it" } ?: ""
@@ -442,7 +451,7 @@ sealed interface EngineConfig {
             sb.appendLine(String.format(fmt, "decoder-buf-size:", decoderInitialBufferSize?.toString() ?: "${d.decoderInitialBufferSize} (default by Vert.x)"))
             sb.appendLine(String.format(fmt, "compression:", compressionSupported?.toString() ?: "${d.isCompressionSupported} (default by Vert.x)"))
             sb.appendLine(String.format(fmt, "compression-level:", compressionLevel?.toString() ?: "${d.compressionLevel} (default by Vert.x)"))
-            sb.appendLine(String.format(fmt, "idle-timeout:", "${idleTimeout ?: d.idleTimeout} sec${if (idleTimeout == null) " (default by Vert.x)" else ""}"))
+            sb.appendLine(String.format(fmt, "connection-idle-timeout:", "${idleTimeout ?: d.idleTimeout} sec${if (idleTimeout == null) " (default by Vert.x)" else ""}"))
         }
 
         override fun toString(): String = buildString {
@@ -466,13 +475,16 @@ sealed interface EngineConfig {
     ) : EngineConfig {
         override fun displayTo(sb: StringBuilder, engine: String) {
             val fmt = "  %-22s %s"
-            // Spring Boot Netty defaults are not easily accessible as constants,
-            // so we document the source in the display string.
+            // Read Netty's HttpObjectDecoder defaults at runtime
+            val nettyMaxChunk = io.netty.handler.codec.http.HttpObjectDecoder.DEFAULT_MAX_CHUNK_SIZE
+            val nettyMaxInitLine = io.netty.handler.codec.http.HttpObjectDecoder.DEFAULT_MAX_INITIAL_LINE_LENGTH
+            val nettyMaxHeader = io.netty.handler.codec.http.HttpObjectDecoder.DEFAULT_MAX_HEADER_SIZE
+            val nettyValidateHeaders = io.netty.handler.codec.http.HttpObjectDecoder.DEFAULT_VALIDATE_HEADERS
             sb.appendLine("--- Engine-Specific (spring) ---")
             sb.appendLine(String.format(fmt, "max-keep-alive-req:", maxKeepAliveRequests?.toString() ?: "unlimited (default by Spring)"))
-            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "8192 (default by Netty)"))
-            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "4096 (default by Netty)"))
-            sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "true (default by Netty)"))
+            sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "$nettyMaxChunk (default by Netty)"))
+            sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "$nettyMaxInitLine (default by Netty)"))
+            sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "$nettyValidateHeaders (default by Netty)"))
             sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "262144 bytes (default by Spring)"))
         }
 
@@ -504,7 +516,7 @@ sealed interface EngineConfig {
                 }
                 "ktor-cio" -> {
                     val b = base as? Cio ?: Cio()
-                    Cio(idleTimeout = args["idle-timeout"]?.toInt() ?: b.idleTimeout)
+                    Cio(idleTimeout = args["connection-idle-timeout"]?.toInt() ?: b.idleTimeout)
                 }
                 "vertx" -> {
                     val b = base as? Vertx ?: Vertx()
@@ -515,7 +527,7 @@ sealed interface EngineConfig {
                         decoderInitialBufferSize = args["decoder-initial-buffer-size"]?.toInt() ?: b.decoderInitialBufferSize,
                         compressionSupported = args["compression-supported"]?.toBooleanStrict() ?: b.compressionSupported,
                         compressionLevel = args["compression-level"]?.toInt() ?: b.compressionLevel,
-                        idleTimeout = args["idle-timeout"]?.toInt() ?: b.idleTimeout,
+                        idleTimeout = args["connection-idle-timeout"]?.toInt() ?: b.idleTimeout,
                     )
                 }
                 "spring" -> {
