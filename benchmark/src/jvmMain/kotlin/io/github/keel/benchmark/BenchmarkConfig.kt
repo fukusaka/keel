@@ -5,7 +5,7 @@ package io.github.keel.benchmark
  *
  * ```
  * BenchmarkConfig
- * ├── engine: String               "keel-nio" | "ktor-cio" | "ktor-netty" | "spring" | "vertx"
+ * ├── engine: String               "keel-nio" | "ktor-cio" | "ktor-netty" | "netty-raw" | "spring" | "vertx"
  * ├── port: Int                    server listen port
  * ├── profile: String              "default" | "tuned" | "keel-equiv-0.1"
  * ├── connectionClose: Boolean     force Connection: close on all engines
@@ -284,8 +284,12 @@ data class SocketConfig(
                         threads = "$ioParallelism (default by Dispatchers.IO)",
                     )
                 }
-                "ktor-netty" -> {
-                    val nettyConfig = io.ktor.server.netty.NettyApplicationEngine.Configuration()
+                "ktor-netty", "netty-raw" -> {
+                    val workerThreads = if (engine == "ktor-netty") {
+                        io.ktor.server.netty.NettyApplicationEngine.Configuration().workerGroupSize
+                    } else {
+                        0 // Netty default: cpu * 2
+                    }
                     // Netty inherits OS socket defaults for TCP_NODELAY and SO_REUSEADDR
                     SocketDefaults(
                         tcpNoDelay = "${os.tcpNoDelay} (default by OS, via Netty)",
@@ -293,7 +297,7 @@ data class SocketConfig(
                         backlog = "${os.backlog} (default by OS)",
                         sendBuffer = "${os.sendBuffer} bytes (default by OS)",
                         receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
-                        threads = "${nettyConfig.workerGroupSize} (default by Netty, workerGroupSize)",
+                        threads = if (workerThreads > 0) "$workerThreads (default by Netty, workerGroupSize)" else "${BenchmarkConfig.cpuCores * 2} (default by Netty, cpu*2)",
                     )
                 }
                 "spring" -> {
@@ -503,6 +507,15 @@ sealed interface EngineConfig {
         }
     }
 
+    /** Raw Netty ServerBootstrap (no framework). All config via SocketConfig. */
+    data object NettyRaw : EngineConfig {
+        override fun displayTo(sb: StringBuilder, engine: String) {
+            val fmt = "  %-22s %s"
+            sb.appendLine("--- Engine-Specific (netty-raw) ---")
+            sb.appendLine(String.format(fmt, "(all via socket options)", ""))
+        }
+    }
+
     // Future: Native engines
     // data class GoGin(val gomaxprocs: Int? = null) : EngineConfig { ... }
     // data class RustAxum(val workerThreads: Int? = null) : EngineConfig { ... }
@@ -549,6 +562,7 @@ sealed interface EngineConfig {
                         maxInMemorySize = args["max-in-memory-size"]?.toInt() ?: b.maxInMemorySize,
                     )
                 }
+                "netty-raw" -> NettyRaw
                 else -> base
             }
         }

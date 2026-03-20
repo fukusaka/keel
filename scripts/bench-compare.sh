@@ -65,7 +65,7 @@ extract_metric() {
     esac
 }
 
-ENGINES=("keel-nio" "keel-netty" "ktor-cio" "ktor-netty" "spring" "vertx")
+ENGINES=("keel-nio" "keel-netty" "ktor-cio" "ktor-netty" "netty-raw" "spring" "vertx")
 SCENARIOS=("hello" "large")
 PROFILES=("low" "high" "ultra")
 PROFILE_LABELS=("2t/10c/10s" "4t/100c/10s" "4t/500c/10s")
