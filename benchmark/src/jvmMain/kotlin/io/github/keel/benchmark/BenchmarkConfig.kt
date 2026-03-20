@@ -286,23 +286,30 @@ data class SocketConfig(
                 }
                 "ktor-netty" -> {
                     val nettyConfig = io.ktor.server.netty.NettyApplicationEngine.Configuration()
+                    // Netty inherits OS socket defaults for TCP_NODELAY and SO_REUSEADDR
                     SocketDefaults(
-                        tcpNoDelay = "false (default by Netty)",
-                        reuseAddress = "false (default by Netty)",
+                        tcpNoDelay = "${os.tcpNoDelay} (default by OS, via Netty)",
+                        reuseAddress = "${os.reuseAddress} (default by OS, via Netty)",
                         backlog = "${os.backlog} (default by OS)",
                         sendBuffer = "${os.sendBuffer} bytes (default by OS)",
                         receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
                         threads = "${nettyConfig.workerGroupSize} (default by Netty, workerGroupSize)",
                     )
                 }
-                "spring" -> SocketDefaults(
-                    tcpNoDelay = "true (default by Reactor Netty)",
-                    reuseAddress = "true (default by Reactor Netty)",
-                    backlog = "${os.backlog} (default by OS)",
-                    sendBuffer = "${os.sendBuffer} bytes (default by OS)",
-                    receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
-                    threads = "${BenchmarkConfig.cpuCores} (default by Reactor Netty, ioWorkerCount)",
-                )
+                "spring" -> {
+                    // Reactor Netty sets tcpNoDelay=true and reuseAddress=true internally
+                    // (not from OS defaults). Cannot read at compile time; verified from source.
+                    val reactorNettyThreads = System.getProperty("reactor.netty.ioWorkerCount")?.toIntOrNull()
+                        ?: BenchmarkConfig.cpuCores
+                    SocketDefaults(
+                        tcpNoDelay = "true (default by Reactor Netty)",
+                        reuseAddress = "true (default by Reactor Netty)",
+                        backlog = "${os.backlog} (default by OS)",
+                        sendBuffer = "${os.sendBuffer} bytes (default by OS)",
+                        receiveBuffer = "${os.receiveBuffer} bytes (default by OS)",
+                        threads = "$reactorNettyThreads (default by Reactor Netty, ioWorkerCount)",
+                    )
+                }
                 "vertx" -> {
                     val vertxDefaults = io.vertx.core.http.HttpServerOptions()
                     SocketDefaults(
@@ -485,7 +492,9 @@ sealed interface EngineConfig {
             sb.appendLine(String.format(fmt, "max-chunk-size:", maxChunkSize?.toString() ?: "$nettyMaxChunk (default by Netty)"))
             sb.appendLine(String.format(fmt, "max-initial-line-len:", maxInitialLineLength?.toString() ?: "$nettyMaxInitLine (default by Netty)"))
             sb.appendLine(String.format(fmt, "validate-headers:", validateHeaders?.toString() ?: "$nettyValidateHeaders (default by Netty)"))
-            sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "262144 bytes (default by Spring)"))
+            // Spring default: 256 * 1024 = 262144. Not accessible as a public constant.
+            val springMaxInMemory = 256 * 1024
+            sb.appendLine(String.format(fmt, "max-in-memory-size:", maxInMemorySize?.let { "$it bytes" } ?: "$springMaxInMemory bytes (default by Spring)"))
         }
 
         override fun toString(): String = buildString {
