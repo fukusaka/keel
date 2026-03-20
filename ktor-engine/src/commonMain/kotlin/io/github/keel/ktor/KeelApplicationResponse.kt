@@ -13,6 +13,17 @@ import kotlinx.coroutines.*
 import kotlinx.io.Sink
 import kotlinx.io.writeString
 
+/**
+ * Ktor [BaseApplicationResponse] that writes HTTP responses through a keel [Sink].
+ *
+ * Response flow:
+ * 1. Ktor pipeline sets status + headers via [setStatus] / [headers]
+ * 2. Body is written via [respondFromBytes] (buffered) or [responseChannel] (streaming)
+ * 3. [sendResponseHead] serialises the status line + headers using codec-http's [writeResponseHead]
+ *
+ * Streaming responses use a [ByteChannel] → [Sink] bridge coroutine that flushes
+ * each chunk to the underlying keel channel.
+ */
 internal class KeelApplicationResponse(
     call: KeelApplicationCall,
     private val sink: Sink,
