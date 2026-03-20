@@ -188,18 +188,6 @@ pub fn main() !void {
         .reuse_address = cfg.reuse_address orelse false,
     });
 
-    // Apply socket options after listen
-    const fd = server.stream.handle;
-    if (cfg.tcp_nodelay) |v| {
-        setIntOpt(fd, posix.IPPROTO.TCP, TCP_NODELAY, if (v) 1 else 0);
-    }
-    if (cfg.send_buffer) |v| {
-        setIntOpt(fd, posix.SOL.SOCKET, posix.SO.SNDBUF, @intCast(v));
-    }
-    if (cfg.receive_buffer) |v| {
-        setIntOpt(fd, posix.SOL.SOCKET, posix.SO.RCVBUF, @intCast(v));
-    }
-
     std.debug.print("Zig std.http server started on port {d}\n", .{cfg.port});
 
     const read_buf_size = cfg.read_buffer orelse 8192;
@@ -208,6 +196,16 @@ pub fn main() !void {
 
     while (true) {
         const conn = server.accept() catch continue;
+        // Apply socket options to accepted connection (not the listening socket)
+        if (cfg.tcp_nodelay) |v| {
+            setIntOpt(conn.stream.handle, posix.IPPROTO.TCP, TCP_NODELAY, if (v) 1 else 0);
+        }
+        if (cfg.send_buffer) |v| {
+            setIntOpt(conn.stream.handle, posix.SOL.SOCKET, posix.SO.SNDBUF, @intCast(v));
+        }
+        if (cfg.receive_buffer) |v| {
+            setIntOpt(conn.stream.handle, posix.SOL.SOCKET, posix.SO.RCVBUF, @intCast(v));
+        }
         _ = std.Thread.spawn(.{}, handleConnection, .{ conn, read_buf_size, write_buf_size, keep_alive }) catch {
             conn.stream.close();
             continue;
