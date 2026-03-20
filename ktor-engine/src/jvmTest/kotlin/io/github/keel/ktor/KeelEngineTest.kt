@@ -74,6 +74,16 @@ class KeelEngineTest {
         }
     }
 
+    @Test
+    fun connectionCloseHeader() {
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            val conn = openConnection(port, "/")
+            assertEquals(200, conn.responseCode)
+            assertEquals("close", conn.getHeaderField("Connection"))
+            conn.disconnect()
+        }
+    }
+
     // --- helpers ---
 
     private fun withKeelServer(
