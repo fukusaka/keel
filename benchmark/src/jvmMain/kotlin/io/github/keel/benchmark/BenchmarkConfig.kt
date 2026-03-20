@@ -113,17 +113,24 @@ data class BenchmarkConfig(
          */
         private fun BenchmarkConfig.applyTuned(): BenchmarkConfig {
             val s = socket
-            var config = copy(
-                socket = s.copy(
+            // Only set socket options the engine actually supports.
+            // keel/keel-netty have no socket option API in Phase (a).
+            // CIO only supports reuseAddress and idleTimeout.
+            val tunedSocket = when (engine) {
+                "keel", "keel-netty" -> s // no tunable socket options
+                "cio" -> s.copy(
+                    reuseAddress = s.reuseAddress ?: true,
+                )
+                else -> s.copy(
                     tcpNoDelay = s.tcpNoDelay ?: true,
                     backlog = s.backlog ?: 1024,
                     reuseAddress = s.reuseAddress ?: true,
                     threads = s.threads ?: cpuCores,
-                ),
-            )
-            // Engine-specific tuned defaults (applied after EngineConfig.parse,
-            // but applyTuned runs before parse — so we set tuned values that
-            // parse will later override if CLI args are present)
+                )
+            }
+            var config = copy(socket = tunedSocket)
+
+            // Engine-specific tuned defaults
             config = when (engine) {
                 "ktor-netty" -> config.copy(
                     engineConfig = EngineConfig.KtorNetty(
@@ -171,7 +178,11 @@ data class BenchmarkConfig(
         appendLine("CPU cores:  $cpuCores")
         appendLine()
         appendLine("--- Connection ---")
-        appendLine("  connection-close: $connectionClose")
+        if (engine == "keel" || engine == "keel-netty") {
+            appendLine("  connection-close: true (always, keel Phase (a) enforces Connection: close)")
+        } else {
+            appendLine("  connection-close: $connectionClose")
+        }
         appendLine()
         socket.displayTo(this, engine)
         appendLine()
@@ -232,12 +243,12 @@ data class SocketConfig(
          * Known default values per engine, displayed when user hasn't overridden.
          */
         fun engineDefaults(engine: String): SocketDefaults = when (engine) {
-            "keel" -> SocketDefaults(
-                tcpNoDelay = "false (OS default)",
-                reuseAddress = "false (OS default)",
-                backlog = "128 (OS default)",
-                sendBuffer = "(OS default)",
-                receiveBuffer = "(OS default)",
+            "keel", "keel-netty" -> SocketDefaults(
+                tcpNoDelay = "(not configurable in Phase (a))",
+                reuseAddress = "(not configurable in Phase (a))",
+                backlog = "(not configurable in Phase (a))",
+                sendBuffer = "(not configurable in Phase (a))",
+                receiveBuffer = "(not configurable in Phase (a))",
                 threads = "64 (Dispatchers.IO)",
             )
             "cio" -> SocketDefaults(
