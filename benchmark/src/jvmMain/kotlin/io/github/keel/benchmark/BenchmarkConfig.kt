@@ -74,13 +74,12 @@ data class BenchmarkConfig(
 
             config = config.copy(socket = socket)
             config = config.applyProfile()
-            // CLI engine args override profile-set tuned values.
-            // Always parse to ensure the correct EngineConfig variant is set,
-            // even with no engine-specific CLI args (to get proper display).
-            val parsed = EngineConfig.parse(config.engine, engineArgs)
-            if (engineArgs.isNotEmpty() || config.engineConfig is EngineConfig.None) {
-                config = config.copy(engineConfig = parsed)
-            }
+            // Merge CLI engine args on top of profile-set engine config.
+            // If profile set tuned values (e.g., runningLimit=160), CLI args
+            // override individual fields while preserving the rest.
+            config = config.copy(
+                engineConfig = EngineConfig.merge(config.engine, config.engineConfig, engineArgs)
+            )
             return config
         }
 
@@ -431,31 +430,52 @@ sealed interface EngineConfig {
     // data class RustAxum(val workerThreads: Int? = null) : EngineConfig { ... }
 
     companion object {
-        fun parse(engine: String, args: Map<String, String>): EngineConfig = when (engine) {
-            "ktor-netty" -> KtorNetty(
-                runningLimit = args["running-limit"]?.toInt(),
-                shareWorkGroup = args["share-work-group"]?.toBooleanStrict(),
-            )
-            "cio" -> Cio(
-                idleTimeout = args["idle-timeout"]?.toInt(),
-            )
-            "vertx" -> Vertx(
-                maxChunkSize = args["max-chunk-size"]?.toInt(),
-                maxHeaderSize = args["max-header-size"]?.toInt(),
-                maxInitialLineLength = args["max-initial-line-length"]?.toInt(),
-                decoderInitialBufferSize = args["decoder-initial-buffer-size"]?.toInt(),
-                compressionSupported = args["compression-supported"]?.toBooleanStrict(),
-                compressionLevel = args["compression-level"]?.toInt(),
-                idleTimeout = args["idle-timeout"]?.toInt(),
-            )
-            "spring" -> Spring(
-                maxKeepAliveRequests = args["max-keep-alive-requests"]?.toInt(),
-                maxChunkSize = args["max-chunk-size"]?.toInt(),
-                maxInitialLineLength = args["max-initial-line-length"]?.toInt(),
-                validateHeaders = args["validate-headers"]?.toBooleanStrict(),
-                maxInMemorySize = args["max-in-memory-size"]?.toInt(),
-            )
-            else -> None
+        /**
+         * Merge CLI engine args on top of an existing [base] config.
+         * The base may come from a profile preset (e.g., tuned).
+         * CLI args override individual fields; unset fields keep the base value.
+         */
+        fun merge(engine: String, base: EngineConfig, args: Map<String, String>): EngineConfig {
+            if (args.isEmpty() && base !is None) return base
+            return when (engine) {
+                "ktor-netty" -> {
+                    val b = base as? KtorNetty ?: KtorNetty()
+                    KtorNetty(
+                        runningLimit = args["running-limit"]?.toInt() ?: b.runningLimit,
+                        shareWorkGroup = args["share-work-group"]?.toBooleanStrict() ?: b.shareWorkGroup,
+                    )
+                }
+                "cio" -> {
+                    val b = base as? Cio ?: Cio()
+                    Cio(idleTimeout = args["idle-timeout"]?.toInt() ?: b.idleTimeout)
+                }
+                "vertx" -> {
+                    val b = base as? Vertx ?: Vertx()
+                    Vertx(
+                        maxChunkSize = args["max-chunk-size"]?.toInt() ?: b.maxChunkSize,
+                        maxHeaderSize = args["max-header-size"]?.toInt() ?: b.maxHeaderSize,
+                        maxInitialLineLength = args["max-initial-line-length"]?.toInt() ?: b.maxInitialLineLength,
+                        decoderInitialBufferSize = args["decoder-initial-buffer-size"]?.toInt() ?: b.decoderInitialBufferSize,
+                        compressionSupported = args["compression-supported"]?.toBooleanStrict() ?: b.compressionSupported,
+                        compressionLevel = args["compression-level"]?.toInt() ?: b.compressionLevel,
+                        idleTimeout = args["idle-timeout"]?.toInt() ?: b.idleTimeout,
+                    )
+                }
+                "spring" -> {
+                    val b = base as? Spring ?: Spring()
+                    Spring(
+                        maxKeepAliveRequests = args["max-keep-alive-requests"]?.toInt() ?: b.maxKeepAliveRequests,
+                        maxChunkSize = args["max-chunk-size"]?.toInt() ?: b.maxChunkSize,
+                        maxInitialLineLength = args["max-initial-line-length"]?.toInt() ?: b.maxInitialLineLength,
+                        validateHeaders = args["validate-headers"]?.toBooleanStrict() ?: b.validateHeaders,
+                        maxInMemorySize = args["max-in-memory-size"]?.toInt() ?: b.maxInMemorySize,
+                    )
+                }
+                else -> base
+            }
         }
+
+        /** Parse engine args with no base config (used when no profile sets engine config). */
+        fun parse(engine: String, args: Map<String, String>): EngineConfig = merge(engine, None, args)
     }
 }
