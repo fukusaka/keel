@@ -47,20 +47,20 @@ private val ENGINES: Map<String, (BenchmarkConfig) -> Unit> = mapOf(
 fun main(args: Array<String>) {
     val config = BenchmarkConfig.parse(args)
 
+    // Validate engine name before any action
+    if (config.engine !in ENGINES) {
+        System.err.println("Unknown engine: ${config.engine}")
+        System.err.println("Available: ${ENGINES.keys.joinToString(", ")}")
+        kotlin.system.exitProcess(1)
+    }
+
     if (config.showConfig) {
         print(config.display())
         return
     }
 
     println("Starting benchmark server: ${config.summary()}")
-
-    val launcher = ENGINES[config.engine]
-    if (launcher == null) {
-        System.err.println("Unknown engine: ${config.engine}")
-        System.err.println("Available: ${ENGINES.keys.joinToString(", ")}")
-        kotlin.system.exitProcess(1)
-    }
-    launcher(config)
+    ENGINES[config.engine]!!(config)
 }
 
 private fun startKeel(config: BenchmarkConfig) {

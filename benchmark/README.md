@@ -4,23 +4,20 @@ HTTP throughput benchmark comparing keel against mainstream JVM server engines.
 
 ## Engines
 
-| Engine | Framework | I/O Model |
-|---|---|---|
-| `keel-nio` | keel Ktor adapter + NioEngine | Sync |
-| `keel-netty` | keel Ktor adapter + NettyEngine | Sync |
-| `ktor-cio` | Ktor CIO | Async (coroutines) |
-| `ktor-netty` | Ktor Netty | Async (Netty EventLoop) |
-| `netty-raw` | Netty ServerBootstrap (no framework) | Async (Netty EventLoop) |
-| `spring` | Spring Boot WebFlux | Async (Reactor Netty) |
-| `vertx` | Vert.x | Async (EventLoop) |
+| Engine | Framework | I/O Model | Threads (default) |
+|---|---|---|---|
+| `keel-nio` | keel + NioEngine | Sync | 64 (Dispatchers.IO) |
+| `keel-netty` | keel + NettyEngine | Sync | 64 (Dispatchers.IO) |
+| `ktor-cio` | Ktor CIO | Async (coroutines) | coroutine-based |
+| `ktor-netty` | Ktor Netty | Async (EventLoop) | cpu/2+1 (by Netty) |
+| `netty-raw` | Netty ServerBootstrap | Async (EventLoop) | cpu*2 (by Netty) |
+| `spring` | Spring WebFlux | Async (Reactor Netty) | cpu (by Reactor) |
+| `vertx` | Vert.x | Async (EventLoop) | cpu (by Vert.x) |
 
 ## Quick Start
 
 ```bash
-# Start a benchmark server
 ./gradlew -Pbenchmark :benchmark:run --args="--engine=keel-nio --port=8080"
-
-# In another terminal
 wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
 ```
 
@@ -31,132 +28,90 @@ wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
 | `default` | Each engine's out-of-box settings |
 | `tuned` | Maximum performance (auto-tuned for CPU cores) |
 | `keel-equiv-0.1` | All engines match keel 0.1.x (Connection: close) |
-| `keel-equiv-0.2` | All engines match keel 0.2.x (keep-alive, future) |
 
 ```bash
-# Tuned profile
 ./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --profile=tuned"
-
-# keel-equivalent (forces Connection: close)
 ./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-cio --profile=keel-equiv-0.1"
 ```
 
-## Default Settings per Engine
+## Default Values and Tuned Overrides
 
-Use `--show-config` to see resolved values. All defaults are read at runtime.
+All defaults are read at runtime. Use `--show-config` to see resolved values.
 
-### Socket Options
+### Socket Options per Engine
 
-| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx |
-|---|---|---|---|---|---|---|---|
-| tcp-nodelay | n/a (OS) | n/a (OS) | n/a (OS) | OS default | OS default | true | true |
-| reuse-address | n/a (OS) | n/a (OS) | false | OS default | OS default | true | true |
-| backlog | n/a (OS) | n/a (OS) | n/a (OS) | OS default | OS default | OS default | -1 (OS) |
-| send-buffer | n/a (OS) | n/a (OS) | n/a (OS) | OS default | OS default | OS default | OS default |
-| receive-buffer | n/a (OS) | n/a (OS) | n/a (OS) | OS default | OS default | OS default | OS default |
-| threads | 64 (IO) | 64 (IO) | 64 (IO) | cpu/2+1 | cpu*2 | cpu | cpu |
+| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx | tuned |
+|---|---|---|---|---|---|---|---|---|
+| tcp-nodelay | n/a | n/a | n/a | OS | OS | true* | true** | true |
+| reuse-address | n/a | n/a | false** | OS | OS | true* | true** | true |
+| backlog | n/a | n/a | n/a | OS | OS | OS | -1** | 1024 |
+| threads | 64 (IO) | 64 (IO) | 64 (IO) | cpu/2+1** | cpu*2** | cpu* | cpu** | cpu |
 
-Default source: OS = `java.net.Socket`/`ServerSocket`, IO = `Dispatchers.IO`, cpu = `Runtime.availableProcessors()`
+n/a = not configurable by benchmark. OS = read from `java.net.Socket`. * = by Reactor Netty. ** = by engine class.
 
-### Engine-Specific
+### Engine-Specific Tuned Values
 
-| Option | Engine | Default | Tuned |
+| Option | Engine | Default (by) | Tuned |
 |---|---|---|---|
-| running-limit | ktor-netty | 32 | cpu*16 |
-| share-work-group | ktor-netty | false | false |
-| connection-idle-timeout | ktor-cio | 45 sec | 10 sec |
-| decoder-buf-size | vertx | 128 | 256 |
-| validate-headers | spring | true | false |
+| running-limit | ktor-netty | 32 (Netty) | cpu*16 |
+| share-work-group | ktor-netty | false (Netty) | false |
+| connection-idle-timeout | ktor-cio | 45 sec (CIO) | 10 sec |
+| decoder-buf-size | vertx | 128 (Vert.x) | 256 |
+| validate-headers | spring | true (Netty) | false |
 
-## CLI Arguments
+## CLI Reference
 
 ### Common
 
-| Argument | Description | Default |
-|---|---|---|
-| `--engine=NAME` | Engine to run | `keel-nio` |
-| `--port=N` | Listen port | `8080` |
-| `--profile=NAME` | Profile preset | `default` |
-| `--show-config` | Display resolved config and exit | -- |
-| `--connection-close=BOOL` | Force Connection: close | `false` |
+| Argument | Description |
+|---|---|
+| `--engine=NAME` | Engine to run (default: `keel-nio`) |
+| `--port=N` | Listen port (default: `8080`) |
+| `--profile=NAME` | Profile preset (default: `default`) |
+| `--show-config` | Display resolved config and exit |
+| `--connection-close=BOOL` | Force Connection: close |
 
-### Socket Options (all engines)
+### Socket Options
 
 | Argument | Description |
 |---|---|
-| `--tcp-nodelay=BOOL` | TCP_NODELAY |
-| `--reuse-address=BOOL` | SO_REUSEADDR |
-| `--backlog=N` | SO_BACKLOG |
-| `--send-buffer=N` | SO_SNDBUF (bytes) |
-| `--receive-buffer=N` | SO_RCVBUF (bytes) |
-| `--threads=N` | Worker thread count |
+| `--tcp-nodelay` | TCP_NODELAY |
+| `--reuse-address` | SO_REUSEADDR |
+| `--backlog` | SO_BACKLOG |
+| `--send-buffer` | SO_SNDBUF (bytes) |
+| `--receive-buffer` | SO_RCVBUF (bytes) |
+| `--threads` | Worker thread count |
 
-### Ktor Netty
+### Engine-Specific
 
-| Argument | Description | Default |
+| Argument | Engine | Description |
 |---|---|---|
-| `--running-limit=N` | Max concurrent pipeline requests | 32 (by Netty) |
-| `--share-work-group=BOOL` | Share connection/worker groups | false (by Netty) |
-
-### Ktor CIO
-
-| Argument | Description | Default |
-|---|---|---|
-| `--connection-idle-timeout=N` | Connection idle timeout (seconds) | 45 (by CIO) |
-
-### Vert.x
-
-| Argument | Description | Default |
-|---|---|---|
-| `--max-chunk-size=N` | Max HTTP chunk size (bytes) | 8192 (by Vert.x) |
-| `--max-header-size=N` | Max total header length | 8192 (by Vert.x) |
-| `--max-initial-line-length=N` | Max request line length | 4096 (by Vert.x) |
-| `--decoder-initial-buffer-size=N` | HTTP decoder buffer | 128 (by Vert.x) |
-| `--compression-supported=BOOL` | Enable gzip/deflate | false (by Vert.x) |
-| `--compression-level=N` | Compression level (1-9) | 6 (by Vert.x) |
-| `--connection-idle-timeout=N` | Idle timeout (seconds) | 0 (by Vert.x) |
-
-### Spring WebFlux
-
-| Argument | Description | Default |
-|---|---|---|
-| `--max-keep-alive-requests=N` | Max requests per connection | unlimited (by Spring) |
-| `--max-chunk-size=N` | Max chunk size (bytes) | 8192 (by Netty) |
-| `--max-initial-line-length=N` | Max request line length | 4096 (by Netty) |
-| `--validate-headers=BOOL` | Header validation | true (by Netty) |
-| `--max-in-memory-size=N` | Max in-memory buffer (bytes) | 262144 (by Spring) |
-
-### Netty Raw
-
-All tuning via Socket Options. No engine-specific parameters.
-
-## Show Config
-
-Display resolved settings without starting the server:
-
-```bash
-./gradlew -Pbenchmark :benchmark:run \
-  --args="--engine=ktor-netty --profile=tuned --threads=16 --show-config"
-```
+| `--running-limit` | ktor-netty | Max concurrent pipeline requests |
+| `--share-work-group` | ktor-netty | Share connection/worker groups |
+| `--connection-idle-timeout` | ktor-cio, vertx | Idle timeout (seconds) |
+| `--max-chunk-size` | vertx, spring | Max HTTP chunk size (bytes) |
+| `--max-header-size` | vertx | Max total header length |
+| `--max-initial-line-length` | vertx, spring | Max request line length |
+| `--decoder-initial-buffer-size` | vertx | HTTP decoder buffer |
+| `--compression-supported` | vertx | Enable gzip/deflate |
+| `--compression-level` | vertx | Compression level (1-9) |
+| `--max-keep-alive-requests` | spring | Max requests per connection |
+| `--validate-headers` | spring | Header validation |
+| `--max-in-memory-size` | spring | Max in-memory buffer (bytes) |
 
 ## Automated Benchmarks
 
 ```bash
-# Run all engines with default profile
-./scripts/bench-run.sh
-
-# Specific engine and profile
-./scripts/bench-run.sh --engine=ktor-cio --profile=keel-equiv-0.1
-
-# Compare results
-./scripts/bench-compare.sh
+./scripts/bench-run.sh                                      # all engines, default
+./scripts/bench-run.sh --engine=ktor-cio --profile=tuned    # specific
+./scripts/bench-compare.sh                                  # compare results
 ```
 
 ## Endpoints
 
 | Path | Response | Purpose |
 |---|---|---|
-| `/hello` | `Hello, World!` (13 bytes) | Minimal overhead measurement |
+| `/hello` | `Hello, World!` (13 bytes) | Minimal overhead |
 | `/large` | 100KB text | Buffer write efficiency |
 
 ## Module Structure
