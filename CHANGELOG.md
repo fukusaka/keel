@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `ktor-engine`: add linuxX64 and linuxArm64 targets with EpollEngine as default
+- `benchmark`: 3 profiles (default/tuned/keel-equiv) with CLI argument override for connection-close, tcp-nodelay, backlog, threads
 - `benchmark`: HTTP throughput benchmark module comparing keel engines against Ktor CIO, Ktor Netty, Spring Boot WebFlux, and Vert.x
 - `sample`: Minimal Ktor + keel hello world demo server
 - `scripts/bench-run.sh`: Automated wrk benchmark runner for all engines
