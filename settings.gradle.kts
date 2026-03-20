@@ -23,4 +23,5 @@ include(
     ":engine-nwconnection",
     ":codec-http",
     ":codec-websocket",
+    ":ktor-engine",
 )
