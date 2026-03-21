@@ -126,13 +126,41 @@ repositories {
 }
 
 dependencies {
+    // Ktor + keel サーバーエンジン
+    implementation("io.github.keel:ktor-engine:0.1.0-SNAPSHOT")
+    implementation("io.ktor:ktor-server-core:3.4.1")
+
+    // 低レベル I/O（Ktor なし）
     implementation("io.github.keel:core:0.1.0-SNAPSHOT")
-    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // 任意
-    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // 任意
+
+    // コーデック（任意）
+    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")
+    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT")
 }
 ```
 
 Maven Central への公開は 0.1.0 リリース時を予定しています。
+
+---
+
+## クイックスタート
+
+```kotlin
+fun main() {
+    embeddedServer(Keel, port = 8080) {
+        routing {
+            get("/") {
+                call.respondText("Hello from keel!")
+            }
+        }
+    }.start(wait = true)
+}
+```
+
+```bash
+./gradlew :sample:run
+# → http://localhost:8080/
+```
 
 ---
 
