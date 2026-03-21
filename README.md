@@ -79,8 +79,10 @@ keel/
 
 ## Benchmark
 
-HTTP "Hello, World!" throughput measured with [wrk](https://github.com/wg/wrk) (4 threads, 100 connections, 10s, Connection: close).
-p50/p99 are the 50th and 99th percentile response latencies.
+Single-machine throughput test: both wrk client and HTTP server run on the same host (loopback).
+Each server responds with `"Hello, World!"` (13 bytes) on `GET /hello`.
+Measured with [wrk](https://github.com/wg/wrk): 4 threads, 100 connections, 10s duration, `Connection: close`.
+p50/p99 = 50th / 99th percentile response latency.
 
 ### Linux x86_64 (32-core)
 
