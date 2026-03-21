@@ -92,9 +92,11 @@ HTTP "Hello, World!" throughput (4 threads, 100 connections, 10s, Connection: cl
 | jvm:spring | 812K |
 | go-hello | 561K |
 | jvm:vertx | 347K |
-| **native:keel-epoll** | **157K** |
+| **native:ktor-keel-epoll** | **157K** |
 | jvm:ktor-cio | 142K |
-| jvm:keel-nio | 138K |
+| jvm:ktor-keel-nio | 138K |
+| jvm:ktor-keel-netty | 39K |
+| native:ktor-cio | 8.6K |
 
 ### macOS M1 (10-core)
 
@@ -108,8 +110,11 @@ HTTP "Hello, World!" throughput (4 threads, 100 connections, 10s, Connection: cl
 | jvm:ktor-netty | 130K |
 | jvm:vertx | 113K |
 | jvm:ktor-cio | 55K |
-| jvm:keel-nio | 20K |
-| **native:keel-kqueue** | **11K** |
+| jvm:ktor-keel-nio | 20K |
+| **native:ktor-keel-kqueue** | **11K** |
+| native:ktor-cio | 9.0K |
+| jvm:ktor-keel-netty | 0.3 |
+| native:ktor-keel-nwconnection | ~0 |
 
 > keel engines currently use Connection: close (no keep-alive). Throughput
 > will improve significantly with the async event loop + keep-alive in Phase 5b.
