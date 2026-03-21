@@ -79,11 +79,17 @@ class NwEngine(
 
         nw_listener_set_queue(lsnr, listenerQueue)
 
-        nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+        var failureReason: String? = null
+        nw_listener_set_state_changed_handler(lsnr) { state, error ->
             if (state == nw_listener_state_ready) {
                 assignedPort = nw_listener_get_port(lsnr).toInt()
                 dispatch_semaphore_signal(readySem)
             } else if (state == nw_listener_state_failed) {
+                if (error != null) {
+                    val code = platform.Network.nw_error_get_error_code(error)
+                    val domain = platform.Network.nw_error_get_error_domain(error)
+                    failureReason = "domain=$domain, code=$code"
+                }
                 dispatch_semaphore_signal(readySem)
             }
         }
@@ -96,7 +102,9 @@ class NwEngine(
         val waitResult = dispatch_semaphore_wait(readySem, timeout)
         check(waitResult == 0L) { "NWListener bind timed out" }
 
-        check(assignedPort > 0) { "NWListener failed to start (port=$assignedPort)" }
+        check(assignedPort > 0) {
+            "NWListener failed to start (port=$assignedPort${failureReason?.let { ", $it" } ?: ""})"
+        }
 
         // Create ServerChannel now that the assigned port is known.
         // The listener only accepts connections after reaching the ready state,
