@@ -66,3 +66,33 @@ tasks.register<JavaExec>("run") {
         kotlin.jvm().compilations["main"].output.allOutputs
     standardInput = System.`in`
 }
+
+// Write classpath file for running JVM benchmark without Gradle process tree.
+// Usage: java -cp @benchmark/build/benchmark-classpath.txt io.github.keel.benchmark.JvmMainKt
+tasks.register("writeClasspath") {
+    val jvmCompilation = kotlin.jvm().compilations["main"]
+    dependsOn(jvmCompilation.compileTaskProvider)
+    val outputFile = layout.buildDirectory.file("benchmark-classpath.txt")
+    outputs.file(outputFile)
+    doLast {
+        val cp = (jvmCompilation.output.allOutputs + jvmCompilation.runtimeDependencyFiles)
+            .joinToString(File.pathSeparator)
+        outputFile.get().asFile.writeText(cp)
+    }
+}
+
+tasks.register<Jar>("fatJar") {
+    archiveClassifier.set("all")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes["Main-Class"] = "io.github.keel.benchmark.JvmMainKt"
+    }
+    val jvmCompilation = kotlin.jvm().compilations["main"]
+    from(jvmCompilation.output.allOutputs)
+    dependsOn(jvmCompilation.compileTaskProvider)
+    from({
+        jvmCompilation.runtimeDependencyFiles
+            .filter { it.name.endsWith(".jar") }
+            .map { zipTree(it) }
+    })
+}
