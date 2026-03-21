@@ -2,6 +2,35 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+Hosted on Cloudflare Pages: `keel-kt.pages.dev`
+
+## Document Structure
+
+```
+website/
+├── docusaurus.config.ts      # Site configuration
+├── docs/
+│   ├── intro.md              # Getting Started
+│   ├── architecture/
+│   │   ├── overview.md       # Layer architecture & design philosophy (public design.md)
+│   │   ├── engine-guide.md   # Engine selection guide
+│   │   └── buffer.md         # NativeBuf / BufferAllocator
+│   ├── codecs/
+│   │   ├── http.md           # :codec-http usage
+│   │   └── websocket.md      # :codec-websocket usage
+│   └── api/                  # Dokka output integration
+└── src/pages/index.tsx       # Landing page
+```
+
+Tutorials and How-to guides will be added after Phase 5b (when async IoEngine is ready).
+
+## Documentation Tools
+
+| Tool | Purpose |
+|---|---|
+| **Docusaurus** | Landing page / Tutorial / How-to / Architecture (MDX + Mermaid) |
+| **Dokka** | KDoc → HTML (API reference), integrated into Docusaurus |
+
 ## Installation
 
 ```bash
@@ -23,19 +52,3 @@ yarn build
 ```
 
 This command generates static content into the `build` directory and can be served using any static contents hosting service.
-
-## Deployment
-
-Using SSH:
-
-```bash
-USE_SSH=true yarn deploy
-```
-
-Not using SSH:
-
-```bash
-GIT_USER=<Your GitHub username> yarn deploy
-```
-
-If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.
