@@ -29,5 +29,8 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
     }
 }
 
+/** Size of the /large endpoint payload (100KB). */
+const val LARGE_PAYLOAD_SIZE = 102_400
+
 /** 100KB text payload, pre-allocated to avoid allocation during benchmarks. */
-private val largePayload = "x".repeat(102_400)
+private val largePayload = "x".repeat(LARGE_PAYLOAD_SIZE)
