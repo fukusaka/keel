@@ -18,7 +18,6 @@ WRK_DURATION=10s
 ENDPOINT="/hello"
 WARMUP_DURATION=3s
 READY_TIMEOUT=30
-PORT_RELEASE_TIMEOUT=20
 
 # --- Port management (cross-platform) ---
 
@@ -31,20 +30,6 @@ kill_port() {
     fi
 }
 
-wait_port_free() {
-    local port="$1"
-    for _ in $(seq 1 "$PORT_RELEASE_TIMEOUT"); do
-        if command -v lsof >/dev/null 2>&1; then
-            lsof -ti :"$port" >/dev/null 2>&1 || return 0
-        elif command -v ss >/dev/null 2>&1; then
-            ss -tlnp "sport = :$port" 2>/dev/null | grep -q LISTEN || return 0
-        else
-            return 0
-        fi
-        sleep 0.5
-    done
-    return 1
-}
 
 # --- Benchmark runner ---
 
