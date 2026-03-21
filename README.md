@@ -77,19 +77,58 @@ keel/
 
 ---
 
+## Benchmark
+
+HTTP "Hello, World!" throughput (4 threads, 100 connections, 10s, Connection: close).
+
+### Linux x86_64 (32-core)
+
+| Server | Req/sec |
+|---|---|
+| zig-hello | 1,316K |
+| rust-hello | 1,304K |
+| jvm:netty-raw | 891K |
+| jvm:ktor-netty | 837K |
+| jvm:spring | 812K |
+| go-hello | 561K |
+| jvm:vertx | 347K |
+| **native:keel-epoll** | **157K** |
+| jvm:ktor-cio | 142K |
+| jvm:keel-nio | 138K |
+
+### macOS M1 (10-core)
+
+| Server | Req/sec |
+|---|---|
+| rust-hello | 158K |
+| jvm:spring | 151K |
+| go-hello | 144K |
+| jvm:netty-raw | 141K |
+| zig-hello | 139K |
+| jvm:ktor-netty | 130K |
+| jvm:vertx | 113K |
+| jvm:ktor-cio | 55K |
+| jvm:keel-nio | 20K |
+| **native:keel-kqueue** | **11K** |
+
+> keel engines currently use Connection: close (no keep-alive). Throughput
+> will improve significantly with the async event loop + keep-alive in Phase 5b.
+> native:keel-epoll already outperforms Ktor CIO (Native) by 18x.
+
+---
+
 ## Roadmap
 
 | Status | Description |
 |---|---|
-| ✅ Completed | Project scaffold, CI |
-| ✅ Completed | kqueue engine (macOS) |
-| ✅ Completed | epoll engine (Linux) |
-| ✅ Completed | NIO / Netty / Node.js / NWConnection engines |
+| ✅ Completed | All 6 engines (epoll / kqueue / NIO / Netty / NWConnection / Node.js) |
+| ✅ Completed | IoEngine / Channel / ServerChannel / NativeBuf / BufferAllocator |
 | ✅ Completed | HTTP/1.1 codec, WebSocket codec |
-| 🔄 In Progress | OSS prep (LICENSE / README / KDoc / Dokka / Docusaurus) |
-| 🔲 Planned | IoEngine redesign / BufferAllocator / Ktor adapter |
+| ✅ Completed | Ktor server engine adapter |
+| ✅ Completed | Benchmark infrastructure (cross-language comparison) |
+| 🔲 Planned | Async event loop + keep-alive (Phase 5b) |
 | 🔲 Planned | TLS (Mbed TLS) / io_uring |
-| 🔲 Planned | UDP / MQTT / HTTP2 / gRPC |
+| 🔲 Planned | UDP / MQTT / HTTP/2 / gRPC |
 
 ---
 
