@@ -79,12 +79,39 @@ keel/
 
 ## Benchmark
 
-Single-machine throughput test: both wrk client and HTTP server run on the same host (loopback).
-Each server responds with `"Hello, World!"` (13 bytes) on `GET /hello`.
-Measured with [wrk](https://github.com/wg/wrk): 4 threads, 100 connections, 10s duration, `Connection: close`.
-p50/p99 = 50th / 99th percentile response latency.
+### Setup
 
-### Linux x86_64 (32-core)
+```
+  ┌─────────────┐         loopback          ┌─────────────┐
+  │  wrk client  │ ──── 127.0.0.1:18090 ──── │  HTTP server │
+  │  4 threads   │    100 connections         │  GET /hello  │
+  │  10s run     │    Connection: close       │  → 13 bytes  │
+  └─────────────┘                             └─────────────┘
+```
+
+- **Endpoint**: `GET /hello` → `"Hello, World!"` (13 bytes, text/plain)
+- **Tool**: [wrk](https://github.com/wg/wrk) — 4 threads, 100 concurrent connections, 10s
+- **Mode**: `Connection: close` (new TCP connection per request)
+- **Topology**: client and server on the same host (loopback)
+- **p50 / p99**: 50th and 99th percentile response latency
+
+### Servers
+
+| Prefix | Category | Description |
+|--------|----------|-------------|
+| `native:ktor-keel-*` | **keel (Native)** | Ktor + keel I/O engine, compiled to native binary |
+| `jvm:ktor-keel-*` | **keel (JVM)** | Ktor + keel I/O engine, running on JVM |
+| `native:ktor-cio` | Ktor CIO (Native) | Ktor's built-in CIO engine, native binary |
+| `jvm:ktor-cio` | Ktor CIO (JVM) | Ktor's built-in CIO engine on JVM |
+| `jvm:ktor-netty` | Ktor + Netty | Ktor's Netty engine adapter |
+| `jvm:spring` | Spring WebFlux | Spring Boot + Reactor Netty |
+| `jvm:vertx` | Vert.x | Eclipse Vert.x Web |
+| `jvm:netty-raw` | Netty (raw) | Netty without any framework |
+| `rust/go/zig/swift` | Native baseline | Minimal HTTP servers in each language |
+
+### Linux x86_64
+
+Intel Xeon (32 cores / 64 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu)
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
@@ -101,7 +128,9 @@ p50/p99 = 50th / 99th percentile response latency.
 | jvm:ktor-keel-netty | 40K | 1.17ms | 25.57ms |
 | native:ktor-cio | 8.3K | 11.47ms | 21.72ms |
 
-### macOS M1 (10-core)
+### macOS Apple Silicon
+
+Apple M1 Pro (10 cores), 32 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
@@ -120,9 +149,11 @@ p50/p99 = 50th / 99th percentile response latency.
 | native:ktor-keel-nwconnection | 0.4 | - | - |
 | jvm:ktor-keel-netty | 0.1 | - | - |
 
-> keel engines currently use Connection: close (no keep-alive). Throughput
-> will improve significantly with the async event loop + keep-alive in Phase 5b.
-> native:ktor-keel-epoll already outperforms Ktor CIO (Native) by 18x.
+### Notes
+
+- keel engines currently use **Connection: close** (no keep-alive), which creates a new TCP handshake per request. Throughput will improve significantly with the async event loop + keep-alive in Phase 5b.
+- **native:ktor-keel-epoll** already outperforms **native:ktor-cio** by 18x on Linux.
+- On Linux 32-core, **jvm:ktor-keel-nio** (138K) is competitive with **jvm:ktor-cio** (142K) despite the Connection: close overhead.
 
 ---
 
