@@ -132,14 +132,14 @@ if [ "$(uname)" = "Darwin" ]; then
         NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
     fi
     if [ -f "$NATIVE_BIN" ]; then
-        for engine in keel-kqueue keel-nwconnection ktor-cio; do
+        for engine in ktor-keel-kqueue ktor-keel-nwconnection ktor-cio; do
             run_bench "native:${engine}" "$NATIVE_BIN" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
         done
     fi
 elif [ "$(uname)" = "Linux" ]; then
     NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
     if [ -f "$NATIVE_BIN" ]; then
-        for engine in keel-epoll ktor-cio; do
+        for engine in ktor-keel-epoll ktor-cio; do
             run_bench "native:${engine}" "$NATIVE_BIN" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
         done
     fi
@@ -151,7 +151,7 @@ fi
 JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
 if [ -f "$JVM_CP_FILE" ]; then
     JVM_CP=$(cat "$JVM_CP_FILE")
-    for engine in keel-nio keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
+    for engine in ktor-keel-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
         run_bench "jvm:${engine}" java -cp "$JVM_CP" io.github.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
     done
 else
