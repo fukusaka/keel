@@ -6,8 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `benchmark`: add Kotlin/Native engines to bench-all.sh (keel-kqueue, keel-nwconnection, ktor-cio on macOS; keel-epoll, ktor-cio on Linux)
+- `benchmark`: add bench-one.sh for single-server benchmarking
+- `benchmark`: add `writeClasspath` Gradle task for running JVM benchmark without Gradle process tree
+- `README`: add benchmark results (macOS M1 + Linux 32-core) and update roadmap
+
 ### Changed
 
+- `benchmark`: use classpath file instead of Gradle for JVM servers in bench-all.sh to fix signal handling
+- `benchmark`: increment port per server to avoid TIME_WAIT conflicts
 - `benchmark`: refactor file organization — split monolithic files into 1-engine-per-file pattern (JvmMain, NativeEngine.macos/linux)
 - `benchmark`: move CioEngine from jvmMain/nativeMain to commonMain (ktor-server-cio is a KMP dependency)
 - `benchmark`: split expect/actual declarations — `defaultEngine()` to EngineRegistry, `printErr()` to Platform
