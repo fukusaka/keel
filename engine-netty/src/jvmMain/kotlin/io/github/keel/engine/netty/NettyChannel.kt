@@ -36,18 +36,21 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * will introduce MemoryOwner abstraction for zero-copy push model support.
  *
  * **Write path**: Uses PendingWrite buffering (matching KqueueChannel/NioChannel
- * pattern). [flush] wraps [NativeBuf.unsafeBuffer] as Netty [ByteBuf] via
- * [Unpooled.wrappedBuffer] and calls [writeAndFlush] — zero-copy on the
- * write side.
+ * pattern). [flush] batches all pending writes into Netty's outbound buffer
+ * via [write], then issues a single [writeAndFlush] on the last write.
+ * Only the last write's future is awaited with a timeout to avoid blocking
+ * Dispatchers.IO threads under high concurrency. Each [NativeBuf.unsafeBuffer]
+ * is wrapped as Netty [ByteBuf] via [Unpooled.wrappedBuffer] — zero-copy on
+ * the write side.
  *
  * ```
  * Read path (push → pull, copy):
  *   Netty EventLoop: channelRead(ByteBuf) --> readQueue.put(byteBuf)
  *   keel thread:     read(NativeBuf) --> readQueue.take() --> copy --> release
  *
- * Write path (buffered, zero-copy flush):
+ * Write path (buffered, batch flush with timeout):
  *   write(buf) --> retain, record PendingWrite
- *   flush()    --> Unpooled.wrappedBuffer(unsafeBuffer) --> writeAndFlush
+ *   flush()    --> write(wrappedBuffer) x N, writeAndFlush(last).await(timeout)
  *
  * EOF detection:
  *   Netty EventLoop: channelInactive() --> readQueue.put(EMPTY_BUFFER)
@@ -130,17 +133,28 @@ internal class NettyChannel(
     /**
      * Sends all buffered writes via Netty's [writeAndFlush].
      *
-     * Wraps each [NativeBuf.unsafeBuffer] as a Netty [ByteBuf] via
-     * [Unpooled.wrappedBuffer] — zero-copy on the write path.
+     * Batches all pending writes into Netty's outbound buffer using [write],
+     * then issues a single [flush]. Only the last write's future is awaited
+     * with a timeout — this avoids blocking Dispatchers.IO threads on every
+     * individual write, which caused thread starvation under high concurrency
+     * (50+ connections with Connection: close).
      */
     internal fun flushBlocking() {
         check(_open) { "Channel is closed" }
-        for (pw in pendingWrites) {
+        val size = pendingWrites.size
+        for ((i, pw) in pendingWrites.withIndex()) {
             val bb = pw.buf.unsafeBuffer.duplicate()
             bb.position(pw.offset)
             bb.limit(pw.offset + pw.length)
             val nettyBuf = Unpooled.wrappedBuffer(bb)
-            nettyChannel.writeAndFlush(nettyBuf).sync()
+            if (i == size - 1) {
+                // Last write: flush and await with timeout to avoid indefinite blocking
+                // when the client closes the connection before the write completes.
+                nettyChannel.writeAndFlush(nettyBuf)
+                    .await(FLUSH_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            } else {
+                nettyChannel.write(nettyBuf)
+            }
             pw.buf.release()
         }
         pendingWrites.clear()
@@ -150,7 +164,8 @@ internal class NettyChannel(
         if (!outputShutdown && _open) {
             outputShutdown = true
             if (nettyChannel is DuplexChannel) {
-                nettyChannel.shutdownOutput().sync()
+                nettyChannel.shutdownOutput()
+                    .await(FLUSH_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
     }
@@ -194,6 +209,9 @@ internal class NettyChannel(
     }
 
     companion object {
+        /** Timeout for writeAndFlush().await() to prevent indefinite blocking. */
+        private const val FLUSH_TIMEOUT_SECONDS = 5L
+
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             val inet = addr as? InetSocketAddress ?: return null
             return SocketAddress(inet.address.hostAddress, inet.port)
