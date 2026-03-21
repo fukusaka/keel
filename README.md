@@ -85,13 +85,12 @@ keel/
   ┌─────────────┐         loopback          ┌─────────────┐
   │  wrk client  │ ──── 127.0.0.1:18090 ──── │  HTTP server │
   │  4 threads   │    100 connections         │  GET /hello  │
-  │  10s run     │    Connection: close       │  → 13 bytes  │
+  │  10s run     │                            │  → 13 bytes  │
   └─────────────┘                             └─────────────┘
 ```
 
 - **Endpoint**: `GET /hello` → `"Hello, World!"` (13 bytes, text/plain)
 - **Tool**: [wrk](https://github.com/wg/wrk) — 4 threads, 100 concurrent connections, 10s
-- **Mode**: `Connection: close` (new TCP connection per request)
 - **Topology**: client and server on the same host (loopback)
 - **p50 / p99**: 50th and 99th percentile response latency
 
@@ -111,7 +110,7 @@ keel/
 
 ### Linux x86_64
 
-Intel Xeon (32 cores / 64 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu)
+AMD Ryzen 9 9950X3D (16 cores / 32 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu)
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
@@ -130,7 +129,7 @@ Intel Xeon (32 cores / 64 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu
 
 ### macOS Apple Silicon
 
-Apple M1 Pro (10 cores), 32 GB RAM, macOS 15.4, Java 21 (Temurin)
+Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
