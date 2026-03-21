@@ -8,30 +8,32 @@
 [![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20JVM%20%7C%20JS-informational)](#ターゲット)
 [![Status](https://img.shields.io/badge/Status-Pre--release-yellow)](#ロードマップ)
 
-Linux の epoll、macOS の kqueue、JVM の Netty — プラットフォームごとに異なるネイティブ非同期 I/O を、keel が単一の Kotlin Multiplatform インターフェースに統一します。
+Linux の epoll、macOS の kqueue、JVM の Netty — プラットフォームごとに異なる I/O プリミティブを、keel が単一の Kotlin Multiplatform インターフェースに統一します。
 KMP 上でネットワークプロトコルを実装するための適切な基盤を提供します。
 
 - **Native ファースト**: epoll（Linux）・kqueue（macOS）を Kotlin Native から直接駆動
-- **非同期イベントループ**: 全ターゲットでスレッドをブロックしない I/O
-- **プラットフォーム最適**: Native=epoll/kqueue · JVM=Netty · Node.js=net モジュール
+- **suspend API**: 全 I/O 操作が `suspend fun`、非同期イベントループ対応準備済み
+- **プラットフォーム最適**: Native=epoll/kqueue · JVM=NIO/Netty · Node.js=net モジュール
 - **コーデック層**: kotlinx.io プリミティブのみで構成した HTTP/1.1・WebSocket
 
 ```
-  ┌──────┬──────┬────────────┬──────┬───────────────┐
-  │epoll │kqueue│  io_uring  │ NIO  │ NWConnection  │
-  │Linux │macOS │ Linux 5.1+ │ JVM  │   Apple       │
-  └──┬───┴──┬───┴─────┬──────┴──┬───┴───────┬───────┘
-     └──────┴─────────┴─────────┴───────────┘
-                           │
-               ┌───────────┴───────────┐
-               │          keel         │
-               │   非同期 I/O エンジン  │
-               └───────────┬───────────┘
-                           │
-  ┌────────────────────────┴─────────────────────────┐
-  │      アプリケーション / Ktor / gRPC KMP           │
-  └──────────────────────────────────────────────────┘
+  ┌────────────────────────────────────────┐
+  │      アプリケーション / Ktor            │
+  └───────────────┬────────────────────────┘
+                  │
+      ┌───────────┴───────────┐
+      │          keel         │
+      │   I/O エンジン層       │
+      └───────────┬───────────┘
+                  │
+  ┌──────┬──────┬──────┬───────┬───────────────┐
+  │epoll │kqueue│ NIO  │Netty  │ NWConnection  │
+  │Linux │macOS │ JVM  │ JVM   │   Apple       │
+  └──────┴──────┴──────┴───────┴───────────────┘
 ```
+
+> [!WARNING]
+> **初期の実験的リリース（0.1.0）** — API は不安定であり、予告なく変更される可能性があります。エラーハンドリングは最小限です。本番環境での使用は推奨しません。
 
 ---
 
@@ -74,6 +76,93 @@ keel/
 | `androidNativeArm64`, `androidNativeX64` | epoll | 🔲 保留 | |
 | `tvosArm64`, `watchosArm64` | — | ❌ 対象外 | サンドボックス制約により対応困難 |
 | `wasmJs`, `wasmWasi` | — | ❌ 対象外 | syscall 直接アクセス不可 |
+
+---
+
+## ロードマップ
+
+### 0.1.0（現在 — 実験的）
+
+- 6 種の I/O エンジン: epoll, kqueue, NIO, Netty, NWConnection, Node.js
+- suspend API（IoEngine / Channel / ServerChannel / NativeBuf）
+- HTTP/1.1・WebSocket コーデック（純粋 kotlinx.io）
+- Ktor サーバーエンジンアダプタ
+
+### Next
+
+- 非同期イベントループ + コルーチン統合（ノンブロッキング I/O）
+- HTTP keep-alive
+- 例外処理改善・安定性の向上
+- io_uring エンジン（Linux 5.1+）
+- Ktor クライアントエンジンアダプタ
+
+### Future
+
+- TLS
+- keel ネイティブクライアント（非 HTTP プロトコル向け）
+- iOS / Android ターゲット
+- UDP トランスポート
+- HTTP/2, gRPC, MQTT
+- HTTP/3 (QUIC)
+
+---
+
+## インストール
+
+> **注意:** keel はまだ Maven Central に公開されていません。0.1.0 リリースまでは、ソースからビルドしてローカル Maven リポジトリに公開して使用してください。
+
+```bash
+git clone https://github.com/keel-kt/keel.git
+cd keel
+./gradlew publishToMavenLocal
+```
+
+プロジェクトへの依存関係の追加:
+
+```kotlin
+// build.gradle.kts
+repositories {
+    mavenLocal()
+}
+
+dependencies {
+    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // 任意
+    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // 任意
+}
+```
+
+Maven Central への公開は 0.1.0 リリース時を予定しています。
+
+---
+
+## ビルド
+
+### 前提
+
+- Java 21+
+- Gradle 9.4+（wrapper 同梱）
+- macOS ビルド：M1/M2 Mac 推奨
+
+### テスト実行
+
+```bash
+# JVM テスト
+./gradlew :engine-nio:jvmTest :engine-netty:jvmTest
+./gradlew :codec-http:jvmTest :codec-websocket:jvmTest
+
+# macOS Native テスト
+./gradlew :engine-kqueue:macosArm64Test
+./gradlew :codec-http:macosArm64Test :codec-websocket:macosArm64Test
+
+# Linux テスト（Docker）
+docker run --rm --platform linux/amd64 \
+  -v $(pwd):/work -w /work gradle:8-jdk21 \
+  ./gradlew :engine-epoll:linuxX64Test
+
+# API ドキュメント生成（Dokka）
+./gradlew dokkaGeneratePublicationHtml
+```
 
 ---
 
@@ -150,83 +239,9 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 
 ### 備考
 
-- keel エンジンは現在 **Connection: close**（keep-alive なし）で動作しており、リクエストごとに TCP ハンドシェイクが発生します。Phase 5b（非同期イベントループ + keep-alive）で大幅に改善予定。
+- keel エンジンは現在 **Connection: close**（keep-alive なし）で動作しており、リクエストごとに TCP ハンドシェイクが発生します。非同期イベントループ + keep-alive で大幅に改善予定。
 - Linux で **native:ktor-keel-epoll**（158K）は **native:ktor-cio**（8.3K）の 18 倍高速。
 - Linux 32 コアでは **jvm:ktor-keel-nio**（138K）が Connection: close にもかかわらず **jvm:ktor-cio**（142K）と同等の性能。
-
----
-
-## ロードマップ
-
-| 状態 | 内容 |
-|---|---|
-| ✅ 完了 | 全 6 エンジン（epoll / kqueue / NIO / Netty / NWConnection / Node.js） |
-| ✅ 完了 | IoEngine / Channel / ServerChannel / NativeBuf / BufferAllocator |
-| ✅ 完了 | HTTP/1.1 コーデック・WebSocket コーデック |
-| ✅ 完了 | Ktor サーバーエンジンアダプタ |
-| ✅ 完了 | ベンチマーク基盤（クロス言語比較） |
-| 🔲 予定 | 非同期イベントループ + keep-alive（Phase 5b） |
-| 🔲 予定 | TLS（Mbed TLS）/ io_uring |
-| 🔲 予定 | UDP / MQTT / HTTP/2 / gRPC |
-
----
-
-## インストール
-
-> **注意:** keel はまだ Maven Central に公開されていません。0.1.0 リリースまでは、ソースからビルドしてローカル Maven リポジトリに公開して使用してください。
-
-```bash
-git clone https://github.com/keel-kt/keel.git
-cd keel
-./gradlew publishToMavenLocal
-```
-
-プロジェクトへの依存関係の追加:
-
-```kotlin
-// build.gradle.kts
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
-    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // 任意
-    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // 任意
-}
-```
-
-Maven Central への公開は 0.1.0 リリース時を予定しています。
-
----
-
-## ビルド
-
-### 前提
-
-- Java 21+
-- Gradle 9.4+（wrapper 同梱）
-- macOS ビルド：M1/M2 Mac 推奨
-
-### テスト実行
-
-```bash
-# JVM テスト
-./gradlew :engine-nio:jvmTest :engine-netty:jvmTest
-./gradlew :codec-http:jvmTest :codec-websocket:jvmTest
-
-# macOS Native テスト
-./gradlew :engine-kqueue:macosArm64Test
-./gradlew :codec-http:macosArm64Test :codec-websocket:macosArm64Test
-
-# Linux テスト（Docker）
-docker run --rm --platform linux/amd64 \
-  -v $(pwd):/work -w /work gradle:8-jdk21 \
-  ./gradlew :engine-epoll:linuxX64Test
-
-# API ドキュメント生成（Dokka）
-./gradlew dokkaGeneratePublicationHtml
-```
 
 ---
 
