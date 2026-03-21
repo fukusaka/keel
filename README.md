@@ -8,30 +8,32 @@
 [![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20JVM%20%7C%20JS-informational)](#targets)
 [![Status](https://img.shields.io/badge/Status-Pre--release-yellow)](#roadmap)
 
-Each platform has its own async I/O primitive — epoll on Linux, kqueue on macOS, Netty on JVM.
+Each platform has its own I/O primitive — epoll on Linux, kqueue on macOS, Netty on JVM.
 keel unifies them behind a single Kotlin Multiplatform interface, giving you the right foundation for implementing network protocols across all targets.
 
 - **Native-first**: drives epoll (Linux) and kqueue (macOS) directly from Kotlin Native
-- **Async event loop**: non-blocking I/O across all targets — no threads blocked waiting
-- **Platform-optimal**: epoll/kqueue on Native · Netty on JVM · net module on Node.js
+- **Suspend API**: all I/O operations are `suspend fun`, ready for async event loop
+- **Platform-optimal**: epoll/kqueue on Native · NIO/Netty on JVM · net module on Node.js
 - **Codec layer**: HTTP/1.1 and WebSocket built on pure `kotlinx.io` primitives
 
 ```
-  ┌──────┬──────┬────────────┬──────┬───────────────┐
-  │epoll │kqueue│  io_uring  │ NIO  │ NWConnection  │
-  │Linux │macOS │ Linux 5.1+ │ JVM  │   Apple       │
-  └──┬───┴──┬───┴─────┬──────┴──┬───┴───────┬───────┘
-     └──────┴─────────┴─────────┴───────────┘
-                           │
-               ┌───────────┴───────────┐
-               │          keel         │
-               │   async I/O engine    │
-               └───────────┬───────────┘
-                           │
-  ┌────────────────────────┴───────────────────────┐
-  │         Application / Ktor / gRPC KMP          │
-  └────────────────────────────────────────────────┘
+  ┌────────────────────────────────────────┐
+  │        Application / Ktor              │
+  └───────────────┬────────────────────────┘
+                  │
+      ┌───────────┴───────────┐
+      │          keel         │
+      │   I/O engine layer    │
+      └───────────┬───────────┘
+                  │
+  ┌──────┬──────┬──────┬───────┬───────────────┐
+  │epoll │kqueue│ NIO  │Netty  │ NWConnection  │
+  │Linux │macOS │ JVM  │ JVM   │   Apple       │
+  └──────┴──────┴──────┴───────┴───────────────┘
 ```
+
+> [!WARNING]
+> **Early experimental release (0.1.0)** — APIs are unstable and may change without notice. Error handling is minimal. Not recommended for production use.
 
 ---
 
@@ -74,6 +76,93 @@ keel/
 | `androidNativeArm64`, `androidNativeX64` | epoll | 🔲 Deferred | |
 | `tvosArm64`, `watchosArm64` | — | ❌ Out of scope | Restricted sandbox |
 | `wasmJs`, `wasmWasi` | — | ❌ Out of scope | No direct syscall access |
+
+---
+
+## Roadmap
+
+### 0.1.0 (current — experimental)
+
+- 6 I/O engines: epoll, kqueue, NIO, Netty, NWConnection, Node.js
+- Suspend API with IoEngine / Channel / ServerChannel / NativeBuf
+- HTTP/1.1 and WebSocket codecs (pure kotlinx.io)
+- Ktor server engine adapter
+
+### Next
+
+- Async event loop with coroutine integration (non-blocking I/O)
+- HTTP keep-alive
+- Error handling and stability improvements
+- io_uring engine (Linux 5.1+)
+- Ktor client engine adapter
+
+### Future
+
+- TLS
+- keel native client (non-HTTP protocols)
+- iOS / Android targets
+- UDP transport
+- HTTP/2, gRPC, MQTT
+- HTTP/3 (QUIC)
+
+---
+
+## Installation
+
+> **Note:** keel is not yet published to Maven Central. Until the 0.1.0 release, build from source and publish to your local Maven repository.
+
+```bash
+git clone https://github.com/keel-kt/keel.git
+cd keel
+./gradlew publishToMavenLocal
+```
+
+Then add the dependency to your project:
+
+```kotlin
+// build.gradle.kts
+repositories {
+    mavenLocal()
+}
+
+dependencies {
+    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // optional
+    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // optional
+}
+```
+
+Maven Central publication is planned for the 0.1.0 release.
+
+---
+
+## Building
+
+### Prerequisites
+
+- Java 21+
+- Gradle 9.4+ (wrapper included)
+- macOS builds: M1/M2 Mac recommended
+
+### Run tests
+
+```bash
+# JVM tests
+./gradlew :engine-nio:jvmTest :engine-netty:jvmTest
+./gradlew :codec-http:jvmTest :codec-websocket:jvmTest
+
+# macOS Native tests
+./gradlew :engine-kqueue:macosArm64Test
+./gradlew :codec-http:macosArm64Test :codec-websocket:macosArm64Test
+
+# Linux tests (Docker)
+docker run --rm --platform linux/amd64 \
+  -v $(pwd):/work -w /work gradle:8-jdk21 \
+  ./gradlew :engine-epoll:linuxX64Test
+
+# Generate API docs (Dokka)
+./gradlew dokkaGeneratePublicationHtml
+```
 
 ---
 
@@ -153,80 +242,6 @@ Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 - keel engines currently use **Connection: close** (no keep-alive), which creates a new TCP handshake per request. Throughput will improve significantly with the async event loop + keep-alive in Phase 5b.
 - **native:ktor-keel-epoll** already outperforms **native:ktor-cio** by 18x on Linux.
 - On Linux 32-core, **jvm:ktor-keel-nio** (138K) is competitive with **jvm:ktor-cio** (142K) despite the Connection: close overhead.
-
----
-
-## Roadmap
-
-| Status | Description |
-|---|---|
-| ✅ Completed | All 6 engines (epoll / kqueue / NIO / Netty / NWConnection / Node.js) |
-| ✅ Completed | IoEngine / Channel / ServerChannel / NativeBuf / BufferAllocator |
-| ✅ Completed | HTTP/1.1 codec, WebSocket codec |
-| ✅ Completed | Ktor server engine adapter |
-| ✅ Completed | Benchmark infrastructure (cross-language comparison) |
-| 🔲 Planned | Async event loop + keep-alive (Phase 5b) |
-| 🔲 Planned | TLS (Mbed TLS) / io_uring |
-| 🔲 Planned | UDP / MQTT / HTTP/2 / gRPC |
-
----
-
-## Installation
-
-> **Note:** keel is not yet published to Maven Central. Until the 0.1.0 release, build from source and publish to your local Maven repository.
-
-```bash
-git clone https://github.com/keel-kt/keel.git
-cd keel
-./gradlew publishToMavenLocal
-```
-
-Then add the dependency to your project:
-
-```kotlin
-// build.gradle.kts
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
-    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")   // optional
-    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT") // optional
-}
-```
-
-Maven Central publication is planned for the 0.1.0 release.
-
----
-
-## Building
-
-### Prerequisites
-
-- Java 21+
-- Gradle 9.4+ (wrapper included)
-- macOS builds: M1/M2 Mac recommended
-
-### Run tests
-
-```bash
-# JVM tests
-./gradlew :engine-nio:jvmTest :engine-netty:jvmTest
-./gradlew :codec-http:jvmTest :codec-websocket:jvmTest
-
-# macOS Native tests
-./gradlew :engine-kqueue:macosArm64Test
-./gradlew :codec-http:macosArm64Test :codec-websocket:macosArm64Test
-
-# Linux tests (Docker)
-docker run --rm --platform linux/amd64 \
-  -v $(pwd):/work -w /work gradle:8-jdk21 \
-  ./gradlew :engine-epoll:linuxX64Test
-
-# Generate API docs (Dokka)
-./gradlew dokkaGeneratePublicationHtml
-```
 
 ---
 
