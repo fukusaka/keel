@@ -79,41 +79,80 @@ keel/
 
 ## Benchmark
 
-HTTP "Hello, World!" throughput (4 threads, 100 connections, 10s, Connection: close).
+### Setup
 
-### Linux x86_64 (32-core)
+```
+  ┌─────────────┐         loopback          ┌─────────────┐
+  │  wrk client  │ ──── 127.0.0.1:18090 ──── │  HTTP server │
+  │  4 threads   │    100 connections         │  GET /hello  │
+  │  10s run     │                            │  → 13 bytes  │
+  └─────────────┘                             └─────────────┘
+```
 
-| Server | Req/sec |
-|---|---|
-| zig-hello | 1,316K |
-| rust-hello | 1,304K |
-| jvm:netty-raw | 891K |
-| jvm:ktor-netty | 837K |
-| jvm:spring | 812K |
-| go-hello | 561K |
-| jvm:vertx | 347K |
-| **native:keel-epoll** | **157K** |
-| jvm:ktor-cio | 142K |
-| jvm:keel-nio | 138K |
+- **Endpoint**: `GET /hello` → `"Hello, World!"` (13 bytes, text/plain)
+- **Tool**: [wrk](https://github.com/wg/wrk) — 4 threads, 100 concurrent connections, 10s
+- **Topology**: client and server on the same host (loopback)
+- **p50 / p99**: 50th and 99th percentile response latency
 
-### macOS M1 (10-core)
+### Servers
 
-| Server | Req/sec |
-|---|---|
-| rust-hello | 158K |
-| jvm:spring | 151K |
-| go-hello | 144K |
-| jvm:netty-raw | 141K |
-| zig-hello | 139K |
-| jvm:ktor-netty | 130K |
-| jvm:vertx | 113K |
-| jvm:ktor-cio | 55K |
-| jvm:keel-nio | 20K |
-| **native:keel-kqueue** | **11K** |
+| Prefix | Category | Description |
+|--------|----------|-------------|
+| `native:ktor-keel-*` | **keel (Native)** | Ktor + keel I/O engine, compiled to native binary |
+| `jvm:ktor-keel-*` | **keel (JVM)** | Ktor + keel I/O engine, running on JVM |
+| `native:ktor-cio` | Ktor CIO (Native) | Ktor's built-in CIO engine, native binary |
+| `jvm:ktor-cio` | Ktor CIO (JVM) | Ktor's built-in CIO engine on JVM |
+| `jvm:ktor-netty` | Ktor + Netty | Ktor's Netty engine adapter |
+| `jvm:spring` | Spring WebFlux | Spring Boot + Reactor Netty |
+| `jvm:vertx` | Vert.x | Eclipse Vert.x Web |
+| `jvm:netty-raw` | Netty (raw) | Netty without any framework |
+| `rust/go/zig/swift` | Native baseline | Minimal HTTP servers in each language |
 
-> keel engines currently use Connection: close (no keep-alive). Throughput
-> will improve significantly with the async event loop + keep-alive in Phase 5b.
-> native:keel-epoll already outperforms Ktor CIO (Native) by 18x.
+### Linux x86_64
+
+AMD Ryzen 9 9950X3D (16 cores / 32 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu)
+
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| zig-hello | 1,295K | 40us | 92us |
+| rust-hello | 1,280K | 39us | 123us |
+| jvm:netty-raw | 882K | 58us | 173us |
+| jvm:ktor-netty | 838K | 82us | 1.80ms |
+| jvm:spring | 814K | 62us | 269us |
+| go-hello | 562K | 97us | 0.91ms |
+| jvm:vertx | 359K | 277us | 312us |
+| **native:ktor-keel-epoll** | **158K** | **384us** | **2.24ms** |
+| jvm:ktor-cio | 142K | 608us | 4.63ms |
+| jvm:ktor-keel-nio | 138K | 114us | 220ms |
+| jvm:ktor-keel-netty | 40K | 1.17ms | 25.57ms |
+| native:ktor-cio | 8.3K | 11.47ms | 21.72ms |
+
+### macOS Apple Silicon
+
+Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
+
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| rust-hello | 159K | 574us | 0.95ms |
+| jvm:spring | 151K | 566us | 7.75ms |
+| go-hello | 147K | 502us | 1.95ms |
+| jvm:netty-raw | 141K | 678us | 0.92ms |
+| zig-hello | 140K | 680us | 0.91ms |
+| jvm:ktor-netty | 133K | 498us | 7.42ms |
+| jvm:vertx | 113K | 0.88ms | 1.67ms |
+| swift-hello | 103K | 619us | 21.83ms |
+| jvm:ktor-cio | 54K | 1.34ms | 17.98ms |
+| jvm:ktor-keel-nio | 20K | 1.94ms | 68.44ms |
+| **native:ktor-keel-kqueue** | **11K** | **2.05ms** | **50.09ms** |
+| native:ktor-cio | 6.2K | 11.01ms | 246ms |
+| native:ktor-keel-nwconnection | 0.4 | - | - |
+| jvm:ktor-keel-netty | 0.1 | - | - |
+
+### Notes
+
+- keel engines currently use **Connection: close** (no keep-alive), which creates a new TCP handshake per request. Throughput will improve significantly with the async event loop + keep-alive in Phase 5b.
+- **native:ktor-keel-epoll** already outperforms **native:ktor-cio** by 18x on Linux.
+- On Linux 32-core, **jvm:ktor-keel-nio** (138K) is competitive with **jvm:ktor-cio** (142K) despite the Connection: close overhead.
 
 ---
 
