@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Benchmark all servers: Phase 2 native + Kotlin/Native + JVM
+# Benchmark keel engines only (ktor-keel-* + ktor-cio for comparison)
 #
-# Usage: ./benchmark/bench-all.sh [profile]
-#   profile: default (default), tuned, keel-equiv-0.1
+# Usage: ./benchmark/bench-keel.sh [profile]
 #
-# Servers are run sequentially, never in parallel.
-# Each server is started, warmed up, benchmarked, then killed before the next.
+# Runs only keel-related engines, skipping Phase 2 native servers
+# and non-keel JVM servers (spring, vertx, netty-raw).
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -30,7 +29,6 @@ kill_port() {
     fi
 }
 
-
 # --- Benchmark runner ---
 
 run_bench() {
@@ -38,8 +36,6 @@ run_bench() {
     shift
     local cmd=("$@")
 
-    # Start server. On Linux, use setsid so Gradle child JVM is in the same
-    # session and fuser can kill them together.
     if command -v setsid >/dev/null 2>&1; then
         setsid "${cmd[@]}" >/dev/null 2>&1 &
     else
@@ -47,7 +43,6 @@ run_bench() {
     fi
     local pid=$!
 
-    # Wait for server to be ready
     local ready=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
         if curl -s -o /dev/null "http://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null; then
@@ -58,7 +53,7 @@ run_bench() {
     done
 
     if [ "$ready" = false ]; then
-        printf "  %-24s %s\n" "$name" "FAILED TO START"
+        printf "  %-28s %s\n" "$name" "FAILED TO START"
         kill_port "$PORT"
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
@@ -66,10 +61,8 @@ run_bench() {
         return
     fi
 
-    # Warmup
     wrk -t2 -c10 -d"${WARMUP_DURATION}" "http://127.0.0.1:${PORT}${ENDPOINT}" >/dev/null 2>&1
 
-    # Benchmark
     local result
     result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
 
@@ -79,29 +72,17 @@ run_bench() {
     lat99=$(echo "$result" | grep "99%" | awk '{print $2}')
     errors=$(echo "$result" | grep "Socket errors" | head -1)
 
-    printf "  %-24s %12s req/s  p50=%-10s p99=%-10s" "$name" "$rps" "$lat50" "$lat99"
+    printf "  %-28s %12s req/s  p50=%-10s p99=%-10s" "$name" "$rps" "$lat50" "$lat99"
     if [ -n "$errors" ]; then
         echo "  $errors"
     else
         echo ""
     fi
 
-    # Stop server: kill by port first (catches Gradle child JVM),
-    # then kill PID as fallback. Move to next port to avoid TIME_WAIT.
     kill_port "$PORT"
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     PORT=$((PORT + 1))
-}
-
-# --- Run optional binary (skip if not found) ---
-
-run_if_exists() {
-    local name="$1" binary="$2"
-    shift 2
-    if [ -f "$binary" ]; then
-        run_bench "$name" "$binary" "$@"
-    fi
 }
 
 # --- Main ---
@@ -111,18 +92,12 @@ if [ "$PROFILE" != "default" ]; then
     PROFILE_ARGS="--profile=${PROFILE}"
 fi
 
-echo "=== Benchmark: ${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} ==="
+echo "=== keel Benchmark: ${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} ==="
 echo ""
-printf "  %-24s %12s        %-10s  %-10s\n" "Server" "Req/sec" "p50" "p99"
-printf "  %-24s %12s        %-10s  %-10s\n" "------------------------" "------------" "----------" "----------"
+printf "  %-28s %12s        %-10s  %-10s\n" "Server" "Req/sec" "p50" "p99"
+printf "  %-28s %12s        %-10s  %-10s\n" "----------------------------" "------------" "----------" "----------"
 
-# Phase 2: Native servers (skip if binary not found)
-run_if_exists "rust-hello" benchmark/rust-hello/target/release/rust-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "go-hello" benchmark/go-hello/go-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "swift-hello" benchmark/swift-hello/.build/release/swift-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "zig-hello" benchmark/zig-hello/zig-out/bin/zig-hello --port="${PORT}" ${PROFILE_ARGS}
-
-# Kotlin/Native servers
+# Kotlin/Native engines
 NATIVE_BIN=""
 if [ "$(uname)" = "Darwin" ]; then
     ARCH=$(uname -m)
@@ -145,13 +120,11 @@ elif [ "$(uname)" = "Linux" ]; then
     fi
 fi
 
-# JVM servers — use classpath file to avoid Gradle process tree issues.
-# Gradle spawns a child JVM for JavaExec; kill only reaches the wrapper, not the server.
-# Using java -cp directly creates a single process that responds to signals.
+# JVM keel engines + ktor-cio for comparison
 JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
 if [ -f "$JVM_CP_FILE" ]; then
     JVM_CP=$(cat "$JVM_CP_FILE")
-    for engine in ktor-keel-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
+    for engine in ktor-keel-nio ktor-keel-netty ktor-cio; do
         run_bench "jvm:${engine}" java -cp "$JVM_CP" io.github.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
     done
 else

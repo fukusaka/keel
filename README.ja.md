@@ -77,19 +77,97 @@ keel/
 
 ---
 
+## ベンチマーク
+
+### 計測方法
+
+```
+  ┌─────────────┐         loopback          ┌─────────────┐
+  │  wrk client  │ ──── 127.0.0.1:18090 ──── │  HTTP server │
+  │  4 threads   │    100 connections         │  GET /hello  │
+  │  10s run     │                            │  → 13 bytes  │
+  └─────────────┘                             └─────────────┘
+```
+
+- **エンドポイント**: `GET /hello` → `"Hello, World!"`（13 bytes, text/plain）
+- **計測ツール**: [wrk](https://github.com/wg/wrk) — 4 スレッド、100 並列接続、10 秒間
+- **構成**: クライアントとサーバーが同一ホスト上（ループバック通信）
+- **p50 / p99**: 50 パーセンタイル / 99 パーセンタイルのレスポンスレイテンシ
+
+### サーバー一覧
+
+| プレフィックス | カテゴリ | 説明 |
+|--------|----------|-------------|
+| `native:ktor-keel-*` | **keel（Native）** | Ktor + keel I/O エンジン、ネイティブバイナリ |
+| `jvm:ktor-keel-*` | **keel（JVM）** | Ktor + keel I/O エンジン、JVM 上で実行 |
+| `native:ktor-cio` | Ktor CIO（Native） | Ktor 標準 CIO エンジン、ネイティブバイナリ |
+| `jvm:ktor-cio` | Ktor CIO（JVM） | Ktor 標準 CIO エンジン、JVM 上で実行 |
+| `jvm:ktor-netty` | Ktor + Netty | Ktor の Netty エンジンアダプタ |
+| `jvm:spring` | Spring WebFlux | Spring Boot + Reactor Netty |
+| `jvm:vertx` | Vert.x | Eclipse Vert.x Web |
+| `jvm:netty-raw` | Netty（素） | フレームワークなしの Netty |
+| `rust/go/zig/swift` | Native ベースライン | 各言語の最小 HTTP サーバー |
+
+### Linux x86_64
+
+AMD Ryzen 9 9950X3D（16 コア / 32 スレッド）、192 GB RAM、Ubuntu 24.04、Java 21（Azul Zulu）
+
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| zig-hello | 1,295K | 40us | 92us |
+| rust-hello | 1,280K | 39us | 123us |
+| jvm:netty-raw | 882K | 58us | 173us |
+| jvm:ktor-netty | 838K | 82us | 1.80ms |
+| jvm:spring | 814K | 62us | 269us |
+| go-hello | 562K | 97us | 0.91ms |
+| jvm:vertx | 359K | 277us | 312us |
+| **native:ktor-keel-epoll** | **158K** | **384us** | **2.24ms** |
+| jvm:ktor-cio | 142K | 608us | 4.63ms |
+| jvm:ktor-keel-nio | 138K | 114us | 220ms |
+| jvm:ktor-keel-netty | 40K | 1.17ms | 25.57ms |
+| native:ktor-cio | 8.3K | 11.47ms | 21.72ms |
+
+### macOS Apple Silicon
+
+Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temurin）
+
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| rust-hello | 159K | 574us | 0.95ms |
+| jvm:spring | 151K | 566us | 7.75ms |
+| go-hello | 147K | 502us | 1.95ms |
+| jvm:netty-raw | 141K | 678us | 0.92ms |
+| zig-hello | 140K | 680us | 0.91ms |
+| jvm:ktor-netty | 133K | 498us | 7.42ms |
+| jvm:vertx | 113K | 0.88ms | 1.67ms |
+| swift-hello | 103K | 619us | 21.83ms |
+| jvm:ktor-cio | 54K | 1.34ms | 17.98ms |
+| jvm:ktor-keel-nio | 20K | 1.94ms | 68.44ms |
+| **native:ktor-keel-kqueue** | **11K** | **2.05ms** | **50.09ms** |
+| native:ktor-cio | 6.2K | 11.01ms | 246ms |
+| native:ktor-keel-nwconnection | 0.4 | - | - |
+| jvm:ktor-keel-netty | 0.1 | - | - |
+
+### 備考
+
+- keel エンジンは現在 **Connection: close**（keep-alive なし）で動作しており、リクエストごとに TCP ハンドシェイクが発生します。Phase 5b（非同期イベントループ + keep-alive）で大幅に改善予定。
+- Linux で **native:ktor-keel-epoll**（158K）は **native:ktor-cio**（8.3K）の 18 倍高速。
+- Linux 32 コアでは **jvm:ktor-keel-nio**（138K）が Connection: close にもかかわらず **jvm:ktor-cio**（142K）と同等の性能。
+
+---
+
 ## ロードマップ
 
 | 状態 | 内容 |
 |---|---|
-| ✅ 完了 | プロジェクト骨格・CI |
-| ✅ 完了 | kqueue エンジン（macOS） |
-| ✅ 完了 | epoll エンジン（Linux） |
-| ✅ 完了 | NIO / Netty / Node.js / NWConnection エンジン |
+| ✅ 完了 | 全 6 エンジン（epoll / kqueue / NIO / Netty / NWConnection / Node.js） |
+| ✅ 完了 | IoEngine / Channel / ServerChannel / NativeBuf / BufferAllocator |
 | ✅ 完了 | HTTP/1.1 コーデック・WebSocket コーデック |
-| 🔄 進行中 | OSS 公開前整備（LICENSE / README / KDoc / Dokka / Docusaurus） |
-| 🔲 予定 | IoEngine 再設計 / BufferAllocator / Ktor アダプタ |
+| ✅ 完了 | Ktor サーバーエンジンアダプタ |
+| ✅ 完了 | ベンチマーク基盤（クロス言語比較） |
+| 🔲 予定 | 非同期イベントループ + keep-alive（Phase 5b） |
 | 🔲 予定 | TLS（Mbed TLS）/ io_uring |
-| 🔲 予定 | UDP / MQTT / HTTP2 / gRPC |
+| 🔲 予定 | UDP / MQTT / HTTP/2 / gRPC |
 
 ---
 
