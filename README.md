@@ -86,18 +86,18 @@ p50/p99 are the 50th and 99th percentile response latencies.
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
-| zig-hello | 1,316K | 39us | 85us |
-| rust-hello | 1,304K | 39us | 117us |
-| jvm:netty-raw | 891K | 57us | 167us |
-| jvm:ktor-netty | 837K | 83us | 1.67ms |
-| jvm:spring | 812K | 62us | 213us |
-| go-hello | 561K | 97us | 0.91ms |
-| jvm:vertx | 347K | 286us | 311us |
-| **native:ktor-keel-epoll** | **157K** | **389us** | **2.22ms** |
-| jvm:ktor-cio | 142K | 613us | 4.50ms |
-| jvm:ktor-keel-nio | 138K | 124us | 198ms |
-| jvm:ktor-keel-netty | 39K | 1.21ms | 25.48ms |
-| native:ktor-cio | 8.6K | 11.10ms | 20.80ms |
+| zig-hello | 1,295K | 40us | 92us |
+| rust-hello | 1,280K | 39us | 123us |
+| jvm:netty-raw | 882K | 58us | 173us |
+| jvm:ktor-netty | 838K | 82us | 1.80ms |
+| jvm:spring | 814K | 62us | 269us |
+| go-hello | 562K | 97us | 0.91ms |
+| jvm:vertx | 359K | 277us | 312us |
+| **native:ktor-keel-epoll** | **158K** | **384us** | **2.24ms** |
+| jvm:ktor-cio | 142K | 608us | 4.63ms |
+| jvm:ktor-keel-nio | 138K | 114us | 220ms |
+| jvm:ktor-keel-netty | 40K | 1.17ms | 25.57ms |
+| native:ktor-cio | 8.3K | 11.47ms | 21.72ms |
 
 ### macOS M1 (10-core)
 
