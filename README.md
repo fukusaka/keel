@@ -79,46 +79,48 @@ keel/
 
 ## Benchmark
 
-HTTP "Hello, World!" throughput (4 threads, 100 connections, 10s, Connection: close).
+HTTP "Hello, World!" throughput measured with [wrk](https://github.com/wg/wrk) (4 threads, 100 connections, 10s, Connection: close).
+p50/p99 are the 50th and 99th percentile response latencies.
 
 ### Linux x86_64 (32-core)
 
-| Server | Req/sec |
-|---|---|
-| zig-hello | 1,316K |
-| rust-hello | 1,304K |
-| jvm:netty-raw | 891K |
-| jvm:ktor-netty | 837K |
-| jvm:spring | 812K |
-| go-hello | 561K |
-| jvm:vertx | 347K |
-| **native:ktor-keel-epoll** | **157K** |
-| jvm:ktor-cio | 142K |
-| jvm:ktor-keel-nio | 138K |
-| jvm:ktor-keel-netty | 39K |
-| native:ktor-cio | 8.6K |
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| zig-hello | 1,316K | 39us | 85us |
+| rust-hello | 1,304K | 39us | 117us |
+| jvm:netty-raw | 891K | 57us | 167us |
+| jvm:ktor-netty | 837K | 83us | 1.67ms |
+| jvm:spring | 812K | 62us | 213us |
+| go-hello | 561K | 97us | 0.91ms |
+| jvm:vertx | 347K | 286us | 311us |
+| **native:ktor-keel-epoll** | **157K** | **389us** | **2.22ms** |
+| jvm:ktor-cio | 142K | 613us | 4.50ms |
+| jvm:ktor-keel-nio | 138K | 124us | 198ms |
+| jvm:ktor-keel-netty | 39K | 1.21ms | 25.48ms |
+| native:ktor-cio | 8.6K | 11.10ms | 20.80ms |
 
 ### macOS M1 (10-core)
 
-| Server | Req/sec |
-|---|---|
-| rust-hello | 158K |
-| jvm:spring | 151K |
-| go-hello | 144K |
-| jvm:netty-raw | 141K |
-| zig-hello | 139K |
-| jvm:ktor-netty | 130K |
-| jvm:vertx | 113K |
-| jvm:ktor-cio | 55K |
-| jvm:ktor-keel-nio | 20K |
-| **native:ktor-keel-kqueue** | **11K** |
-| native:ktor-cio | 9.0K |
-| jvm:ktor-keel-netty | 0.3 |
-| native:ktor-keel-nwconnection | ~0 |
+| Server | Req/sec | p50 | p99 |
+|---|---|---|---|
+| rust-hello | 159K | 574us | 0.95ms |
+| jvm:spring | 151K | 566us | 7.75ms |
+| go-hello | 147K | 502us | 1.95ms |
+| jvm:netty-raw | 141K | 678us | 0.92ms |
+| zig-hello | 140K | 680us | 0.91ms |
+| jvm:ktor-netty | 133K | 498us | 7.42ms |
+| jvm:vertx | 113K | 0.88ms | 1.67ms |
+| swift-hello | 103K | 619us | 21.83ms |
+| jvm:ktor-cio | 54K | 1.34ms | 17.98ms |
+| jvm:ktor-keel-nio | 20K | 1.94ms | 68.44ms |
+| **native:ktor-keel-kqueue** | **11K** | **2.05ms** | **50.09ms** |
+| native:ktor-cio | 6.2K | 11.01ms | 246ms |
+| native:ktor-keel-nwconnection | 0.4 | - | - |
+| jvm:ktor-keel-netty | 0.1 | - | - |
 
 > keel engines currently use Connection: close (no keep-alive). Throughput
 > will improve significantly with the async event loop + keep-alive in Phase 5b.
-> native:keel-epoll already outperforms Ktor CIO (Native) by 18x.
+> native:ktor-keel-epoll already outperforms Ktor CIO (Native) by 18x.
 
 ---
 
