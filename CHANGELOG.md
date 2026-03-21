@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `benchmark`: rename engine keys from `keel-*` to `ktor-keel-*` to clarify Ktor + keel combination
 - `benchmark`: use classpath file instead of Gradle for JVM servers in bench-all.sh to fix signal handling
 - `benchmark`: increment port per server to avoid TIME_WAIT conflicts
 - `benchmark`: refactor file organization — split monolithic files into 1-engine-per-file pattern (JvmMain, NativeEngine.macos/linux)
