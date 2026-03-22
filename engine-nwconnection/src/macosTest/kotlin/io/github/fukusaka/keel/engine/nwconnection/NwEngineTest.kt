@@ -608,14 +608,8 @@ class NwEngineTest {
 
     // --- Cancellation ---
 
-    // cancelReadCoroutine is deferred: cancelling a coroutine while
-    // keel_nw_read_async's nw_connection_receive is pending causes a
-    // StableRef use-after-dispose crash. The C callback fires after
-    // invokeOnCancellation disposes the StableRef. Fixing this requires
-    // an atomic flag in the callback to skip resume if cancelled.
-
-    //@Test
-    fun cancelReadCoroutine() = runBlocking {
+    @Test
+    fun `cancel read coroutine does not crash`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -636,6 +630,39 @@ class NwEngineTest {
         readJob.cancel()
 
         withTimeout(3000) { readJob.join() }
+        assertTrue(ch.isOpen)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `cancel write coroutine does not crash`() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val writeJob = launch {
+            val buf = NativeBuf(64)
+            try {
+                buf.writerIndex = 64
+                ch.write(buf)
+                // flush suspends on keel_nw_write_async callback
+                ch.flush()
+            } finally {
+                buf.release()
+            }
+        }
+
+        delay(100)
+        writeJob.cancel()
+
+        withTimeout(3000) { writeJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
