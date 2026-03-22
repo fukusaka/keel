@@ -27,6 +27,11 @@ kotlin {
                 implementation(project(":core"))
             }
         }
+        val macosMain by getting {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
         val macosTest by getting {
             dependencies {
                 implementation(kotlin("test"))
