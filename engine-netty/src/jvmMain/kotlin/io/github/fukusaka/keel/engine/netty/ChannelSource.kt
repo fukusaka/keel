@@ -25,7 +25,7 @@ internal class ChannelSource(
 ) : RawSource {
 
     override fun readAtMostTo(sink: Buffer, byteCount: Long): Long {
-        val size = byteCount.coerceAtMost(CODEC_BUFFER_SIZE.toLong()).toInt()
+        val size = byteCount.coerceAtMost(NettyChannel.CODEC_BUFFER_SIZE.toLong()).toInt()
         val buf = allocator.allocate(size)
         return try {
             val n = runBlocking { channel.read(buf) }
@@ -44,8 +44,4 @@ internal class ChannelSource(
 
     /** No-op: channel lifecycle is managed by the caller, not by this source. */
     override fun close() {}
-
-    companion object {
-        private const val CODEC_BUFFER_SIZE = 8192
-    }
 }

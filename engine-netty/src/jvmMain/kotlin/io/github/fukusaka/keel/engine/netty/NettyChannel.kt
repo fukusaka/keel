@@ -285,6 +285,14 @@ internal class NettyChannel(
     }
 
     companion object {
+        /**
+         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
+         * Matches the default kotlinx-io segment size. Larger values reduce
+         * syscall count but increase per-read memory; 8 KiB is a common
+         * balance for HTTP request/response parsing.
+         */
+        internal const val CODEC_BUFFER_SIZE = 8192
+
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             val inet = addr as? InetSocketAddress ?: return null
             return SocketAddress(inet.address.hostAddress, inet.port)
