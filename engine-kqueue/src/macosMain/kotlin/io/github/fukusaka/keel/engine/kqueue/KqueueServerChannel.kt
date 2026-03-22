@@ -8,6 +8,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import platform.posix.EAGAIN
 import platform.posix.accept
 import platform.posix.close

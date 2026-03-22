@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.resume
 import io.github.fukusaka.keel.core.Channel as KeelChannel
 

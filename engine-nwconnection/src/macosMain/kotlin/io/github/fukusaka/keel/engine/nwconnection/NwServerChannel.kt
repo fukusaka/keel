@@ -12,6 +12,7 @@ import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t

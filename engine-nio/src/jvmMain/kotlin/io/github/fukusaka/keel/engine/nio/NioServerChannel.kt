@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 
