@@ -4,9 +4,11 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
 import java.net.InetSocketAddress
+import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 
 /**
@@ -23,37 +25,36 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * **Zero-copy I/O**: read/write pass [NativeBuf.unsafeBuffer] (DirectByteBuffer)
  * directly to [SocketChannel.read]/[SocketChannel.write] — no intermediate
- * ByteArray copy. The ByteBuffer's position/limit are set to match
- * [NativeBuf.writerIndex]/[NativeBuf.readerIndex] before each syscall.
+ * ByteArray copy.
  *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
- * [SocketChannel.write] for each, then releases the buffers.
+ * [SocketChannel.write] for each (gather-write for multiple buffers).
  *
- * Phase (a): blocking mode. [SocketChannel] is in blocking mode so
- * read/write calls block until data is available or sent. No Selector
- * needed; Phase (b) will switch to non-blocking + Selector.
+ * **Async read via EventLoop**: The [SocketChannel] is in non-blocking mode.
+ * When `read()` returns 0 (no data), the channel is registered with the
+ * [NioEventLoop] for [SelectionKey.OP_READ] and the coroutine suspends.
+ * The EventLoop's [java.nio.channels.Selector] resumes the coroutine
+ * when the channel becomes readable.
  *
  * ```
- * Read path (zero-copy):
- *   SocketChannel.read(ByteBuffer) --> NativeBuf.unsafeBuffer
- *     (data lands directly in DirectByteBuffer's native memory)
+ * Read path (zero-copy, async via EventLoop):
+ *   SocketChannel.read(ByteBuffer) → NativeBuf.unsafeBuffer
+ *   If n == 0: suspendCancellableCoroutine + eventLoop.register(ch, OP_READ)
+ *   EventLoop select() fires → continuation.resume(Unit) → retry read
  *
  * Write path (buffered, zero-copy flush):
- *   write(buf)  --> retain buf, record offset/length in PendingWrite
- *   flush()     --> SocketChannel.write(ByteBuffer) for each PendingWrite
- *                   release each buf
- *
- * Codec bridge (byte-by-byte copy, acceptable for codec layer):
- *   asSource() --> ChannelSource --> NativeBuf --> kotlinx-io Buffer
- *   asSink()   --> ChannelSink   --> kotlinx-io Buffer --> NativeBuf
+ *   write(buf)  → retain buf, record offset/length in PendingWrite
+ *   flush()     → SocketChannel.write(ByteBuffer[]) gather-write
  * ```
  *
- * @param socketChannel The connected SocketChannel for this channel.
+ * @param socketChannel The connected SocketChannel (non-blocking).
+ * @param eventLoop     The [NioEventLoop] for readiness notification.
  * @param allocator     Buffer allocator for [asSource]/[asSink] bridge.
  */
 internal class NioChannel(
     private val socketChannel: SocketChannel,
+    private val eventLoop: NioEventLoop,
     override val allocator: BufferAllocator,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
@@ -67,50 +68,46 @@ internal class NioChannel(
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
-    /** Phase (a): no-op. Will suspend until closed in Phase (b). */
+    /** No-op. JVM SocketChannel has no close-completion callback. */
     override suspend fun awaitClosed() {}
-
-    override suspend fun read(buf: NativeBuf): Int = readBlocking(buf)
-
-    override suspend fun write(buf: NativeBuf): Int = writeBlocking(buf)
-
-    override suspend fun flush() = flushBlocking()
 
     /**
      * Reads bytes into [buf] via zero-copy SocketChannel read.
      *
-     * Sets the ByteBuffer's position to [NativeBuf.writerIndex] and limit
-     * to [NativeBuf.capacity] so data lands at the correct offset.
-     * Phase (a): blocking mode, so this call blocks until data arrives.
+     * On non-blocking mode, [SocketChannel.read] returns 0 if no data
+     * is available. In that case, registers with the [NioEventLoop]
+     * for [SelectionKey.OP_READ] and suspends.
      *
      * @return number of bytes read, or -1 on EOF.
      */
-    internal fun readBlocking(buf: NativeBuf): Int {
+    override suspend fun read(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
 
-        val bb = buf.unsafeBuffer
-        bb.position(buf.writerIndex)
-        bb.limit(buf.capacity)
+        while (true) {
+            val bb = buf.unsafeBuffer
+            bb.position(buf.writerIndex)
+            bb.limit(buf.capacity)
 
-        val n = socketChannel.read(bb)
-        if (n > 0) {
-            buf.writerIndex += n
-            return n
+            val n = socketChannel.read(bb)
+            if (n > 0) {
+                buf.writerIndex += n
+                return n
+            }
+            if (n < 0) return -1 // EOF
+
+            // n == 0: no data available, suspend until readable
+            suspendCancellableCoroutine<Unit> { cont ->
+                eventLoop.register(socketChannel, SelectionKey.OP_READ, cont)
+            }
         }
-        if (n < 0) return -1 // EOF
-        return 0
     }
 
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      *
-     * The caller's [NativeBuf.readerIndex] is advanced immediately so the
-     * buffer can be reused or released by the caller. The actual SocketChannel
-     * write happens on [flushBlocking].
-     *
      * @return number of bytes buffered.
      */
-    internal fun writeBlocking(buf: NativeBuf): Int {
+    override suspend fun write(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -125,12 +122,10 @@ internal class NioChannel(
     /**
      * Sends all buffered writes to the network via SocketChannel.
      *
-     * Uses [GatheringByteChannel.write] to send all pending buffers in a
-     * single syscall when multiple writes are buffered, reducing context
-     * switches compared to individual write() calls per buffer.
-     * Falls back to single write() for one-buffer flushes.
+     * Uses [GatheringByteChannel.write] for gather-write when multiple
+     * writes are buffered. Falls back to single write() for one buffer.
      */
-    internal fun flushBlocking() {
+    override suspend fun flush() {
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
@@ -142,7 +137,6 @@ internal class NioChannel(
             socketChannel.write(bb)
             pw.buf.release()
         } else {
-            // Gather write: send all buffers in one syscall via GatheringByteChannel
             val bbArray = Array(pendingWrites.size) { i ->
                 val pw = pendingWrites[i]
                 pw.buf.unsafeBuffer.duplicate().apply {
@@ -167,8 +161,10 @@ internal class NioChannel(
         }
     }
 
+    @Suppress("DEPRECATION")
     override fun asSource(): RawSource = ChannelSource(this, allocator)
 
+    @Suppress("DEPRECATION")
     override fun asSink(): RawSink = ChannelSink(this, allocator)
 
     /**
