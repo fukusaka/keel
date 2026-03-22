@@ -5,13 +5,17 @@ import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
+import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.socket.DuplexChannel
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
 import java.net.InetSocketAddress
-import java.util.concurrent.LinkedBlockingQueue
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
@@ -24,37 +28,45 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
 /**
  * Netty-based [KeelChannel] implementation for JVM.
  *
- * **Push-to-pull bridge**: Netty delivers data via [channelRead] callbacks
- * (push model). This class buffers received [ByteBuf]s in a
- * [LinkedBlockingQueue] and exposes a blocking [read] (pull model).
+ * **Push-to-pull bridge via coroutines**: Netty delivers data via [channelRead]
+ * callbacks (push model). With `autoRead = false`, data is only read when keel
+ * explicitly calls [nettyChannel.read()][NettyNativeChannel.read]. The [read]
+ * method suspends via [suspendCancellableCoroutine] and resumes when the Netty
+ * handler receives data.
  *
  * **Read path (copy from ByteBuf)**: Unlike kqueue/epoll/NIO which read
  * directly into [NativeBuf], Netty delivers data asynchronously before the
- * user calls [read]. The [ByteBuf] content is copied into [NativeBuf] via
+ * user provides a buffer. The [ByteBuf] content is copied into [NativeBuf] via
  * [ByteBuf.getBytes]. This is an accepted Phase 5 limitation — same
  * structural constraint as NWConnection's dispatch_data_t copy. Phase 6
  * will introduce MemoryOwner abstraction for zero-copy push model support.
  *
  * **Write path**: Uses PendingWrite buffering (matching KqueueChannel/NioChannel
  * pattern). [flush] batches all pending writes into Netty's outbound buffer
- * via [write], then issues a single [writeAndFlush] on the last write.
- * Only the last write's future is awaited with a timeout to avoid blocking
- * Dispatchers.IO threads under high concurrency. Each [NativeBuf.unsafeBuffer]
- * is wrapped as Netty [ByteBuf] via [Unpooled.wrappedBuffer] — zero-copy on
- * the write side.
+ * via [write][NettyNativeChannel.write], then issues a single
+ * [writeAndFlush][NettyNativeChannel.writeAndFlush] on the last write.
+ * The last write's [ChannelFuture] is awaited via [suspendCancellableCoroutine]
+ * with a listener callback — no thread blocking.
+ *
+ * **Thread safety**: [pendingReadCont] is accessed from both coroutine threads
+ * ([read], [close]) and Netty's worker EventLoop thread ([channelRead],
+ * [channelInactive], [exceptionCaught]). All access is protected by [readLock]
+ * to prevent double-resume races (e.g. [close] and [channelInactive] firing
+ * concurrently).
  *
  * ```
- * Read path (push → pull, copy):
- *   Netty EventLoop: channelRead(ByteBuf) --> readQueue.put(byteBuf)
- *   keel thread:     read(NativeBuf) --> readQueue.take() --> copy --> release
+ * Read path (auto-read=false, coroutine bridge):
+ *   keel coroutine: read(buf) --> suspendCancellableCoroutine + nettyChannel.read()
+ *   Netty EventLoop: channelRead(ByteBuf) --> continuation.resume(byteBuf)
+ *   keel coroutine: resumed --> copy ByteBuf to NativeBuf --> release ByteBuf
  *
- * Write path (buffered, batch flush with timeout):
+ * Write path (buffered, async flush):
  *   write(buf) --> retain, record PendingWrite
- *   flush()    --> write(wrappedBuffer) x N, writeAndFlush(last).await(timeout)
+ *   flush()    --> write(wrappedBuffer) x N, writeAndFlush(last) + listener
  *
  * EOF detection:
- *   Netty EventLoop: channelInactive() --> readQueue.put(EMPTY_BUFFER)
- *   keel thread:     read() --> take() --> EMPTY_BUFFER --> return -1
+ *   Netty EventLoop: channelInactive() --> continuation.resume(null)
+ *   keel coroutine:  resumed with null --> return -1
  * ```
  *
  * @param nettyChannel The underlying Netty channel.
@@ -67,41 +79,65 @@ internal class NettyChannel(
     override val localAddress: SocketAddress?,
 ) : KeelChannel {
 
-    private val readQueue = LinkedBlockingQueue<ByteBuf>()
+    /**
+     * Guards all access to [pendingReadCont]. Required because [read] and
+     * [close] run on coroutine threads while [channelRead], [channelInactive],
+     * and [exceptionCaught] run on Netty's worker EventLoop thread.
+     * Coroutine [Mutex] cannot be used here because the handler callbacks
+     * are not in a coroutine context ([Mutex.lock] is a suspend function).
+     */
+    private val readLock = Any()
+    private var pendingReadCont: CancellableContinuation<ByteBuf?>? = null
     private val pendingWrites = mutableListOf<PendingWrite>()
+    // @Volatile for isOpen/isActive property getters read outside readLock.
+    // Writes happen on the coroutine thread (close) or EventLoop (channelInactive).
+    @Volatile
     private var _open = true
+    @Volatile
     private var _active = true
     private var outputShutdown = false
 
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
-    /** Phase (a): no-op. Will suspend until closed in Phase (b). */
-    override suspend fun awaitClosed() {}
-
-    override suspend fun read(buf: NativeBuf): Int = readBlocking(buf)
-
-    override suspend fun write(buf: NativeBuf): Int = writeBlocking(buf)
-
-    override suspend fun flush() = flushBlocking()
+    /** Suspends until this channel is fully closed by Netty's EventLoop. */
+    override suspend fun awaitClosed() {
+        if (!_open) return
+        suspendCancellableCoroutine { cont ->
+            nettyChannel.closeFuture().addListener {
+                cont.resume(Unit)
+            }
+        }
+    }
 
     /**
-     * Blocks until data is available from Netty's event loop, then copies
+     * Suspends until data is available from Netty's event loop, then copies
      * the received [ByteBuf] into [buf].
+     *
+     * With `autoRead = false`, explicitly requests one read from Netty via
+     * [NettyNativeChannel.read]. The handler's [channelRead] resumes the
+     * suspended coroutine with the received [ByteBuf].
      *
      * @return number of bytes read, or -1 on EOF/channel inactive.
      */
-    internal fun readBlocking(buf: NativeBuf): Int {
+    override suspend fun read(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
 
-        // Poll with timeout to avoid indefinite blocking (e.g. if channel
-        // is closed concurrently). 5-second timeout matches kqueue/epoll pattern.
-        val byteBuf = readQueue.poll(5, java.util.concurrent.TimeUnit.SECONDS)
-            ?: return -1 // Timeout: treat as EOF
+        val byteBuf = suspendCancellableCoroutine { cont ->
+            synchronized(readLock) {
+                pendingReadCont = cont
+                cont.invokeOnCancellation {
+                    synchronized(readLock) { pendingReadCont = null }
+                }
+            }
+            // auto-read=false: explicitly request one read from Netty.
+            // Called outside readLock to avoid holding the lock during Netty I/O.
+            nettyChannel.read()
+        }
 
-        // EOF sentinel: empty buffer from channelInactive
-        if (!byteBuf.isReadable) {
-            byteBuf.release()
+        // EOF: null from channelInactive, or empty buffer
+        if (byteBuf == null || !byteBuf.isReadable) {
+            byteBuf?.release()
             return -1
         }
 
@@ -118,7 +154,7 @@ internal class NettyChannel(
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      */
-    internal fun writeBlocking(buf: NativeBuf): Int {
+    override suspend fun write(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -131,41 +167,59 @@ internal class NettyChannel(
     }
 
     /**
-     * Sends all buffered writes via Netty's [writeAndFlush].
+     * Sends all buffered writes via Netty's [writeAndFlush][NettyNativeChannel.writeAndFlush].
      *
-     * Batches all pending writes into Netty's outbound buffer using [write],
-     * then issues a single [flush]. Only the last write's future is awaited
-     * with a timeout — this avoids blocking Dispatchers.IO threads on every
-     * individual write, which caused thread starvation under high concurrency
-     * (50+ connections with Connection: close).
+     * Batches all pending writes into Netty's outbound buffer using
+     * [write][NettyNativeChannel.write], then issues a single flush on the last
+     * write. The last write's [ChannelFuture] is awaited via
+     * [suspendCancellableCoroutine] — no thread blocking.
      */
-    internal fun flushBlocking() {
+    override suspend fun flush() {
         check(_open) { "Channel is closed" }
         val size = pendingWrites.size
+        if (size == 0) return
+        var lastFuture: ChannelFuture? = null
         for ((i, pw) in pendingWrites.withIndex()) {
             val bb = pw.buf.unsafeBuffer.duplicate()
             bb.position(pw.offset)
             bb.limit(pw.offset + pw.length)
             val nettyBuf = Unpooled.wrappedBuffer(bb)
             if (i == size - 1) {
-                // Last write: flush and await with timeout to avoid indefinite blocking
-                // when the client closes the connection before the write completes.
-                nettyChannel.writeAndFlush(nettyBuf)
-                    .await(FLUSH_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+                lastFuture = nettyChannel.writeAndFlush(nettyBuf)
             } else {
                 nettyChannel.write(nettyBuf)
             }
             pw.buf.release()
         }
         pendingWrites.clear()
+        // Await the last write's completion via listener callback
+        lastFuture?.let { future ->
+            suspendCancellableCoroutine { cont ->
+                future.addListener { f ->
+                    if (f.isSuccess) {
+                        cont.resume(Unit)
+                    } else {
+                        cont.resumeWithException(
+                            f.cause() ?: Exception("flush failed")
+                        )
+                    }
+                }
+                cont.invokeOnCancellation { future.cancel(false) }
+            }
+        }
     }
 
+    /**
+     * Sends a FIN to the remote peer. The shutdown is asynchronous —
+     * Netty's EventLoop handles the actual socket operation. No await
+     * is needed because the caller does not depend on shutdown completion
+     * (unlike flush, where the caller needs write confirmation).
+     */
     override fun shutdownOutput() {
         if (!outputShutdown && _open) {
             outputShutdown = true
             if (nettyChannel is DuplexChannel) {
                 nettyChannel.shutdownOutput()
-                    .await(FLUSH_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
             }
         }
     }
@@ -178,6 +232,12 @@ internal class NettyChannel(
         if (_open) {
             _open = false
             _active = false
+            // Resume any pending read with null (EOF), under lock to
+            // prevent double-resume with channelInactive/exceptionCaught.
+            synchronized(readLock) {
+                pendingReadCont?.resume(null)
+                pendingReadCont = null
+            }
             for (pw in pendingWrites) {
                 pw.buf.release()
             }
@@ -189,28 +249,49 @@ internal class NettyChannel(
     }
 
     /**
-     * Netty [ChannelInboundHandlerAdapter] that bridges push events to the
-     * blocking [readQueue]. Added to each accepted/connected channel's pipeline.
+     * Netty [ChannelInboundHandlerAdapter] that bridges push events to
+     * suspended coroutines. With `autoRead = false`, [channelRead] is only
+     * called after keel explicitly calls [nettyChannel.read()][NettyNativeChannel.read].
      */
     internal val handler = object : ChannelInboundHandlerAdapter() {
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
-            readQueue.put(msg as ByteBuf)
+            synchronized(readLock) {
+                val cont = pendingReadCont
+                pendingReadCont = null
+                if (cont != null) {
+                    cont.resume(msg as ByteBuf)
+                } else {
+                    // auto-read=false should prevent this, but release defensively
+                    (msg as ByteBuf).release()
+                }
+            }
         }
 
         override fun channelInactive(ctx: ChannelHandlerContext) {
-            // EOF sentinel: unreadable empty buffer
-            readQueue.put(Unpooled.EMPTY_BUFFER)
+            _active = false
+            synchronized(readLock) {
+                pendingReadCont?.resume(null)
+                pendingReadCont = null
+            }
         }
 
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-            readQueue.put(Unpooled.EMPTY_BUFFER)
+            synchronized(readLock) {
+                pendingReadCont?.resumeWithException(cause)
+                pendingReadCont = null
+            }
             ctx.close()
         }
     }
 
     companion object {
-        /** Timeout for writeAndFlush().await() to prevent indefinite blocking. */
-        private const val FLUSH_TIMEOUT_SECONDS = 5L
+        /**
+         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
+         * Matches the default kotlinx-io segment size. Larger values reduce
+         * syscall count but increase per-read memory; 8 KiB is a common
+         * balance for HTTP request/response parsing.
+         */
+        internal const val CODEC_BUFFER_SIZE = 8192
 
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             val inet = addr as? InetSocketAddress ?: return null
