@@ -5,14 +5,18 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
+import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelInitializer
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
-import java.util.concurrent.LinkedBlockingQueue
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
+import io.netty.channel.Channel as NettyNativeChannel
 
 /**
  * Netty-based [IoEngine] implementation for JVM.
@@ -21,12 +25,14 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * client-side TCP connections. Netty manages its own EventLoop threads
  * (boss group for accept, worker group for I/O).
  *
- * **Push-to-pull bridge**: Netty's event-driven model (channelRead callback)
- * is bridged to keel's pull model (suspend read) via [LinkedBlockingQueue]
- * in [NettyChannel]. See [NettyChannel] KDoc for details.
+ * **Coroutine integration**: All suspend functions use
+ * [suspendCancellableCoroutine] with Netty's [ChannelFuture] listeners
+ * for non-blocking operation. No thread blocking occurs.
  *
- * Phase (a): blocking I/O. All suspend functions block internally.
- * Netty's EventLoop runs in background threads.
+ * **auto-read=false**: Each accepted/connected channel has `autoRead`
+ * disabled. Data is only read when keel's [NettyChannel.read] explicitly
+ * calls [NettyNativeChannel.read], enabling pull-model semantics and
+ * natural TCP backpressure.
  *
  * ```
  * NettyEngine (owns NioEventLoopGroups)
@@ -51,38 +57,44 @@ class NettyEngine(
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        // Accept queue shared between ChannelInitializer and NettyServerChannel.
-        // Created upfront so the closure can capture it before bind completes.
-        // Queue of fully-initialized NettyChannels (with handler already in pipeline).
-        // The handler is added in initChannel to avoid the race condition where
-        // channelRead fires before accept() adds the handler.
-        val acceptQueue = LinkedBlockingQueue<NettyChannel>()
+        val serverChannel = NettyServerChannel.create()
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
+                    // Disable auto-read for pull-model semantics.
+                    // Data is only read when keel calls nettyChannel.read().
+                    ch.config().isAutoRead = false
                     val remoteAddr = NettyChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyChannel.toSocketAddress(ch.localAddress())
                     val keelChannel = NettyChannel(ch, config.allocator, remoteAddr, localAddr)
                     ch.pipeline().addLast(keelChannel.handler)
-                    acceptQueue.put(keelChannel)
+                    serverChannel.onNewChannel(keelChannel)
                 }
             })
 
-        val nettyServerCh = bootstrap.bind(InetSocketAddress(host, port)).sync().channel()
+        val nettyServerCh = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
+            bootstrap.bind(InetSocketAddress(host, port)).addListener { f ->
+                val cf = f as ChannelFuture
+                if (cf.isSuccess) {
+                    cont.resume(cf.channel())
+                } else {
+                    cont.resumeWithException(
+                        cf.cause() ?: Exception("bind failed")
+                    )
+                }
+            }
+        }
 
         val localAddr = NettyChannel.toSocketAddress(nettyServerCh.localAddress())
             ?: error("Failed to get local address")
 
-        // Pass the shared acceptQueue to the ServerChannel
-        return NettyServerChannel(nettyServerCh, localAddr, acceptQueue)
+        serverChannel.init(nettyServerCh, localAddr)
+        return serverChannel
     }
 
-    /**
-     * Phase (a): blocking connect via Netty [Bootstrap].
-     */
     override suspend fun connect(host: String, port: Int): KeelChannel {
         check(!closed) { "Engine is closed" }
 
@@ -91,11 +103,23 @@ class NettyEngine(
             .channel(NioSocketChannel::class.java)
             .handler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    // Handler will be added after connect completes
+                    // Disable auto-read for pull-model semantics
+                    ch.config().isAutoRead = false
                 }
             })
 
-        val nettyChannel = bootstrap.connect(InetSocketAddress(host, port)).sync().channel()
+        val nettyChannel = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
+            bootstrap.connect(InetSocketAddress(host, port)).addListener { f ->
+                val cf = f as ChannelFuture
+                if (cf.isSuccess) {
+                    cont.resume(cf.channel())
+                } else {
+                    cont.resumeWithException(
+                        cf.cause() ?: Exception("connect failed")
+                    )
+                }
+            }
+        }
 
         val remoteAddr = NettyChannel.toSocketAddress(nettyChannel.remoteAddress())
         val localAddr = NettyChannel.toSocketAddress(nettyChannel.localAddress())
