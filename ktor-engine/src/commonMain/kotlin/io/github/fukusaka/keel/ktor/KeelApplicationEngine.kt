@@ -171,7 +171,6 @@ public class KeelApplicationEngine(
      * joined before parsing the next request to ensure body bytes are fully
      * consumed from the source.
      */
-    @Suppress("DEPRECATION")
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
         val source = BufferedSuspendSource(channel.asSuspendSource(), channel.allocator)
         val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
