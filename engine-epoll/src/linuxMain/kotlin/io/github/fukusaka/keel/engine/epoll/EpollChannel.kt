@@ -15,8 +15,6 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 import epoll.keel_writev
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
@@ -62,14 +60,11 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *   write(buf)  --> retain buf, record offset/length in PendingWrite
  *   flush()     --> POSIX write/writev, release buffers
  *
- * Codec bridge (byte-by-byte copy, acceptable for codec layer):
- *   asSource() --> ChannelSource --> NativeBuf --> kotlinx-io Buffer
- *   asSink()   --> ChannelSink   --> kotlinx-io Buffer --> NativeBuf
  * ```
  *
  * @param fd        The connected socket file descriptor (non-blocking).
  * @param eventLoop The [EpollEventLoop] for fd readiness notification.
- * @param allocator Buffer allocator for [asSource]/[asSink] bridge.
+ * @param allocator Buffer allocator for read operations.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollChannel(
@@ -198,10 +193,6 @@ internal class EpollChannel(
         }
     }
 
-    override fun asSource(): RawSource = ChannelSource(this, allocator)
-
-    override fun asSink(): RawSink = ChannelSink(this, allocator)
-
     /**
      * Closes the socket and releases all pending writes.
      * Unflushed data is discarded (buffers are released without sending).
@@ -218,11 +209,4 @@ internal class EpollChannel(
         }
     }
 
-    companion object {
-        /**
-         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
-         * Matches the default kotlinx-io segment size.
-         */
-        internal const val CODEC_BUFFER_SIZE = 8192
-    }
 }

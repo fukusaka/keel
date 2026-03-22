@@ -11,8 +11,6 @@ import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.socket.DuplexChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 import java.net.InetSocketAddress
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -70,7 +68,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * ```
  *
  * @param nettyChannel The underlying Netty channel.
- * @param allocator    Buffer allocator for [asSource]/[asSink] bridge.
+ * @param allocator    Buffer allocator for read operations.
  */
 internal class NettyChannel(
     private val nettyChannel: NettyNativeChannel,
@@ -224,10 +222,6 @@ internal class NettyChannel(
         }
     }
 
-    override fun asSource(): RawSource = ChannelSource(this, allocator)
-
-    override fun asSink(): RawSink = ChannelSink(this, allocator)
-
     override fun close() {
         if (_open) {
             _open = false
@@ -285,14 +279,6 @@ internal class NettyChannel(
     }
 
     companion object {
-        /**
-         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
-         * Matches the default kotlinx-io segment size. Larger values reduce
-         * syscall count but increase per-read memory; 8 KiB is a common
-         * balance for HTTP request/response parsing.
-         */
-        internal const val CODEC_BUFFER_SIZE = 8192
-
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             val inet = addr as? InetSocketAddress ?: return null
             return SocketAddress(inet.address.hostAddress, inet.port)
