@@ -70,20 +70,37 @@ class BufferedSuspendSink(
     }
 
     /**
-     * Sends the internal buffer's contents to the underlying sink.
+     * Sends the internal buffer's contents to the underlying sink
+     * and waits for delivery before clearing the buffer.
+     *
+     * Must call sink.flush() before buf.clear() because Channel.write()
+     * retains a reference to buf and records offset/length. If buf were
+     * cleared and reused before flush, new data would overwrite the
+     * retained buffer's memory, corrupting pending writes.
      */
     private suspend fun flushBuffer() {
         if (buf.readableBytes > 0) {
             sink.write(buf)
+            sink.flush()
             buf.clear()
         }
     }
 
     override fun close() {
-        buf.release()
+        if (!closed) {
+            closed = true
+            buf.release()
+        }
     }
 
+    private var closed = false
+
     companion object {
+        /**
+         * Internal buffer size. 8 KiB matches the default kotlinx-io segment
+         * size and balances syscall frequency against memory usage for typical
+         * HTTP response sizes.
+         */
         private const val BUFFER_SIZE = 8192
     }
 }
