@@ -11,6 +11,11 @@ kotlin {
                 implementation(project(":core"))
             }
         }
+        jvmMain {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
         jvmTest {
             dependencies {
                 implementation(kotlin("test"))
