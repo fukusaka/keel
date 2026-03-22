@@ -1,0 +1,70 @@
+package io.github.fukusaka.keel.codec.http
+
+import io.github.fukusaka.keel.core.BufferedSuspendSource
+import io.github.fukusaka.keel.core.HeapAllocator
+import io.github.fukusaka.keel.core.NativeBuf
+import io.github.fukusaka.keel.core.SuspendSource
+import kotlinx.coroutines.runBlocking
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class SuspendHttpParserTest {
+
+    private fun sourceOf(data: String): SuspendSource = object : SuspendSource {
+        private val bytes = data.encodeToByteArray()
+        private var pos = 0
+        override suspend fun read(buf: NativeBuf): Int {
+            if (pos >= bytes.size) return -1
+            val n = minOf(bytes.size - pos, buf.writableBytes)
+            for (i in 0 until n) buf.writeByte(bytes[pos++])
+            return n
+        }
+        override fun close() {}
+    }
+
+    @Test
+    fun `parseRequestHead suspend variant parses GET request`() = runBlocking {
+        val raw = "GET /hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+
+        val head = parseRequestHead(source)
+
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals("/hello", head.uri)
+        assertEquals(HttpVersion.HTTP_1_1, head.version)
+        assertEquals("localhost", head.headers["Host"])
+        assertEquals("0", head.headers["Content-Length"])
+        source.close()
+    }
+
+    @Test
+    fun `parseRequestHead suspend variant parses POST request`() = runBlocking {
+        val raw = "POST /submit HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
+        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+
+        val head = parseRequestHead(source)
+
+        assertEquals(HttpMethod.POST, head.method)
+        assertEquals("/submit", head.uri)
+        assertEquals("text/plain", head.headers["Content-Type"])
+        assertEquals("5", head.headers["Content-Length"])
+
+        // Body should remain in the source
+        val body = source.readByteArray(5)
+        assertEquals("hello", body.decodeToString())
+        source.close()
+    }
+
+    @Test
+    fun `parseResponseHead suspend variant parses 200 OK`() = runBlocking {
+        val raw = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
+        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+
+        val head = parseResponseHead(source)
+
+        assertEquals(200, head.status.code)
+        assertEquals(HttpVersion.HTTP_1_1, head.version)
+        assertEquals("2", head.headers["Content-Length"])
+        source.close()
+    }
+}
