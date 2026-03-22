@@ -29,6 +29,8 @@ internal class ChannelSink(
         while (remaining > 0) {
             val chunkSize = remaining.coerceAtMost(EpollChannel.CODEC_BUFFER_SIZE)
             val buf = allocator.allocate(chunkSize)
+            // Copy from kotlinx-io Buffer to NativeBuf byte-by-byte.
+            // Acceptable overhead for codec layer; engine layer uses zero-copy.
             for (i in 0 until chunkSize) {
                 buf.writeByte(source.readByte())
             }

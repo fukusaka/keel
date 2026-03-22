@@ -78,7 +78,11 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollEventLoop {
 
-    /** The epoll file descriptor, created at construction. */
+    /**
+     * The epoll file descriptor, created at construction.
+     * Exposed for [EpollEngine.bind] to register server fds directly
+     * via `epoll_ctl(epFd, ...)`. Channel fds are registered via [register].
+     */
     val epFd: Int
 
     // Arena for long-lived native allocations (mutex, pthread_t).

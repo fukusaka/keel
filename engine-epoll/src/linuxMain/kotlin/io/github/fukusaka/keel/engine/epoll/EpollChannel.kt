@@ -30,6 +30,9 @@ import platform.posix.write
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
+ *
+ * We record offset/length separately because [NativeBuf.readerIndex] is
+ * advanced at write() time so the caller can reuse the buffer immediately.
  */
 private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
 
@@ -199,6 +202,10 @@ internal class EpollChannel(
 
     override fun asSink(): RawSink = ChannelSink(this, allocator)
 
+    /**
+     * Closes the socket and releases all pending writes.
+     * Unflushed data is discarded (buffers are released without sending).
+     */
     override fun close() {
         if (_open) {
             _open = false
