@@ -10,8 +10,10 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t
@@ -160,10 +162,9 @@ internal class NwServerChannel(
         withLock {
             if (_active) {
                 _active = false
-                // Pending accept continuation is left uncompleted.
-                // The coroutine will be garbage collected. Explicit cancel
-                // requires CancellationException import and is deferred to
-                // graceful shutdown implementation.
+                pendingAcceptCont?.resumeWithException(
+                    CancellationException("ServerChannel closed"),
+                )
                 pendingAcceptCont = null
             }
         }

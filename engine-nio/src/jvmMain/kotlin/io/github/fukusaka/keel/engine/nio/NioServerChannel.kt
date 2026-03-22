@@ -4,7 +4,10 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 
@@ -37,6 +40,7 @@ internal class NioServerChannel(
 ) : ServerChannel {
 
     private var _active = true
+    private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
     override val isActive: Boolean get() = _active
 
@@ -58,14 +62,21 @@ internal class NioServerChannel(
             }
 
             suspendCancellableCoroutine<Unit> { cont ->
+                pendingAcceptCont = cont
                 bossLoop.register(serverChannel, SelectionKey.OP_ACCEPT, cont)
+                cont.invokeOnCancellation { pendingAcceptCont = null }
             }
+            pendingAcceptCont = null
         }
     }
 
     override fun close() {
         if (_active) {
             _active = false
+            pendingAcceptCont?.resumeWithException(
+                CancellationException("ServerChannel closed"),
+            )
+            pendingAcceptCont = null
             serverChannel.close()
         }
     }

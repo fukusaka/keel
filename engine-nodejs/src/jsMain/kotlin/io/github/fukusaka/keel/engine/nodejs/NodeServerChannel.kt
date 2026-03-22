@@ -3,8 +3,11 @@ package io.github.fukusaka.keel.engine.nodejs
 import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 import io.github.fukusaka.keel.core.Channel as KeelChannel
 
 /**
@@ -29,16 +32,16 @@ internal class NodeServerChannel(
 
     private var _active = true
     private val pendingConnections = ArrayDeque<Socket>()
-    private var pendingAccept: ((Socket) -> Unit)? = null
+    private var pendingAcceptCont: CancellableContinuation<Socket>? = null
 
     override val isActive: Boolean get() = _active
 
     /** Called by [NodeEngine.bind] to register the connection handler. */
     internal fun onConnection(socket: Socket) {
-        if (pendingAccept != null) {
-            val callback = pendingAccept!!
-            pendingAccept = null
-            callback(socket)
+        val cont = pendingAcceptCont
+        if (cont != null) {
+            pendingAcceptCont = null
+            cont.resume(socket)
         } else {
             pendingConnections.addLast(socket)
         }
@@ -50,8 +53,9 @@ internal class NodeServerChannel(
         val socket: Socket = if (pendingConnections.isNotEmpty()) {
             pendingConnections.removeFirst()
         } else {
-            suspendCoroutine { cont ->
-                pendingAccept = { s -> cont.resume(s) }
+            suspendCancellableCoroutine { cont ->
+                pendingAcceptCont = cont
+                cont.invokeOnCancellation { pendingAcceptCont = null }
             }
         }
 
@@ -65,6 +69,10 @@ internal class NodeServerChannel(
     override fun close() {
         if (_active) {
             _active = false
+            pendingAcceptCont?.resumeWithException(
+                CancellationException("ServerChannel closed"),
+            )
+            pendingAcceptCont = null
             server.close()
         }
     }
