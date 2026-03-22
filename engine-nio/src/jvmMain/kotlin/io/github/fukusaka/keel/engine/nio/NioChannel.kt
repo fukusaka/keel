@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
@@ -67,6 +68,9 @@ internal class NioChannel(
 
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
+
+    /** Returns the worker EventLoop's dispatcher for same-thread I/O execution. */
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     /** No-op. JVM SocketChannel has no close-completion callback. */
     override suspend fun awaitClosed() {}

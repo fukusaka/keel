@@ -28,6 +28,7 @@ kotlin {
         commonMain {
             dependencies {
                 api(libs.kotlinx.io.core)
+                api(libs.kotlinx.coroutines.core)
             }
         }
         commonTest {

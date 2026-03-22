@@ -11,27 +11,27 @@ import java.nio.channels.ServerSocketChannel
 /**
  * Java NIO [ServerSocketChannel]-based [ServerChannel] implementation for JVM.
  *
- * The [ServerSocketChannel] is in non-blocking mode. [accept] attempts
- * [ServerSocketChannel.accept] and if null (no pending connection),
- * registers with the [NioEventLoop] for [SelectionKey.OP_ACCEPT]
- * and suspends.
+ * Uses [bossLoop] for accept readiness notification and assigns accepted
+ * channels to worker EventLoops from [workerGroup] in round-robin order.
  *
  * ```
  * accept() flow:
- *   ServerSocketChannel.accept()
- *     if null: suspendCancellableCoroutine + eventLoop.register(ch, OP_ACCEPT)
- *     EventLoop select() fires → resume → retry accept
- *   → NioChannel(socketChannel, eventLoop, allocator, remoteAddr, localAddr)
+ *   bossLoop: select() fires OP_ACCEPT → resume
+ *   ServerSocketChannel.accept() → client SocketChannel
+ *   workerGroup.next() → assign worker EventLoop
+ *   → NioChannel(client, workerLoop, ...)
  * ```
  *
  * @param serverChannel The listening ServerSocketChannel (non-blocking).
- * @param eventLoop     The [NioEventLoop] for readiness notification.
+ * @param bossLoop      EventLoop for accept readiness notification.
+ * @param workerGroup   Worker EventLoopGroup for accepted channels.
  * @param localAddress  Bind address of this server channel.
  * @param allocator     Passed to accepted [NioChannel]s.
  */
 internal class NioServerChannel(
     private val serverChannel: ServerSocketChannel,
-    private val eventLoop: NioEventLoop,
+    private val bossLoop: NioEventLoop,
+    private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
 ) : ServerChannel {
@@ -41,11 +41,8 @@ internal class NioServerChannel(
     override val isActive: Boolean get() = _active
 
     /**
-     * Suspends until an incoming connection arrives, then returns a [NioChannel].
-     *
-     * Uses non-blocking [ServerSocketChannel.accept]. If no connection is
-     * pending (returns null), registers with the [NioEventLoop] for
-     * [SelectionKey.OP_ACCEPT] and suspends.
+     * Suspends until an incoming connection arrives, then returns a [NioChannel]
+     * assigned to the next worker EventLoop.
      */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
@@ -56,12 +53,12 @@ internal class NioServerChannel(
                 client.configureBlocking(false)
                 val remoteAddr = NioChannel.toSocketAddress(client.remoteAddress)
                 val localAddr = NioChannel.toSocketAddress(client.localAddress)
-                return NioChannel(client, eventLoop, allocator, remoteAddr, localAddr)
+                val workerLoop = workerGroup.next()
+                return NioChannel(client, workerLoop, allocator, remoteAddr, localAddr)
             }
 
-            // No pending connection, suspend until OP_ACCEPT fires
             suspendCancellableCoroutine<Unit> { cont ->
-                eventLoop.register(serverChannel, SelectionKey.OP_ACCEPT, cont)
+                bossLoop.register(serverChannel, SelectionKey.OP_ACCEPT, cont)
             }
         }
     }
