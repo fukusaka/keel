@@ -122,10 +122,20 @@ class BufferedSuspendSource(
     }
 
     override fun close() {
-        buf.release()
+        if (!closed) {
+            closed = true
+            buf.release()
+        }
     }
 
+    private var closed = false
+
     companion object {
+        /**
+         * Internal buffer size. 8 KiB matches the default kotlinx-io segment
+         * size and balances suspend frequency against memory usage for typical
+         * HTTP request header sizes.
+         */
         private const val BUFFER_SIZE = 8192
         private const val LF = '\n'.code.toByte()
     }
