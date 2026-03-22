@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: add suspend overloads for `parseRequestHead`/`writeResponseHead` using `BufferedSuspendSource`/`BufferedSuspendSink`
 - `codec-http`: add `HttpHeaders.entries()` for suspend-compatible iteration
 - `ktor-engine`: switch from `asSource()`/`asSink()` to `asSuspendSource()`/`asSuspendSink()` — eliminates `runBlocking` from I/O path
+- `engine-nio`: replace blocking SocketChannel with non-blocking mode + Selector EventLoop (Phase 5b async)
+- `engine-nio`: add `NioEventLoop` with Selector.wakeup and dedicated thread
 
 ## [0.1.0] - 2026-03-22
 
