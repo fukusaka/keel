@@ -180,9 +180,13 @@ internal class NwChannel(
         }
     }
 
-    override fun asSource(): RawSource = ChannelSource(this, allocator)
+    @Suppress("DEPRECATION")
+    override fun asSource(): RawSource =
+        throw UnsupportedOperationException("Use asSuspendSource() instead")
 
-    override fun asSink(): RawSink = ChannelSink(this, allocator)
+    @Suppress("DEPRECATION")
+    override fun asSink(): RawSink =
+        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     /**
      * Cancels the NWConnection and releases all pending writes.

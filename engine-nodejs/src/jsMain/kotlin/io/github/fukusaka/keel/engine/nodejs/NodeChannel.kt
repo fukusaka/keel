@@ -147,9 +147,13 @@ internal class NodeChannel(
         }
     }
 
-    override fun asSource(): RawSource = ChannelSource(this)
+    @Suppress("DEPRECATION")
+    override fun asSource(): RawSource =
+        throw UnsupportedOperationException("Use asSuspendSource() instead")
 
-    override fun asSink(): RawSink = ChannelSink(this)
+    @Suppress("DEPRECATION")
+    override fun asSink(): RawSink =
+        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     override fun close() {
         if (_open) {
@@ -163,9 +167,4 @@ internal class NodeChannel(
         }
     }
 
-    // Internal blocking variants for ChannelSource/ChannelSink
-    // In JS, these delegate to the suspend versions via Promise
-    internal suspend fun readSuspend(buf: NativeBuf): Int = read(buf)
-    internal suspend fun writeSuspend(buf: NativeBuf): Int = write(buf)
-    internal suspend fun flushSuspend() = flush()
 }

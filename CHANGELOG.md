@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-nio`: remove `ChannelSource`/`ChannelSink` — first engine fully migrated to `SuspendSource`/`SuspendSink`
 - `core`: add `Channel.coroutineDispatcher` for engine-specific EventLoop dispatcher (default: `Dispatchers.Default`)
 - `core`: add `kotlinx-coroutines-core` as `api` dependency in commonMain
+- All engines: delete `ChannelSource`/`ChannelSink` — `asSource()`/`asSink()` now throw `UnsupportedOperationException`; use `asSuspendSource()`/`asSuspendSink()` instead
 
 ## [0.1.0] - 2026-03-22
 
