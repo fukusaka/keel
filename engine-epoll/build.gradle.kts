@@ -27,6 +27,11 @@ kotlin {
                 implementation(project(":core"))
             }
         }
+        val linuxMain by getting {
+            dependencies {
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
         val linuxTest by getting {
             dependencies {
                 implementation(kotlin("test"))
