@@ -11,4 +11,22 @@ data class HttpRequestHead(
     val uri: String,
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
-)
+) {
+    /**
+     * Returns true if this request supports HTTP keep-alive.
+     *
+     * HTTP/1.1 connections are keep-alive by default (RFC 7230 §6.3).
+     * Returns false only if `Connection: close` is explicitly set.
+     * HTTP/1.0 connections are close by default; returns true only
+     * if `Connection: keep-alive` is explicitly set.
+     */
+    fun isKeepAlive(): Boolean {
+        val connection = headers["Connection"]?.lowercase()
+        return when {
+            connection == "close" -> false
+            version == HttpVersion.HTTP_1_1 -> true
+            connection == "keep-alive" -> true
+            else -> false
+        }
+    }
+}
