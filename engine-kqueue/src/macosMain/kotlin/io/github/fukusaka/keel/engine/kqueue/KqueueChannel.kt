@@ -206,9 +206,13 @@ internal class KqueueChannel(
         }
     }
 
-    override fun asSource(): RawSource = ChannelSource(this, allocator)
+    @Suppress("DEPRECATION")
+    override fun asSource(): RawSource =
+        throw UnsupportedOperationException("Use asSuspendSource() instead")
 
-    override fun asSink(): RawSink = ChannelSink(this, allocator)
+    @Suppress("DEPRECATION")
+    override fun asSink(): RawSink =
+        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     /**
      * Closes the socket and releases all pending writes.

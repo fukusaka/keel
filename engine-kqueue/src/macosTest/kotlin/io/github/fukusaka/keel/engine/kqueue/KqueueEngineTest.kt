@@ -15,8 +15,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.io.buffered
-import kotlinx.io.readByteArray
 import kqueue.keel_loopback_addr
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
@@ -410,10 +408,10 @@ class KqueueEngineTest {
         engine.close()
     }
 
-    // --- asSource/asSink ---
+    // --- asSuspendSource/asSuspendSink ---
 
     @Test
-    fun asSourceReadsData() = runBlocking {
+    fun asSuspendSourceReadsData() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -423,10 +421,13 @@ class KqueueEngineTest {
 
         rawWrite(clientFd, "test")
 
-        val source = ch.asSource().buffered()
+        val source = io.github.fukusaka.keel.core.BufferedSuspendSource(
+            ch.asSuspendSource(), ch.allocator,
+        )
         val data = source.readByteArray(4)
         assertEquals("test", data.decodeToString())
 
+        source.close()
         ch.close()
         close(clientFd)
         server.close()
@@ -434,7 +435,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun asSinkWritesData() = runBlocking {
+    fun asSuspendSinkWritesData() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -442,13 +443,16 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        val sink = ch.asSink().buffered()
-        sink.write("data".encodeToByteArray())
+        val sink = io.github.fukusaka.keel.core.BufferedSuspendSink(
+            ch.asSuspendSink(), ch.allocator,
+        )
+        sink.writeString("data")
         sink.flush()
 
         val received = rawRead(clientFd, 4)
         assertEquals("data", received)
 
+        sink.close()
         ch.close()
         close(clientFd)
         server.close()
@@ -456,7 +460,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun asSourceEofReturnsMinusOne() = runBlocking {
+    fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -466,11 +470,11 @@ class KqueueEngineTest {
 
         close(clientFd)
 
-        val source = ch.asSource()
-        val buf = kotlinx.io.Buffer()
-        val n = source.readAtMostTo(buf, 64)
-        assertEquals(-1L, n)
+        val buf = NativeBuf(64)
+        val n = ch.asSuspendSource().read(buf)
+        assertEquals(-1, n)
 
+        buf.release()
         ch.close()
         server.close()
         engine.close()
