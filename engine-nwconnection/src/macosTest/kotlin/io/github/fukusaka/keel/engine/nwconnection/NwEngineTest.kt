@@ -10,7 +10,11 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.io.buffered
 import kotlinx.io.readByteArray
 import nwconnection.keel_nw_loopback_addr
@@ -503,5 +507,125 @@ class NwEngineTest {
         assertFailsWith<IllegalStateException> {
             runBlocking { engine.bind("127.0.0.1", 0) }
         }
+    }
+
+    // --- Concurrent ---
+
+    @Test
+    fun concurrentReadOnMultipleChannels() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        val clientCount = 5
+
+        val clients = (1..clientCount).map { connectRawClient(port) }
+        val channels = (1..clientCount).map { server.accept() }
+
+        clients.forEachIndexed { i, fd -> rawWrite(fd, "msg$i") }
+
+        val results = channels.map { ch ->
+            async {
+                val buf = NativeBuf(64)
+                val n = ch.read(buf)
+                val bytes = ByteArray(n)
+                for (j in 0 until n) bytes[j] = buf.readByte()
+                buf.release()
+                bytes.decodeToString()
+            }
+        }
+
+        val messages = results.map { it.await() }.sorted()
+        assertEquals(listOf("msg0", "msg1", "msg2", "msg3", "msg4"), messages)
+
+        channels.forEach { it.close() }
+        clients.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun concurrentAcceptMultipleClients() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        val clientCount = 10
+
+        val acceptJob = async {
+            (1..clientCount).map { server.accept() }
+        }
+
+        val clients = (1..clientCount).map { connectRawClient(port) }
+
+        val channels = withTimeout(5000) { acceptJob.await() }
+        assertEquals(clientCount, channels.size)
+        channels.forEach { assertTrue(it.isOpen) }
+
+        channels.forEach { it.close() }
+        clients.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
+    // --- Close race ---
+
+    @Test
+    fun clientDisconnectDuringRead() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val readResult = async {
+            val buf = NativeBuf(64)
+            try {
+                ch.read(buf)
+            } finally {
+                buf.release()
+            }
+        }
+
+        delay(100)
+        close(clientFd)
+
+        val n = withTimeout(3000) { readResult.await() }
+        assertEquals(-1, n)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
+    // --- Cancellation ---
+
+    @Test
+    fun cancelReadCoroutine() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val readJob = launch {
+            val buf = NativeBuf(64)
+            try {
+                ch.read(buf)
+            } finally {
+                buf.release()
+            }
+        }
+
+        delay(100)
+        readJob.cancel()
+
+        withTimeout(3000) { readJob.join() }
+        assertTrue(ch.isOpen)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
     }
 }
