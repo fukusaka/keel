@@ -10,7 +10,6 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_start_conn_async
@@ -142,13 +141,14 @@ class NwEngine(
         )
 
         val rc = suspendCancellableCoroutine<Int> { cont ->
-            val ref = StableRef.create(cont)
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
                 conn, connQueue,
                 startCallback,
                 ref.asCPointer(),
             )
-            cont.invokeOnCancellation { ref.dispose() }
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
         check(rc == 0) { "connect to $host:$port failed" }
 
@@ -174,8 +174,8 @@ class NwEngine(
         /** C callback for [keel_nw_start_conn_async]. */
         private val startCallback = staticCFunction {
                 result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
-            ref.get().resume(result)
+            val ref = ctx!!.asStableRef<CallbackContext<Int>>()
+            ref.get().tryResume(result)
             ref.dispose()
         }
     }
