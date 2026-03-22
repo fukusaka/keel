@@ -17,6 +17,6 @@ dependencies {
 
 subprojects {
     apply(plugin = "org.jetbrains.dokka")
-    group = "io.github.keel"
+    group = "io.github.fukusaka.keel"
     version = "0.1.0-SNAPSHOT"
 }

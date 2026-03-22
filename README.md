@@ -127,15 +127,15 @@ repositories {
 
 dependencies {
     // Ktor + keel server engine
-    implementation("io.github.fukusaka:ktor-engine:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:ktor-engine:0.1.0-SNAPSHOT")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // Low-level I/O (without Ktor)
-    implementation("io.github.fukusaka:core:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:core:0.1.0-SNAPSHOT")
 
     // Codecs (optional)
-    implementation("io.github.fukusaka:codec-http:0.1.0-SNAPSHOT")
-    implementation("io.github.fukusaka:codec-websocket:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-http:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-websocket:0.1.0-SNAPSHOT")
 }
 ```
 
