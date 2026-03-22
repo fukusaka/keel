@@ -4,19 +4,20 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
-import kotlinx.cinterop.ptr
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
-import kqueue.keel_ev_set
-import platform.darwin.EV_ADD
-import platform.darwin.EVFILT_READ
-import platform.darwin.kevent
+import kqueue.keel_writev
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
 import platform.posix.SHUT_WR
@@ -24,14 +25,8 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.read
 import platform.posix.shutdown
-import platform.posix.timespec
 import platform.posix.write
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointerVar
-import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.set
-import kqueue.keel_writev
+import kotlin.coroutines.resume
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -50,48 +45,37 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
- * POSIX `write()` for each, then releases the buffers. This design enables
- * future writev/gather-write optimisation without API changes.
+ * POSIX `write()` for each, then releases the buffers. Uses `writev()`
+ * gather-write for multiple pending buffers.
  *
- * **Read blocking with kqueue wait**: the socket is non-blocking. When
- * `read()` returns EAGAIN, we wait on kqueue (EVFILT_READ) with a 5-second
- * timeout before retrying. This avoids busy-wait while keeping the socket
- * in non-blocking mode for compatibility with the event loop in Phase (b).
- *
- * Phase (a): all suspend methods delegate to internal blocking counterparts.
+ * **Async read via EventLoop**: The socket is non-blocking. When `read()`
+ * returns EAGAIN, the fd is registered with the [KqueueEventLoop] for
+ * EVFILT_READ and the coroutine suspends. The EventLoop's `kevent()` loop
+ * resumes the coroutine when the fd becomes readable.
  *
  * ```
- * Read path (zero-copy):
+ * Read path (zero-copy, async via EventLoop):
  *   POSIX read(fd) --> NativeBuf.unsafePointer + writerIndex
- *                      (data lands directly in native memory)
+ *   If EAGAIN: suspendCancellableCoroutine + eventLoop.register(fd, READ)
+ *   EventLoop kevent() fires --> continuation.resume(Unit) --> retry read
  *
  * Write path (buffered, zero-copy flush):
  *   write(buf)  --> retain buf, record offset/length in PendingWrite
- *   write(buf2) --> retain buf2, append to pendingWrites
- *   flush()     --> POSIX write(fd, buf.unsafePointer + offset, length)
- *                   POSIX write(fd, buf2.unsafePointer + offset, length)
- *                   release buf, release buf2
- *
- * Read wait (EAGAIN handling):
- *   read(fd) returns EAGAIN
- *     --> register fd with kqueue (EVFILT_READ, lazy)
- *     --> kevent(kqFd, timeout=5s)
- *     --> retry read(fd)
+ *   flush()     --> POSIX write/writev, release buffers
  *
  * Codec bridge (byte-by-byte copy, acceptable for codec layer):
  *   asSource() --> ChannelSource --> NativeBuf --> kotlinx-io Buffer
  *   asSink()   --> ChannelSink   --> kotlinx-io Buffer --> NativeBuf
  * ```
  *
- * @param fd        The connected socket file descriptor.
- * @param kqFd      The kqueue file descriptor shared from [KqueueEngine],
- *                   used for EAGAIN read-wait and future event-driven I/O.
+ * @param fd        The connected socket file descriptor (non-blocking).
+ * @param eventLoop The [KqueueEventLoop] for fd readiness notification.
  * @param allocator Buffer allocator for [asSource]/[asSink] bridge.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueChannel(
     private val fd: Int,
-    private val kqFd: Int,
+    private val eventLoop: KqueueEventLoop,
     override val allocator: BufferAllocator,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
@@ -101,46 +85,37 @@ internal class KqueueChannel(
     private var _open = true
     private var _active = true
     private var outputShutdown = false
-    private var registeredForRead = false
 
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
-    /** Phase (a): no-op. Will suspend until closed in Phase (b). */
-    override suspend fun awaitClosed() {}
-
-    override suspend fun read(buf: NativeBuf): Int = readBlocking(buf)
-
-    override suspend fun write(buf: NativeBuf): Int = writeBlocking(buf)
-
-    override suspend fun flush() = flushBlocking()
+    /** Suspends until this channel is closed. */
+    override suspend fun awaitClosed() {
+        if (!_open) return
+        // Poll-based: no native close notification available for raw fds.
+        // In practice, awaitClosed is rarely used; keep-alive will use
+        // read loop termination instead.
+        while (_open) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                eventLoop.register(fd, KqueueEventLoop.Interest.READ, cont)
+                cont.invokeOnCancellation {
+                    eventLoop.unregister(fd, KqueueEventLoop.Interest.READ)
+                }
+            }
+        }
+    }
 
     /**
      * Reads bytes into [buf] via zero-copy POSIX read.
      *
      * On EAGAIN (non-blocking socket has no data), registers the fd with
-     * kqueue for EVFILT_READ and waits up to 5 seconds before retrying.
-     * The fd is registered lazily on first read to avoid unnecessary
-     * kevent syscalls when data is already available.
+     * the [KqueueEventLoop] for EVFILT_READ and suspends. The EventLoop
+     * resumes the coroutine when data is available.
      *
      * @return number of bytes read, or -1 on EOF/error.
      */
-    internal fun readBlocking(buf: NativeBuf): Int {
+    override suspend fun read(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
-
-        // Lazy registration: register with kqueue on first read so that
-        // we can kevent-wait when EAGAIN is returned.
-        if (!registeredForRead) {
-            memScoped {
-                val kev = alloc<kevent>()
-                keel_ev_set(
-                    kev.ptr, fd.convert(), EVFILT_READ.convert(),
-                    EV_ADD.convert(), 0u, 0, null,
-                )
-                kevent(kqFd, kev.ptr, 1, null, 0, null)
-            }
-            registeredForRead = true
-        }
 
         while (true) {
             // Zero-copy: write directly into NativeBuf's backing memory
@@ -155,13 +130,12 @@ internal class KqueueChannel(
                 else -> {
                     val err = errno
                     if (err == EAGAIN || err == EWOULDBLOCK) {
-                        // No data available yet — wait for kqueue readiness
-                        memScoped {
-                            val eventList = allocArray<kevent>(1)
-                            val timeout = alloc<timespec>()
-                            timeout.tv_sec = 5
-                            timeout.tv_nsec = 0
-                            kevent(kqFd, null, 0, eventList, 1, timeout.ptr)
+                        // Suspend until EventLoop reports fd is readable
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            eventLoop.register(fd, KqueueEventLoop.Interest.READ, cont)
+                            cont.invokeOnCancellation {
+                                eventLoop.unregister(fd, KqueueEventLoop.Interest.READ)
+                            }
                         }
                         continue
                     }
@@ -176,11 +150,11 @@ internal class KqueueChannel(
      *
      * The caller's [NativeBuf.readerIndex] is advanced immediately so the
      * buffer can be reused or released by the caller. The actual POSIX write
-     * happens on [flushBlocking].
+     * happens on [flush].
      *
      * @return number of bytes buffered.
      */
-    internal fun writeBlocking(buf: NativeBuf): Int {
+    override suspend fun write(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -204,7 +178,7 @@ internal class KqueueChannel(
      * reducing context switches compared to individual `write()` calls.
      * Falls back to single `write()` for one-buffer flushes.
      */
-    internal fun flushBlocking() {
+    override suspend fun flush() {
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
@@ -261,5 +235,15 @@ internal class KqueueChannel(
             pendingWrites.clear()
             close(fd)
         }
+    }
+
+    companion object {
+        /**
+         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
+         * Matches the default kotlinx-io segment size. Larger values reduce
+         * syscall count but increase per-read memory; 8 KiB is a common
+         * balance for HTTP request/response parsing.
+         */
+        internal const val CODEC_BUFFER_SIZE = 8192
     }
 }
