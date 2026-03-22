@@ -125,7 +125,7 @@ JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
 if [ -f "$JVM_CP_FILE" ]; then
     JVM_CP=$(cat "$JVM_CP_FILE")
     for engine in ktor-keel-nio ktor-keel-netty ktor-cio; do
-        run_bench "jvm:${engine}" java -cp "$JVM_CP" io.github.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
+        run_bench "jvm:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
     done
 else
     echo "  (classpath file not found — run './gradlew -Pbenchmark :benchmark:writeClasspath' first)"
