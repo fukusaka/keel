@@ -16,11 +16,14 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(libs.kotlinx.io.core)
+                implementation(project(":core"))
             }
         }
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
     }

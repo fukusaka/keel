@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: add `NativeBuf.compact()` and `NativeBuf.clear()` for buffer reuse
 - `core`: add `Channel.asSuspendSource()`/`Channel.asSuspendSink()` with default implementations
 - `core`: deprecate `Channel.asSource()`/`Channel.asSink()` in favor of suspend variants
+- `codec-http`: add suspend overloads for `parseRequestHead`/`writeResponseHead` using `BufferedSuspendSource`/`BufferedSuspendSink`
+- `codec-http`: add `HttpHeaders.entries()` for suspend-compatible iteration
+- `ktor-engine`: switch from `asSource()`/`asSink()` to `asSuspendSource()`/`asSuspendSink()` — eliminates `runBlocking` from I/O path
 
 ## [0.1.0] - 2026-03-22
 

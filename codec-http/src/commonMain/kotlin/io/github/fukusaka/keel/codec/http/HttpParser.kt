@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.core.BufferedSuspendSource
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
 import kotlinx.io.readLine
@@ -61,6 +62,57 @@ fun parseResponseHead(source: Source): HttpResponseHead {
     val (version, status, _) = parseStatusLine(line)
     val headers = parseHeaders(source)
     return HttpResponseHead(status, version, headers)
+}
+
+// ---------------------------------------------------------------------------
+// Suspend variants — use BufferedSuspendSource for zero-copy async I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * Suspend variant of [parseRequestHead] using [BufferedSuspendSource].
+ *
+ * Zero-copy: reads directly from NativeBuf without kotlinx-io Buffer copy.
+ * No runBlocking needed — suspends naturally on I/O wait.
+ */
+suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
+    val line = source.readLine()
+        ?: throw IllegalArgumentException("Unexpected EOF reading request line")
+    val (method, uri, version) = parseRequestLine(line)
+    val headers = parseHeaders(source)
+    return HttpRequestHead(method, uri, version, headers)
+}
+
+/**
+ * Suspend variant of [parseResponseHead] using [BufferedSuspendSource].
+ */
+suspend fun parseResponseHead(source: BufferedSuspendSource): HttpResponseHead {
+    val line = source.readLine()
+        ?: throw IllegalArgumentException("Unexpected EOF reading status line")
+    val (version, status, _) = parseStatusLine(line)
+    val headers = parseHeaders(source)
+    return HttpResponseHead(status, version, headers)
+}
+
+/**
+ * Suspend variant of [parseHeaders] using [BufferedSuspendSource].
+ */
+internal suspend fun parseHeaders(source: BufferedSuspendSource): HttpHeaders {
+    val headers = HttpHeaders()
+    while (true) {
+        val line = source.readLine() ?: break
+        if (line.isEmpty()) break
+        if (line[0] == ' ' || line[0] == '\t') {
+            throw IllegalArgumentException(
+                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
+            )
+        }
+        val colon = line.indexOf(':')
+        require(colon >= 1) { "Invalid header field (missing ':'): $line" }
+        val name = line.substring(0, colon).trim()
+        val value = line.substring(colon + 1).trim()
+        headers.add(name, value)
+    }
+    return headers
 }
 
 // ---------------------------------------------------------------------------

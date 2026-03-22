@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.parseRequestHead
+import io.github.fukusaka.keel.core.BufferedSuspendSink
+import io.github.fukusaka.keel.core.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.ServerChannel
 import io.ktor.events.*
@@ -9,7 +11,6 @@ import io.ktor.server.engine.*
 import io.ktor.util.pipeline.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
-import kotlinx.io.buffered
 
 /**
  * Ktor server engine backed by keel I/O engines.
@@ -158,19 +159,22 @@ public class KeelApplicationEngine(
      *                     ByteReadChannel ◄── bridge coroutine   Ktor pipeline
      *                                                                   │
      *                                                                   ▼
-     *                   Channel ◄──asSink()──◄── writeResponseHead + body
+     *                   Channel ◄──asSuspendSink()──◄── writeResponseHead + body
      * ```
      *
-     * Request body bridging: keel's pull-based [RawSource] is piped into Ktor's
+     * Uses [BufferedSuspendSource]/[BufferedSuspendSink] for zero-copy I/O:
+     * no kotlinx-io Buffer intermediary, no runBlocking.
+     *
+     * Request body bridging: keel's [BufferedSuspendSource] is piped into Ktor's
      * push-based [ByteReadChannel] via a dedicated coroutine. This copy is
      * unavoidable because Ktor expects a channel interface. The bridge job is
      * joined before parsing the next request to ensure body bytes are fully
      * consumed from the source.
      */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
+        val source = BufferedSuspendSource(channel.asSuspendSource(), channel.allocator)
+        val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
         try {
-            val source = channel.asSource().buffered()
-            val sink = channel.asSink().buffered()
             val serverKeepAlive = configuration.keepAlive
 
             while (channel.isActive) {
@@ -185,14 +189,14 @@ public class KeelApplicationEngine(
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive()
 
-                // Bridge request body: pull from RawSource → push to ByteReadChannel.
+                // Bridge request body: pull from BufferedSuspendSource → push to ByteReadChannel.
                 // The bridge coroutine reads exactly contentLength bytes from source
                 // and pipes them into bodyChannel for Ktor's push-based API.
                 val contentLength = head.headers.contentLength()
                 var bodyBridgeJob: Job? = null
                 val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
                     val bodyChannel = ByteChannel()
-                    bodyBridgeJob = launch(Dispatchers.IO) {
+                    bodyBridgeJob = launch {
                         var remaining = contentLength
                         val buf = ByteArray(8192)
                         while (remaining > 0) {
@@ -226,7 +230,7 @@ public class KeelApplicationEngine(
                 if (!keepAlive) break
 
                 // Ensure the body bridge coroutine has fully consumed the request
-                // body from the RawSource before parsing the next request. Without
+                // body from the source before parsing the next request. Without
                 // this, leftover body bytes would be misinterpreted as the next
                 // request line.
                 bodyBridgeJob?.join()
@@ -236,6 +240,8 @@ public class KeelApplicationEngine(
                 environment.log.error("Connection handling failed", e)
             }
         } finally {
+            runCatching { source.close() }
+            runCatching { sink.close() }
             runCatching { channel.close() }
         }
     }
