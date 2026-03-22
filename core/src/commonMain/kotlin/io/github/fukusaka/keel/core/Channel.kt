@@ -7,10 +7,11 @@ import kotlinx.io.RawSource
  * A bidirectional byte channel backed by a network connection.
  *
  * ```
- * Layer          API                  Copy
- * -----          ---                  ----
- * Engine layer:  read/write(NativeBuf)  0  (zero-copy via unsafePointer)
- * Codec layer:   asSource/asSink()      1  (NativeBuf <-> kotlinx-io Buffer)
+ * Layer          API                       Copy
+ * -----          ---                       ----
+ * Engine layer:  read/write(NativeBuf)       0  (zero-copy via unsafePointer)
+ * Codec layer:   asSuspendSource/Sink()      0  (NativeBuf direct, zero-copy)
+ * Legacy bridge: asSource/asSink()           1  (NativeBuf <-> kotlinx-io Buffer)
  * ```
  *
  * **Write/flush separation**: [write] buffers data without sending.
@@ -93,22 +94,53 @@ interface Channel : AutoCloseable {
      */
     fun shutdownOutput()
 
-    // --- kotlinx-io bridge (codec layer) ---
+    // --- Suspend I/O bridge (codec layer, zero-copy) ---
+
+    /**
+     * Returns a [SuspendSource] view for reading from this channel.
+     *
+     * Zero-copy: delegates to [read] which writes directly into [NativeBuf].
+     * Use [BufferedSuspendSource] to wrap the result for readLine/readByte.
+     *
+     * Default implementation delegates to [read] via [SuspendChannelSource].
+     * Engines can override for specialized implementations (e.g., io_uring).
+     */
+    fun asSuspendSource(): SuspendSource = SuspendChannelSource(this)
+
+    /**
+     * Returns a [SuspendSink] view for writing to this channel.
+     *
+     * Zero-copy: delegates to [write]/[flush] which read directly from [NativeBuf].
+     * Use [BufferedSuspendSink] to wrap the result for writeString/writeByte.
+     *
+     * Default implementation delegates to [write]/[flush] via [SuspendChannelSink].
+     */
+    fun asSuspendSink(): SuspendSink = SuspendChannelSink(this)
+
+    // --- kotlinx-io bridge (legacy, involves copy) ---
 
     /**
      * Returns a [RawSource] view for reading from this channel.
      *
      * Involves a byte-by-byte copy between [NativeBuf] and kotlinx-io [Buffer].
-     * Acceptable for codec layer; engine layer should use [read] directly.
+     * Prefer [asSuspendSource] for zero-copy suspend I/O.
      */
+    @Deprecated(
+        "Use asSuspendSource() for zero-copy suspend I/O",
+        replaceWith = ReplaceWith("asSuspendSource()"),
+    )
     fun asSource(): RawSource
 
     /**
      * Returns a [RawSink] view for writing to this channel.
      *
      * Involves a byte-by-byte copy between kotlinx-io [Buffer] and [NativeBuf].
-     * Acceptable for codec layer; engine layer should use [write]/[flush] directly.
+     * Prefer [asSuspendSink] for zero-copy suspend I/O.
      */
+    @Deprecated(
+        "Use asSuspendSink() for zero-copy suspend I/O",
+        replaceWith = ReplaceWith("asSuspendSink()"),
+    )
     fun asSink(): RawSink
 
     /** Closes both read and write sides and releases all resources. */
