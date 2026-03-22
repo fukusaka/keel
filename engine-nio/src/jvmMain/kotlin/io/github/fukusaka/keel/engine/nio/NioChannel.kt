@@ -162,10 +162,12 @@ internal class NioChannel(
     }
 
     @Suppress("DEPRECATION")
-    override fun asSource(): RawSource = ChannelSource(this, allocator)
+    override fun asSource(): RawSource =
+        throw UnsupportedOperationException("Use asSuspendSource() instead")
 
     @Suppress("DEPRECATION")
-    override fun asSink(): RawSink = ChannelSink(this, allocator)
+    override fun asSink(): RawSink =
+        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     /**
      * Closes the SocketChannel and releases all pending writes.
