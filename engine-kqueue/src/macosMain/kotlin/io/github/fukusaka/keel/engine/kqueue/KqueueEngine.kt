@@ -14,30 +14,28 @@ import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
-import platform.darwin.kqueue
-import platform.posix.close
 import platform.posix.errno
 import platform.posix.strerror
 
 /**
  * macOS kqueue-based [IoEngine] implementation.
  *
- * Phase (a): synchronous I/O. All suspend functions block internally.
- * A single kqueue fd is shared across all channels created by this engine
- * for read-readiness notification (EAGAIN → kevent wait → retry).
+ * Creates a [KqueueEventLoop] that drives all I/O for channels created
+ * by this engine. The EventLoop owns the kqueue fd and runs a dedicated
+ * pthread that calls `kevent()` to multiplex fd readiness events.
  *
- * The kqueue fd is created at construction time and closed when
- * [close] is called. All [ServerChannel]s and [Channel]s created by
- * this engine share this kqueue fd for event notification.
+ * All suspend functions ([bind], [connect]) are non-blocking. Channel
+ * read/write operations suspend via [suspendCancellableCoroutine] and
+ * are resumed by the EventLoop when their fds become ready.
  *
  * ```
- * KqueueEngine (owns kqFd)
+ * KqueueEngine (owns EventLoop)
  *   |
- *   +-- bind() --> KqueueServerChannel (serverFd registered on kqFd)
+ *   +-- bind() --> KqueueServerChannel (serverFd registered on EventLoop)
  *   |                |
- *   |                +-- accept() --> KqueueChannel (clientFd, shares kqFd)
+ *   |                +-- accept() --> KqueueChannel (clientFd, shares EventLoop)
  *   |
- *   +-- connect() --> KqueueChannel (clientFd, shares kqFd)
+ *   +-- connect() --> KqueueChannel (clientFd, shares EventLoop)
  * ```
  *
  * @param config Engine-wide configuration (allocator, threads).
@@ -47,13 +45,11 @@ class KqueueEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
-    private val kqFd: Int
+    private val eventLoop = KqueueEventLoop()
     private var closed = false
 
     init {
-        val fd = kqueue()
-        check(fd >= 0) { "kqueue() failed: ${strerror(errno)?.toKString()}" }
-        kqFd = fd
+        eventLoop.start()
     }
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -61,8 +57,8 @@ class KqueueEngine(
 
         val serverFd = SocketUtils.createServerSocket(host, port)
 
-        // Register server fd with kqueue so that KqueueServerChannel.accept()
-        // can wait for incoming connections via kevent().
+        // Register server fd with kqueue so that accept() can be notified
+        // of incoming connections via the EventLoop.
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -74,18 +70,21 @@ class KqueueEngine(
                 0,
                 null,
             )
-            val result = kevent(kqFd, kev.ptr, 1, null, 0, null)
+            val result = kevent(eventLoop.kqFd, kev.ptr, 1, null, 0, null)
             check(result >= 0) { "kevent(EV_ADD server) failed: ${strerror(errno)?.toKString()}" }
         }
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
-        return KqueueServerChannel(serverFd, kqFd, localAddr, config.allocator)
+        return KqueueServerChannel(serverFd, eventLoop, localAddr, config.allocator)
     }
 
     /**
-     * Phase (a): blocking connect. The socket is created in blocking mode,
-     * connected synchronously, then switched to non-blocking for subsequent
-     * read/write operations.
+     * Creates a TCP client connection.
+     *
+     * Phase (a) limitation: connect is still synchronous (blocking).
+     * The socket is created in blocking mode, connected, then switched
+     * to non-blocking. Phase (b) defers non-blocking connect with
+     * kqueue EVFILT_WRITE wait to a future improvement.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
@@ -94,13 +93,13 @@ class KqueueEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
         val localAddr = SocketUtils.getLocalAddress(clientFd)
 
-        return KqueueChannel(clientFd, kqFd, config.allocator, remoteAddr, localAddr)
+        return KqueueChannel(clientFd, eventLoop, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
         if (!closed) {
             closed = true
-            close(kqFd)
+            eventLoop.close()
         }
     }
 }
