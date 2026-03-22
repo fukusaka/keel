@@ -11,10 +11,10 @@ const config: Config = {
     v4: true,
   },
 
-  url: process.env.SITE_URL ?? 'https://keel-kt.github.io',
+  url: process.env.SITE_URL ?? 'https://fukusaka.github.io',
   baseUrl: process.env.BASE_URL ?? '/keel/',
 
-  organizationName: 'keel-kt',
+  organizationName: 'fukusaka',
   projectName: 'keel',
 
   onBrokenLinks: 'throw',
@@ -33,7 +33,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/keel-kt/keel/tree/main/website/',
+          editUrl: 'https://github.com/fukusaka/keel/tree/main/website/',
         },
         blog: false,
         theme: {
@@ -57,7 +57,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/keel-kt/keel',
+          href: 'https://github.com/fukusaka/keel',
           label: 'GitHub',
           position: 'right',
         },
@@ -78,12 +78,12 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/keel-kt/keel',
+              href: 'https://github.com/fukusaka/keel',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} The keel-kt Authors. Licensed under Apache 2.0.`,
+      copyright: `Copyright © ${new Date().getFullYear()} fukusaka. Licensed under Apache 2.0.`,
     },
     prism: {
       theme: prismThemes.github,

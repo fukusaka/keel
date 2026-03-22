@@ -9,14 +9,14 @@ kotlin {
     macosArm64 {
         binaries {
             executable {
-                entryPoint = "io.github.keel.benchmark.main"
+                entryPoint = "io.github.fukusaka.keel.benchmark.main"
             }
         }
     }
     linuxX64 {
         binaries {
             executable {
-                entryPoint = "io.github.keel.benchmark.main"
+                entryPoint = "io.github.fukusaka.keel.benchmark.main"
             }
         }
     }
@@ -61,14 +61,14 @@ kotlin {
 
 tasks.register<JavaExec>("run") {
     description = "Run benchmark server (--engine=keel|keel-netty|cio|ktor-netty|spring|vertx)"
-    mainClass.set("io.github.keel.benchmark.JvmMainKt")
+    mainClass.set("io.github.fukusaka.keel.benchmark.JvmMainKt")
     classpath = kotlin.jvm().compilations["main"].runtimeDependencyFiles +
         kotlin.jvm().compilations["main"].output.allOutputs
     standardInput = System.`in`
 }
 
 // Write classpath file for running JVM benchmark without Gradle process tree.
-// Usage: java -cp @benchmark/build/benchmark-classpath.txt io.github.keel.benchmark.JvmMainKt
+// Usage: java -cp @benchmark/build/benchmark-classpath.txt io.github.fukusaka.keel.benchmark.JvmMainKt
 tasks.register("writeClasspath") {
     val jvmCompilation = kotlin.jvm().compilations["main"]
     dependsOn(jvmCompilation.compileTaskProvider)
@@ -85,7 +85,7 @@ tasks.register<Jar>("fatJar") {
     archiveClassifier.set("all")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
-        attributes["Main-Class"] = "io.github.keel.benchmark.JvmMainKt"
+        attributes["Main-Class"] = "io.github.fukusaka.keel.benchmark.JvmMainKt"
     }
     val jvmCompilation = kotlin.jvm().compilations["main"]
     from(jvmCompilation.output.allOutputs)
