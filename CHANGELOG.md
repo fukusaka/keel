@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-netty`: enable `autoRead=false` for pull-model semantics and TCP backpressure
 - `engine-kqueue`: replace blocking kevent wait with async EventLoop + `suspendCancellableCoroutine` (Phase 5b async)
 - `engine-kqueue`: add `KqueueEventLoop` with pipe wakeup and pthread-based event loop thread
+- `engine-epoll`: replace blocking epoll_wait with async EventLoop + `suspendCancellableCoroutine` (Phase 5b async)
+- `engine-epoll`: add `EpollEventLoop` with eventfd wakeup and pthread-based event loop thread
 
 ## [0.1.0] - 2026-03-22
 
