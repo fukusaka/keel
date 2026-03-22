@@ -28,7 +28,6 @@ import platform.Network.nw_listener_state_ready
 import platform.Network.nw_listener_start
 import platform.Network.nw_listener_t
 import platform.darwin.dispatch_queue_create
-import kotlin.coroutines.resume
 
 /**
  * macOS NWConnection-based [IoEngine] implementation.
@@ -93,14 +92,18 @@ class NwEngine(
         nw_listener_set_queue(lsnr, listenerQueue)
 
         // Suspend until listener reaches ready or failed state.
-        // The state_changed_handler resumes the coroutine.
+        // The state_changed_handler resumes the coroutine via CallbackContext.
+        // CallbackContext prevents double-resume if the state handler fires
+        // multiple times (e.g. ready then cancelled) or after coroutine cancel.
         val assignedPort = suspendCancellableCoroutine<Int> { cont ->
-            nw_listener_set_state_changed_handler(lsnr) { state, error ->
+            val cbCtx = CallbackContext(cont)
+
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
                 if (state == nw_listener_state_ready) {
                     val p = nw_listener_get_port(lsnr).toInt()
-                    cont.resume(p)
+                    cbCtx.tryResume(p)
                 } else if (state == nw_listener_state_failed) {
-                    cont.resume(-1)
+                    cbCtx.tryResume(-1)
                 }
             }
 
@@ -111,6 +114,7 @@ class NwEngine(
             }
 
             nw_listener_start(lsnr)
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
 
         check(assignedPort > 0) {
