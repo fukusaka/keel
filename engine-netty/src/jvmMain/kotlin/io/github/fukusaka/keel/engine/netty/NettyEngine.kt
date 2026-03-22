@@ -57,6 +57,10 @@ class NettyEngine(
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        // Two-phase init: create NettyServerChannel before bind so the
+        // ChannelInitializer closure can call onNewChannel(). The underlying
+        // Netty server channel and local address are set via init() after
+        // the bind future completes.
         val serverChannel = NettyServerChannel.create()
 
         val bootstrap = ServerBootstrap()

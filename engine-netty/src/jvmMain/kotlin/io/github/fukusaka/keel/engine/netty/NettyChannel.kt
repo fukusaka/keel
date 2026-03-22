@@ -79,9 +79,18 @@ internal class NettyChannel(
     override val localAddress: SocketAddress?,
 ) : KeelChannel {
 
+    /**
+     * Guards all access to [pendingReadCont]. Required because [read] and
+     * [close] run on coroutine threads while [channelRead], [channelInactive],
+     * and [exceptionCaught] run on Netty's worker EventLoop thread.
+     * Coroutine [Mutex] cannot be used here because the handler callbacks
+     * are not in a coroutine context ([Mutex.lock] is a suspend function).
+     */
     private val readLock = Any()
     private var pendingReadCont: CancellableContinuation<ByteBuf?>? = null
     private val pendingWrites = mutableListOf<PendingWrite>()
+    // @Volatile for isOpen/isActive property getters read outside readLock.
+    // Writes happen on the coroutine thread (close) or EventLoop (channelInactive).
     @Volatile
     private var _open = true
     @Volatile
@@ -91,6 +100,7 @@ internal class NettyChannel(
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
+    /** Suspends until this channel is fully closed by Netty's EventLoop. */
     override suspend fun awaitClosed() {
         if (!_open) return
         suspendCancellableCoroutine { cont ->
@@ -199,6 +209,12 @@ internal class NettyChannel(
         }
     }
 
+    /**
+     * Sends a FIN to the remote peer. The shutdown is asynchronous —
+     * Netty's EventLoop handles the actual socket operation. No await
+     * is needed because the caller does not depend on shutdown completion
+     * (unlike flush, where the caller needs write confirmation).
+     */
     override fun shutdownOutput() {
         if (!outputShutdown && _open) {
             outputShutdown = true
