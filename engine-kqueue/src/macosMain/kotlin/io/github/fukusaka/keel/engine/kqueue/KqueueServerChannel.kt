@@ -5,6 +5,8 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.EAGAIN
 import platform.posix.accept
@@ -43,6 +45,7 @@ internal class KqueueServerChannel(
 ) : ServerChannel {
 
     private var _active = true
+    private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
     override val isActive: Boolean get() = _active
 
@@ -69,11 +72,14 @@ internal class KqueueServerChannel(
             if (err == EAGAIN) {
                 // Suspend until EventLoop reports serverFd is readable
                 suspendCancellableCoroutine<Unit> { cont ->
+                    pendingAcceptCont = cont
                     eventLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
                     cont.invokeOnCancellation {
+                        pendingAcceptCont = null
                         eventLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
                     }
                 }
+                pendingAcceptCont = null
                 continue
             }
             error("accept() failed: errno=$err")
@@ -83,6 +89,10 @@ internal class KqueueServerChannel(
     override fun close() {
         if (_active) {
             _active = false
+            pendingAcceptCont?.resumeWithException(
+                CancellationException("ServerChannel closed"),
+            )
+            pendingAcceptCont = null
             close(serverFd)
         }
     }
