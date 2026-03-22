@@ -7,6 +7,8 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.get
 import kotlinx.cinterop.set
 import kotlinx.cinterop.nativeHeap
+import kotlinx.cinterop.plus
+import platform.posix.memmove
 
 @OptIn(ExperimentalForeignApi::class)
 actual class NativeBuf actual constructor(actual val capacity: Int) {
@@ -28,6 +30,23 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
     }
 
     actual fun readByte(): Byte = ptr[readerIndex++]
+
+    actual fun compact() {
+        if (readerIndex > 0) {
+            val readable = readableBytes
+            if (readable > 0) {
+                // memmove handles overlapping regions safely
+                memmove(ptr, ptr + readerIndex, readable.toULong())
+            }
+            readerIndex = 0
+            writerIndex = readable
+        }
+    }
+
+    actual fun clear() {
+        readerIndex = 0
+        writerIndex = 0
+    }
 
     actual fun retain(): NativeBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
