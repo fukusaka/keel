@@ -1,9 +1,11 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.NativeBuf
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.io.buffered
-import kotlinx.io.readByteArray
+import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.Socket
 import kotlin.test.Test
@@ -361,10 +363,10 @@ class NioEngineTest {
         engine.close()
     }
 
-    // --- asSource/asSink ---
+    // --- asSuspendSource/asSuspendSink ---
 
     @Test
-    fun asSourceReadsData() = runBlocking {
+    fun asSuspendSourceReadsData() = runBlocking {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -374,10 +376,13 @@ class NioEngineTest {
 
         rawWrite(client, "test")
 
-        val source = ch.asSource().buffered()
+        val source = io.github.fukusaka.keel.core.BufferedSuspendSource(
+            ch.asSuspendSource(), ch.allocator,
+        )
         val data = source.readByteArray(4)
         assertEquals("test", data.decodeToString())
 
+        source.close()
         ch.close()
         client.close()
         server.close()
@@ -385,7 +390,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun asSinkWritesData() = runBlocking {
+    fun asSuspendSinkWritesData() = runBlocking {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -393,13 +398,16 @@ class NioEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val sink = ch.asSink().buffered()
-        sink.write("data".encodeToByteArray())
+        val sink = io.github.fukusaka.keel.core.BufferedSuspendSink(
+            ch.asSuspendSink(), ch.allocator,
+        )
+        sink.writeString("data")
         sink.flush()
 
         val received = rawRead(client, 4)
         assertEquals("data", received)
 
+        sink.close()
         ch.close()
         client.close()
         server.close()
@@ -407,7 +415,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun asSourceEofReturnsMinusOne() = runBlocking {
+    fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -417,11 +425,11 @@ class NioEngineTest {
 
         client.close()
 
-        val source = ch.asSource()
-        val buf = kotlinx.io.Buffer()
-        val n = source.readAtMostTo(buf, 64)
-        assertEquals(-1L, n)
+        val buf = NativeBuf(64)
+        val n = ch.asSuspendSource().read(buf)
+        assertEquals(-1, n)
 
+        buf.release()
         ch.close()
         server.close()
         engine.close()
@@ -475,5 +483,125 @@ class NioEngineTest {
         assertFailsWith<IllegalStateException> {
             runBlocking { engine.bind("0.0.0.0", 0) }
         }
+    }
+
+    // --- Concurrent ---
+
+    @Test
+    fun concurrentReadOnMultipleChannels() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        val clientCount = 5
+
+        val clients = (1..clientCount).map { connectRawClient(port) }
+        val channels = (1..clientCount).map { server.accept() }
+
+        clients.forEachIndexed { i, client -> rawWrite(client, "msg$i") }
+
+        val results = channels.map { ch ->
+            async {
+                val buf = NativeBuf(64)
+                val n = ch.read(buf)
+                val bytes = ByteArray(n)
+                for (j in 0 until n) bytes[j] = buf.readByte()
+                buf.release()
+                String(bytes)
+            }
+        }
+
+        val messages = results.map { it.await() }.sorted()
+        assertEquals(listOf("msg0", "msg1", "msg2", "msg3", "msg4"), messages)
+
+        channels.forEach { it.close() }
+        clients.forEach { it.close() }
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun concurrentAcceptMultipleClients() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        val clientCount = 10
+
+        val acceptJob = async {
+            (1..clientCount).map { server.accept() }
+        }
+
+        val clients = (1..clientCount).map { connectRawClient(port) }
+
+        val channels = withTimeout(5000) { acceptJob.await() }
+        assertEquals(clientCount, channels.size)
+        channels.forEach { assertTrue(it.isOpen) }
+
+        channels.forEach { it.close() }
+        clients.forEach { it.close() }
+        server.close()
+        engine.close()
+    }
+
+    // --- Close race ---
+
+    @Test
+    fun clientDisconnectDuringRead() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        val readResult = async {
+            val buf = NativeBuf(64)
+            try {
+                ch.read(buf)
+            } finally {
+                buf.release()
+            }
+        }
+
+        delay(100)
+        client.close()
+
+        val n = withTimeout(3000) { readResult.await() }
+        assertEquals(-1, n)
+
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
+    // --- Cancellation ---
+
+    @Test
+    fun cancelReadCoroutine() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        val readJob = launch {
+            val buf = NativeBuf(64)
+            try {
+                ch.read(buf)
+            } finally {
+                buf.release()
+            }
+        }
+
+        delay(100)
+        readJob.cancel()
+
+        withTimeout(3000) { readJob.join() }
+        assertTrue(ch.isOpen)
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 }
