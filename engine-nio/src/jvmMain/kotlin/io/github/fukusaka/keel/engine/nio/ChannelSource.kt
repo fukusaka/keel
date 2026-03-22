@@ -1,18 +1,19 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BufferAllocator
+import kotlinx.coroutines.runBlocking
 import kotlinx.io.Buffer
 import kotlinx.io.RawSource
 
 /**
  * Bridges [NioChannel] to kotlinx-io [RawSource] for codec layer integration.
  *
- * Allocates a temporary [NativeBuf][io.github.fukusaka.keel.core.NativeBuf] for each
- * read, copies bytes into the kotlinx-io [Buffer], then releases the native buffer.
- * This introduces one byte-by-byte copy per read, which is acceptable for
- * codec-layer usage where kotlinx-io's Source/Sink abstraction is needed.
+ * **Deprecated**: prefer [Channel.asSuspendSource][io.github.fukusaka.keel.core.Channel.asSuspendSource]
+ * for zero-copy suspend I/O without runBlocking.
  *
- * Engine-layer code should use [NioChannel.read] directly for zero-copy I/O.
+ * Uses [runBlocking] to bridge the suspend [NioChannel.read] into the
+ * non-suspend [RawSource.readAtMostTo]. Must not be called from the
+ * EventLoop thread.
  */
 internal class ChannelSource(
     private val channel: NioChannel,
@@ -23,7 +24,7 @@ internal class ChannelSource(
         val size = byteCount.coerceAtMost(8192).toInt()
         val buf = allocator.allocate(size)
         return try {
-            val n = channel.readBlocking(buf)
+            val n = runBlocking { channel.read(buf) }
             if (n <= 0) {
                 n.toLong()
             } else {
@@ -37,6 +38,5 @@ internal class ChannelSource(
         }
     }
 
-    /** No-op: channel lifecycle is managed by the caller, not by this source. */
     override fun close() {}
 }
