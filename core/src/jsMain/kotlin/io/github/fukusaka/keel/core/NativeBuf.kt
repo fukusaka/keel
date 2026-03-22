@@ -29,6 +29,23 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
 
     actual fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()
 
+    actual fun compact() {
+        if (readerIndex > 0) {
+            val readable = readableBytes
+            if (readable > 0) {
+                // Int8Array.copyWithin(target, start, end)
+                buf.asDynamic().copyWithin(0, readerIndex, writerIndex)
+            }
+            readerIndex = 0
+            writerIndex = readable
+        }
+    }
+
+    actual fun clear() {
+        readerIndex = 0
+        writerIndex = 0
+    }
+
     actual fun retain(): NativeBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
         refCount++
