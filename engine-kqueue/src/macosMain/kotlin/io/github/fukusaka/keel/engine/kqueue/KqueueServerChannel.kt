@@ -10,7 +10,6 @@ import platform.posix.EAGAIN
 import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
-import kotlin.coroutines.resume
 
 /**
  * kqueue-based [ServerChannel] implementation for macOS.

@@ -23,6 +23,7 @@ import platform.darwin.EVFILT_WRITE
 import platform.darwin.kevent
 import platform.darwin.kqueue
 import platform.posix.EAGAIN
+import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.errno
 import platform.posix.pipe
@@ -80,7 +81,11 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueEventLoop {
 
-    /** The kqueue file descriptor, created at construction. */
+    /**
+     * The kqueue file descriptor, created at construction.
+     * Exposed for [KqueueEngine.bind] to register server fds directly
+     * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
+     */
     val kqFd: Int
 
     // Arena for long-lived native allocations (mutex).
@@ -229,7 +234,10 @@ internal class KqueueEventLoop {
             while (running.value != 0) {
                 val n = kevent(kqFd, null, 0, eventList, MAX_EVENTS, null)
                 if (n < 0) {
-                    if (errno == EAGAIN) continue
+                    // EINTR: interrupted by signal (e.g. debugger attach).
+                    // EAGAIN: spurious wakeup. Both are retriable.
+                    val err = errno
+                    if (err == EINTR || err == EAGAIN) continue
                     break // Fatal error
                 }
                 for (i in 0 until n) {
@@ -297,7 +305,12 @@ internal class KqueueEventLoop {
     }
 
     companion object {
-        /** Maximum events per kevent() call. */
+        /**
+         * Maximum events per kevent() call. 64 balances memory usage
+         * (64 * sizeof(kevent) = ~2.5 KiB on arm64) against reducing
+         * the number of kevent() syscalls under high fd counts.
+         * Netty uses 4096; 64 is conservative for initial implementation.
+         */
         private const val MAX_EVENTS = 64
     }
 }

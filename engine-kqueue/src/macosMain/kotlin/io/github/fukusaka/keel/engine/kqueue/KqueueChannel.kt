@@ -26,7 +26,6 @@ import platform.posix.errno
 import platform.posix.read
 import platform.posix.shutdown
 import platform.posix.write
-import kotlin.coroutines.resume
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -89,21 +88,12 @@ internal class KqueueChannel(
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
-    /** Suspends until this channel is closed. */
-    override suspend fun awaitClosed() {
-        if (!_open) return
-        // Poll-based: no native close notification available for raw fds.
-        // In practice, awaitClosed is rarely used; keep-alive will use
-        // read loop termination instead.
-        while (_open) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                eventLoop.register(fd, KqueueEventLoop.Interest.READ, cont)
-                cont.invokeOnCancellation {
-                    eventLoop.unregister(fd, KqueueEventLoop.Interest.READ)
-                }
-            }
-        }
-    }
+    /**
+     * No-op for raw fd channels. Unlike Netty's `closeFuture()`, POSIX fds
+     * have no kernel-level close notification. Callers should detect close
+     * via `read()` returning -1 (EOF) instead.
+     */
+    override suspend fun awaitClosed() {}
 
     /**
      * Reads bytes into [buf] via zero-copy POSIX read.
