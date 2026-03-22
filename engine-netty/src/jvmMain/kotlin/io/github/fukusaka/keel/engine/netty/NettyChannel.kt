@@ -48,6 +48,12 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * The last write's [ChannelFuture] is awaited via [suspendCancellableCoroutine]
  * with a listener callback — no thread blocking.
  *
+ * **Thread safety**: [pendingReadCont] is accessed from both coroutine threads
+ * ([read], [close]) and Netty's worker EventLoop thread ([channelRead],
+ * [channelInactive], [exceptionCaught]). All access is protected by [readLock]
+ * to prevent double-resume races (e.g. [close] and [channelInactive] firing
+ * concurrently).
+ *
  * ```
  * Read path (auto-read=false, coroutine bridge):
  *   keel coroutine: read(buf) --> suspendCancellableCoroutine + nettyChannel.read()
@@ -73,7 +79,7 @@ internal class NettyChannel(
     override val localAddress: SocketAddress?,
 ) : KeelChannel {
 
-    @Volatile
+    private val readLock = Any()
     private var pendingReadCont: CancellableContinuation<ByteBuf?>? = null
     private val pendingWrites = mutableListOf<PendingWrite>()
     @Volatile
@@ -108,9 +114,14 @@ internal class NettyChannel(
         check(_open) { "Channel is closed" }
 
         val byteBuf = suspendCancellableCoroutine { cont ->
-            pendingReadCont = cont
-            cont.invokeOnCancellation { pendingReadCont = null }
-            // auto-read=false: explicitly request one read from Netty
+            synchronized(readLock) {
+                pendingReadCont = cont
+                cont.invokeOnCancellation {
+                    synchronized(readLock) { pendingReadCont = null }
+                }
+            }
+            // auto-read=false: explicitly request one read from Netty.
+            // Called outside readLock to avoid holding the lock during Netty I/O.
             nettyChannel.read()
         }
 
@@ -205,9 +216,12 @@ internal class NettyChannel(
         if (_open) {
             _open = false
             _active = false
-            // Resume any pending read with null (EOF)
-            pendingReadCont?.resume(null)
-            pendingReadCont = null
+            // Resume any pending read with null (EOF), under lock to
+            // prevent double-resume with channelInactive/exceptionCaught.
+            synchronized(readLock) {
+                pendingReadCont?.resume(null)
+                pendingReadCont = null
+            }
             for (pw in pendingWrites) {
                 pw.buf.release()
             }
@@ -225,25 +239,31 @@ internal class NettyChannel(
      */
     internal val handler = object : ChannelInboundHandlerAdapter() {
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
-            val cont = pendingReadCont
-            pendingReadCont = null
-            if (cont != null) {
-                cont.resume(msg as ByteBuf)
-            } else {
-                // auto-read=false should prevent this, but release defensively
-                (msg as ByteBuf).release()
+            synchronized(readLock) {
+                val cont = pendingReadCont
+                pendingReadCont = null
+                if (cont != null) {
+                    cont.resume(msg as ByteBuf)
+                } else {
+                    // auto-read=false should prevent this, but release defensively
+                    (msg as ByteBuf).release()
+                }
             }
         }
 
         override fun channelInactive(ctx: ChannelHandlerContext) {
             _active = false
-            pendingReadCont?.resume(null)
-            pendingReadCont = null
+            synchronized(readLock) {
+                pendingReadCont?.resume(null)
+                pendingReadCont = null
+            }
         }
 
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-            pendingReadCont?.resumeWithException(cause)
-            pendingReadCont = null
+            synchronized(readLock) {
+                pendingReadCont?.resumeWithException(cause)
+                pendingReadCont = null
+            }
             ctx.close()
         }
     }
