@@ -33,6 +33,8 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
         // nativeMain is created automatically by applyDefaultHierarchyTemplate()
