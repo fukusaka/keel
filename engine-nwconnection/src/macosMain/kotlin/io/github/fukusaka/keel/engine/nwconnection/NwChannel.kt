@@ -5,20 +5,20 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.plus
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.value
+import kotlinx.cinterop.staticCFunction
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
-import nwconnection.keel_nw_read
+import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
-import nwconnection.keel_nw_write
+import nwconnection.keel_nw_write_async
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_t
-import platform.posix.int32_tVar
-import platform.posix.uint32_tVar
+import kotlin.coroutines.resume
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -30,38 +30,42 @@ import platform.posix.uint32_tVar
 private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
 
 /**
+ * Result of an async NWConnection read operation.
+ *
+ * Returned from the C callback via [StableRef] to the suspended coroutine.
+ */
+private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val failed: Boolean)
+
+/**
  * NWConnection-based [Channel] implementation for macOS.
  *
- * **Read path (copy from dispatch_data_t)**:
+ * **Read path (copy from dispatch_data_t, async)**:
  * Unlike kqueue/epoll which use zero-copy POSIX `read()` directly into
  * [NativeBuf], NWConnection delivers received data as `dispatch_data_t`.
- * The C wrapper [keel_nw_read] copies data segment-by-segment via
- * `dispatch_data_apply` + `memcpy`. This is an accepted limitation for
- * Phase 5 — measured overhead is ~0.1–0.4 us per small packet.
- * See nwconnection.def for details and Phase 6+ zero-copy plans.
+ * The C wrapper [keel_nw_read_async] copies data segment-by-segment via
+ * `dispatch_data_apply` + `memcpy`, then invokes a callback that resumes
+ * the suspended coroutine. No thread blocking occurs.
  *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
- * [keel_nw_write] for each, then releases the buffers. This design matches
- * [KqueueChannel] and enables future gather-write optimisation.
+ * [keel_nw_write_async] for each, suspending until each send completes.
  *
- * Phase (a): all suspend methods delegate to internal blocking counterparts.
+ * **Coroutine integration**: All I/O operations use [suspendCancellableCoroutine]
+ * with [staticCFunction] + [StableRef] to bridge dispatch callbacks to
+ * coroutine continuations. The callback runs on NWConnection's dispatch
+ * queue; the coroutine dispatcher handles re-dispatch.
  *
  * ```
- * Read path (copy):
- *   nw_connection_receive --> dispatch_data_t
- *     --> dispatch_data_apply + memcpy --> NativeBuf
+ * Read path (async, copy):
+ *   suspendCancellableCoroutine + keel_nw_read_async(conn, buf, callback, ctx)
+ *   dispatch queue: nw_connection_receive --> dispatch_data_apply + memcpy
+ *                   --> callback(len, complete, error, ctx)
+ *   coroutine: resumed with ReadResult --> advance writerIndex
  *
- * Write path (buffered, flush via NWConnection send):
+ * Write path (buffered, async flush):
  *   write(buf)  --> retain buf, record offset/length in PendingWrite
- *   write(buf2) --> retain buf2, append to pendingWrites
- *   flush()     --> keel_nw_write(conn, buf ptr, length)
- *                   keel_nw_write(conn, buf2 ptr, length)
- *                   release buf, release buf2
- *
- * Codec bridge (byte-by-byte copy, acceptable for codec layer):
- *   asSource() --> ChannelSource --> NativeBuf --> kotlinx-io Buffer
- *   asSink()   --> ChannelSink   --> kotlinx-io Buffer --> NativeBuf
+ *   flush()     --> for each: suspendCancellableCoroutine + keel_nw_write_async
+ *                   --> callback(error, ctx) --> resume
  * ```
  *
  * @param conn       The NWConnection handle for this channel.
@@ -83,45 +87,40 @@ internal class NwChannel(
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
-    /** Phase (a): no-op. Will suspend until closed in Phase (b). */
+    /**
+     * No-op for NWConnection channels. NWConnection does not provide
+     * a close-completion notification that maps to coroutine suspension.
+     * Callers should detect close via `read()` returning -1 (EOF).
+     */
     override suspend fun awaitClosed() {}
 
-    override suspend fun read(buf: NativeBuf): Int = readBlocking(buf)
-
-    override suspend fun write(buf: NativeBuf): Int = writeBlocking(buf)
-
-    override suspend fun flush() = flushBlocking()
-
     /**
-     * Reads bytes into [buf] via NWConnection receive + memcpy.
+     * Reads bytes into [buf] via async NWConnection receive + memcpy.
      *
-     * Calls the C wrapper [keel_nw_read] which blocks on a dispatch
-     * semaphore until the receive completion handler fires. Data is
-     * copied from dispatch_data_t into [buf] segment-by-segment.
+     * Suspends via [suspendCancellableCoroutine] until the C wrapper
+     * [keel_nw_read_async] invokes the callback with received data.
+     * Data is copied from dispatch_data_t into [buf] segment-by-segment.
      *
      * @return number of bytes read, or -1 on EOF/error.
      */
-    internal fun readBlocking(buf: NativeBuf): Int {
+    override suspend fun read(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
 
-        memScoped {
-            val outLen = alloc<uint32_tVar>()
-            val outComplete = alloc<int32_tVar>()
+        val result = suspendCancellableCoroutine<ReadResult> { cont ->
+            val ref = StableRef.create(cont)
             val ptr = (buf.unsafePointer + buf.writerIndex)!!
-
-            val rc = keel_nw_read(
+            keel_nw_read_async(
                 conn, ptr, buf.writableBytes.toUInt(),
-                outLen.ptr, outComplete.ptr,
+                readCallback,
+                ref.asCPointer(),
             )
-            if (rc < 0) return -1
-
-            val n = outLen.value.toInt()
-            if (n > 0) buf.writerIndex += n
-
-            // EOF: peer closed the connection
-            if (n == 0 && outComplete.value != 0) return -1
-            return n
+            cont.invokeOnCancellation { ref.dispose() }
         }
+
+        if (result.failed) return -1
+        if (result.bytesRead > 0) buf.writerIndex += result.bytesRead
+        if (result.bytesRead == 0 && result.isComplete) return -1
+        return result.bytesRead
     }
 
     /**
@@ -129,11 +128,11 @@ internal class NwChannel(
      *
      * The caller's [NativeBuf.readerIndex] is advanced immediately so the
      * buffer can be reused or released by the caller. The actual NWConnection
-     * send happens on [flushBlocking].
+     * send happens on [flush].
      *
      * @return number of bytes buffered.
      */
-    internal fun writeBlocking(buf: NativeBuf): Int {
+    override suspend fun write(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -146,17 +145,24 @@ internal class NwChannel(
     }
 
     /**
-     * Sends all buffered writes to the network via NWConnection.
+     * Sends all buffered writes to the network via async NWConnection send.
      *
-     * Each [PendingWrite] is sent using [keel_nw_write] which creates
-     * a dispatch_data_t and blocks until the send completes.
-     * The retained [NativeBuf] is released after each send.
+     * Each [PendingWrite] is sent using [keel_nw_write_async]. The coroutine
+     * suspends until each send's callback fires, then releases the buffer.
      */
-    internal fun flushBlocking() {
+    override suspend fun flush() {
         check(_open) { "Channel is closed" }
         for (pw in pendingWrites) {
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
-            keel_nw_write(conn, ptr, pw.length.toUInt())
+            suspendCancellableCoroutine<Int> { cont ->
+                val ref = StableRef.create(cont)
+                keel_nw_write_async(
+                    conn, ptr, pw.length.toUInt(),
+                    writeCallback,
+                    ref.asCPointer(),
+                )
+                cont.invokeOnCancellation { ref.dispose() }
+            }
             pw.buf.release()
         }
         pendingWrites.clear()
@@ -164,7 +170,8 @@ internal class NwChannel(
 
     /**
      * Sends TCP FIN to the peer via NWConnection.
-     * The read side remains open so the peer's remaining data can be consumed.
+     * Fire-and-forget: no blocking or suspend needed because the caller
+     * does not depend on shutdown completion.
      */
     override fun shutdownOutput() {
         if (!outputShutdown && _open) {
@@ -190,6 +197,39 @@ internal class NwChannel(
             }
             pendingWrites.clear()
             nw_connection_cancel(conn)
+        }
+    }
+
+    companion object {
+        /**
+         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
+         * Matches the default kotlinx-io segment size.
+         */
+        internal const val CODEC_BUFFER_SIZE = 8192
+
+        /**
+         * C callback for [keel_nw_read_async]. Resumes the suspended
+         * coroutine with [ReadResult] via [StableRef].
+         *
+         * Must be a top-level staticCFunction because Kotlin/Native
+         * cannot capture local state in C function pointers.
+         */
+        private val readCallback = staticCFunction {
+                len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
+            val ref = ctx!!.asStableRef<CancellableContinuation<ReadResult>>()
+            ref.get().resume(ReadResult(len.toInt(), isComplete != 0, error != 0))
+            ref.dispose()
+        }
+
+        /**
+         * C callback for [keel_nw_write_async]. Resumes the suspended
+         * coroutine with the error code via [StableRef].
+         */
+        private val writeCallback = staticCFunction {
+                error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
+            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
+            ref.get().resume(error)
+            ref.dispose()
         }
     }
 }
