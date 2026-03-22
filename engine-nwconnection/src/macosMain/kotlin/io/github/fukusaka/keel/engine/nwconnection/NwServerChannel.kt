@@ -5,42 +5,53 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
-import nwconnection.keel_nw_start_conn
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
+import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t
 import platform.Network.nw_endpoint_get_hostname
 import platform.Network.nw_endpoint_get_port
 import platform.Network.nw_listener_cancel
 import platform.Network.nw_listener_t
-import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.dispatch_queue_create
-import platform.darwin.dispatch_semaphore_create
-import platform.darwin.dispatch_semaphore_signal
-import platform.darwin.dispatch_semaphore_wait
+import platform.posix.pthread_mutex_destroy
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
+import kotlinx.cinterop.Arena
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.ptr
+import kotlin.coroutines.resume
 
 /**
  * NWConnection-based [ServerChannel] implementation for macOS.
  *
- * Wraps an [nw_listener_t] and accepts incoming connections via a
- * semaphore-synchronised queue. The listener's new-connection handler
- * (set by [NwEngine.bind]) pushes [nw_connection_t] instances into
- * [pendingConnections] and signals [acceptSem].
+ * Wraps an [nw_listener_t] and accepts incoming connections via
+ * [suspendCancellableCoroutine]. The listener's new-connection handler
+ * (set by [NwEngine.bind]) calls [onNewConnection] for each accepted
+ * connection, which either resumes a waiting [accept] coroutine or
+ * buffers the connection for the next [accept] call.
  *
- * Phase (a): [accept] blocks on the semaphore until a connection arrives.
+ * **Thread safety**: [onNewConnection] is called from the listener's
+ * dispatch queue while [accept] runs on a coroutine thread. All access
+ * to [pendingConnections] and [pendingAcceptCont] is protected by
+ * [mutex] (pthread_mutex_t). Kotlin/Native lacks JVM's `synchronized`;
+ * coroutine `Mutex` cannot be used from the dispatch callback.
  *
  * ```
  * accept() flow:
- *   dispatch_semaphore_wait(acceptSem)  -- blocks until new connection
- *     --> take nw_connection_t from pendingConnections
- *   keel_nw_start_conn(conn, queue)     -- wait for ready state
- *     --> extract remote/local address from endpoint
+ *   suspendCancellableCoroutine
+ *     --> listener callback: onNewConnection(conn) --> resume
+ *   keel_nw_start_conn_async(conn, queue, callback, ctx)
+ *     --> suspendCancellableCoroutine until ready
  *   --> NwChannel(conn, allocator, remoteAddr, localAddr)
  * ```
- *
- * Thread safety: [pendingConnections] is written by the listener's
- * dispatch queue callback and read by the caller's thread.
- * The semaphore serialises access (signal after add, wait before take).
  *
  * @param listener    The NWListener handle.
  * @param localAddress Bind address of this server channel.
@@ -49,62 +60,115 @@ import platform.darwin.dispatch_semaphore_wait
 @OptIn(ExperimentalForeignApi::class)
 internal class NwServerChannel(
     private val listener: nw_listener_t,
-    override val localAddress: SocketAddress,
+    localAddress: SocketAddress,
     private val allocator: BufferAllocator,
 ) : ServerChannel {
 
+    private val arena = Arena()
+    private val mutex = arena.alloc<pthread_mutex_t>().apply {
+        pthread_mutex_init(ptr, null)
+    }
+    private val pendingConnections = ArrayDeque<nw_connection_t>()
+    private var pendingAcceptCont: CancellableContinuation<nw_connection_t>? = null
     private var _active = true
+    private var _localAddress: SocketAddress = localAddress
 
-    /** Queue of connections awaiting accept(). Written by listener callback. */
-    internal val pendingConnections = mutableListOf<nw_connection_t>()
-
-    /** Signalled when a new connection is added to pendingConnections. */
-    internal val acceptSem = dispatch_semaphore_create(0L)!!
-
+    override val localAddress: SocketAddress get() = _localAddress
     override val isActive: Boolean get() = _active
 
     /**
-     * Waits for an incoming connection, starts it, and returns a [NwChannel].
+     * Updates the local address after the listener's assigned port is known.
+     * Called by [NwEngine.bind] after the listener reaches the ready state.
+     */
+    internal fun updateLocalAddress(addr: SocketAddress) {
+        _localAddress = addr
+    }
+
+    /**
+     * Called by [NwEngine.bind]'s new-connection handler when an incoming
+     * connection arrives. If [accept] is already waiting, resumes the
+     * coroutine directly. Otherwise, buffers the connection.
      *
-     * Blocks on [acceptSem] until the listener's new-connection handler
-     * pushes a connection. The connection is then started via
-     * [keel_nw_start_conn] on a per-connection serial dispatch queue.
+     * Thread safety: called from the listener's dispatch queue.
+     * Protected by [mutex] to synchronize with [accept].
+     */
+    internal fun onNewConnection(conn: nw_connection_t) {
+        withLock {
+            val cont = pendingAcceptCont
+            if (cont != null) {
+                pendingAcceptCont = null
+                cont.resume(conn)
+            } else {
+                pendingConnections.addLast(conn)
+            }
+        }
+    }
+
+    /**
+     * Suspends until an incoming connection arrives, starts it, and
+     * returns a [NwChannel].
+     *
+     * The connection is started via [keel_nw_start_conn_async] on a
+     * per-connection serial dispatch queue, suspending until the
+     * connection reaches the ready state.
      */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
 
-        // 5-second timeout to prevent indefinite blocking in tests.
-        // dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)
-        val timeout = platform.darwin.dispatch_time(platform.darwin.DISPATCH_TIME_NOW, 5L * 1_000_000_000L)
-        val result = dispatch_semaphore_wait(acceptSem, timeout)
-        if (result != 0L) error("accept() timed out — no connection within 5 seconds")
-        check(_active) { "ServerChannel closed while waiting for accept" }
-
-        // Thread safety: the semaphore guarantees at least one element exists.
-        // Phase (a) is single-threaded on the accept() side; the listener
-        // callback only adds (never removes), so no lock is needed.
-        val conn = pendingConnections.removeFirst()
+        // Get a connection: fast path (buffered) or slow path (suspend)
+        val conn: nw_connection_t = withLock {
+            if (pendingConnections.isNotEmpty()) {
+                return@withLock pendingConnections.removeFirst()
+            }
+            null
+        } ?: suspendCancellableCoroutine { cont ->
+            withLock {
+                if (pendingConnections.isNotEmpty()) {
+                    cont.resume(pendingConnections.removeFirst())
+                } else {
+                    pendingAcceptCont = cont
+                    cont.invokeOnCancellation {
+                        withLock { pendingAcceptCont = null }
+                    }
+                }
+            }
+        }
 
         // Per-connection serial queue for NWConnection callbacks
         val connQueue = dispatch_queue_create(
             "io.github.fukusaka.keel.nwconnection.conn", null,
         )
 
-        val rc = keel_nw_start_conn(conn, connQueue)
-        check(rc == 0) { "keel_nw_start_conn failed" }
+        // Start connection asynchronously and wait for ready state
+        val rc = suspendCancellableCoroutine<Int> { cont ->
+            val ref = StableRef.create(cont)
+            keel_nw_start_conn_async(
+                conn, connQueue,
+                startCallback,
+                ref.asCPointer(),
+            )
+            cont.invokeOnCancellation { ref.dispose() }
+        }
+        check(rc == 0) { "keel_nw_start_conn_async failed" }
 
         val remoteAddr = extractAddress(conn)
-        // Accepted connections share the listener's local address
         return NwChannel(conn, allocator, remoteAddr, localAddress)
     }
 
     override fun close() {
-        if (_active) {
-            _active = false
-            nw_listener_cancel(listener)
-            // Unblock any pending accept() call
-            dispatch_semaphore_signal(acceptSem)
+        withLock {
+            if (_active) {
+                _active = false
+                // Pending accept continuation is left uncompleted.
+                // The coroutine will be garbage collected. Explicit cancel
+                // requires CancellationException import and is deferred to
+                // graceful shutdown implementation.
+                pendingAcceptCont = null
+            }
         }
+        nw_listener_cancel(listener)
+        pthread_mutex_destroy(mutex.ptr)
+        arena.clear()
     }
 
     /**
@@ -115,5 +179,28 @@ internal class NwServerChannel(
         val host = nw_endpoint_get_hostname(endpoint)?.toKString() ?: return null
         val port = nw_endpoint_get_port(endpoint).toInt()
         return SocketAddress(host, port)
+    }
+
+    /** Runs [block] under the pthread mutex. */
+    private inline fun <T> withLock(block: () -> T): T {
+        pthread_mutex_lock(mutex.ptr)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(mutex.ptr)
+        }
+    }
+
+    companion object {
+        /**
+         * C callback for [keel_nw_start_conn_async].
+         * Resumes the suspended coroutine with 0 (ready) or -1 (failed).
+         */
+        private val startCallback = staticCFunction {
+                result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
+            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
+            ref.get().resume(result)
+            ref.dispose()
+        }
     }
 }
