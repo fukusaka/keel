@@ -26,7 +26,7 @@ internal class ChannelSink(
     override fun write(source: Buffer, byteCount: Long) {
         var remaining = byteCount.toInt()
         while (remaining > 0) {
-            val chunkSize = remaining.coerceAtMost(CODEC_BUFFER_SIZE)
+            val chunkSize = remaining.coerceAtMost(NettyChannel.CODEC_BUFFER_SIZE)
             val buf = allocator.allocate(chunkSize)
             for (i in 0 until chunkSize) {
                 buf.writeByte(source.readByte())
@@ -43,8 +43,4 @@ internal class ChannelSink(
 
     /** No-op: channel lifecycle is managed by the caller, not by this sink. */
     override fun close() {}
-
-    companion object {
-        private const val CODEC_BUFFER_SIZE = 8192
-    }
 }

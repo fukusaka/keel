@@ -99,6 +99,14 @@ class NettyEngine(
         return serverChannel
     }
 
+    /**
+     * Connects to a remote server via Netty [Bootstrap].
+     *
+     * Unlike [bind], the handler is added **after** connect completes
+     * because there is no ChannelInitializer race — the channel is not
+     * yet receiving data until [NettyChannel.read] is called
+     * (`autoRead = false`).
+     */
     override suspend fun connect(host: String, port: Int): KeelChannel {
         check(!closed) { "Engine is closed" }
 
