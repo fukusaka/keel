@@ -1,64 +1,50 @@
 package io.github.fukusaka.keel.engine.nio
 
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineDispatcher
 import java.nio.channels.SelectableChannel
 import java.nio.channels.Selector
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 /**
- * Single-threaded NIO event loop for JVM.
+ * Single-threaded NIO event loop for JVM, also serving as a [CoroutineDispatcher].
  *
- * Drives all I/O for channels created by [NioEngine]. A dedicated daemon
- * [Thread] runs [loop], calling [Selector.select] to wait for channel
- * readiness events and resuming suspended coroutines when their channels
- * become ready.
+ * Drives all I/O for channels assigned to this EventLoop. A dedicated daemon
+ * thread runs [loop], interleaving three tasks:
+ * 1. Execute queued coroutine continuations ([taskQueue])
+ * 2. Process pending channel registrations ([pendingRegistrations])
+ * 3. Call [Selector.select] to wait for channel readiness events
  *
- * **Scalability**: Currently single-threaded. All channel readiness events
- * are dispatched serially. Multi-thread support
- * (`IoEngineConfig.threads > 1`) will address this in a future PR.
+ * **CoroutineDispatcher integration**: By extending [CoroutineDispatcher],
+ * coroutines launched on this EventLoop (e.g., `launch(eventLoop) {}`)
+ * execute entirely on the EventLoop thread. When `cont.resume()` is called,
+ * the continuation is dispatched back to this same thread via [dispatch],
+ * eliminating cross-thread dispatch overhead. This matches Netty's model
+ * where channelRead/write run on the EventLoop thread.
  *
- * **Wakeup mechanism**: [Selector.wakeup] is used to interrupt
- * [Selector.select] when new registrations are added. This is JVM's
- * built-in wakeup mechanism (no pipe or eventfd needed).
- *
- * **Thread safety**: [pendingRegistrations] is protected by
- * `synchronized(lock)`. Registrations are queued and processed at the
- * beginning of each select loop iteration, because
- * [SelectableChannel.register] must not be called while `select()` is
- * in progress.
+ * **Wakeup**: [Selector.wakeup] is called when tasks or registrations are
+ * queued, interrupting a blocking `select()`.
  *
  * ```
- * EventLoop thread:
- *   while (running):
- *     drain pending registrations → channel.register(selector, ops, cont)
- *     selector.select()
- *     for each selected key:
- *       cancel key, continuation.resume(Unit)
- *
- * Coroutine thread:
- *   suspendCancellableCoroutine { cont ->
- *     eventLoop.register(channel, OP_READ, cont)
- *   }
- *   // resumed when channel is readable → retry NIO read
+ * EventLoop thread (single loop iteration):
+ *   1. drainTasks()          — run coroutine continuations
+ *   2. drainRegistrations()  — channel.register(selector, ops, cont)
+ *   3. selector.select()     — block until events or wakeup
+ *   4. processSelectedKeys() — cont.resume(Unit) for ready channels
  * ```
  */
-internal class NioEventLoop {
+internal class NioEventLoop(name: String) : CoroutineDispatcher() {
 
     private val selector: Selector = Selector.open()
     private val lock = Any()
     private val pendingRegistrations = mutableListOf<Registration>()
+    private val taskQueue = ConcurrentLinkedQueue<Runnable>()
     @Volatile
     private var running = true
     private val thread: Thread
 
-    /**
-     * A pending channel registration request.
-     *
-     * Queued by [register] and processed by the EventLoop thread.
-     * [SelectableChannel.register] requires the channel to not be in
-     * a blocking select call, so registrations are deferred to the
-     * beginning of each loop iteration.
-     */
     class Registration(
         val channel: SelectableChannel,
         val ops: Int,
@@ -66,23 +52,33 @@ internal class NioEventLoop {
     )
 
     init {
-        thread = Thread({ loop() }, "keel-nio-eventloop").apply {
+        thread = Thread({ loop() }, name).apply {
             isDaemon = true
             start()
         }
     }
 
+    // --- CoroutineDispatcher ---
+
+    /**
+     * Dispatches a coroutine block to run on this EventLoop thread.
+     *
+     * Called by the coroutine machinery when a continuation needs to resume.
+     * The block is queued and the selector is woken up to process it
+     * in the next loop iteration.
+     */
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        taskQueue.add(block)
+        selector.wakeup()
+    }
+
+    // --- Channel registration ---
+
     /**
      * Registers a channel for readiness notification.
      *
-     * The registration is queued and [Selector.wakeup] is called to
-     * interrupt the select loop. The EventLoop thread processes the
-     * queue and calls [SelectableChannel.register] on the selector
-     * thread.
-     *
      * When the channel becomes ready, the [cont] is resumed with [Unit]
-     * and the [SelectionKey][java.nio.channels.SelectionKey] is cancelled
-     * (one-shot).
+     * on this EventLoop thread (via [dispatch]).
      */
     fun register(channel: SelectableChannel, ops: Int, cont: CancellableContinuation<Unit>) {
         synchronized(lock) {
@@ -91,38 +87,34 @@ internal class NioEventLoop {
         selector.wakeup()
     }
 
-    /**
-     * The EventLoop's main loop.
-     *
-     * 1. Drains pending registrations (must be done on selector thread)
-     * 2. Calls [Selector.select] (blocks until events or wakeup)
-     * 3. For each selected key, cancels the key and resumes the continuation
-     */
+    // --- Event loop ---
+
     private fun loop() {
         while (running) {
+            drainTasks()
             drainRegistrations()
 
-            val n = selector.select()
-            if (n == 0) continue
-
-            val iter = selector.selectedKeys().iterator()
-            while (iter.hasNext()) {
-                val key = iter.next()
-                iter.remove()
-                val cont = key.attachment() as? CancellableContinuation<*> ?: continue
-                key.cancel()
-                @Suppress("UNCHECKED_CAST")
-                (cont as CancellableContinuation<Unit>).resume(Unit)
+            val n = if (taskQueue.isNotEmpty()) {
+                // Tasks pending: don't block, process them immediately
+                selector.selectNow()
+            } else {
+                selector.select()
+            }
+            if (n > 0) {
+                processSelectedKeys()
             }
         }
     }
 
-    /**
-     * Processes all pending registrations on the EventLoop thread.
-     *
-     * Each registration calls [SelectableChannel.register] with the
-     * continuation as the attachment. Closed channels are skipped.
-     */
+    /** Runs all queued coroutine continuations on this thread. */
+    private fun drainTasks() {
+        while (true) {
+            val task = taskQueue.poll() ?: break
+            task.run()
+        }
+    }
+
+    /** Processes pending channel registrations. */
     private fun drainRegistrations() {
         val regs: List<Registration>
         synchronized(lock) {
@@ -141,13 +133,44 @@ internal class NioEventLoop {
         }
     }
 
-    /**
-     * Stops the EventLoop and closes the selector.
-     */
+    /** Resumes continuations for all ready channels. */
+    private fun processSelectedKeys() {
+        val iter = selector.selectedKeys().iterator()
+        while (iter.hasNext()) {
+            val key = iter.next()
+            iter.remove()
+            val cont = key.attachment() as? CancellableContinuation<*> ?: continue
+            key.cancel()
+            @Suppress("UNCHECKED_CAST")
+            (cont as CancellableContinuation<Unit>).resume(Unit)
+        }
+    }
+
     fun close() {
         running = false
         selector.wakeup()
         thread.join(2000)
         selector.close()
+    }
+}
+
+/**
+ * A group of [NioEventLoop] instances for round-robin channel assignment.
+ *
+ * Mirrors Netty's `NioEventLoopGroup`: distributes channels across multiple
+ * EventLoop threads for parallel I/O processing.
+ *
+ * @param size Number of EventLoop threads.
+ * @param namePrefix Thread name prefix (e.g., "keel-nio-worker").
+ */
+internal class NioEventLoopGroup(size: Int, namePrefix: String) {
+    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i") }
+    private val index = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Returns the next EventLoop in round-robin order. */
+    fun next(): NioEventLoop = loops[index.getAndIncrement() % loops.size]
+
+    fun close() {
+        for (loop in loops) loop.close()
     }
 }

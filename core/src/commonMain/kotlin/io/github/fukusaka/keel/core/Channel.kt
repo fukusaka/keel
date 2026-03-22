@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.core
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.io.RawSink
 import kotlinx.io.RawSource
 
@@ -84,6 +86,20 @@ interface Channel : AutoCloseable {
      * after the data is sent.
      */
     suspend fun flush()
+
+    // --- Dispatcher ---
+
+    /**
+     * The [CoroutineDispatcher] best suited for I/O operations on this channel.
+     *
+     * Engines with dedicated EventLoop threads (NIO, kqueue, epoll) return
+     * their EventLoop's dispatcher, enabling coroutines to run on the same
+     * thread that drives I/O — eliminating cross-thread dispatch overhead.
+     *
+     * Default: [Dispatchers.Default] for engines without a dedicated EventLoop.
+     * (Dispatchers.IO is not available in commonMain due to JS target.)
+     */
+    val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     // --- Half-close ---
 
