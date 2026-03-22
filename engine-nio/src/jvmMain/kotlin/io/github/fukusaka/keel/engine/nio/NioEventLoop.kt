@@ -18,6 +18,10 @@ import kotlin.coroutines.resume
  * [Selector.select] when new registrations are added. This is
  * JVM's built-in wakeup mechanism (no pipe or eventfd needed).
  *
+ * **Scalability**: Currently single-threaded. All channel readiness
+ * events are dispatched serially. Multi-thread support
+ * (`IoEngineConfig.threads > 1`) will address this in a future PR.
+ *
  * **Thread safety**: [pendingRegistrations] is protected by
  * `synchronized(lock)`. Registrations are queued and processed
  * at the beginning of each select loop iteration, because
@@ -41,7 +45,7 @@ import kotlin.coroutines.resume
  */
 internal class NioEventLoop {
 
-    val selector: Selector = Selector.open()
+    private val selector: Selector = Selector.open()
 
     private val lock = Any()
     private val pendingRegistrations = mutableListOf<Registration>()
