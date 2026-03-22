@@ -160,10 +160,9 @@ internal class NwServerChannel(
         withLock {
             if (_active) {
                 _active = false
-                // Pending accept continuation is left uncompleted.
-                // The coroutine will be garbage collected. Explicit cancel
-                // requires CancellationException import and is deferred to
-                // graceful shutdown implementation.
+                pendingAcceptCont?.resumeWithException(
+                    kotlinx.coroutines.CancellationException("ServerChannel closed"),
+                )
                 pendingAcceptCont = null
             }
         }
