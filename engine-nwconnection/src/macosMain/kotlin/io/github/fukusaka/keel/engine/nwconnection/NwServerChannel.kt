@@ -10,6 +10,7 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -162,7 +163,7 @@ internal class NwServerChannel(
             if (_active) {
                 _active = false
                 pendingAcceptCont?.resumeWithException(
-                    kotlinx.coroutines.CancellationException("ServerChannel closed"),
+                    CancellationException("ServerChannel closed"),
                 )
                 pendingAcceptCont = null
             }
