@@ -25,13 +25,13 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
         if (readerIndex > 0) {
             val readable = readableBytes
             if (readable > 0) {
-                // ByteBuffer compact: copy readable bytes to position 0
+                // Use ByteBuffer.compact(): copies bytes between position and
+                // limit to the beginning, then sets position = remaining.
                 buf.position(readerIndex)
                 buf.limit(writerIndex)
-                val tmp = buf.slice()
-                buf.position(0)
+                buf.compact()
+                // Reset limit to capacity (compact sets it to capacity already)
                 buf.limit(capacity)
-                buf.put(tmp)
             }
             readerIndex = 0
             writerIndex = readable

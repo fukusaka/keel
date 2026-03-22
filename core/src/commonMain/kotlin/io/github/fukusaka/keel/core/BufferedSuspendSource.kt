@@ -60,6 +60,9 @@ class BufferedSuspendSource(
      * Scans the internal buffer for a newline. If not found, refills
      * and continues scanning. Returns null on EOF before any data.
      *
+     * Note: assumes ASCII-compatible encoding (valid for HTTP headers per
+     * RFC 7230). Multi-byte UTF-8 sequences are not handled correctly.
+     *
      * @return the line without the line terminator, or null on EOF.
      */
     suspend fun readLine(): String? {
