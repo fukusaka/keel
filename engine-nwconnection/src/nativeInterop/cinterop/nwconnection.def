@@ -139,13 +139,20 @@ void keel_nw_shutdown_output(nw_connection_t conn) {
  */
 void keel_nw_start_conn_async(nw_connection_t conn, dispatch_queue_t queue,
                                keel_nw_start_callback callback, void *ctx) {
+    /* Guard: state handler may fire multiple times (e.g. ready then cancelled).
+     * The callback must be invoked exactly once to avoid double-resume of
+     * the Kotlin coroutine continuation. */
+    __block int called = 0;
     nw_connection_set_queue(conn, queue);
     nw_connection_set_state_changed_handler(conn,
         ^(nw_connection_state_t state, nw_error_t error) {
+            if (called) return;
             if (state == nw_connection_state_ready) {
+                called = 1;
                 callback(0, ctx);
             } else if (state == nw_connection_state_failed ||
                        state == nw_connection_state_cancelled) {
+                called = 1;
                 callback(-1, ctx);
             }
         });
