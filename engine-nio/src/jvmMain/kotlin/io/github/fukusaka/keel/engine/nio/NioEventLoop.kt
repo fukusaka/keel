@@ -168,7 +168,11 @@ internal class NioEventLoopGroup(size: Int, namePrefix: String) {
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Returns the next EventLoop in round-robin order. */
-    fun next(): NioEventLoop = loops[index.getAndIncrement() % loops.size]
+    fun next(): NioEventLoop {
+        // Use absolute value to avoid negative index when counter overflows Int.MAX_VALUE
+        val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
+        return loops[i]
+    }
 
     fun close() {
         for (loop in loops) loop.close()

@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ktor-engine`: switch from `asSource()`/`asSink()` to `asSuspendSource()`/`asSuspendSink()` — eliminates `runBlocking` from I/O path
 - `engine-nio`: replace blocking SocketChannel with non-blocking mode + Selector EventLoop (Phase 5b async)
 - `engine-nio`: add `NioEventLoop` with Selector.wakeup and dedicated thread
+- `engine-nio`: add `NioEventLoopGroup` for boss/worker model with round-robin channel assignment
+- `engine-nio`: remove `ChannelSource`/`ChannelSink` — first engine fully migrated to `SuspendSource`/`SuspendSink`
+- `core`: add `Channel.coroutineDispatcher` for engine-specific EventLoop dispatcher (default: `Dispatchers.Default`)
+- `core`: add `kotlinx-coroutines-core` as `api` dependency in commonMain
 
 ## [0.1.0] - 2026-03-22
 
