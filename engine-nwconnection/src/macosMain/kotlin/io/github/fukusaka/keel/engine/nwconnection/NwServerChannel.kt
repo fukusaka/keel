@@ -60,7 +60,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class NwServerChannel(
     private val listener: nw_listener_t,
-    override val localAddress: SocketAddress,
+    localAddress: SocketAddress,
     private val allocator: BufferAllocator,
 ) : ServerChannel {
 
@@ -71,8 +71,18 @@ internal class NwServerChannel(
     private val pendingConnections = ArrayDeque<nw_connection_t>()
     private var pendingAcceptCont: CancellableContinuation<nw_connection_t>? = null
     private var _active = true
+    private var _localAddress: SocketAddress = localAddress
 
+    override val localAddress: SocketAddress get() = _localAddress
     override val isActive: Boolean get() = _active
+
+    /**
+     * Updates the local address after the listener's assigned port is known.
+     * Called by [NwEngine.bind] after the listener reaches the ready state.
+     */
+    internal fun updateLocalAddress(addr: SocketAddress) {
+        _localAddress = addr
+    }
 
     /**
      * Called by [NwEngine.bind]'s new-connection handler when an incoming
@@ -149,7 +159,10 @@ internal class NwServerChannel(
         withLock {
             if (_active) {
                 _active = false
-                pendingAcceptCont?.let { /* cancel would require CancellationException import */ }
+                // Pending accept continuation is left uncompleted.
+                // The coroutine will be garbage collected. Explicit cancel
+                // requires CancellationException import and is deferred to
+                // graceful shutdown implementation.
                 pendingAcceptCont = null
             }
         }

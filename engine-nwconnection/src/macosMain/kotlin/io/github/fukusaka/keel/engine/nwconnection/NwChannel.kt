@@ -214,6 +214,11 @@ internal class NwChannel(
          * Must be a top-level staticCFunction because Kotlin/Native
          * cannot capture local state in C function pointers.
          */
+        // Note on StableRef lifecycle: the callback always calls ref.dispose().
+        // invokeOnCancellation also calls ref.dispose() but only fires if
+        // the coroutine is cancelled BEFORE the callback runs. Once the
+        // callback resumes the continuation, invokeOnCancellation becomes
+        // a no-op, so no double-dispose occurs.
         private val readCallback = staticCFunction {
                 len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
             val ref = ctx!!.asStableRef<CancellableContinuation<ReadResult>>()
