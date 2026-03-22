@@ -1,19 +1,19 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
+import io.github.fukusaka.keel.core.BufferedSuspendSink
 import io.github.fukusaka.keel.core.SocketAddress
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.io.Sink
 import kotlin.coroutines.CoroutineContext
 
 /**
  * Ktor [BaseApplicationCall] backed by a single keel [Channel][io.github.fukusaka.keel.core.Channel] connection.
  *
  * Bridges the parsed [HttpRequestHead] and raw I/O streams ([ByteReadChannel] for request body,
- * [Sink] for response output) into Ktor's request/response hierarchy.
+ * [BufferedSuspendSink] for response output) into Ktor's request/response hierarchy.
  */
 internal class KeelApplicationCall(
     application: Application,
@@ -21,7 +21,7 @@ internal class KeelApplicationCall(
     localAddress: SocketAddress?,
     remoteAddress: SocketAddress?,
     requestBody: ByteReadChannel,
-    sink: Sink,
+    sink: BufferedSuspendSink,
     scope: CoroutineScope,
     override val coroutineContext: CoroutineContext,
     keepAlive: Boolean,
