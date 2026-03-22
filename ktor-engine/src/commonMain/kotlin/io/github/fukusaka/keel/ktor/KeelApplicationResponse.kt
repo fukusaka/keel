@@ -28,6 +28,7 @@ internal class KeelApplicationResponse(
     call: KeelApplicationCall,
     private val sink: Sink,
     private val scope: CoroutineScope,
+    private val keepAlive: Boolean,
 ) : BaseApplicationResponse(call) {
 
     private var statusCode: HttpStatusCode = HttpStatusCode.OK
@@ -98,9 +99,11 @@ internal class KeelApplicationResponse(
                 keelHeaders.add(name, value)
             }
         }
-        // Phase (a): no keep-alive support — always signal client to close after response.
-        // Ktor pipeline may set "Connection: keep-alive" but keel does not support it yet.
-        keelHeaders["Connection"] = "close"
+        // Set Connection header based on keep-alive decision.
+        // HTTP/1.1 default is keep-alive, so only send "close" when closing.
+        if (!keepAlive) {
+            keelHeaders["Connection"] = "close"
+        }
         writeResponseHead(
             status = KeelHttpStatus(statusCode.value),
             version = KeelHttpVersion.HTTP_1_1,

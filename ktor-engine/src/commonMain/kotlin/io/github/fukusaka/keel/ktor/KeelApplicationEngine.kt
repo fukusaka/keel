@@ -14,7 +14,9 @@ import kotlinx.io.buffered
 /**
  * Ktor server engine backed by keel I/O engines.
  *
- * Phase (a): synchronous I/O, no keep-alive (Connection: close per request).
+ * Supports HTTP/1.1 keep-alive: multiple requests can be processed on a
+ * single TCP connection. Keep-alive is enabled by default and can be
+ * disabled via [Configuration.keepAlive].
  */
 public class KeelApplicationEngine(
     environment: ApplicationEnvironment,
@@ -30,6 +32,18 @@ public class KeelApplicationEngine(
          * (JVM: NioEngine, macOS: KqueueEngine).
          */
         public var engine: IoEngine? = null
+
+        /**
+         * Enable HTTP/1.1 keep-alive (default: true).
+         *
+         * When true, multiple requests are processed on a single TCP connection
+         * (per HTTP/1.1 standard). The connection is closed when the client sends
+         * `Connection: close` or an error occurs.
+         *
+         * When false, every response includes `Connection: close` and the
+         * connection is closed after each request (Phase (a) behavior).
+         */
+        public var keepAlive: Boolean = true
     }
 
     private val engineDispatcher = Dispatchers.IO
@@ -127,9 +141,13 @@ public class KeelApplicationEngine(
     }
 
     /**
-     * Handle a single HTTP request on the accepted [channel].
+     * Handle HTTP requests on the accepted [channel].
      *
-     * Data flow (Phase (a) — single request, no keep-alive):
+     * When keep-alive is enabled, processes multiple sequential requests
+     * on the same TCP connection until the client sends `Connection: close`,
+     * an error occurs, or the connection is closed by the peer.
+     *
+     * Data flow per request:
      * ```
      * Channel ──asSource()──► RawSource ──parseRequestHead()──► HttpRequestHead
      *                              │                                    │
@@ -145,50 +163,78 @@ public class KeelApplicationEngine(
      *
      * Request body bridging: keel's pull-based [RawSource] is piped into Ktor's
      * push-based [ByteReadChannel] via a dedicated coroutine. This copy is
-     * unavoidable because Ktor expects a channel interface.
+     * unavoidable because Ktor expects a channel interface. The bridge job is
+     * joined before parsing the next request to ensure body bytes are fully
+     * consumed from the source.
      */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
         try {
             val source = channel.asSource().buffered()
             val sink = channel.asSink().buffered()
+            val serverKeepAlive = configuration.keepAlive
 
-            val head = parseRequestHead(source)
-
-            // Bridge request body: pull from RawSource → push to ByteReadChannel
-            val contentLength = head.headers.contentLength()
-            val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
-                val bodyChannel = ByteChannel()
-                launch(Dispatchers.IO) {
-                    var remaining = contentLength
-                    val buf = ByteArray(8192)
-                    while (remaining > 0) {
-                        val toRead = minOf(remaining, buf.size.toLong()).toInt()
-                        val n = source.readAtMostTo(buf, 0, toRead)
-                        if (n == -1) break
-                        bodyChannel.writeFully(buf, 0, n)
-                        remaining -= n
-                    }
-                    bodyChannel.flushAndClose()
+            while (channel.isActive) {
+                // parseRequestHead throws IllegalArgumentException on EOF
+                // ("Unexpected EOF reading request line") and on malformed
+                // requests. Both cases mean the connection should be closed.
+                val head = try {
+                    parseRequestHead(source)
+                } catch (_: Exception) {
+                    break
                 }
-                bodyChannel
-            } else {
-                ByteReadChannel.Empty
+
+                val keepAlive = serverKeepAlive && head.isKeepAlive()
+
+                // Bridge request body: pull from RawSource → push to ByteReadChannel.
+                // The bridge coroutine reads exactly contentLength bytes from source
+                // and pipes them into bodyChannel for Ktor's push-based API.
+                val contentLength = head.headers.contentLength()
+                var bodyBridgeJob: Job? = null
+                val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
+                    val bodyChannel = ByteChannel()
+                    bodyBridgeJob = launch(Dispatchers.IO) {
+                        var remaining = contentLength
+                        val buf = ByteArray(8192)
+                        while (remaining > 0) {
+                            val toRead = minOf(remaining, buf.size.toLong()).toInt()
+                            val n = source.readAtMostTo(buf, 0, toRead)
+                            if (n == -1) break
+                            bodyChannel.writeFully(buf, 0, n)
+                            remaining -= n
+                        }
+                        bodyChannel.flushAndClose()
+                    }
+                    bodyChannel
+                } else {
+                    ByteReadChannel.Empty
+                }
+
+                val call = KeelApplicationCall(
+                    application = applicationProvider(),
+                    head = head,
+                    localAddress = channel.localAddress,
+                    remoteAddress = channel.remoteAddress,
+                    requestBody = requestBody,
+                    sink = sink,
+                    scope = this,
+                    coroutineContext = coroutineContext,
+                    keepAlive = keepAlive,
+                )
+
+                pipeline.execute(call)
+
+                if (!keepAlive) break
+
+                // Ensure the body bridge coroutine has fully consumed the request
+                // body from the RawSource before parsing the next request. Without
+                // this, leftover body bytes would be misinterpreted as the next
+                // request line.
+                bodyBridgeJob?.join()
             }
-
-            val call = KeelApplicationCall(
-                application = applicationProvider(),
-                head = head,
-                localAddress = channel.localAddress,
-                remoteAddress = channel.remoteAddress,
-                requestBody = requestBody,
-                sink = sink,
-                scope = this,
-                coroutineContext = coroutineContext,
-            )
-
-            pipeline.execute(call)
         } catch (e: Exception) {
-            environment.log.error("Connection handling failed", e)
+            if (e !is kotlinx.coroutines.CancellationException) {
+                environment.log.error("Connection handling failed", e)
+            }
         } finally {
             runCatching { channel.close() }
         }
