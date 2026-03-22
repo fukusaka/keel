@@ -604,4 +604,22 @@ class NioEngineTest {
         server.close()
         engine.close()
     }
+
+    @Test
+    fun `close ServerChannel cancels pending accept`() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+
+        val acceptJob = launch {
+            server.accept()
+        }
+
+        delay(100)
+        server.close()
+
+        withTimeout(3000) { acceptJob.join() }
+        assertTrue(acceptJob.isCancelled)
+
+        engine.close()
+    }
 }
