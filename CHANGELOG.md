@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Rename GitHub organization from `keel-kt` to `fukusaka` — the dedicated org was premature at this stage
+- Update copyright holder from `The keel-kt Authors` to `fukusaka`
+
 ## [0.1.0] - 2026-03-22
 
 ### Added

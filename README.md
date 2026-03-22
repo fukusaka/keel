@@ -1,6 +1,6 @@
 # keel — KMP Native Network I/O Engine
 
-[![CI](https://github.com/keel-kt/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/keel-kt/keel/actions/workflows/ci.yml)
+[![CI](https://github.com/fukusaka/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/fukusaka/keel/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3.20-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![KMP](https://img.shields.io/badge/Kotlin%20Multiplatform-✓-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/docs/multiplatform.html)
@@ -112,7 +112,7 @@ keel/
 > **Note:** keel is not yet published to Maven Central. Until the 0.1.0 release, build from source and publish to your local Maven repository.
 
 ```bash
-git clone https://github.com/keel-kt/keel.git
+git clone https://github.com/fukusaka/keel.git
 cd keel
 ./gradlew publishToMavenLocal
 ```
@@ -127,15 +127,15 @@ repositories {
 
 dependencies {
     // Ktor + keel server engine
-    implementation("io.github.keel:ktor-engine:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:ktor-engine:0.1.0-SNAPSHOT")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // Low-level I/O (without Ktor)
-    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:core:0.1.0-SNAPSHOT")
 
     // Codecs (optional)
-    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")
-    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-http:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-websocket:0.1.0-SNAPSHOT")
 }
 ```
 
@@ -275,5 +275,5 @@ Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 ## License
 
-Apache License 2.0 — Copyright 2026 The keel-kt Authors.
+Apache License 2.0 — Copyright 2026 fukusaka.
 See [LICENSE](LICENSE) for details.

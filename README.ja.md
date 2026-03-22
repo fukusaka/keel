@@ -1,6 +1,6 @@
 # keel — KMP Native ネットワーク I/O エンジン
 
-[![CI](https://github.com/keel-kt/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/keel-kt/keel/actions/workflows/ci.yml)
+[![CI](https://github.com/fukusaka/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/fukusaka/keel/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3.20-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![KMP](https://img.shields.io/badge/Kotlin%20Multiplatform-✓-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/docs/multiplatform.html)
@@ -112,7 +112,7 @@ keel/
 > **注意:** keel はまだ Maven Central に公開されていません。0.1.0 リリースまでは、ソースからビルドしてローカル Maven リポジトリに公開して使用してください。
 
 ```bash
-git clone https://github.com/keel-kt/keel.git
+git clone https://github.com/fukusaka/keel.git
 cd keel
 ./gradlew publishToMavenLocal
 ```
@@ -127,15 +127,15 @@ repositories {
 
 dependencies {
     // Ktor + keel サーバーエンジン
-    implementation("io.github.keel:ktor-engine:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:ktor-engine:0.1.0-SNAPSHOT")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // 低レベル I/O（Ktor なし）
-    implementation("io.github.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:core:0.1.0-SNAPSHOT")
 
     // コーデック（任意）
-    implementation("io.github.keel:codec-http:0.1.0-SNAPSHOT")
-    implementation("io.github.keel:codec-websocket:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-http:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-websocket:0.1.0-SNAPSHOT")
 }
 ```
 
@@ -275,5 +275,5 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 
 ## ライセンス
 
-Apache License 2.0 — Copyright 2026 The keel-kt Authors
+Apache License 2.0 — Copyright 2026 fukusaka
 詳細は [LICENSE](LICENSE) を参照。

@@ -40,4 +40,4 @@ epoll / kqueue / io_uring / NIO / NWConnection
 
 ## License
 
-Apache 2.0 — Copyright 2026 The keel-kt Authors
+Apache 2.0 — Copyright 2026 fukusaka
