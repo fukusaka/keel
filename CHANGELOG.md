@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-epoll`: add `EpollEventLoop` with eventfd wakeup and pthread-based event loop thread
 - `engine-nwconnection`: replace blocking `dispatch_semaphore_wait` with async C wrappers + `suspendCancellableCoroutine` (Phase 5b async)
 - `engine-nwconnection`: replace `keel_nw_read`/`keel_nw_write`/`keel_nw_start_conn` with callback-based async versions
+- `engine-nio`: replace blocking SocketChannel with non-blocking mode + Selector EventLoop (Phase 5b async)
+- `engine-nio`: add `NioEventLoop` with Selector.wakeup and dedicated thread
 
 ## [0.1.0] - 2026-03-22
 
