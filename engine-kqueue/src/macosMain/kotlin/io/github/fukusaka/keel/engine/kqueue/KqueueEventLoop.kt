@@ -57,6 +57,11 @@ import kotlin.coroutines.resume
  * `kevent()` to return immediately so the EventLoop can process newly
  * registered fds.
  *
+ * **Scalability**: Currently single-threaded. All fd readiness events
+ * are dispatched serially. Multi-thread support
+ * (`IoEngineConfig.threads > 1`) with round-robin fd assignment
+ * will address this in a future PR.
+ *
  * **Thread safety**: [registrations] is protected by a `pthread_mutex_t`.
  * Kotlin/Native does not support JVM's `synchronized` keyword, and
  * coroutine `Mutex` cannot be used because the EventLoop thread is not
