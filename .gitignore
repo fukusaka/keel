@@ -24,8 +24,9 @@ plan.md
 status.md
 daily/
 
-# Benchmark results (raw wrk output)
+# Benchmark results (raw wrk output + summaries)
 benchmark/results/
+benchmark/results-summary/
 
 # Benchmark native server build artifacts
 benchmark/rust-hello/target/
