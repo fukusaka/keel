@@ -3,8 +3,6 @@ package io.github.fukusaka.keel.engine.nodejs
 import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import io.github.fukusaka.keel.core.Channel as KeelChannel
@@ -30,7 +28,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * event callbacks. JS is single-threaded, so no locking is needed.
  *
  * @param socket    The Node.js net.Socket.
- * @param allocator Buffer allocator for [asSource]/[asSink] bridge.
+ * @param allocator Buffer allocator for read operations.
  */
 internal class NodeChannel(
     private val socket: Socket,
@@ -146,14 +144,6 @@ internal class NodeChannel(
             socket.end()
         }
     }
-
-    @Suppress("DEPRECATION")
-    override fun asSource(): RawSource =
-        throw UnsupportedOperationException("Use asSuspendSource() instead")
-
-    @Suppress("DEPRECATION")
-    override fun asSink(): RawSink =
-        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     override fun close() {
         if (_open) {

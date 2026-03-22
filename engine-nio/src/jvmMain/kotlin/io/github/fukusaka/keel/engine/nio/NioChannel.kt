@@ -6,8 +6,6 @@ import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
@@ -51,7 +49,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * @param socketChannel The connected SocketChannel (non-blocking).
  * @param eventLoop     The [NioEventLoop] for readiness notification.
- * @param allocator     Buffer allocator for [asSource]/[asSink] bridge.
+ * @param allocator     Buffer allocator for read operations.
  */
 internal class NioChannel(
     private val socketChannel: SocketChannel,
@@ -164,14 +162,6 @@ internal class NioChannel(
             socketChannel.shutdownOutput()
         }
     }
-
-    @Suppress("DEPRECATION")
-    override fun asSource(): RawSource =
-        throw UnsupportedOperationException("Use asSuspendSource() instead")
-
-    @Suppress("DEPRECATION")
-    override fun asSink(): RawSink =
-        throw UnsupportedOperationException("Use asSuspendSink() instead")
 
     /**
      * Closes the SocketChannel and releases all pending writes.

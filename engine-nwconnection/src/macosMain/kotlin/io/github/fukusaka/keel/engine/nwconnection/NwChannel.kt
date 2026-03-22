@@ -11,8 +11,6 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
@@ -69,7 +67,7 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  * ```
  *
  * @param conn       The NWConnection handle for this channel.
- * @param allocator  Buffer allocator for [asSource]/[asSink] bridge.
+ * @param allocator  Buffer allocator for read operations.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwChannel(
@@ -180,14 +178,6 @@ internal class NwChannel(
         }
     }
 
-    @Suppress("DEPRECATION")
-    override fun asSource(): RawSource =
-        throw UnsupportedOperationException("Use asSuspendSource() instead")
-
-    @Suppress("DEPRECATION")
-    override fun asSink(): RawSink =
-        throw UnsupportedOperationException("Use asSuspendSink() instead")
-
     /**
      * Cancels the NWConnection and releases all pending writes.
      * Unflushed data is discarded (buffers are released without sending).
@@ -205,12 +195,6 @@ internal class NwChannel(
     }
 
     companion object {
-        /**
-         * Buffer size for [ChannelSource]/[ChannelSink] codec bridge.
-         * Matches the default kotlinx-io segment size.
-         */
-        internal const val CODEC_BUFFER_SIZE = 8192
-
         /**
          * C callback for [keel_nw_read_async]. Resumes the suspended
          * coroutine with [ReadResult] via [StableRef].
