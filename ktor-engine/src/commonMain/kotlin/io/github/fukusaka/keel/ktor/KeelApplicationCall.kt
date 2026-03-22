@@ -24,6 +24,7 @@ internal class KeelApplicationCall(
     sink: Sink,
     scope: CoroutineScope,
     override val coroutineContext: CoroutineContext,
+    keepAlive: Boolean,
 ) : BaseApplicationCall(application), CoroutineScope {
 
     override val request = KeelApplicationRequest(
@@ -38,6 +39,7 @@ internal class KeelApplicationCall(
         call = this,
         sink = sink,
         scope = scope,
+        keepAlive = keepAlive,
     )
 
     init {
