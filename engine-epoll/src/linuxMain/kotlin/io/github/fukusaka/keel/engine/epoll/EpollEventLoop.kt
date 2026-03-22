@@ -54,6 +54,12 @@ import kotlin.coroutines.resume
  * newly registered fds. eventfd is more efficient than pipe(2) on Linux:
  * single fd instead of two, and kernel-optimized for signaling.
  *
+ * **Scalability**: Currently single-threaded. All fd readiness events
+ * are dispatched serially, which limits throughput compared to Phase (a)
+ * where each coroutine called `epoll_wait()` independently. Multi-thread
+ * support (`IoEngineConfig.threads > 1`) with round-robin fd assignment
+ * will address this in a future PR.
+ *
  * **Thread safety**: [registrations] is protected by a `pthread_mutex_t`.
  * Kotlin/Native does not support JVM's `synchronized` keyword, and
  * coroutine `Mutex` cannot be used because the EventLoop thread is not
