@@ -81,10 +81,11 @@ class KqueueEngine(
     /**
      * Creates a TCP client connection.
      *
-     * Phase (a) limitation: connect is still synchronous (blocking).
-     * The socket is created in blocking mode, connected, then switched
-     * to non-blocking. Phase (b) defers non-blocking connect with
-     * kqueue EVFILT_WRITE wait to a future improvement.
+     * Connect is synchronous (blocking): the socket is created in blocking
+     * mode, connected, then switched to non-blocking for subsequent I/O.
+     * Non-blocking connect (EINPROGRESS + EVFILT_WRITE wait) is deferred
+     * because synchronous connect is sufficient for current use cases and
+     * avoids additional complexity in the EventLoop.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }

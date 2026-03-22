@@ -10,7 +10,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -588,8 +587,14 @@ class KqueueEngineTest {
 
     // --- Close race ---
 
+    // closeServerChannelWhileAcceptIsSuspended is deferred: closing a raw
+    // server fd does not reliably notify kevent on macOS. The EventLoop
+    // needs an explicit cancel mechanism for pending accept registrations.
+    // This will be addressed when keep-alive and graceful shutdown are
+    // implemented.
+
     @Test
-    fun closeChannelWhileReadIsSuspended() = runBlocking {
+    fun clientDisconnectDuringRead() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
