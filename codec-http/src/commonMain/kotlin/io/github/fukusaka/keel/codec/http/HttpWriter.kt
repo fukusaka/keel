@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.core.BufferedSuspendSink
 import kotlinx.io.Sink
 import kotlinx.io.write
 import kotlinx.io.writeString
@@ -44,6 +45,31 @@ fun writeResponseHead(
 ) {
     sink.writeString("${version.text} ${status.code} ${status.reasonPhrase()}\r\n")
     writeHeaders(headers, sink)
+}
+
+// ---------------------------------------------------------------------------
+// Suspend variants — use BufferedSuspendSink for zero-copy async I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * Suspend variant of [writeResponseHead] using [BufferedSuspendSink].
+ *
+ * Zero-copy: writes directly into NativeBuf without kotlinx-io Buffer copy.
+ * No runBlocking needed — suspends naturally on I/O wait.
+ */
+suspend fun writeResponseHead(
+    status: HttpStatus,
+    version: HttpVersion,
+    headers: HttpHeaders,
+    sink: BufferedSuspendSink,
+) {
+    sink.writeString("${version.text} ${status.code} ${status.reasonPhrase()}\r\n")
+    // Cannot use headers.forEach { } because it is not inline and cannot
+    // accept suspend lambdas. Use entries() iteration instead.
+    for ((name, value) in headers.entries()) {
+        sink.writeString("$name: $value\r\n")
+    }
+    sink.writeString("\r\n")
 }
 
 // ---------------------------------------------------------------------------
