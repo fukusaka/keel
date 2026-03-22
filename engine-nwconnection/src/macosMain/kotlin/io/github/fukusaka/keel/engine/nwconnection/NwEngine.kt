@@ -85,7 +85,8 @@ class NwEngine(
 
         // Create ServerChannel before starting the listener so
         // onNewConnection can be called immediately if connections
-        // arrive during startup.
+        // arrive during startup. localAddress is updated after the
+        // assigned port is known.
         val serverChannel = NwServerChannel(
             lsnr, SocketAddress(host, 0), config.allocator,
         )
@@ -94,18 +95,12 @@ class NwEngine(
 
         // Suspend until listener reaches ready or failed state.
         // The state_changed_handler resumes the coroutine.
-        val assignedPort = suspendCancellableCoroutine { cont ->
-            var failureReason: String? = null
+        val assignedPort = suspendCancellableCoroutine<Int> { cont ->
             nw_listener_set_state_changed_handler(lsnr) { state, error ->
                 if (state == nw_listener_state_ready) {
                     val p = nw_listener_get_port(lsnr).toInt()
                     cont.resume(p)
                 } else if (state == nw_listener_state_failed) {
-                    if (error != null) {
-                        val code = platform.Network.nw_error_get_error_code(error)
-                        val domain = platform.Network.nw_error_get_error_domain(error)
-                        failureReason = "domain=$domain, code=$code"
-                    }
                     cont.resume(-1)
                 }
             }
@@ -124,16 +119,8 @@ class NwEngine(
         }
 
         // Update the local address with the assigned port
-        return NwServerChannel(
-            lsnr, SocketAddress(host, assignedPort), config.allocator,
-        ).also { newChannel ->
-            // Re-wire the connection handler to the new ServerChannel
-            nw_listener_set_new_connection_handler(lsnr) { conn ->
-                if (conn != null) {
-                    newChannel.onNewConnection(conn)
-                }
-            }
-        }
+        serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
+        return serverChannel
     }
 
     /**
@@ -181,6 +168,9 @@ class NwEngine(
     }
 
     companion object {
+        // Same callback as NwServerChannel.startCallback. Duplicated because
+        // staticCFunction must be defined in the companion of the using class
+        // (cannot reference another class's companion private val).
         /** C callback for [keel_nw_start_conn_async]. */
         private val startCallback = staticCFunction {
                 result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
