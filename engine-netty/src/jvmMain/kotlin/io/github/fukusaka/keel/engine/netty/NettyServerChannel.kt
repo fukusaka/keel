@@ -44,6 +44,8 @@ internal class NettyServerChannel private constructor() : ServerChannel {
     private val lock = Any()
     private val pendingConnections = ArrayDeque<NettyChannel>()
     private var pendingAcceptCont: CancellableContinuation<NettyChannel>? = null
+    // @Volatile for isActive property getter read outside lock.
+    @Volatile
     private var _active = true
 
     override val localAddress: SocketAddress get() = _localAddress
