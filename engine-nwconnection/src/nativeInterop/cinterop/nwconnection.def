@@ -24,51 +24,46 @@ nw_parameters_t keel_nw_create_tcp_params(void) {
 uint32_t keel_nw_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
 
 /*
- * Blocking read via NWConnection.
+ * Callback types for async C wrappers.
+ * Used by Kotlin/Native staticCFunction + StableRef to bridge
+ * NWConnection's dispatch callbacks to coroutine continuations.
+ */
+typedef void (*keel_nw_read_callback)(uint32_t len, int is_complete, int error, void *ctx);
+typedef void (*keel_nw_write_callback)(int error, void *ctx);
+typedef void (*keel_nw_start_callback)(int result, void *ctx);
+
+/*
+ * Async read via NWConnection.
  *
- * Schedules nw_connection_receive and blocks on a dispatch semaphore until
- * the completion handler fires. Received data (dispatch_data_t) is copied
- * into the caller's buffer segment-by-segment via dispatch_data_apply,
- * avoiding an extra flatten/allocation pass.
+ * Schedules nw_connection_receive and invokes the callback when data
+ * arrives. No blocking — the caller suspends via coroutine and is
+ * resumed by the callback.
+ *
+ * Data is copied from dispatch_data_t into the caller's buffer
+ * segment-by-segment via dispatch_data_apply (same as blocking version).
  *
  * Limitation: NWConnection does not provide a receive API that writes into
  * a pre-allocated buffer. The kernel delivers data as dispatch_data_t,
  * so a memcpy into NativeBuf is unavoidable. Measured cost: ~0.1-0.4 us
- * for small packets, ~1-2 us for 64 KB. Zero-copy wrapping of
- * dispatch_data_t memory is deferred to Phase 6+ (requires NativeBuf
- * MemoryOwner abstraction).
+ * for small packets, ~1-2 us for 64 KB. Zero-copy wrapping is deferred
+ * to Phase 6+ (requires NativeBuf MemoryOwner abstraction).
  *
- * Thread safety: the completion handler runs on the connection's dispatch
- * queue, while dispatch_semaphore_wait blocks the caller's thread.
- * No deadlock because they are different threads.
- *
- * @param conn           NWConnection to read from.
- * @param buf            Destination buffer (typically NativeBuf.unsafePointer + writerIndex).
- * @param buf_len        Maximum bytes to read (typically NativeBuf.writableBytes).
- * @param out_len        [out] Number of bytes actually copied into buf.
- * @param out_is_complete [out] 1 if the peer sent EOF (is_complete), 0 otherwise.
- * @return 0 on success, -1 on error.
+ * @param conn     NWConnection to read from.
+ * @param buf      Destination buffer.
+ * @param buf_len  Maximum bytes to read.
+ * @param callback Invoked on completion with (bytes_copied, is_complete, error, ctx).
+ * @param ctx      Opaque pointer passed to callback (StableRef to continuation).
  */
-int keel_nw_read(nw_connection_t conn,
-                 void *buf, uint32_t buf_len,
-                 uint32_t *out_len, int *out_is_complete)
-{
-    __block uint32_t copied = 0;
-    __block int complete = 0;
-    __block int failed = 0;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
+void keel_nw_read_async(nw_connection_t conn,
+                         void *buf, uint32_t buf_len,
+                         keel_nw_read_callback callback, void *ctx) {
     nw_connection_receive(conn, 1, buf_len,
         ^(dispatch_data_t content, nw_content_context_t context,
           bool is_complete, nw_error_t error)
         {
-            if (error) {
-                failed = 1;
-            } else if (content) {
-                /* Segment-wise copy: dispatch_data_t may be fragmented
-                 * across multiple internal regions. dispatch_data_apply
-                 * iterates each contiguous region without flattening,
-                 * avoiding an extra allocation. */
+            __block uint32_t copied = 0;
+            int failed = error ? 1 : 0;
+            if (!failed && content) {
                 dispatch_data_apply(content,
                     ^(dispatch_data_t region, size_t offset,
                       const void *ptr, size_t size)
@@ -81,45 +76,36 @@ int keel_nw_read(nw_connection_t conn,
                         return (bool)(copied < buf_len);
                     });
             }
-            complete = is_complete ? 1 : 0;
-            dispatch_semaphore_signal(sem);
+            callback(copied, is_complete ? 1 : 0, failed, ctx);
         });
-
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-
-    *out_len = copied;
-    *out_is_complete = complete;
-    return failed ? -1 : 0;
 }
 
 /*
- * Blocking write via NWConnection.
+ * Async write via NWConnection.
  *
  * Creates a dispatch_data_t from the caller's buffer, sends it via
- * nw_connection_send, and blocks until the send completion fires.
+ * nw_connection_send, and invokes the callback on completion.
+ * No blocking.
  *
- * @param conn    NWConnection to write to.
- * @param buf     Source buffer (typically NativeBuf.unsafePointer + offset).
- * @param buf_len Number of bytes to send.
- * @return 0 on success, -1 on error.
+ * dispatch_data_create copies buf by default (DISPATCH_DATA_DESTRUCTOR_DEFAULT).
+ * The caller's NativeBuf stays valid because flush() holds a retain.
+ *
+ * @param conn     NWConnection to write to.
+ * @param buf      Source buffer.
+ * @param buf_len  Number of bytes to send.
+ * @param callback Invoked on completion with (error, ctx).
+ * @param ctx      Opaque pointer passed to callback (StableRef to continuation).
  */
-int keel_nw_write(nw_connection_t conn, const void *buf, uint32_t buf_len) {
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    __block int failed = 0;
-
-    /* dispatch_data_create copies buf by default (DISPATCH_DATA_DESTRUCTOR_DEFAULT).
-     * The caller's NativeBuf stays valid because flush() holds a retain. */
+void keel_nw_write_async(nw_connection_t conn,
+                          const void *buf, uint32_t buf_len,
+                          keel_nw_write_callback callback, void *ctx) {
     dispatch_data_t data = dispatch_data_create(buf, buf_len,
         dispatch_get_global_queue(0, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 
     nw_connection_send(conn, data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false,
         ^(nw_error_t error) {
-            if (error) failed = 1;
-            dispatch_semaphore_signal(sem);
+            callback(error ? 1 : 0, ctx);
         });
-
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-    return failed ? -1 : 0;
 }
 
 /*
@@ -128,49 +114,40 @@ int keel_nw_write(nw_connection_t conn, const void *buf, uint32_t buf_len) {
  * Sends NULL content with NW_CONNECTION_FINAL_MESSAGE_CONTEXT and
  * is_complete=true, which triggers a TCP FIN to the peer.
  * The read side remains open.
+ *
+ * Fire-and-forget: no callback needed because the caller does not
+ * depend on shutdown completion (unlike flush).
  */
 void keel_nw_shutdown_output(nw_connection_t conn) {
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
     nw_connection_send(conn, NULL, NW_CONNECTION_FINAL_MESSAGE_CONTEXT, true,
         ^(nw_error_t error) {
-            dispatch_semaphore_signal(sem);
+            /* no-op: fire and forget */
         });
-
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 }
 
 /*
- * Start a connection and wait until it reaches the ready state.
+ * Start a connection asynchronously and invoke callback when ready.
  *
  * Sets a state handler on the connection, calls nw_connection_start,
- * and blocks until the connection is ready or fails.
- * Unlike the old keel_nw_start_connection, this does NOT start
- * a receive-echo loop — the caller controls read/write via
- * keel_nw_read / keel_nw_write.
+ * and invokes the callback when the connection reaches ready or fails.
+ * No blocking.
  *
- * @param conn  NWConnection to start.
- * @param queue Dispatch queue for the connection's callbacks.
- * @return 0 on success (ready), -1 on failure.
+ * @param conn     NWConnection to start.
+ * @param queue    Dispatch queue for the connection's callbacks.
+ * @param callback Invoked with 0 on ready, -1 on failure.
+ * @param ctx      Opaque pointer passed to callback (StableRef to continuation).
  */
-int keel_nw_start_conn(nw_connection_t conn, dispatch_queue_t queue) {
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    __block int result = -1;
-
+void keel_nw_start_conn_async(nw_connection_t conn, dispatch_queue_t queue,
+                               keel_nw_start_callback callback, void *ctx) {
     nw_connection_set_queue(conn, queue);
     nw_connection_set_state_changed_handler(conn,
         ^(nw_connection_state_t state, nw_error_t error) {
             if (state == nw_connection_state_ready) {
-                result = 0;
-                dispatch_semaphore_signal(sem);
+                callback(0, ctx);
             } else if (state == nw_connection_state_failed ||
                        state == nw_connection_state_cancelled) {
-                result = -1;
-                dispatch_semaphore_signal(sem);
+                callback(-1, ctx);
             }
         });
-
     nw_connection_start(conn);
-    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-    return result;
 }
