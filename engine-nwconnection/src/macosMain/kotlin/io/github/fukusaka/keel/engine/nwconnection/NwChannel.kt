@@ -9,14 +9,12 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.staticCFunction
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_t
-import kotlin.coroutines.resume
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -105,14 +103,15 @@ internal class NwChannel(
         check(_open) { "Channel is closed" }
 
         val result = suspendCancellableCoroutine<ReadResult> { cont ->
-            val ref = StableRef.create(cont)
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
             val ptr = (buf.unsafePointer + buf.writerIndex)!!
             keel_nw_read_async(
                 conn, ptr, buf.writableBytes.toUInt(),
                 readCallback,
                 ref.asCPointer(),
             )
-            cont.invokeOnCancellation { ref.dispose() }
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
 
         if (result.failed) return -1
@@ -153,13 +152,14 @@ internal class NwChannel(
         for (pw in pendingWrites) {
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
             suspendCancellableCoroutine<Int> { cont ->
-                val ref = StableRef.create(cont)
+                val cbCtx = CallbackContext(cont)
+                val ref = StableRef.create(cbCtx)
                 keel_nw_write_async(
                     conn, ptr, pw.length.toUInt(),
                     writeCallback,
                     ref.asCPointer(),
                 )
-                cont.invokeOnCancellation { ref.dispose() }
+                cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
             pw.buf.release()
         }
@@ -197,31 +197,30 @@ internal class NwChannel(
     companion object {
         /**
          * C callback for [keel_nw_read_async]. Resumes the suspended
-         * coroutine with [ReadResult] via [StableRef].
+         * coroutine with [ReadResult] via [CallbackContext].
          *
          * Must be a top-level staticCFunction because Kotlin/Native
          * cannot capture local state in C function pointers.
+         *
+         * The [StableRef] is always disposed here — never in
+         * [invokeOnCancellation]. If the coroutine was cancelled,
+         * [CallbackContext.tryResume] is a no-op (skips resume).
          */
-        // Note on StableRef lifecycle: the callback always calls ref.dispose().
-        // invokeOnCancellation also calls ref.dispose() but only fires if
-        // the coroutine is cancelled BEFORE the callback runs. Once the
-        // callback resumes the continuation, invokeOnCancellation becomes
-        // a no-op, so no double-dispose occurs.
         private val readCallback = staticCFunction {
                 len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CancellableContinuation<ReadResult>>()
-            ref.get().resume(ReadResult(len.toInt(), isComplete != 0, error != 0))
+            val ref = ctx!!.asStableRef<CallbackContext<ReadResult>>()
+            ref.get().tryResume(ReadResult(len.toInt(), isComplete != 0, error != 0))
             ref.dispose()
         }
 
         /**
          * C callback for [keel_nw_write_async]. Resumes the suspended
-         * coroutine with the error code via [StableRef].
+         * coroutine with the error code via [CallbackContext].
          */
         private val writeCallback = staticCFunction {
                 error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
-            ref.get().resume(error)
+            val ref = ctx!!.asStableRef<CallbackContext<Int>>()
+            ref.get().tryResume(error)
             ref.dispose()
         }
     }
