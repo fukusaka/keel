@@ -2,8 +2,6 @@ package io.github.fukusaka.keel.core
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.io.RawSink
-import kotlinx.io.RawSource
 
 /**
  * A bidirectional byte channel backed by a network connection.
@@ -13,7 +11,6 @@ import kotlinx.io.RawSource
  * -----          ---                       ----
  * Engine layer:  read/write(NativeBuf)       0  (zero-copy via unsafePointer)
  * Codec layer:   asSuspendSource/Sink()      0  (NativeBuf direct, zero-copy)
- * Legacy bridge: asSource/asSink()           1  (NativeBuf <-> kotlinx-io Buffer)
  * ```
  *
  * **Write/flush separation**: [write] buffers data without sending.
@@ -132,32 +129,6 @@ interface Channel : AutoCloseable {
      * Default implementation delegates to [write]/[flush] via [SuspendChannelSink].
      */
     fun asSuspendSink(): SuspendSink = SuspendChannelSink(this)
-
-    // --- kotlinx-io bridge (legacy, involves copy) ---
-
-    /**
-     * Returns a [RawSource] view for reading from this channel.
-     *
-     * Involves a byte-by-byte copy between [NativeBuf] and kotlinx-io [Buffer].
-     * Prefer [asSuspendSource] for zero-copy suspend I/O.
-     */
-    @Deprecated(
-        "Use asSuspendSource() for zero-copy suspend I/O",
-        replaceWith = ReplaceWith("asSuspendSource()"),
-    )
-    fun asSource(): RawSource
-
-    /**
-     * Returns a [RawSink] view for writing to this channel.
-     *
-     * Involves a byte-by-byte copy between kotlinx-io [Buffer] and [NativeBuf].
-     * Prefer [asSuspendSink] for zero-copy suspend I/O.
-     */
-    @Deprecated(
-        "Use asSuspendSink() for zero-copy suspend I/O",
-        replaceWith = ReplaceWith("asSuspendSink()"),
-    )
-    fun asSink(): RawSink
 
     /** Closes both read and write sides and releases all resources. */
     override fun close()
