@@ -160,6 +160,12 @@ public class KeelApplicationEngine(
      *                                                                   ▼
      *                   Channel ◄──asSink()──◄── writeResponseHead + body
      * ```
+     *
+     * Request body bridging: keel's pull-based [RawSource] is piped into Ktor's
+     * push-based [ByteReadChannel] via a dedicated coroutine. This copy is
+     * unavoidable because Ktor expects a channel interface. The bridge job is
+     * joined before parsing the next request to ensure body bytes are fully
+     * consumed from the source.
      */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
         try {
@@ -168,10 +174,13 @@ public class KeelApplicationEngine(
             val serverKeepAlive = configuration.keepAlive
 
             while (channel.isActive) {
+                // parseRequestHead throws IllegalArgumentException on EOF
+                // ("Unexpected EOF reading request line") and on malformed
+                // requests. Both cases mean the connection should be closed.
                 val head = try {
                     parseRequestHead(source)
                 } catch (_: Exception) {
-                    break // EOF or parse error → close connection
+                    break
                 }
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive()
