@@ -28,7 +28,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
 /**
  * Result of an async NWConnection read operation.
  *
- * Returned from the C callback via [StableRef] to the suspended coroutine.
+ * Returned from the C callback via [CallbackContext] to the suspended coroutine.
  */
 private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val failed: Boolean)
 
@@ -47,9 +47,11 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  * [keel_nw_write_async] for each, suspending until each send completes.
  *
  * **Coroutine integration**: All I/O operations use [suspendCancellableCoroutine]
- * with [staticCFunction] + [StableRef] to bridge dispatch callbacks to
- * coroutine continuations. The callback runs on NWConnection's dispatch
- * queue; the coroutine dispatcher handles re-dispatch.
+ * with [staticCFunction] + [StableRef] + [CallbackContext] to bridge dispatch
+ * callbacks to coroutine continuations. [CallbackContext] wraps the continuation
+ * with an atomic flag for cancel-safety: [invokeOnCancellation] sets the flag,
+ * the C callback checks it before resuming. The [StableRef] is always disposed
+ * by the callback, never by cancellation.
  *
  * ```
  * Read path (async, copy):
@@ -216,6 +218,8 @@ internal class NwChannel(
         /**
          * C callback for [keel_nw_write_async]. Resumes the suspended
          * coroutine with the error code via [CallbackContext].
+         *
+         * Same [StableRef] ownership as [readCallback]: always disposed here.
          */
         private val writeCallback = staticCFunction {
                 error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
