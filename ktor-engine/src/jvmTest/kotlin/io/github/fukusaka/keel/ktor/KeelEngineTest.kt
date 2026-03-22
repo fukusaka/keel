@@ -6,13 +6,20 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.runBlocking
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.PrintWriter
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class KeelEngineTest {
+
+    // --- Basic request/response ---
 
     @Test
     fun respondTextHello() {
@@ -74,23 +81,128 @@ class KeelEngineTest {
         }
     }
 
+    // --- Keep-alive ---
+
     @Test
-    fun connectionCloseHeader() {
+    fun `keep-alive serves multiple requests on same connection`() {
         withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
-            val conn = openConnection(port, "/")
-            assertEquals(200, conn.responseCode)
-            assertEquals("close", conn.getHeaderField("Connection"))
-            conn.disconnect()
+            // Use raw socket to control keep-alive behavior
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 5000
+                val writer = PrintWriter(socket.getOutputStream(), true)
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+
+                // First request (HTTP/1.1 default keep-alive)
+                writer.print("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                writer.flush()
+                val resp1 = readHttpResponse(reader)
+                assertEquals("HTTP/1.1 200 OK", resp1.statusLine)
+                assertEquals("OK", resp1.body)
+                // No Connection: close header (HTTP/1.1 default is keep-alive)
+                assertNull(resp1.headers["Connection"])
+
+                // Second request on same connection
+                writer.print("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                writer.flush()
+                val resp2 = readHttpResponse(reader)
+                assertEquals("HTTP/1.1 200 OK", resp2.statusLine)
+                assertEquals("OK", resp2.body)
+            }
+        }
+    }
+
+    @Test
+    fun `Connection close header closes connection after response`() {
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 5000
+                val writer = PrintWriter(socket.getOutputStream(), true)
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+
+                // Send request with Connection: close
+                writer.print("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                writer.flush()
+                val resp = readHttpResponse(reader)
+                assertEquals("HTTP/1.1 200 OK", resp.statusLine)
+                assertEquals("close", resp.headers["Connection"])
+
+                // Connection should be closed — next read returns EOF
+                val nextLine = reader.readLine()
+                assertNull(nextLine)
+            }
+        }
+    }
+
+    @Test
+    fun `keepAlive=false forces Connection close on every response`() {
+        withKeelServer(
+            { routing { get("/") { call.respondText("OK") } } },
+            keepAlive = false,
+        ) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 5000
+                val writer = PrintWriter(socket.getOutputStream(), true)
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+
+                // Even without Connection: close in request, server sends it
+                writer.print("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                writer.flush()
+                val resp = readHttpResponse(reader)
+                assertEquals("HTTP/1.1 200 OK", resp.statusLine)
+                assertEquals("close", resp.headers["Connection"])
+
+                // Connection should be closed
+                val nextLine = reader.readLine()
+                assertNull(nextLine)
+            }
         }
     }
 
     // --- helpers ---
 
+    private data class HttpResponse(
+        val statusLine: String,
+        val headers: Map<String, String>,
+        val body: String,
+    )
+
+    /**
+     * Reads a complete HTTP response from a raw socket reader.
+     * Handles Content-Length based body reading.
+     */
+    private fun readHttpResponse(reader: BufferedReader): HttpResponse {
+        val statusLine = reader.readLine() ?: error("EOF reading status line")
+        val headers = mutableMapOf<String, String>()
+        while (true) {
+            val line = reader.readLine() ?: break
+            if (line.isEmpty()) break
+            val colon = line.indexOf(':')
+            if (colon > 0) {
+                headers[line.substring(0, colon).trim()] = line.substring(colon + 1).trim()
+            }
+        }
+        val contentLength = headers["Content-Length"]?.toIntOrNull() ?: 0
+        val body = if (contentLength > 0) {
+            val buf = CharArray(contentLength)
+            var read = 0
+            while (read < contentLength) {
+                val n = reader.read(buf, read, contentLength - read)
+                if (n == -1) break
+                read += n
+            }
+            String(buf, 0, read)
+        } else ""
+        return HttpResponse(statusLine, headers, body)
+    }
+
     private fun withKeelServer(
         module: suspend Application.() -> Unit,
+        keepAlive: Boolean = true,
         block: (port: Int) -> Unit,
     ) {
         val server = embeddedServer(Keel, port = 0, module = module)
+        // Access Configuration via the engine to set keepAlive
+        (server.engine as KeelApplicationEngine).configuration.keepAlive = keepAlive
         server.start(wait = false)
         try {
             val port = runBlocking { server.engine.resolvedConnectors().first().port }
