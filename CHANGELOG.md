@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-nwconnection`: replace `keel_nw_read`/`keel_nw_write`/`keel_nw_start_conn` with callback-based async versions
 - `ktor-engine`: add HTTP/1.1 keep-alive support with configurable `keepAlive` setting (default: true)
 - `codec-http`: add `isKeepAlive()` to `HttpRequestHead` for HTTP/1.1 Connection header semantics
+- `core`: add `SuspendSource`/`SuspendSink` interfaces (NativeBuf-based, kotlinx-io independent)
+- `core`: add `BufferedSuspendSource`/`BufferedSuspendSink` for zero-copy readLine/readByte/writeString
+- `core`: add `NativeBuf.compact()` and `NativeBuf.clear()` for buffer reuse
+- `core`: add `Channel.asSuspendSource()`/`Channel.asSuspendSink()` with default implementations
+- `core`: deprecate `Channel.asSource()`/`Channel.asSink()` in favor of suspend variants
 
 ## [0.1.0] - 2026-03-22
 
