@@ -4,29 +4,30 @@ import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpStatus as KeelHttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion as KeelHttpVersion
 import io.github.fukusaka.keel.codec.http.writeResponseHead
+import io.github.fukusaka.keel.core.BufferedSuspendSink
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.engine.*
 import io.ktor.server.response.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
-import kotlinx.io.Sink
-import kotlinx.io.writeString
 
 /**
- * Ktor [BaseApplicationResponse] that writes HTTP responses through a keel [Sink].
+ * Ktor [BaseApplicationResponse] that writes HTTP responses through a keel
+ * [BufferedSuspendSink].
  *
  * Response flow:
  * 1. Ktor pipeline sets status + headers via [setStatus] / [headers]
  * 2. Body is written via [respondFromBytes] (buffered) or [responseChannel] (streaming)
- * 3. [sendResponseHead] serialises the status line + headers using codec-http's [writeResponseHead]
+ * 3. [sendResponseHead] serialises the status line + headers using codec-http's
+ *    suspend [writeResponseHead]
  *
- * Streaming responses use a [ByteChannel] → [Sink] bridge coroutine that flushes
- * each chunk to the underlying keel channel.
+ * Zero-copy I/O: uses [BufferedSuspendSink] backed by NativeBuf. No kotlinx-io
+ * Buffer intermediary, no runBlocking.
  */
 internal class KeelApplicationResponse(
     call: KeelApplicationCall,
-    private val sink: Sink,
+    private val sink: BufferedSuspendSink,
     private val scope: CoroutineScope,
     private val keepAlive: Boolean,
 ) : BaseApplicationResponse(call) {
@@ -54,7 +55,7 @@ internal class KeelApplicationResponse(
     override suspend fun responseChannel(): ByteWriteChannel {
         sendResponseHead(contentReady = false)
         val bodyChannel = ByteChannel()
-        responseBodyJob = scope.launch(Dispatchers.IO) {
+        responseBodyJob = scope.launch {
             try {
                 val buf = ByteArray(8192)
                 while (!bodyChannel.isClosedForRead) {
@@ -71,7 +72,7 @@ internal class KeelApplicationResponse(
     }
 
     override suspend fun respondUpgrade(upgrade: OutgoingContent.ProtocolUpgrade) {
-        throw UnsupportedOperationException("Protocol upgrade (WebSocket) is not supported in Phase (a)")
+        throw UnsupportedOperationException("Protocol upgrade (WebSocket) is not supported")
     }
 
     override suspend fun respondFromBytes(bytes: ByteArray) {
@@ -92,7 +93,7 @@ internal class KeelApplicationResponse(
         responseBodyJob?.join()
     }
 
-    private fun sendResponseHead(contentReady: Boolean) {
+    private suspend fun sendResponseHead(contentReady: Boolean) {
         val keelHeaders = KeelHttpHeaders()
         for (name in headersBuilder.names()) {
             for (value in headersBuilder.getAll(name)!!) {
@@ -104,6 +105,7 @@ internal class KeelApplicationResponse(
         if (!keepAlive) {
             keelHeaders["Connection"] = "close"
         }
+        // Use suspend writeResponseHead (BufferedSuspendSink overload)
         writeResponseHead(
             status = KeelHttpStatus(statusCode.value),
             version = KeelHttpVersion.HTTP_1_1,
