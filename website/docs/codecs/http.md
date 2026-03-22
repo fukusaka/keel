@@ -11,7 +11,7 @@ supported targets.
 ## Parsing
 
 ```kotlin
-import io.github.keel.codec.http.*
+import io.github.fukusaka.keel.codec.http.*
 import kotlinx.io.Buffer
 
 val buf = Buffer()

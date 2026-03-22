@@ -11,7 +11,7 @@ in pure Kotlin per RFC 3174).
 ## Parsing
 
 ```kotlin
-import io.github.keel.codec.websocket.*
+import io.github.fukusaka.keel.codec.websocket.*
 import kotlinx.io.Buffer
 
 val frame: WsFrame = parseFrame(source)
