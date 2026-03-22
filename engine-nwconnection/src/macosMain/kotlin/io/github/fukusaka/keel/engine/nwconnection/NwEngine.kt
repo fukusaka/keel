@@ -10,7 +10,6 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_start_conn_async
@@ -29,7 +28,6 @@ import platform.Network.nw_listener_state_ready
 import platform.Network.nw_listener_start
 import platform.Network.nw_listener_t
 import platform.darwin.dispatch_queue_create
-import kotlin.coroutines.resume
 
 /**
  * macOS NWConnection-based [IoEngine] implementation.
@@ -94,14 +92,18 @@ class NwEngine(
         nw_listener_set_queue(lsnr, listenerQueue)
 
         // Suspend until listener reaches ready or failed state.
-        // The state_changed_handler resumes the coroutine.
+        // The state_changed_handler resumes the coroutine via CallbackContext.
+        // CallbackContext prevents double-resume if the state handler fires
+        // multiple times (e.g. ready then cancelled) or after coroutine cancel.
         val assignedPort = suspendCancellableCoroutine<Int> { cont ->
-            nw_listener_set_state_changed_handler(lsnr) { state, error ->
+            val cbCtx = CallbackContext(cont)
+
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
                 if (state == nw_listener_state_ready) {
                     val p = nw_listener_get_port(lsnr).toInt()
-                    cont.resume(p)
+                    cbCtx.tryResume(p)
                 } else if (state == nw_listener_state_failed) {
-                    cont.resume(-1)
+                    cbCtx.tryResume(-1)
                 }
             }
 
@@ -112,6 +114,7 @@ class NwEngine(
             }
 
             nw_listener_start(lsnr)
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
 
         check(assignedPort > 0) {
@@ -142,13 +145,14 @@ class NwEngine(
         )
 
         val rc = suspendCancellableCoroutine<Int> { cont ->
-            val ref = StableRef.create(cont)
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
                 conn, connQueue,
                 startCallback,
                 ref.asCPointer(),
             )
-            cont.invokeOnCancellation { ref.dispose() }
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
         check(rc == 0) { "connect to $host:$port failed" }
 
@@ -174,8 +178,8 @@ class NwEngine(
         /** C callback for [keel_nw_start_conn_async]. */
         private val startCallback = staticCFunction {
                 result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
-            ref.get().resume(result)
+            val ref = ctx!!.asStableRef<CallbackContext<Int>>()
+            ref.get().tryResume(result)
             ref.dispose()
         }
     }

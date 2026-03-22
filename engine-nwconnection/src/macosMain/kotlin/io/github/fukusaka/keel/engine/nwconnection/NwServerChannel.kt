@@ -11,6 +11,7 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t
@@ -27,7 +28,6 @@ import platform.posix.pthread_mutex_unlock
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.ptr
-import kotlin.coroutines.resume
 
 /**
  * NWConnection-based [ServerChannel] implementation for macOS.
@@ -141,13 +141,14 @@ internal class NwServerChannel(
 
         // Start connection asynchronously and wait for ready state
         val rc = suspendCancellableCoroutine<Int> { cont ->
-            val ref = StableRef.create(cont)
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
                 conn, connQueue,
                 startCallback,
                 ref.asCPointer(),
             )
-            cont.invokeOnCancellation { ref.dispose() }
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
         check(rc == 0) { "keel_nw_start_conn_async failed" }
 
@@ -195,11 +196,14 @@ internal class NwServerChannel(
         /**
          * C callback for [keel_nw_start_conn_async].
          * Resumes the suspended coroutine with 0 (ready) or -1 (failed).
+         *
+         * The [StableRef] is always disposed here. If the coroutine was
+         * cancelled, [CallbackContext.tryResume] skips the resume.
          */
         private val startCallback = staticCFunction {
                 result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CancellableContinuation<Int>>()
-            ref.get().resume(result)
+            val ref = ctx!!.asStableRef<CallbackContext<Int>>()
+            ref.get().tryResume(result)
             ref.dispose()
         }
     }
