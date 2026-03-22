@@ -19,6 +19,12 @@ import io.netty.channel.Channel as NettyNativeChannel
  * which either resumes a waiting [accept] coroutine or buffers the channel
  * for the next [accept] call.
  *
+ * Thread safety: [onNewChannel] is called from Netty's boss EventLoop
+ * thread while [accept] runs on a coroutine thread. All access to
+ * [pendingConnections] and [pendingAcceptCont] is protected by [lock]
+ * to prevent TOCTOU races. The lock is uncontended in practice since
+ * accept is called once per new TCP connection.
+ *
  * Created via [create] factory to support two-phase initialization:
  * the instance is created before [ServerBootstrap.bind] so that the
  * ChannelInitializer closure can reference [onNewChannel], then
@@ -35,10 +41,9 @@ internal class NettyServerChannel private constructor() : ServerChannel {
 
     private lateinit var serverChannel: NettyNativeChannel
     private lateinit var _localAddress: SocketAddress
+    private val lock = Any()
     private val pendingConnections = ArrayDeque<NettyChannel>()
-    @Volatile
     private var pendingAcceptCont: CancellableContinuation<NettyChannel>? = null
-    @Volatile
     private var _active = true
 
     override val localAddress: SocketAddress get() = _localAddress
@@ -58,15 +63,18 @@ internal class NettyServerChannel private constructor() : ServerChannel {
      * arrives. If [accept] is already waiting, resumes the coroutine directly.
      * Otherwise, buffers the channel for the next [accept] call.
      *
-     * Thread safety: called from Netty's boss EventLoop thread.
+     * Thread safety: called from Netty's boss EventLoop thread. Protected
+     * by [lock] to synchronize with [accept] on coroutine threads.
      */
     internal fun onNewChannel(ch: NettyChannel) {
-        val cont = pendingAcceptCont
-        if (cont != null) {
-            pendingAcceptCont = null
-            cont.resume(ch)
-        } else {
-            pendingConnections.addLast(ch)
+        synchronized(lock) {
+            val cont = pendingAcceptCont
+            if (cont != null) {
+                pendingAcceptCont = null
+                cont.resume(ch)
+            } else {
+                pendingConnections.addLast(ch)
+            }
         }
     }
 
@@ -79,26 +87,42 @@ internal class NettyServerChannel private constructor() : ServerChannel {
     override suspend fun accept(): KeelChannel {
         check(_active) { "ServerChannel is closed" }
 
-        return if (pendingConnections.isNotEmpty()) {
-            pendingConnections.removeFirst()
-        } else {
-            suspendCancellableCoroutine { cont ->
-                pendingAcceptCont = cont
-                cont.invokeOnCancellation { pendingAcceptCont = null }
+        // Fast path: buffered connection available
+        synchronized(lock) {
+            if (pendingConnections.isNotEmpty()) {
+                return pendingConnections.removeFirst()
+            }
+        }
+
+        // Slow path: suspend until onNewChannel is called
+        return suspendCancellableCoroutine { cont ->
+            synchronized(lock) {
+                // Double-check: connection may have arrived between the
+                // fast path check and this lock acquisition.
+                if (pendingConnections.isNotEmpty()) {
+                    cont.resume(pendingConnections.removeFirst())
+                } else {
+                    pendingAcceptCont = cont
+                    cont.invokeOnCancellation {
+                        synchronized(lock) { pendingAcceptCont = null }
+                    }
+                }
             }
         }
     }
 
     override fun close() {
-        if (_active) {
-            _active = false
-            pendingAcceptCont?.resumeWithException(
-                CancellationException("ServerChannel closed")
-            )
-            pendingAcceptCont = null
-            if (::serverChannel.isInitialized) {
-                serverChannel.close()
+        synchronized(lock) {
+            if (_active) {
+                _active = false
+                pendingAcceptCont?.resumeWithException(
+                    CancellationException("ServerChannel closed")
+                )
+                pendingAcceptCont = null
             }
+        }
+        if (::serverChannel.isInitialized) {
+            serverChannel.close()
         }
     }
 
