@@ -47,6 +47,9 @@ class HttpHeaders {
     fun forEach(action: (name: String, value: String) -> Unit) =
         entries.forEach { (n, v) -> action(n, v) }
 
+    /** Returns all header fields as a list of (name, value) pairs in insertion order. */
+    fun entries(): List<Pair<String, String>> = entries.toList()
+
     // Convenience accessors
 
     /** Parsed value of the Content-Length header, or null if absent or malformed. */

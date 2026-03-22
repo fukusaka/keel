@@ -16,6 +16,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(libs.kotlinx.io.core)
+                implementation(project(":core"))
             }
         }
         commonTest {
