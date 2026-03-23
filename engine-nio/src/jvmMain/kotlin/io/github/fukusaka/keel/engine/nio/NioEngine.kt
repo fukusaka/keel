@@ -23,14 +23,18 @@ import java.nio.channels.SocketChannel
  * I/O + request processing for a channel runs on a single thread without
  * cross-thread dispatch.
  *
+ * **SelectionKey caching**: Channels are registered with the Selector once
+ * via [NioEventLoop.registerChannel]. Subsequent I/O uses [NioEventLoop.setInterest]
+ * to toggle interest ops without JNI re-registration.
+ *
  * ```
  * NioEngine
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → NioServerChannel
+ *   |     +-- bind() → NioServerChannel (cached SelectionKey)
  *   |           |
- *   |           +-- accept() → assign to workerGroup.next()
+ *   |           +-- accept() → registerChannel on workerLoop → NioChannel
  *   |
  *   +-- workerGroup (N worker EventLoops, round-robin)
  *         |
@@ -61,7 +65,10 @@ class NioEngine(
         val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
 
-        return NioServerChannel(serverChannel, bossLoop, workerGroup, localAddr, config.allocator)
+        // One-time registration with the boss Selector
+        val selectionKey = bossLoop.registerChannel(serverChannel)
+
+        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, config.allocator)
     }
 
     /**
@@ -74,7 +81,7 @@ class NioEngine(
      * without needing to suspend.
      *
      * The connected channel is assigned to the next worker EventLoop
-     * in round-robin order.
+     * in round-robin order with a cached [SelectionKey].
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
@@ -83,22 +90,40 @@ class NioEngine(
         socketChannel.configureBlocking(false)
         val workerLoop = workerGroup.next()
 
-        val connected = socketChannel.connect(InetSocketAddress(host, port))
+        // Try connect first — loopback may succeed or fail immediately
+        // without needing Selector registration.
+        val connected = try {
+            socketChannel.connect(InetSocketAddress(host, port))
+        } catch (e: Exception) {
+            socketChannel.close()
+            throw e
+        }
+
+        // One-time registration with the worker Selector
+        val selectionKey = workerLoop.registerChannel(socketChannel)
+
         if (!connected) {
             // Connection in progress — suspend until OP_CONNECT fires
-            suspendCancellableCoroutine<Unit> { cont ->
-                workerLoop.register(socketChannel, SelectionKey.OP_CONNECT, cont)
-                cont.invokeOnCancellation {
-                    runCatching { socketChannel.close() }
+            try {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    workerLoop.setInterest(selectionKey, SelectionKey.OP_CONNECT, cont)
+                    cont.invokeOnCancellation {
+                        selectionKey.cancel()
+                        runCatching { socketChannel.close() }
+                    }
                 }
+                socketChannel.finishConnect()
+            } catch (e: Exception) {
+                selectionKey.cancel()
+                runCatching { socketChannel.close() }
+                throw e
             }
-            socketChannel.finishConnect()
         }
 
         val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
         val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
 
-        return NioChannel(socketChannel, workerLoop, config.allocator, remoteAddr, localAddr)
+        return NioChannel(socketChannel, selectionKey, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
