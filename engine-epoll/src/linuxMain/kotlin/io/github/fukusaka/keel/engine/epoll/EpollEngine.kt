@@ -47,7 +47,8 @@ import platform.posix.strerror
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
- *               the number of worker EventLoop threads (default: 1).
+ *               the number of worker EventLoop threads. 0 (default) resolves
+ *               to `availableProcessors()`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngine(
@@ -55,7 +56,7 @@ class EpollEngine(
 ) : IoEngine {
 
     private val bossLoop = EpollEventLoop()
-    private val workerGroup = EpollEventLoopGroup(config.threads)
+    private val workerGroup = EpollEventLoopGroup(resolveThreads(config))
     private var closed = false
 
     init {
@@ -136,5 +137,13 @@ class EpollEngine(
             bossLoop.close()
             workerGroup.close()
         }
+    }
+
+    companion object {
+        /** Resolves threads=0 to available CPU cores. */
+        @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
+        private fun resolveThreads(config: IoEngineConfig): Int =
+            if (config.threads > 0) config.threads
+            else kotlin.native.Platform.getAvailableProcessors()
     }
 }
