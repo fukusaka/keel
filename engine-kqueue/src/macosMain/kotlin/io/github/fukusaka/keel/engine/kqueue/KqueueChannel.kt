@@ -168,36 +168,128 @@ internal class KqueueChannel(
      * Each [PendingWrite] is written using zero-copy pointer access,
      * then the retained [NativeBuf] is released.
      *
-     * Uses POSIX `writev()` to send all pending buffers in a single
-     * syscall (gather write) when multiple writes are buffered,
-     * reducing context switches compared to individual `write()` calls.
-     * Falls back to single `write()` for one-buffer flushes.
+     * **EAGAIN / short write handling**: Non-blocking sockets may return
+     * EAGAIN (send buffer full) or a short write (fewer bytes than requested).
+     * Both cases are handled by suspending on EVFILT_WRITE via the EventLoop
+     * and retrying, using the same pattern as [read].
+     *
+     * **Gather write**: Uses POSIX `writev()` for multiple pending buffers.
+     * On partial writev, completed buffers are released and the remaining
+     * partial buffer falls through to the single-write loop.
      */
     override suspend fun flush() {
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
         if (pendingWrites.size == 1) {
-            val pw = pendingWrites[0]
-            val ptr = (pw.buf.unsafePointer + pw.offset)!!
-            write(fd, ptr, pw.length.convert())
-            pw.buf.release()
+            flushSingle(pendingWrites[0])
         } else {
-            // Gather write: send all buffers in one writev syscall via C wrapper.
-            // keel_writev accepts parallel arrays of base pointers and lengths,
-            // builds iovec internally to avoid exposing struct iovec to Kotlin.
-            memScoped {
-                val bases = allocArray<CPointerVar<ByteVar>>(pendingWrites.size)
-                val lens = allocArray<ULongVar>(pendingWrites.size)
-                for ((i, pw) in pendingWrites.withIndex()) {
-                    bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-                    lens[i] = pw.length.convert()
-                }
-                keel_writev(fd, bases.reinterpret(), lens.reinterpret(), pendingWrites.size)
-            }
-            for (pw in pendingWrites) pw.buf.release()
+            flushGather()
         }
         pendingWrites.clear()
+    }
+
+    /**
+     * Writes a single [PendingWrite] with EAGAIN and short write handling.
+     *
+     * Loops until all bytes are written, suspending on EVFILT_WRITE when
+     * the send buffer is full (EAGAIN/EWOULDBLOCK).
+     */
+    private suspend fun flushSingle(pw: PendingWrite) {
+        var written = 0
+        while (written < pw.length) {
+            val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+            val remaining = (pw.length - written).convert<ULong>()
+            val n = write(fd, ptr, remaining)
+            if (n >= 0) {
+                written += n.toInt()
+            } else {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    // Send buffer full — suspend until fd is writable
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        eventLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
+                        cont.invokeOnCancellation {
+                            eventLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
+                        }
+                    }
+                    continue
+                }
+                break // Other error (e.g. EPIPE, ECONNRESET)
+            }
+        }
+        pw.buf.release()
+    }
+
+    /**
+     * Writes multiple pending buffers using gather write (writev).
+     *
+     * Attempts a single `writev()` syscall for all buffers. If writev
+     * completes fully, all buffers are released. On partial write or
+     * EAGAIN, completed buffers are released and the remaining data
+     * falls through to [flushSingle] for per-buffer retry.
+     */
+    private suspend fun flushGather() {
+        // First attempt: writev for all pending buffers
+        val totalBytes = pendingWrites.sumOf { it.length }
+        val writtenBytes: Int
+
+        memScoped {
+            val bases = allocArray<CPointerVar<ByteVar>>(pendingWrites.size)
+            val lens = allocArray<ULongVar>(pendingWrites.size)
+            for ((i, pw) in pendingWrites.withIndex()) {
+                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+                lens[i] = pw.length.convert()
+            }
+            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), pendingWrites.size)
+            if (n < 0) {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    // Nothing written — suspend, then fall through to per-buffer writes
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        eventLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
+                        cont.invokeOnCancellation {
+                            eventLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
+                        }
+                    }
+                    // After wakeup, flush each buffer individually
+                    for (pw in pendingWrites) flushSingle(pw)
+                    return
+                }
+                // Other error — release all buffers and return
+                for (pw in pendingWrites) pw.buf.release()
+                return
+            }
+            writtenBytes = n.toInt()
+        }
+
+        if (writtenBytes >= totalBytes) {
+            // All data written — release all buffers
+            for (pw in pendingWrites) pw.buf.release()
+            return
+        }
+
+        // Partial writev: walk the PendingWrite list to find the split point.
+        // Buffers before the split were fully written → release.
+        // The buffer at the split may be partially written → adjust offset/length.
+        // Buffers after the split were not written at all → flushSingle as-is.
+        var consumed = 0
+        for (pw in pendingWrites) {
+            if (consumed + pw.length <= writtenBytes) {
+                // Fully written by writev
+                consumed += pw.length
+                pw.buf.release()
+            } else {
+                // Partially or not written — calculate how many bytes writev
+                // already sent from this buffer, then flush the remainder.
+                val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
+                flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
+                // After the first partial buffer, all subsequent buffers have
+                // consumed >= writtenBytes, so alreadyWritten will be 0 and
+                // they are flushed in full via flushSingle.
+                consumed += pw.length
+            }
+        }
     }
 
     /**
