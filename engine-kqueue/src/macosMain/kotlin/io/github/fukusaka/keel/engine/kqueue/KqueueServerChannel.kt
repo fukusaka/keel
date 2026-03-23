@@ -17,30 +17,29 @@ import platform.posix.errno
 /**
  * kqueue-based [ServerChannel] implementation for macOS.
  *
- * Listens on [serverFd] and uses the [KqueueEventLoop] to wait for
- * incoming connections. The server fd is registered with kqueue by
- * [KqueueEngine.bind] before this object is created.
- *
- * [accept] suspends via [suspendCancellableCoroutine] until the EventLoop
- * reports the server fd as readable (incoming connection available).
+ * Listens on [serverFd] and uses the boss [KqueueEventLoop] to wait for
+ * incoming connections. Accepted channels are assigned to worker EventLoops
+ * from [workerGroup] in round-robin order.
  *
  * ```
  * accept() flow:
- *   try POSIX accept(serverFd)
- *     if EAGAIN: suspendCancellableCoroutine + eventLoop.register(serverFd, READ)
- *     EventLoop kevent() fires --> resume --> retry accept
- *   setNonBlocking(clientFd)
- *   --> KqueueChannel(clientFd, eventLoop, allocator)
+ *   bossLoop: kevent() fires EVFILT_READ on serverFd → resume
+ *   POSIX accept(serverFd) → clientFd
+ *   workerGroup.next() → assign worker EventLoop
+ *   → KqueueChannel(clientFd, workerLoop, allocator)
  * ```
  *
- * @param serverFd  The listening server socket fd (non-blocking).
- * @param eventLoop The [KqueueEventLoop] for readiness notification.
- * @param allocator Passed to accepted [KqueueChannel]s.
+ * @param serverFd    The listening server socket fd (non-blocking).
+ * @param bossLoop    The boss [KqueueEventLoop] for accept readiness notification.
+ * @param workerGroup Worker EventLoopGroup for accepted channels.
+ * @param localAddress Bind address of this server channel.
+ * @param allocator   Passed to accepted [KqueueChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueServerChannel(
     private val serverFd: Int,
-    private val eventLoop: KqueueEventLoop,
+    private val bossLoop: KqueueEventLoop,
+    private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
 ) : ServerChannel {
@@ -66,18 +65,19 @@ internal class KqueueServerChannel(
                 SocketUtils.setNonBlocking(clientFd)
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
-                return KqueueChannel(clientFd, eventLoop, allocator, remoteAddr, localAddr)
+                val workerLoop = workerGroup.next()
+                return KqueueChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
             }
 
             val err = errno
             if (err == EAGAIN) {
-                // Suspend until EventLoop reports serverFd is readable
+                // Suspend until boss EventLoop reports serverFd is readable
                 suspendCancellableCoroutine<Unit> { cont ->
                     pendingAcceptCont = cont
-                    eventLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
+                    bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
                     cont.invokeOnCancellation {
                         pendingAcceptCont = null
-                        eventLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
+                        bossLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
                     }
                 }
                 pendingAcceptCont = null

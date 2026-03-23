@@ -68,10 +68,9 @@ import kotlin.coroutines.resume
  * `kevent()` to return immediately so the EventLoop can process newly
  * registered fds or queued tasks.
  *
- * **Scalability**: Currently single-threaded. All fd readiness events
- * are dispatched serially. Multi-thread support
- * (`IoEngineConfig.threads > 1`) with round-robin fd assignment
- * will address this in a future PR.
+ * **Scalability**: Each EventLoop instance is single-threaded.
+ * [KqueueEventLoopGroup] creates multiple instances and distributes
+ * channels in round-robin for multi-threaded I/O.
  *
  * **Thread safety**: [registrations] and [taskQueue] are each protected
  * by separate `pthread_mutex_t` instances to minimize lock contention.
