@@ -1,5 +1,11 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.io.BufferedSuspendSink
+import io.github.fukusaka.keel.io.BufferedSuspendSource
+import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.SuspendSink
+import io.github.fukusaka.keel.io.SuspendSource
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 

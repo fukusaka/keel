@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.io.HeapAllocator
+
 /**
  * Configuration shared across all [IoEngine] implementations.
  *

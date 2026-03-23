@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.core.BufferedSuspendSource
-import io.github.fukusaka.keel.core.HeapAllocator
-import io.github.fukusaka.keel.core.NativeBuf
-import io.github.fukusaka.keel.core.SuspendSource
+import io.github.fukusaka.keel.io.BufferedSuspendSource
+import io.github.fukusaka.keel.io.HeapAllocator
+import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.SuspendSource
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
