@@ -16,6 +16,8 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
@@ -35,56 +37,60 @@ import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
 import platform.posix.read
+import platform.posix.timespec
 import platform.posix.write
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 /**
- * Single-threaded kqueue event loop for macOS.
+ * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
  *
  * Drives all I/O for channels created by [KqueueEngine]. A dedicated
- * pthread runs [loop], calling `kevent()` to wait for fd readiness
- * events and resuming suspended coroutines when their fds become ready.
+ * pthread runs [loop], interleaving three tasks:
+ * 1. Execute queued coroutine continuations ([taskQueue])
+ * 2. Call `kevent()` to wait for fd readiness events
+ * 3. Resume suspended coroutines when their fds become ready
+ *
+ * **CoroutineDispatcher integration**: By extending [CoroutineDispatcher],
+ * coroutines dispatched on this EventLoop (e.g., `launch(eventLoop) {}`)
+ * execute entirely on the EventLoop thread. When `cont.resume()` is called,
+ * the continuation is dispatched back to this same thread via [dispatch],
+ * eliminating cross-thread dispatch overhead. This matches Netty's model
+ * where channelRead/write run on the EventLoop thread.
  *
  * **Thread model**: The EventLoop thread is created via `pthread_create`
  * rather than Kotlin/Native's `Worker` (deprecated) or coroutine dispatchers
- * (unnecessary overhead for a tight syscall loop). Coroutine continuations
- * are resumed from the EventLoop thread; the coroutine dispatcher handles
- * re-dispatch to the appropriate thread.
+ * (unnecessary overhead for a tight syscall loop).
  *
  * **Wakeup mechanism**: A `pipe(2)` fd pair is registered with kqueue.
  * External threads call [wakeup] to write 1 byte to the pipe, causing
  * `kevent()` to return immediately so the EventLoop can process newly
- * registered fds.
+ * registered fds or queued tasks.
  *
  * **Scalability**: Currently single-threaded. All fd readiness events
  * are dispatched serially. Multi-thread support
  * (`IoEngineConfig.threads > 1`) with round-robin fd assignment
  * will address this in a future PR.
  *
- * **Thread safety**: [registrations] is protected by a `pthread_mutex_t`.
+ * **Thread safety**: [registrations] and [taskQueue] are each protected
+ * by separate `pthread_mutex_t` instances to minimize lock contention.
  * Kotlin/Native does not support JVM's `synchronized` keyword, and
  * coroutine `Mutex` cannot be used because the EventLoop thread is not
- * in a coroutine context. `pthread_mutex_t` provides the necessary
- * cross-thread synchronization with minimal overhead.
+ * in a coroutine context.
  *
  * ```
- * EventLoop thread:
- *   while (running):
- *     kevent(kqFd, timeout=null)  // block until events
- *     for each ready fd:
- *       if wakeup pipe: consume byte, continue
- *       lookup registration -> remove -> continuation.resume(Unit)
- *
- * Coroutine thread:
- *   suspendCancellableCoroutine { cont ->
- *     eventLoop.register(fd, READ, cont)
- *   }
- *   // resumed when fd is readable -> retry POSIX read
+ * EventLoop thread (single loop iteration):
+ *   1. drainTasks()    — run coroutine continuations
+ *   2. kevent(timeout) — block until events or wakeup
+ *      timeout = 0 if tasks pending, null otherwise
+ *   3. for each ready fd:
+ *        if wakeup pipe: consume byte, continue
+ *        lookup registration -> remove -> continuation.resume(Unit)
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueueEventLoop {
+internal class KqueueEventLoop : CoroutineDispatcher() {
 
     /**
      * The kqueue file descriptor, created at construction.
@@ -93,13 +99,19 @@ internal class KqueueEventLoop {
      */
     val kqFd: Int
 
-    // Arena for long-lived native allocations (mutex).
+    // Arena for long-lived native allocations (mutexes).
     // Freed in close().
     private val arena = Arena()
-    private val mutex = arena.alloc<pthread_mutex_t>().apply {
+    private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
     private val registrations = mutableMapOf<Long, Registration>()
+
+    private val taskMutex = arena.alloc<pthread_mutex_t>().apply {
+        pthread_mutex_init(ptr, null)
+    }
+    private val taskQueue = mutableListOf<Runnable>()
+
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<platform.posix.pthread_tVar>()
@@ -139,6 +151,22 @@ internal class KqueueEventLoop {
             kevent(kqFd, kev.ptr, 1, null, 0, null)
         }
     }
+
+    // --- CoroutineDispatcher ---
+
+    /**
+     * Dispatches a coroutine block to run on this EventLoop thread.
+     *
+     * Called by the coroutine machinery when a continuation needs to resume.
+     * The block is queued and the EventLoop is woken up to process it
+     * in the next loop iteration via [drainTasks].
+     */
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        withTaskLock { taskQueue.add(block) }
+        wakeup()
+    }
+
+    // --- Channel registration ---
 
     /**
      * Starts the EventLoop thread. Must be called once after construction.
@@ -186,7 +214,7 @@ internal class KqueueEventLoop {
             kevent(kqFd, kev.ptr, 1, null, 0, null)
         }
 
-        withLock {
+        withRegLock {
             registrations[key] = Registration(fd, interest, cont)
         }
         wakeup()
@@ -198,14 +226,17 @@ internal class KqueueEventLoop {
      */
     fun unregister(fd: Int, interest: Interest) {
         val key = registrationKey(fd, interest)
-        withLock {
+        withRegLock {
             registrations.remove(key)
         }
     }
 
+    // --- Wakeup ---
+
     /**
      * Wakes up the EventLoop thread by writing 1 byte to the wakeup pipe.
-     * Called after [register] to ensure `kevent()` re-evaluates pending fds.
+     * Called after [register] or [dispatch] to ensure `kevent()` re-evaluates
+     * pending fds and tasks.
      */
     private fun wakeup() {
         byteArrayOf(1).usePinned { pinned ->
@@ -226,18 +257,31 @@ internal class KqueueEventLoop {
         }
     }
 
+    // --- Event loop ---
+
     /**
      * The EventLoop's main loop, running on a dedicated pthread.
      *
-     * Calls `kevent()` with no timeout (blocks indefinitely until events).
-     * For each ready fd, looks up and removes the registration, then
-     * resumes the associated coroutine continuation.
+     * Each iteration:
+     * 1. [drainTasks] — execute queued coroutine continuations
+     * 2. `kevent()` — wait for fd readiness events (non-blocking if tasks
+     *    are pending, blocking otherwise)
+     * 3. Process ready fds — resume associated coroutine continuations
      */
     private fun loop() {
         memScoped {
             val eventList = allocArray<kevent>(MAX_EVENTS)
+            val zeroTimeout = alloc<timespec>().apply {
+                tv_sec = 0
+                tv_nsec = 0
+            }
             while (running.value != 0) {
-                val n = kevent(kqFd, null, 0, eventList, MAX_EVENTS, null)
+                drainTasks()
+
+                // Non-blocking poll if tasks arrived during drainTasks(),
+                // otherwise block until events or wakeup.
+                val timeout = if (hasTasksPending()) zeroTimeout.ptr else null
+                val n = kevent(kqFd, null, 0, eventList, MAX_EVENTS, timeout)
                 if (n < 0) {
                     // EINTR: interrupted by signal (e.g. debugger attach).
                     // EAGAIN: spurious wakeup. Both are retriable.
@@ -260,12 +304,34 @@ internal class KqueueEventLoop {
                         else -> continue
                     }
                     val key = registrationKey(fd, interest)
-                    val reg = withLock { registrations.remove(key) }
+                    val reg = withRegLock { registrations.remove(key) }
                     reg?.continuation?.resume(Unit)
                 }
             }
         }
     }
+
+    /** Runs all queued coroutine continuations on this thread. */
+    private fun drainTasks() {
+        while (true) {
+            val tasks = withTaskLock {
+                if (taskQueue.isEmpty()) return
+                val snapshot = taskQueue.toList()
+                taskQueue.clear()
+                snapshot
+            }
+            for (task in tasks) {
+                task.run()
+            }
+        }
+    }
+
+    /** Checks if there are pending tasks without draining them. */
+    private fun hasTasksPending(): Boolean {
+        return withTaskLock { taskQueue.isNotEmpty() }
+    }
+
+    // --- Lifecycle ---
 
     /**
      * Stops the EventLoop and releases all resources.
@@ -286,10 +352,13 @@ internal class KqueueEventLoop {
             close(wakeupFds[0])
             close(wakeupFds[1])
             close(kqFd)
-            pthread_mutex_destroy(mutex.ptr)
+            pthread_mutex_destroy(regMutex.ptr)
+            pthread_mutex_destroy(taskMutex.ptr)
             arena.clear()
         }
     }
+
+    // --- Helpers ---
 
     /**
      * Encodes fd + interest into a single Long key.
@@ -299,13 +368,23 @@ internal class KqueueEventLoop {
         return fd.toLong() or (interest.ordinal.toLong() shl 32)
     }
 
-    /** Runs [block] under the pthread mutex. */
-    private inline fun <T> withLock(block: () -> T): T {
-        pthread_mutex_lock(mutex.ptr)
+    /** Runs [block] under the registration mutex. */
+    private inline fun <T> withRegLock(block: () -> T): T {
+        pthread_mutex_lock(regMutex.ptr)
         try {
             return block()
         } finally {
-            pthread_mutex_unlock(mutex.ptr)
+            pthread_mutex_unlock(regMutex.ptr)
+        }
+    }
+
+    /** Runs [block] under the task queue mutex. */
+    private inline fun <T> withTaskLock(block: () -> T): T {
+        pthread_mutex_lock(taskMutex.ptr)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(taskMutex.ptr)
         }
     }
 
