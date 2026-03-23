@@ -519,6 +519,42 @@ class EpollEngineTest {
         engine.close()
     }
 
+    @Test
+    fun `connect and echo round trip`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)
+        val client = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        // Client writes, server reads and echoes back
+        val msg = "async-connect"
+        val writeBuf = NativeBuf(64)
+        for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
+        client.write(writeBuf)
+        client.flush()
+        writeBuf.release()
+
+        val readBuf = NativeBuf(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(msg.length, n)
+        serverCh.write(readBuf)
+        serverCh.flush()
+        readBuf.release()
+
+        val echoBuf = NativeBuf(64)
+        val n2 = client.read(echoBuf)
+        assertEquals(msg.length, n2)
+        echoBuf.release()
+
+        client.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
     // --- asSuspendSource/asSuspendSink ---
 
     @Test
