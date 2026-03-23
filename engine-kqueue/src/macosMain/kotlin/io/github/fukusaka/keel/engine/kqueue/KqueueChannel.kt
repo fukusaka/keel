@@ -269,18 +269,25 @@ internal class KqueueChannel(
             return
         }
 
-        // Partial writev: release fully-written buffers, flush remainder
+        // Partial writev: walk the PendingWrite list to find the split point.
+        // Buffers before the split were fully written → release.
+        // The buffer at the split may be partially written → adjust offset/length.
+        // Buffers after the split were not written at all → flushSingle as-is.
         var consumed = 0
         for (pw in pendingWrites) {
             if (consumed + pw.length <= writtenBytes) {
-                // This buffer was fully written
+                // Fully written by writev
                 consumed += pw.length
                 pw.buf.release()
             } else {
-                // Partially or not written — flush remaining bytes
+                // Partially or not written — calculate how many bytes writev
+                // already sent from this buffer, then flush the remainder.
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
                 flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
-                consumed = writtenBytes // Skip further partial calculation
+                // After the first partial buffer, all subsequent buffers have
+                // consumed >= writtenBytes, so alreadyWritten will be 0 and
+                // they are flushed in full via flushSingle.
+                consumed += pw.length
             }
         }
     }
