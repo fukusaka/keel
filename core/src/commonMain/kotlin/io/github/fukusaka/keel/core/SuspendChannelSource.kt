@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.SuspendSource
+
 /**
  * Default [SuspendSource] implementation that delegates to [Channel.read].
  *

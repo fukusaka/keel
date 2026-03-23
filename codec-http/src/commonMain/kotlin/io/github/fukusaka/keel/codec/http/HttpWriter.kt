@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.core.BufferedSuspendSink
+import io.github.fukusaka.keel.io.BufferedSuspendSink
 import kotlinx.io.Sink
 import kotlinx.io.write
 import kotlinx.io.writeString

@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.core.BufferedSuspendSource
+import io.github.fukusaka.keel.io.BufferedSuspendSource
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
 import kotlinx.io.readLine
