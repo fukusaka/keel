@@ -47,7 +47,10 @@ public class KeelApplicationEngine(
         public var keepAlive: Boolean = true
     }
 
-    private val engineDispatcher = Dispatchers.IO
+    // Application pipeline dispatcher. Uses Dispatchers.Default (thread pool)
+    // so user code in routing {} blocks doesn't block the I/O EventLoop.
+    // Channel I/O is dispatched on channel.coroutineDispatcher instead.
+    private val appDispatcher = Dispatchers.Default
     private val startupJob = CompletableDeferred<Unit>()
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
@@ -95,7 +98,7 @@ public class KeelApplicationEngine(
         val resolvedDeferred = resolvedConnectorsDeferred
 
         return CoroutineScope(
-            applicationProvider().parentCoroutineContext + engineDispatcher
+            applicationProvider().parentCoroutineContext + appDispatcher
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
             val servers = mutableListOf<ServerChannel>()
@@ -131,7 +134,7 @@ public class KeelApplicationEngine(
         while (server.isActive && isActive) {
             try {
                 val channel = server.accept()
-                launch(engineDispatcher) {
+                launch(appDispatcher) {
                     handleConnection(channel)
                 }
             } catch (e: Exception) {
