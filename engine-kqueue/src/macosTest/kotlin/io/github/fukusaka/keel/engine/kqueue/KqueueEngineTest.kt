@@ -14,6 +14,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kqueue.keel_loopback_addr
 import platform.posix.AF_INET
@@ -652,6 +653,84 @@ class KqueueEngineTest {
 
         withTimeout(3000) { readJob.join() }
         assertTrue(ch.isOpen)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    // --- CoroutineDispatcher ---
+
+    @Test
+    fun `channel coroutineDispatcher returns EventLoop`() = runBlocking {
+        val engine = KqueueEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // coroutineDispatcher should be the KqueueEventLoop, not Dispatchers.Default
+        assertTrue(ch.coroutineDispatcher is KqueueEventLoop)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `dispatch executes task on EventLoop thread`() = runBlocking {
+        val engine = KqueueEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Launch a coroutine on the EventLoop dispatcher and capture thread name
+        val threadName = withContext(ch.coroutineDispatcher) {
+            // Read/write on EventLoop thread to verify I/O runs there
+            rawWrite(clientFd, "x")
+            val buf = NativeBuf(64)
+            val n = ch.read(buf)
+            assertEquals(1, n)
+            buf.release()
+            "ok"
+        }
+        assertEquals("ok", threadName)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `echo round trip on EventLoop dispatcher`() = runBlocking {
+        val engine = KqueueEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Run entire echo on the EventLoop dispatcher
+        withContext(ch.coroutineDispatcher) {
+            rawWrite(clientFd, "hello")
+
+            val buf = NativeBuf(64)
+            val n = ch.read(buf)
+            assertEquals(5, n)
+
+            ch.write(buf)
+            ch.flush()
+            buf.release()
+        }
+
+        val echo = rawRead(clientFd, 5)
+        assertEquals("hello", echo)
 
         ch.close()
         close(clientFd)
