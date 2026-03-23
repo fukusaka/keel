@@ -94,6 +94,9 @@ class KqueueEngine(
      *
      * Connect is synchronous (blocking): the socket is created in blocking
      * mode, connected, then switched to non-blocking for subsequent I/O.
+     * The connected channel is assigned to the next worker EventLoop
+     * in round-robin order.
+     *
      * Non-blocking connect (EINPROGRESS + EVFILT_WRITE wait) is deferred
      * because synchronous connect is sufficient for current use cases and
      * avoids additional complexity in the EventLoop.
