@@ -18,38 +18,49 @@ import platform.posix.errno
 import platform.posix.strerror
 
 /**
- * macOS kqueue-based [IoEngine] implementation.
+ * macOS kqueue-based [IoEngine] implementation with multi-threaded EventLoop.
  *
- * Creates a [KqueueEventLoop] that drives all I/O for channels created
- * by this engine. The EventLoop owns the kqueue fd and runs a dedicated
- * pthread that calls `kevent()` to multiplex fd readiness events.
+ * Uses a boss/worker EventLoop model (same as NIO and Netty):
+ * - **Boss EventLoop**: handles `accept()` readiness on server fds
+ * - **Worker EventLoopGroup**: handles `read`/`write`/`flush` on accepted channels
  *
- * All suspend functions ([bind], [connect]) are non-blocking. Channel
- * read/write operations suspend via [suspendCancellableCoroutine] and
- * are resumed by the EventLoop when their fds become ready.
+ * New connections are assigned to worker EventLoops in round-robin order.
+ * Each worker thread runs its own kqueue fd and acts as a
+ * [CoroutineDispatcher][kotlinx.coroutines.CoroutineDispatcher], so all
+ * I/O + request processing for a channel runs on a single thread without
+ * cross-thread dispatch.
  *
  * ```
- * KqueueEngine (owns EventLoop)
+ * KqueueEngine
  *   |
- *   +-- bind() --> KqueueServerChannel (serverFd registered on EventLoop)
- *   |                |
- *   |                +-- accept() --> KqueueChannel (clientFd, shares EventLoop)
+ *   +-- bossLoop (accept EventLoop)
+ *   |     |
+ *   |     +-- bind() → KqueueServerChannel
+ *   |           |
+ *   |           +-- accept() → assign to workerGroup.next()
  *   |
- *   +-- connect() --> KqueueChannel (clientFd, shares EventLoop)
+ *   +-- workerGroup (N worker EventLoops, round-robin)
+ *         |
+ *         +-- worker[0]: Channel A, D, ...
+ *         +-- worker[1]: Channel B, E, ...
+ *         +-- worker[N]: ...
  * ```
  *
- * @param config Engine-wide configuration (allocator, threads).
+ * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
+ *               the number of worker EventLoop threads (default: 1).
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
-    private val eventLoop = KqueueEventLoop()
+    private val bossLoop = KqueueEventLoop()
+    private val workerGroup = KqueueEventLoopGroup(config.threads)
     private var closed = false
 
     init {
-        eventLoop.start()
+        bossLoop.start()
+        workerGroup.start()
     }
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -57,8 +68,8 @@ class KqueueEngine(
 
         val serverFd = SocketUtils.createServerSocket(host, port)
 
-        // Register server fd with kqueue so that accept() can be notified
-        // of incoming connections via the EventLoop.
+        // Register server fd with the boss EventLoop's kqueue so that
+        // accept() readiness is notified on the boss thread.
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -70,12 +81,12 @@ class KqueueEngine(
                 0,
                 null,
             )
-            val result = kevent(eventLoop.kqFd, kev.ptr, 1, null, 0, null)
+            val result = kevent(bossLoop.kqFd, kev.ptr, 1, null, 0, null)
             check(result >= 0) { "kevent(EV_ADD server) failed: ${strerror(errno)?.toKString()}" }
         }
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
-        return KqueueServerChannel(serverFd, eventLoop, localAddr, config.allocator)
+        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr, config.allocator)
     }
 
     /**
@@ -93,14 +104,16 @@ class KqueueEngine(
         val clientFd = SocketUtils.createClientSocket(host, port)
         val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
         val localAddr = SocketUtils.getLocalAddress(clientFd)
+        val workerLoop = workerGroup.next()
 
-        return KqueueChannel(clientFd, eventLoop, config.allocator, remoteAddr, localAddr)
+        return KqueueChannel(clientFd, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
         if (!closed) {
             closed = true
-            eventLoop.close()
+            bossLoop.close()
+            workerGroup.close()
         }
     }
 }
