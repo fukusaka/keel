@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.BufferAllocator
-import io.github.fukusaka.keel.core.NativeBuf
+import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.io.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine

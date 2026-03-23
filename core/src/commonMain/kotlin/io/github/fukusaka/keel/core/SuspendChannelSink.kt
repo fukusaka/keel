@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.SuspendSink
+
 /**
  * Default [SuspendSink] implementation that delegates to [Channel.write]/[Channel.flush].
  *

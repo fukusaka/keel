@@ -27,6 +27,7 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
+                api(project(":io-core"))
                 api(libs.kotlinx.coroutines.core)
             }
         }

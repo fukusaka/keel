@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.BufferAllocator
+import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CancellableContinuation
