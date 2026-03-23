@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.NativeBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -868,6 +869,76 @@ class KqueueEngineTest {
         withTimeout(3000) { acceptJob.join() }
         assertTrue(acceptJob.isCancelled)
 
+        engine.close()
+    }
+
+    // --- Multi-thread EventLoop ---
+
+    @Test
+    fun `echo with multi-thread EventLoop`() = runBlocking {
+        val engine = KqueueEngine(IoEngineConfig(threads = 4))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        // Multiple clients to exercise round-robin distribution
+        val results = (1..8).map { i ->
+            async {
+                val clientFd = connectRawClient(port)
+                val ch = server.accept()
+
+                val msg = "msg-$i"
+                rawWrite(clientFd, msg)
+
+                val buf = NativeBuf(64)
+                val n = ch.read(buf)
+                assertEquals(msg.length, n)
+
+                ch.write(buf)
+                ch.flush()
+                buf.release()
+
+                val echo = rawRead(clientFd, msg.length)
+                ch.close()
+                close(clientFd)
+                echo
+            }
+        }
+
+        for ((i, deferred) in results.withIndex()) {
+            assertEquals("msg-${i + 1}", deferred.await())
+        }
+
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `channels are distributed across worker EventLoops`() = runBlocking {
+        val engine = KqueueEngine(IoEngineConfig(threads = 4))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        // Accept 4 channels — should be assigned to 4 different workers
+        val channels = (1..4).map {
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            ch to clientFd
+        }
+
+        // Each channel's coroutineDispatcher should be a KqueueEventLoop
+        // (different instances for round-robin distribution)
+        val dispatchers = channels.map { (ch, _) -> ch.coroutineDispatcher }
+        for (d in dispatchers) {
+            assertTrue(d is KqueueEventLoop, "Expected KqueueEventLoop dispatcher")
+        }
+        // With 4 workers and 4 channels, all dispatchers should be distinct
+        assertEquals(4, dispatchers.toSet().size, "Expected 4 distinct EventLoops")
+
+        for ((ch, fd) in channels) {
+            ch.close()
+            close(fd)
+        }
+        server.close()
         engine.close()
     }
 }
