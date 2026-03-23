@@ -40,14 +40,15 @@ import java.nio.channels.SocketChannel
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
- *               the number of worker EventLoop threads (default: 1).
+ *               the number of worker EventLoop threads. 0 (default) resolves
+ *               to `availableProcessors()`.
  */
 class NioEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
     private val bossLoop = NioEventLoop("keel-nio-boss")
-    private val workerGroup = NioEventLoopGroup(config.threads, "keel-nio-worker")
+    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker")
     private var closed = false
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -106,5 +107,12 @@ class NioEngine(
             bossLoop.close()
             workerGroup.close()
         }
+    }
+
+    companion object {
+        /** Resolves threads=0 to available CPU cores. */
+        private fun resolveThreads(config: IoEngineConfig): Int =
+            if (config.threads > 0) config.threads
+            else Runtime.getRuntime().availableProcessors()
     }
 }
