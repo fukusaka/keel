@@ -26,21 +26,19 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * directly to [SocketChannel.read]/[SocketChannel.write] — no intermediate
  * ByteArray copy.
  *
+ * **SelectionKey caching**: The [selectionKey] is registered once at channel
+ * creation with `interestOps=0`. Each `read()` call toggles interest ops
+ * via [NioEventLoop.setInterest] instead of re-registering with the Selector.
+ * This eliminates per-read JNI overhead (Netty uses the same pattern).
+ *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
  * [SocketChannel.write] for each (gather-write for multiple buffers).
  *
- * **Async read via EventLoop**: The [SocketChannel] is in non-blocking mode.
- * When `read()` returns 0 (no data), the channel is registered with the
- * [NioEventLoop] for [SelectionKey.OP_READ] and the coroutine suspends.
- * The EventLoop's [java.nio.channels.Selector] resumes the coroutine
- * when the channel becomes readable.
- *
  * ```
  * Read path (zero-copy, async via EventLoop):
  *   SocketChannel.read(ByteBuffer) → NativeBuf.unsafeBuffer
- *   If n == 0: suspendCancellableCoroutine + eventLoop.register(ch, OP_READ)
- *   EventLoop select() fires → continuation.resume(Unit) → retry read
+ *   If n == 0: setInterest(key, OP_READ, cont) → select() → resume → retry
  *
  * Write path (buffered, zero-copy flush):
  *   write(buf)  → retain buf, record offset/length in PendingWrite
@@ -48,11 +46,13 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * ```
  *
  * @param socketChannel The connected SocketChannel (non-blocking).
+ * @param selectionKey  Cached SelectionKey registered with the worker Selector.
  * @param eventLoop     The [NioEventLoop] for readiness notification.
  * @param allocator     Buffer allocator for read operations.
  */
 internal class NioChannel(
     private val socketChannel: SocketChannel,
+    private val selectionKey: SelectionKey,
     private val eventLoop: NioEventLoop,
     override val allocator: BufferAllocator,
     override val remoteAddress: SocketAddress?,
@@ -77,8 +77,9 @@ internal class NioChannel(
      * Reads bytes into [buf] via zero-copy SocketChannel read.
      *
      * On non-blocking mode, [SocketChannel.read] returns 0 if no data
-     * is available. In that case, registers with the [NioEventLoop]
-     * for [SelectionKey.OP_READ] and suspends.
+     * is available. In that case, sets [SelectionKey.OP_READ] interest
+     * on the cached [selectionKey] and suspends. No Selector re-registration
+     * needed (interestOps toggle only).
      *
      * @return number of bytes read, or -1 on EOF.
      */
@@ -99,7 +100,7 @@ internal class NioChannel(
 
             // n == 0: no data available, suspend until readable
             suspendCancellableCoroutine<Unit> { cont ->
-                eventLoop.register(socketChannel, SelectionKey.OP_READ, cont)
+                eventLoop.setInterest(selectionKey, SelectionKey.OP_READ, cont)
             }
         }
     }
@@ -164,13 +165,14 @@ internal class NioChannel(
     }
 
     /**
-     * Closes the SocketChannel and releases all pending writes.
-     * Unflushed data is discarded (buffers are released without sending).
+     * Closes the SocketChannel, cancels the cached SelectionKey,
+     * and releases all pending writes.
      */
     override fun close() {
         if (_open) {
             _open = false
             _active = false
+            selectionKey.cancel()
             for (pw in pendingWrites) {
                 pw.buf.release()
             }
