@@ -14,6 +14,8 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.linux.EPOLL_CTL_ADD
@@ -33,26 +35,35 @@ import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 /**
- * Single-threaded epoll event loop for Linux.
+ * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
  *
  * Drives all I/O for channels created by [EpollEngine]. A dedicated
- * pthread runs [loop], calling `epoll_wait()` to wait for fd readiness
- * events and resuming suspended coroutines when their fds become ready.
+ * pthread runs [loop], interleaving three tasks:
+ * 1. Execute queued coroutine continuations ([taskQueue])
+ * 2. Call `epoll_wait()` to wait for fd readiness events
+ * 3. Resume suspended coroutines when their fds become ready
+ *
+ * **CoroutineDispatcher integration**: By extending [CoroutineDispatcher],
+ * coroutines dispatched on this EventLoop (e.g., `launch(eventLoop) {}`)
+ * execute entirely on the EventLoop thread. When `cont.resume()` is called,
+ * the continuation is dispatched back to this same thread via [dispatch],
+ * eliminating cross-thread dispatch overhead. This matches Netty's model
+ * where channelRead/write run on the EventLoop thread.
  *
  * **Thread model**: The EventLoop thread is created via `pthread_create`
  * rather than Kotlin/Native's `Worker` (deprecated) or coroutine dispatchers
- * (unnecessary overhead for a tight syscall loop). Coroutine continuations
- * are resumed from the EventLoop thread; the coroutine dispatcher handles
- * re-dispatch to the appropriate thread.
+ * (unnecessary overhead for a tight syscall loop).
  *
  * **Wakeup mechanism**: An `eventfd(2)` is registered with epoll.
  * External threads call [wakeup] to signal the eventfd, causing
  * `epoll_wait()` to return immediately so the EventLoop can process
- * newly registered fds. eventfd is more efficient than pipe(2) on Linux:
- * single fd instead of two, and kernel-optimized for signaling.
+ * newly registered fds or queued tasks. eventfd is more efficient than
+ * pipe(2) on Linux: single fd instead of two, and kernel-optimized
+ * for signaling.
  *
  * **Scalability**: Currently single-threaded. All fd readiness events
  * are dispatched serially, which limits throughput compared to Phase (a)
@@ -60,29 +71,24 @@ import kotlin.coroutines.resume
  * support (`IoEngineConfig.threads > 1`) with round-robin fd assignment
  * will address this in a future PR.
  *
- * **Thread safety**: [registrations] is protected by a `pthread_mutex_t`.
+ * **Thread safety**: [registrations] and [taskQueue] are each protected
+ * by separate `pthread_mutex_t` instances to minimize lock contention.
  * Kotlin/Native does not support JVM's `synchronized` keyword, and
  * coroutine `Mutex` cannot be used because the EventLoop thread is not
- * in a coroutine context. `pthread_mutex_t` provides the necessary
- * cross-thread synchronization with minimal overhead.
+ * in a coroutine context.
  *
  * ```
- * EventLoop thread:
- *   while (running):
- *     epoll_wait(epFd, timeout=-1)  // block until events
- *     for each ready fd:
- *       if eventfd: consume, continue
- *       lookup registration -> remove -> continuation.resume(Unit)
- *
- * Coroutine thread:
- *   suspendCancellableCoroutine { cont ->
- *     eventLoop.register(fd, READ, cont)
- *   }
- *   // resumed when fd is readable -> retry POSIX read
+ * EventLoop thread (single loop iteration):
+ *   1. drainTasks()        — run coroutine continuations
+ *   2. epoll_wait(timeout) — block until events or wakeup
+ *      timeout = 0 if tasks pending, -1 otherwise
+ *   3. for each ready fd:
+ *        if eventfd: consume, continue
+ *        lookup registration -> remove -> continuation.resume(Unit)
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollEventLoop {
+internal class EpollEventLoop : CoroutineDispatcher() {
 
     /**
      * The epoll file descriptor, created at construction.
@@ -91,13 +97,23 @@ internal class EpollEventLoop {
      */
     val epFd: Int
 
-    // Arena for long-lived native allocations (mutex, pthread_t).
+    // Arena for long-lived native allocations (mutexes).
     // Freed in close().
     private val arena = Arena()
-    private val mutex = arena.alloc<pthread_mutex_t>().apply {
+
+    // Separate mutexes for registrations and taskQueue to minimize lock
+    // contention: dispatch() (any thread) and register() (coroutine thread)
+    // are independent hot paths that should not block each other.
+    private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
     private val registrations = mutableMapOf<Long, Registration>()
+
+    private val taskMutex = arena.alloc<pthread_mutex_t>().apply {
+        pthread_mutex_init(ptr, null)
+    }
+    private val taskQueue = mutableListOf<Runnable>()
+
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<platform.posix.pthread_tVar>()
@@ -135,6 +151,22 @@ internal class EpollEventLoop {
             epoll_ctl(epFd, EPOLL_CTL_ADD, wakeupFd, ev.ptr)
         }
     }
+
+    // --- CoroutineDispatcher ---
+
+    /**
+     * Dispatches a coroutine block to run on this EventLoop thread.
+     *
+     * Called by the coroutine machinery when a continuation needs to resume.
+     * The block is queued and the EventLoop is woken up to process it
+     * in the next loop iteration via [drainTasks].
+     */
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        withTaskLock { taskQueue.add(block) }
+        wakeup()
+    }
+
+    // --- Channel registration ---
 
     /**
      * Starts the EventLoop thread. Must be called once after construction.
@@ -181,7 +213,7 @@ internal class EpollEventLoop {
             epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
         }
 
-        withLock {
+        withRegLock {
             registrations[key] = Registration(fd, interest, cont)
         }
         wakeup()
@@ -193,14 +225,17 @@ internal class EpollEventLoop {
      */
     fun unregister(fd: Int, interest: Interest) {
         val key = registrationKey(fd, interest)
-        withLock {
+        withRegLock {
             registrations.remove(key)
         }
     }
 
+    // --- Wakeup ---
+
     /**
      * Wakes up the EventLoop thread by signaling the eventfd.
-     * Called after [register] to ensure `epoll_wait()` re-evaluates pending fds.
+     * Called after [register] or [dispatch] to ensure `epoll_wait()`
+     * re-evaluates pending fds and tasks.
      */
     private fun wakeup() {
         keel_eventfd_write(wakeupFd)
@@ -214,18 +249,28 @@ internal class EpollEventLoop {
         keel_eventfd_read(wakeupFd)
     }
 
+    // --- Event loop ---
+
     /**
      * The EventLoop's main loop, running on a dedicated pthread.
      *
-     * Calls `epoll_wait()` with timeout=-1 (blocks indefinitely until events).
-     * For each ready fd, looks up and removes the registration, then
-     * resumes the associated coroutine continuation.
+     * Each iteration:
+     * 1. [drainTasks] — execute queued coroutine continuations
+     * 2. `epoll_wait()` — wait for fd readiness events (non-blocking if
+     *    tasks are pending, blocking otherwise)
+     * 3. Process ready fds — resume associated coroutine continuations
      */
     private fun loop() {
         memScoped {
             val eventList = allocArray<epoll_event>(MAX_EVENTS)
             while (running.value != 0) {
-                val n = epoll_wait(epFd, eventList, MAX_EVENTS, -1)
+                drainTasks()
+
+                // Non-blocking poll if tasks arrived during drainTasks(),
+                // otherwise block until events or wakeup.
+                // epoll_wait timeout: 0 = immediate, -1 = indefinite block.
+                val timeout = if (hasTasksPending()) 0 else -1
+                val n = epoll_wait(epFd, eventList, MAX_EVENTS, timeout)
                 if (n < 0) {
                     // EINTR: interrupted by signal (e.g. debugger attach).
                     // EAGAIN: spurious wakeup. Both are retriable.
@@ -250,12 +295,47 @@ internal class EpollEventLoop {
                         Interest.WRITE
                     }
                     val key = registrationKey(fd, interest)
-                    val reg = withLock { registrations.remove(key) }
+                    val reg = withRegLock { registrations.remove(key) }
                     reg?.continuation?.resume(Unit)
                 }
             }
         }
     }
+
+    /**
+     * Runs all queued coroutine continuations on this thread.
+     *
+     * Uses a while loop because task execution may enqueue new tasks
+     * (e.g., a resumed coroutine calls channel.read() which suspends
+     * and re-registers, then immediately resumes via dispatch()).
+     * Draining in the same iteration prevents starvation where tasks
+     * accumulate faster than epoll_wait() cycles can process them.
+     */
+    private fun drainTasks() {
+        while (true) {
+            val tasks = withTaskLock {
+                if (taskQueue.isEmpty()) return
+                val snapshot = taskQueue.toList()
+                taskQueue.clear()
+                snapshot
+            }
+            for (task in tasks) {
+                task.run()
+            }
+        }
+    }
+
+    /**
+     * Checks if there are pending tasks without draining them.
+     *
+     * Used to decide `epoll_wait()` timeout: 0 if tasks are pending
+     * (non-blocking poll), -1 otherwise (block until events).
+     */
+    private fun hasTasksPending(): Boolean {
+        return withTaskLock { taskQueue.isNotEmpty() }
+    }
+
+    // --- Lifecycle ---
 
     /**
      * Stops the EventLoop and releases all resources.
@@ -268,16 +348,20 @@ internal class EpollEventLoop {
     fun close() {
         if (running.compareAndSet(1, 0)) {
             wakeup()
+            // Join the EventLoop thread. threadPtr was written by pthread_create.
             val t = threadPtr.ptr[0]
             if (t != null) {
                 pthread_join(t, null)
             }
             close(wakeupFd)
             close(epFd)
-            pthread_mutex_destroy(mutex.ptr)
+            pthread_mutex_destroy(regMutex.ptr)
+            pthread_mutex_destroy(taskMutex.ptr)
             arena.clear()
         }
     }
+
+    // --- Helpers ---
 
     /**
      * Encodes fd + interest into a single Long key.
@@ -287,13 +371,23 @@ internal class EpollEventLoop {
         return fd.toLong() or (interest.ordinal.toLong() shl 32)
     }
 
-    /** Runs [block] under the pthread mutex. */
-    private inline fun <T> withLock(block: () -> T): T {
-        pthread_mutex_lock(mutex.ptr)
+    /** Runs [block] under the registration mutex. */
+    private inline fun <T> withRegLock(block: () -> T): T {
+        pthread_mutex_lock(regMutex.ptr)
         try {
             return block()
         } finally {
-            pthread_mutex_unlock(mutex.ptr)
+            pthread_mutex_unlock(regMutex.ptr)
+        }
+    }
+
+    /** Runs [block] under the task queue mutex. */
+    private inline fun <T> withTaskLock(block: () -> T): T {
+        pthread_mutex_lock(taskMutex.ptr)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(taskMutex.ptr)
         }
     }
 

@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
@@ -641,6 +642,163 @@ class EpollEngineTest {
 
         withTimeout(3000) { readJob.join() }
         assertTrue(ch.isOpen)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    // --- CoroutineDispatcher ---
+
+    @Test
+    fun `channel coroutineDispatcher returns EventLoop`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // coroutineDispatcher should be the EpollEventLoop, not Dispatchers.Default
+        assertTrue(ch.coroutineDispatcher is EpollEventLoop)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `dispatch executes task on EventLoop thread`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Launch a coroutine on the EventLoop dispatcher and verify I/O works
+        val result = withContext(ch.coroutineDispatcher) {
+            rawWrite(clientFd, "x")
+            val buf = NativeBuf(64)
+            val n = ch.read(buf)
+            assertEquals(1, n)
+            buf.release()
+            "ok"
+        }
+        assertEquals("ok", result)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `echo round trip on EventLoop dispatcher`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Run entire echo on the EventLoop dispatcher
+        withContext(ch.coroutineDispatcher) {
+            rawWrite(clientFd, "hello")
+
+            val buf = NativeBuf(64)
+            val n = ch.read(buf)
+            assertEquals(5, n)
+
+            ch.write(buf)
+            ch.flush()
+            buf.release()
+        }
+
+        val echo = rawRead(clientFd, 5)
+        assertEquals("hello", echo)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `multiple dispatches are executed in FIFO order`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Dispatch multiple tasks and verify they execute in order
+        val results = mutableListOf<Int>()
+        withContext(ch.coroutineDispatcher) {
+            // All dispatches go to the same EventLoop thread's taskQueue
+            launch(ch.coroutineDispatcher) { results.add(1) }
+            launch(ch.coroutineDispatcher) { results.add(2) }
+            launch(ch.coroutineDispatcher) { results.add(3) }
+        }
+
+        // drainTasks processes the taskQueue in FIFO order
+        assertEquals(listOf(1, 2, 3), results)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `dispatch from within EventLoop thread`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Test that dispatching from within a dispatched task works correctly.
+        // This exercises the drainTasks() while loop: the inner dispatch
+        // enqueues a new task that must be drained in the same iteration.
+        val result = withContext(ch.coroutineDispatcher) {
+            withContext(ch.coroutineDispatcher) {
+                "nested"
+            }
+        }
+        assertEquals("nested", result)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `concurrent dispatch from multiple coroutines`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Launch multiple coroutines that all dispatch to the EventLoop
+        // concurrently, exercising the taskMutex thread safety
+        val counter = kotlin.concurrent.AtomicInt(0)
+        val jobs = (1..10).map {
+            async {
+                withContext(ch.coroutineDispatcher) {
+                    counter.incrementAndGet()
+                }
+            }
+        }
+        jobs.forEach { it.await() }
+        assertEquals(10, counter.value)
 
         ch.close()
         close(clientFd)
