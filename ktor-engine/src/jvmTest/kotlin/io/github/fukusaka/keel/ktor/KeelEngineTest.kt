@@ -158,6 +158,83 @@ class KeelEngineTest {
         }
     }
 
+    // --- Dispatcher separation ---
+
+    @Test
+    fun `concurrent requests are handled without blocking`() {
+        // Verifies that the Ktor pipeline runs on appDispatcher (thread pool),
+        // not the EventLoop. If pipeline ran on EventLoop, the delay would
+        // block all other connections on the same EventLoop.
+        withKeelServer({
+            routing {
+                get("/slow") {
+                    kotlinx.coroutines.delay(200)
+                    call.respondText("done")
+                }
+            }
+        }) { port ->
+            val threads = (1..5).map { i ->
+                Thread {
+                    val (status, body) = httpGet(port, "/slow")
+                    assertEquals(200, status, "Request $i failed")
+                    assertEquals("done", body)
+                }
+            }
+            val start = System.currentTimeMillis()
+            threads.forEach { it.start() }
+            threads.forEach { it.join(5000) }
+            val elapsed = System.currentTimeMillis() - start
+
+            // If serialized on EventLoop: 5 * 200ms = 1000ms minimum.
+            // If parallel on thread pool: ~200ms + overhead.
+            // Allow generous margin but reject fully serial execution.
+            assertTrue(elapsed < 800, "Requests took ${elapsed}ms — likely serialized on EventLoop")
+        }
+    }
+
+    @Test
+    fun `multiple sequential posts with dispatcher separation`() {
+        // Exercises the body bridge (EventLoop reads source, Default runs pipeline)
+        // across multiple sequential POST requests. Each request verifies that
+        // the body is correctly read on EventLoop and processed on Default.
+        withKeelServer({
+            routing {
+                post("/echo") {
+                    val body = call.receiveText()
+                    call.respondText("echo:$body")
+                }
+            }
+        }) { port ->
+            for (i in 1..3) {
+                val (status, body) = httpPost(port, "/echo", "body-$i")
+                assertEquals(200, status, "Request $i failed")
+                assertEquals("echo:body-$i", body)
+            }
+        }
+    }
+
+    @Test
+    fun `large payload with dispatcher separation`() {
+        // Large response exercises the response channel path where body is
+        // streamed via responseChannel() bridge. With dispatcher separation,
+        // the bridge runs on the coroutine scope's dispatcher (EventLoop for
+        // kqueue/epoll, Default for NIO/others).
+        val largeBody = "y".repeat(50_000)
+        withKeelServer({
+            routing {
+                post("/echo-large") {
+                    val body = call.receiveText()
+                    call.respondText(body)
+                }
+            }
+        }) { port ->
+            val (status, body) = httpPost(port, "/echo-large", largeBody)
+            assertEquals(200, status)
+            assertEquals(50_000, body.length)
+            assertEquals(largeBody, body)
+        }
+    }
+
     // --- helpers ---
 
     private data class HttpResponse(

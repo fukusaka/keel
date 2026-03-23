@@ -15,6 +15,13 @@ import kotlinx.coroutines.*
 /**
  * Ktor server engine backed by keel I/O engines.
  *
+ * **Dispatcher model**: Connection I/O (read/parse) runs on the channel's
+ * [coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+ * (EventLoop thread for kqueue/epoll/NIO), while the Ktor application
+ * pipeline is offloaded to [Dispatchers.Default] to avoid blocking the
+ * EventLoop with user code. For engines without a dedicated EventLoop
+ * (Netty, NWConnection, Node.js), both use [Dispatchers.Default].
+ *
  * Supports HTTP/1.1 keep-alive: multiple requests can be processed on a
  * single TCP connection. Keep-alive is enabled by default and can be
  * disabled via [Configuration.keepAlive].
@@ -47,7 +54,10 @@ public class KeelApplicationEngine(
         public var keepAlive: Boolean = true
     }
 
-    private val engineDispatcher = Dispatchers.IO
+    // Application pipeline dispatcher. Uses Dispatchers.Default (thread pool)
+    // so user code in routing {} blocks doesn't block the I/O EventLoop.
+    // Channel I/O is dispatched on channel.coroutineDispatcher instead.
+    private val appDispatcher = Dispatchers.Default
     private val startupJob = CompletableDeferred<Unit>()
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
@@ -94,8 +104,10 @@ public class KeelApplicationEngine(
         val connectors = configuration.connectors
         val resolvedDeferred = resolvedConnectorsDeferred
 
+        // Server lifecycle (bind, accept loop, shutdown) uses appDispatcher.
+        // These are coordination tasks, not I/O — no need for EventLoop.
         return CoroutineScope(
-            applicationProvider().parentCoroutineContext + engineDispatcher
+            applicationProvider().parentCoroutineContext + appDispatcher
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
             val servers = mutableListOf<ServerChannel>()
@@ -131,7 +143,11 @@ public class KeelApplicationEngine(
         while (server.isActive && isActive) {
             try {
                 val channel = server.accept()
-                launch(engineDispatcher) {
+                // Dispatch on EventLoop so read/parse runs on the I/O
+                // thread without cross-thread dispatch. For engines
+                // without a dedicated EventLoop (Netty, NWConnection,
+                // Node.js), this falls back to Dispatchers.Default.
+                launch(channel.coroutineDispatcher) {
                     handleConnection(channel)
                 }
             } catch (e: Exception) {
@@ -148,18 +164,17 @@ public class KeelApplicationEngine(
      * on the same TCP connection until the client sends `Connection: close`,
      * an error occurs, or the connection is closed by the peer.
      *
-     * Data flow per request:
+     * **Dispatcher model**: This method runs on [channel.coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+     * (EventLoop thread for kqueue/epoll/NIO, Dispatchers.Default for others).
+     * I/O operations (read/parse) execute directly on the EventLoop without
+     * cross-thread dispatch. The Ktor pipeline is offloaded to [appDispatcher]
+     * (thread pool) so user routing code doesn't block the EventLoop.
+     *
      * ```
-     * Channel ──asSource()──► RawSource ──parseRequestHead()──► HttpRequestHead
-     *                              │                                    │
-     *                              ▼                                    ▼
-     *                   body bytes (pull)                     KeelApplicationCall
-     *                              │                                    │
-     *                              ▼                                    ▼
-     *                     ByteReadChannel ◄── bridge coroutine   Ktor pipeline
-     *                                                                   │
-     *                                                                   ▼
-     *                   Channel ◄──asSuspendSink()──◄── writeResponseHead + body
+     * [EventLoop]  parseRequestHead(source)          read → zero-copy
+     * [EventLoop]  launch { body bridge }             source.read → EventLoop
+     * [Default]    withContext { pipeline.execute() }  user code + response write
+     * [EventLoop]  bodyBridgeJob?.join()               next request
      * ```
      *
      * Uses [BufferedSuspendSource]/[BufferedSuspendSink] for zero-copy I/O:
@@ -225,7 +240,13 @@ public class KeelApplicationEngine(
                     keepAlive = keepAlive,
                 )
 
-                pipeline.execute(call)
+                // Run the Ktor pipeline on appDispatcher (thread pool)
+                // so user routing code doesn't block the EventLoop.
+                // For engines without a dedicated EventLoop, both
+                // dispatchers are Dispatchers.Default → no-op switch.
+                withContext(appDispatcher) {
+                    pipeline.execute(call)
+                }
 
                 if (!keepAlive) break
 
