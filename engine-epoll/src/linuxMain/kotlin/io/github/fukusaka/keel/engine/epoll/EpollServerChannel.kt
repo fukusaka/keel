@@ -17,30 +17,29 @@ import platform.posix.errno
 /**
  * epoll-based [ServerChannel] implementation for Linux.
  *
- * Listens on [serverFd] and uses the [EpollEventLoop] to wait for
- * incoming connections. The server fd is registered with epoll by
- * [EpollEngine.bind] before this object is created.
- *
- * [accept] suspends via [suspendCancellableCoroutine] until the EventLoop
- * reports the server fd as readable (incoming connection available).
+ * Listens on [serverFd] and uses the boss [EpollEventLoop] to wait for
+ * incoming connections. Accepted channels are assigned to worker EventLoops
+ * from [workerGroup] in round-robin order.
  *
  * ```
  * accept() flow:
- *   try POSIX accept(serverFd)
- *     if EAGAIN: suspendCancellableCoroutine + eventLoop.register(serverFd, READ)
- *     EventLoop epoll_wait() fires --> resume --> retry accept
- *   setNonBlocking(clientFd)
- *   --> EpollChannel(clientFd, eventLoop, allocator)
+ *   bossLoop: epoll_wait() fires EPOLLIN on serverFd → resume
+ *   POSIX accept(serverFd) → clientFd
+ *   workerGroup.next() → assign worker EventLoop
+ *   → EpollChannel(clientFd, workerLoop, allocator)
  * ```
  *
- * @param serverFd  The listening server socket fd (non-blocking).
- * @param eventLoop The [EpollEventLoop] for readiness notification.
- * @param allocator Passed to accepted [EpollChannel]s.
+ * @param serverFd    The listening server socket fd (non-blocking).
+ * @param bossLoop    The boss [EpollEventLoop] for accept readiness notification.
+ * @param workerGroup Worker EventLoopGroup for accepted channels.
+ * @param localAddress Bind address of this server channel.
+ * @param allocator   Passed to accepted [EpollChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollServerChannel(
     private val serverFd: Int,
-    private val eventLoop: EpollEventLoop,
+    private val bossLoop: EpollEventLoop,
+    private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
 ) : ServerChannel {
@@ -66,18 +65,19 @@ internal class EpollServerChannel(
                 SocketUtils.setNonBlocking(clientFd)
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
-                return EpollChannel(clientFd, eventLoop, allocator, remoteAddr, localAddr)
+                val workerLoop = workerGroup.next()
+                return EpollChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
             }
 
             val err = errno
             if (err == EAGAIN) {
-                // Suspend until EventLoop reports serverFd is readable
+                // Suspend until boss EventLoop reports serverFd is readable
                 suspendCancellableCoroutine<Unit> { cont ->
                     pendingAcceptCont = cont
-                    eventLoop.register(serverFd, EpollEventLoop.Interest.READ, cont)
+                    bossLoop.register(serverFd, EpollEventLoop.Interest.READ, cont)
                     cont.invokeOnCancellation {
                         pendingAcceptCont = null
-                        eventLoop.unregister(serverFd, EpollEventLoop.Interest.READ)
+                        bossLoop.unregister(serverFd, EpollEventLoop.Interest.READ)
                     }
                 }
                 pendingAcceptCont = null
