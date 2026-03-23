@@ -14,6 +14,7 @@ import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.errno
 import platform.posix.strerror
 
@@ -90,26 +91,51 @@ class KqueueEngine(
     }
 
     /**
-     * Creates a TCP client connection.
+     * Creates a TCP client connection (non-blocking).
      *
-     * Connect is synchronous (blocking): the socket is created in blocking
-     * mode, connected, then switched to non-blocking for subsequent I/O.
+     * The socket is created in non-blocking mode so `connect()` returns
+     * immediately with `EINPROGRESS`. The coroutine then suspends on
+     * `EVFILT_WRITE` via the EventLoop until the connection is established
+     * (or fails). On loopback, `connect()` may succeed immediately
+     * (returns 0) without needing to suspend.
+     *
+     * After connection, `getsockopt(SO_ERROR)` verifies success.
      * The connected channel is assigned to the next worker EventLoop
      * in round-robin order.
-     *
-     * Non-blocking connect (EINPROGRESS + EVFILT_WRITE wait) is deferred
-     * because synchronous connect is sufficient for current use cases and
-     * avoids additional complexity in the EventLoop.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
 
-        val clientFd = SocketUtils.createClientSocket(host, port)
-        val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
-        val localAddr = SocketUtils.getLocalAddress(clientFd)
+        val fd = SocketUtils.createUnconnectedSocket()
         val workerLoop = workerGroup.next()
 
-        return KqueueChannel(clientFd, workerLoop, config.allocator, remoteAddr, localAddr)
+        val result = SocketUtils.connectNonBlocking(fd, host, port)
+        if (result < 0) {
+            val err = errno
+            if (err == platform.posix.EINPROGRESS) {
+                // Connection in progress — suspend until fd is writable
+                suspendCancellableCoroutine<Unit> { cont ->
+                    workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
+                    cont.invokeOnCancellation {
+                        workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
+                        platform.posix.close(fd)
+                    }
+                }
+                // Verify connection succeeded via SO_ERROR
+                val error = SocketUtils.getSocketError(fd)
+                if (error != 0) {
+                    platform.posix.close(fd)
+                    error("connect() failed: ${strerror(error)?.toKString()}")
+                }
+            } else {
+                platform.posix.close(fd)
+                error("connect() failed: ${strerror(err)?.toKString()}")
+            }
+        }
+
+        val remoteAddr = SocketUtils.getRemoteAddress(fd)
+        val localAddr = SocketUtils.getLocalAddress(fd)
+        return KqueueChannel(fd, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
