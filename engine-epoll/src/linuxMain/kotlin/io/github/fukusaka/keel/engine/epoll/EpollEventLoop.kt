@@ -348,6 +348,7 @@ internal class EpollEventLoop : CoroutineDispatcher() {
     fun close() {
         if (running.compareAndSet(1, 0)) {
             wakeup()
+            // Join the EventLoop thread. threadPtr was written by pthread_create.
             val t = threadPtr.ptr[0]
             if (t != null) {
                 pthread_join(t, null)

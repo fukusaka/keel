@@ -164,8 +164,12 @@ internal class EpollChannel(
     /**
      * Sends all buffered writes to the network via POSIX write.
      *
+     * Each [PendingWrite] is written using zero-copy pointer access,
+     * then the retained [NativeBuf] is released.
+     *
      * Uses POSIX `writev()` to send all pending buffers in a single
-     * syscall (gather write) when multiple writes are buffered.
+     * syscall (gather write) when multiple writes are buffered,
+     * reducing context switches compared to individual `write()` calls.
      * Falls back to single `write()` for one-buffer flushes.
      */
     override suspend fun flush() {
@@ -178,6 +182,9 @@ internal class EpollChannel(
             write(fd, ptr, pw.length.convert())
             pw.buf.release()
         } else {
+            // Gather write: send all buffers in one writev syscall via C wrapper.
+            // keel_writev accepts parallel arrays of base pointers and lengths,
+            // builds iovec internally to avoid exposing struct iovec to Kotlin.
             memScoped {
                 val bases = allocArray<CPointerVar<ByteVar>>(pendingWrites.size)
                 val lens = allocArray<ULongVar>(pendingWrites.size)
@@ -211,6 +218,7 @@ internal class EpollChannel(
         if (_open) {
             _open = false
             _active = false
+            // Release retained buffers that were never flushed
             for (pw in pendingWrites) {
                 pw.buf.release()
             }
