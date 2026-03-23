@@ -76,6 +76,13 @@ internal class KqueueChannel(
     override val localAddress: SocketAddress?,
 ) : Channel {
 
+    /**
+     * Returns this channel's [KqueueEventLoop] as the dispatcher.
+     *
+     * Coroutines launched on this dispatcher execute on the EventLoop
+     * thread, keeping I/O syscalls (read/write) on the same thread
+     * that drives `kevent()` — no cross-thread dispatch overhead.
+     */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     private val pendingWrites = mutableListOf<PendingWrite>()

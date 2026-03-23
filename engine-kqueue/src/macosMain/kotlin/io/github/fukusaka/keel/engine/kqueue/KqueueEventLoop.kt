@@ -102,6 +102,10 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
     // Arena for long-lived native allocations (mutexes).
     // Freed in close().
     private val arena = Arena()
+
+    // Separate mutexes for registrations and taskQueue to minimize lock
+    // contention: dispatch() (any thread) and register() (coroutine thread)
+    // are independent hot paths that should not block each other.
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
@@ -311,7 +315,15 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
         }
     }
 
-    /** Runs all queued coroutine continuations on this thread. */
+    /**
+     * Runs all queued coroutine continuations on this thread.
+     *
+     * Uses a while loop because task execution may enqueue new tasks
+     * (e.g., a resumed coroutine calls channel.read() which suspends
+     * and re-registers, then immediately resumes via dispatch()).
+     * Draining in the same iteration prevents starvation where tasks
+     * accumulate faster than kevent() cycles can process them.
+     */
     private fun drainTasks() {
         while (true) {
             val tasks = withTaskLock {
@@ -326,7 +338,12 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
         }
     }
 
-    /** Checks if there are pending tasks without draining them. */
+    /**
+     * Checks if there are pending tasks without draining them.
+     *
+     * Used to decide `kevent()` timeout: 0 if tasks are pending
+     * (non-blocking poll), null otherwise (block until events).
+     */
     private fun hasTasksPending(): Boolean {
         return withTaskLock { taskQueue.isNotEmpty() }
     }
