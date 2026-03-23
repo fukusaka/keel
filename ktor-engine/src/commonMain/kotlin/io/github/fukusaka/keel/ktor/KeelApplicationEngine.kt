@@ -15,6 +15,13 @@ import kotlinx.coroutines.*
 /**
  * Ktor server engine backed by keel I/O engines.
  *
+ * **Dispatcher model**: Connection I/O (read/parse) runs on the channel's
+ * [coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+ * (EventLoop thread for kqueue/epoll/NIO), while the Ktor application
+ * pipeline is offloaded to [Dispatchers.Default] to avoid blocking the
+ * EventLoop with user code. For engines without a dedicated EventLoop
+ * (Netty, NWConnection, Node.js), both use [Dispatchers.Default].
+ *
  * Supports HTTP/1.1 keep-alive: multiple requests can be processed on a
  * single TCP connection. Keep-alive is enabled by default and can be
  * disabled via [Configuration.keepAlive].
@@ -97,6 +104,8 @@ public class KeelApplicationEngine(
         val connectors = configuration.connectors
         val resolvedDeferred = resolvedConnectorsDeferred
 
+        // Server lifecycle (bind, accept loop, shutdown) uses appDispatcher.
+        // These are coordination tasks, not I/O — no need for EventLoop.
         return CoroutineScope(
             applicationProvider().parentCoroutineContext + appDispatcher
         ).launch(start = CoroutineStart.LAZY) {
