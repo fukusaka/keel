@@ -381,6 +381,36 @@ class EpollEngineTest {
         engine.close()
     }
 
+    @Test
+    fun `sequential flush reuses channel correctly`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Multiple write+flush cycles on the same channel to verify
+        // that flush state (pendingWrites) is properly cleared and
+        // the channel can be reused after EAGAIN recovery.
+        for (round in 1..3) {
+            val data = "round-$round"
+            val buf = NativeBuf(64)
+            for (b in data.encodeToByteArray()) buf.writeByte(b)
+            ch.write(buf)
+            ch.flush()
+            buf.release()
+
+            val received = rawRead(clientFd, data.length)
+            assertEquals(data, received, "Round $round mismatch")
+        }
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
     // --- Half-close ---
 
     @Test
