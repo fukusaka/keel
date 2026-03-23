@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`: non-blocking `connect()` with EINPROGRESS + EVFILT_WRITE suspend, replacing blocking connect
 - `engine-epoll`: non-blocking `connect()` with EINPROGRESS + EPOLLOUT suspend, replacing blocking connect
 - `engine-nio`: non-blocking `connect()` with OP_CONNECT suspend, replacing blocking connect
+- `core`: `IoEngineConfig.threads` default changed from 1 to 0 (auto) — each engine resolves to `availableProcessors()` at construction
 - Rename GitHub organization from `keel-kt` to `fukusaka` — the dedicated org was premature at this stage
 - Update copyright holder from `The keel-kt Authors` to `fukusaka`
 - `engine-netty`: replace blocking `LinkedBlockingQueue` I/O with `suspendCancellableCoroutine` + Netty listener callbacks (Phase 5b async)
