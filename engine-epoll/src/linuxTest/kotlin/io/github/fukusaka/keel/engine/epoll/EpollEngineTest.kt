@@ -555,6 +555,24 @@ class EpollEngineTest {
         engine.close()
     }
 
+    @Test
+    fun `connect to refused port throws`() = runBlocking {
+        val engine = EpollEngine()
+        // Bind to get a port, then close the server so the port is refused
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        server.close()
+
+        val ex = assertFailsWith<IllegalStateException> {
+            withTimeout(3000) {
+                engine.connect("127.0.0.1", port)
+            }
+        }
+        assertTrue(ex.message!!.contains("connect"))
+
+        engine.close()
+    }
+
     // --- asSuspendSource/asSuspendSink ---
 
     @Test
