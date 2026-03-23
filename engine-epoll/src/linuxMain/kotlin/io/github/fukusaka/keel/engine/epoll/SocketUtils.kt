@@ -23,6 +23,7 @@ import platform.posix.INADDR_ANY
 import platform.posix.O_NONBLOCK
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
+import platform.posix.SO_ERROR
 import platform.posix.SO_REUSEADDR
 import platform.posix.bind
 import platform.posix.connect
@@ -30,6 +31,7 @@ import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.getpeername
 import platform.posix.getsockname
+import platform.posix.getsockopt
 import epoll.keel_inet_ntop
 import epoll.keel_inet_pton
 import platform.posix.listen
@@ -95,35 +97,58 @@ internal object SocketUtils {
     }
 
     /**
-     * Creates a TCP client socket and connects synchronously (blocking).
+     * Creates a non-blocking TCP client socket without connecting.
      *
-     * The socket is created in blocking mode for the connect() call,
-     * then switched to non-blocking after connection is established.
-     * Phase (a) design: non-blocking connect with epoll wait is deferred
-     * to Phase (b).
+     * The socket is set to non-blocking immediately so that a subsequent
+     * `connect()` call returns `EINPROGRESS` instead of blocking.
+     * The caller is responsible for calling POSIX `connect()` and handling
+     * the `EINPROGRESS` case via EventLoop WRITE readiness.
      *
-     * @param host Remote host (IPv4 literal, e.g. "127.0.0.1").
-     *             DNS resolution is not supported in Phase (a).
-     * @param port Remote port.
-     * @return The connected socket file descriptor (non-blocking).
+     * @return The unconnected socket file descriptor (non-blocking).
      */
-    fun createClientSocket(host: String, port: Int): Int {
+    fun createUnconnectedSocket(): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
-
-        memScoped {
-            val addr = alloc<sockaddr_in>()
-            addr.sin_family = AF_INET.convert()
-            addr.sin_port = keel_htons(port.toUShort())
-            val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-            check(rc == 1) { "Invalid address: $host" }
-            val result = connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-            check(result == 0) { "connect() failed: ${strerror(errno)?.toKString()}" }
-        }
-
-        // Switch to non-blocking after connect succeeds
         setNonBlocking(fd)
         return fd
+    }
+
+    /**
+     * Initiates a non-blocking connect on [fd].
+     *
+     * @return 0 if connected immediately (e.g. loopback), or -1 with
+     *         `errno` set (typically `EINPROGRESS` for non-blocking sockets).
+     */
+    fun connectNonBlocking(fd: Int, host: String, port: Int): Int = memScoped {
+        val addr = alloc<sockaddr_in>()
+        addr.sin_family = AF_INET.convert()
+        addr.sin_port = keel_htons(port.toUShort())
+        val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+        check(rc == 1) { "Invalid address: $host" }
+        connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+    }
+
+    /**
+     * Retrieves the pending socket error via `getsockopt(SO_ERROR)`.
+     *
+     * Used after a non-blocking `connect()` returns `EINPROGRESS` and the
+     * EventLoop reports WRITE readiness. A return value of 0 indicates
+     * successful connection; non-zero is an errno (e.g. `ECONNREFUSED`).
+     */
+    fun getSocketError(fd: Int): Int {
+        // IntArray.usePinned workaround: IntVar.value / socklen_tVar.value
+        // assignment fails on some Kotlin/Native versions.
+        val errBuf = intArrayOf(0)
+        errBuf.usePinned { errPinned ->
+            uintArrayOf(sizeOf<IntVar>().toUInt()).usePinned { lenPinned ->
+                getsockopt(
+                    fd, SOL_SOCKET, SO_ERROR,
+                    errPinned.addressOf(0),
+                    lenPinned.addressOf(0).reinterpret(),
+                )
+            }
+        }
+        return errBuf[0]
     }
 
     /** Retrieves the local address of [fd] via `getsockname`. */
