@@ -14,6 +14,7 @@ dependencyResolutionManagement {
 }
 
 include(
+    ":io-core",
     ":core",
     ":engine-epoll",
     ":engine-kqueue",

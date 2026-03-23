@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.core.NativeBuf
+import io.github.fukusaka.keel.io.NativeBuf
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -429,7 +429,7 @@ class NioEngineTest {
 
         rawWrite(client, "test")
 
-        val source = io.github.fukusaka.keel.core.BufferedSuspendSource(
+        val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
             ch.asSuspendSource(), ch.allocator,
         )
         val data = source.readByteArray(4)
@@ -451,7 +451,7 @@ class NioEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val sink = io.github.fukusaka.keel.core.BufferedSuspendSink(
+        val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
             ch.asSuspendSink(), ch.allocator,
         )
         sink.writeString("data")
