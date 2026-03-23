@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -74,6 +75,15 @@ internal class EpollChannel(
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
 ) : Channel {
+
+    /**
+     * Returns this channel's [EpollEventLoop] as the dispatcher.
+     *
+     * Coroutines launched on this dispatcher execute on the EventLoop
+     * thread, keeping I/O syscalls (read/write) on the same thread
+     * that drives `epoll_wait()` — no cross-thread dispatch overhead.
+     */
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
