@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -74,6 +75,8 @@ internal class KqueueChannel(
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
 ) : Channel {
+
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
