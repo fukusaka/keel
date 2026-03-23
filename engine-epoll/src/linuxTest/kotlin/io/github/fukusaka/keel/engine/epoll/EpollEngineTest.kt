@@ -296,6 +296,91 @@ class EpollEngineTest {
         engine.close()
     }
 
+    @Test
+    fun `large payload flush writes all bytes`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // 256KB payload — large enough to potentially trigger short writes
+        // or EAGAIN when the kernel send buffer fills up.
+        val payloadSize = 256 * 1024
+        val payload = ByteArray(payloadSize) { (it % 256).toByte() }
+
+        // Server writes the large payload
+        val buf = NativeBuf(payloadSize)
+        for (b in payload) buf.writeByte(b)
+        ch.write(buf)
+        ch.flush()
+        buf.release()
+
+        // Client reads all bytes
+        val received = ByteArray(payloadSize)
+        var totalRead = 0
+        while (totalRead < payloadSize) {
+            val n = received.usePinned { pinned ->
+                read(clientFd, pinned.addressOf(totalRead), (payloadSize - totalRead).convert())
+            }
+            if (n <= 0) break
+            totalRead += n.toInt()
+        }
+        assertEquals(payloadSize, totalRead)
+        assertTrue(payload.contentEquals(received))
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `multiple write then single flush`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Buffer multiple writes, then flush once (exercises writev path).
+        // 3 buffers of 64KB each = 192KB total via gather write.
+        val chunkSize = 64 * 1024
+        val bufs = (0 until 3).map { i ->
+            NativeBuf(chunkSize).also { buf ->
+                for (j in 0 until chunkSize) buf.writeByte(((i * chunkSize + j) % 256).toByte())
+            }
+        }
+        for (buf in bufs) ch.write(buf)
+        ch.flush()
+        for (buf in bufs) buf.release()
+
+        // Client reads all bytes
+        val totalSize = chunkSize * 3
+        val received = ByteArray(totalSize)
+        var totalRead = 0
+        while (totalRead < totalSize) {
+            val n = received.usePinned { pinned ->
+                read(clientFd, pinned.addressOf(totalRead), (totalSize - totalRead).convert())
+            }
+            if (n <= 0) break
+            totalRead += n.toInt()
+        }
+        assertEquals(totalSize, totalRead)
+
+        // Verify content
+        for (i in 0 until totalSize) {
+            assertEquals((i % 256).toByte(), received[i], "Mismatch at byte $i")
+        }
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
     // --- Half-close ---
 
     @Test
