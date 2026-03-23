@@ -33,7 +33,7 @@ internal class EpollEventLoopGroup(size: Int) {
      * Thread-safe: multiple accept threads can call this concurrently.
      */
     fun next(): EpollEventLoop {
-        val i = (index.addAndGet(1) and Int.MAX_VALUE) % loops.size
+        val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i]
     }
 
