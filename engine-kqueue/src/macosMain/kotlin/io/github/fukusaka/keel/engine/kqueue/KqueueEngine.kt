@@ -48,7 +48,8 @@ import platform.posix.strerror
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
- *               the number of worker EventLoop threads (default: 1).
+ *               the number of worker EventLoop threads. 0 (default) resolves
+ *               to `availableProcessors()`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngine(
@@ -56,7 +57,7 @@ class KqueueEngine(
 ) : IoEngine {
 
     private val bossLoop = KqueueEventLoop()
-    private val workerGroup = KqueueEventLoopGroup(config.threads)
+    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config))
     private var closed = false
 
     init {
@@ -144,5 +145,13 @@ class KqueueEngine(
             bossLoop.close()
             workerGroup.close()
         }
+    }
+
+    companion object {
+        /** Resolves threads=0 to available CPU cores. */
+        @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
+        private fun resolveThreads(config: IoEngineConfig): Int =
+            if (config.threads > 0) config.threads
+            else kotlin.native.Platform.getAvailableProcessors()
     }
 }

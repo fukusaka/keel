@@ -44,7 +44,9 @@ import io.netty.channel.Channel as NettyNativeChannel
  *   +-- connect() --> NettyChannel (wraps Netty SocketChannel)
  * ```
  *
- * @param config Engine-wide configuration (allocator, threads).
+ * @param config Engine-wide configuration. [IoEngineConfig.threads] is passed
+ *               directly to Netty's `NioEventLoopGroup`. 0 (default) lets Netty
+ *               choose automatically (`cpu * 2`).
  */
 class NettyEngine(
     private val config: IoEngineConfig = IoEngineConfig(),

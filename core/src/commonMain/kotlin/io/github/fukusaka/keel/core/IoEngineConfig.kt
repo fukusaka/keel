@@ -16,11 +16,14 @@ package io.github.fukusaka.keel.core
  * @property allocator Buffer allocator for all channels created by this engine.
  *                     Defaults to [HeapAllocator] (suitable for tests).
  *                     Production engines should use a pooled allocator.
- * @property threads   Number of EventLoop threads. Defaults to 1 (single-threaded).
- *                     Ignored by engines that manage their own threads
- *                     (Netty: NioEventLoopGroup, Node.js: V8 runtime).
+ * @property threads   Number of worker EventLoop threads. 0 (default) means
+ *                     auto-detect based on available CPU cores. Each engine
+ *                     resolves 0 to `availableProcessors()` at construction.
+ *                     Netty passes 0 directly to `NioEventLoopGroup(0)` which
+ *                     uses its own default (`cpu * 2`). Node.js ignores this
+ *                     (V8 runtime manages its own threads).
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = HeapAllocator,
-    val threads: Int = 1,
+    val threads: Int = 0,
 )
