@@ -4,7 +4,9 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
+import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 
@@ -62,23 +64,38 @@ class NioEngine(
     }
 
     /**
-     * Creates a TCP client connection.
+     * Creates a TCP client connection (non-blocking).
      *
-     * Connect is synchronous (blocking): the channel is temporarily set
-     * to blocking mode for the connect call, then switched to non-blocking.
-     * The connected channel is assigned to the next worker EventLoop.
+     * The SocketChannel is opened in non-blocking mode so `connect()`
+     * returns false (connection pending). The coroutine then suspends
+     * on `OP_CONNECT` via the worker EventLoop until the connection is
+     * established. On loopback, `connect()` may return true immediately
+     * without needing to suspend.
+     *
+     * The connected channel is assigned to the next worker EventLoop
+     * in round-robin order.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
 
         val socketChannel = SocketChannel.open()
-        socketChannel.configureBlocking(true)
-        socketChannel.connect(InetSocketAddress(host, port))
         socketChannel.configureBlocking(false)
+        val workerLoop = workerGroup.next()
+
+        val connected = socketChannel.connect(InetSocketAddress(host, port))
+        if (!connected) {
+            // Connection in progress — suspend until OP_CONNECT fires
+            suspendCancellableCoroutine<Unit> { cont ->
+                workerLoop.register(socketChannel, SelectionKey.OP_CONNECT, cont)
+                cont.invokeOnCancellation {
+                    runCatching { socketChannel.close() }
+                }
+            }
+            socketChannel.finishConnect()
+        }
 
         val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
         val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
-        val workerLoop = workerGroup.next()
 
         return NioChannel(socketChannel, workerLoop, config.allocator, remoteAddr, localAddr)
     }
