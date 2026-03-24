@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+  release:
+    types: [published]
   pull_request:
     types: [labeled]
   workflow_dispatch:
@@ -21,6 +23,7 @@ jobs:
     name: Deploy to Cloudflare Pages
     if: >-
       github.event_name == 'push' ||
+      github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
        github.event.label.name == 'deploy-docs' &&
@@ -28,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      # --- Docusaurus ---
 
       - uses: actions/setup-node@v4
         with:
@@ -39,12 +44,41 @@ jobs:
         run: npm ci
         working-directory: website
 
-      - name: Build
+      - name: Build Docusaurus
         run: npm run build
         working-directory: website
         env:
           SITE_URL: https://keel-kt.pages.dev
           BASE_URL: /
+
+      # --- Dokka (release and manual only) ---
+
+      - uses: actions/setup-java@v5
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+
+      - name: Cache Kotlin/Native toolchain
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      - name: Generate API docs (Dokka)
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        run: ./gradlew dokkaGeneratePublicationHtml
+
+      - name: Copy Dokka output to website build
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        run: cp -r build/dokka/html website/build/api
+
+      # --- Deploy ---
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
