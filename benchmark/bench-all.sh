@@ -15,9 +15,15 @@ PORT=${BENCH_PORT:-18090}
 WRK_THREADS=4
 WRK_CONNS=100
 WRK_DURATION=10s
-ENDPOINT="/hello"
+ENDPOINT="${BENCH_ENDPOINT:-/hello}"
 WARMUP_DURATION=3s
 READY_TIMEOUT=30
+RESULTS_BASE="benchmark/results"
+HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
+RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+
+mkdir -p "$RESULTS_DIR"
 
 # --- Port management (cross-platform) ---
 
@@ -72,6 +78,14 @@ run_bench() {
     # Benchmark
     local result
     result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
+
+    # Save raw wrk output
+    local safe_name
+    safe_name=$(echo "$name" | tr ':/' '-')
+    local endpoint_name
+    endpoint_name=$(echo "$ENDPOINT" | tr '/' '-' | sed 's/^-//')
+    local result_file="${RESULTS_DIR}/${safe_name}-${endpoint_name}-${WRK_THREADS}t${WRK_CONNS}c-${TIMESTAMP}.txt"
+    echo "$result" > "$result_file"
 
     local rps lat50 lat99 errors
     rps=$(echo "$result" | grep "Requests/sec" | awk '{print $2}')
