@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HOST="${1:-luna.local}"
-REMOTE_WORKDIR="/home/fukusaka/prj/keel-work/keel"
+REMOTE_WORKDIR="${BENCH_REMOTE_WORKDIR:-/home/fukusaka/prj/keel-work/keel}"
 
 echo "Pulling results from ${HOST}:${REMOTE_WORKDIR}/benchmark/results/ ..."
 rsync -azP "${HOST}:${REMOTE_WORKDIR}/benchmark/results/" benchmark/results/
