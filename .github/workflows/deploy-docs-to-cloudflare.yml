@@ -9,6 +9,9 @@ on:
     types: [labeled]
   workflow_dispatch:
 
+# Comma-separated list of users allowed to trigger deploy via deploy-docs label.
+# Reuses the same CI_ALLOWED_USERS variable as ci.yml.
+
 concurrency:
   group: deploy-docs-cloudflare
   cancel-in-progress: true
@@ -19,10 +22,12 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'deploy-docs')
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'deploy-docs' &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
@@ -37,6 +42,9 @@ jobs:
       - name: Build
         run: npm run build
         working-directory: website
+        env:
+          SITE_URL: https://keel-kt.pages.dev
+          BASE_URL: /
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
