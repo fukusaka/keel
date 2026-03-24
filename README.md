@@ -33,7 +33,7 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 ```
 
 > [!WARNING]
-> **Early experimental release (0.1.0)** — APIs are unstable and may change without notice. Error handling is minimal. Not recommended for production use.
+> **Early experimental release (0.2.0)** — APIs are unstable and may change without notice. Not recommended for production use.
 
 ---
 
@@ -49,7 +49,8 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 
 ```
 keel/
-├── core/                  # IoEngine / NativeBuf (expect/actual)
+├── core/                  # IoEngine / Channel / ServerChannel (expect/actual)
+├── io-core/               # NativeBuf / SuspendSource / SuspendSink / BufferAllocator
 ├── engine-epoll/          # linuxX64, linuxArm64
 ├── engine-kqueue/         # macosArm64, macosX64
 ├── engine-nio/            # JVM (java.nio.Selector)
@@ -57,7 +58,8 @@ keel/
 ├── engine-nodejs/         # JS nodejs()
 ├── engine-nwconnection/   # macosArm64, macosX64 (Network.framework)
 ├── codec-http/            # HTTP/1.1 parser / writer (RFC 7230/7231)
-└── codec-websocket/       # WebSocket framing (RFC 6455)
+├── codec-websocket/       # WebSocket framing (RFC 6455)
+└── ktor-engine/           # Ktor server engine adapter
 ```
 
 ---
@@ -81,35 +83,34 @@ keel/
 
 ## Roadmap
 
-### 0.1.0 (current — experimental)
+### 0.2.0 (current — experimental)
 
 - 6 I/O engines: epoll, kqueue, NIO, Netty, NWConnection, Node.js
-- Suspend API with IoEngine / Channel / ServerChannel / NativeBuf
-- HTTP/1.1 and WebSocket codecs (pure kotlinx.io)
-- Ktor server engine adapter
+- Fully async EventLoop with coroutine integration (non-blocking I/O)
+- HTTP/1.1 keep-alive
+- Boss/worker EventLoop separation with configurable thread count
+- Ktor server engine adapter with dispatcher separation (I/O on EventLoop, pipeline on Default)
 
-### Next
+### Next (Phase 6)
 
-- Async event loop with coroutine integration (non-blocking I/O)
-- HTTP keep-alive
-- Error handling and stability improvements
+- SlabAllocator (memory pool)
+- Zero-copy codec-http (BufSlice on NativeBuf)
+- TLS (Mbed TLS)
 - io_uring engine (Linux 5.1+)
-- Ktor client engine adapter
 
-### Future
+### Future (Phase 7+)
 
-- TLS
-- keel native client (non-HTTP protocols)
-- iOS / Android targets
+- Push Channel + keel native server (:server, Ktor-independent)
 - UDP transport
 - HTTP/2, gRPC, MQTT
+- iOS / Android targets
 - HTTP/3 (QUIC)
 
 ---
 
 ## Installation
 
-> **Note:** keel is not yet published to Maven Central. Until the 0.1.0 release, build from source and publish to your local Maven repository.
+> **Note:** keel is not yet published to Maven Central. Build from source and publish to your local Maven repository.
 
 ```bash
 git clone https://github.com/fukusaka/keel.git
@@ -127,19 +128,19 @@ repositories {
 
 dependencies {
     // Ktor + keel server engine
-    implementation("io.github.fukusaka.keel:ktor-engine:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:ktor-engine:0.2.0")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // Low-level I/O (without Ktor)
-    implementation("io.github.fukusaka.keel:core:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:core:0.2.0")
 
     // Codecs (optional)
-    implementation("io.github.fukusaka.keel:codec-http:0.1.0-SNAPSHOT")
-    implementation("io.github.fukusaka.keel:codec-websocket:0.1.0-SNAPSHOT")
+    implementation("io.github.fukusaka.keel:codec-http:0.2.0")
+    implementation("io.github.fukusaka.keel:codec-websocket:0.2.0")
 }
 ```
 
-Maven Central publication is planned for the 0.1.0 release.
+Maven Central publication is planned for a future release.
 
 ---
 
@@ -231,18 +232,19 @@ AMD Ryzen 9 9950X3D (16 cores / 32 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
-| zig-hello | 1,295K | 40us | 92us |
-| rust-hello | 1,280K | 39us | 123us |
-| jvm:netty-raw | 882K | 58us | 173us |
-| jvm:ktor-netty | 838K | 82us | 1.80ms |
-| jvm:spring | 814K | 62us | 269us |
-| go-hello | 562K | 97us | 0.91ms |
-| jvm:vertx | 359K | 277us | 312us |
-| **native:ktor-keel-epoll** | **158K** | **384us** | **2.24ms** |
-| jvm:ktor-cio | 142K | 608us | 4.63ms |
-| jvm:ktor-keel-nio | 138K | 114us | 220ms |
-| jvm:ktor-keel-netty | 40K | 1.17ms | 25.57ms |
-| native:ktor-cio | 8.3K | 11.47ms | 21.72ms |
+| zig-hello | 1,331K | 39us | 79us |
+| rust-hello | 1,291K | 39us | 120us |
+| jvm:netty-raw | 1,100K | 45us | 115us |
+| jvm:ktor-netty | 832K | 82us | 1.88ms |
+| jvm:spring | 821K | 61us | 205us |
+| **jvm:ktor-keel-netty** | **667K** | **100us** | **2.88ms** |
+| go-hello | 538K | 101us | 1.01ms |
+| swift-hello | 527K | 145us | 507us |
+| **jvm:ktor-keel-nio** | **487K** | **110us** | **3.23ms** |
+| **native:ktor-keel-epoll** | **419K** | **162us** | **3.96ms** |
+| jvm:vertx | 346K | 287us | 313us |
+| jvm:ktor-cio | 147K | 584us | 4.53ms |
+| native:ktor-cio | 7.6K | 12.60ms | 23.71ms |
 
 ### macOS Apple Silicon
 
@@ -250,26 +252,28 @@ Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 | Server | Req/sec | p50 | p99 |
 |---|---|---|---|
-| rust-hello | 159K | 574us | 0.95ms |
-| jvm:spring | 151K | 566us | 7.75ms |
-| go-hello | 147K | 502us | 1.95ms |
-| jvm:netty-raw | 141K | 678us | 0.92ms |
-| zig-hello | 140K | 680us | 0.91ms |
-| jvm:ktor-netty | 133K | 498us | 7.42ms |
-| jvm:vertx | 113K | 0.88ms | 1.67ms |
-| swift-hello | 103K | 619us | 21.83ms |
-| jvm:ktor-cio | 54K | 1.34ms | 17.98ms |
-| jvm:ktor-keel-nio | 20K | 1.94ms | 68.44ms |
-| **native:ktor-keel-kqueue** | **11K** | **2.05ms** | **50.09ms** |
-| native:ktor-cio | 6.2K | 11.01ms | 246ms |
-| native:ktor-keel-nwconnection | 0.4 | - | - |
-| jvm:ktor-keel-netty | 0.1 | - | - |
+| rust-hello | 161K | 569us | 1.19ms |
+| jvm:spring | 158K | 558us | 1.91ms |
+| go-hello | 153K | 495us | 1.97ms |
+| jvm:netty-raw | 146K | 661us | 0.86ms |
+| zig-hello | 145K | 667us | 0.85ms |
+| jvm:ktor-netty | 138K | 487us | 9.55ms |
+| **jvm:ktor-keel-nio** | **129K** | **438us** | **14.78ms** |
+| jvm:vertx | 114K | 0.88ms | 1.99ms |
+| swift-hello | 106K | 581us | 30.97ms |
+| **jvm:ktor-keel-netty** | **99K** | **569us** | **51.37ms** |
+| **native:ktor-keel-kqueue** | **88K** | **681us** | **12.04ms** |
+| jvm:ktor-cio | 63K | 1.10ms | 15.21ms |
+| **native:ktor-keel-nwconnection** | **47K** | **1.77ms** | **11.13ms** |
+| native:ktor-cio | 4.8K | 11.08ms | 337ms |
 
 ### Notes
 
-- keel engines currently use **Connection: close** (no keep-alive), which creates a new TCP handshake per request. Throughput will improve significantly with the async event loop + keep-alive in Phase 5b.
-- **native:ktor-keel-epoll** already outperforms **native:ktor-cio** by 18x on Linux.
-- On Linux 32-core, **jvm:ktor-keel-nio** (138K) is competitive with **jvm:ktor-cio** (142K) despite the Connection: close overhead.
+- All keel engines use fully async I/O with HTTP/1.1 keep-alive (v0.2.0).
+- **jvm:ktor-keel-nio** (129K on macOS, 487K on Linux) approaches **jvm:ktor-netty** performance thanks to SelectionKey caching and EventLoop CoroutineDispatcher.
+- **native:ktor-keel-epoll** (419K) outperforms **native:ktor-cio** by 55x on Linux.
+- **native:ktor-keel-kqueue** (88K) is 84% of **swift-hello** (Hummingbird) on macOS.
+- JVM keel engines benefit from JIT optimization of the EventLoop hot path. Native engines use the same async architecture but rely on AOT compilation, where coroutine suspend/resume and EventLoop dispatch have higher per-operation cost. Zero-copy codec and memory pooling (Phase 6) will narrow this gap.
 
 ---
 
