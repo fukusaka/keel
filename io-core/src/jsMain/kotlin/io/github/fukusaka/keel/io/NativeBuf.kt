@@ -27,6 +27,13 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
         buf.asDynamic()[writerIndex++] = value
     }
 
+    actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+        require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
+        for (i in 0 until length) {
+            buf.asDynamic()[writerIndex++] = src[offset + i]
+        }
+    }
+
     actual fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()
 
     actual fun compact() {
