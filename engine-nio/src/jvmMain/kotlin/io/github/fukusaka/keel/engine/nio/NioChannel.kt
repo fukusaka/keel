@@ -125,6 +125,10 @@ internal class NioChannel(
     /**
      * Sends all buffered writes to the network via SocketChannel.
      *
+     * Handles partial writes and send buffer full (write returns 0 on
+     * non-blocking SocketChannel): suspends on [SelectionKey.OP_WRITE]
+     * until the socket becomes writable, then retries.
+     *
      * Uses [GatheringByteChannel.write] for gather-write when multiple
      * writes are buffered. Falls back to single write() for one buffer.
      */
@@ -133,24 +137,81 @@ internal class NioChannel(
         if (pendingWrites.isEmpty()) return
 
         if (pendingWrites.size == 1) {
-            val pw = pendingWrites[0]
-            val bb = pw.buf.unsafeBuffer
-            bb.position(pw.offset)
-            bb.limit(pw.offset + pw.length)
-            socketChannel.write(bb)
-            pw.buf.release()
+            flushSingle(pendingWrites[0])
         } else {
-            val bbArray = Array(pendingWrites.size) { i ->
-                val pw = pendingWrites[i]
-                pw.buf.unsafeBuffer.duplicate().apply {
-                    position(pw.offset)
-                    limit(pw.offset + pw.length)
-                }
-            }
-            socketChannel.write(bbArray)
-            for (pw in pendingWrites) pw.buf.release()
+            flushGather()
         }
         pendingWrites.clear()
+    }
+
+    /**
+     * Writes a single [PendingWrite] with partial write and OP_WRITE handling.
+     *
+     * Loops until all bytes are written. When [SocketChannel.write] returns 0
+     * (send buffer full), suspends on [SelectionKey.OP_WRITE] until the socket
+     * becomes writable, then retries.
+     */
+    private suspend fun flushSingle(pw: PendingWrite) {
+        val bb = pw.buf.unsafeBuffer
+        bb.position(pw.offset)
+        bb.limit(pw.offset + pw.length)
+        while (bb.hasRemaining()) {
+            val n = socketChannel.write(bb)
+            if (n == 0) {
+                // Send buffer full — suspend until writable
+                suspendCancellableCoroutine<Unit> { cont ->
+                    eventLoop.setInterest(selectionKey, SelectionKey.OP_WRITE, cont)
+                }
+            }
+        }
+        pw.buf.release()
+    }
+
+    /**
+     * Writes multiple pending buffers using gather write.
+     *
+     * Attempts a single [GatheringByteChannel.write] for all buffers.
+     * On partial write, completed buffers are released and the remaining
+     * data falls through to [flushSingle] for per-buffer retry with
+     * OP_WRITE suspension.
+     */
+    private suspend fun flushGather() {
+        val bbArray = Array(pendingWrites.size) { i ->
+            val pw = pendingWrites[i]
+            pw.buf.unsafeBuffer.duplicate().apply {
+                position(pw.offset)
+                limit(pw.offset + pw.length)
+            }
+        }
+        val totalBytes = bbArray.sumOf { it.remaining().toLong() }
+        val written = socketChannel.write(bbArray)
+
+        if (written >= totalBytes) {
+            // All data written
+            for (pw in pendingWrites) pw.buf.release()
+            return
+        }
+
+        // Partial write or send buffer full: walk buffers to find split point.
+        // Fully written buffers have no remaining bytes in their ByteBuffer.
+        for (i in pendingWrites.indices) {
+            val pw = pendingWrites[i]
+            val bb = bbArray[i]
+            if (!bb.hasRemaining()) {
+                // Fully written
+                pw.buf.release()
+            } else {
+                // Partially written or not written at all — flush remaining
+                // via flushSingle which handles OP_WRITE suspension.
+                val consumed = bb.position() - pw.offset
+                flushSingle(PendingWrite(pw.buf, pw.offset + consumed, pw.length - consumed))
+                // Release remaining buffers via flushSingle
+                for (j in (i + 1) until pendingWrites.size) {
+                    flushSingle(pendingWrites[j])
+                }
+                return
+            }
+        }
     }
 
     /**
