@@ -161,6 +161,9 @@ internal class NioChannel(
                 // Send buffer full — suspend until writable
                 suspendCancellableCoroutine<Unit> { cont ->
                     eventLoop.setInterest(selectionKey, SelectionKey.OP_WRITE, cont)
+                    cont.invokeOnCancellation {
+                        eventLoop.removeInterest(selectionKey, SelectionKey.OP_WRITE)
+                    }
                 }
             }
         }
@@ -203,9 +206,12 @@ internal class NioChannel(
             } else {
                 // Partially written or not written at all — flush remaining
                 // via flushSingle which handles OP_WRITE suspension.
+                // Note: pw.buf's retain (from Channel.write) is consumed by
+                // flushSingle's release — the original PendingWrite is not
+                // released here since flushSingle takes ownership.
                 val consumed = bb.position() - pw.offset
                 flushSingle(PendingWrite(pw.buf, pw.offset + consumed, pw.length - consumed))
-                // Release remaining buffers via flushSingle
+                // Flush remaining buffers individually with OP_WRITE handling
                 for (j in (i + 1) until pendingWrites.size) {
                     flushSingle(pendingWrites[j])
                 }
