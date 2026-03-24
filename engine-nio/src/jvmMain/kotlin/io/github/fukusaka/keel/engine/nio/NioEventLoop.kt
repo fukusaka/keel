@@ -119,7 +119,21 @@ internal class NioEventLoop(name: String) : CoroutineDispatcher() {
     }
 
     /**
-     * Clears interest ops (e.g., after processing a ready event).
+     * Removes specific interest ops from a SelectionKey.
+     *
+     * Called from [invokeOnCancellation] when a coroutine waiting on
+     * OP_WRITE (flush) or OP_READ is cancelled. Clears only the
+     * specified ops without affecting other interest bits.
+     */
+    fun removeInterest(key: SelectionKey, ops: Int) {
+        if (key.isValid) {
+            key.interestOps(key.interestOps() and ops.inv())
+            key.attach(null)
+        }
+    }
+
+    /**
+     * Clears all interest ops (e.g., after processing a ready event).
      * Called from [processSelectedKeys] to disable readiness notification
      * until the next [setInterest] call.
      */

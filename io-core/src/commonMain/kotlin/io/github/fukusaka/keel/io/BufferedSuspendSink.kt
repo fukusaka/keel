@@ -54,9 +54,8 @@ class BufferedSuspendSink(
         while (remaining > 0) {
             if (buf.writableBytes == 0) flushBuffer()
             val chunk = remaining.coerceAtMost(buf.writableBytes)
-            for (i in 0 until chunk) {
-                buf.writeByte(bytes[pos++])
-            }
+            buf.writeBytes(bytes, pos, chunk)
+            pos += chunk
             remaining -= chunk
         }
     }

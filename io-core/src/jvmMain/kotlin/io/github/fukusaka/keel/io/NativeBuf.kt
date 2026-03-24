@@ -19,6 +19,15 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
         buf.put(writerIndex++, value)
     }
 
+    actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+        require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
+        // ByteBuffer.put(src, offset, length) uses optimized bulk copy.
+        // Must set position first since put(byte[], off, len) writes at position.
+        buf.position(writerIndex)
+        buf.put(src, offset, length)
+        writerIndex += length
+    }
+
     actual fun readByte(): Byte = buf.get(readerIndex++)
 
     actual fun compact() {
@@ -41,6 +50,12 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
     actual fun clear() {
         readerIndex = 0
         writerIndex = 0
+        // Reset DirectByteBuffer position/limit to match. Without this,
+        // limit may be left at a smaller value from a previous
+        // SocketChannel.write (via flushSingle), causing absolute put()
+        // to throw IndexOutOfBoundsException (index >= limit).
+        buf.position(0)
+        buf.limit(capacity)
     }
 
     actual fun retain(): NativeBuf {
