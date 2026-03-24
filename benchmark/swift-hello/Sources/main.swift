@@ -160,7 +160,7 @@ func detectOsSocketDefaults() -> OsSocketDefaults {
     #if canImport(Darwin)
     let fd = Darwin.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
     #elseif canImport(Glibc)
-    let fd = Glibc.socket(AF_INET, Int32(SOCK_STREAM), Int32(IPPROTO_TCP))
+    let fd = Glibc.socket(AF_INET, Int32(SOCK_STREAM.rawValue), Int32(IPPROTO_TCP))
     #endif
     guard fd >= 0 else { return OsSocketDefaults(sendBuffer: 0, receiveBuffer: 0) }
     defer {
