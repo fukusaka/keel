@@ -717,4 +717,99 @@ class NioEngineTest {
         server.close()
         engine.close()
     }
+
+    // --- Large payload (flush EAGAIN / OP_WRITE) ---
+
+    @Test
+    fun `flush large payload completes without data loss`() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        // 100KB payload — exceeds typical socket buffer size,
+        // triggering partial write + OP_WRITE suspension in flush.
+        val payloadSize = 100_000
+        val payload = "x".repeat(payloadSize)
+
+        val writeBuf = NativeBuf(payloadSize)
+        for (b in payload.encodeToByteArray()) writeBuf.writeByte(b)
+        ch.write(writeBuf)
+
+        // Read on a separate coroutine to prevent deadlock:
+        // flush blocks until all data is sent, but the socket buffer
+        // fills up if nobody is reading on the other side.
+        val readResult = async {
+            val buf = ByteArray(payloadSize)
+            var total = 0
+            val input = client.getInputStream()
+            while (total < payloadSize) {
+                val n = input.read(buf, total, payloadSize - total)
+                if (n < 0) break
+                total += n
+            }
+            String(buf, 0, total)
+        }
+
+        withTimeout(10_000) { ch.flush() }
+        writeBuf.release()
+
+        val received = withTimeout(10_000) { readResult.await() }
+        assertEquals(payloadSize, received.length)
+        assertEquals(payload, received)
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `flush multiple large buffers with gather write`() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        // Write 3 x 50KB buffers = 150KB total — triggers gather write
+        // with partial write handling.
+        val chunkSize = 50_000
+        val chunks = 3
+        val totalSize = chunkSize * chunks
+        val payload = "y".repeat(totalSize)
+
+        for (i in 0 until chunks) {
+            val buf = NativeBuf(chunkSize)
+            for (b in "y".repeat(chunkSize).encodeToByteArray()) buf.writeByte(b)
+            ch.write(buf)
+            buf.release() // write retains
+        }
+
+        val readResult = async {
+            val buf = ByteArray(totalSize)
+            var total = 0
+            val input = client.getInputStream()
+            while (total < totalSize) {
+                val n = input.read(buf, total, totalSize - total)
+                if (n < 0) break
+                total += n
+            }
+            String(buf, 0, total)
+        }
+
+        withTimeout(10_000) { ch.flush() }
+
+        val received = withTimeout(10_000) { readResult.await() }
+        assertEquals(totalSize, received.length)
+        assertEquals(payload, received)
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
 }
