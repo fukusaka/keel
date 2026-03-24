@@ -47,6 +47,15 @@ expect class NativeBuf(capacity: Int) {
     /** Writes [value] at the current write position and advances [writerIndex]. */
     fun writeByte(value: Byte)
 
+    /**
+     * Bulk write: copies [length] bytes from [src] starting at [offset]
+     * into this buffer at the current [writerIndex]. Uses platform-optimized
+     * copy (memcpy on Native, ByteBuffer.put on JVM) instead of per-byte loop.
+     *
+     * @throws IllegalArgumentException if [length] exceeds [writableBytes].
+     */
+    fun writeBytes(src: ByteArray, offset: Int, length: Int)
+
     /** Reads a byte from the current read position and advances [readerIndex]. */
     fun readByte(): Byte
 

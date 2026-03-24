@@ -6,8 +6,11 @@ import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.get
 import kotlinx.cinterop.set
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.plus
+import kotlinx.cinterop.usePinned
+import platform.posix.memcpy
 import platform.posix.memmove
 
 @OptIn(ExperimentalForeignApi::class)
@@ -27,6 +30,14 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
 
     actual fun writeByte(value: Byte) {
         ptr[writerIndex++] = value
+    }
+
+    actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+        require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
+        src.usePinned { pinned ->
+            memcpy(ptr + writerIndex, pinned.addressOf(offset), length.toULong())
+        }
+        writerIndex += length
     }
 
     actual fun readByte(): Byte = ptr[readerIndex++]
