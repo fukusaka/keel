@@ -87,6 +87,15 @@ internal class KqueueServerChannel(
         }
     }
 
+    /**
+     * Stops accepting and closes the server socket.
+     *
+     * If an accept coroutine is currently suspended, it is cancelled
+     * with [CancellationException]. Thread safety: accept() runs on the
+     * boss EventLoop thread; close() is typically called from a coroutine
+     * on a different dispatcher. The CancellableContinuation.resumeWithException
+     * call is thread-safe by contract of kotlinx.coroutines.
+     */
     override fun close() {
         if (_active) {
             _active = false
