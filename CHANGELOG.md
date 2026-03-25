@@ -19,10 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`, `engine-epoll`: GC heap growth verification tests (100 echo cycles, 512KB tolerance)
 - `engine-netty`: TrackingAllocator leak detection tests + re-enable detekt in lint-only mode
 - `engine-nwconnection`: TrackingAllocator leak detection tests + GC heap growth test (50 echo cycles)
+- `engine-nodejs`: asSuspendSource/asSuspendSink tests
 
 ### Fixed
 
 - `engine-nio`: protect `processSelectedKeys` with try-catch so one channel's error does not stop other channels
+- `engine-nodejs`: replace byte-by-byte read loop with bulk `writeBytes()` copy
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`
 - `engine-kqueue`: log fatal `kevent()` error to stderr before EventLoop exit (previously silent)
