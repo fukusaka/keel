@@ -27,6 +27,15 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * Phase (a): all suspend functions use `suspendCoroutine` with Node.js
  * event callbacks. JS is single-threaded, so no locking is needed.
  *
+ * **Backpressure**: [pendingWrites] has no upper bound. A producer that
+ * calls [write] without [flush] can accumulate unbounded memory. This is
+ * acceptable for the current use case. An application-level write watermark
+ * is deferred to Phase 7.
+ *
+ * **Thread model**: JS is single-threaded (Node.js event loop). All state
+ * fields ([_open], [_active], [readQueue], [pendingWrites]) are accessed
+ * from the same thread — no locking required.
+ *
  * @param socket    The Node.js net.Socket.
  * @param allocator Buffer allocator for read operations.
  */
@@ -101,11 +110,16 @@ internal class NodeChannel(
 
         if (data == null) return -1
 
-        // Copy Node.js Buffer to NativeBuf byte-by-byte
-        val length = (data.length as Int).coerceAtMost(buf.writableBytes)
+        // Copy Node.js Buffer to NativeBuf via bulk copy.
+        // Node.js Buffer is a Uint8Array subclass; we extract bytes into
+        // a ByteArray and use writeBytes() for efficient transfer.
+        val dataLength = data.length as Int
+        val length = dataLength.coerceAtMost(buf.writableBytes)
+        val bytes = ByteArray(length)
         for (i in 0 until length) {
-            buf.writeByte((data[i] as Int).toByte())
+            bytes[i] = (data[i] as Int).toByte()
         }
+        buf.writeBytes(bytes, 0, length)
         return length
     }
 
