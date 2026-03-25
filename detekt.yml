@@ -1,0 +1,76 @@
+# detekt configuration for keel
+# Builds upon the default config (buildUponDefaultConfig = true)
+# Only overrides/disables rules that don't fit the project.
+
+complexity:
+  # KMP actual classes need to mirror expect — structure is dictated by API
+  TooManyFunctions:
+    active: false
+  NestedBlockDepth:
+    threshold: 5  # readLine/readChunkedBody have unavoidable nesting
+  LongMethod:
+    threshold: 80  # EventLoop.loop() and flush methods are inherently long
+  LongParameterList:
+    functionThreshold: 8  # cinterop wrappers often have many params
+    constructorThreshold: 10
+  CyclomaticComplexMethod:
+    threshold: 20  # EventLoop dispatch logic has unavoidable branching
+
+style:
+  # Wildcard imports are acceptable for platform.posix.* and cinterop
+  WildcardImport:
+    active: false
+  # MagicNumber: project uses constants-config.md rule instead
+  MagicNumber:
+    active: false
+  # ReturnCount: flush/read methods have multiple early returns
+  ReturnCount:
+    max: 5
+  # UnusedParameter: actual fun implementations may not use all params
+  UnusedParameter:
+    active: false
+  # MaxLineLength: KDoc lines and cinterop signatures can be long
+  MaxLineLength:
+    maxLineLength: 140
+  # LoopWithTooManyJumpStatements: EventLoop.loop() and parser loops
+  # use break/continue for control flow (EINTR retry, wakeup consume, etc.)
+  LoopWithTooManyJumpStatements:
+    active: false
+  # UseCheckOrError/UseRequire: readByte/readByteArray throw
+  # IllegalStateException for EOF, which is semantically correct
+  # (not a precondition check but a state violation)
+  UseCheckOrError:
+    active: false
+  UseRequire:
+    active: false
+
+empty-blocks:
+  # awaitClosed() and close() are intentionally empty (not yet implemented
+  # or no-op by design). SuspendChannelSource/Sink close() delegates
+  # ownership to the caller.
+  EmptyFunctionBlock:
+    active: false
+  EmptyElseBlock:
+    active: false
+
+naming:
+  # Allow short names in cinterop contexts (fd, ev, rc, n, etc.)
+  FunctionParameterNaming:
+    parameterPattern: '[a-z][A-Za-z0-9]*'
+  VariableNaming:
+    variablePattern: '[a-z][A-Za-z0-9]*'
+
+exceptions:
+  # TooGenericExceptionCaught: EventLoop catches Exception for resilience
+  TooGenericExceptionCaught:
+    active: false
+  # InstanceOfCheckForException: CancellationException check is idiomatic
+  # in Kotlin coroutine error handling
+  InstanceOfCheckForException:
+    active: false
+
+potential-bugs:
+  # CastToNullableType: cinterop often requires nullable casts
+  CastToNullableType:
+    active: false
+
