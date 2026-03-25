@@ -15,6 +15,7 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
+import io.github.fukusaka.keel.io.MpscQueue
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -74,11 +75,10 @@ import kotlin.coroutines.resume
  * [KqueueEventLoopGroup] creates multiple instances and distributes
  * channels in round-robin for multi-threaded I/O.
  *
- * **Thread safety**: [registrations] and [taskQueue] are each protected
- * by separate `pthread_mutex_t` instances to minimize lock contention.
- * Kotlin/Native does not support JVM's `synchronized` keyword, and
- * coroutine `Mutex` cannot be used because the EventLoop thread is not
- * in a coroutine context.
+ * **Thread safety**: [registrations] is protected by `pthread_mutex_t`.
+ * [taskQueue] uses a lock-free MPSC queue ([MpscQueue]) — CAS-based
+ * enqueue (~5-10ns) replaces mutex lock/unlock (~50-100ns) on the
+ * dispatch hot path.
  *
  * ```
  * EventLoop thread (single loop iteration):
@@ -112,10 +112,9 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
     }
     private val registrations = mutableMapOf<Long, Registration>()
 
-    private val taskMutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
-    }
-    private val taskQueue = mutableListOf<Runnable>()
+    // Lock-free MPSC queue replaces pthread_mutex + MutableList for
+    // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
+    private val taskQueue = MpscQueue<Runnable>()
 
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
     // Cached byte arrays to avoid per-wakeup allocation.
@@ -171,7 +170,7 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
      * in the next loop iteration via [drainTasks].
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
-        withTaskLock { taskQueue.add(block) }
+        taskQueue.offer(block)
         wakeup()
     }
 
@@ -337,14 +336,12 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
      * accumulate faster than kevent() cycles can process them.
      */
     private fun drainTasks() {
+        val batch = mutableListOf<Runnable>()
         while (true) {
-            val tasks = withTaskLock {
-                if (taskQueue.isEmpty()) return
-                val snapshot = taskQueue.toList()
-                taskQueue.clear()
-                snapshot
-            }
-            for (task in tasks) {
+            batch.clear()
+            taskQueue.drain(batch)
+            if (batch.isEmpty()) return
+            for (task in batch) {
                 task.run()
             }
         }
@@ -357,7 +354,7 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
      * (non-blocking poll), null otherwise (block until events).
      */
     private fun hasTasksPending(): Boolean {
-        return withTaskLock { taskQueue.isNotEmpty() }
+        return taskQueue.isNotEmpty()
     }
 
     // --- Lifecycle ---
@@ -382,7 +379,7 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
             close(wakeupFds[1])
             close(kqFd)
             pthread_mutex_destroy(regMutex.ptr)
-            pthread_mutex_destroy(taskMutex.ptr)
+            // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
         }
     }
@@ -404,16 +401,6 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
             return block()
         } finally {
             pthread_mutex_unlock(regMutex.ptr)
-        }
-    }
-
-    /** Runs [block] under the task queue mutex. */
-    private inline fun <T> withTaskLock(block: () -> T): T {
-        pthread_mutex_lock(taskMutex.ptr)
-        try {
-            return block()
-        } finally {
-            pthread_mutex_unlock(taskMutex.ptr)
         }
     }
 
