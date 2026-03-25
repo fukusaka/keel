@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`, `engine-epoll`: replace pthread_mutex with lock-free MPSC queue for coroutine dispatch
 - `codec-http`: reduce alloc in suspend writeResponseHead (index-based headers, split string templates, remove trimEnd)
 - `codec-websocket`: consolidate mask key byte extraction in WsFrameWriter
+- `ktor-engine`: add accept error backoff strategy (Fixed / Exponential) via `Configuration.acceptBackoff`
+- `ktor-engine`: concurrent keep-alive connection test (5 connections × 3 requests)
 - `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
 - `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `engine-nio`: TrackingAllocator leak detection tests (echo, large payload, connect)
