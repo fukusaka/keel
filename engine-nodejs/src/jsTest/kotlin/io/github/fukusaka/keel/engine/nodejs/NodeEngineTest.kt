@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.engine.nodejs
 
+import io.github.fukusaka.keel.io.BufferedSuspendSink
+import io.github.fukusaka.keel.io.BufferedSuspendSource
+import io.github.fukusaka.keel.io.HeapAllocator
 import io.github.fukusaka.keel.io.NativeBuf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -356,5 +359,91 @@ class NodeEngineTest {
         assertFailsWith<IllegalStateException> {
             engine.bind("127.0.0.1", 0)
         }
+    }
+
+    // --- asSuspendSource / asSuspendSink ---
+
+    @Test
+    fun asSuspendSourceReadsData() = runTest {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientCh = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        // Write via client
+        val writeBuf = NativeBuf(8)
+        writeBuf.writeByte(0x41)
+        writeBuf.writeByte(0x42)
+        clientCh.write(writeBuf)
+        clientCh.flush()
+        writeBuf.release()
+
+        // Read via asSuspendSource bridge
+        val source = BufferedSuspendSource(serverCh.asSuspendSource(), HeapAllocator)
+        val b1 = source.readByte()
+        val b2 = source.readByte()
+        assertEquals(0x41.toByte(), b1)
+        assertEquals(0x42.toByte(), b2)
+        source.close()
+
+        clientCh.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun asSuspendSinkWritesData() = runTest {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientCh = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        // Write via asSuspendSink bridge
+        val sink = BufferedSuspendSink(serverCh.asSuspendSink(), HeapAllocator)
+        sink.writeByte(0x43)
+        sink.writeByte(0x44)
+        sink.flush()
+        sink.close()
+
+        // Read via client
+        val readBuf = NativeBuf(8)
+        val n = clientCh.read(readBuf)
+        assertEquals(2, n)
+        assertEquals(0x43.toByte(), readBuf.readByte())
+        assertEquals(0x44.toByte(), readBuf.readByte())
+        readBuf.release()
+
+        clientCh.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun asSuspendSourceEofReturnsMinusOne() = runTest {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientCh = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        // Close client → server should see EOF
+        clientCh.close()
+
+        val source = serverCh.asSuspendSource()
+        val buf = NativeBuf(8)
+        val n = source.read(buf)
+        assertEquals(-1, n)
+        buf.release()
+
+        serverCh.close()
+        server.close()
+        engine.close()
     }
 }
