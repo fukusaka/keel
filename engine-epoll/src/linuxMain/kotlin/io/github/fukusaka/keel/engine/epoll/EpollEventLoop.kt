@@ -13,6 +13,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
+import io.github.fukusaka.keel.io.MpscQueue
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -70,11 +71,10 @@ import kotlin.coroutines.resume
  * [EpollEventLoopGroup] creates multiple instances and distributes
  * channels in round-robin for multi-threaded I/O.
  *
- * **Thread safety**: [registrations] and [taskQueue] are each protected
- * by separate `pthread_mutex_t` instances to minimize lock contention.
- * Kotlin/Native does not support JVM's `synchronized` keyword, and
- * coroutine `Mutex` cannot be used because the EventLoop thread is not
- * in a coroutine context.
+ * **Thread safety**: [registrations] is protected by `pthread_mutex_t`.
+ * [taskQueue] uses a lock-free MPSC queue ([MpscQueue]) — CAS-based
+ * enqueue (~5-10ns) replaces mutex lock/unlock (~50-100ns) on the
+ * dispatch hot path.
  *
  * ```
  * EventLoop thread (single loop iteration):
@@ -100,18 +100,17 @@ internal class EpollEventLoop : CoroutineDispatcher() {
     // Freed in close().
     private val arena = Arena()
 
-    // Separate mutexes for registrations and taskQueue to minimize lock
-    // contention: dispatch() (any thread) and register() (coroutine thread)
-    // are independent hot paths that should not block each other.
+    // Registration mutex protects the registrations map.
+    // Task queue uses lock-free MPSC queue — CAS-based enqueue (~5-10ns)
+    // replaces mutex lock/unlock (~50-100ns) on the dispatch hot path.
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
     private val registrations = mutableMapOf<Long, Registration>()
 
-    private val taskMutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
-    }
-    private val taskQueue = mutableListOf<Runnable>()
+    // Lock-free MPSC queue replaces pthread_mutex + MutableList for
+    // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
+    private val taskQueue = MpscQueue<Runnable>()
 
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
@@ -161,7 +160,7 @@ internal class EpollEventLoop : CoroutineDispatcher() {
      * in the next loop iteration via [drainTasks].
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
-        withTaskLock { taskQueue.add(block) }
+        taskQueue.offer(block)
         wakeup()
     }
 
@@ -319,14 +318,12 @@ internal class EpollEventLoop : CoroutineDispatcher() {
      * accumulate faster than epoll_wait() cycles can process them.
      */
     private fun drainTasks() {
+        val batch = mutableListOf<Runnable>()
         while (true) {
-            val tasks = withTaskLock {
-                if (taskQueue.isEmpty()) return
-                val snapshot = taskQueue.toList()
-                taskQueue.clear()
-                snapshot
-            }
-            for (task in tasks) {
+            batch.clear()
+            taskQueue.drain(batch)
+            if (batch.isEmpty()) return
+            for (task in batch) {
                 task.run()
             }
         }
@@ -339,7 +336,7 @@ internal class EpollEventLoop : CoroutineDispatcher() {
      * (non-blocking poll), -1 otherwise (block until events).
      */
     private fun hasTasksPending(): Boolean {
-        return withTaskLock { taskQueue.isNotEmpty() }
+        return taskQueue.isNotEmpty()
     }
 
     // --- Lifecycle ---
@@ -363,7 +360,7 @@ internal class EpollEventLoop : CoroutineDispatcher() {
             close(wakeupFd)
             close(epFd)
             pthread_mutex_destroy(regMutex.ptr)
-            pthread_mutex_destroy(taskMutex.ptr)
+            // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
         }
     }
@@ -385,16 +382,6 @@ internal class EpollEventLoop : CoroutineDispatcher() {
             return block()
         } finally {
             pthread_mutex_unlock(regMutex.ptr)
-        }
-    }
-
-    /** Runs [block] under the task queue mutex. */
-    private inline fun <T> withTaskLock(block: () -> T): T {
-        pthread_mutex_lock(taskMutex.ptr)
-        try {
-            return block()
-        } finally {
-            pthread_mutex_unlock(taskMutex.ptr)
         }
     }
 
