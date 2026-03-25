@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.TrackingAllocator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -681,5 +683,114 @@ class NettyEngineTest {
         client.close()
         server.close()
         engine.close()
+    }
+
+    // --- Resource leak detection ---
+
+    @Test
+    fun `echo with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NettyEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = Socket(InetAddress.getLoopbackAddress(), port)
+        val ch = server.accept()
+
+        client.getOutputStream().write("leak-check".toByteArray())
+        client.getOutputStream().flush()
+
+        val buf = NativeBuf(64)
+        val n = withTimeout(3000) { ch.read(buf) }
+        assertEquals(10, n)
+        ch.write(buf)
+        withTimeout(3000) { ch.flush() }
+        buf.release()
+
+        val echo = ByteArray(10)
+        client.getInputStream().read(echo)
+        assertEquals("leak-check", String(echo))
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `large payload with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NettyEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = Socket(InetAddress.getLoopbackAddress(), port)
+        val ch = server.accept()
+
+        // Smaller payload than kqueue/epoll/NIO (10KB vs 100KB) because
+        // Netty's push→pull bridge (autoRead=false → read() → channelRead
+        // callback) has higher per-read latency than direct syscall engines.
+        val payload = "X".repeat(10_000)
+        client.getOutputStream().write(payload.toByteArray())
+        client.getOutputStream().flush()
+
+        var totalRead = 0
+        while (totalRead < payload.length) {
+            val buf = NativeBuf(8192)
+            val n = withTimeout(5000) { ch.read(buf) }
+            if (n <= 0) {
+                buf.release()
+                break
+            }
+            totalRead += n
+            buf.release()
+        }
+        assertEquals(payload.length, totalRead)
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `connect with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NettyEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientCh = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        val writeBuf = NativeBuf(64)
+        for (b in "test".toByteArray()) writeBuf.writeByte(b)
+        clientCh.write(writeBuf)
+        withTimeout(3000) { clientCh.flush() }
+        writeBuf.release()
+
+        val readBuf = NativeBuf(64)
+        withTimeout(3000) { serverCh.read(readBuf) }
+        readBuf.release()
+
+        clientCh.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
     }
 }
