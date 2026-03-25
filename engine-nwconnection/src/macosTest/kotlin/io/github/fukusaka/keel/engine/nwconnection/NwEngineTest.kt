@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.TrackingAllocator
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
@@ -664,6 +666,129 @@ class NwEngineTest {
 
         withTimeout(3000) { writeJob.join() }
         assertTrue(ch.isOpen)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    // --- Resource leak detection ---
+
+    @Test
+    fun `echo with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NwEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        rawWrite(clientFd, "leak-check")
+        val buf = NativeBuf(64)
+        val n = withTimeout(3000) { ch.read(buf) }
+        assertEquals(10, n)
+        ch.write(buf)
+        withTimeout(3000) { ch.flush() }
+        buf.release()
+
+        val echo = rawRead(clientFd, 10)
+        assertEquals("leak-check", echo)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `connect with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NwEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        val writeBuf = NativeBuf(64)
+        for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
+        client.write(writeBuf)
+        withTimeout(3000) { client.flush() }
+        writeBuf.release()
+
+        val readBuf = NativeBuf(64)
+        withTimeout(3000) { serverCh.read(readBuf) }
+        readBuf.release()
+
+        client.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    // --- GC heap verification ---
+
+    @OptIn(kotlin.native.runtime.NativeRuntimeApi::class, ExperimentalStdlibApi::class)
+    @Test
+    fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        // Warm up
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        rawWrite(clientFd, "warmup")
+        val warmBuf = NativeBuf(64)
+        withTimeout(3000) { ch.read(warmBuf) }
+        warmBuf.release()
+
+        // Baseline GC
+        kotlin.native.runtime.GC.collect()
+        val baselineInfo = kotlin.native.runtime.GC.lastGCInfo
+        val baselineHeap = baselineInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
+
+        // Run 50 echo cycles (fewer than kqueue/epoll due to dispatch callback latency)
+        repeat(50) {
+            rawWrite(clientFd, "test")
+            val buf = NativeBuf(64)
+            val n = withTimeout(3000) { ch.read(buf) }
+            if (n > 0) {
+                ch.write(buf)
+                withTimeout(3000) { ch.flush() }
+            }
+            buf.release()
+        }
+        rawRead(clientFd, 200) // drain echoed data
+
+        // Post-test GC
+        kotlin.native.runtime.GC.collect()
+        val afterInfo = kotlin.native.runtime.GC.lastGCInfo
+        val afterHeap = afterInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
+
+        // Heap growth tolerance: fixed 512KB absolute increase.
+        // NWConnection creates per-callback StableRef + CallbackContext objects
+        // which are disposed in callbacks, but GC internal state may retain
+        // metadata. 512KB absorbs this variance while catching real leaks.
+        val heapGrowthTolerance = 512L * 1024
+        val maxAllowed = baselineHeap + heapGrowthTolerance
+        assertTrue(
+            afterHeap <= maxAllowed,
+            "Heap grew from $baselineHeap to $afterHeap bytes after 50 echo cycles " +
+                "(tolerance: ${heapGrowthTolerance / 1024}KB). Possible memory leak.",
+        )
 
         ch.close()
         close(clientFd)

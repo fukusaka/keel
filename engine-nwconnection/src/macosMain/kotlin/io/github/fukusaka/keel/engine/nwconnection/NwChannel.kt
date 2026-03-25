@@ -66,6 +66,18 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  *                   --> callback(error, ctx) --> resume
  * ```
  *
+ * **Backpressure**: [pendingWrites] has no upper bound. A producer that
+ * calls [write] without [flush] can accumulate unbounded memory. This is
+ * acceptable for the current HTTP server use case where the ktor-engine
+ * layer calls flush() after each response. An application-level write
+ * watermark is deferred to Phase 7.
+ *
+ * **Thread model**: [read] and [write]/[flush] are called from coroutine
+ * threads. Dispatch callbacks run on per-connection serial dispatch queues.
+ * Cross-thread synchronization is handled by [CallbackContext] (atomic CAS)
+ * and [StableRef] (C callback owns disposal). State fields ([_open],
+ * [_active], [pendingWrites]) are accessed from the coroutine thread only.
+ *
  * @param conn       The NWConnection handle for this channel.
  * @param allocator  Buffer allocator for read operations.
  */

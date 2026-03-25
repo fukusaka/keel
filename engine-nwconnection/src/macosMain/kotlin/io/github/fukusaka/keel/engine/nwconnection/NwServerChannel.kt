@@ -158,6 +158,18 @@ internal class NwServerChannel(
         return NwChannel(conn, allocator, remoteAddr, localAddress)
     }
 
+    /**
+     * Closes the server channel and stops accepting connections.
+     *
+     * Idempotent: subsequent calls are no-ops for the accept
+     * cancellation, but `nw_listener_cancel` / `pthread_mutex_destroy` /
+     * `arena.clear` are called unconditionally (safe to call multiple
+     * times on already-cancelled/destroyed resources).
+     *
+     * If an [accept] coroutine is suspended, it is cancelled with
+     * [CancellationException]. Uses [withLock] because [onNewConnection]
+     * may run concurrently on the listener's dispatch queue thread.
+     */
     override fun close() {
         withLock {
             if (_active) {
