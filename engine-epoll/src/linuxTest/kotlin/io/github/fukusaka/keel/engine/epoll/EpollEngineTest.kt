@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.TrackingAllocator
 import epoll.keel_htons
 import epoll.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -1044,5 +1045,107 @@ class EpollEngineTest {
         }
         server.close()
         engine.close()
+    }
+
+    // --- Resource leak detection ---
+
+    @Test
+    fun `echo with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = EpollEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        rawWrite(clientFd, "leak-check")
+        val buf = NativeBuf(64)
+        val n = ch.read(buf)
+        assertEquals(10, n)
+        ch.write(buf)
+        ch.flush()
+        buf.release()
+
+        val echo = rawRead(clientFd, 10)
+        assertEquals("leak-check", echo)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `large payload with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = EpollEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val payload = "X".repeat(100_000)
+        rawWrite(clientFd, payload)
+
+        var totalRead = 0
+        while (totalRead < payload.length) {
+            val buf = NativeBuf(8192)
+            val n = ch.read(buf)
+            if (n <= 0) {
+                buf.release()
+                break
+            }
+            totalRead += n
+            buf.release()
+        }
+        assertEquals(payload.length, totalRead)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `connect with TrackingAllocator has no buffer leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = EpollEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val client = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        val writeBuf = NativeBuf(64)
+        for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
+        client.write(writeBuf)
+        client.flush()
+        writeBuf.release()
+
+        val readBuf = NativeBuf(64)
+        serverCh.read(readBuf)
+        readBuf.release()
+
+        client.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
     }
 }
