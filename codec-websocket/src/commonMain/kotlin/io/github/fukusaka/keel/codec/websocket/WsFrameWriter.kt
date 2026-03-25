@@ -41,17 +41,14 @@ fun writeFrame(frame: WsFrame, sink: Sink) {
 
     if (frame.maskKey != null) {
         val key = frame.maskKey
-        sink.writeByte((key shr 24).toByte())
-        sink.writeByte((key shr 16).toByte())
-        sink.writeByte((key shr 8).toByte())
-        sink.writeByte(key.toByte())
+        // Extract mask key bytes once, reuse for both header write and XOR.
+        val keyBytes = ByteArray(4)
+        keyBytes[0] = (key shr 24).toByte()
+        keyBytes[1] = (key shr 16).toByte()
+        keyBytes[2] = (key shr 8).toByte()
+        keyBytes[3] = key.toByte()
+        sink.write(keyBytes)
 
-        val keyBytes = ByteArray(4).also { k ->
-            k[0] = (key shr 24).toByte()
-            k[1] = (key shr 16).toByte()
-            k[2] = (key shr 8).toByte()
-            k[3] = key.toByte()
-        }
         val masked = ByteArray(frame.payload.size) { i ->
             (frame.payload[i].toInt() xor keyBytes[i % 4].toInt()).toByte()
         }
