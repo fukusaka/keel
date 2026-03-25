@@ -42,6 +42,9 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
+      - name: Static analysis (detekt)
+        run: ./gradlew detekt
+
       - name: Compile (JVM + linuxX64)
         run: ./gradlew compileKotlinJvm compileKotlinLinuxX64
 
