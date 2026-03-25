@@ -66,6 +66,13 @@ internal class NodeServerChannel(
         return NodeChannel(socket, allocator, remoteAddr, localAddress)
     }
 
+    /**
+     * Closes the server channel and stops accepting connections.
+     *
+     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
+     * is suspended, it is cancelled with [CancellationException].
+     * No locking needed — JS is single-threaded.
+     */
     override fun close() {
         if (_active) {
             _active = false
