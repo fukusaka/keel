@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform) apply false
+    alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.dokka)
     alias(libs.plugins.detekt)
 }
@@ -16,28 +17,20 @@ dependencies {
     dokka(project(":codec-websocket"))
 }
 
-detekt {
-    // Analyze all Kotlin source sets across modules (excluding benchmark/sample)
-    source.setFrom(
-        subprojects.filter { it.name !in setOf("benchmark", "sample") }.flatMap { project ->
-            listOf(
-                "${project.projectDir}/src/commonMain/kotlin",
-                "${project.projectDir}/src/jvmMain/kotlin",
-                "${project.projectDir}/src/nativeMain/kotlin",
-                "${project.projectDir}/src/macosMain/kotlin",
-                "${project.projectDir}/src/linuxMain/kotlin",
-                "${project.projectDir}/src/jsMain/kotlin",
-            ).map { file(it) }
-        },
-    )
-    config.setFrom("detekt.yml")
-    buildUponDefaultConfig = true
-    // Baseline for existing violations — new code must be clean
-    // baseline = file("detekt-baseline.xml")
-}
-
 subprojects {
     apply(plugin = "org.jetbrains.dokka")
     group = "io.github.fukusaka.keel"
     version = "0.2.0-SNAPSHOT"
+
+    // Apply detekt with type resolution to production modules
+    if (name !in setOf("benchmark", "sample", "detekt-rules")) {
+        apply(plugin = "io.gitlab.arturbosch.detekt")
+        configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
+            config.setFrom(rootProject.file("detekt.yml"))
+            buildUponDefaultConfig = true
+        }
+        dependencies {
+            "detektPlugins"(project(":detekt-rules"))
+        }
+    }
 }

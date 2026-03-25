@@ -43,7 +43,7 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       - name: Static analysis (detekt)
-        run: ./gradlew detekt
+        run: ./gradlew detektMetadataCommonMain detektLinuxX64Main detektJvmMain
 
       - name: Compile (JVM + linuxX64)
         run: ./gradlew compileKotlinJvm compileKotlinLinuxX64
