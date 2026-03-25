@@ -63,6 +63,17 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * ```
  *
+ * **Backpressure**: [pendingWrites] has no upper bound. A producer that
+ * calls [write] without [flush] can accumulate unbounded memory. This is
+ * acceptable for the current HTTP server use case where the ktor-engine
+ * layer calls flush() after each response. An application-level write
+ * watermark (similar to Netty's ChannelOutboundBuffer) is deferred to
+ * Phase 7.
+ *
+ * **Thread model**: all public methods must be called from the EventLoop
+ * thread (via [coroutineDispatcher]). State fields ([_open], [_active],
+ * [pendingWrites]) are not thread-safe.
+ *
  * @param fd        The connected socket file descriptor (non-blocking).
  * @param eventLoop The [EpollEventLoop] for fd readiness notification.
  * @param allocator Buffer allocator for read operations.

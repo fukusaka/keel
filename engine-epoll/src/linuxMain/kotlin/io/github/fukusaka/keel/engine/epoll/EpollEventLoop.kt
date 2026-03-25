@@ -27,6 +27,7 @@ import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.strerror
 import platform.posix.pthread_create
 import platform.posix.pthread_join
 import platform.posix.pthread_mutex_destroy
@@ -274,7 +275,15 @@ internal class EpollEventLoop : CoroutineDispatcher() {
                     // EAGAIN: spurious wakeup. Both are retriable.
                     val err = errno
                     if (err == EINTR || err == EAGAIN) continue
-                    break // Fatal error
+                    // Fatal error — log before exiting the EventLoop.
+                    // Cannot throw (no coroutine context), so print to stderr.
+                    platform.posix.fprintf(
+                        platform.posix.fdopen(2, "w"),
+                        "epoll_wait() fatal error: errno=%d (%s)\n",
+                        err,
+                        strerror(err),
+                    )
+                    break
                 }
                 for (i in 0 until n) {
                     val ev = eventList[i]
