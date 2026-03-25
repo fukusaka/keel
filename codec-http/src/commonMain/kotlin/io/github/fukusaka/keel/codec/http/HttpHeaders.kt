@@ -43,6 +43,15 @@ class HttpHeaders {
         return this
     }
 
+    /** Number of header fields. */
+    val size: Int get() = entries.size
+
+    /** Returns the name of the header at [index] (insertion order). */
+    fun nameAt(index: Int): String = entries[index].first
+
+    /** Returns the value of the header at [index] (insertion order). */
+    fun valueAt(index: Int): String = entries[index].second
+
     /** Iterates all header fields in insertion order. */
     fun forEach(action: (name: String, value: String) -> Unit) =
         entries.forEach { (n, v) -> action(n, v) }

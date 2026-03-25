@@ -132,7 +132,8 @@ internal fun parseRequestLine(line: String): RequestLine {
     return RequestLine(
         method  = HttpMethod(parts[0]),
         uri     = parts[1],
-        version = HttpVersion.of(parts[2].trimEnd()),
+        // No trimEnd() needed: readLine() already strips CRLF.
+        version = HttpVersion.of(parts[2]),
     )
 }
 

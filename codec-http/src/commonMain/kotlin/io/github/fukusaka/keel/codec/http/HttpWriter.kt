@@ -63,11 +63,22 @@ suspend fun writeResponseHead(
     headers: HttpHeaders,
     sink: BufferedSuspendSink,
 ) {
-    sink.writeString("${version.text} ${status.code} ${status.reasonPhrase()}\r\n")
-    // Cannot use headers.forEach { } because it is not inline and cannot
-    // accept suspend lambdas. Use entries() iteration instead.
-    for ((name, value) in headers.entries()) {
-        sink.writeString("$name: $value\r\n")
+    // Split writeString calls to avoid StringBuilder allocation from
+    // string templates on the hot path.
+    sink.writeString(version.text)
+    sink.writeString(" ")
+    sink.writeString(status.code.toString())
+    sink.writeString(" ")
+    sink.writeString(status.reasonPhrase())
+    sink.writeString("\r\n")
+    // Index-based iteration avoids entries().toList() allocation.
+    // Cannot use forEach {} because it is inline and cannot accept
+    // suspend lambdas.
+    for (i in 0 until headers.size) {
+        sink.writeString(headers.nameAt(i))
+        sink.writeString(": ")
+        sink.writeString(headers.valueAt(i))
+        sink.writeString("\r\n")
     }
     sink.writeString("\r\n")
 }
