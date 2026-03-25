@@ -146,6 +146,7 @@ class NwEngine(
 
         val rc = suspendCancellableCoroutine<Int> { cont ->
             val cbCtx = CallbackContext(cont)
+            @Suppress("StableRefLeak") // dispose() called in C callback via asStableRef().dispose()
             val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
                 conn, connQueue,

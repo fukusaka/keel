@@ -42,6 +42,7 @@ interface BufferAllocator {
  * production workloads due to per-allocation overhead.
  */
 object HeapAllocator : BufferAllocator {
+    @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf = NativeBuf(capacity)
     override fun release(buf: NativeBuf) { buf.release() }
 }
