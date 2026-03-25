@@ -14,6 +14,10 @@ package io.github.fukusaka.keel.io
  * refilling. Typical HTTP request parsing suspends 1-2 times per request
  * (header + body boundary).
  *
+ * **Ownership**: this class does NOT own [source]. Closing this wrapper
+ * releases the internal buffer but does not close the underlying source.
+ * The caller is responsible for closing [source] independently.
+ *
  * @param source The underlying [SuspendSource] to read from.
  * @param allocator Buffer allocator for the internal buffer.
  */

@@ -13,6 +13,17 @@ import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
 import platform.posix.memmove
 
+/**
+ * Native [NativeBuf] implementation backed by [nativeHeap] memory.
+ *
+ * Memory is allocated via `nativeHeap.allocArray<ByteVar>(capacity)` and
+ * freed in [close] via `nativeHeap.free`. The [unsafePointer] property
+ * exposes the raw `CPointer<ByteVar>` for zero-copy I/O with POSIX
+ * syscalls (read/write/writev).
+ *
+ * **Reference counting**: non-atomic (single-threaded EventLoop model).
+ * A `freed` flag prevents double-free in [close].
+ */
 @OptIn(ExperimentalForeignApi::class)
 actual class NativeBuf actual constructor(actual val capacity: Int) {
     private val ptr = nativeHeap.allocArray<ByteVar>(capacity)
@@ -34,6 +45,7 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
 
     actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
+        if (length == 0) return
         src.usePinned { pinned ->
             memcpy(ptr + writerIndex, pinned.addressOf(offset), length.toULong())
         }

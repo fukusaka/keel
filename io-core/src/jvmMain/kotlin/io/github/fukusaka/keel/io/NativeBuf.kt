@@ -2,6 +2,21 @@ package io.github.fukusaka.keel.io
 
 import java.nio.ByteBuffer
 
+/**
+ * JVM [NativeBuf] implementation backed by a direct [ByteBuffer].
+ *
+ * Uses `ByteBuffer.allocateDirect(capacity)` for off-heap memory that
+ * can be passed directly to NIO `SocketChannel.read/write` without
+ * copying. The [unsafeBuffer] property exposes the underlying [ByteBuffer].
+ *
+ * **Reference counting**: non-atomic (single-threaded EventLoop model).
+ * [close] is a no-op since the [ByteBuffer] is GC-managed.
+ *
+ * **position/limit management**: [clear] resets both `position` and `limit`
+ * on the underlying [ByteBuffer] because NIO `SocketChannel.write` may
+ * set `limit` to a smaller value, causing subsequent `put(index, value)`
+ * to throw [IndexOutOfBoundsException] if index >= limit.
+ */
 actual class NativeBuf actual constructor(actual val capacity: Int) {
     private val buf: ByteBuffer = ByteBuffer.allocateDirect(capacity)
 

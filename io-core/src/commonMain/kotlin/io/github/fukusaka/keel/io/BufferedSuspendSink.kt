@@ -10,6 +10,11 @@ package io.github.fukusaka.keel.io
  *     NativeBuf → Channel.write (zero-copy) → Channel.flush → kernel
  * ```
  *
+ * **Ownership**: this class does NOT own [sink]. Closing this wrapper
+ * releases the internal buffer but does not close or flush the underlying
+ * sink. The caller must call [flush] before [close] to ensure all buffered
+ * data is written, and must close [sink] independently.
+ *
  * @param sink The underlying [SuspendSink] to write to.
  * @param allocator Buffer allocator for the internal buffer.
  */
