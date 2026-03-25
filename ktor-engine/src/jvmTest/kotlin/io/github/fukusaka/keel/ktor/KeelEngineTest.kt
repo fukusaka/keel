@@ -235,6 +235,48 @@ class KeelEngineTest {
         }
     }
 
+    // --- Concurrent + keep-alive ---
+
+    @Test
+    fun `concurrent keep-alive connections serve multiple requests each`() {
+        // Verifies that multiple keep-alive connections work concurrently.
+        // Each connection sends 3 sequential requests on the same socket.
+        // Tests the combination of:
+        //   - Multiple concurrent accept → handleConnection launches
+        //   - Keep-alive loop within each handleConnection
+        //   - Body bridge cleanup between keep-alive requests
+        val connectionCount = 5
+        val requestsPerConnection = 3
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            val threads = (1..connectionCount).map { connId ->
+                Thread {
+                    Socket("127.0.0.1", port).use { sock ->
+                        sock.soTimeout = 5000
+                        val writer = PrintWriter(sock.getOutputStream(), true)
+                        val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
+
+                        for (reqId in 1..requestsPerConnection) {
+                            writer.print("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                            writer.flush()
+                            val response = readHttpResponse(reader)
+                            assertEquals(
+                                "HTTP/1.1 200 OK", response.statusLine,
+                                "conn=$connId req=$reqId",
+                            )
+                            assertEquals("OK", response.body, "conn=$connId req=$reqId")
+                        }
+                    }
+                }
+            }
+            threads.forEach { it.start() }
+            threads.forEach { it.join(10_000) }
+            // Verify all threads completed (not hung)
+            threads.forEachIndexed { i, t ->
+                assertTrue(!t.isAlive, "Thread $i should have completed")
+            }
+        }
+    }
+
     // --- Error handling ---
 
     @Test
