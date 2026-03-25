@@ -38,13 +38,14 @@ class NativeBufLeakRule(config: Config) : Rule(config) {
 
         // Skip allocator implementations — they return NativeBuf to caller.
         // Also skip test functions (test helper methods that allocate buffers).
-        val enclosingFunction = expression.getParentOfType<KtNamedFunction>(strict = true) ?: return
-        val funcName = enclosingFunction.name ?: ""
+        // Skip allocator implementations — they return NativeBuf to caller.
+        // Single-expression functions (fun foo() = NativeBuf(...)) have the
+        // NativeBuf call as the body expression, so strict=false matches.
+        val enclosingFunction = expression.getParentOfType<KtNamedFunction>(strict = false)
+        val funcName = enclosingFunction?.name ?: ""
         if (funcName == "allocate" || funcName == "release") return
-
-        // Skip allocator implementations by file name
-        val filePath = expression.containingFile.virtualFile?.path ?: expression.containingFile.name
-        if ("BufferAllocator" in filePath || "TrackingAllocator" in filePath) return
+        // If no enclosing function found (e.g., property initializer), skip
+        if (enclosingFunction == null) return
         val tryExpressions = enclosingFunction.collectDescendantsOfType<KtTryExpression>()
 
         val hasProtectedRelease = tryExpressions.any { tryExpr ->

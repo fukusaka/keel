@@ -106,7 +106,6 @@ internal class NwChannel(
 
         val result = suspendCancellableCoroutine<ReadResult> { cont ->
             val cbCtx = CallbackContext(cont)
-            @Suppress("StableRefLeak") // dispose() called in C callback via asStableRef().dispose()
             val ref = StableRef.create(cbCtx)
             val ptr = (buf.unsafePointer + buf.writerIndex)!!
             keel_nw_read_async(
@@ -156,7 +155,6 @@ internal class NwChannel(
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
             suspendCancellableCoroutine<Int> { cont ->
                 val cbCtx = CallbackContext(cont)
-                @Suppress("StableRefLeak") // dispose() called in C callback via asStableRef().dispose()
                 val ref = StableRef.create(cbCtx)
                 keel_nw_write_async(
                     conn, ptr, pw.length.toUInt(),
