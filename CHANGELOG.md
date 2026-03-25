@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `core`: tests for `SocketAddress`, `IoEngineConfig`, and `SuspendChannelSource`/`SuspendChannelSink` bridge
+
 ### Fixed
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`

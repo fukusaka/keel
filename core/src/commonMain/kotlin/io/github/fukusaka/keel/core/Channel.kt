@@ -52,7 +52,10 @@ interface Channel : AutoCloseable {
     /** True if the channel is connected and ready for read/write. */
     val isActive: Boolean
 
-    /** Suspends until this channel is fully closed. */
+    /**
+     * Suspends until this channel is fully closed.
+     * Returns immediately if the channel is already closed.
+     */
     suspend fun awaitClosed()
 
     // --- Zero-copy I/O (engine layer) ---
@@ -74,8 +77,9 @@ interface Channel : AutoCloseable {
      * Advances [NativeBuf.readerIndex] by the number of bytes consumed.
      * Data is buffered until [flush] is called.
      *
-     * The implementation retains [buf] internally and records the byte range,
-     * so the caller may reuse or release the buffer after this call returns.
+     * **Ownership**: the implementation calls [NativeBuf.retain] on [buf] and
+     * records the byte range. [flush] releases the retained reference after
+     * writing. The caller may reuse or release the buffer after this call returns.
      *
      * @return number of bytes written to the outbound buffer.
      */

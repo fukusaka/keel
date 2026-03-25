@@ -14,7 +14,7 @@ package io.github.fukusaka.keel.core
  *       |
  *   +---+---+---+---+---+---+
  *   |   |   |   |   |   |   |
- *  kq  ep  nio net  nw  js  (io_uring: Phase 6)
+ *  kq  ep  nio net  nw  js  (io_uring: Phase 8)
  * ```
  *
  * [bind] and [connect] are suspend functions because some engines
