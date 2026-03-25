@@ -15,8 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
 - `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
+- `engine-nio`: TrackingAllocator leak detection tests (echo, large payload, connect)
 
 ### Fixed
+
+- `engine-nio`: protect `processSelectedKeys` with try-catch so one channel's error does not stop other channels
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`
 - `engine-kqueue`: log fatal `kevent()` error to stderr before EventLoop exit (previously silent)
