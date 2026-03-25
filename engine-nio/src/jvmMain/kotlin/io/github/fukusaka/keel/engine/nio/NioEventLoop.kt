@@ -208,11 +208,16 @@ internal class NioEventLoop(name: String) : CoroutineDispatcher() {
         while (iter.hasNext()) {
             val key = iter.next()
             iter.remove()
-            val cont = key.attachment() as? CancellableContinuation<*> ?: continue
-            // Clear interest instead of cancel — key stays valid for reuse
-            clearInterest(key)
-            @Suppress("UNCHECKED_CAST")
-            (cont as CancellableContinuation<Unit>).resume(Unit)
+            try {
+                val cont = key.attachment() as? CancellableContinuation<*> ?: continue
+                // Clear interest instead of cancel — key stays valid for reuse
+                clearInterest(key)
+                @Suppress("UNCHECKED_CAST")
+                (cont as CancellableContinuation<Unit>).resume(Unit)
+            } catch (_: Exception) {
+                // Individual key failure must not stop processing other keys.
+                // The channel's coroutine will observe the error on next I/O.
+            }
         }
     }
 

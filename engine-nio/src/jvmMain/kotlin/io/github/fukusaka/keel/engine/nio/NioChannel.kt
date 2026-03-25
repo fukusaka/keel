@@ -45,6 +45,17 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *   flush()     → SocketChannel.write(ByteBuffer[]) gather-write
  * ```
  *
+ * **Backpressure**: [pendingWrites] has no upper bound. A producer that
+ * calls [write] without [flush] can accumulate unbounded memory. This is
+ * acceptable for the current HTTP server use case where the ktor-engine
+ * layer calls flush() after each response. An application-level write
+ * watermark (similar to Netty's ChannelOutboundBuffer) is deferred to
+ * Phase 7.
+ *
+ * **Thread model**: all public methods must be called from the EventLoop
+ * thread (via [coroutineDispatcher]). State fields ([_open],
+ * [pendingWrites]) are not thread-safe.
+ *
  * @param socketChannel The connected SocketChannel (non-blocking).
  * @param selectionKey  Cached SelectionKey registered with the worker Selector.
  * @param eventLoop     The [NioEventLoop] for readiness notification.

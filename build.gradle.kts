@@ -23,7 +23,10 @@ subprojects {
     version = "0.2.0-SNAPSHOT"
 
     // Apply detekt with type resolution to production modules
-    if (name !in setOf("benchmark", "sample", "detekt-rules")) {
+    // engine-netty excluded: detekt type resolution crashes on Netty's
+    // external API (NPE in IgnoredReturnValue → findPackage). Reviewed
+    // manually via /deep-review instead.
+    if (name !in setOf("benchmark", "sample", "detekt-rules", "engine-netty")) {
         apply(plugin = "io.gitlab.arturbosch.detekt")
         configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
             config.setFrom(rootProject.file("detekt.yml"))

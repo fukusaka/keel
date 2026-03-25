@@ -80,6 +80,16 @@ internal class NioServerChannel(
         }
     }
 
+    /**
+     * Closes the server channel and stops accepting connections.
+     *
+     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
+     * is suspended, it is cancelled with [CancellationException].
+     *
+     * **Thread safety**: must be called from the boss EventLoop thread
+     * or after the EventLoop has been stopped. [_active] and
+     * [pendingAcceptCont] are not thread-safe.
+     */
     override fun close() {
         if (_active) {
             _active = false
