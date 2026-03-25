@@ -235,6 +235,72 @@ class KeelEngineTest {
         }
     }
 
+    // --- Error handling ---
+
+    @Test
+    fun `malformed request closes connection gracefully`() {
+        // Server should handle malformed HTTP and close the connection
+        // without crashing the accept loop. Subsequent valid requests
+        // must still be served.
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            // Send garbage that is not valid HTTP
+            Socket("127.0.0.1", port).use { sock ->
+                sock.soTimeout = 3000
+                val writer = PrintWriter(sock.getOutputStream(), true)
+                writer.print("NOT_HTTP\r\n\r\n")
+                writer.flush()
+                // Server should close the connection — read should return EOF or error
+                val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
+                val line = reader.readLine()
+                // Server may respond with nothing (EOF) or an error — either is acceptable
+                // The important thing is the server doesn't crash
+            }
+            // Verify server is still alive — next request succeeds
+            val (status, body) = httpGet(port, "/")
+            assertEquals(200, status)
+            assertEquals("OK", body)
+        }
+    }
+
+    @Test
+    fun `client disconnect mid-request does not crash server`() {
+        // Client connects, sends partial HTTP, then disconnects.
+        // Server should handle the broken connection gracefully
+        // and continue accepting new connections.
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            // Partial request — only send the request line, no headers, then close
+            Socket("127.0.0.1", port).use { sock ->
+                sock.soTimeout = 1000
+                val writer = PrintWriter(sock.getOutputStream(), true)
+                writer.print("GET / HTTP/1.1\r\n")
+                writer.flush()
+                // Close without sending the empty line terminator
+            }
+            Thread.sleep(200) // Give server time to detect the disconnect
+            // Verify server is still alive
+            val (status, body) = httpGet(port, "/")
+            assertEquals(200, status)
+            assertEquals("OK", body)
+        }
+    }
+
+    @Test
+    fun `empty request closes connection gracefully`() {
+        // Client connects but sends nothing, then closes.
+        // Server should handle EOF on parseRequestHead gracefully.
+        withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
+            Socket("127.0.0.1", port).use { sock ->
+                sock.soTimeout = 1000
+                // Close immediately without sending anything
+            }
+            Thread.sleep(200)
+            // Verify server is still alive
+            val (status, body) = httpGet(port, "/")
+            assertEquals(200, status)
+            assertEquals("OK", body)
+        }
+    }
+
     // --- helpers ---
 
     private data class HttpResponse(
