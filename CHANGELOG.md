@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add detekt 1.23.8 static analysis with KMP-tuned configuration for all production modules
 - `io-core`: add `TrackingAllocator` for allocate/release leak detection in tests
 - CI: add detekt step (runs before compilation)
+- `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
 
 ### Fixed
 
