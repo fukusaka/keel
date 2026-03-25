@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`
+- `engine-kqueue`: log fatal `kevent()` error to stderr before EventLoop exit (previously silent)
+
+### Changed
+
+- `engine-kqueue`: cache wakeup byte arrays to avoid per-dispatch allocation
 
 ## [0.2.0] - 2026-03-25
 

@@ -85,6 +85,8 @@ internal class KqueueChannel(
      */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
+    // No upper bound on pending writes. Callers must call flush() periodically
+    // to avoid unbounded memory growth. Write watermark will be added in Phase 7.
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
     private var _active = true

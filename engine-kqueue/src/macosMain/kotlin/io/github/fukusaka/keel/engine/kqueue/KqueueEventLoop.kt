@@ -37,8 +37,10 @@ import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
 import platform.posix.read
+import platform.posix.strerror
 import platform.posix.timespec
 import platform.posix.write
+import kotlinx.cinterop.toKString
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -116,6 +118,10 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
     private val taskQueue = mutableListOf<Runnable>()
 
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
+    // Cached byte arrays to avoid per-wakeup allocation.
+    // wakeup() is called once per dispatch/register, so reuse matters.
+    private val wakeupWriteBuf = byteArrayOf(1)
+    private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<platform.posix.pthread_tVar>()
 
@@ -242,7 +248,7 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
      * pending fds and tasks.
      */
     private fun wakeup() {
-        byteArrayOf(1).usePinned { pinned ->
+        wakeupWriteBuf.usePinned { pinned ->
             write(wakeupFds[1], pinned.addressOf(0), 1u.convert())
         }
     }
@@ -252,9 +258,9 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
      * Called from the EventLoop thread when the wakeup fd fires.
      */
     private fun consumeWakeup() {
-        ByteArray(64).usePinned { pinned ->
+        wakeupReadBuf.usePinned { pinned ->
             while (true) {
-                val n = read(wakeupFds[0], pinned.addressOf(0), 64u.convert())
+                val n = read(wakeupFds[0], pinned.addressOf(0), WAKEUP_DRAIN_SIZE.toULong().convert())
                 if (n <= 0) break // EAGAIN or error — all bytes consumed
             }
         }
@@ -290,7 +296,14 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
                     // EAGAIN: spurious wakeup. Both are retriable.
                     val err = errno
                     if (err == EINTR || err == EAGAIN) continue
-                    break // Fatal error
+                    // Fatal error — log and terminate the EventLoop thread.
+                    // Cannot throw from a pthread; stderr is the only output path.
+                    val msg = strerror(err)?.toKString() ?: "unknown"
+                    val line = "keel: kevent() fatal error: $msg (errno=$err)\n"
+                    line.encodeToByteArray().usePinned { pinned ->
+                        write(2, pinned.addressOf(0), line.length.convert())
+                    }
+                    break
                 }
                 for (i in 0 until n) {
                     val ev = eventList[i]
@@ -412,5 +425,8 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
          * Netty uses 4096; 64 is conservative for initial implementation.
          */
         private const val MAX_EVENTS = 64
+
+        /** Drain buffer size for consumeWakeup(). Matches pipe FIFO default. */
+        private const val WAKEUP_DRAIN_SIZE = 64
     }
 }
