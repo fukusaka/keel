@@ -113,6 +113,16 @@ internal class NettyServerChannel private constructor() : ServerChannel {
         }
     }
 
+    /**
+     * Closes the server channel and stops accepting connections.
+     *
+     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
+     * is suspended, it is cancelled with [CancellationException].
+     *
+     * **Thread safety**: uses [synchronized] on [lock] because [close]
+     * may be called from any thread while [onNewChannel] runs on the
+     * Netty boss EventLoop thread.
+     */
     override fun close() {
         synchronized(lock) {
             if (_active) {

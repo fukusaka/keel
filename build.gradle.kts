@@ -22,18 +22,33 @@ subprojects {
     group = "io.github.fukusaka.keel"
     version = "0.2.0-SNAPSHOT"
 
-    // Apply detekt with type resolution to production modules
-    // engine-netty excluded: detekt type resolution crashes on Netty's
-    // external API (NPE in IgnoredReturnValue → findPackage). Reviewed
-    // manually via /deep-review instead.
-    if (name !in setOf("benchmark", "sample", "detekt-rules", "engine-netty")) {
+    // Apply detekt to production modules
+    if (name !in setOf("benchmark", "sample", "detekt-rules")) {
         apply(plugin = "io.gitlab.arturbosch.detekt")
         configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
             config.setFrom(rootProject.file("detekt.yml"))
             buildUponDefaultConfig = true
         }
-        dependencies {
-            "detektPlugins"(project(":detekt-rules"))
+        // engine-netty: lint-only (no type resolution, no custom rules).
+        // detekt type resolution crashes on Netty's external API with NPE
+        // in IgnoredReturnValue → DescriptorUtilKt.findPackage (detekt 1.23.8).
+        // Standard rules still work via the `detekt` task (lint-only).
+        // Custom rules (NativeBufLeak etc.) are excluded because they
+        // produce false positives without type resolution.
+        // Type resolution tasks (detektJvmMain etc.) must NOT be run for
+        // this module — use `detekt` task only.
+        if (name != "engine-netty") {
+            dependencies {
+                "detektPlugins"(project(":detekt-rules"))
+            }
+        } else {
+            // Disable type resolution tasks to prevent NPE in CI.
+            // Only the lint-only `detekt` task is safe to run.
+            afterEvaluate {
+                tasks.matching { it.name.startsWith("detekt") && it.name != "detekt" }.configureEach {
+                    enabled = false
+                }
+            }
         }
     }
 }
