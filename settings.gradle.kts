@@ -25,6 +25,7 @@ include(
     ":codec-http",
     ":codec-websocket",
     ":ktor-engine",
+    ":detekt-rules",
 )
 
 // Benchmark and sample modules are opt-in to avoid downloading

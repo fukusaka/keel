@@ -1,10 +1,12 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform) apply false
+    alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.dokka)
     alias(libs.plugins.detekt)
 }
 
 dependencies {
+    detektPlugins(project(":detekt-rules"))
     dokka(project(":core"))
     dokka(project(":engine-epoll"))
     dokka(project(":engine-kqueue"))
@@ -19,7 +21,7 @@ dependencies {
 detekt {
     // Analyze all Kotlin source sets across modules (excluding benchmark/sample)
     source.setFrom(
-        subprojects.filter { it.name !in setOf("benchmark", "sample") }.flatMap { project ->
+        subprojects.filter { it.name !in setOf("benchmark", "sample", "detekt-rules") }.flatMap { project ->
             listOf(
                 "${project.projectDir}/src/commonMain/kotlin",
                 "${project.projectDir}/src/jvmMain/kotlin",

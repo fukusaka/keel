@@ -74,3 +74,12 @@ potential-bugs:
   CastToNullableType:
     active: false
 
+# keel custom rules (detekt-rules module)
+keel:
+  NativeBufLeak:
+    active: true
+  ArenaLeak:
+    active: true
+  StableRefLeak:
+    active: true
+
