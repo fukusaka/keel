@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI: add detekt step (runs before compilation)
 - `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `codec-websocket`: replace Japanese comment with English in SHA-1 implementation
+- `ktor-engine`: error handling tests (malformed request, client disconnect, empty request)
 - `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
 - `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `engine-nio`: TrackingAllocator leak detection tests (echo, large payload, connect)
