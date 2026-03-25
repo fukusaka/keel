@@ -52,6 +52,45 @@ public class KeelApplicationEngine(
          * connection is closed after each request (Phase (a) behavior).
          */
         public var keepAlive: Boolean = true
+
+        /**
+         * Accept error backoff strategy (default: [AcceptBackoff.Exponential]).
+         *
+         * When `server.accept()` fails (e.g. EMFILE — too many open files),
+         * the accept loop pauses before retrying to avoid CPU spin.
+         *
+         * - [AcceptBackoff.Fixed]: constant delay between retries
+         * - [AcceptBackoff.Exponential]: doubles delay on each consecutive
+         *   failure, resets on success (default: 100ms initial, 1s max)
+         */
+        public var acceptBackoff: AcceptBackoff = AcceptBackoff.Exponential()
+    }
+
+    /**
+     * Accept error backoff strategy.
+     *
+     * Controls how long the accept loop waits after a failed `accept()`.
+     * Prevents CPU spin when accept fails repeatedly (e.g. EMFILE).
+     */
+    public sealed class AcceptBackoff {
+        /**
+         * Fixed delay between retries.
+         *
+         * @param delayMs delay in milliseconds (default: 100ms)
+         */
+        public data class Fixed(val delayMs: Long = 100L) : AcceptBackoff()
+
+        /**
+         * Exponential backoff: doubles delay on each consecutive failure,
+         * resets to [initialMs] on success.
+         *
+         * @param initialMs initial delay in milliseconds (default: 100ms)
+         * @param maxMs maximum delay in milliseconds (default: 1000ms)
+         */
+        public data class Exponential(
+            val initialMs: Long = 100L,
+            val maxMs: Long = 1000L,
+        ) : AcceptBackoff()
     }
 
     // Application pipeline dispatcher. Uses Dispatchers.Default (thread pool)
@@ -139,10 +178,28 @@ public class KeelApplicationEngine(
         }
     }
 
+    /**
+     * Accepts connections in a loop with configurable error backoff.
+     *
+     * On accept failure (e.g. EMFILE — too many open files), the loop
+     * pauses according to [Configuration.acceptBackoff] to prevent
+     * CPU spin. The delay resets on a successful accept (exponential
+     * backoff mode).
+     */
     private suspend fun CoroutineScope.acceptLoop(server: ServerChannel) {
+        var currentDelayMs = when (val b = configuration.acceptBackoff) {
+            is AcceptBackoff.Fixed -> b.delayMs
+            is AcceptBackoff.Exponential -> b.initialMs
+        }
+
         while (server.isActive && isActive) {
             try {
                 val channel = server.accept()
+                // Reset backoff on successful accept
+                currentDelayMs = when (val b = configuration.acceptBackoff) {
+                    is AcceptBackoff.Fixed -> b.delayMs
+                    is AcceptBackoff.Exponential -> b.initialMs
+                }
                 // Dispatch on EventLoop so read/parse runs on the I/O
                 // thread without cross-thread dispatch. For engines
                 // without a dedicated EventLoop (Netty, NWConnection,
@@ -153,6 +210,15 @@ public class KeelApplicationEngine(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 if (!server.isActive || !isActive) break
+                // Backoff before retrying to prevent CPU spin on
+                // persistent errors (e.g. EMFILE, fd exhaustion).
+                environment.log.error("Accept failed, retrying in ${currentDelayMs}ms", e)
+                delay(currentDelayMs)
+                // Advance exponential backoff
+                if (configuration.acceptBackoff is AcceptBackoff.Exponential) {
+                    val exp = configuration.acceptBackoff as AcceptBackoff.Exponential
+                    currentDelayMs = (currentDelayMs * 2).coerceAtMost(exp.maxMs)
+                }
             }
         }
     }
