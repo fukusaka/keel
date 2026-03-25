@@ -29,7 +29,7 @@ fun validateClientKey(key: String): Boolean {
     }
 }
 
-// RFC 3174 準拠の SHA-1 実装（pure Kotlin、外部ライブラリ不使用）
+// RFC 3174 compliant SHA-1 implementation (pure Kotlin, no external libraries)
 internal fun sha1(input: ByteArray): ByteArray {
     var h0 = 0x67452301
     var h1 = 0xEFCDAB89.toInt()
