@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
 - `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `engine-nio`: TrackingAllocator leak detection tests (echo, large payload, connect)
+- `engine-kqueue`, `engine-epoll`: GC heap growth verification tests (100 echo cycles, 512KB tolerance)
 
 ### Fixed
 
