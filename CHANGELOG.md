@@ -14,11 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI: add detekt step (runs before compilation)
 - `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
 - `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
+- `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
 
 ### Fixed
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`
 - `engine-kqueue`: log fatal `kevent()` error to stderr before EventLoop exit (previously silent)
+- `engine-epoll`: log fatal `epoll_wait()` error to stderr before EventLoop exit (previously silent)
 
 ### Changed
 
