@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `io-core`: add `TrackingAllocator` for allocate/release leak detection in tests
 - CI: add detekt step (runs before compilation)
 - `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
+- `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
 
 ### Fixed
 
