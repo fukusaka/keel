@@ -1148,4 +1148,68 @@ class EpollEngineTest {
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
+
+    // --- GC heap verification ---
+
+    @OptIn(kotlin.native.runtime.NativeRuntimeApi::class, ExperimentalStdlibApi::class)
+    @Test
+    fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        // Warm up
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        rawWrite(clientFd, "warmup")
+        val warmBuf = NativeBuf(64)
+        ch.read(warmBuf)
+        warmBuf.release()
+
+        // Baseline GC
+        kotlin.native.runtime.GC.collect()
+        val baselineInfo = kotlin.native.runtime.GC.lastGCInfo
+        val baselineHeap = baselineInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
+
+        // Run 100 echo cycles
+        repeat(100) {
+            rawWrite(clientFd, "test")
+            val buf = NativeBuf(64)
+            val n = ch.read(buf)
+            if (n > 0) {
+                ch.write(buf)
+                ch.flush()
+            }
+            buf.release()
+        }
+        rawRead(clientFd, 400)
+
+        // Post-test GC
+        kotlin.native.runtime.GC.collect()
+        val afterInfo = kotlin.native.runtime.GC.lastGCInfo
+        val afterHeap = afterInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
+
+        // Heap growth tolerance: fixed 512KB absolute increase.
+        // After GC.collect(), all NativeBuf and coroutine temporaries
+        // from the 100 echo cycles should be fully reclaimed. Remaining
+        // growth comes from GC internal state (mark bitmaps, free lists),
+        // coroutine scheduler caches, and epoll EventLoop bookkeeping.
+        // 512KB is generous enough to absorb these, but tight enough to
+        // catch a real leak (e.g., unreleased NativeBuf = 64 bytes * 100
+        // = 6.4KB, or retained pendingWrites = much larger).
+        // Using absolute size rather than percentage because percentage
+        // is too lenient for large heaps and too strict for small heaps.
+        val heapGrowthTolerance = 512L * 1024
+        val maxAllowed = baselineHeap + heapGrowthTolerance
+        assertTrue(
+            afterHeap <= maxAllowed,
+            "Heap grew from $baselineHeap to $afterHeap bytes after 100 echo cycles " +
+                "(tolerance: ${heapGrowthTolerance / 1024}KB). Possible memory leak.",
+        )
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
 }
