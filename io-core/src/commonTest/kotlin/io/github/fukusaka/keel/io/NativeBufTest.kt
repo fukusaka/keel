@@ -160,6 +160,63 @@ class NativeBufTest {
         buf.release()
     }
 
+    // --- writeBytes ---
+
+    @Test
+    fun writeBytesBasic() {
+        val buf = NativeBuf(16)
+        val src = byteArrayOf(0x41, 0x42, 0x43)
+        buf.writeBytes(src, 0, 3)
+        assertEquals(3, buf.writerIndex)
+        assertEquals(0x41.toByte(), buf.readByte())
+        assertEquals(0x42.toByte(), buf.readByte())
+        assertEquals(0x43.toByte(), buf.readByte())
+        buf.release()
+    }
+
+    @Test
+    fun writeBytesWithOffset() {
+        val buf = NativeBuf(16)
+        val src = byteArrayOf(0x10, 0x20, 0x30, 0x40)
+        buf.writeBytes(src, 1, 2)
+        assertEquals(2, buf.writerIndex)
+        assertEquals(0x20.toByte(), buf.readByte())
+        assertEquals(0x30.toByte(), buf.readByte())
+        buf.release()
+    }
+
+    @Test
+    fun writeBytesExceedsCapacityThrows() {
+        val buf = NativeBuf(4)
+        val src = byteArrayOf(0x01, 0x02, 0x03, 0x04, 0x05)
+        assertFailsWith<IllegalArgumentException> {
+            buf.writeBytes(src, 0, 5)
+        }
+        buf.release()
+    }
+
+    @Test
+    fun writeBytesZeroLength() {
+        val buf = NativeBuf(4)
+        buf.writeBytes(byteArrayOf(), 0, 0)
+        assertEquals(0, buf.writerIndex)
+        buf.release()
+    }
+
+    @Test
+    fun writeBytesFullCapacity() {
+        val buf = NativeBuf(4)
+        val src = byteArrayOf(0x01, 0x02, 0x03, 0x04)
+        buf.writeBytes(src, 0, 4)
+        assertEquals(4, buf.writerIndex)
+        assertEquals(0, buf.writableBytes)
+        assertEquals(0x01.toByte(), buf.readByte())
+        assertEquals(0x02.toByte(), buf.readByte())
+        assertEquals(0x03.toByte(), buf.readByte())
+        assertEquals(0x04.toByte(), buf.readByte())
+        buf.release()
+    }
+
     // --- clear ---
 
     @Test
