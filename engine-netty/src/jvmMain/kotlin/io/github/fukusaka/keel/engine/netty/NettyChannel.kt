@@ -67,6 +67,14 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *   keel coroutine:  resumed with null --> return -1
  * ```
  *
+ * **Backpressure**: [pendingWrites] has no upper bound. A producer that
+ * calls [write] without [flush] can accumulate unbounded memory. This is
+ * acceptable for the current HTTP server use case where the ktor-engine
+ * layer calls flush() after each response. Netty's own
+ * [ChannelOutboundBuffer] provides a secondary watermark, but keel's
+ * pendingWrites accumulate before reaching Netty. An application-level
+ * write watermark is deferred to Phase 7.
+ *
  * @param nettyChannel The underlying Netty channel.
  * @param allocator    Buffer allocator for read operations.
  */
