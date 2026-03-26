@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `logging`: add logging module with `Logger`, `LoggerFactory`, `LogLevel`, `NoopLoggerFactory`, and `PrintLogger`
+- `core`: add `loggerFactory` property to `IoEngineConfig` (defaults to `NoopLoggerFactory`)
+- `ktor-engine`: add `KtorLoggerAdapter` to bridge Ktor Logger to keel `LoggerFactory`
 - `io-core`: add `KeelEofException` as domain-specific base exception for unexpected EOF
 - `codec-http`: add `HttpParseException` and `HttpEofException` for layered error handling
 - `codec-http`: add status code range validation in `parseStatusLine` before `HttpStatus` construction

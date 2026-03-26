@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.core
 
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.io.HeapAllocator
+import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
 
 /**
  * Configuration shared across all [IoEngine] implementations.
@@ -25,8 +27,12 @@ import io.github.fukusaka.keel.io.HeapAllocator
  *                     Netty passes 0 directly to `NioEventLoopGroup(0)` which
  *                     uses its own default (`cpu * 2`). Node.js ignores this
  *                     (V8 runtime manages its own threads).
+ * @property loggerFactory Factory for creating [io.github.fukusaka.keel.logging.Logger]
+ *                         instances. Defaults to [NoopLoggerFactory] which discards
+ *                         all log output (zero overhead).
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = HeapAllocator,
     val threads: Int = 0,
+    val loggerFactory: LoggerFactory = NoopLoggerFactory,
 )
