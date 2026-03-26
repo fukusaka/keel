@@ -16,7 +16,7 @@ import org.khronos.webgl.Int8Array
 actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     private val buf = Int8Array(capacity)
     private var refCount = 1
-    actual internal var deallocator: ((NativeBuf) -> Unit)? = null
+    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0

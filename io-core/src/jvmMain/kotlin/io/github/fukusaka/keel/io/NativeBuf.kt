@@ -23,7 +23,7 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
     private var refCount = 1
-    actual internal var deallocator: ((NativeBuf) -> Unit)? = null
+    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0

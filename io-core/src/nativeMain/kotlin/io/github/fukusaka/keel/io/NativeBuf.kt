@@ -32,7 +32,7 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
-    actual internal var deallocator: ((NativeBuf) -> Unit)? = null
+    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0
