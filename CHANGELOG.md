@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add `BufSlice` for zero-copy read-only views over `NativeBuf` regions
+- `io-core`: add `NativeBuf.getByte(index)` for absolute byte access without modifying readerIndex
+- `io-core`: add `BufferedSuspendSource.scanLine()` returning `BufSlice` instead of `String`
 - `io-core`: add `SlabAllocator` (Native) and `PooledDirectAllocator` (JVM) for per-EventLoop buffer pooling
 - `io-core`: add `NativeBuf.resetForReuse()` for pool-based buffer recycling
 - `engine-kqueue`, `engine-epoll`, `engine-nio`: wire per-EventLoop allocators via `createForEventLoop()`
