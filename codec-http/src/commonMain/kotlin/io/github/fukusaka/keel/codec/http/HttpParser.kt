@@ -46,7 +46,7 @@ fun parseResponse(source: Source): HttpResponse {
  * based on Content-Length or Transfer-Encoding headers.
  */
 fun parseRequestHead(source: Source): HttpRequestHead {
-    val line = source.readLine() ?: throw IllegalArgumentException("Unexpected EOF reading request line")
+    val line = source.readLine() ?: throw HttpEofException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
     return HttpRequestHead(method, uri, version, headers)
@@ -58,7 +58,7 @@ fun parseRequestHead(source: Source): HttpRequestHead {
  * The body bytes remain in [source] for streaming consumption.
  */
 fun parseResponseHead(source: Source): HttpResponseHead {
-    val line = source.readLine() ?: throw IllegalArgumentException("Unexpected EOF reading status line")
+    val line = source.readLine() ?: throw HttpEofException("Unexpected EOF reading status line")
     val (version, status, _) = parseStatusLine(line)
     val headers = parseHeaders(source)
     return HttpResponseHead(status, version, headers)
@@ -76,7 +76,7 @@ fun parseResponseHead(source: Source): HttpResponseHead {
  */
 suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
     val line = source.readLine()
-        ?: throw IllegalArgumentException("Unexpected EOF reading request line")
+        ?: throw HttpEofException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
     return HttpRequestHead(method, uri, version, headers)
@@ -87,7 +87,7 @@ suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
  */
 suspend fun parseResponseHead(source: BufferedSuspendSource): HttpResponseHead {
     val line = source.readLine()
-        ?: throw IllegalArgumentException("Unexpected EOF reading status line")
+        ?: throw HttpEofException("Unexpected EOF reading status line")
     val (version, status, _) = parseStatusLine(line)
     val headers = parseHeaders(source)
     return HttpResponseHead(status, version, headers)
@@ -102,12 +102,12 @@ internal suspend fun parseHeaders(source: BufferedSuspendSource): HttpHeaders {
         val line = source.readLine() ?: break
         if (line.isEmpty()) break
         if (line[0] == ' ' || line[0] == '\t') {
-            throw IllegalArgumentException(
+            throw HttpParseException(
                 "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
             )
         }
         val colon = line.indexOf(':')
-        require(colon >= 1) { "Invalid header field (missing ':'): $line" }
+        if (colon < 1) throw HttpParseException("Invalid header field (missing ':'): $line")
         val name = line.substring(0, colon).trim()
         val value = line.substring(colon + 1).trim()
         headers.add(name, value)
@@ -128,7 +128,7 @@ internal data class StatusLine(val version: HttpVersion, val status: HttpStatus,
  */
 internal fun parseRequestLine(line: String): RequestLine {
     val parts = line.split(" ")
-    require(parts.size == 3) { "Invalid request line (expected 3 tokens): $line" }
+    if (parts.size != 3) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
     return RequestLine(
         method  = HttpMethod(parts[0]),
         uri     = parts[1],
@@ -143,9 +143,10 @@ internal fun parseRequestLine(line: String): RequestLine {
  */
 internal fun parseStatusLine(line: String): StatusLine {
     val parts = line.split(" ", limit = 3)
-    require(parts.size >= 2) { "Invalid status line (expected at least 2 tokens): $line" }
+    if (parts.size < 2) throw HttpParseException("Invalid status line (expected at least 2 tokens): $line")
     val code = parts[1].trim().toIntOrNull()
-        ?: throw IllegalArgumentException("Invalid status code '${parts[1]}' in: $line")
+        ?: throw HttpParseException("Invalid status code '${parts[1]}' in: $line")
+    if (code !in 100..999) throw HttpParseException("Invalid status code '$code' in: $line")
     return StatusLine(
         version = HttpVersion.of(parts[0].trimEnd()),
         status  = HttpStatus(code),
@@ -166,12 +167,12 @@ internal fun parseHeaders(source: Source): HttpHeaders {
         if (line.isEmpty()) break
         // Detect obs-fold: a line that starts with SP or HTAB following a previous field
         if (line[0] == ' ' || line[0] == '\t') {
-            throw IllegalArgumentException(
+            throw HttpParseException(
                 "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
             )
         }
         val colon = line.indexOf(':')
-        require(colon >= 1) { "Invalid header field (missing ':'): $line" }
+        if (colon < 1) throw HttpParseException("Invalid header field (missing ':'): $line")
         val name  = line.substring(0, colon).trim()
         val value = line.substring(colon + 1).trim()   // strip OWS
         headers.add(name, value)
@@ -209,10 +210,10 @@ internal fun readChunkedBody(source: Source): ByteArray? {
     var total = 0
     while (true) {
         val sizeLine = source.readLine()
-            ?: throw IllegalArgumentException("Unexpected EOF reading chunk size")
+            ?: throw HttpEofException("Unexpected EOF reading chunk size")
         val sizeStr = sizeLine.substringBefore(';').trim()
         val chunkSize = sizeStr.toLongOrNull(16)
-            ?: throw IllegalArgumentException("Invalid chunk size '$sizeStr'")
+            ?: throw HttpParseException("Invalid chunk size '$sizeStr'")
         if (chunkSize == 0L) {
             // Consume optional trailer headers
             while (true) {
