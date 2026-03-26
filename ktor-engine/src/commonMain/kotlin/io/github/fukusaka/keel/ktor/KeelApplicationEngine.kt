@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.ktor
 
+import io.github.fukusaka.keel.codec.http.HttpEofException
+import io.github.fukusaka.keel.codec.http.HttpParseException
 import io.github.fukusaka.keel.codec.http.parseRequestHead
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
@@ -259,13 +261,12 @@ public class KeelApplicationEngine(
             val serverKeepAlive = configuration.keepAlive
 
             while (channel.isActive) {
-                // parseRequestHead throws IllegalArgumentException on EOF
-                // ("Unexpected EOF reading request line") and on malformed
-                // requests. Both cases mean the connection should be closed.
                 val head = try {
                     parseRequestHead(source)
-                } catch (_: Exception) {
-                    break
+                } catch (_: HttpEofException) {
+                    break  // client closed connection
+                } catch (_: HttpParseException) {
+                    break  // malformed request
                 }
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive()
