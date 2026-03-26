@@ -85,6 +85,13 @@ expect class NativeBuf internal constructor(capacity: Int) {
      */
     fun clear()
 
+    /**
+     * Resets the buffer for reuse from a pool.
+     * Restores [readerIndex], [writerIndex] to 0 and reference count to 1.
+     * Called by pool-based allocators when recycling a released buffer.
+     */
+    internal fun resetForReuse()
+
     /** Increments the reference count and returns this buffer for chaining. */
     fun retain(): NativeBuf
 

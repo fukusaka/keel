@@ -74,6 +74,14 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         buf.limit(capacity)
     }
 
+    internal actual fun resetForReuse() {
+        readerIndex = 0
+        writerIndex = 0
+        refCount = 1
+        buf.position(0)
+        buf.limit(capacity)
+    }
+
     actual fun retain(): NativeBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
         refCount++

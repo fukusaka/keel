@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -33,7 +32,6 @@ import platform.posix.errno
  * @param bossLoop    The boss [EpollEventLoop] for accept readiness notification.
  * @param workerGroup Worker EventLoopGroup for accepted channels.
  * @param localAddress Bind address of this server channel.
- * @param allocator   Passed to accepted [EpollChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollServerChannel(
@@ -41,7 +39,6 @@ internal class EpollServerChannel(
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val allocator: BufferAllocator,
 ) : ServerChannel {
 
     private var _active = true
@@ -65,7 +62,7 @@ internal class EpollServerChannel(
                 SocketUtils.setNonBlocking(clientFd)
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
-                val workerLoop = workerGroup.next()
+                val (workerLoop, allocator) = workerGroup.next()
                 return EpollChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
             }
 

@@ -55,7 +55,7 @@ class NioEngine(
     private val logger = config.loggerFactory.logger("NioEngine")
     private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")
     private val bossLoop = NioEventLoop("keel-nio-boss", eventLoopLogger)
-    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker", eventLoopLogger)
+    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker", eventLoopLogger, config.allocator)
     private var closed = false
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -72,7 +72,7 @@ class NioEngine(
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, config.allocator)
+        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr)
     }
 
     /**
@@ -92,7 +92,7 @@ class NioEngine(
 
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
-        val workerLoop = workerGroup.next()
+        val (workerLoop, allocator) = workerGroup.next()
 
         // Try connect first — loopback may succeed or fail immediately
         // without needing Selector registration.
@@ -128,7 +128,7 @@ class NioEngine(
         val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
-        return NioChannel(socketChannel, selectionKey, workerLoop, config.allocator, remoteAddr, localAddr)
+        return NioChannel(socketChannel, selectionKey, workerLoop, allocator, remoteAddr, localAddr)
     }
 
     override fun close() {

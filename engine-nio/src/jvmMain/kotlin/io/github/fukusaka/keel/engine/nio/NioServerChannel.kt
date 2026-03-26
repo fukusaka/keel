@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -35,7 +34,6 @@ import java.nio.channels.ServerSocketChannel
  * @param bossLoop      EventLoop for accept readiness notification.
  * @param workerGroup   Worker EventLoopGroup for accepted channels.
  * @param localAddress  Bind address of this server channel.
- * @param allocator     Passed to accepted [NioChannel]s.
  */
 internal class NioServerChannel(
     private val serverChannel: ServerSocketChannel,
@@ -43,7 +41,6 @@ internal class NioServerChannel(
     private val bossLoop: NioEventLoop,
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val allocator: BufferAllocator,
 ) : ServerChannel {
 
     private var _active = true
@@ -64,7 +61,7 @@ internal class NioServerChannel(
                 client.configureBlocking(false)
                 val remoteAddr = NioChannel.toSocketAddress(client.remoteAddress)
                 val localAddr = NioChannel.toSocketAddress(client.localAddress)
-                val workerLoop = workerGroup.next()
+                val (workerLoop, allocator) = workerGroup.next()
                 // One-time registration with the worker's Selector.
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
