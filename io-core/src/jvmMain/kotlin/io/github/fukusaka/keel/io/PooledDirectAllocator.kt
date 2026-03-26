@@ -42,7 +42,7 @@ class PooledDirectAllocator(
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
         val buf = if (capacity == bufferSize && pool.isNotEmpty()) {
-            pool.removeLast().also { it.clear() }
+            pool.removeLast().also { it.resetForReuse() }
         } else {
             NativeBuf(capacity)
         }
