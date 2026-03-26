@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.HeapAllocator
 import io.github.fukusaka.keel.io.TrackingAllocator
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -112,7 +113,7 @@ class NioEngineTest {
 
         rawWrite(client, "hello")
 
-        val readBuf = NativeBuf(64)
+        val readBuf = HeapAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
@@ -140,7 +141,7 @@ class NioEngineTest {
 
         client.close() // Client closes -> EOF
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(-1, n)
 
@@ -159,7 +160,7 @@ class NioEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         buf.writeByte(0x41) // 'A'
         buf.writeByte(0x42) // 'B'
 
@@ -187,11 +188,11 @@ class NioEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf1 = NativeBuf(4)
+        val buf1 = HeapAllocator.allocate(4)
         buf1.writeByte(0x41) // 'A'
         buf1.writeByte(0x42) // 'B'
 
-        val buf2 = NativeBuf(4)
+        val buf2 = HeapAllocator.allocate(4)
         buf2.writeByte(0x43) // 'C'
         buf2.writeByte(0x44) // 'D'
 
@@ -221,7 +222,7 @@ class NioEngineTest {
 
         rawWrite(client, "abc")
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         ch.read(buf)
         assertEquals(3, buf.writerIndex)
@@ -243,7 +244,7 @@ class NioEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0, buf.readerIndex)
@@ -296,7 +297,7 @@ class NioEngineTest {
 
         rawWrite(client, "hi")
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -377,20 +378,20 @@ class NioEngineTest {
 
         // Client writes, server reads and echoes back
         val msg = "async-connect"
-        val writeBuf = NativeBuf(64)
+        val writeBuf = HeapAllocator.allocate(64)
         for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         client.flush()
         writeBuf.release()
 
-        val readBuf = NativeBuf(64)
+        val readBuf = HeapAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(msg.length, n)
         serverCh.write(readBuf)
         serverCh.flush()
         readBuf.release()
 
-        val echoBuf = NativeBuf(64)
+        val echoBuf = HeapAllocator.allocate(64)
         val n2 = client.read(echoBuf)
         assertEquals(msg.length, n2)
         echoBuf.release()
@@ -486,7 +487,7 @@ class NioEngineTest {
 
         client.close()
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = ch.asSuspendSource().read(buf)
         assertEquals(-1, n)
 
@@ -509,7 +510,7 @@ class NioEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.read(NativeBuf(8))
+            ch.read(HeapAllocator.allocate(8))
         }
 
         client.close()
@@ -528,7 +529,7 @@ class NioEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.write(NativeBuf(8))
+            ch.write(HeapAllocator.allocate(8))
         }
 
         client.close()
@@ -562,7 +563,7 @@ class NioEngineTest {
 
         val results = channels.map { ch ->
             async {
-                val buf = NativeBuf(64)
+                val buf = HeapAllocator.allocate(64)
                 val n = ch.read(buf)
                 val bytes = ByteArray(n)
                 for (j in 0 until n) bytes[j] = buf.readByte()
@@ -615,7 +616,7 @@ class NioEngineTest {
         val ch = server.accept()
 
         val readResult = async {
-            val buf = NativeBuf(64)
+            val buf = HeapAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -646,7 +647,7 @@ class NioEngineTest {
         val ch = server.accept()
 
         val readJob = launch {
-            val buf = NativeBuf(64)
+            val buf = HeapAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -702,7 +703,7 @@ class NioEngineTest {
             client.getOutputStream().write(msg.toByteArray())
             client.getOutputStream().flush()
 
-            val buf = NativeBuf(64)
+            val buf = HeapAllocator.allocate(64)
             val n = ch.read(buf)
             assertEquals(msg.length, n)
 
@@ -736,7 +737,7 @@ class NioEngineTest {
         val payloadSize = 100_000
         val payload = "x".repeat(payloadSize)
 
-        val writeBuf = NativeBuf(payloadSize)
+        val writeBuf = HeapAllocator.allocate(payloadSize)
         for (b in payload.encodeToByteArray()) writeBuf.writeByte(b)
         ch.write(writeBuf)
 
@@ -785,7 +786,7 @@ class NioEngineTest {
         val payload = "y".repeat(totalSize)
 
         for (i in 0 until chunks) {
-            val buf = NativeBuf(chunkSize)
+            val buf = HeapAllocator.allocate(chunkSize)
             for (b in "y".repeat(chunkSize).encodeToByteArray()) buf.writeByte(b)
             ch.write(buf)
             buf.release() // write retains
@@ -830,7 +831,7 @@ class NioEngineTest {
         client.getOutputStream().write("leak-check".toByteArray())
         client.getOutputStream().flush()
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = withTimeout(3000) { ch.read(buf) }
         assertEquals(10, n)
         ch.write(buf)
@@ -868,7 +869,7 @@ class NioEngineTest {
 
         var totalRead = 0
         while (totalRead < payload.length) {
-            val buf = NativeBuf(8192)
+            val buf = HeapAllocator.allocate(8192)
             val n = withTimeout(3000) { ch.read(buf) }
             if (n <= 0) {
                 buf.release()
@@ -900,13 +901,13 @@ class NioEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val writeBuf = NativeBuf(64)
+        val writeBuf = HeapAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         withTimeout(3000) { clientCh.flush() }
         writeBuf.release()
 
-        val readBuf = NativeBuf(64)
+        val readBuf = HeapAllocator.allocate(64)
         withTimeout(3000) { serverCh.read(readBuf) }
         readBuf.release()
 

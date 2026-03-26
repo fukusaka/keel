@@ -49,7 +49,7 @@ class SuspendChannelBridgeTest {
         val channel = StubChannel()
         val source = channel.asSuspendSource()
 
-        val buf = NativeBuf(16)
+        val buf = HeapAllocator.allocate(16)
         val n = source.read(buf)
 
         assertEquals(1, n)
@@ -63,7 +63,7 @@ class SuspendChannelBridgeTest {
         val channel = StubChannel()
         val sink = channel.asSuspendSink()
 
-        val buf = NativeBuf(16)
+        val buf = HeapAllocator.allocate(16)
         buf.writeByte(0x41)
         val n = sink.write(buf)
         sink.flush()
