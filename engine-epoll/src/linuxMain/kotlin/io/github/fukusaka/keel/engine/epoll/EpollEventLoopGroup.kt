@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.logging.Logger
 import kotlin.concurrent.AtomicInt
 
 /**
@@ -15,10 +16,11 @@ import kotlin.concurrent.AtomicInt
  * Array + AtomicInt round-robin.
  *
  * @param size Number of EventLoop threads. Must be >= 1.
+ * @param logger Logger for each EventLoop in the group.
  */
-internal class EpollEventLoopGroup(size: Int) {
+internal class EpollEventLoopGroup(size: Int, logger: Logger) {
 
-    private val loops = Array(size) { EpollEventLoop() }
+    private val loops = Array(size) { EpollEventLoop(logger) }
     private val index = AtomicInt(0)
 
     /** Starts all EventLoop threads. */
