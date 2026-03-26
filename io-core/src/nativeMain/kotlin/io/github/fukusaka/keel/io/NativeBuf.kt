@@ -76,6 +76,7 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
+        freed = false
     }
 
     actual fun retain(): NativeBuf {

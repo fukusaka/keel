@@ -10,8 +10,9 @@ import kotlin.test.assertTrue
  * Tests for pool-based allocator behavior shared by [SlabAllocator] (Native)
  * and [PooledDirectAllocator] (JVM).
  *
- * Uses [HeapAllocator] as the baseline (no pooling) and the platform-specific
- * pool allocator as the subject under test.
+ * Uses the platform-specific pool allocator as the subject under test.
+ * JS falls back to [HeapAllocator] (no pooling), so pool-specific tests
+ * (reuse, maxPoolSize) are guarded by [isPoolAllocator].
  */
 class PoolAllocatorTest {
 
@@ -25,12 +26,12 @@ class PoolAllocatorTest {
 
     @Test
     fun releasedBufferIsReusedOnNextAllocate() {
+        if (!isPoolAllocator()) return
         val allocator = createPoolAllocator()
         val buf1 = allocator.allocate(8192)
         buf1.release()
 
         val buf2 = allocator.allocate(8192)
-        // Pool should return the same instance (cleared)
         assertSame(buf1, buf2)
         assertEquals(0, buf2.readerIndex)
         assertEquals(0, buf2.writerIndex)
@@ -47,20 +48,16 @@ class PoolAllocatorTest {
 
     @Test
     fun poolDoesNotExceedMaxSize() {
+        if (!isPoolAllocator()) return
         val allocator = createPoolAllocator(maxPoolSize = 2)
         val bufs = (0 until 5).map { allocator.allocate(8192) }
-        // Release all 5 — only 2 should be pooled
         bufs.forEach { it.release() }
 
-        // Next 2 allocations should come from pool
         val reused1 = allocator.allocate(8192)
         val reused2 = allocator.allocate(8192)
-        // Third allocation should be fresh (pool exhausted)
         val fresh = allocator.allocate(8192)
         assertTrue(bufs.contains(reused1))
         assertTrue(bufs.contains(reused2))
-        // fresh may or may not be a previously-seen instance depending on
-        // whether close() resets state. Just verify it works.
         assertEquals(8192, fresh.capacity)
         reused1.release()
         reused2.release()
@@ -69,6 +66,7 @@ class PoolAllocatorTest {
 
     @Test
     fun createForEventLoopReturnsNewInstance() {
+        if (!isPoolAllocator()) return
         val base = createPoolAllocator()
         val perEventLoop = base.createForEventLoop()
         assertNotSame(base, perEventLoop)
@@ -91,9 +89,12 @@ class PoolAllocatorTest {
 
 /**
  * Creates the platform-specific pool allocator.
- * Implemented via expect/actual in platform test source sets.
+ * Native: [SlabAllocator], JVM: [PooledDirectAllocator], JS: [HeapAllocator].
  */
 expect fun createPoolAllocator(
     bufferSize: Int = 8192,
     maxPoolSize: Int = 256,
 ): BufferAllocator
+
+/** Returns true if the platform has a real pool allocator (Native/JVM). */
+expect fun isPoolAllocator(): Boolean
