@@ -14,6 +14,7 @@ dependencyResolutionManagement {
 }
 
 include(
+    ":logging",
     ":io-core",
     ":core",
     ":engine-epoll",
