@@ -103,8 +103,8 @@ class BufSlice(
             val c = string[i].code
             if (b == c) continue
             // ASCII case-insensitive: 'A'..'Z' (65..90) vs 'a'..'z' (97..122)
-            if (b or 0x20 != c or 0x20) return false
-            if (b or 0x20 !in 0x61..0x7A) return false
+            if ((b or 0x20) != (c or 0x20)) return false
+            if ((b or 0x20) !in 0x61..0x7A) return false
         }
         return true
     }
