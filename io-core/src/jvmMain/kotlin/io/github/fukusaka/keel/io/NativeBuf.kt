@@ -46,6 +46,8 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
 
     actual fun readByte(): Byte = buf.get(readerIndex++)
 
+    actual fun getByte(index: Int): Byte = buf.get(index)
+
     actual fun compact() {
         if (readerIndex > 0) {
             val readable = readableBytes
