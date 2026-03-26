@@ -3,14 +3,15 @@ package io.github.fukusaka.keel.io
 /**
  * Delegating [BufferAllocator] that counts allocate/release calls.
  *
+ * Wraps the delegate's [NativeBuf.deallocator] to intercept release
+ * events, so `buf.release()` is correctly counted regardless of where
+ * it is called.
+ *
  * Used for testing (asserting allocate/release symmetry) and profiling
  * (measuring allocation frequency during benchmarks).
  *
  * **Thread safety**: not thread-safe. Intended for single-threaded test
  * execution where allocate/release are called from the same thread.
- * For multi-threaded profiling (e.g., benchmark with multiple EventLoops),
- * use separate TrackingAllocator instances per thread or accept approximate
- * counts.
  *
  * ```
  * val tracker = TrackingAllocator(HeapAllocator)
@@ -29,7 +30,7 @@ class TrackingAllocator(
     var allocateCount: Int = 0
         private set
 
-    /** Total number of [release] calls since creation or last [reset]. */
+    /** Total number of release calls since creation or last [reset]. */
     var releaseCount: Int = 0
         private set
 
@@ -38,12 +39,13 @@ class TrackingAllocator(
 
     override fun allocate(capacity: Int): NativeBuf {
         allocateCount++
-        return delegate.allocate(capacity)
-    }
-
-    override fun release(buf: NativeBuf) {
-        releaseCount++
-        delegate.release(buf)
+        val buf = delegate.allocate(capacity)
+        val original = buf.deallocator
+        buf.deallocator = { b ->
+            releaseCount++
+            original?.invoke(b) ?: b.close()
+        }
+        return buf
     }
 
     /** Resets counters to zero. */

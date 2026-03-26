@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: add `NativeBuf.deallocator` callback for pool-based buffer reclamation; `release()` invokes deallocator instead of directly freeing memory
+- `io-core`: make `NativeBuf` constructor `internal`; create buffers via `BufferAllocator.allocate()`
+- `io-core`: remove `BufferAllocator.release(buf)`; use `buf.release()` as the single release path
+- `io-core`: add `BufferAllocator.createForEventLoop()` for per-EventLoop allocator instances
+- `io-core`: `TrackingAllocator` now wraps the deallocator callback to track releases from any call site
 - `io-core`: `BufferedSuspendSource.readByte()`/`readByteArray()` now throw `KeelEofException` instead of `IllegalStateException`
 - `codec-http`: `HttpParser` throws `HttpEofException`/`HttpParseException` instead of `IllegalArgumentException`
 - `codec-http`: `HttpVersion.of()` throws `HttpParseException` instead of `IllegalArgumentException`

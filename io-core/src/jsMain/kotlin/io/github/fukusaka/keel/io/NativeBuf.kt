@@ -13,9 +13,10 @@ import org.khronos.webgl.Int8Array
  * Note: [Int8Array] provides direct byte-level access without `dynamic`
  * type casts, ensuring type safety in Kotlin/JS IR mode.
  */
-actual class NativeBuf actual constructor(actual val capacity: Int) {
+actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     private val buf = Int8Array(capacity)
     private var refCount = 1
+    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0
@@ -61,7 +62,16 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
 
     actual fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
-        return --refCount == 0
+        if (--refCount == 0) {
+            val d = deallocator
+            if (d != null) {
+                d(this)
+            } else {
+                close()
+            }
+            return true
+        }
+        return false
     }
 
     actual fun close() {

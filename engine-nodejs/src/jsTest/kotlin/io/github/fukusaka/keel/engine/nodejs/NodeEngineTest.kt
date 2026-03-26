@@ -82,13 +82,13 @@ class NodeEngineTest {
         val serverCh = server.accept()
 
         // Client sends "hello"
-        val writeBuf = NativeBuf(64)
+        val writeBuf = HeapAllocator.allocate(64)
         for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
         // Server reads
-        val readBuf = NativeBuf(64)
+        val readBuf = HeapAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
@@ -97,7 +97,7 @@ class NodeEngineTest {
         serverCh.flush()
 
         // Client receives
-        val echoBuf = NativeBuf(64)
+        val echoBuf = HeapAllocator.allocate(64)
         val n2 = clientCh.read(echoBuf)
         assertEquals(5, n2)
 
@@ -124,7 +124,7 @@ class NodeEngineTest {
 
         clientCh.close() // Client closes -> EOF
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = serverCh.read(buf)
         assertEquals(-1, n)
 
@@ -143,7 +143,7 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         buf.writeByte(0x41) // 'A'
         buf.writeByte(0x42) // 'B'
 
@@ -152,7 +152,7 @@ class NodeEngineTest {
 
         serverCh.flush()
 
-        val readBuf = NativeBuf(8)
+        val readBuf = HeapAllocator.allocate(8)
         val n = clientCh.read(readBuf)
         assertEquals(2, n)
         assertEquals(0x41.toByte(), readBuf.readByte())
@@ -175,12 +175,12 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val writeBuf = NativeBuf(8)
+        val writeBuf = HeapAllocator.allocate(8)
         for (b in "abc".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         serverCh.read(buf)
         assertEquals(3, buf.writerIndex)
@@ -203,7 +203,7 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0, buf.readerIndex)
@@ -234,7 +234,7 @@ class NodeEngineTest {
         serverCh.shutdownOutput()
 
         // Client should see EOF
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         val n = clientCh.read(buf)
         assertEquals(-1, n)
 
@@ -256,12 +256,12 @@ class NodeEngineTest {
 
         serverCh.shutdownOutput()
 
-        val writeBuf = NativeBuf(8)
+        val writeBuf = HeapAllocator.allocate(8)
         for (b in "hi".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
-        val buf = NativeBuf(64)
+        val buf = HeapAllocator.allocate(64)
         val n = serverCh.read(buf)
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -326,7 +326,7 @@ class NodeEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.read(NativeBuf(8))
+            ch.read(HeapAllocator.allocate(8))
         }
 
         server.close()
@@ -344,7 +344,7 @@ class NodeEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.write(NativeBuf(8))
+            ch.write(HeapAllocator.allocate(8))
         }
 
         server.close()
@@ -373,7 +373,7 @@ class NodeEngineTest {
         val serverCh = server.accept()
 
         // Write via client
-        val writeBuf = NativeBuf(8)
+        val writeBuf = HeapAllocator.allocate(8)
         writeBuf.writeByte(0x41)
         writeBuf.writeByte(0x42)
         clientCh.write(writeBuf)
@@ -411,7 +411,7 @@ class NodeEngineTest {
         sink.close()
 
         // Read via client
-        val readBuf = NativeBuf(8)
+        val readBuf = HeapAllocator.allocate(8)
         val n = clientCh.read(readBuf)
         assertEquals(2, n)
         assertEquals(0x43.toByte(), readBuf.readByte())
@@ -437,7 +437,7 @@ class NodeEngineTest {
         clientCh.close()
 
         val source = serverCh.asSuspendSource()
-        val buf = NativeBuf(8)
+        val buf = HeapAllocator.allocate(8)
         val n = source.read(buf)
         assertEquals(-1, n)
         buf.release()
