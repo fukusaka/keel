@@ -49,11 +49,11 @@ class BufferedSuspendSource(
     /**
      * Reads a single byte, suspending if the buffer is empty.
      *
-     * @throws IllegalStateException on EOF.
+     * @throws KeelEofException on EOF.
      */
     suspend fun readByte(): Byte {
         if (buf.readableBytes == 0 && !fill()) {
-            throw IllegalStateException("Unexpected EOF")
+            throw KeelEofException("Unexpected EOF")
         }
         return buf.readByte()
     }
@@ -92,14 +92,14 @@ class BufferedSuspendSource(
     /**
      * Reads exactly [count] bytes into a new ByteArray.
      *
-     * @throws IllegalStateException if EOF is reached before [count] bytes.
+     * @throws KeelEofException if EOF is reached before [count] bytes.
      */
     suspend fun readByteArray(count: Int): ByteArray {
         val result = ByteArray(count)
         var offset = 0
         while (offset < count) {
             if (buf.readableBytes == 0 && !fill()) {
-                throw IllegalStateException("Unexpected EOF: expected $count bytes, got $offset")
+                throw KeelEofException("Unexpected EOF: expected $count bytes, got $offset")
             }
             val available = buf.readableBytes.coerceAtMost(count - offset)
             for (i in 0 until available) {

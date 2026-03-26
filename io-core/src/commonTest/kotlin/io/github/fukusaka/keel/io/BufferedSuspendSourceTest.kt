@@ -64,7 +64,7 @@ class BufferedSuspendSourceTest {
     @Test
     fun readByteEofThrows() = runBlocking {
         val source = BufferedSuspendSource(sourceOf(""), HeapAllocator)
-        assertFailsWith<IllegalStateException> { source.readByte() }
+        assertFailsWith<KeelEofException> { source.readByte() }
         source.close()
     }
 
@@ -79,7 +79,7 @@ class BufferedSuspendSourceTest {
     @Test
     fun readByteArrayEofThrows() = runBlocking {
         val source = BufferedSuspendSource(sourceOf("hi"), HeapAllocator)
-        assertFailsWith<IllegalStateException> { source.readByteArray(5) }
+        assertFailsWith<KeelEofException> { source.readByteArray(5) }
         source.close()
     }
 
