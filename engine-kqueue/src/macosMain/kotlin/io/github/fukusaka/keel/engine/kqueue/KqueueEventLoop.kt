@@ -16,6 +16,8 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 import io.github.fukusaka.keel.io.MpscQueue
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -91,7 +93,9 @@ import kotlin.coroutines.resume
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueueEventLoop : CoroutineDispatcher() {
+internal class KqueueEventLoop(
+    private val logger: Logger,
+) : CoroutineDispatcher() {
 
     /**
      * The kqueue file descriptor, created at construction.
@@ -296,12 +300,9 @@ internal class KqueueEventLoop : CoroutineDispatcher() {
                     val err = errno
                     if (err == EINTR || err == EAGAIN) continue
                     // Fatal error — log and terminate the EventLoop thread.
-                    // Cannot throw from a pthread; stderr is the only output path.
+                    // Cannot throw from a pthread; logger is the only output path.
                     val msg = strerror(err)?.toKString() ?: "unknown"
-                    val line = "keel: kevent() fatal error: $msg (errno=$err)\n"
-                    line.encodeToByteArray().usePinned { pinned ->
-                        write(2, pinned.addressOf(0), line.length.convert())
-                    }
+                    logger.error { "kevent() fatal error: $msg (errno=$err)" }
                     break
                 }
                 for (i in 0 until n) {

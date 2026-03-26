@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -55,8 +56,9 @@ class EpollEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
-    private val bossLoop = EpollEventLoop()
-    private val workerGroup = EpollEventLoopGroup(resolveThreads(config))
+    private val logger = config.loggerFactory.logger("EpollEngine")
+    private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
+    private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"))
     private var closed = false
 
     init {
@@ -80,6 +82,7 @@ class EpollEngine(
         }
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
+        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr, config.allocator)
     }
 
@@ -128,6 +131,7 @@ class EpollEngine(
 
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
+        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         return EpollChannel(fd, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
@@ -136,6 +140,7 @@ class EpollEngine(
             closed = true
             bossLoop.close()
             workerGroup.close()
+            logger.debug { "Engine closed" }
         }
     }
 

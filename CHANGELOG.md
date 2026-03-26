@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `logging`: add logging module with `Logger`, `LoggerFactory`, `LogLevel`, `NoopLoggerFactory`, and `PrintLogger`
 - `core`: add `loggerFactory` property to `IoEngineConfig` (defaults to `NoopLoggerFactory`)
 - `ktor-engine`: add `KtorLoggerAdapter` to bridge Ktor Logger to keel `LoggerFactory`
+- `engine-*`: add DEBUG lifecycle logging (bind, connect, close) to all six engines
+- `engine-kqueue`: replace stderr write with `Logger.error()` in KqueueEventLoop fatal error path
+- `engine-epoll`: replace fprintf(stderr) with `Logger.error()` in EpollEventLoop fatal error path
+- `engine-nio`: replace silent catch with `Logger.warn()` in NioEventLoop key processing
 - `io-core`: add `KeelEofException` as domain-specific base exception for unexpected EOF
 - `codec-http`: add `HttpParseException` and `HttpEofException` for layered error handling
 - `codec-http`: add status code range validation in `parseStatusLine` before `HttpStatus` construction

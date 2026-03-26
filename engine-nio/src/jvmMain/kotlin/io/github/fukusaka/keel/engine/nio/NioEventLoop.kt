@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import java.nio.channels.SelectableChannel
@@ -38,7 +40,7 @@ import kotlin.coroutines.resume
  *   4. processSelectedKeys() — interestOps(0) + cont.resume(Unit)
  * ```
  */
-internal class NioEventLoop(name: String) : CoroutineDispatcher() {
+internal class NioEventLoop(name: String, private val logger: Logger) : CoroutineDispatcher() {
 
     private val selector: Selector = Selector.open()
     private val regLock = Any()
@@ -214,9 +216,10 @@ internal class NioEventLoop(name: String) : CoroutineDispatcher() {
                 clearInterest(key)
                 @Suppress("UNCHECKED_CAST")
                 (cont as CancellableContinuation<Unit>).resume(Unit)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 // Individual key failure must not stop processing other keys.
                 // The channel's coroutine will observe the error on next I/O.
+                logger.warn(e) { "SelectionKey processing failed" }
             }
         }
     }
@@ -237,9 +240,10 @@ internal class NioEventLoop(name: String) : CoroutineDispatcher() {
  *
  * @param size Number of EventLoop threads.
  * @param namePrefix Thread name prefix (e.g., "keel-nio-worker").
+ * @param logger Logger for each EventLoop in the group.
  */
-internal class NioEventLoopGroup(size: Int, namePrefix: String) {
-    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i") }
+internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger) {
+    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger) }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Returns the next EventLoop in round-robin order. */

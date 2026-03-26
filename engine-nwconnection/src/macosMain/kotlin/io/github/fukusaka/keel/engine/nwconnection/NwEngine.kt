@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -57,6 +58,7 @@ class NwEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
+    private val logger = config.loggerFactory.logger("NwEngine")
     private var listener: nw_listener_t = null
     private var closed = false
 
@@ -123,6 +125,7 @@ class NwEngine(
 
         // Update the local address with the assigned port
         serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
+        logger.debug { "Bound to $host:$assignedPort" }
         return serverChannel
     }
 
@@ -161,6 +164,7 @@ class NwEngine(
             nw_endpoint_get_port(endpoint).toInt(),
         )
 
+        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         return NwChannel(conn, config.allocator, remoteAddr, null)
     }
 
@@ -168,6 +172,7 @@ class NwEngine(
         if (!closed) {
             closed = true
             listener?.let { nw_listener_cancel(it) }
+            logger.debug { "Engine closed" }
         }
     }
 

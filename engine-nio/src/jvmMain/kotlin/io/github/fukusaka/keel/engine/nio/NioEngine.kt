@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.logging.debug
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
@@ -51,8 +52,10 @@ class NioEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
-    private val bossLoop = NioEventLoop("keel-nio-boss")
-    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker")
+    private val logger = config.loggerFactory.logger("NioEngine")
+    private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")
+    private val bossLoop = NioEventLoop("keel-nio-boss", eventLoopLogger)
+    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker", eventLoopLogger)
     private var closed = false
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -68,6 +71,7 @@ class NioEngine(
         // One-time registration with the boss Selector
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
+        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, config.allocator)
     }
 
@@ -123,6 +127,7 @@ class NioEngine(
         val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
         val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
 
+        logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
         return NioChannel(socketChannel, selectionKey, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
@@ -131,6 +136,7 @@ class NioEngine(
             closed = true
             bossLoop.close()
             workerGroup.close()
+            logger.debug { "Engine closed" }
         }
     }
 

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.debug
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -36,6 +37,7 @@ class NodeEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
+    private val logger = config.loggerFactory.logger("NodeEngine")
     private var closed = false
 
     override suspend fun bind(host: String, port: Int): ServerChannel {
@@ -57,6 +59,7 @@ class NodeEngine(
                     serverChannel.onConnection(socket as Socket)
                 }
 
+                logger.debug { "Bound to $host:$assignedPort" }
                 cont.resume(serverChannel)
             }
 
@@ -78,6 +81,7 @@ class NodeEngine(
                     socket.localPort?.let { p -> SocketAddress(h, p) }
                 }
                 val channel = NodeChannel(socket, config.allocator, remoteAddr, localAddr)
+                logger.debug { "Connected to $host:$port" }
                 cont.resume(channel)
             }
 
@@ -90,6 +94,7 @@ class NodeEngine(
     override fun close() {
         if (!closed) {
             closed = true
+            logger.debug { "Engine closed" }
         }
     }
 }

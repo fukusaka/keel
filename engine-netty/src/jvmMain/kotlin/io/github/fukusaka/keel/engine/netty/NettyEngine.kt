@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.logging.debug
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
@@ -52,6 +53,7 @@ class NettyEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
+    private val logger = config.loggerFactory.logger("NettyEngine")
     private val bossGroup = NioEventLoopGroup(1)
     private val workerGroup = NioEventLoopGroup(config.threads)
     private var closed = false
@@ -98,6 +100,7 @@ class NettyEngine(
             ?: error("Failed to get local address")
 
         serverChannel.init(nettyServerCh, localAddr)
+        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return serverChannel
     }
 
@@ -141,6 +144,7 @@ class NettyEngine(
         val keelChannel = NettyChannel(nettyChannel, config.allocator, remoteAddr, localAddr)
         nettyChannel.pipeline().addLast(keelChannel.handler)
 
+        logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
         return keelChannel
     }
 
@@ -152,6 +156,7 @@ class NettyEngine(
             // causes CI timeouts when channels are not fully drained.
             workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
             bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
+            logger.debug { "Engine closed" }
         }
     }
 }

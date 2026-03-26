@@ -14,6 +14,8 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import io.github.fukusaka.keel.io.MpscQueue
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -36,6 +38,7 @@ import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import kotlinx.cinterop.toKString
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -87,7 +90,9 @@ import kotlin.coroutines.resume
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollEventLoop : CoroutineDispatcher() {
+internal class EpollEventLoop(
+    private val logger: Logger,
+) : CoroutineDispatcher() {
 
     /**
      * The epoll file descriptor, created at construction.
@@ -274,14 +279,9 @@ internal class EpollEventLoop : CoroutineDispatcher() {
                     // EAGAIN: spurious wakeup. Both are retriable.
                     val err = errno
                     if (err == EINTR || err == EAGAIN) continue
-                    // Fatal error — log before exiting the EventLoop.
-                    // Cannot throw (no coroutine context), so print to stderr.
-                    platform.posix.fprintf(
-                        platform.posix.fdopen(2, "w"),
-                        "epoll_wait() fatal error: errno=%d (%s)\n",
-                        err,
-                        strerror(err),
-                    )
+                    // Fatal error — log and terminate the EventLoop thread.
+                    // Cannot throw from a pthread; logger is the only output path.
+                    logger.error { "epoll_wait() fatal error: ${strerror(err)?.toKString()} (errno=$err)" }
                     break
                 }
                 for (i in 0 until n) {
