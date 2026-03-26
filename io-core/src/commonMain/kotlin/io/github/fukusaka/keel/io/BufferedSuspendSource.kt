@@ -90,6 +90,54 @@ class BufferedSuspendSource(
     }
 
     /**
+     * Scans for a line terminated by `\n` or `\r\n` and returns it as a
+     * [BufSlice] pointing directly into the internal buffer (zero-copy).
+     *
+     * The returned BufSlice is valid until the next [scanLine], [readLine],
+     * [fill], or [close] call. The caller must not hold a reference beyond
+     * the current parse step.
+     *
+     * If the line does not fit in the buffer (longer than [BUFFER_SIZE]),
+     * the buffer is compacted and refilled. HTTP header lines are typically
+     * a few hundred bytes, so this path is rarely taken.
+     *
+     * @return the line without the line terminator, or null on EOF.
+     */
+    suspend fun scanLine(): BufSlice? {
+        while (true) {
+            // Scan readable region for LF
+            val start = buf.readerIndex
+            val end = buf.writerIndex
+            for (i in start until end) {
+                if (buf.getByte(i) == LF) {
+                    // Found LF — compute line length excluding terminators
+                    var lineEnd = i
+                    if (lineEnd > start && buf.getByte(lineEnd - 1) == CR) {
+                        lineEnd-- // strip \r
+                    }
+                    val slice = BufSlice(buf, start, lineEnd - start)
+                    buf.readerIndex = i + 1 // consume through LF
+                    return slice
+                }
+            }
+
+            // LF not found in current buffer — need more data
+            if (!fill()) {
+                // EOF — return remaining bytes as a line, or null if empty
+                return if (buf.readableBytes > 0) {
+                    val slice = BufSlice(buf, buf.readerIndex, buf.readableBytes)
+                    buf.readerIndex = buf.writerIndex
+                    slice
+                } else {
+                    null
+                }
+            }
+            // After fill(), compact() moved data to offset 0 and appended new data.
+            // Loop back to scan from the new readerIndex.
+        }
+    }
+
+    /**
      * Reads exactly [count] bytes into a new ByteArray.
      *
      * @throws KeelEofException if EOF is reached before [count] bytes.
@@ -142,5 +190,6 @@ class BufferedSuspendSource(
          */
         private const val BUFFER_SIZE = 8192
         private const val LF = '\n'.code.toByte()
+        private const val CR = '\r'.code.toByte()
     }
 }

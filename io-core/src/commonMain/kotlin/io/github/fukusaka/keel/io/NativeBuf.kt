@@ -71,6 +71,13 @@ expect class NativeBuf internal constructor(capacity: Int) {
     fun readByte(): Byte
 
     /**
+     * Reads a byte at the given absolute [index] without modifying [readerIndex].
+     *
+     * Used by [BufSlice] for random access within a buffer region.
+     */
+    fun getByte(index: Int): Byte
+
+    /**
      * Discards already-read bytes by moving readable data to the beginning
      * of the buffer, maximizing writable space.
      *
