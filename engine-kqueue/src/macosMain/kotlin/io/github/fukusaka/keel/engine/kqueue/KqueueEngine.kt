@@ -59,7 +59,7 @@ class KqueueEngine(
 
     private val logger = config.loggerFactory.logger("KqueueEngine")
     private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
-    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("KqueueEventLoop"))
+    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("KqueueEventLoop"), config.allocator)
     private var closed = false
 
     init {
@@ -91,7 +91,7 @@ class KqueueEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr, config.allocator)
+        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr)
     }
 
     /**
@@ -111,7 +111,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = SocketUtils.createUnconnectedSocket()
-        val workerLoop = workerGroup.next()
+        val (workerLoop, allocator) = workerGroup.next()
 
         val result = SocketUtils.connectNonBlocking(fd, host, port)
         if (result < 0) {
@@ -140,7 +140,7 @@ class KqueueEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return KqueueChannel(fd, workerLoop, config.allocator, remoteAddr, localAddr)
+        return KqueueChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
     }
 
     override fun close() {

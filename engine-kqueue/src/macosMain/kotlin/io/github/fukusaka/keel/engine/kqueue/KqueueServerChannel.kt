@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -31,9 +30,8 @@ import platform.posix.errno
  *
  * @param serverFd    The listening server socket fd (non-blocking).
  * @param bossLoop    The boss [KqueueEventLoop] for accept readiness notification.
- * @param workerGroup Worker EventLoopGroup for accepted channels.
+ * @param workerGroup Worker EventLoopGroup for accepted channels (provides per-EventLoop allocator).
  * @param localAddress Bind address of this server channel.
- * @param allocator   Passed to accepted [KqueueChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueServerChannel(
@@ -41,7 +39,6 @@ internal class KqueueServerChannel(
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val allocator: BufferAllocator,
 ) : ServerChannel {
 
     private var _active = true
@@ -65,7 +62,7 @@ internal class KqueueServerChannel(
                 SocketUtils.setNonBlocking(clientFd)
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
-                val workerLoop = workerGroup.next()
+                val (workerLoop, allocator) = workerGroup.next()
                 return KqueueChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
             }
 

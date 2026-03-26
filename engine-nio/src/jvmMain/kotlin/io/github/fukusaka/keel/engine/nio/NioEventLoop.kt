@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import kotlinx.coroutines.CancellableContinuation
@@ -241,15 +242,17 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
  * @param size Number of EventLoop threads.
  * @param namePrefix Thread name prefix (e.g., "keel-nio-worker").
  * @param logger Logger for each EventLoop in the group.
+ * @param allocator Base allocator; [BufferAllocator.createForEventLoop] is called per EventLoop.
  */
-internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger) {
+internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger, allocator: BufferAllocator) {
     private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger) }
+    private val allocators = Array(size) { allocator.createForEventLoop() }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /** Returns the next EventLoop in round-robin order. */
-    fun next(): NioEventLoop {
+    /** Returns the next EventLoop and its per-EventLoop allocator in round-robin order. */
+    fun next(): Pair<NioEventLoop, BufferAllocator> {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
-        return loops[i]
+        return loops[i] to allocators[i]
     }
 
     fun close() {

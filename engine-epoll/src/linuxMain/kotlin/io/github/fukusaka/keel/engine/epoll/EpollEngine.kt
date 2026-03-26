@@ -58,7 +58,7 @@ class EpollEngine(
 
     private val logger = config.loggerFactory.logger("EpollEngine")
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
-    private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"))
+    private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"), config.allocator)
     private var closed = false
 
     init {
@@ -83,7 +83,7 @@ class EpollEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr, config.allocator)
+        return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr)
     }
 
     /**
@@ -103,7 +103,7 @@ class EpollEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = SocketUtils.createUnconnectedSocket()
-        val workerLoop = workerGroup.next()
+        val (workerLoop, allocator) = workerGroup.next()
 
         val result = SocketUtils.connectNonBlocking(fd, host, port)
         if (result < 0) {
@@ -132,7 +132,7 @@ class EpollEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return EpollChannel(fd, workerLoop, config.allocator, remoteAddr, localAddr)
+        return EpollChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
     }
 
     override fun close() {
