@@ -3,8 +3,8 @@ package io.github.fukusaka.keel.logging
 /**
  * Creates [Logger] instances identified by a tag (typically a class name).
  *
- * Set on [IoEngineConfig.loggerFactory][io.github.fukusaka.keel.core.IoEngineConfig]
- * to enable logging for an engine and all channels it creates.
+ * Set on `IoEngineConfig.loggerFactory` to enable logging for an engine
+ * and all channels it creates.
  * The default is [NoopLoggerFactory] which discards all log output.
  */
 public fun interface LoggerFactory {
