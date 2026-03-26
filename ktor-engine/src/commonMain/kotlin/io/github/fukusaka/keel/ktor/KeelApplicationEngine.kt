@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpEofException
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpParseException
 import io.github.fukusaka.keel.codec.http.HttpStatus
@@ -269,8 +270,8 @@ public class KeelApplicationEngine(
                     parseRequestHead(source)
                 } catch (_: HttpEofException) {
                     break  // client closed connection
-                } catch (e: HttpParseException) {
-                    respondBadRequest(sink, e.message)
+                } catch (_: HttpParseException) {
+                    respondBadRequest(sink)
                     break
                 }
 
@@ -345,11 +346,11 @@ public class KeelApplicationEngine(
      * Uses HTTP/1.0 to avoid implying keep-alive support, following the same
      * approach as Ktor CIO's error response handling.
      */
-    private suspend fun respondBadRequest(sink: BufferedSuspendSink, message: String?) {
+    private suspend fun respondBadRequest(sink: BufferedSuspendSink) {
         try {
             val headers = HttpHeaders()
-            headers.add("Connection", "close")
-            headers.add("Content-Length", "0")
+            headers.add(HttpHeaderName.CONNECTION, "close")
+            headers.add(HttpHeaderName.CONTENT_LENGTH, "0")
             writeResponseHead(HttpStatus.BAD_REQUEST, HttpVersion.HTTP_1_0, headers, sink)
             sink.flush()
         } catch (_: Exception) {
