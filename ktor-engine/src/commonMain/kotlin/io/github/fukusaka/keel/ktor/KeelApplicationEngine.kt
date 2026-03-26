@@ -1,8 +1,13 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpEofException
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpParseException
+import io.github.fukusaka.keel.codec.http.HttpStatus
+import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.parseRequestHead
+import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
@@ -266,7 +271,8 @@ public class KeelApplicationEngine(
                 } catch (_: HttpEofException) {
                     break  // client closed connection
                 } catch (_: HttpParseException) {
-                    break  // malformed request
+                    respondBadRequest(sink)
+                    break
                 }
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive()
@@ -331,6 +337,24 @@ public class KeelApplicationEngine(
             runCatching { source.close() }
             runCatching { sink.close() }
             runCatching { channel.close() }
+        }
+    }
+
+    /**
+     * Sends an HTTP 400 Bad Request response before closing the connection.
+     *
+     * Uses HTTP/1.0 to avoid implying keep-alive support, following the same
+     * approach as Ktor CIO's error response handling.
+     */
+    private suspend fun respondBadRequest(sink: BufferedSuspendSink) {
+        try {
+            val headers = HttpHeaders()
+            headers.add(HttpHeaderName.CONNECTION, "close")
+            headers.add(HttpHeaderName.CONTENT_LENGTH, "0")
+            writeResponseHead(HttpStatus.BAD_REQUEST, HttpVersion.HTTP_1_0, headers, sink)
+            sink.flush()
+        } catch (_: Exception) {
+            // Best-effort: client may have already disconnected
         }
     }
 }

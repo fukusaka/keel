@@ -14,6 +14,7 @@ import java.net.Socket
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -280,10 +281,9 @@ class KeelEngineTest {
     // --- Error handling ---
 
     @Test
-    fun `malformed request closes connection gracefully`() {
-        // Server should handle malformed HTTP and close the connection
-        // without crashing the accept loop. Subsequent valid requests
-        // must still be served.
+    fun `malformed request returns 400 and closes connection`() {
+        // Server should respond with 400 Bad Request on malformed HTTP,
+        // close the connection, and continue accepting new connections.
         withKeelServer({ routing { get("/") { call.respondText("OK") } } }) { port ->
             // Send garbage that is not valid HTTP
             Socket("127.0.0.1", port).use { sock ->
@@ -291,11 +291,10 @@ class KeelEngineTest {
                 val writer = PrintWriter(sock.getOutputStream(), true)
                 writer.print("NOT_HTTP\r\n\r\n")
                 writer.flush()
-                // Server should close the connection — read should return EOF or error
                 val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
-                val line = reader.readLine()
-                // Server may respond with nothing (EOF) or an error — either is acceptable
-                // The important thing is the server doesn't crash
+                val statusLine = reader.readLine()
+                assertNotNull(statusLine, "Server should respond before closing")
+                assertTrue(statusLine.contains("400"), "Expected 400 Bad Request, got: $statusLine")
             }
             // Verify server is still alive — next request succeeds
             val (status, body) = httpGet(port, "/")

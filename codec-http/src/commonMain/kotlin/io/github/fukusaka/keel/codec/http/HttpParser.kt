@@ -144,9 +144,8 @@ internal fun parseRequestLine(line: String): RequestLine {
 internal fun parseStatusLine(line: String): StatusLine {
     val parts = line.split(" ", limit = 3)
     if (parts.size < 2) throw HttpParseException("Invalid status line (expected at least 2 tokens): $line")
-    val code = parts[1].trim().toIntOrNull()
+    val code = parts[1].trim().toIntOrNull()?.takeIf { it in 100..999 }
         ?: throw HttpParseException("Invalid status code '${parts[1]}' in: $line")
-    if (code !in 100..999) throw HttpParseException("Invalid status code '$code' in: $line")
     return StatusLine(
         version = HttpVersion.of(parts[0].trimEnd()),
         status  = HttpStatus(code),

@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: `HttpParser` throws `HttpEofException`/`HttpParseException` instead of `IllegalArgumentException`
 - `codec-http`: `HttpVersion.of()` throws `HttpParseException` instead of `IllegalArgumentException`
 - `ktor-engine`: catch specific `HttpEofException`/`HttpParseException` instead of generic `Exception`
+- `ktor-engine`: respond with HTTP 400 Bad Request on malformed requests before closing connection
 
 ### Added
 
