@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.logging.error
 import io.ktor.events.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -104,6 +105,7 @@ public class KeelApplicationEngine(
     // so user code in routing {} blocks doesn't block the I/O EventLoop.
     // Channel I/O is dispatched on channel.coroutineDispatcher instead.
     private val appDispatcher = Dispatchers.Default
+    private val logger = KtorLoggerFactory(environment.log).logger("KeelApplicationEngine")
     private val startupJob = CompletableDeferred<Unit>()
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
@@ -219,7 +221,7 @@ public class KeelApplicationEngine(
                 if (!server.isActive || !isActive) break
                 // Backoff before retrying to prevent CPU spin on
                 // persistent errors (e.g. EMFILE, fd exhaustion).
-                environment.log.error("Accept failed, retrying in ${currentDelayMs}ms", e)
+                logger.error(e) { "Accept failed, retrying in ${currentDelayMs}ms" }
                 delay(currentDelayMs)
                 // Advance exponential backoff
                 if (configuration.acceptBackoff is AcceptBackoff.Exponential) {
@@ -331,7 +333,7 @@ public class KeelApplicationEngine(
             }
         } catch (e: Exception) {
             if (e !is kotlinx.coroutines.CancellationException) {
-                environment.log.error("Connection handling failed", e)
+                logger.error(e) { "Connection handling failed" }
             }
         } finally {
             runCatching { source.close() }
