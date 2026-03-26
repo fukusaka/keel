@@ -51,13 +51,13 @@ class HttpParserTest {
 
     @Test
     fun invalidRequestLineThrows() {
-        assertFailsWith<IllegalArgumentException> { parseRequestLine("GET HTTP/1.1") }
-        assertFailsWith<IllegalArgumentException> { parseRequestLine("") }
+        assertFailsWith<HttpParseException> { parseRequestLine("GET HTTP/1.1") }
+        assertFailsWith<HttpParseException> { parseRequestLine("") }
     }
 
     @Test
     fun invalidVersionInRequestLineThrows() {
-        assertFailsWith<IllegalArgumentException> { parseRequestLine("GET / HTTP/2.0") }
+        assertFailsWith<HttpParseException> { parseRequestLine("GET / HTTP/2.0") }
     }
 
     // --- parseStatusLine ---
@@ -86,8 +86,8 @@ class HttpParserTest {
 
     @Test
     fun invalidStatusCodeThrows() {
-        assertFailsWith<IllegalArgumentException> { parseStatusLine("HTTP/1.1 99 X") }
-        assertFailsWith<IllegalArgumentException> { parseStatusLine("HTTP/1.1 abc OK") }
+        assertFailsWith<HttpParseException> { parseStatusLine("HTTP/1.1 99 X") }
+        assertFailsWith<HttpParseException> { parseStatusLine("HTTP/1.1 abc OK") }
     }
 
     // --- parseHeaders ---
@@ -117,7 +117,7 @@ class HttpParserTest {
     @Test
     fun obsFoldThrows() {
         val src = buffer("Foo: bar\r\n baz\r\n\r\n")
-        assertFailsWith<IllegalArgumentException> { parseHeaders(src) }
+        assertFailsWith<HttpParseException> { parseHeaders(src) }
     }
 
     @Test

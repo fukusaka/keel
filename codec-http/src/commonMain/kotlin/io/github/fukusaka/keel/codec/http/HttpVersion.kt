@@ -11,6 +11,6 @@ enum class HttpVersion(val text: String, val major: Int, val minor: Int) {
     companion object {
         fun of(text: String): HttpVersion =
             entries.firstOrNull { it.text == text }
-                ?: throw IllegalArgumentException("Unsupported HTTP version: $text")
+                ?: throw HttpParseException("Unsupported HTTP version: $text")
     }
 }

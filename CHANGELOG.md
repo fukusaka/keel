@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add `KeelEofException` as domain-specific base exception for unexpected EOF
+- `codec-http`: add `HttpParseException` and `HttpEofException` for layered error handling
+- `codec-http`: add status code range validation in `parseStatusLine` before `HttpStatus` construction
+
+### Changed
+
+- `io-core`: `BufferedSuspendSource.readByte()`/`readByteArray()` now throw `KeelEofException` instead of `IllegalStateException`
+- `codec-http`: `HttpParser` throws `HttpEofException`/`HttpParseException` instead of `IllegalArgumentException`
+- `codec-http`: `HttpVersion.of()` throws `HttpParseException` instead of `IllegalArgumentException`
+- `ktor-engine`: catch specific `HttpEofException`/`HttpParseException` instead of generic `Exception`
+
+### Added
+
 - `core`: tests for `SocketAddress`, `IoEngineConfig`, and `SuspendChannelSource`/`SuspendChannelSink` bridge
 - Add detekt 1.23.8 static analysis with KMP-tuned configuration for all production modules
 - `io-core`: add `TrackingAllocator` for allocate/release leak detection in tests

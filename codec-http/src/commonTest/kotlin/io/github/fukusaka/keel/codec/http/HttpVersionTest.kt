@@ -18,12 +18,12 @@ class HttpVersionTest {
 
     @Test
     fun ofUnknownThrows() {
-        assertFailsWith<IllegalArgumentException> { HttpVersion.of("HTTP/2.0") }
+        assertFailsWith<HttpParseException> { HttpVersion.of("HTTP/2.0") }
     }
 
     @Test
     fun ofLowercaseThrows() {
-        assertFailsWith<IllegalArgumentException> { HttpVersion.of("http/1.1") }
+        assertFailsWith<HttpParseException> { HttpVersion.of("http/1.1") }
     }
 
     @Test
