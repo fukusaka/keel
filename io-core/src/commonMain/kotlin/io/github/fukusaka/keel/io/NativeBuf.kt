@@ -28,9 +28,20 @@ package io.github.fukusaka.keel.io
  *
  * @param capacity Buffer size in bytes.
  */
-expect class NativeBuf(capacity: Int) {
+expect class NativeBuf internal constructor(capacity: Int) {
     /** Buffer capacity in bytes. */
     val capacity: Int
+
+    /**
+     * Callback invoked when [release] decrements the reference count to zero.
+     *
+     * Set by the [BufferAllocator] that created this buffer. Pool-based
+     * allocators set this to return the buffer to the pool instead of
+     * freeing the underlying memory.
+     *
+     * When `null`, [release] falls back to [close] (direct memory free).
+     */
+    internal var deallocator: ((NativeBuf) -> Unit)?
 
     /** Current read position. */
     var readerIndex: Int

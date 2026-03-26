@@ -25,13 +25,14 @@ import platform.posix.memmove
  * A `freed` flag prevents double-free in [close].
  */
 @OptIn(ExperimentalForeignApi::class)
-actual class NativeBuf actual constructor(actual val capacity: Int) {
+actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     private val ptr = nativeHeap.allocArray<ByteVar>(capacity)
 
     /** Raw pointer to the underlying native memory. For engine-layer zero-copy I/O. */
     val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
+    actual internal var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0
@@ -80,7 +81,12 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
     actual fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            close()
+            val d = deallocator
+            if (d != null) {
+                d(this)
+            } else {
+                close()
+            }
             return true
         }
         return false

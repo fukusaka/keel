@@ -17,12 +17,13 @@ import java.nio.ByteBuffer
  * set `limit` to a smaller value, causing subsequent `put(index, value)`
  * to throw [IndexOutOfBoundsException] if index >= limit.
  */
-actual class NativeBuf actual constructor(actual val capacity: Int) {
+actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     private val buf: ByteBuffer = ByteBuffer.allocateDirect(capacity)
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
     private var refCount = 1
+    actual internal var deallocator: ((NativeBuf) -> Unit)? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0
@@ -81,7 +82,16 @@ actual class NativeBuf actual constructor(actual val capacity: Int) {
 
     actual fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
-        return --refCount == 0
+        if (--refCount == 0) {
+            val d = deallocator
+            if (d != null) {
+                d(this)
+            } else {
+                close()
+            }
+            return true
+        }
+        return false
     }
 
     actual fun close() {
