@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.logging
 
 /**
- * Simple [Logger] and [LoggerFactory] that writes to standard output via [println].
+ * Simple [Logger] that writes to standard output via [println].
  *
  * Intended for development and debugging. Production applications should
  * provide a [LoggerFactory] that bridges to their preferred logging framework
