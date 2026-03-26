@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
@@ -56,8 +57,9 @@ class KqueueEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
 ) : IoEngine {
 
-    private val bossLoop = KqueueEventLoop()
-    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config))
+    private val logger = config.loggerFactory.logger("KqueueEngine")
+    private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
+    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("KqueueEventLoop"))
     private var closed = false
 
     init {
@@ -88,6 +90,7 @@ class KqueueEngine(
         }
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
+        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr, config.allocator)
     }
 
@@ -136,6 +139,7 @@ class KqueueEngine(
 
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
+        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         return KqueueChannel(fd, workerLoop, config.allocator, remoteAddr, localAddr)
     }
 
@@ -144,6 +148,7 @@ class KqueueEngine(
             closed = true
             bossLoop.close()
             workerGroup.close()
+            logger.debug { "Engine closed" }
         }
     }
 
