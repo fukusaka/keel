@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: use `scanLine()` + `BufSlice` for suspend HTTP parsing (zero-copy line access with deferred String conversion)
 - `io-core`: add `BufSlice` for zero-copy read-only views over `NativeBuf` regions
 - `io-core`: add `NativeBuf.getByte(index)` for absolute byte access without modifying readerIndex
 - `io-core`: add `BufferedSuspendSource.scanLine()` returning `BufSlice` instead of `String`
