@@ -3,7 +3,10 @@ package io.github.fukusaka.keel.io
 /**
  * Buffered wrapper over [SuspendSink] providing writeString/writeByte utilities.
  *
- * Uses [NativeBuf] instances from [allocator] for zero-copy I/O:
+ * Uses [NativeBuf] instances from [allocator] for zero-copy I/O.
+ * The flush strategy is controlled by [deferFlush]:
+ *
+ * **deferFlush = true** (EventLoop-based engines: kqueue/epoll/NIO):
  * ```
  * writeString/writeByte → NativeBuf (buffer accumulation)
  *   → when buffer is full:
@@ -12,10 +15,12 @@ package io.github.fukusaka.keel.io
  *     Channel.flush → writev (single syscall for all queued buffers)
  * ```
  *
- * Multiple writes accumulate in the Channel's pending-write queue without
- * triggering OS writes. The caller's [flush] sends all queued buffers in
- * a single `writev` syscall, avoiding per-buffer OS write overhead that
- * would otherwise block the EventLoop thread.
+ * **deferFlush = false** (push-model engines: Netty/NWConnection/Node.js):
+ * ```
+ * writeString/writeByte → NativeBuf (buffer accumulation)
+ *   → when buffer is full:
+ *     NativeBuf → Channel.write + Channel.flush (immediate OS write) → clear
+ * ```
  *
  * **Ownership**: this class does NOT own [sink]. Closing this wrapper
  * releases the internal buffer but does not close or flush the underlying
