@@ -48,3 +48,12 @@ object HeapAllocator : BufferAllocator {
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf = NativeBuf(capacity)
 }
+
+/**
+ * Returns the recommended default [BufferAllocator] for the current platform.
+ *
+ * - **Native** (Linux/macOS): [SlabAllocator] — per-EventLoop nativeHeap pool
+ * - **JVM**: [PooledDirectAllocator] — per-EventLoop DirectByteBuffer pool
+ * - **JS**: [HeapAllocator] — V8 GC manages Int8Array; pooling is unnecessary
+ */
+expect fun defaultAllocator(): BufferAllocator

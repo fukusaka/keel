@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add `defaultAllocator()` expect/actual returning the platform-recommended pooled allocator
 - `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
 - `io-core`: add `BufferedSuspendSink.writeAscii()` for zero-allocation HTTP header writing
 - `codec-http`: add `HttpMethod.of()` factory that returns cached instances for standard methods
@@ -34,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: `IoEngineConfig.allocator` now defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`)
 - `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource` to reduce per-request allocations
 - `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
 - `codec-http`: use `String.equals(ignoreCase=true)` in `isKeepAlive()` instead of `String.lowercase()`
