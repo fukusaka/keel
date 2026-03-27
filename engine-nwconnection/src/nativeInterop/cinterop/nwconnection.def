@@ -109,6 +109,42 @@ void keel_nw_write_async(nw_connection_t conn,
 }
 
 /*
+ * Batched async write via NWConnection (scatter/gather equivalent).
+ *
+ * Concatenates multiple buffers into a single dispatch_data_t using
+ * dispatch_data_create_concat, then sends the combined data in one
+ * nw_connection_send call. This is the NWConnection equivalent of
+ * POSIX writev().
+ *
+ * Each buffer is copied into dispatch_data_t
+ * (DISPATCH_DATA_DESTRUCTOR_DEFAULT). The concatenation itself is
+ * zero-copy (dispatch_data_t chains internally without memcpy).
+ *
+ * @param conn       NWConnection to write to.
+ * @param bufs       Array of source buffer pointers.
+ * @param lens       Array of buffer lengths (bytes).
+ * @param count      Number of buffers.
+ * @param callback   Invoked on completion with (error, ctx).
+ * @param ctx        Opaque pointer passed to callback.
+ */
+void keel_nw_writev_async(nw_connection_t conn,
+                           const void **bufs, const uint32_t *lens, int count,
+                           keel_nw_write_callback callback, void *ctx) {
+    dispatch_data_t combined = dispatch_data_empty;
+    dispatch_queue_t q = dispatch_get_global_queue(0, 0);
+    for (int i = 0; i < count; i++) {
+        dispatch_data_t chunk = dispatch_data_create(bufs[i], lens[i],
+            q, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        dispatch_data_t prev = combined;
+        combined = dispatch_data_create_concat(prev, chunk);
+    }
+    nw_connection_send(conn, combined, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false,
+        ^(nw_error_t error) {
+            callback(error ? 1 : 0, ctx);
+        });
+}
+
+/*
  * Send TCP FIN (half-close) via NWConnection.
  *
  * Sends NULL content with NW_CONNECTION_FINAL_MESSAGE_CONTEXT and
