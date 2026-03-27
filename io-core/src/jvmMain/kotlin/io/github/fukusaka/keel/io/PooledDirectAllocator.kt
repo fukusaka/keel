@@ -53,6 +53,7 @@ class PooledDirectAllocator(
         while (true) {
             val cur = head.get() ?: return null
             if (head.compareAndSet(cur, cur.nextLink)) {
+                cur.nextLink = null  // detach from freelist
                 poolSize.decrementAndGet()
                 return cur
             }
