@@ -17,6 +17,7 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
     private val buf = Int8Array(capacity)
     private var refCount = 1
     internal actual var deallocator: ((NativeBuf) -> Unit)? = null
+    internal actual var nextLink: NativeBuf? = null
 
     actual var readerIndex: Int = 0
     actual var writerIndex: Int = 0
@@ -68,6 +69,7 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
+        nextLink = null
     }
 
     actual fun retain(): NativeBuf {

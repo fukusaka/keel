@@ -106,8 +106,20 @@ expect class NativeBuf internal constructor(capacity: Int) {
     fun clear()
 
     /**
+     * Intrusive link for lock-free pool freelists (Treiber stack).
+     *
+     * Non-null only while this buffer resides in a pool's freelist.
+     * Used by [PooledDirectAllocator] and future [AdaptiveAllocator] to
+     * build freelists without wrapper node allocations. Also reusable
+     * for segment chain linking (exclusive ownership: a buffer is either
+     * in a freelist or in a chain, never both).
+     */
+    internal var nextLink: NativeBuf?
+
+    /**
      * Resets the buffer for reuse from a pool.
-     * Restores [readerIndex], [writerIndex] to 0 and reference count to 1.
+     * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
+     * and [nextLink] to null.
      * Called by pool-based allocators when recycling a released buffer.
      */
     internal fun resetForReuse()
