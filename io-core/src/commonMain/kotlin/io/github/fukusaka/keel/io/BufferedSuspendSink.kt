@@ -3,12 +3,19 @@ package io.github.fukusaka.keel.io
 /**
  * Buffered wrapper over [SuspendSink] providing writeString/writeByte utilities.
  *
- * Uses a [NativeBuf] as the internal buffer for zero-copy I/O:
+ * Uses [NativeBuf] instances from [allocator] for zero-copy I/O:
  * ```
  * writeString/writeByte → NativeBuf (buffer accumulation)
- *   → when buffer is full or flush() is called:
- *     NativeBuf → Channel.write (zero-copy) → Channel.flush → kernel
+ *   → when buffer is full:
+ *     NativeBuf → Channel.write (enqueue) → allocate fresh NativeBuf
+ *   → when flush() is called:
+ *     Channel.flush → writev (single syscall for all queued buffers)
  * ```
+ *
+ * Multiple writes accumulate in the Channel's pending-write queue without
+ * triggering OS writes. The caller's [flush] sends all queued buffers in
+ * a single `writev` syscall, avoiding per-buffer OS write overhead that
+ * would otherwise block the EventLoop thread.
  *
  * **Ownership**: this class does NOT own [sink]. Closing this wrapper
  * releases the internal buffer but does not close or flush the underlying
@@ -17,13 +24,19 @@ package io.github.fukusaka.keel.io
  *
  * @param sink The underlying [SuspendSink] to write to.
  * @param allocator Buffer allocator for the internal buffer.
+ * @param deferFlush When true, [flushBuffer] enqueues buffers without OS write,
+ *                   deferring the actual I/O to the caller's [flush]. When false
+ *                   (default), each buffer fill triggers an immediate OS write.
+ *                   Set to true for EventLoop-based engines (kqueue/epoll/NIO)
+ *                   where write and flush run on the same single thread.
  */
 class BufferedSuspendSink(
     private val sink: SuspendSink,
     private val allocator: BufferAllocator,
+    private val deferFlush: Boolean = false,
 ) : AutoCloseable {
 
-    private val buf = allocator.allocate(BUFFER_SIZE)
+    private var buf = allocator.allocate(BUFFER_SIZE)
 
     /**
      * Writes a single byte, flushing the buffer if full.
@@ -95,19 +108,29 @@ class BufferedSuspendSink(
     }
 
     /**
-     * Sends the internal buffer's contents to the underlying sink
-     * and waits for delivery before clearing the buffer.
+     * Sends the internal buffer's contents to the underlying sink.
      *
-     * Must call sink.flush() before buf.clear() because Channel.write()
-     * retains a reference to buf and records offset/length. If buf were
-     * cleared and reused before flush, new data would overwrite the
-     * retained buffer's memory, corrupting pending writes.
+     * When [deferFlush] is true (EventLoop-based engines: kqueue/epoll/NIO):
+     * enqueues the buffer via sink.write(), releases our reference, and
+     * allocates a fresh buffer from the pool. The old buffer remains in the
+     * Channel's pending-write queue until the caller's [flush] sends all
+     * accumulated buffers in a single writev() syscall.
+     *
+     * When [deferFlush] is false (push-model engines: Netty/NWConnection/Node.js):
+     * calls sink.write() + sink.flush() synchronously and reuses the same
+     * buffer. This is required because push-model engines may flush on a
+     * different thread, making pool-based buffer recycling unsafe.
      */
     private suspend fun flushBuffer() {
         if (buf.readableBytes > 0) {
             sink.write(buf)
-            sink.flush()
-            buf.clear()
+            if (deferFlush) {
+                buf.release()
+                buf = allocator.allocate(BUFFER_SIZE)
+            } else {
+                sink.flush()
+                buf.clear()
+            }
         }
     }
 

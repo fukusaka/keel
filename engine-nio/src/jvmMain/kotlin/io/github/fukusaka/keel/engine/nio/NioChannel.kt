@@ -81,6 +81,7 @@ internal class NioChannel(
 
     /** Returns the worker EventLoop's dispatcher for same-thread I/O execution. */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val supportsDeferredFlush: Boolean get() = true
 
     /** ForkJoinPool work-stealing outperforms EventLoop fixed-partition for pipeline. */
     override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default

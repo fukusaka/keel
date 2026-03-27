@@ -120,6 +120,24 @@ interface Channel : AutoCloseable {
      */
     val appDispatcher: CoroutineDispatcher get() = coroutineDispatcher
 
+    // --- Flush strategy ---
+
+    /**
+     * Whether this channel supports deferred flushing in [BufferedSuspendSink].
+     *
+     * When true, [BufferedSuspendSink] enqueues filled buffers without OS write,
+     * deferring the actual I/O to the caller's flush(). This enables writev()
+     * batching and avoids blocking the EventLoop on per-buffer OS writes.
+     *
+     * Requires that write() and flush() run on the same single thread (EventLoop).
+     * Push-model engines (Netty, NWConnection, Node.js) must return false because
+     * their flush runs on a different thread, making pool-based buffer recycling
+     * unsafe.
+     *
+     * Default: false (safe for all engines).
+     */
+    val supportsDeferredFlush: Boolean get() = false
+
     // --- Half-close ---
 
     /**
