@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `ktor-engine`: run Ktor pipeline on EventLoop for Native engines (kqueue +26%, epoll +33%)
+- `engine-kqueue`, `engine-epoll`, `engine-nio`: skip wakeup syscall when dispatching from EventLoop thread (inEventLoop optimization)
+- `benchmark`: add `--gc-target` and `--gc-no-autotune` CLI options for GC tuning benchmarks
 - `io-core`: add `BufSlice` for zero-copy read-only views over `NativeBuf` regions
 - `io-core`: add `NativeBuf.getByte(index)` for absolute byte access without modifying readerIndex
 - `io-core`: add `BufferedSuspendSource.scanLine()` returning `BufSlice` instead of `String`
