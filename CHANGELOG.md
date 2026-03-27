@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add `NativeBuf.nextLink` for intrusive lock-free pool freelists (Treiber stack)
 - `io-core`: add `defaultAllocator()` expect/actual returning the platform-recommended pooled allocator
 - `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
 - `io-core`: add `BufferedSuspendSink.writeAscii()` for zero-allocation HTTP header writing
@@ -36,7 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall, fixing 100KB response throughput regression (epoll /large: 5.6K → 561K)
-- `io-core`: `PooledDirectAllocator` is now thread-safe (`ConcurrentLinkedDeque` + `AtomicInteger`) for cross-thread allocate/release with deferred flush (NIO /hello: +45%)
+- `io-core`: `PooledDirectAllocator` uses intrusive Treiber stack (`NativeBuf.nextLink` + `AtomicReference` CAS) for lock-free thread-safe pool access without wrapper node allocations
+- `io-core`: `SlabAllocator` is now thread-safe via spin lock for NWConnection deferred flush support
 - `core`: `IoEngineConfig.allocator` now defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`)
 - `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource` to reduce per-request allocations
 - `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
