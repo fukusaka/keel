@@ -127,13 +127,19 @@ internal data class StatusLine(val version: HttpVersion, val status: HttpStatus,
  * SP must be a single space; the version token is case-sensitive.
  */
 internal fun parseRequestLine(line: String): RequestLine {
-    val parts = line.split(" ")
-    if (parts.size != 3) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+    // indexOf-based parsing avoids List + extra String allocations from split().
+    val sp1 = line.indexOf(' ')
+    if (sp1 < 1) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+    val sp2 = line.indexOf(' ', sp1 + 1)
+    if (sp2 < 0) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+    // Reject more than 3 tokens
+    if (line.indexOf(' ', sp2 + 1) >= 0) {
+        throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+    }
     return RequestLine(
-        method  = HttpMethod(parts[0]),
-        uri     = parts[1],
-        // No trimEnd() needed: readLine() already strips CRLF.
-        version = HttpVersion.of(parts[2]),
+        method  = HttpMethod.of(line.substring(0, sp1)),
+        uri     = line.substring(sp1 + 1, sp2),
+        version = HttpVersion.of(line.substring(sp2 + 1)),
     )
 }
 
