@@ -31,6 +31,18 @@ data class HttpMethod(val name: String) {
         val TRACE   = HttpMethod("TRACE")
         val PATCH   = HttpMethod("PATCH")   // RFC 5789
 
+        /**
+         * Returns a cached instance for standard HTTP methods, or creates
+         * a new instance for extension methods. Avoids per-request allocation
+         * for the common case (GET, POST, etc.).
+         */
+        fun of(name: String): HttpMethod = when (name) {
+            "GET" -> GET; "HEAD" -> HEAD; "POST" -> POST
+            "PUT" -> PUT; "DELETE" -> DELETE; "CONNECT" -> CONNECT
+            "OPTIONS" -> OPTIONS; "TRACE" -> TRACE; "PATCH" -> PATCH
+            else -> HttpMethod(name)
+        }
+
         private val SAFE_METHODS       = setOf(GET, HEAD, OPTIONS, TRACE)
         private val IDEMPOTENT_METHODS = setOf(GET, HEAD, PUT, DELETE, OPTIONS, TRACE)
     }
