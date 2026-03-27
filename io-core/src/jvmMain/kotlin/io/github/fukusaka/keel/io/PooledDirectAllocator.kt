@@ -1,37 +1,38 @@
 package io.github.fukusaka.keel.io
 
-import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Pool-based [BufferAllocator] for JVM targets.
  *
- * Maintains a freelist of [NativeBuf] instances backed by
- * [java.nio.ByteBuffer.allocateDirect]. DirectByteBuffer allocation
- * is expensive (JNI call + OS mmap), so reusing buffers significantly
- * reduces per-connection overhead.
+ * Maintains a lock-free freelist of [NativeBuf] instances backed by
+ * [java.nio.ByteBuffer.allocateDirect] using an intrusive Treiber stack.
+ * Each [NativeBuf.nextLink] field links to the next buffer in the freelist,
+ * eliminating wrapper node allocations that [java.util.concurrent.ConcurrentLinkedDeque]
+ * would require.
  *
- * **Thread safety**: thread-safe. Uses [ConcurrentLinkedDeque] for
- * lock-free pool access. This is required because NIO's
- * `appDispatcher = Dispatchers.Default` causes `allocate()` and
- * `returnToPool()` to run on different ForkJoinPool worker threads
- * when deferred flush is enabled in [BufferedSuspendSink].
+ * DirectByteBuffer allocation is expensive (JNI call + OS mmap), so reusing
+ * buffers significantly reduces per-connection overhead.
  *
- * Native [SlabAllocator] does not need thread safety because Native
- * engines run `appDispatcher` on the EventLoop thread (single-threaded).
+ * **Thread safety**: lock-free via [AtomicReference] CAS on the stack head.
+ * Required because NIO's `appDispatcher = Dispatchers.Default` causes
+ * `allocate()` and `returnToPool()` to run on different ForkJoinPool
+ * worker threads when deferred flush is enabled in [BufferedSuspendSink].
  *
  * @param bufferSize Size of pooled buffers in bytes. Requests matching
  *                   this size are served from the pool. Other sizes
  *                   fall back to fresh allocation.
  * @param maxPoolSize Maximum number of buffers to retain in the pool.
- *                    Excess buffers are GC-collected on release.
+ *                    Strictly enforced via increment-then-check on [poolSize].
+ *                    Excess buffers are GC-collected.
  */
 class PooledDirectAllocator(
     private val bufferSize: Int = DEFAULT_BUFFER_SIZE,
     private val maxPoolSize: Int = DEFAULT_MAX_POOL_SIZE,
 ) : BufferAllocator {
 
-    private val pool = ConcurrentLinkedDeque<NativeBuf>()
+    private val head = AtomicReference<NativeBuf?>(null)
     private val poolSize = AtomicInteger(0)
 
     override fun createForEventLoop(): BufferAllocator =
@@ -40,10 +41,7 @@ class PooledDirectAllocator(
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
         val buf = if (capacity == bufferSize) {
-            pool.pollLast()?.also {
-                poolSize.decrementAndGet()
-                it.resetForReuse()
-            }
+            pop()?.also { it.resetForReuse() }
         } else {
             null
         } ?: NativeBuf(capacity)
@@ -51,11 +49,33 @@ class PooledDirectAllocator(
         return buf
     }
 
+    private fun pop(): NativeBuf? {
+        while (true) {
+            val cur = head.get() ?: return null
+            if (head.compareAndSet(cur, cur.nextLink)) {
+                cur.nextLink = null  // detach from freelist
+                poolSize.decrementAndGet()
+                return cur
+            }
+        }
+    }
+
     private fun returnToPool(buf: NativeBuf) {
-        if (buf.capacity == bufferSize && poolSize.get() < maxPoolSize) {
-            pool.addLast(buf)
-            poolSize.incrementAndGet()
+        if (buf.capacity != bufferSize) {
+            buf.close()
+            return
+        }
+        // Increment-then-check: strictly enforces maxPoolSize even under
+        // concurrent access. If the pool is full, undo the increment.
+        val newSize = poolSize.incrementAndGet()
+        if (newSize <= maxPoolSize) {
+            while (true) {
+                val cur = head.get()
+                buf.nextLink = cur
+                if (head.compareAndSet(cur, buf)) return
+            }
         } else {
+            poolSize.decrementAndGet()
             buf.close()
         }
     }
