@@ -120,6 +120,8 @@ internal class EpollEventLoop(
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<platform.posix.pthread_tVar>()
+    @kotlin.concurrent.Volatile
+    private var eventLoopThread: platform.posix.pthread_t? = null
 
     /**
      * A pending I/O interest for a file descriptor.
@@ -166,7 +168,14 @@ internal class EpollEventLoop(
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)
-        wakeup()
+        if (!inEventLoop()) {
+            wakeup()
+        }
+    }
+
+    private fun inEventLoop(): Boolean {
+        val t = eventLoopThread ?: return false
+        return platform.posix.pthread_equal(platform.posix.pthread_self(), t) != 0
     }
 
     // --- Channel registration ---
@@ -264,6 +273,7 @@ internal class EpollEventLoop(
      * 3. Process ready fds — resume associated coroutine continuations
      */
     private fun loop() {
+        eventLoopThread = platform.posix.pthread_self()
         memScoped {
             val eventList = allocArray<epoll_event>(MAX_EVENTS)
             while (running.value != 0) {
