@@ -21,11 +21,11 @@ data class HttpRequestHead(
      * if `Connection: keep-alive` is explicitly set.
      */
     fun isKeepAlive(): Boolean {
-        val connection = headers["Connection"]?.lowercase()
+        val connection = headers["Connection"]
         return when {
-            connection == "close" -> false
+            connection.equals("close", ignoreCase = true) -> false
             version == HttpVersion.HTTP_1_1 -> true
-            connection == "keep-alive" -> true
+            connection.equals("keep-alive", ignoreCase = true) -> true
             else -> false
         }
     }

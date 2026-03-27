@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
+- `io-core`: add `BufferedSuspendSink.writeAscii()` for zero-allocation HTTP header writing
+- `codec-http`: add `HttpMethod.of()` factory that returns cached instances for standard methods
 - `core`: add `Channel.appDispatcher` for per-engine pipeline dispatch strategy
 - `ktor-engine`: run Ktor pipeline on EventLoop for Native engines (kqueue +26%, epoll +33%)
 - `engine-kqueue`, `engine-epoll`, `engine-nio`: skip wakeup syscall when dispatching from EventLoop thread (inEventLoop optimization)
@@ -31,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource` to reduce per-request allocations
+- `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
+- `codec-http`: use `String.equals(ignoreCase=true)` in `isKeepAlive()` instead of `String.lowercase()`
+- `ktor-engine`: reuse body bridge `ByteArray` across keep-alive requests on the same connection
 - `io-core`: add `NativeBuf.deallocator` callback for pool-based buffer reclamation; `release()` invokes deallocator instead of directly freeing memory
 - `io-core`: make `NativeBuf` constructor `internal`; create buffers via `BufferAllocator.allocate()`
 - `io-core`: remove `BufferAllocator.release(buf)`; use `buf.release()` as the single release path

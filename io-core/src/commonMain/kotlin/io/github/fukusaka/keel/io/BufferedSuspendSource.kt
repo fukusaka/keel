@@ -70,22 +70,22 @@ class BufferedSuspendSource(
      * @return the line without the line terminator, or null on EOF.
      */
     suspend fun readLine(): String? {
-        val sb = StringBuilder()
+        lineBuilder.clear()
         while (true) {
             if (buf.readableBytes == 0) {
                 if (!fill()) {
-                    return if (sb.isEmpty()) null else sb.toString()
+                    return if (lineBuilder.isEmpty()) null else lineBuilder.toString()
                 }
             }
             val b = buf.readByte()
             if (b == LF) {
                 // Remove trailing \r if present
-                if (sb.isNotEmpty() && sb[sb.length - 1] == '\r') {
-                    sb.deleteAt(sb.length - 1)
+                if (lineBuilder.isNotEmpty() && lineBuilder[lineBuilder.length - 1] == '\r') {
+                    lineBuilder.deleteAt(lineBuilder.length - 1)
                 }
-                return sb.toString()
+                return lineBuilder.toString()
             }
-            sb.append(b.toInt().toChar())
+            lineBuilder.append(b.toInt().toChar())
         }
     }
 
@@ -182,6 +182,9 @@ class BufferedSuspendSource(
 
     private var closed = false
 
+    /** Reused across readLine calls to avoid per-call StringBuilder allocation. */
+    private val lineBuilder = StringBuilder(INITIAL_LINE_CAPACITY)
+
     companion object {
         /**
          * Internal buffer size. 8 KiB matches the default kotlinx-io segment
@@ -189,6 +192,8 @@ class BufferedSuspendSource(
          * HTTP request header sizes.
          */
         private const val BUFFER_SIZE = 8192
+        /** Initial StringBuilder capacity for readLine. Covers typical HTTP header lines. */
+        private const val INITIAL_LINE_CAPACITY = 128
         private const val LF = '\n'.code.toByte()
         private const val CR = '\r'.code.toByte()
     }

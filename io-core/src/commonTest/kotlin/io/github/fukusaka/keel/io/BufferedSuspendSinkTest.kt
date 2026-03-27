@@ -37,6 +37,28 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
+    fun writeAscii() = runBlocking {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, HeapAllocator)
+        buffered.writeAscii("hello")
+        buffered.flush()
+        assertEquals("hello", sink.collected())
+        assertEquals(true, sink.flushed)
+        buffered.close()
+    }
+
+    @Test
+    fun writeAsciiLargerThanBuffer() = runBlocking {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, HeapAllocator)
+        val large = "x".repeat(10000)
+        buffered.writeAscii(large)
+        buffered.flush()
+        assertEquals(large, sink.collected())
+        buffered.close()
+    }
+
+    @Test
     fun writeByte() = runBlocking {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, HeapAllocator)

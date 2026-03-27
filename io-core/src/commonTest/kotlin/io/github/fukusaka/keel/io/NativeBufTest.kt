@@ -217,6 +217,47 @@ class NativeBufTest {
         buf.release()
     }
 
+    // --- writeAsciiString ---
+
+    @Test
+    fun writeAsciiStringBasic() {
+        val buf = NativeBuf(16)
+        buf.writeAsciiString("ABC", 0, 3)
+        assertEquals(3, buf.writerIndex)
+        assertEquals(0x41.toByte(), buf.readByte())
+        assertEquals(0x42.toByte(), buf.readByte())
+        assertEquals(0x43.toByte(), buf.readByte())
+        buf.release()
+    }
+
+    @Test
+    fun writeAsciiStringWithOffset() {
+        val buf = NativeBuf(16)
+        buf.writeAsciiString("Hello", 1, 3)
+        assertEquals(3, buf.writerIndex)
+        assertEquals('e'.code.toByte(), buf.readByte())
+        assertEquals('l'.code.toByte(), buf.readByte())
+        assertEquals('l'.code.toByte(), buf.readByte())
+        buf.release()
+    }
+
+    @Test
+    fun writeAsciiStringExceedsCapacityThrows() {
+        val buf = NativeBuf(4)
+        assertFailsWith<IllegalArgumentException> {
+            buf.writeAsciiString("Hello", 0, 5)
+        }
+        buf.release()
+    }
+
+    @Test
+    fun writeAsciiStringZeroLength() {
+        val buf = NativeBuf(4)
+        buf.writeAsciiString("Hello", 0, 0)
+        assertEquals(0, buf.writerIndex)
+        buf.release()
+    }
+
     // --- clear ---
 
     @Test
