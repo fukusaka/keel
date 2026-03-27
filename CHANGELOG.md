@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-nwconnection`: batch flush via `keel_nw_writev_async`; concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call (macOS /large: 7K → 47K, +552%)
+- `engine-nwconnection`: enable `supportsDeferredFlush` so `BufferedSuspendSink` accumulates buffers before flushing
 - `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall, fixing 100KB response throughput regression (epoll /large: 5.6K → 561K)
 - `io-core`: `PooledDirectAllocator` uses intrusive Treiber stack (`NativeBuf.nextLink` + `AtomicReference` CAS) for lock-free thread-safe pool access without wrapper node allocations
 - `io-core`: `SlabAllocator` is now thread-safe via spin lock for NWConnection deferred flush support
