@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: add `Channel.appDispatcher` for per-engine pipeline dispatch strategy
 - `ktor-engine`: run Ktor pipeline on EventLoop for Native engines (kqueue +26%, epoll +33%)
 - `engine-kqueue`, `engine-epoll`, `engine-nio`: skip wakeup syscall when dispatching from EventLoop thread (inEventLoop optimization)
 - `benchmark`: add `--gc-target` and `--gc-no-autotune` CLI options for GC tuning benchmarks
