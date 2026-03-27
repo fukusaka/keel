@@ -267,6 +267,10 @@ public class KeelApplicationEngine(
         try {
             val serverKeepAlive = configuration.keepAlive
 
+            // Reusable byte array for request body bridging. Allocated once per
+            // connection instead of per request to reduce GC pressure.
+            val bodyBridgeBuf = ByteArray(BODY_BRIDGE_BUFFER_SIZE)
+
             while (channel.isActive) {
                 val head = try {
                     parseRequestHead(source)
@@ -288,7 +292,7 @@ public class KeelApplicationEngine(
                     val bodyChannel = ByteChannel()
                     bodyBridgeJob = launch {
                         var remaining = contentLength
-                        val buf = ByteArray(8192)
+                        val buf = bodyBridgeBuf
                         while (remaining > 0) {
                             val toRead = minOf(remaining, buf.size.toLong()).toInt()
                             val n = source.readAtMostTo(buf, 0, toRead)
@@ -360,5 +364,10 @@ public class KeelApplicationEngine(
         } catch (_: Exception) {
             // Best-effort: client may have already disconnected
         }
+    }
+
+    private companion object {
+        /** Buffer size for request body bridging (pull → push). */
+        private const val BODY_BRIDGE_BUFFER_SIZE = 8192
     }
 }
