@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.io
 
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
+
 /**
  * Pool-based [BufferAllocator] for JVM targets.
  *
@@ -8,14 +11,14 @@ package io.github.fukusaka.keel.io
  * is expensive (JNI call + OS mmap), so reusing buffers significantly
  * reduces per-connection overhead.
  *
- * **Thread safety**: not thread-safe. Designed for per-EventLoop use
- * via [createForEventLoop], which returns a new instance with its own
- * freelist. No locking is needed because each EventLoop is single-threaded.
+ * **Thread safety**: thread-safe. Uses [ConcurrentLinkedDeque] for
+ * lock-free pool access. This is required because NIO's
+ * `appDispatcher = Dispatchers.Default` causes `allocate()` and
+ * `returnToPool()` to run on different ForkJoinPool worker threads
+ * when deferred flush is enabled in [BufferedSuspendSink].
  *
- * ```
- * val engine = NioEngine(IoEngineConfig(allocator = PooledDirectAllocator()))
- * // Engine internally calls allocator.createForEventLoop() per EventLoop
- * ```
+ * Native [SlabAllocator] does not need thread safety because Native
+ * engines run `appDispatcher` on the EventLoop thread (single-threaded).
  *
  * @param bufferSize Size of pooled buffers in bytes. Requests matching
  *                   this size are served from the pool. Other sizes
@@ -28,31 +31,30 @@ class PooledDirectAllocator(
     private val maxPoolSize: Int = DEFAULT_MAX_POOL_SIZE,
 ) : BufferAllocator {
 
-    private val pool = ArrayDeque<NativeBuf>(maxPoolSize)
+    private val pool = ConcurrentLinkedDeque<NativeBuf>()
+    private val poolSize = AtomicInteger(0)
 
-    /**
-     * Returns a new [PooledDirectAllocator] instance for a single EventLoop thread.
-     *
-     * Each instance has its own independent freelist, so no locking is
-     * needed. The [bufferSize] and [maxPoolSize] settings are inherited.
-     */
     override fun createForEventLoop(): BufferAllocator =
         PooledDirectAllocator(bufferSize, maxPoolSize)
 
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
-        val buf = if (capacity == bufferSize && pool.isNotEmpty()) {
-            pool.removeLast().also { it.resetForReuse() }
+        val buf = if (capacity == bufferSize) {
+            pool.pollLast()?.also {
+                poolSize.decrementAndGet()
+                it.resetForReuse()
+            }
         } else {
-            NativeBuf(capacity)
-        }
+            null
+        } ?: NativeBuf(capacity)
         buf.deallocator = ::returnToPool
         return buf
     }
 
     private fun returnToPool(buf: NativeBuf) {
-        if (buf.capacity == bufferSize && pool.size < maxPoolSize) {
+        if (buf.capacity == bufferSize && poolSize.get() < maxPoolSize) {
             pool.addLast(buf)
+            poolSize.incrementAndGet()
         } else {
             buf.close()
         }

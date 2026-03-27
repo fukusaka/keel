@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall, fixing 100KB response throughput regression (epoll /large: 5.6K → 561K)
+- `io-core`: `PooledDirectAllocator` is now thread-safe (`ConcurrentLinkedDeque` + `AtomicInteger`) for cross-thread allocate/release with deferred flush (NIO /hello: +45%)
 - `core`: `IoEngineConfig.allocator` now defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`)
 - `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource` to reduce per-request allocations
 - `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
