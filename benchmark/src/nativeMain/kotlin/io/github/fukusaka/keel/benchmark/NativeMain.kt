@@ -13,6 +13,9 @@ package io.github.fukusaka.keel.benchmark
  * - ktor-cio (all platforms)
  */
 fun main(args: Array<String>) {
+    // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
+    applyGcTuning(args)
+
     val config = BenchmarkConfig.parse(args)
 
     val registry = engineRegistry()
@@ -30,4 +33,30 @@ fun main(args: Array<String>) {
 
     println("Starting benchmark server: ${config.summary()}")
     eb.start(config)
+}
+
+@OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
+private fun applyGcTuning(args: Array<String>) {
+    for (arg in args) {
+        if (arg.startsWith("--gc-target=")) {
+            val value = arg.removePrefix("--gc-target=")
+            val bytes = parseSizeBytes(value)
+            kotlin.native.runtime.GC.targetHeapBytes = bytes
+            println("GC targetHeapBytes=$bytes")
+        }
+        if (arg == "--gc-no-autotune") {
+            kotlin.native.runtime.GC.autotune = false
+            println("GC autotune=false")
+        }
+    }
+}
+
+private fun parseSizeBytes(s: String): Long {
+    val lower = s.lowercase()
+    return when {
+        lower.endsWith("m") -> lower.dropLast(1).toLong() * 1024 * 1024
+        lower.endsWith("g") -> lower.dropLast(1).toLong() * 1024 * 1024 * 1024
+        lower.endsWith("k") -> lower.dropLast(1).toLong() * 1024
+        else -> s.toLong()
+    }
 }
