@@ -168,6 +168,9 @@ internal class EpollEventLoop(
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)
+        // Skip wakeup when already on the EventLoop thread — the loop
+        // will drain tasks before the next epoll_wait(). eventfd write is a
+        // syscall; avoiding it on the hot path eliminates unnecessary overhead.
         if (!inEventLoop()) {
             wakeup()
         }
