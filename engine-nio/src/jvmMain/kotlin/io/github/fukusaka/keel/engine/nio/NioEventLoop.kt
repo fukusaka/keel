@@ -74,7 +74,13 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
 
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.add(block)
-        selector.wakeup()
+        // Skip wakeup when already on the EventLoop thread — the loop
+        // will drain tasks before the next select(). Selector.wakeup()
+        // is a pipe write syscall; avoiding it on the hot path (coroutine
+        // resume on the same thread) eliminates unnecessary overhead.
+        if (Thread.currentThread() != thread) {
+            selector.wakeup()
+        }
     }
 
     // --- Channel registration (one-time) ---

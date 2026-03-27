@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.error
+import kotlin.coroutines.ContinuationInterceptor
 import io.ktor.events.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -101,10 +102,10 @@ public class KeelApplicationEngine(
         ) : AcceptBackoff()
     }
 
-    // Application pipeline dispatcher. Uses Dispatchers.Default (thread pool)
-    // so user code in routing {} blocks doesn't block the I/O EventLoop.
-    // Channel I/O is dispatched on channel.coroutineDispatcher instead.
-    private val appDispatcher = Dispatchers.Default
+    // Ktor pipeline runs on the channel's EventLoop dispatcher (same as
+    // Netty's model). All processing — codec, routing, response write —
+    // stays on the EventLoop thread, eliminating context switches.
+    // User code that performs blocking I/O should use withContext(Dispatchers.IO).
     private val logger = KtorLoggerFactory(environment.log).logger("KeelApplicationEngine")
     private val startupJob = CompletableDeferred<Unit>()
     private val stopRequest: CompletableJob = Job()
@@ -152,10 +153,10 @@ public class KeelApplicationEngine(
         val connectors = configuration.connectors
         val resolvedDeferred = resolvedConnectorsDeferred
 
-        // Server lifecycle (bind, accept loop, shutdown) uses appDispatcher.
+        // Server lifecycle (bind, accept loop, shutdown) uses Dispatchers.Default.
         // These are coordination tasks, not I/O — no need for EventLoop.
         return CoroutineScope(
-            applicationProvider().parentCoroutineContext + appDispatcher
+            applicationProvider().parentCoroutineContext + Dispatchers.Default
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
             val servers = mutableListOf<ServerChannel>()
@@ -239,17 +240,16 @@ public class KeelApplicationEngine(
      * on the same TCP connection until the client sends `Connection: close`,
      * an error occurs, or the connection is closed by the peer.
      *
-     * **Dispatcher model**: This method runs on [channel.coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
-     * (EventLoop thread for kqueue/epoll/NIO, Dispatchers.Default for others).
-     * I/O operations (read/parse) execute directly on the EventLoop without
-     * cross-thread dispatch. The Ktor pipeline is offloaded to [appDispatcher]
-     * (thread pool) so user routing code doesn't block the EventLoop.
+     * **Dispatcher model**: I/O runs on [channel.coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+     * (EventLoop). The Ktor pipeline runs on [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher]:
+     * - Native (kqueue/epoll): EventLoop — zero context switches (Netty model)
+     * - JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing
      *
      * ```
-     * [EventLoop]  parseRequestHead(source)          read → zero-copy
-     * [EventLoop]  launch { body bridge }             source.read → EventLoop
-     * [Default]    withContext { pipeline.execute() }  user code + response write
-     * [EventLoop]  bodyBridgeJob?.join()               next request
+     * [EventLoop]     parseRequestHead(source)   read → zero-copy
+     * [EventLoop]     launch { body bridge }      source.read → EventLoop
+     * [appDispatcher] pipeline.execute(call)      routing + response write
+     * [EventLoop]     bodyBridgeJob?.join()        next request
      * ```
      *
      * Uses [BufferedSuspendSource]/[BufferedSuspendSink] for zero-copy I/O:
@@ -315,11 +315,13 @@ public class KeelApplicationEngine(
                     keepAlive = keepAlive,
                 )
 
-                // Run the Ktor pipeline on appDispatcher (thread pool)
-                // so user routing code doesn't block the EventLoop.
-                // For engines without a dedicated EventLoop, both
-                // dispatchers are Dispatchers.Default → no-op switch.
-                withContext(appDispatcher) {
+                // Run the Ktor pipeline on channel.appDispatcher.
+                // Native engines (kqueue/epoll): EventLoop — zero context switches.
+                // JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing.
+                val appCtx = channel.appDispatcher
+                if (appCtx !== coroutineContext[ContinuationInterceptor]) {
+                    withContext(appCtx) { pipeline.execute(call) }
+                } else {
                     pipeline.execute(call)
                 }
 
