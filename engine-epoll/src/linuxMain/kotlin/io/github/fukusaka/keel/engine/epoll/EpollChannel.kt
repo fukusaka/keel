@@ -95,6 +95,7 @@ internal class EpollChannel(
      * that drives `epoll_wait()` — no cross-thread dispatch overhead.
      */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val supportsDeferredFlush: Boolean get() = true
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true

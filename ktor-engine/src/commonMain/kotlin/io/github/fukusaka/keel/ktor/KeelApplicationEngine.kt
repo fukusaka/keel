@@ -263,7 +263,7 @@ public class KeelApplicationEngine(
      */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
         val source = BufferedSuspendSource(channel.asSuspendSource(), channel.allocator)
-        val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
+        val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush)
         try {
             val serverKeepAlive = configuration.keepAlive
 

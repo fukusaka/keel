@@ -84,6 +84,7 @@ internal class KqueueChannel(
      * that drives `kevent()` — no cross-thread dispatch overhead.
      */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val supportsDeferredFlush: Boolean get() = true
 
     // No upper bound on pending writes. Callers must call flush() periodically
     // to avoid unbounded memory growth. Write watermark will be added in Phase 7.
