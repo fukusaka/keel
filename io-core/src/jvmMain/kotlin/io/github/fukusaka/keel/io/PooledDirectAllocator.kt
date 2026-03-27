@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicReference
  *                   this size are served from the pool. Other sizes
  *                   fall back to fresh allocation.
  * @param maxPoolSize Maximum number of buffers to retain in the pool.
- *                    Approximate limit — may be exceeded by a few buffers
- *                    under concurrent access. Excess buffers are GC-collected.
+ *                    Strictly enforced via increment-then-check on [poolSize].
+ *                    Excess buffers are GC-collected.
  */
 class PooledDirectAllocator(
     private val bufferSize: Int = DEFAULT_BUFFER_SIZE,
@@ -61,16 +61,21 @@ class PooledDirectAllocator(
     }
 
     private fun returnToPool(buf: NativeBuf) {
-        if (buf.capacity == bufferSize && poolSize.get() < maxPoolSize) {
+        if (buf.capacity != bufferSize) {
+            buf.close()
+            return
+        }
+        // Increment-then-check: strictly enforces maxPoolSize even under
+        // concurrent access. If the pool is full, undo the increment.
+        val newSize = poolSize.incrementAndGet()
+        if (newSize <= maxPoolSize) {
             while (true) {
                 val cur = head.get()
                 buf.nextLink = cur
-                if (head.compareAndSet(cur, buf)) {
-                    poolSize.incrementAndGet()
-                    return
-                }
+                if (head.compareAndSet(cur, buf)) return
             }
         } else {
+            poolSize.decrementAndGet()
             buf.close()
         }
     }

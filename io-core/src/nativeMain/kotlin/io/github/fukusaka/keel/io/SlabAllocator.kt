@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.io
 
-import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
 
 /**
@@ -29,7 +28,6 @@ class SlabAllocator(
 ) : BufferAllocator {
 
     private val pool = ArrayDeque<NativeBuf>(maxPoolSize)
-    private val poolSize = AtomicInt(0)
     private val lock = AtomicReference(false)
 
     private inline fun <T> withSpinLock(block: () -> T): T {
@@ -48,12 +46,8 @@ class SlabAllocator(
     override fun allocate(capacity: Int): NativeBuf {
         val buf = if (capacity == bufferSize) {
             withSpinLock {
-                if (pool.isNotEmpty()) {
-                    poolSize.decrementAndGet()
-                    pool.removeLast().also { it.resetForReuse() }
-                } else {
-                    null
-                }
+                if (pool.isNotEmpty()) pool.removeLast().also { it.resetForReuse() }
+                else null
             }
         } else {
             null
@@ -63,14 +57,19 @@ class SlabAllocator(
     }
 
     private fun returnToPool(buf: NativeBuf) {
-        if (buf.capacity == bufferSize && poolSize.value < maxPoolSize) {
-            withSpinLock {
-                pool.addLast(buf)
-                poolSize.incrementAndGet()
-            }
-        } else {
+        if (buf.capacity != bufferSize) {
             buf.close()
+            return
         }
+        val closed = withSpinLock {
+            if (pool.size < maxPoolSize) {
+                pool.addLast(buf)
+                false
+            } else {
+                true
+            }
+        }
+        if (closed) buf.close()
     }
 
     companion object {
