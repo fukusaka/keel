@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.io.BufSlice
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
@@ -71,11 +72,12 @@ fun parseResponseHead(source: Source): HttpResponseHead {
 /**
  * Suspend variant of [parseRequestHead] using [BufferedSuspendSource].
  *
- * Zero-copy: reads directly from NativeBuf without kotlinx-io Buffer copy.
- * No runBlocking needed — suspends naturally on I/O wait.
+ * Zero-copy: uses [scanLine] to get a [BufSlice] pointing directly into
+ * the NativeBuf. String conversion is deferred to the boundary where
+ * HttpRequestHead fields require String (method name, URI, headers).
  */
 suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
-    val line = source.readLine()
+    val line = source.scanLine()
         ?: throw HttpEofException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
@@ -86,7 +88,7 @@ suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
  * Suspend variant of [parseResponseHead] using [BufferedSuspendSource].
  */
 suspend fun parseResponseHead(source: BufferedSuspendSource): HttpResponseHead {
-    val line = source.readLine()
+    val line = source.scanLine()
         ?: throw HttpEofException("Unexpected EOF reading status line")
     val (version, status, _) = parseStatusLine(line)
     val headers = parseHeaders(source)
@@ -95,24 +97,80 @@ suspend fun parseResponseHead(source: BufferedSuspendSource): HttpResponseHead {
 
 /**
  * Suspend variant of [parseHeaders] using [BufferedSuspendSource].
+ *
+ * Uses [scanLine] for zero-copy line access. Header name and value are
+ * extracted as BufSlice sub-ranges, then converted to String at the
+ * boundary where HttpHeaders requires String.
  */
 internal suspend fun parseHeaders(source: BufferedSuspendSource): HttpHeaders {
     val headers = HttpHeaders()
     while (true) {
-        val line = source.readLine() ?: break
+        val line = source.scanLine() ?: break
         if (line.isEmpty()) break
-        if (line[0] == ' ' || line[0] == '\t') {
+        if (line[0] == ' '.code.toByte() || line[0] == '\t'.code.toByte()) {
             throw HttpParseException(
                 "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
             )
         }
-        val colon = line.indexOf(':')
-        if (colon < 1) throw HttpParseException("Invalid header field (missing ':'): $line")
-        val name = line.substring(0, colon).trim()
-        val value = line.substring(colon + 1).trim()
+        val colon = line.indexOf(':'.code.toByte())
+        if (colon < 1) throw HttpParseException(
+            "Invalid header field (missing ':'): ${line.decodeToString()}"
+        )
+        val name = line.slice(0, colon).trim().decodeToString()
+        val value = line.slice(colon + 1, line.length).trim().decodeToString()
         headers.add(name, value)
     }
     return headers
+}
+
+/**
+ * Parses "Method SP Request-Target SP HTTP-Version" from a [BufSlice].
+ *
+ * Zero-copy variant: operates on byte ranges without intermediate String
+ * allocation for split/substring. String conversion only at the boundary
+ * where HttpMethod and HttpVersion require String.
+ */
+internal fun parseRequestLine(line: BufSlice): RequestLine {
+    val sp1 = line.indexOf(' '.code.toByte())
+    if (sp1 < 1) throw HttpParseException(
+        "Invalid request line (missing first SP): ${line.decodeToString()}"
+    )
+    val sp2 = line.indexOf(' '.code.toByte(), sp1 + 1)
+    if (sp2 < 0) throw HttpParseException(
+        "Invalid request line (missing second SP): ${line.decodeToString()}"
+    )
+    return RequestLine(
+        method  = HttpMethod(line.slice(0, sp1).decodeToString()),
+        uri     = line.slice(sp1 + 1, sp2).decodeToString(),
+        version = HttpVersion.of(line.slice(sp2 + 1, line.length).decodeToString()),
+    )
+}
+
+/**
+ * Parses "HTTP-Version SP Status-Code SP Reason-Phrase" from a [BufSlice].
+ */
+internal fun parseStatusLine(line: BufSlice): StatusLine {
+    val sp1 = line.indexOf(' '.code.toByte())
+    if (sp1 < 1) throw HttpParseException(
+        "Invalid status line (missing first SP): ${line.decodeToString()}"
+    )
+    val sp2 = line.indexOf(' '.code.toByte(), sp1 + 1)
+    val statusEnd = if (sp2 >= 0) sp2 else line.length
+    val statusSlice = line.slice(sp1 + 1, statusEnd).trim()
+    val code = try {
+        statusSlice.toInt()
+    } catch (_: NumberFormatException) {
+        throw HttpParseException("Invalid status code '${statusSlice.decodeToString()}' in: ${line.decodeToString()}")
+    }
+    if (code !in 100..999) throw HttpParseException(
+        "Invalid status code '$code' in: ${line.decodeToString()}"
+    )
+    val reason = if (sp2 >= 0) line.slice(sp2 + 1, line.length).trim().decodeToString() else ""
+    return StatusLine(
+        version = HttpVersion.of(line.slice(0, sp1).decodeToString()),
+        status  = HttpStatus(code),
+        reason  = reason,
+    )
 }
 
 // ---------------------------------------------------------------------------

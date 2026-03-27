@@ -129,11 +129,13 @@ class BufSlice(
      */
     fun decodeToString(): String {
         if (length == 0) return ""
-        val bytes = ByteArray(length)
+        // Build String directly from chars to avoid ByteArray intermediate copy.
+        // Valid for ASCII content (HTTP headers per RFC 7230).
+        val chars = CharArray(length)
         for (i in 0 until length) {
-            bytes[i] = buf.getByte(offset + i)
+            chars[i] = (buf.getByte(offset + i).toInt() and 0xFF).toChar()
         }
-        return bytes.decodeToString()
+        return chars.concatToString()
     }
 
     /** Copies this slice into a new [ByteArray]. */
