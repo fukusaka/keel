@@ -63,24 +63,24 @@ suspend fun writeResponseHead(
     headers: HttpHeaders,
     sink: BufferedSuspendSink,
 ) {
-    // Split writeString calls to avoid StringBuilder allocation from
-    // string templates on the hot path.
-    sink.writeString(version.text)
-    sink.writeString(" ")
-    sink.writeString(status.code.toString())
-    sink.writeString(" ")
-    sink.writeString(status.reasonPhrase())
-    sink.writeString("\r\n")
+    // writeAscii writes directly into NativeBuf without intermediate
+    // ByteArray allocation (encodeToByteArray). HTTP headers are US-ASCII.
+    sink.writeAscii(version.text)
+    sink.writeAscii(" ")
+    sink.writeAscii(status.code.toString())
+    sink.writeAscii(" ")
+    sink.writeAscii(status.reasonPhrase())
+    sink.writeAscii("\r\n")
     // Index-based iteration avoids entries().toList() allocation.
     // Cannot use forEach {} because it is inline and cannot accept
     // suspend lambdas.
     for (i in 0 until headers.size) {
-        sink.writeString(headers.nameAt(i))
-        sink.writeString(": ")
-        sink.writeString(headers.valueAt(i))
-        sink.writeString("\r\n")
+        sink.writeAscii(headers.nameAt(i))
+        sink.writeAscii(": ")
+        sink.writeAscii(headers.valueAt(i))
+        sink.writeAscii("\r\n")
     }
-    sink.writeString("\r\n")
+    sink.writeAscii("\r\n")
 }
 
 // ---------------------------------------------------------------------------

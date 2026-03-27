@@ -44,6 +44,27 @@ class BufferedSuspendSink(
     }
 
     /**
+     * Writes an ASCII string directly into the buffer without intermediate
+     * ByteArray allocation. Each character is truncated to its low 8 bits,
+     * which is correct for HTTP headers, status lines, and other US-ASCII
+     * protocol text.
+     *
+     * Prefer this over [writeString] on the HTTP write path to avoid
+     * per-call `String.encodeToByteArray()` allocations.
+     */
+    suspend fun writeAscii(text: String) {
+        var pos = 0
+        var remaining = text.length
+        while (remaining > 0) {
+            if (buf.writableBytes == 0) flushBuffer()
+            val chunk = remaining.coerceAtMost(buf.writableBytes)
+            buf.writeAsciiString(text, pos, chunk)
+            pos += chunk
+            remaining -= chunk
+        }
+    }
+
+    /**
      * Writes all bytes from [bytes].
      */
     suspend fun write(bytes: ByteArray) {

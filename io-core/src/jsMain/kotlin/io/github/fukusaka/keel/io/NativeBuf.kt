@@ -35,6 +35,14 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         }
     }
 
+    actual fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+        require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
+        for (i in 0 until length) {
+            buf.asDynamic()[writerIndex + i] = src[srcOffset + i].code.toByte()
+        }
+        writerIndex += length
+    }
+
     actual fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()
 
     actual fun getByte(index: Int): Byte = (buf.asDynamic()[index] as Int).toByte()

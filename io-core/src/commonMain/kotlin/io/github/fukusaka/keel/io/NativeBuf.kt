@@ -67,6 +67,19 @@ expect class NativeBuf internal constructor(capacity: Int) {
      */
     fun writeBytes(src: ByteArray, offset: Int, length: Int)
 
+    /**
+     * Writes ASCII characters from [src] directly into this buffer without
+     * intermediate ByteArray allocation. Each character is truncated to its
+     * low 8 bits (`char.code.toByte()`), which is correct for US-ASCII
+     * (HTTP headers, status lines).
+     *
+     * This avoids the `String.encodeToByteArray()` allocation that
+     * [writeBytes] would require when the source is a [String].
+     *
+     * @throws IllegalArgumentException if [length] exceeds [writableBytes].
+     */
+    fun writeAsciiString(src: String, srcOffset: Int, length: Int)
+
     /** Reads a byte from the current read position and advances [readerIndex]. */
     fun readByte(): Byte
 
