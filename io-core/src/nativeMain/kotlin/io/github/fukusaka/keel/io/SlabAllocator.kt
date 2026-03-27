@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.io
 
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
+
 /**
  * Pool-based [BufferAllocator] for Native targets.
  *
@@ -8,14 +11,11 @@ package io.github.fukusaka.keel.io
  * eliminates per-connection `nativeHeap.allocArray` / `nativeHeap.free`
  * overhead.
  *
- * **Thread safety**: not thread-safe. Designed for per-EventLoop use
- * via [createForEventLoop], which returns a new instance with its own
- * freelist. No locking is needed because each EventLoop is single-threaded.
- *
- * ```
- * val engine = KqueueEngine(IoEngineConfig(allocator = SlabAllocator()))
- * // Engine internally calls allocator.createForEventLoop() per EventLoop
- * ```
+ * **Thread safety**: thread-safe via spin lock. EventLoop-based engines
+ * (kqueue/epoll) access the pool from a single thread, so the lock is
+ * always uncontended (~5ns CAS). Push-model engines (NWConnection) may
+ * access from multiple Dispatchers.Default workers when deferred flush
+ * is enabled.
  *
  * @param bufferSize Size of pooled buffers in bytes. Requests matching
  *                   this size are served from the pool. Other sizes
@@ -29,30 +29,45 @@ class SlabAllocator(
 ) : BufferAllocator {
 
     private val pool = ArrayDeque<NativeBuf>(maxPoolSize)
+    private val poolSize = AtomicInt(0)
+    private val lock = AtomicReference(false)
 
-    /**
-     * Returns a new [SlabAllocator] instance for a single EventLoop thread.
-     *
-     * Each instance has its own independent freelist, so no locking is
-     * needed. The [bufferSize] and [maxPoolSize] settings are inherited.
-     */
+    private inline fun <T> withSpinLock(block: () -> T): T {
+        while (!lock.compareAndSet(false, true)) { /* spin */ }
+        try {
+            return block()
+        } finally {
+            lock.value = false
+        }
+    }
+
     override fun createForEventLoop(): BufferAllocator =
         SlabAllocator(bufferSize, maxPoolSize)
 
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
-        val buf = if (capacity == bufferSize && pool.isNotEmpty()) {
-            pool.removeLast().also { it.resetForReuse() }
+        val buf = if (capacity == bufferSize) {
+            withSpinLock {
+                if (pool.isNotEmpty()) {
+                    poolSize.decrementAndGet()
+                    pool.removeLast().also { it.resetForReuse() }
+                } else {
+                    null
+                }
+            }
         } else {
-            NativeBuf(capacity)
-        }
+            null
+        } ?: NativeBuf(capacity)
         buf.deallocator = ::returnToPool
         return buf
     }
 
     private fun returnToPool(buf: NativeBuf) {
-        if (buf.capacity == bufferSize && pool.size < maxPoolSize) {
-            pool.addLast(buf)
+        if (buf.capacity == bufferSize && poolSize.value < maxPoolSize) {
+            withSpinLock {
+                pool.addLast(buf)
+                poolSize.incrementAndGet()
+            }
         } else {
             buf.close()
         }
