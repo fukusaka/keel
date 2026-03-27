@@ -4,15 +4,23 @@ import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.io.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
+import nwconnection.keel_nw_writev_async
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_t
 
@@ -43,8 +51,10 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  * the suspended coroutine. No thread blocking occurs.
  *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records
- * the byte range to send. [flush] iterates all pending writes and calls
- * [keel_nw_write_async] for each, suspending until each send completes.
+ * the byte range to send. [flush] concatenates all pending writes into a
+ * single `dispatch_data_t` via [keel_nw_writev_async] and sends in one
+ * `nw_connection_send` call. The concatenation is zero-copy
+ * (`dispatch_data_t` chains internally without `memcpy`).
  *
  * **Coroutine integration**: All I/O operations use [suspendCancellableCoroutine]
  * with [staticCFunction] + [StableRef] + [CallbackContext] to bridge dispatch
@@ -62,8 +72,9 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  *
  * Write path (buffered, async flush):
  *   write(buf)  --> retain buf, record offset/length in PendingWrite
- *   flush()     --> for each: suspendCancellableCoroutine + keel_nw_write_async
- *                   --> callback(error, ctx) --> resume
+ *   flush()     --> keel_nw_writev_async(bufs[], lens[], count)
+ *                   dispatch_data_create_concat x N --> single nw_connection_send
+ *                   --> callback(error, ctx) --> resume --> release all bufs
  * ```
  *
  * **Backpressure**: [pendingWrites] has no upper bound. A producer that
@@ -96,6 +107,7 @@ internal class NwChannel(
 
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
+    override val supportsDeferredFlush: Boolean get() = true
 
     /**
      * No-op for NWConnection channels. NWConnection does not provide
@@ -156,28 +168,73 @@ internal class NwChannel(
     }
 
     /**
-     * Sends all buffered writes to the network via async NWConnection send.
+     * Sends all buffered writes to the network in a single NWConnection send.
      *
-     * Each [PendingWrite] is sent using [keel_nw_write_async]. The coroutine
-     * suspends until each send's callback fires, then releases the buffer.
+     * When there is only one pending write, falls back to [keel_nw_write_async]
+     * to avoid the overhead of scatter/gather setup. For multiple pending writes,
+     * uses [keel_nw_writev_async] which concatenates all buffers into a single
+     * `dispatch_data_t` via `dispatch_data_create_concat` and sends them in one
+     * `nw_connection_send` call.
      */
     override suspend fun flush() {
         check(_open) { "Channel is closed" }
+        if (pendingWrites.isEmpty()) return
+        if (pendingWrites.size == 1) {
+            flushSingle(pendingWrites[0])
+        } else {
+            flushGather()
+        }
         for (pw in pendingWrites) {
-            val ptr = (pw.buf.unsafePointer + pw.offset)!!
+            pw.buf.release()
+        }
+        pendingWrites.clear()
+    }
+
+    /**
+     * Sends a single pending write directly via [keel_nw_write_async].
+     * Avoids scatter/gather overhead for the common single-buffer case.
+     */
+    private suspend fun flushSingle(pw: PendingWrite) {
+        val ptr = (pw.buf.unsafePointer + pw.offset)!!
+        suspendCancellableCoroutine<Int> { cont ->
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
+            keel_nw_write_async(
+                conn, ptr, pw.length.toUInt(),
+                writeCallback,
+                ref.asCPointer(),
+            )
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
+        }
+    }
+
+    /**
+     * Sends multiple pending writes as a single batch via [keel_nw_writev_async].
+     *
+     * Builds C arrays of buffer pointers and lengths in [memScoped] stack memory,
+     * then calls the C wrapper which concatenates them into one `dispatch_data_t`.
+     */
+    private suspend fun flushGather() {
+        val count = pendingWrites.size
+        memScoped {
+            val bufs = allocArray<CPointerVar<ByteVar>>(count)
+            val lens = allocArray<UIntVar>(count)
+            for (i in 0 until count) {
+                val pw = pendingWrites[i]
+                bufs[i] = (pw.buf.unsafePointer + pw.offset)!!.reinterpret()
+                lens[i] = pw.length.toUInt()
+            }
             suspendCancellableCoroutine<Int> { cont ->
                 val cbCtx = CallbackContext(cont)
                 val ref = StableRef.create(cbCtx)
-                keel_nw_write_async(
-                    conn, ptr, pw.length.toUInt(),
+                keel_nw_writev_async(
+                    conn, bufs.reinterpret(), lens, count,
                     writeCallback,
                     ref.asCPointer(),
                 )
                 cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
-            pw.buf.release()
         }
-        pendingWrites.clear()
     }
 
     /**
