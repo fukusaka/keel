@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.error
+import kotlin.coroutines.ContinuationInterceptor
 import io.ktor.events.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -239,16 +240,16 @@ public class KeelApplicationEngine(
      * on the same TCP connection until the client sends `Connection: close`,
      * an error occurs, or the connection is closed by the peer.
      *
-     * **Dispatcher model**: all processing runs on the channel's EventLoop
-     * thread — codec parsing, Ktor pipeline, response writing. This is the
-     * same model as Netty and eliminates context switches between threads.
-     * User code that performs blocking I/O should use `withContext(Dispatchers.IO)`.
+     * **Dispatcher model**: I/O runs on [channel.coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+     * (EventLoop). The Ktor pipeline runs on [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher]:
+     * - Native (kqueue/epoll): EventLoop — zero context switches (Netty model)
+     * - JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing
      *
      * ```
-     * [EventLoop]  parseRequestHead(source)   read → zero-copy
-     * [EventLoop]  launch { body bridge }      source.read → EventLoop
-     * [EventLoop]  pipeline.execute(call)      routing + response write
-     * [EventLoop]  bodyBridgeJob?.join()        next request
+     * [EventLoop]     parseRequestHead(source)   read → zero-copy
+     * [EventLoop]     launch { body bridge }      source.read → EventLoop
+     * [appDispatcher] pipeline.execute(call)      routing + response write
+     * [EventLoop]     bodyBridgeJob?.join()        next request
      * ```
      *
      * Uses [BufferedSuspendSource]/[BufferedSuspendSink] for zero-copy I/O:
@@ -314,10 +315,15 @@ public class KeelApplicationEngine(
                     keepAlive = keepAlive,
                 )
 
-                // Run the Ktor pipeline on the EventLoop (same thread
-                // as I/O). Eliminates context switches between EventLoop
-                // and Dispatchers.Default. Same model as Netty.
-                pipeline.execute(call)
+                // Run the Ktor pipeline on channel.appDispatcher.
+                // Native engines (kqueue/epoll): EventLoop — zero context switches.
+                // JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing.
+                val appCtx = channel.appDispatcher
+                if (appCtx !== coroutineContext[ContinuationInterceptor]) {
+                    withContext(appCtx) { pipeline.execute(call) }
+                } else {
+                    pipeline.execute(call)
+                }
 
                 if (!keepAlive) break
 

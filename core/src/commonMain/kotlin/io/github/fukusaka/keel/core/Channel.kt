@@ -108,6 +108,18 @@ interface Channel : AutoCloseable {
      */
     val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
+    /**
+     * The [CoroutineDispatcher] for application-level processing (e.g. Ktor pipeline).
+     *
+     * Native engines (kqueue, epoll) return the EventLoop dispatcher (same as
+     * [coroutineDispatcher]), running the entire request pipeline on the I/O
+     * thread — same model as Netty. JVM NIO returns [Dispatchers.Default] to
+     * leverage ForkJoinPool work-stealing for better load distribution.
+     *
+     * Default: same as [coroutineDispatcher].
+     */
+    val appDispatcher: CoroutineDispatcher get() = coroutineDispatcher
+
     // --- Half-close ---
 
     /**

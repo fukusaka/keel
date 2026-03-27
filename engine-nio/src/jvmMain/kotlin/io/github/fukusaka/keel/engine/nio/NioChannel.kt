@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.io.NativeBuf
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
@@ -80,6 +81,9 @@ internal class NioChannel(
 
     /** Returns the worker EventLoop's dispatcher for same-thread I/O execution. */
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+
+    /** ForkJoinPool work-stealing outperforms EventLoop fixed-partition for pipeline. */
+    override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     /** No-op. JVM SocketChannel has no close-completion callback. */
     override suspend fun awaitClosed() {}
