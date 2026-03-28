@@ -5,8 +5,8 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.io.NativeBuf
 import io_uring.iovec
-import io_uring.io_uring_prep_read
-import io_uring.io_uring_prep_write
+import io_uring.io_uring_prep_recv
+import io_uring.io_uring_prep_send
 import io_uring.io_uring_prep_writev
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -42,8 +42,12 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * the coroutine with the CQE result.
  *
  * **Zero-copy I/O**: read passes [NativeBuf.unsafePointer] directly to
- * `IORING_OP_READ`; flush passes NativeBuf pointers to `IORING_OP_WRITE` /
+ * `IORING_OP_RECV`; flush passes NativeBuf pointers to `IORING_OP_SEND` /
  * `IORING_OP_WRITEV`. No intermediate ByteArray copy.
+ *
+ * **RECV/SEND vs READ/WRITE**: Socket I/O uses `IORING_OP_RECV`/`IORING_OP_SEND`
+ * rather than `IORING_OP_READ`/`IORING_OP_WRITE`. The RECV/SEND opcodes are
+ * optimised for socket file descriptors and support socket-specific flags.
  *
  * **Write/flush separation**: [write] retains the [NativeBuf] and records the
  * byte range. [flush] submits a single `IORING_OP_WRITEV` SQE for all pending
@@ -64,13 +68,13 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * ```
  * Read path:
- *   submitAndAwait { io_uring_prep_read(sqe, fd, buf.ptr + writerIndex, writableBytes, 0) }
+ *   submitAndAwait { io_uring_prep_recv(sqe, fd, buf.ptr + writerIndex, writableBytes, 0) }
  *   CQE.res > 0 → advance writerIndex, return
  *   CQE.res = 0 → EOF; CQE.res < 0 → error
  *
  * Write path:
  *   write(buf)  → retain buf, record offset/length in PendingWrite
- *   flush()     → IORING_OP_WRITE or IORING_OP_WRITEV SQE → release buffers on CQE
+ *   flush()     → IORING_OP_SEND or IORING_OP_WRITEV SQE → release buffers on CQE
  * ```
  *
  * @param fd        The connected socket file descriptor.
@@ -114,7 +118,7 @@ internal class IoUringChannel(
 
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         val res = eventLoop.submitAndAwait { sqe ->
-            io_uring_prep_read(sqe, fd, ptr, buf.writableBytes.toUInt(), 0u)
+            io_uring_prep_recv(sqe, fd, ptr, buf.writableBytes.toULong(), 0)
         }
         return when {
             res > 0 -> {
@@ -175,9 +179,9 @@ internal class IoUringChannel(
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            val remaining = (pw.length - written).toUInt()
+            val remaining = (pw.length - written).toULong()
             val res = eventLoop.submitAndAwait { sqe ->
-                io_uring_prep_write(sqe, fd, ptr, remaining, 0u)
+                io_uring_prep_send(sqe, fd, ptr, remaining, 0)
             }
             if (res > 0) written += res else break
         }
