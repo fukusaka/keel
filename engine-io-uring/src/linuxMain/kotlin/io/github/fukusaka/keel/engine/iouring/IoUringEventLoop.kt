@@ -147,9 +147,7 @@ internal class IoUringEventLoop(
     //
     // freeSlots is an IntArray-backed stack: push/pop are plain array
     // reads/writes with no boxing or heap allocation.
-    @Suppress("UNCHECKED_CAST")
     private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
-        as Array<CancellableContinuation<Int>?>
     private val freeSlots = IntArray(ringSize) { it }
     private var freeSlotsTop = ringSize
 
