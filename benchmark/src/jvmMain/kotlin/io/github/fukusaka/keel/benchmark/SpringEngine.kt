@@ -23,12 +23,12 @@ open class SpringBenchmarkApp {
         GET("/hello") {
             ServerResponse.ok()
                 .contentType(MediaType.TEXT_PLAIN)
-                .bodyValue("Hello, World!")
+                .bodyValue(springHelloPayload)
         }
         GET("/large") {
             ServerResponse.ok()
                 .contentType(MediaType.TEXT_PLAIN)
-                .bodyValue(springLargePayload)
+                .bodyValue(springLargePayloadBytes)
         }
     }
 
@@ -42,7 +42,8 @@ open class SpringBenchmarkApp {
     }
 }
 
-private val springLargePayload = "x".repeat(LARGE_PAYLOAD_SIZE)
+private val springHelloPayload = "Hello, World!".toByteArray()
+private val springLargePayloadBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
 
 /** Spring Boot WebFlux / Reactor Netty settings. */
 data class SpringEngineConfig(
