@@ -18,9 +18,12 @@ import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
@@ -361,6 +364,69 @@ class IoUringEngineTest {
 
         for (i in 0 until n) { close(readFds[i]); close(writeFds[i]) }
         for (buf in readBufs) buf.release()
+        loop.close()
+    }
+
+    // --- ASYNC_CANCEL ---
+
+    /**
+     * Regression test for IORING_OP_ASYNC_CANCEL support.
+     *
+     * Cancelling a coroutine blocked in submitAndAwait() must:
+     * 1. Submit IORING_OP_ASYNC_CANCEL targeting the in-flight SQE.
+     * 2. Release the continuation slot (no slot leak).
+     * 3. Leave the EventLoop in a functional state for subsequent operations.
+     *
+     * The test blocks a submitAndAwait() on a pipe read with no data, cancels
+     * the coroutine, then verifies EventLoop functionality by completing a
+     * second pipe read successfully.
+     */
+    @Test
+    fun `cancelled submitAndAwait submits ASYNC_CANCEL and leaves EventLoop functional`() {
+        val loop = IoUringEventLoop(IoEngineConfig().loggerFactory.logger("test"))
+        loop.start()
+
+        val fds = IntArray(2)
+        fds.usePinned { pipe(it.addressOf(0).reinterpret()) }
+        val readFd = fds[0]
+        val writeFd = fds[1]
+        val buf = HeapAllocator.allocate(1)
+        val buf2 = HeapAllocator.allocate(1)
+
+        runBlocking {
+            // Launch a coroutine on the EventLoop that blocks on a pipe read.
+            val job = launch(loop) {
+                loop.submitAndAwait { sqe ->
+                    io_uring_prep_read(sqe, readFd, buf.unsafePointer, 1u, 0u)
+                }
+            }
+
+            // Yield to the EventLoop so it submits the SQE to the kernel
+            // before we cancel. withContext(loop) dispatches a no-op and
+            // returns only after the EventLoop has processed it (and thus
+            // the prior iteration's io_uring_submit_and_wait has run).
+            withContext(loop) { /* yield */ }
+            delay(50) // brief pause for io_uring_submit_and_wait to commit the SQE
+
+            // Cancel the job; ASYNC_CANCEL is dispatched to the EventLoop.
+            job.cancelAndJoin()
+
+            // EventLoop must still be functional: write + read on the same pipe.
+            ByteArray(1) { 0x42 }.usePinned { write(writeFd, it.addressOf(0), 1uL) }
+            val n = withTimeout(2000) {
+                withContext(loop) {
+                    loop.submitAndAwait { sqe ->
+                        io_uring_prep_read(sqe, readFd, buf2.unsafePointer, 1u, 0u)
+                    }
+                }
+            }
+            assertEquals(1, n)
+        }
+
+        close(readFd)
+        close(writeFd)
+        buf.release()
+        buf2.release()
         loop.close()
     }
 
