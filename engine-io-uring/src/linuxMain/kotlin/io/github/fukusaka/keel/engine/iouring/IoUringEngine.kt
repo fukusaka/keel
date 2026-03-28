@@ -96,20 +96,26 @@ class IoUringEngine(
         val fd = SocketUtils.createUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
-        val res = memScoped {
-            val addr = alloc<sockaddr_in>()
-            addr.sin_family = AF_INET.convert()
-            addr.sin_port = keel_htons(port.toUShort())
-            val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-            check(rc == 1) { "Invalid address: $host" }
+        val res: Int
+        try {
+            res = memScoped {
+                val addr = alloc<sockaddr_in>()
+                addr.sin_family = AF_INET.convert()
+                addr.sin_port = keel_htons(port.toUShort())
+                val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+                check(rc == 1) { "Invalid address: $host" }
 
-            workerLoop.submitAndAwait { sqe ->
-                io_uring_prep_connect(
-                    sqe, fd,
-                    addr.ptr.reinterpret(),
-                    sizeOf<sockaddr_in>().convert(),
-                )
+                workerLoop.submitAndAwait { sqe ->
+                    io_uring_prep_connect(
+                        sqe, fd,
+                        addr.ptr.reinterpret(),
+                        sizeOf<sockaddr_in>().convert(),
+                    )
+                }
             }
+        } catch (e: Throwable) {
+            platform.posix.close(fd)
+            throw e
         }
 
         if (res < 0) {

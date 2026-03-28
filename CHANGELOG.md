@@ -13,11 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: fix fd leak in `IoUringEngine.connect()` and `IoUringServerChannel.accept()` when an exception (e.g., `CancellationException`) occurs after fd creation but before it is wrapped in a Channel
 - `engine-io-uring`: fix potential deadlock in `IoUringEventLoop` when the wakeup SQE submission was silently dropped due to a full SQ ring; the submission is now deferred via `wakeupSqePending` and retried at the top of the next loop iteration
 
 ### Changed
 
-- `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary
+- `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary (including `keel_alloc_iovec` / `keel_free_iovec` added in a follow-up)
 - `engine-io-uring`: remove redundant `@Suppress("UNCHECKED_CAST")` and unnecessary cast from `contSlots` initializer
 - `engine-io-uring`: replace `StableRef`-per-operation with a slot-indexed continuation pool (`IntArray` stack + Kotlin array) eliminating per-I/O GC allocation on the hot path
 - `engine-io-uring`: replace separate `io_uring_submit` + `io_uring_wait_cqe` with `io_uring_submit_and_wait(1)` reducing per-iteration kernel entries by 50%

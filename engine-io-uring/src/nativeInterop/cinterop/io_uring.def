@@ -59,7 +59,7 @@ static int keel_eventfd_write(int fd) {
  * The iovec is heap-allocated so it remains valid until the CQE arrives.
  * Caller must free with keel_free_iovec() after the CQE is processed.
  */
-struct iovec *keel_alloc_iovec(const void **bases, const size_t *lens, int count) {
+static struct iovec *keel_alloc_iovec(const void **bases, const size_t *lens, int count) {
     struct iovec *iov = (struct iovec *)malloc(count * sizeof(struct iovec));
     if (!iov) return NULL;
     for (int i = 0; i < count; i++) {
@@ -69,6 +69,6 @@ struct iovec *keel_alloc_iovec(const void **bases, const size_t *lens, int count
     return iov;
 }
 
-void keel_free_iovec(struct iovec *iov) {
+static void keel_free_iovec(struct iovec *iov) {
     free(iov);
 }
