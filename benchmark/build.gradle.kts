@@ -50,10 +50,11 @@ kotlin {
             }
         }
 
-        // Linux: keel-epoll engine
+        // Linux: keel-epoll + keel-io-uring engines
         val linuxMain by getting {
             dependencies {
                 implementation(project(":engine-epoll"))
+                implementation(project(":engine-io-uring"))
             }
         }
     }
