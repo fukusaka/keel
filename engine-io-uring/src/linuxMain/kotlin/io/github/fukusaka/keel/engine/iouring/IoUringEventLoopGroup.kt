@@ -37,12 +37,17 @@ internal class IoUringEventLoopGroup(
     }
 
     /**
-     * Returns the next EventLoop and its per-EventLoop allocator in round-robin order.
+     * Returns the index of the next EventLoop in round-robin order.
+     * Use [loopAt] and [allocatorAt] to access the EventLoop and allocator.
      */
-    fun next(): Pair<IoUringEventLoop, BufferAllocator> {
-        val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
-        return loops[i] to allocators[i]
-    }
+    fun nextIndex(): Int =
+        (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
+
+    /** Returns the EventLoop at [i]. */
+    fun loopAt(i: Int): IoUringEventLoop = loops[i]
+
+    /** Returns the per-EventLoop allocator at [i]. */
+    fun allocatorAt(i: Int): BufferAllocator = allocators[i]
 
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
