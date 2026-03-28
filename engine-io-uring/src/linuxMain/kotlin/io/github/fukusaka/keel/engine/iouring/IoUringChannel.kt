@@ -161,12 +161,15 @@ internal class IoUringChannel(
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
-        if (pendingWrites.size == 1) {
-            flushSingle(pendingWrites[0])
-        } else {
-            flushGather()
+        try {
+            if (pendingWrites.size == 1) {
+                flushSingle(pendingWrites[0])
+            } else {
+                flushGather()
+            }
+        } finally {
+            pendingWrites.clear()
         }
-        pendingWrites.clear()
     }
 
     /**
@@ -176,16 +179,19 @@ internal class IoUringChannel(
      * partial write until the full length is covered or an error occurs.
      */
     private suspend fun flushSingle(pw: PendingWrite) {
-        var written = 0
-        while (written < pw.length) {
-            val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            val remaining = (pw.length - written).toULong()
-            val res = eventLoop.submitAndAwait { sqe ->
-                io_uring_prep_send(sqe, fd, ptr, remaining, 0)
+        try {
+            var written = 0
+            while (written < pw.length) {
+                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+                val remaining = (pw.length - written).toULong()
+                val res = eventLoop.submitAndAwait { sqe ->
+                    io_uring_prep_send(sqe, fd, ptr, remaining, 0)
+                }
+                if (res > 0) written += res else break
             }
-            if (res > 0) written += res else break
+        } finally {
+            pw.buf.release()
         }
-        pw.buf.release()
     }
 
     /**
@@ -220,9 +226,13 @@ internal class IoUringChannel(
                 io_uring_prep_writev(sqe, fd, iovecs, count.toUInt(), 0u)
             }
             writtenBytes = if (res > 0) res else 0
-        } finally {
+        } catch (e: Throwable) {
             keel_free_iovec(iovecs)
+            // Release all buffers on exception (e.g. CancellationException).
+            for (pw in pendingWrites) pw.buf.release()
+            throw e
         }
+        keel_free_iovec(iovecs)
 
         if (writtenBytes >= totalBytes) {
             for (pw in pendingWrites) pw.buf.release()
@@ -230,16 +240,30 @@ internal class IoUringChannel(
         }
 
         // Partial writev: release fully-written buffers, retry the rest individually.
+        // If flushSingle throws (e.g. CancellationException), it releases its own buffer
+        // via try-finally, but subsequent buffers in the list must also be released.
+        var i = 0
         var consumed = 0
-        for (pw in pendingWrites) {
-            if (consumed + pw.length <= writtenBytes) {
-                consumed += pw.length
-                pw.buf.release()
-            } else {
-                val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
-                consumed += pw.length
+        try {
+            while (i < pendingWrites.size) {
+                val pw = pendingWrites[i]
+                if (consumed + pw.length <= writtenBytes) {
+                    consumed += pw.length
+                    pw.buf.release()
+                } else {
+                    val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
+                    flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
+                    consumed += pw.length
+                }
+                i++
             }
+        } catch (e: Throwable) {
+            // Release remaining buffers that were not yet processed.
+            // The buffer at index i was already released by flushSingle's try-finally.
+            for (j in i + 1 until pendingWrites.size) {
+                pendingWrites[j].buf.release()
+            }
+            throw e
         }
     }
 
