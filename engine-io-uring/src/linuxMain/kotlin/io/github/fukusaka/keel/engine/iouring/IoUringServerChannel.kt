@@ -65,11 +65,16 @@ internal class IoUringServerChannel(
             error("io_uring accept failed: errno=${-clientFd}")
         }
 
-        SocketUtils.setNonBlocking(clientFd)
-        val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
-        val localAddr = SocketUtils.getLocalAddress(clientFd)
-        val (workerLoop, allocator) = workerGroup.next()
-        return IoUringChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+        try {
+            SocketUtils.setNonBlocking(clientFd)
+            val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
+            val localAddr = SocketUtils.getLocalAddress(clientFd)
+            val (workerLoop, allocator) = workerGroup.next()
+            return IoUringChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+        } catch (e: Throwable) {
+            platform.posix.close(clientFd)
+            throw e
+        }
     }
 
     /**

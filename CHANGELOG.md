@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: fix fd leak in `IoUringEngine.connect()` and `IoUringServerChannel.accept()` when an exception (e.g., `CancellationException`) occurs after fd creation but before it is wrapped in a Channel
 - `engine-io-uring`: fix potential deadlock in `IoUringEventLoop` when the wakeup SQE submission was silently dropped due to a full SQ ring; the submission is now deferred via `wakeupSqePending` and retried at the top of the next loop iteration
 
 ### Changed
