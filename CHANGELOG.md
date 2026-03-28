@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary
+- `engine-io-uring`: remove redundant `@Suppress("UNCHECKED_CAST")` and unnecessary cast from `contSlots` initializer
 - `engine-io-uring`: replace `StableRef`-per-operation with a slot-indexed continuation pool (`IntArray` stack + Kotlin array) eliminating per-I/O GC allocation on the hot path
 - `engine-io-uring`: replace separate `io_uring_submit` + `io_uring_wait_cqe` with `io_uring_submit_and_wait(1)` reducing per-iteration kernel entries by 50%
 - `engine-io-uring`: use `IORING_OP_RECV`/`IORING_OP_SEND` instead of `IORING_OP_READ`/`IORING_OP_WRITE` for socket I/O (socket-optimised opcodes)
