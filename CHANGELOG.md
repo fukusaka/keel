@@ -6,101 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-28
+
 ### Added
 
-- `benchmark`: add `BENCH_RUNS` for multi-run median calculation, `BENCH_SHUFFLE` for randomized engine order, and `BENCH_COOLDOWN` for inter-engine recovery delay
-- `io-core`: add `NativeBuf.nextLink` for intrusive lock-free pool freelists (Treiber stack)
-- `io-core`: add `defaultAllocator()` expect/actual returning the platform-recommended pooled allocator
-- `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
-- `io-core`: add `BufferedSuspendSink.writeAscii()` for zero-allocation HTTP header writing
-- `codec-http`: add `HttpMethod.of()` factory that returns cached instances for standard methods
-- `core`: add `Channel.appDispatcher` for per-engine pipeline dispatch strategy
-- `ktor-engine`: run Ktor pipeline on EventLoop for Native engines (kqueue +26%, epoll +33%)
-- `engine-kqueue`, `engine-epoll`, `engine-nio`: skip wakeup syscall when dispatching from EventLoop thread (inEventLoop optimization)
-- `benchmark`: add `--gc-target` and `--gc-no-autotune` CLI options for GC tuning benchmarks
-- `io-core`: add `BufSlice` for zero-copy read-only views over `NativeBuf` regions
-- `io-core`: add `NativeBuf.getByte(index)` for absolute byte access without modifying readerIndex
-- `io-core`: add `BufferedSuspendSource.scanLine()` returning `BufSlice` instead of `String`
-- `io-core`: add `SlabAllocator` (Native) and `PooledDirectAllocator` (JVM) for per-EventLoop buffer pooling
-- `io-core`: add `NativeBuf.resetForReuse()` for pool-based buffer recycling
-- `engine-kqueue`, `engine-epoll`, `engine-nio`: wire per-EventLoop allocators via `createForEventLoop()`
 - `logging`: add logging module with `Logger`, `LoggerFactory`, `LogLevel`, `NoopLoggerFactory`, and `PrintLogger`
 - `core`: add `loggerFactory` property to `IoEngineConfig` (defaults to `NoopLoggerFactory`)
+- `core`: add `Channel.appDispatcher` for per-engine pipeline dispatch strategy
 - `ktor-engine`: add `KtorLoggerAdapter` to bridge Ktor Logger to keel `LoggerFactory`
-- `engine-*`: add DEBUG lifecycle logging (bind, connect, close) to all six engines
-- `engine-kqueue`: replace stderr write with `Logger.error()` in KqueueEventLoop fatal error path
-- `engine-epoll`: replace fprintf(stderr) with `Logger.error()` in EpollEventLoop fatal error path
-- `engine-nio`: replace silent catch with `Logger.warn()` in NioEventLoop key processing
+- `ktor-engine`: run Ktor pipeline on EventLoop for Native engines (kqueue +26%, epoll +33%)
+- `ktor-engine`: add accept error backoff strategy (Fixed / Exponential) via `Configuration.acceptBackoff`
 - `io-core`: add `KeelEofException` as domain-specific base exception for unexpected EOF
+- `io-core`: add `NativeBuf.deallocator` callback for pool-based buffer reclamation
+- `io-core`: add `NativeBuf.nextLink` for intrusive lock-free pool freelists (Treiber stack)
+- `io-core`: add `NativeBuf.getByte(index)` for absolute byte access without modifying readerIndex
+- `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
+- `io-core`: add `NativeBuf.resetForReuse()` for pool-based buffer recycling
+- `io-core`: add `BufferedSuspendSink.writeAscii()` for zero-allocation HTTP header writing
+- `io-core`: add `BufferedSuspendSource.scanLine()` returning `BufSlice` instead of `String`
+- `io-core`: add `BufSlice` for zero-copy read-only views over `NativeBuf` regions
+- `io-core`: add `defaultAllocator()` expect/actual returning the platform-recommended pooled allocator
+- `io-core`: add `BufferAllocator.createForEventLoop()` for per-EventLoop allocator instances
+- `io-core`: add `SlabAllocator` (Native) and `PooledDirectAllocator` (JVM) for per-EventLoop buffer pooling
+- `io-core`: add `TrackingAllocator` for allocate/release leak detection in tests
 - `codec-http`: add `HttpParseException` and `HttpEofException` for layered error handling
+- `codec-http`: add `HttpMethod.of()` factory that returns cached instances for standard methods
 - `codec-http`: add status code range validation in `parseStatusLine` before `HttpStatus` construction
+- `engine-*`: add DEBUG lifecycle logging (bind, connect, close) to all six engines
+- `engine-kqueue`, `engine-epoll`, `engine-nio`: skip wakeup syscall when dispatching from EventLoop thread (inEventLoop optimization)
+- `engine-kqueue`, `engine-epoll`, `engine-nio`: wire per-EventLoop allocators via `createForEventLoop()`
+- `engine-kqueue`, `engine-epoll`: replace pthread_mutex with lock-free MPSC queue for coroutine dispatch
+- `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
+- Add detekt 1.23.8 static analysis with KMP-tuned configuration for all production modules
+- CI: add detekt step (runs before compilation)
+- `benchmark`: add `BENCH_RUNS` for multi-run median, `BENCH_SHUFFLE` for randomized engine order, and `BENCH_COOLDOWN` for inter-engine recovery delay
 
 ### Changed
 
-- `io-core`: `BufferedSuspendSource.fill()` compacts only when writable space falls below 1 KiB threshold, skipping ~87% of unnecessary `compact()` calls during typical HTTP header parsing
-- `engine-nwconnection`: batch flush via `keel_nw_writev_async`; concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call (macOS /large: 7K → 47K, +552%)
-- `engine-nwconnection`: enable `supportsDeferredFlush` so `BufferedSuspendSink` accumulates buffers before flushing
-- `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall, fixing 100KB response throughput regression (epoll /large: 5.6K → 561K)
-- `io-core`: `PooledDirectAllocator` uses intrusive Treiber stack (`NativeBuf.nextLink` + `AtomicReference` CAS) for lock-free thread-safe pool access without wrapper node allocations
+- `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall (epoll /large: 9K → 201K)
+- `io-core`: `BufferedSuspendSource.fill()` compacts only when writable space falls below 1 KiB threshold, skipping ~87% of unnecessary `compact()` calls
+- `io-core`: `PooledDirectAllocator` uses intrusive Treiber stack for lock-free thread-safe pool access
 - `io-core`: `SlabAllocator` is now thread-safe via spin lock for NWConnection deferred flush support
-- `core`: `IoEngineConfig.allocator` now defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`)
-- `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource` to reduce per-request allocations
-- `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
-- `codec-http`: use `String.equals(ignoreCase=true)` in `isKeepAlive()` instead of `String.lowercase()`
-- `ktor-engine`: reuse body bridge `ByteArray` across keep-alive requests on the same connection
-- `io-core`: add `NativeBuf.deallocator` callback for pool-based buffer reclamation; `release()` invokes deallocator instead of directly freeing memory
 - `io-core`: make `NativeBuf` constructor `internal`; create buffers via `BufferAllocator.allocate()`
 - `io-core`: remove `BufferAllocator.release(buf)`; use `buf.release()` as the single release path
-- `io-core`: add `BufferAllocator.createForEventLoop()` for per-EventLoop allocator instances
-- `io-core`: `TrackingAllocator` now wraps the deallocator callback to track releases from any call site
-- `io-core`: `BufferedSuspendSource.readByte()`/`readByteArray()` now throw `KeelEofException` instead of `IllegalStateException`
+- `io-core`: reuse `StringBuilder` across `readLine()` calls in `BufferedSuspendSource`
+- `core`: `IoEngineConfig.allocator` now defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`)
+- `engine-nwconnection`: batch flush via `keel_nw_writev_async`; concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call
+- `engine-kqueue`: cache wakeup byte arrays to avoid per-dispatch allocation
+- `codec-http`: use `indexOf`-based parsing in `parseRequestLine` instead of `String.split()`
+- `codec-http`: use `String.equals(ignoreCase=true)` in `isKeepAlive()` instead of `String.lowercase()`
 - `codec-http`: `HttpParser` throws `HttpEofException`/`HttpParseException` instead of `IllegalArgumentException`
-- `codec-http`: `HttpVersion.of()` throws `HttpParseException` instead of `IllegalArgumentException`
-- `ktor-engine`: catch specific `HttpEofException`/`HttpParseException` instead of generic `Exception`
 - `ktor-engine`: respond with HTTP 400 Bad Request on malformed requests before closing connection
+- `ktor-engine`: catch specific `HttpEofException`/`HttpParseException` instead of generic `Exception`
+- `ktor-engine`: reuse body bridge `ByteArray` across keep-alive requests on the same connection
 
 ### Fixed
-
-- `benchmark`: `bench-one.sh` now reads `BENCH_ENDPOINT` environment variable instead of hardcoding `/hello`
-- `benchmark`: use pre-encoded byte payloads for all servers to eliminate per-request `String.encodeToByteArray()` overhead (/large +44-280%)
-- `benchmark`: use SIGTERM with graceful fallback instead of SIGKILL in `kill_port()`
-- `codec-http`: merge throw statements in `parseRequestLine` to satisfy detekt `ThrowsCount` rule
-- `engine-nio`: suppress `InjectDispatcher` detekt warning for intentional `Dispatchers.Default` usage
-
-### Added
-
-- `core`: tests for `SocketAddress`, `IoEngineConfig`, and `SuspendChannelSource`/`SuspendChannelSink` bridge
-- Add detekt 1.23.8 static analysis with KMP-tuned configuration for all production modules
-- `io-core`: add `TrackingAllocator` for allocate/release leak detection in tests
-- CI: add detekt step (runs before compilation)
-- `engine-kqueue`: TrackingAllocator leak detection tests (echo, large payload, connect)
-- `codec-websocket`: replace Japanese comment with English in SHA-1 implementation
-- `ktor-engine`: error handling tests (malformed request, client disconnect, empty request)
-- `engine-kqueue`, `engine-epoll`: replace pthread_mutex with lock-free MPSC queue for coroutine dispatch
-- `codec-http`: reduce alloc in suspend writeResponseHead (index-based headers, split string templates, remove trimEnd)
-- `codec-websocket`: consolidate mask key byte extraction in WsFrameWriter
-- `ktor-engine`: add accept error backoff strategy (Fixed / Exponential) via `Configuration.acceptBackoff`
-- `ktor-engine`: concurrent keep-alive connection test (5 connections × 3 requests)
-- `detekt-rules`: custom detekt rules for resource leak detection (NativeBufLeak, ArenaLeak, StableRefLeak)
-- `engine-epoll`: TrackingAllocator leak detection tests (echo, large payload, connect)
-- `engine-nio`: TrackingAllocator leak detection tests (echo, large payload, connect)
-- `engine-kqueue`, `engine-epoll`: GC heap growth verification tests (100 echo cycles, 512KB tolerance)
-- `engine-netty`: TrackingAllocator leak detection tests + re-enable detekt in lint-only mode
-- `engine-nwconnection`: TrackingAllocator leak detection tests + GC heap growth test (50 echo cycles)
-- `engine-nodejs`: asSuspendSource/asSuspendSink tests
-
-### Fixed
-
-- `engine-nio`: protect `processSelectedKeys` with try-catch so one channel's error does not stop other channels
-- `engine-nodejs`: replace byte-by-byte read loop with bulk `writeBytes()` copy
 
 - `io-core`: Native `NativeBuf.writeBytes()` with zero-length input no longer throws `ArrayIndexOutOfBoundsException` from `usePinned`
-- `engine-kqueue`: log fatal `kevent()` error to stderr before EventLoop exit (previously silent)
-- `engine-epoll`: log fatal `epoll_wait()` error to stderr before EventLoop exit (previously silent)
-
-### Changed
-
-- `engine-kqueue`: cache wakeup byte arrays to avoid per-dispatch allocation
+- `engine-nio`: protect `processSelectedKeys` with try-catch so one channel's error does not stop other channels
+- `engine-nodejs`: replace byte-by-byte read loop with bulk `writeBytes()` copy
+- `benchmark`: `bench-one.sh` now reads `BENCH_ENDPOINT` environment variable instead of hardcoding `/hello`
+- `benchmark`: use pre-encoded byte payloads for all servers to eliminate per-request encoding overhead
+- `benchmark`: use SIGTERM with graceful fallback instead of SIGKILL in `kill_port()`
 
 ## [0.2.0] - 2026-03-25
 
