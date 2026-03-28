@@ -281,9 +281,17 @@ internal class IoUringEventLoop(
      * This keeps the ring occupied so `io_uring_submit_and_wait` always has
      * something to wait on. Called once at startup and again after each wakeup
      * CQE. The SQE is submitted in the next loop iteration's batch.
+     *
+     * **Known issue — deadlock risk**: if the SQ ring is full when this is
+     * called, the wakeup SQE is silently dropped (`?: return`). If all real
+     * I/O SQEs subsequently complete (ring becomes empty) and an external
+     * thread calls [dispatch], the EventLoop cannot be woken and blocks
+     * indefinitely in `io_uring_submit_and_wait`.
+     * Fix: track the missed submission and retry at the top of the next loop
+     * iteration before calling `io_uring_submit_and_wait`.
      */
     private fun submitWakeupSqe() {
-        val sqe = io_uring_get_sqe(ring.ptr) ?: return // ring full; retry on next submit
+        val sqe = io_uring_get_sqe(ring.ptr) ?: return // ring full; see KDoc — deadlock risk
         io_uring_prep_read(sqe, wakeupFd, wakeupBuf.ptr, 8u, 0u)
         io_uring_sqe_set_data64(sqe, WAKEUP_TOKEN)
     }
