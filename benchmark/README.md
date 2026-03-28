@@ -1,22 +1,31 @@
 # keel benchmark
 
-HTTP throughput benchmark comparing keel against mainstream server engines across JVM, Rust, Go, Swift, and Zig.
+HTTP throughput benchmark comparing keel against mainstream server engines across JVM, Kotlin/Native, Rust, Go, Swift, and Zig.
 
 ## Servers
 
-### JVM (via Gradle)
+### JVM (via classpath)
 
-| Engine | Framework | I/O Model | Threads (default) |
-|---|---|---|---|
-| `keel-nio` | keel + NioEngine | Sync | 64 (Dispatchers.IO) |
-| `keel-netty` | keel + NettyEngine | Sync | 64 (Dispatchers.IO) |
-| `ktor-cio` | Ktor CIO | Async (coroutines) | coroutine-based |
-| `ktor-netty` | Ktor Netty | Async (EventLoop) | cpu/2+1 (by Netty) |
-| `netty-raw` | Netty ServerBootstrap | Async (EventLoop) | cpu*2 (by Netty) |
-| `spring` | Spring WebFlux | Async (Reactor Netty) | cpu (by Reactor) |
-| `vertx` | Vert.x | Async (EventLoop) | cpu (by Vert.x) |
+| Engine | Framework | I/O Model |
+|---|---|---|
+| `ktor-keel-nio` | keel + NioEngine | Async (EventLoop + Dispatchers.Default) |
+| `ktor-keel-netty` | keel + NettyEngine | Async (Netty EventLoop) |
+| `ktor-cio` | Ktor CIO | Async (coroutines) |
+| `ktor-netty` | Ktor Netty | Async (EventLoop) |
+| `netty-raw` | Netty ServerBootstrap | Async (EventLoop) |
+| `spring` | Spring WebFlux | Async (Reactor Netty) |
+| `vertx` | Vert.x | Async (EventLoop) |
 
-### Native (standalone binaries)
+### Kotlin/Native (standalone binary)
+
+| Engine | Platform | I/O Model |
+|---|---|---|
+| `ktor-keel-kqueue` | macOS (kqueue) | Async (EventLoop dispatch) |
+| `ktor-keel-epoll` | Linux (epoll) | Async (EventLoop dispatch) |
+| `ktor-keel-nwconnection` | macOS (NWConnection) | Async (dispatch queue) |
+| `ktor-cio` | macOS / Linux | Async (coroutines) |
+
+### Phase 2 Native (standalone binaries)
 
 | Server | Language | Framework | I/O Model |
 |---|---|---|---|
@@ -28,14 +37,68 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 ## Quick Start
 
 ```bash
-# JVM engine
-./gradlew -Pbenchmark :benchmark:run --args="--engine=keel-nio --port=8080"
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
+# Build
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
 
-# Native server (Rust example)
-cd benchmark/rust-hello && cargo build --release
-./target/release/rust-hello --port=8080
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
+# Single engine
+./benchmark/bench-one.sh ktor-keel-kqueue \
+  ./benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe \
+  --engine=ktor-keel-kqueue --port=18090
+
+# All engines (default /hello)
+./benchmark/bench-all.sh
+
+# All engines (/large, 3 runs median, shuffled)
+BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
+```
+
+## Endpoints
+
+| Path | Response | Purpose |
+|---|---|---|
+| `/hello` | `Hello, World!` (13 bytes) | Minimal overhead |
+| `/large` | 100KB text | Buffer write efficiency |
+
+## Benchmark Scripts
+
+| Script | Purpose |
+|---|---|
+| `bench-one.sh` | Single engine benchmark |
+| `bench-keel.sh` | keel engines only (keel-* + ktor-cio) |
+| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
+| `bench-pull.sh` | Pull results from remote host (luna.local) |
+| `bench-snapshot.sh` | Snapshot raw results with summary |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `BENCH_ENDPOINT` | `/hello` | Endpoint to benchmark |
+| `BENCH_RUNS` | `1` | Runs per engine; median is reported |
+| `BENCH_SHUFFLE` | `false` | Randomize engine execution order |
+| `BENCH_COOLDOWN` | `2` | Seconds between engines for OS recovery |
+| `BENCH_WRK_THREADS` | `4` | wrk threads |
+| `BENCH_WRK_CONNS` | `100` | wrk connections |
+| `BENCH_WRK_DURATION` | `10s` | wrk duration |
+| `BENCH_PORT` | `18090` | Starting port |
+| `BENCH_HOST_LABEL` | `$(hostname -s)` | Hostname label for results directory |
+
+### Recommended Usage
+
+```bash
+# Quick: single engine regression check
+./benchmark/bench-one.sh <name> <command> [args...]
+
+# Keel comparison: keel engines vs ktor-cio
+./benchmark/bench-keel.sh
+
+# Full matrix (release / milestone):
+BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh
+BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
+
+# Remote (luna.local):
+ssh luna.local "cd /home/fukusaka/prj/keel-work/keel && BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh"
+./benchmark/bench-pull.sh
 ```
 
 ## Profiles
@@ -49,34 +112,10 @@ All servers (JVM and Native) share the same 3 profiles:
 | `keel-equiv-0.1` | All engines match keel 0.1.x (keep-alive off) |
 
 ```bash
-# JVM — default profile
-./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --port=8080"
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
-
-# JVM — tuned profile
-./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --port=8080 --profile=tuned"
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
-
-# JVM — keel-equiv (keep-alive off, fair comparison with keel sync)
-./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --port=8080 --profile=keel-equiv-0.1"
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
-
-# Native — tuned profile
-cd benchmark/rust-hello && cargo build --release
-./target/release/rust-hello --port=8080 --profile=tuned
-wrk -t4 -c100 -d10s --latency http://127.0.0.1:8080/hello
-
 # Show resolved config without starting server
-./gradlew -Pbenchmark :benchmark:run --args="--engine=ktor-netty --profile=tuned --show-config"
-./target/release/rust-hello --profile=tuned --show-config
+java -cp @benchmark/build/benchmark-classpath.txt \
+  io.github.fukusaka.keel.benchmark.JvmMainKt --engine=ktor-netty --profile=tuned --show-config
 ```
-
-## Endpoints
-
-| Path | Response | Purpose |
-|---|---|---|
-| `/hello` | `Hello, World!` (13 bytes) | Minimal overhead |
-| `/large` | 100KB text | Buffer write efficiency |
 
 ## CLI Reference
 
@@ -102,13 +141,13 @@ All servers accept the same `--key=value` CLI format.
 | `--receive-buffer=N` | SO_RCVBUF (bytes) | o | o | o | \* | o |
 | `--threads=N` | Worker thread count | o | o | o | o | \* |
 
-o = applied. \* = accepted and displayed in show-config but not applied by framework (swift: tcp-nodelay/send-buffer/receive-buffer managed by SwiftNIO; go: backlog uses SOMAXCONN; zig: thread-per-connection model, no thread pool).
+o = applied. \* = accepted and displayed in show-config but not applied by framework.
 
 ### Engine-Specific (JVM)
 
 | Argument | Engine | Description |
 |---|---|---|
-| `--engine=NAME` | (JVM only) | Engine to run (default: `keel-nio`) |
+| `--engine=NAME` | (JVM only) | Engine to run (default: `ktor-keel-nio`) |
 | `--running-limit=N` | ktor-netty | Max concurrent pipeline requests |
 | `--share-work-group=BOOL` | ktor-netty | Share connection/worker groups |
 | `--connection-idle-timeout=N` | ktor-cio, vertx | Idle timeout (seconds) |
@@ -130,62 +169,17 @@ o = applied. \* = accepted and displayed in show-config but not applied by frame
 | `--read-buffer=N` | zig-hello | HTTP read buffer size (default: 8192) |
 | `--write-buffer=N` | zig-hello | HTTP write buffer size (default: 8192) |
 
-## Default Values and Tuned Overrides (JVM)
+## Build
 
-All defaults are read at runtime. Use `--show-config` to see resolved values.
-
-### Default Socket Options per Engine
-
-| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx |
-|---|---|---|---|---|---|---|---|
-| tcp-nodelay | n/a | n/a | n/a | OS | OS | true\* | true\*\* |
-| reuse-address | n/a | n/a | false\*\* | OS | OS | true\* | true\*\* |
-| backlog | n/a | n/a | n/a | OS | OS | OS | -1\*\* |
-| threads | 64 (IO) | 64 (IO) | 64 (IO) | cpu/2+1\*\* | cpu\*2\*\* | cpu\* | cpu\*\* |
-
-n/a = not configurable. OS = read from `java.net.Socket`. \* = by Reactor Netty. \*\* = by engine class.
-
-### Tuned Socket Overrides per Engine
-
-> **Note**: Tuned values are initial estimates based on documentation and source code
-> analysis, not yet validated by systematic benchmarking. Use `--show-config` to inspect
-> and override via CLI as needed.
-
-Only values that differ from the engine's built-in default are overridden:
-
-| Option | keel-nio | keel-netty | ktor-cio | ktor-netty | netty-raw | spring | vertx |
-|---|---|---|---|---|---|---|---|
-| tcp-nodelay | n/a | n/a | — | true | true | — | — |
-| reuse-address | n/a | n/a | true | true | true | — | — |
-| backlog | n/a | n/a | — | 1024 | 1024 | 1024 | 1024 |
-| threads | n/a | n/a | — | cpu | — | cpu | cpu |
-
-n/a = no tunable socket options. — = already optimal or not configurable. netty-raw keeps Netty default (cpu\*2) for EventLoop model.
-
-### Engine-Specific Tuned Values
-
-| Option | Engine | Default | Tuned |
-|---|---|---|---|
-| running-limit | ktor-netty | 32 | cpu\*16 |
-| share-work-group | ktor-netty | false | false |
-| connection-idle-timeout | ktor-cio | 45 sec | 10 sec |
-| decoder-buf-size | vertx | 128 | 256 |
-| validate-headers | spring | true | false |
-
-## Automated Benchmarks
+### Kotlin (JVM + Native)
 
 ```bash
-# JVM engines (sequential, with wrk)
-./scripts/bench-run.sh                                      # all JVM engines, default
-./scripts/bench-run.sh --engine=ktor-cio --profile=tuned    # specific engine
-./scripts/bench-compare.sh                                  # compare results
-
-# All servers (JVM + Native)
-./benchmark/bench-all.sh                                    # default profile
-./benchmark/bench-all.sh tuned                              # tuned profile
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
+# or for Linux:
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64 :benchmark:writeClasspath
 ```
 
-## Build (Native)
+### Phase 2 Native
 
 | Server | Build | Binary |
 |---|---|---|
@@ -200,15 +194,41 @@ swift-hello is macOS only (requires SwiftNIO + Network.framework).
 
 ```
 benchmark/
-├── build.gradle.kts                 # JVM-only, opt-in via -Pbenchmark
-├── bench-all.sh                     # Cross-language benchmark runner
-├── src/jvmMain/kotlin/.../
+├── build.gradle.kts                 # KMP, opt-in via -Pbenchmark
+├── bench-all.sh                     # All engines benchmark runner
+├── bench-keel.sh                    # keel engines benchmark runner
+├── bench-one.sh                     # Single engine benchmark runner
+├── bench-pull.sh                    # Pull results from remote host
+├── bench-snapshot.sh                # Snapshot raw results
+├── results/                         # Raw wrk output (.gitignore)
+│   └── {hostname}/                  # Per-host results
+├── results-summary/                 # Summary + snapshots (.gitignore)
+├── src/commonMain/kotlin/.../
 │   ├── BenchmarkConfig.kt           # Configuration + profiles + CLI parsing
 │   ├── BenchmarkModule.kt           # Shared Ktor routing (/hello, /large)
-│   ├── BenchmarkApp.kt              # CLI entry point + engine registry
-│   ├── NettyRawBenchmark.kt         # Raw Netty ServerBootstrap server
-│   ├── SpringBenchmark.kt           # Spring Boot WebFlux server
-│   └── VertxBenchmark.kt            # Vert.x server
+│   ├── EngineBenchmark.kt           # Engine abstraction
+│   ├── EngineConfig.kt              # Engine configuration
+│   ├── SocketConfig.kt              # Socket options
+│   └── Platform.kt                  # Platform expect declarations
+├── src/jvmMain/kotlin/.../
+│   ├── JvmMain.kt                   # JVM entry point
+│   ├── EngineRegistry.jvm.kt        # JVM engine registry
+│   ├── KeelNioEngine.kt             # keel NIO adapter
+│   ├── KeelNettyEngine.kt           # keel Netty adapter
+│   ├── KtorNettyEngine.kt           # Ktor Netty adapter
+│   ├── NettyRawEngine.kt            # Raw Netty ServerBootstrap
+│   ├── SpringEngine.kt              # Spring WebFlux adapter
+│   └── VertxEngine.kt               # Vert.x adapter
+├── src/nativeMain/kotlin/.../
+│   ├── NativeMain.kt                # Native entry point
+│   └── Platform.native.kt           # Native platform actual
+├── src/macosMain/kotlin/.../
+│   ├── EngineRegistry.macos.kt      # macOS engine registry
+│   ├── KeelKqueueEngine.kt          # keel kqueue adapter
+│   └── KeelNwConnectionEngine.kt    # keel NWConnection adapter
+├── src/linuxMain/kotlin/.../
+│   ├── EngineRegistry.linux.kt      # Linux engine registry
+│   └── KeelEpollEngine.kt           # keel epoll adapter
 ├── rust-hello/                      # Rust Axum (Phase 2)
 ├── go-hello/                        # Go Gin (Phase 2)
 ├── swift-hello/                     # Swift Hummingbird (Phase 2, macOS only)
