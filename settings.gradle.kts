@@ -18,6 +18,7 @@ include(
     ":io-core",
     ":core",
     ":engine-epoll",
+    ":engine-io-uring",
     ":engine-kqueue",
     ":engine-nio",
     ":engine-netty",

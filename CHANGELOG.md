@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with zero-copy read/write via `IORING_OP_RECV`/`IORING_OP_SEND`, gather write (`IORING_OP_WRITEV`), and eventfd-based wakeup mechanism
+
+### Changed
+
+- `engine-io-uring`: replace `StableRef`-per-operation with a slot-indexed continuation pool (`IntArray` stack + Kotlin array) eliminating per-I/O GC allocation on the hot path
+- `engine-io-uring`: replace separate `io_uring_submit` + `io_uring_wait_cqe` with `io_uring_submit_and_wait(1)` reducing per-iteration kernel entries by 50%
+- `engine-io-uring`: use `IORING_OP_RECV`/`IORING_OP_SEND` instead of `IORING_OP_READ`/`IORING_OP_WRITE` for socket I/O (socket-optimised opcodes)
+
 ## [0.3.0] - 2026-03-28
 
 ### Added
