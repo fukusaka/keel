@@ -244,6 +244,15 @@ internal class IoUringEventLoop(
      */
     internal suspend fun submitAndAwait(prepare: (CPointer<io_uring_sqe>) -> Unit): Int {
         return suspendCancellableCoroutine { cont ->
+            // Hot-path allocation note:
+            // [prepare] lambda: allocated by every call site (read/write/accept). Captures local
+            // variables (fd, ptr, size), so a new closure object is created each time. Eliminated
+            // only by replacing the generic lambda API with typed methods (submitRecv, submitSend).
+            //
+            // [doSubmit] Runnable: needed only in the slow path (!inEventLoop). Currently allocated
+            // unconditionally; the fast path inlines doSubmit.run() but the Runnable is still
+            // created. Moving the if/else before Runnable construction would eliminate fast-path
+            // allocation at the cost of code duplication.
             val doSubmit = Runnable {
                 val sqe = io_uring_get_sqe(ring.ptr)
                     ?: error("io_uring SQ ring full (size=$ringSize)")
@@ -342,15 +351,24 @@ internal class IoUringEventLoop(
             drainBatch.clear()
             taskQueue.drain(drainBatch)
             if (drainBatch.isEmpty()) return
+            // Hot-path allocation note: for-in on ArrayList creates an Iterator object each call.
+            // Index-based iteration (for i in 0 until size) avoids this at the cost of readability.
             for (task in drainBatch) task.run()
         }
     }
 
     companion object {
         /**
-         * Default SQE ring size. 1024 supports ~500 concurrent connections with
-         * 2 in-flight operations each (read + write), plus the wakeup SQE.
-         * Must be a power of 2 (io_uring requirement).
+         * Default SQE ring size. Must be a power of 2 (io_uring requirement).
+         *
+         * The wakeup SQE permanently occupies 1 slot, so the effective maximum
+         * number of concurrent in-flight I/O operations is `ringSize - 1 = 1023`.
+         * Because [flush] awaits the CQE before returning, each connection has at
+         * most 1 in-flight SQE at a time, supporting up to ~1023 concurrent connections.
+         * Exceeding this limit causes [io_uring_get_sqe] to return null → error.
+         *
+         * Memory: `ringSize × 12 bytes` for the slot pool (contSlots + freeSlots),
+         * i.e. ~12 KB at the default size.
          */
         internal const val DEFAULT_RING_SIZE = 1024
 
