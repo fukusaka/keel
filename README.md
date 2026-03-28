@@ -88,11 +88,11 @@ keel/
 
 - 6 I/O engines: epoll, kqueue, NIO, Netty, NWConnection, Node.js
 - SlabAllocator (Native) + PooledDirectAllocator (JVM) for per-EventLoop buffer pooling
-- EventLoop dispatch for Native engines (kqueue +27%, epoll +39%)
-- Deferred flush + writev batching (epoll /large: 9K → 201K)
+- EventLoop dispatch for Native engines
+- Deferred flush + writev batching
 - Logging module (zero-dependency Logger interface)
 - Exception hierarchy (KeelEofException, HttpParseException)
-- Ktor 400 Bad Request on malformed requests
+- detekt static analysis + TrackingAllocator leak detection
 
 ### Next (Phase 7)
 
