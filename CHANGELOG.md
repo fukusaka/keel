@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with zero-copy read/write via `IORING_OP_RECV`/`IORING_OP_SEND`, gather write (`IORING_OP_WRITEV`), and eventfd-based wakeup mechanism
+- `engine-io-uring`: cancel in-flight SQEs via `IORING_OP_ASYNC_CANCEL` when the waiting coroutine is cancelled; fast path (EventLoop thread) captures user_data directly, slow path (cross-thread) uses `AtomicLong` to bridge the submission/cancellation race
 
 ### Fixed
 
