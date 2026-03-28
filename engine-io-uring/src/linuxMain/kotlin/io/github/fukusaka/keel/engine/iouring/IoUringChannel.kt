@@ -240,16 +240,30 @@ internal class IoUringChannel(
         }
 
         // Partial writev: release fully-written buffers, retry the rest individually.
+        // If flushSingle throws (e.g. CancellationException), it releases its own buffer
+        // via try-finally, but subsequent buffers in the list must also be released.
+        var i = 0
         var consumed = 0
-        for (pw in pendingWrites) {
-            if (consumed + pw.length <= writtenBytes) {
-                consumed += pw.length
-                pw.buf.release()
-            } else {
-                val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
-                consumed += pw.length
+        try {
+            while (i < pendingWrites.size) {
+                val pw = pendingWrites[i]
+                if (consumed + pw.length <= writtenBytes) {
+                    consumed += pw.length
+                    pw.buf.release()
+                } else {
+                    val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
+                    flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
+                    consumed += pw.length
+                }
+                i++
             }
+        } catch (e: Throwable) {
+            // Release remaining buffers that were not yet processed.
+            // The buffer at index i was already released by flushSingle's try-finally.
+            for (j in i + 1 until pendingWrites.size) {
+                pendingWrites[j].buf.release()
+            }
+            throw e
         }
     }
 
