@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: add `BENCH_RUNS` for multi-run median calculation, `BENCH_SHUFFLE` for randomized engine order, and `BENCH_COOLDOWN` for inter-engine recovery delay
 - `io-core`: add `NativeBuf.nextLink` for intrusive lock-free pool freelists (Treiber stack)
 - `io-core`: add `defaultAllocator()` expect/actual returning the platform-recommended pooled allocator
 - `io-core`: add `NativeBuf.writeAsciiString()` for bulk ASCII string-to-buffer writes without ByteArray allocation
@@ -57,6 +58,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: `HttpVersion.of()` throws `HttpParseException` instead of `IllegalArgumentException`
 - `ktor-engine`: catch specific `HttpEofException`/`HttpParseException` instead of generic `Exception`
 - `ktor-engine`: respond with HTTP 400 Bad Request on malformed requests before closing connection
+
+### Fixed
+
+- `benchmark`: `bench-one.sh` now reads `BENCH_ENDPOINT` environment variable instead of hardcoding `/hello`
 
 ### Added
 
