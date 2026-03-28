@@ -292,6 +292,12 @@ internal class IoUringEventLoop(
      * iteration (before [io_uring_submit_and_wait]). Since the ring being full
      * implies other SQEs are in-flight, [io_uring_submit_and_wait] will return
      * when one of them completes, giving the retry a chance to succeed.
+     *
+     * **Limitation**: while [wakeupSqePending] is `true`, an external [dispatch]
+     * call will not immediately wake the EventLoop. The wakeup is delayed until
+     * another in-flight SQE completes and the loop retries this submission.
+     * io_uring does not support dynamic ring resize, so the only mitigation is
+     * a larger [ringSize] at construction time.
      */
     private fun submitWakeupSqe() {
         val sqe = io_uring_get_sqe(ring.ptr)
