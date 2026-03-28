@@ -62,6 +62,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `benchmark`: `bench-one.sh` now reads `BENCH_ENDPOINT` environment variable instead of hardcoding `/hello`
+- `benchmark`: use pre-encoded byte payloads for all servers to eliminate per-request `String.encodeToByteArray()` overhead (/large +44-280%)
+- `benchmark`: use SIGTERM with graceful fallback instead of SIGKILL in `kill_port()`
+- `codec-http`: merge throw statements in `parseRequestLine` to satisfy detekt `ThrowsCount` rule
+- `engine-nio`: suppress `InjectDispatcher` detekt warning for intentional `Dispatchers.Default` usage
 
 ### Added
 
