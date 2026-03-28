@@ -17,7 +17,6 @@ import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
-import kotlinx.cinterop.CPointed
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.ULongVar
@@ -28,8 +27,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlinx.cinterop.toCPointer
-import kotlinx.cinterop.toLong
 import kotlinx.cinterop.value
 import io.github.fukusaka.keel.io.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
@@ -65,14 +62,15 @@ import kotlin.coroutines.resume
  * delivers the result of the *completed* operation in the CQE. This eliminates
  * EAGAIN retry loops and allows SQE batching across concurrent operations.
  *
- * **No registration map**: epoll requires a map from fd to continuation.
- * io_uring stores a 64-bit `user_data` in each SQE, echoed back in the CQE.
- * We store a [StableRef] to the [CancellableContinuation] directly in
- * `user_data`, avoiding any map lookup on the hot path.
+ * **Zero-allocation continuation tracking**: Each SQE stores a slot index
+ * (not a pointer) in `user_data`. Continuations are stored in [contSlots],
+ * a fixed-size Kotlin array. Free slots are tracked by [freeSlots], an
+ * `IntArray`-backed stack. This avoids [StableRef] allocation on every I/O
+ * operation — the dominant GC pressure in the single-shot design.
  *
  * **Single-syscall submit + wait**: `io_uring_submit_and_wait(1)` combines
  * SQE submission and CQE waiting into one `io_uring_enter` syscall, halving
- * the per-iteration kernel entry count compared to separate submit + wait.
+ * the per-iteration kernel entry count compared to separate submit + wait calls.
  * This matches the pattern used by tokio-uring and monoio.
  *
  * **SQE prepared during CQE drain**: When [cont.resume][kotlin.coroutines.resume]
@@ -88,12 +86,17 @@ import kotlin.coroutines.resume
  * The wakeup SQE is re-submitted after each wakeup CQE.
  *
  * ```
+ * user_data encoding:
+ *   0              — reserved (unused; safety skip)
+ *   WAKEUP_TOKEN   — wakeup eventfd READ SQE
+ *   slot + SLOT_BASE — real I/O SQE; slot is an index into contSlots[]
+ *
  * EventLoop thread (single loop iteration):
  *   1. drainTasks()                  — run task queue; SQEs are prepared here
  *   2. io_uring_submit_and_wait(1)   — batch-submit SQEs + block for ≥1 CQE
  *   3. drain CQEs (io_uring_peek_cqe):
- *        WAKEUP_TOKEN → re-submit wakeup SQE, continue
- *        else         → StableRef.get() → cont.resume(cqe.res) → dispose ref
+ *        WAKEUP_TOKEN   → re-submit wakeup SQE, continue
+ *        slot+SLOT_BASE → contSlots[slot].resume(res), releaseSlot(slot)
  *        (resumed continuations may prepare new SQEs inline — submitted next iter)
  * ```
  *
@@ -123,6 +126,29 @@ internal class IoUringEventLoop(
     // Pre-allocated drain buffer — reused every loop iteration to avoid
     // per-iteration heap allocation on the hot path.
     private val drainBatch = ArrayList<Runnable>(64)
+
+    // --- Zero-allocation continuation slot pool ---
+    //
+    // Continuations are stored in a fixed array indexed by slot number.
+    // The SQE user_data holds (slot + SLOT_BASE) so the EventLoop can
+    // retrieve and resume the continuation without any GC allocation.
+    //
+    // freeSlots is an IntArray-backed stack: push/pop are plain array
+    // reads/writes with no boxing or heap allocation.
+    @Suppress("UNCHECKED_CAST")
+    private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
+        as Array<CancellableContinuation<Int>?>
+    private val freeSlots = IntArray(ringSize) { it }
+    private var freeSlotsTop = ringSize
+
+    private fun acquireSlot(): Int {
+        check(freeSlotsTop > 0) { "Continuation slot pool exhausted (ringSize=$ringSize)" }
+        return freeSlots[--freeSlotsTop]
+    }
+
+    private fun releaseSlot(slot: Int) {
+        freeSlots[freeSlotsTop++] = slot
+    }
 
     private val wakeupFd: Int
     private val running = AtomicInt(1)
@@ -203,16 +229,15 @@ internal class IoUringEventLoop(
      * Prepares an SQE and suspends the coroutine until the CQE arrives.
      *
      * The [prepare] lambda fills in the SQE via `io_uring_prep_*` functions.
-     * A [StableRef] to the continuation is stored in `sqe.user_data` so the
-     * EventLoop can resume it on CQE arrival.
+     * A slot index is stored in `sqe.user_data`; the continuation is kept in
+     * [contSlots] at that index. No [StableRef] is allocated.
      *
      * **Thread safety**: `io_uring_get_sqe()` and SQE field writes must occur
-     * on the EventLoop thread to avoid races with `io_uring_submit()`. If
-     * [submitAndAwait] is called from an external thread (e.g., the test's
-     * `runBlocking` context), SQE preparation is dispatched to the EventLoop
-     * thread via [dispatch], which also calls [wakeup] to break out of any
-     * pending `io_uring_wait_cqe()`. The SQE is submitted on the next
-     * `io_uring_submit()` call in [loop].
+     * on the EventLoop thread to avoid races with `io_uring_submit_and_wait()`.
+     * If called from an external thread, SQE preparation is dispatched to the
+     * EventLoop thread via [dispatch], which also calls [wakeup] to break out
+     * of any pending `io_uring_submit_and_wait()`. The SQE is submitted on the
+     * next `io_uring_submit_and_wait()` call in [loop].
      *
      * @return CQE result: positive = bytes transferred, 0 = EOF/closed,
      *         negative = -errno error code.
@@ -223,8 +248,9 @@ internal class IoUringEventLoop(
                 val sqe = io_uring_get_sqe(ring.ptr)
                     ?: error("io_uring SQ ring full (size=$ringSize)")
                 prepare(sqe)
-                val ref = StableRef.create(cont)
-                io_uring_sqe_set_data64(sqe, ref.asCPointer().toLong().toULong())
+                val slot = acquireSlot()
+                contSlots[slot] = cont
+                io_uring_sqe_set_data64(sqe, slot.toULong() + SLOT_BASE)
             }
             if (inEventLoop()) {
                 doSubmit.run()
@@ -243,9 +269,9 @@ internal class IoUringEventLoop(
     /**
      * Prepares a READ SQE on [wakeupFd] with [WAKEUP_TOKEN] as user_data.
      *
-     * This keeps the ring occupied so `io_uring_wait_cqe` always has something
-     * to wait on. Called once at startup and again after each wakeup CQE.
-     * The SQE is submitted in the next loop iteration's batch.
+     * This keeps the ring occupied so `io_uring_submit_and_wait` always has
+     * something to wait on. Called once at startup and again after each wakeup
+     * CQE. The SQE is submitted in the next loop iteration's batch.
      */
     private fun submitWakeupSqe() {
         val sqe = io_uring_get_sqe(ring.ptr) ?: return // ring full; retry on next submit
@@ -298,12 +324,13 @@ internal class IoUringEventLoop(
                         continue
                     }
 
-                    // Real I/O completion: restore StableRef, resume continuation.
-                    if (userData == 0UL) continue // safety: skip zero user_data
-                    val ref = userData.toLong().toCPointer<CPointed>()!!
-                        .asStableRef<CancellableContinuation<Int>>()
-                    val cont = ref.get()
-                    ref.dispose()
+                    if (userData < SLOT_BASE) continue // safety: skip reserved values
+
+                    // Real I/O completion: retrieve continuation from slot, resume it.
+                    val slot = (userData - SLOT_BASE).toInt()
+                    val cont = contSlots[slot] ?: continue // safety
+                    contSlots[slot] = null
+                    releaseSlot(slot)
                     cont.resume(res)
                 }
             }
@@ -329,8 +356,14 @@ internal class IoUringEventLoop(
 
         /**
          * Special user_data value for the permanent wakeup READ SQE.
-         * A valid StableRef pointer is never 0 or 1, so 1 is a safe sentinel.
+         * Must not conflict with slot-encoded user_data values (slot + SLOT_BASE).
          */
         internal const val WAKEUP_TOKEN = 1UL
+
+        /**
+         * Offset added to slot indices when encoding into user_data.
+         * Keeps slot 0 → user_data=2, safely above the reserved range (0, WAKEUP_TOKEN=1).
+         */
+        internal const val SLOT_BASE = 2UL
     }
 }
