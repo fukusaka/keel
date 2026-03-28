@@ -18,7 +18,7 @@ import kotlinx.coroutines.CancellationException
  * accept() flow:
  *   bossLoop: submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd) }
  *   CQE arrives with res = clientFd
- *   workerGroup.nextIndex() → assign worker EventLoop
+ *   workerGroup[nextIndex] → assign worker EventLoop + allocator
  *   → IoUringChannel(clientFd, workerLoop, allocator)
  * ```
  *

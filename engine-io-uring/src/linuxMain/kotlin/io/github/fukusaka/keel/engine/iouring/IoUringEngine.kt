@@ -43,7 +43,7 @@ import io_uring.keel_inet_pton
  *   |     |
  *   |     +-- bind() → IoUringServerChannel
  *   |           |
- *   |           +-- accept() → IORING_OP_ACCEPT → assign to workerGroup.nextIndex()
+ *   |           +-- accept() → IORING_OP_ACCEPT → assign to workerGroup[nextIndex]
  *   |
  *   +-- workerGroup (N worker EventLoops, round-robin)
  *         |
