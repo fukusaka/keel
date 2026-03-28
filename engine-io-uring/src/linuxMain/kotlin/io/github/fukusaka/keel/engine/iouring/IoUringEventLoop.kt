@@ -85,6 +85,14 @@ import kotlin.coroutines.resume
  * the eventfd, triggering the READ to complete and unblocking the loop.
  * The wakeup SQE is re-submitted after each wakeup CQE.
  *
+ * **Limitation — wakeup latency under full ring**: When the SQ ring is full,
+ * the wakeup SQE cannot be submitted immediately and is deferred via
+ * [wakeupSqePending]. During this window an external [dispatch] call will not
+ * immediately wake the EventLoop; the wakeup is delayed until another
+ * in-flight SQE completes and the loop retries submission. io_uring does not
+ * support dynamic ring resize, so the primary mitigation is choosing a
+ * sufficient [ringSize] at construction time.
+ *
  * ```
  * user_data encoding:
  *   0              — reserved (unused; safety skip)
