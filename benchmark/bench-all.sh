@@ -4,6 +4,17 @@
 # Usage: ./benchmark/bench-all.sh [profile]
 #   profile: default (default), tuned, keel-equiv-0.1
 #
+# Environment variables:
+#   BENCH_ENDPOINT       Endpoint to benchmark (default: /hello)
+#   BENCH_RUNS           Number of runs per engine; median is reported (default: 1)
+#   BENCH_SHUFFLE        Randomize engine order (default: false, set "true" to enable)
+#   BENCH_COOLDOWN       Seconds to wait between engines for OS resource recovery (default: 2)
+#   BENCH_WRK_THREADS    wrk threads (default: 4)
+#   BENCH_WRK_CONNS      wrk connections (default: 100)
+#   BENCH_WRK_DURATION   wrk duration (default: 10s)
+#   BENCH_PORT           Starting port (default: 18090)
+#   BENCH_HOST_LABEL     Hostname label for results directory
+#
 # Servers are run sequentially, never in parallel.
 # Each server is started, warmed up, benchmarked, then killed before the next.
 
@@ -18,6 +29,9 @@ WRK_DURATION=${BENCH_WRK_DURATION:-10s}
 ENDPOINT="${BENCH_ENDPOINT:-/hello}"
 WARMUP_DURATION=3s
 READY_TIMEOUT=30
+RUNS=${BENCH_RUNS:-1}
+SHUFFLE=${BENCH_SHUFFLE:-false}
+COOLDOWN=${BENCH_COOLDOWN:-2}
 RESULTS_BASE="benchmark/results"
 HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
 RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
@@ -36,6 +50,20 @@ kill_port() {
     fi
 }
 
+# --- Extract Req/sec from wrk output ---
+
+extract_rps() {
+    echo "$1" | grep "Requests/sec" | awk '{print $2}'
+}
+
+# --- Compute median of space-separated numbers ---
+
+median() {
+    echo "$@" | tr ' ' '\n' | sort -n | awk '{a[NR]=$1} END {
+        if (NR%2==1) print a[(NR+1)/2]
+        else printf "%.2f\n", (a[NR/2]+a[NR/2+1])/2
+    }'
+}
 
 # --- Benchmark runner ---
 
@@ -43,69 +71,105 @@ run_bench() {
     local name="$1"
     shift
     local cmd=("$@")
+    local all_rps=()
+    local best_result=""
+    local best_rps=0
 
-    # Start server. On Linux, use setsid so Gradle child JVM is in the same
-    # session and fuser can kill them together.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid "${cmd[@]}" >/dev/null 2>&1 &
-    else
-        "${cmd[@]}" >/dev/null 2>&1 &
-    fi
-    local pid=$!
+    # Use a dedicated port for this engine, incremented once per engine (not per run).
+    local engine_port="$PORT"
 
-    # Wait for server to be ready
-    local ready=false
-    for _ in $(seq 1 "$READY_TIMEOUT"); do
-        if curl -s -o /dev/null "http://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null; then
-            ready=true
-            break
+    for run in $(seq 1 "$RUNS"); do
+        # Start server
+        if command -v setsid >/dev/null 2>&1; then
+            setsid "${cmd[@]}" >/dev/null 2>&1 &
+        else
+            "${cmd[@]}" >/dev/null 2>&1 &
         fi
-        sleep 0.3
-    done
+        local pid=$!
 
-    if [ "$ready" = false ]; then
-        printf "  %-24s %s\n" "$name" "FAILED TO START"
-        kill_port "$PORT"
+        # Wait for server to be ready
+        local ready=false
+        for _ in $(seq 1 "$READY_TIMEOUT"); do
+            if curl -s -o /dev/null "http://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null; then
+                ready=true
+                break
+            fi
+            sleep 0.3
+        done
+
+        if [ "$ready" = false ]; then
+            printf "  %-24s %s\n" "$name" "FAILED TO START"
+            kill_port "$engine_port"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            PORT=$((engine_port + 1))
+            return
+        fi
+
+        # Warmup
+        wrk -t2 -c10 -d"${WARMUP_DURATION}" "http://127.0.0.1:${engine_port}${ENDPOINT}" >/dev/null 2>&1
+
+        # Benchmark
+        local result
+        result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${engine_port}${ENDPOINT}" 2>&1)
+
+        local rps
+        rps=$(extract_rps "$result")
+        all_rps+=("$rps")
+
+        # Keep result with highest rps for raw output file and display
+        if awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
+            best_rps="$rps"
+            best_result="$result"
+        fi
+
+        # Stop server
+        kill_port "$engine_port"
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
-        PORT=$((PORT + 1))
-        return
+
+        # Cooldown between runs of same engine
+        if [ "$run" -lt "$RUNS" ]; then
+            sleep "$COOLDOWN"
+        fi
+    done
+
+    # Move to next port for next engine
+    PORT=$((engine_port + 1))
+
+    # Save raw wrk output (best run)
+    local safe_name endpoint_name result_file
+    safe_name=$(echo "$name" | tr ':/' '-')
+    endpoint_name=$(echo "$ENDPOINT" | tr '/' '-' | sed 's/^-//')
+    result_file="${RESULTS_DIR}/${safe_name}-${endpoint_name}-${WRK_THREADS}t${WRK_CONNS}c-${TIMESTAMP}.txt"
+    echo "$best_result" > "$result_file"
+
+    # Compute median rps
+    local median_rps
+    if [ "$RUNS" -gt 1 ]; then
+        median_rps=$(median "${all_rps[@]}")
+    else
+        median_rps="${all_rps[0]}"
     fi
 
-    # Warmup
-    wrk -t2 -c10 -d"${WARMUP_DURATION}" "http://127.0.0.1:${PORT}${ENDPOINT}" >/dev/null 2>&1
+    local lat50 lat99 errors
+    lat50=$(echo "$best_result" | grep "50%" | awk '{print $2}')
+    lat99=$(echo "$best_result" | grep "99%" | awk '{print $2}')
+    errors=$(echo "$best_result" | grep "Socket errors" | head -1)
 
-    # Benchmark
-    local result
-    result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
-
-    # Save raw wrk output
-    local safe_name
-    safe_name=$(echo "$name" | tr ':/' '-')
-    local endpoint_name
-    endpoint_name=$(echo "$ENDPOINT" | tr '/' '-' | sed 's/^-//')
-    local result_file="${RESULTS_DIR}/${safe_name}-${endpoint_name}-${WRK_THREADS}t${WRK_CONNS}c-${TIMESTAMP}.txt"
-    echo "$result" > "$result_file"
-
-    local rps lat50 lat99 errors
-    rps=$(echo "$result" | grep "Requests/sec" | awk '{print $2}')
-    lat50=$(echo "$result" | grep "50%" | awk '{print $2}')
-    lat99=$(echo "$result" | grep "99%" | awk '{print $2}')
-    errors=$(echo "$result" | grep "Socket errors" | head -1)
-
-    printf "  %-24s %12s req/s  p50=%-10s p99=%-10s" "$name" "$rps" "$lat50" "$lat99"
+    if [ "$RUNS" -gt 1 ]; then
+        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s [%s] (%d runs)" "$name" "$median_rps" "$lat50" "$lat99" "${all_rps[*]}" "$RUNS"
+    else
+        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s" "$name" "$median_rps" "$lat50" "$lat99"
+    fi
     if [ -n "$errors" ]; then
         echo "  $errors"
     else
         echo ""
     fi
 
-    # Stop server: kill by port first (catches Gradle child JVM),
-    # then kill PID as fallback. Move to next port to avoid TIME_WAIT.
-    kill_port "$PORT"
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    PORT=$((PORT + 1))
+    # Cooldown between engines
+    sleep "$COOLDOWN"
 }
 
 # --- Run optional binary (skip if not found) ---
@@ -118,59 +182,118 @@ run_if_exists() {
     fi
 }
 
+# --- Build engine list ---
+
+build_engine_list() {
+    local engines=()
+
+    PROFILE_ARGS=""
+    if [ "$PROFILE" != "default" ]; then
+        PROFILE_ARGS="--profile=${PROFILE}"
+    fi
+
+    # Phase 2: Native servers
+    for pair in \
+        "rust-hello:benchmark/rust-hello/target/release/rust-hello" \
+        "go-hello:benchmark/go-hello/go-hello" \
+        "swift-hello:benchmark/swift-hello/.build/release/swift-hello" \
+        "zig-hello:benchmark/zig-hello/zig-out/bin/zig-hello"; do
+        local ename="${pair%%:*}"
+        local ebin="${pair#*:}"
+        if [ -f "$ebin" ]; then
+            engines+=("native-bin:${ename}:${ebin}")
+        fi
+    done
+
+    # Kotlin/Native servers
+    NATIVE_BIN=""
+    if [ "$(uname)" = "Darwin" ]; then
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "arm64" ]; then
+            NATIVE_BIN="benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe"
+        else
+            NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
+        fi
+        if [ -f "$NATIVE_BIN" ]; then
+            for engine in ktor-keel-kqueue ktor-keel-nwconnection ktor-cio; do
+                engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
+            done
+        fi
+    elif [ "$(uname)" = "Linux" ]; then
+        NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
+        if [ -f "$NATIVE_BIN" ]; then
+            for engine in ktor-keel-epoll ktor-cio; do
+                engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
+            done
+        fi
+    fi
+
+    # JVM servers
+    JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
+    if [ -f "$JVM_CP_FILE" ]; then
+        for engine in ktor-keel-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
+            engines+=("jvm-engine:jvm:${engine}")
+        done
+    fi
+
+    # Shuffle if requested
+    if [ "$SHUFFLE" = "true" ]; then
+        local shuffled
+        shuffled=$(printf '%s\n' "${engines[@]}" | shuf)
+        engines=()
+        while IFS= read -r line; do
+            engines+=("$line")
+        done <<< "$shuffled"
+    fi
+
+    printf '%s\n' "${engines[@]}"
+}
+
 # --- Main ---
+
+echo "=== Benchmark: ${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} runs=${RUNS} shuffle=${SHUFFLE} cooldown=${COOLDOWN}s ==="
+echo ""
+printf "  %-24s %12s        %-10s  %-10s\n" "Server" "Req/sec" "p50" "p99"
+printf "  %-24s %12s        %-10s  %-10s\n" "------------------------" "------------" "----------" "----------"
+
+JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
+JVM_CP=""
+if [ -f "$JVM_CP_FILE" ]; then
+    JVM_CP=$(cat "$JVM_CP_FILE")
+fi
 
 PROFILE_ARGS=""
 if [ "$PROFILE" != "default" ]; then
     PROFILE_ARGS="--profile=${PROFILE}"
 fi
 
-echo "=== Benchmark: ${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} ==="
-echo ""
-printf "  %-24s %12s        %-10s  %-10s\n" "Server" "Req/sec" "p50" "p99"
-printf "  %-24s %12s        %-10s  %-10s\n" "------------------------" "------------" "----------" "----------"
-
-# Phase 2: Native servers (skip if binary not found)
-run_if_exists "rust-hello" benchmark/rust-hello/target/release/rust-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "go-hello" benchmark/go-hello/go-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "swift-hello" benchmark/swift-hello/.build/release/swift-hello --port="${PORT}" ${PROFILE_ARGS}
-run_if_exists "zig-hello" benchmark/zig-hello/zig-out/bin/zig-hello --port="${PORT}" ${PROFILE_ARGS}
-
-# Kotlin/Native servers
-NATIVE_BIN=""
-if [ "$(uname)" = "Darwin" ]; then
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "arm64" ]; then
-        NATIVE_BIN="benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe"
-    else
-        NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
-    fi
-    if [ -f "$NATIVE_BIN" ]; then
-        for engine in ktor-keel-kqueue ktor-keel-nwconnection ktor-cio; do
-            run_bench "native:${engine}" "$NATIVE_BIN" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
-        done
-    fi
-elif [ "$(uname)" = "Linux" ]; then
-    NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
-    if [ -f "$NATIVE_BIN" ]; then
-        for engine in ktor-keel-epoll ktor-cio; do
-            run_bench "native:${engine}" "$NATIVE_BIN" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
-        done
-    fi
-fi
-
-# JVM servers — use classpath file to avoid Gradle process tree issues.
-# Gradle spawns a child JVM for JavaExec; kill only reaches the wrapper, not the server.
-# Using java -cp directly creates a single process that responds to signals.
-JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
-if [ -f "$JVM_CP_FILE" ]; then
-    JVM_CP=$(cat "$JVM_CP_FILE")
-    for engine in ktor-keel-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
-        run_bench "jvm:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
-    done
-else
-    echo "  (classpath file not found — run './gradlew -Pbenchmark :benchmark:writeClasspath' first)"
-fi
+while IFS= read -r entry; do
+    type="${entry%%:*}"
+    rest="${entry#*:}"
+    case "$type" in
+        native-bin)
+            ename="${rest%%:*}"
+            ebin="${rest#*:}"
+            run_bench "$ename" "$ebin" --port="${PORT}" ${PROFILE_ARGS}
+            ;;
+        kn-engine)
+            # format: native:<engine>:<binary>
+            display="${rest%%:*}"  # "native"
+            rest2="${rest#*:}"
+            engine="${rest2%%:*}"
+            binary="${rest2#*:}"
+            run_bench "${display}:${engine}" "$binary" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
+            ;;
+        jvm-engine)
+            # format: jvm:<engine>
+            display="${rest%%:*}"
+            engine="${rest#*:}"
+            if [ -n "$JVM_CP" ]; then
+                run_bench "${display}:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
+            fi
+            ;;
+    esac
+done < <(build_engine_list)
 
 echo ""
 echo "=== Done ==="
