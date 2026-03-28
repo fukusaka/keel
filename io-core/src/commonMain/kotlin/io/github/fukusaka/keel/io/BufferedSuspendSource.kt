@@ -138,7 +138,7 @@ class BufferedSuspendSource(
                     null
                 }
             }
-            // After fill(), compact() moved data to offset 0 and appended new data.
+            // After fill(), buffer may have been compacted and new data appended.
             // Loop back to scan from the new readerIndex.
         }
     }
