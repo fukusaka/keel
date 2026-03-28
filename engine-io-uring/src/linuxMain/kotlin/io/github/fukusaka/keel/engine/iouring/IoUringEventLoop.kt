@@ -11,8 +11,7 @@ import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
-import io_uring.io_uring_submit
-import io_uring.io_uring_wait_cqe
+import io_uring.io_uring_submit_and_wait
 import io_uring.keel_eventfd_create
 import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
@@ -58,7 +57,7 @@ import kotlin.coroutines.resume
  * Drives all I/O for channels created by [IoUringEngine]. A dedicated
  * pthread runs [loop], interleaving three tasks:
  * 1. Execute queued coroutine continuations ([taskQueue])
- * 2. Submit all pending SQEs via a single `io_uring_submit()` call (batching)
+ * 2. Submit all pending SQEs + wait for CQEs via `io_uring_submit_and_wait(1)`
  * 3. Drain completed CQEs and resume the associated coroutines
  *
  * **Completion model vs readiness model**: Unlike epoll which notifies when
@@ -71,24 +70,31 @@ import kotlin.coroutines.resume
  * We store a [StableRef] to the [CancellableContinuation] directly in
  * `user_data`, avoiding any map lookup on the hot path.
  *
- * **SQE batching**: All SQEs prepared during [drainTasks] are submitted in
- * one `io_uring_submit()` call before waiting for CQEs. This amortises the
- * `io_uring_enter` syscall overhead across concurrent I/O operations.
+ * **Single-syscall submit + wait**: `io_uring_submit_and_wait(1)` combines
+ * SQE submission and CQE waiting into one `io_uring_enter` syscall, halving
+ * the per-iteration kernel entry count compared to separate submit + wait.
+ * This matches the pattern used by tokio-uring and monoio.
+ *
+ * **SQE prepared during CQE drain**: When [cont.resume][kotlin.coroutines.resume]
+ * runs a continuation that calls [submitAndAwait] (fast path), the SQE is
+ * prepared inline but not yet submitted. It is submitted on the next
+ * `io_uring_submit_and_wait` call — one loop iteration of intentional delay,
+ * the same design used by monoio.
  *
  * **Wakeup mechanism**: A permanent eventfd READ SQE with [WAKEUP_TOKEN] as
- * `user_data` keeps the ring occupied so `io_uring_wait_cqe` never blocks
- * indefinitely. External threads call [wakeup] to write to the eventfd,
- * triggering the READ to complete and breaking out of `io_uring_wait_cqe`.
+ * `user_data` keeps at least one SQE in-flight so `io_uring_submit_and_wait`
+ * always has something to wait on. External threads call [wakeup] to write to
+ * the eventfd, triggering the READ to complete and unblocking the loop.
  * The wakeup SQE is re-submitted after each wakeup CQE.
  *
  * ```
  * EventLoop thread (single loop iteration):
- *   1. drainTasks()        — run coroutine continuations; SQEs are prepared here
- *   2. io_uring_submit()   — batch-submit all pending SQEs to the kernel
- *   3. io_uring_wait_cqe() — block until at least 1 CQE arrives
- *   4. drain CQEs:
+ *   1. drainTasks()                  — run task queue; SQEs are prepared here
+ *   2. io_uring_submit_and_wait(1)   — batch-submit SQEs + block for ≥1 CQE
+ *   3. drain CQEs (io_uring_peek_cqe):
  *        WAKEUP_TOKEN → re-submit wakeup SQE, continue
  *        else         → StableRef.get() → cont.resume(cqe.res) → dispose ref
+ *        (resumed continuations may prepare new SQEs inline — submitted next iter)
  * ```
  *
  * @param logger Logger for error reporting.
@@ -113,6 +119,10 @@ internal class IoUringEventLoop(
     // Lock-free MPSC queue for cross-thread task dispatch.
     // CAS-based enqueue (~5-10ns) vs mutex lock/unlock (~50-100ns).
     private val taskQueue = MpscQueue<Runnable>()
+
+    // Pre-allocated drain buffer — reused every loop iteration to avoid
+    // per-iteration heap allocation on the hot path.
+    private val drainBatch = ArrayList<Runnable>(64)
 
     private val wakeupFd: Int
     private val running = AtomicInt(1)
@@ -140,7 +150,7 @@ internal class IoUringEventLoop(
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)
         // Skip wakeup when already on the EventLoop thread — the loop
-        // will drain tasks before the next io_uring_submit().
+        // will drain tasks before the next io_uring_submit_and_wait().
         if (!inEventLoop()) {
             wakeup()
         }
@@ -248,10 +258,11 @@ internal class IoUringEventLoop(
     private fun loop() {
         eventLoopThread = pthread_self()
 
-        // Submit the initial wakeup SQE before entering the loop.
-        // This ensures io_uring_wait_cqe always has something to wait on.
+        // Prepare the initial wakeup READ SQE.
+        // It is submitted on the first io_uring_submit_and_wait() call below,
+        // keeping the ring always occupied so the wait never blocks with no
+        // in-flight operation.
         submitWakeupSqe()
-        io_uring_submit(ring.ptr)
 
         memScoped {
             val cqePtrVar = alloc<CPointerVar<io_uring_cqe>>()
@@ -259,20 +270,21 @@ internal class IoUringEventLoop(
             while (running.value != 0) {
                 drainTasks()
 
-                // Batch-submit all SQEs prepared during drainTasks().
-                // One io_uring_enter syscall covers all concurrent I/O.
-                io_uring_submit(ring.ptr)
-
-                // Block until at least one CQE is available.
-                val ret = io_uring_wait_cqe(ring.ptr, cqePtrVar.ptr)
+                // Submit all pending SQEs and wait for at least 1 CQE in a
+                // single io_uring_enter syscall. This halves the per-iteration
+                // kernel entry count compared to separate submit + wait calls,
+                // following the pattern used by tokio-uring and monoio.
+                val ret = io_uring_submit_and_wait(ring.ptr, 1u)
                 if (ret < 0) {
                     val err = errno
                     if (err == EINTR) continue
-                    logger.error { "io_uring_wait_cqe() fatal error: errno=$err" }
+                    logger.error { "io_uring_submit_and_wait() fatal error: errno=$err" }
                     break
                 }
 
                 // Drain all available CQEs without blocking.
+                // Resumed continuations may prepare new SQEs inline (fast path);
+                // those SQEs are submitted on the next io_uring_submit_and_wait().
                 while (io_uring_peek_cqe(ring.ptr, cqePtrVar.ptr) == 0) {
                     val cqe = cqePtrVar.value ?: break
                     val userData = io_uring_cqe_get_data64(cqe)
@@ -281,7 +293,7 @@ internal class IoUringEventLoop(
 
                     if (userData == WAKEUP_TOKEN) {
                         // Wakeup fired — re-submit for the next round.
-                        // The new SQE will be submitted at the next io_uring_submit().
+                        // The new SQE is submitted at the next io_uring_submit_and_wait().
                         submitWakeupSqe()
                         continue
                     }
@@ -299,12 +311,11 @@ internal class IoUringEventLoop(
     }
 
     private fun drainTasks() {
-        val batch = mutableListOf<Runnable>()
         while (true) {
-            batch.clear()
-            taskQueue.drain(batch)
-            if (batch.isEmpty()) return
-            for (task in batch) task.run()
+            drainBatch.clear()
+            taskQueue.drain(drainBatch)
+            if (drainBatch.isEmpty()) return
+            for (task in drainBatch) task.run()
         }
     }
 
