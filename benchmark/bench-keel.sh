@@ -36,11 +36,21 @@ mkdir -p "$RESULTS_DIR"
 
 kill_port() {
     local port="$1"
+    local pids
     if [ "$(uname)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
-        fuser -k "$port"/tcp 2>/dev/null || true
+        pids=$(fuser "$port"/tcp 2>/dev/null) || return 0
     elif command -v lsof >/dev/null 2>&1; then
-        lsof -ti :"$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
+        pids=$(lsof -ti :"$port" 2>/dev/null) || return 0
+    else
+        return 0
     fi
+    [ -z "$pids" ] && return 0
+    kill $pids 2>/dev/null || return 0       # SIGTERM first
+    for _ in $(seq 1 20); do                 # wait up to 2s
+        kill -0 $pids 2>/dev/null || return 0
+        sleep 0.1
+    done
+    kill -9 $pids 2>/dev/null || true        # SIGKILL fallback
 }
 
 # --- Extract Req/sec from wrk output ---
