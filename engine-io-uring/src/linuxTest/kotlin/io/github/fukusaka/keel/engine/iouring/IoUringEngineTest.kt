@@ -543,6 +543,37 @@ class IoUringEngineTest {
     // --- NativeBuf leak check ---
 
     @Test
+    fun `no NativeBuf leak when channel closed with pending writes`() = runBlocking {
+        val tracking = TrackingAllocator(HeapAllocator)
+        val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        // Write multiple buffers but do not flush — close releases them.
+        val buf1 = ch.allocator.allocate(8)
+        buf1.writeByte(0x41)
+        ch.write(buf1)
+
+        val buf2 = ch.allocator.allocate(8)
+        buf2.writeByte(0x42)
+        ch.write(buf2)
+
+        // Close without flush: pendingWrites should be released.
+        ch.close()
+        buf1.release()
+        buf2.release()
+
+        close(clientFd)
+        server.close()
+        engine.close()
+
+        assertEquals(0, tracking.outstandingCount, "NativeBuf leak detected")
+    }
+
+    @Test
     fun `no NativeBuf leak on echo`() = runBlocking {
         val tracking = TrackingAllocator(HeapAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
