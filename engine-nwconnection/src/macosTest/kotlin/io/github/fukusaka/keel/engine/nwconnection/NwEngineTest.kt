@@ -516,6 +516,43 @@ class NwEngineTest {
         }
     }
 
+    @Test
+    fun `double close is idempotent`() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.close()
+        ch.close()
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `write zero bytes returns zero`() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        val buf = HeapAllocator.allocate(8)
+        val written = ch.write(buf)
+        assertEquals(0, written)
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
     // --- Concurrent ---
 
     @Test

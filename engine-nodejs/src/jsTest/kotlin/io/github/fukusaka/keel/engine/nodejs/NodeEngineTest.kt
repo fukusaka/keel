@@ -361,6 +361,42 @@ class NodeEngineTest {
         }
     }
 
+    @Test
+    fun `double close is idempotent`() = runTest {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        server.accept().close()
+
+        ch.close()
+        ch.close()
+
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `write zero bytes returns zero`() = runTest {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val ch = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        val buf = HeapAllocator.allocate(8)
+        val written = ch.write(buf)
+        assertEquals(0, written)
+
+        buf.release()
+        ch.close()
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
     // --- asSuspendSource / asSuspendSink ---
 
     @Test

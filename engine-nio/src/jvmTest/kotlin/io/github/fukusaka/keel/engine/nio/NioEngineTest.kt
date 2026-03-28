@@ -547,6 +547,43 @@ class NioEngineTest {
         }
     }
 
+    @Test
+    fun `double close is idempotent`() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        ch.close()
+        ch.close()
+
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `write zero bytes returns zero`() = runBlocking {
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        val buf = HeapAllocator.allocate(8)
+        val written = ch.write(buf)
+        assertEquals(0, written)
+
+        buf.release()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
     // --- Concurrent ---
 
     @Test
