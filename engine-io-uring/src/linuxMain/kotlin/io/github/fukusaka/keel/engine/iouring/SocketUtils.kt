@@ -53,9 +53,15 @@ import platform.posix.strerror
 @OptIn(ExperimentalForeignApi::class)
 internal object SocketUtils {
 
+    /** TCP listen backlog. Matches the default used by epoll/kqueue engines. */
+    private const val LISTEN_BACKLOG = 128
+
+    /** Maximum length of an IPv4 address string (e.g. "255.255.255.255"). */
+    private const val INET_ADDRSTRLEN = 16
+
     /**
      * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
-     * non-blocking -> bind -> listen(backlog=128).
+     * non-blocking -> bind -> listen(backlog=[LISTEN_BACKLOG]).
      *
      * @param host Bind address. "0.0.0.0" binds to all interfaces.
      * @param port Port number. 0 lets the OS assign an ephemeral port.
@@ -85,7 +91,7 @@ internal object SocketUtils {
             check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
         }
 
-        val result = listen(fd, 128)
+        val result = listen(fd, LISTEN_BACKLOG)
         check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
 
         return fd
@@ -149,8 +155,8 @@ internal object SocketUtils {
     /** Converts a C `sockaddr_in` to a keel [SocketAddress]. */
     fun toSocketAddress(addr: sockaddr_in): SocketAddress = memScoped {
         val port = keel_ntohs(addr.sin_port).toInt()
-        val hostBuf = allocArray<ByteVar>(16)
-        keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, 16u)
+        val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
+        keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
         val host = hostBuf.toKString()
         SocketAddress(host, port)
     }

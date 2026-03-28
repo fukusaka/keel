@@ -43,7 +43,7 @@ import io_uring.keel_inet_pton
  *   |     |
  *   |     +-- bind() → IoUringServerChannel
  *   |           |
- *   |           +-- accept() → IORING_OP_ACCEPT → assign to workerGroup.next()
+ *   |           +-- accept() → IORING_OP_ACCEPT → assign to workerGroup[nextIndex]
  *   |
  *   +-- workerGroup (N worker EventLoops, round-robin)
  *         |
@@ -94,7 +94,9 @@ class IoUringEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = SocketUtils.createUnconnectedSocket()
-        val (workerLoop, allocator) = workerGroup.next()
+        val wi = workerGroup.nextIndex()
+        val workerLoop = workerGroup.loopAt(wi)
+        val allocator = workerGroup.allocatorAt(wi)
 
         val res: Int
         try {

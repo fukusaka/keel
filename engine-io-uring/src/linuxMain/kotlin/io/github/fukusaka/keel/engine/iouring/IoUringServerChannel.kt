@@ -18,7 +18,7 @@ import kotlinx.coroutines.CancellationException
  * accept() flow:
  *   bossLoop: submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd) }
  *   CQE arrives with res = clientFd
- *   workerGroup.next() → assign worker EventLoop
+ *   workerGroup[nextIndex] → assign worker EventLoop + allocator
  *   → IoUringChannel(clientFd, workerLoop, allocator)
  * ```
  *
@@ -69,8 +69,8 @@ internal class IoUringServerChannel(
             SocketUtils.setNonBlocking(clientFd)
             val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
             val localAddr = SocketUtils.getLocalAddress(clientFd)
-            val (workerLoop, allocator) = workerGroup.next()
-            return IoUringChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+            val wi = workerGroup.nextIndex()
+            return IoUringChannel(clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi), remoteAddr, localAddr)
         } catch (e: Throwable) {
             platform.posix.close(clientFd)
             throw e

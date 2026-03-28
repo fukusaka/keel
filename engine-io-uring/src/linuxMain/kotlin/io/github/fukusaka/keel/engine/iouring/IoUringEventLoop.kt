@@ -432,9 +432,8 @@ internal class IoUringEventLoop(
             drainBatch.clear()
             taskQueue.drain(drainBatch)
             if (drainBatch.isEmpty()) return
-            // Hot-path allocation note: for-in on ArrayList creates an Iterator object each call.
-            // Index-based iteration (for i in 0 until size) avoids this at the cost of readability.
-            for (task in drainBatch) task.run()
+            // Index-based iteration avoids Iterator allocation on every drain cycle.
+            for (i in 0 until drainBatch.size) drainBatch[i].run()
         }
     }
 
