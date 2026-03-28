@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: `BufferedSuspendSource.fill()` compacts only when writable space falls below 1 KiB threshold, skipping ~87% of unnecessary `compact()` calls during typical HTTP header parsing
 - `engine-nwconnection`: batch flush via `keel_nw_writev_async`; concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call (macOS /large: 7K → 47K, +552%)
 - `engine-nwconnection`: enable `supportsDeferredFlush` so `BufferedSuspendSink` accumulates buffers before flushing
 - `io-core`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers are enqueued and sent in a single `writev()` syscall, fixing 100KB response throughput regression (epoll /large: 5.6K → 561K)

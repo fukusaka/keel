@@ -31,13 +31,19 @@ class BufferedSuspendSource(
 
     /**
      * Refills the internal buffer from the underlying source.
-     * Compacts the buffer first to maximize writable space.
+     *
+     * Compacts the buffer only when writable space falls below [COMPACT_THRESHOLD].
+     * For typical HTTP header parsing (lines of 30-50 bytes in an 8 KiB buffer),
+     * this skips ~87% of compactions that the unconditional approach would perform.
+     * Full segment-chain elimination of compact is deferred to Phase 9 (:server).
      *
      * @return true if data was read, false on EOF.
      */
     private suspend fun fill(): Boolean {
         if (eof) return false
-        buf.compact()
+        if (buf.writableBytes < COMPACT_THRESHOLD) {
+            buf.compact()
+        }
         val n = source.read(buf)
         if (n <= 0) {
             eof = true
@@ -192,6 +198,13 @@ class BufferedSuspendSource(
          * HTTP request header sizes.
          */
         private const val BUFFER_SIZE = 8192
+        /**
+         * Compact threshold: compact only when writable space falls below this.
+         * 1 KiB ensures enough room for at least one typical HTTP header line
+         * while skipping compact for the common case where most of the buffer
+         * is still writable.
+         */
+        private const val COMPACT_THRESHOLD = 1024
         /** Initial StringBuilder capacity for readLine. Covers typical HTTP header lines. */
         private const val INITIAL_LINE_CAPACITY = 128
         private const val LF = '\n'.code.toByte()
