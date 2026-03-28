@@ -118,7 +118,7 @@ run_bench() {
         all_rps+=("$rps")
 
         # Keep result with highest rps for raw output file and display
-        if awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
+        if [ -n "$rps" ] && awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
             best_rps="$rps"
             best_result="$result"
         fi
@@ -239,7 +239,7 @@ build_engine_list() {
     # Shuffle if requested
     if [ "$SHUFFLE" = "true" ]; then
         local shuffled
-        shuffled=$(printf '%s\n' "${engines[@]}" | shuf)
+        shuffled=$(printf '%s\n' "${engines[@]}" | sort -R)
         engines=()
         while IFS= read -r line; do
             engines+=("$line")
