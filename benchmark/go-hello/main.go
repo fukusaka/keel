@@ -21,7 +21,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var largePayload = strings.Repeat("x", 102400)
+var helloPayloadBytes = []byte("Hello, World!")
+var largePayloadBytes = []byte(strings.Repeat("x", 102400))
 
 // Config mirrors the JVM BenchmarkConfig for consistent cross-language comparison.
 type Config struct {
@@ -237,10 +238,10 @@ func main() {
 	}
 
 	r.GET("/hello", func(c *gin.Context) {
-		c.String(200, "Hello, World!")
+		c.Data(200, "text/plain", helloPayloadBytes)
 	})
 	r.GET("/large", func(c *gin.Context) {
-		c.String(200, largePayload)
+		c.Data(200, "text/plain", largePayloadBytes)
 	})
 
 	// Create listener with socket options

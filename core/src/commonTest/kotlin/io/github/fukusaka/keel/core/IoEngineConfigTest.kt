@@ -1,16 +1,17 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.io.HeapAllocator
+import io.github.fukusaka.keel.io.defaultAllocator
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertSame
+import kotlin.test.assertIs
 
 class IoEngineConfigTest {
 
     @Test
-    fun `default allocator is HeapAllocator`() {
+    fun `default allocator matches platform default type`() {
         val config = IoEngineConfig()
-        assertSame(HeapAllocator, config.allocator)
+        assertIs<Any>(config.allocator) // non-null
+        assertEquals(defaultAllocator()::class, config.allocator::class)
     }
 
     @Test
@@ -29,7 +30,7 @@ class IoEngineConfigTest {
     fun `copy preserves allocator`() {
         val config = IoEngineConfig(threads = 2)
         val copied = config.copy(threads = 8)
-        assertSame(HeapAllocator, copied.allocator)
+        assertEquals(config.allocator::class, copied.allocator::class)
         assertEquals(8, copied.threads)
     }
 }

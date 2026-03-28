@@ -17,7 +17,8 @@ import Darwin.C
 import Glibc
 #endif
 
-let largePayload = String(repeating: "x", count: 102_400)
+let helloPayloadBytes: [UInt8] = Array("Hello, World!".utf8)
+let largePayloadBytes: [UInt8] = Array(String(repeating: "x", count: 102_400).utf8)
 
 // MARK: - Configuration
 
@@ -205,8 +206,12 @@ if config.showConfig {
         router.addMiddleware { ConnectionCloseMiddleware() }
     }
 
-    router.get("/hello") { _, _ in "Hello, World!" }
-    router.get("/large") { _, _ in largePayload }
+    router.get("/hello") { _, _ in
+        Response(status: .ok, headers: [.contentType: "text/plain"], body: .init(byteBuffer: ByteBuffer(bytes: helloPayloadBytes)))
+    }
+    router.get("/large") { _, _ in
+        Response(status: .ok, headers: [.contentType: "text/plain"], body: .init(byteBuffer: ByteBuffer(bytes: largePayloadBytes)))
+    }
 
     let eventLoopGroup: any EventLoopGroup
     if let threads = config.threads {

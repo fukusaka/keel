@@ -84,6 +84,7 @@ internal class NioChannel(
     override val supportsDeferredFlush: Boolean get() = true
 
     /** ForkJoinPool work-stealing outperforms EventLoop fixed-partition for pipeline. */
+    @Suppress("InjectDispatcher") // Intentional: NIO pipeline runs on Dispatchers.Default (design.md §17)
     override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     /** No-op. JVM SocketChannel has no close-completion callback. */

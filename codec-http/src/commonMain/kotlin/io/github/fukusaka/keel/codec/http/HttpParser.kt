@@ -131,9 +131,8 @@ internal fun parseRequestLine(line: String): RequestLine {
     val sp1 = line.indexOf(' ')
     if (sp1 < 1) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
     val sp2 = line.indexOf(' ', sp1 + 1)
-    if (sp2 < 0) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
-    // Reject more than 3 tokens
-    if (line.indexOf(' ', sp2 + 1) >= 0) {
+    // Require exactly 2 spaces: second SP must exist and no third SP after it.
+    if (sp2 < 0 || line.indexOf(' ', sp2 + 1) >= 0) {
         throw HttpParseException("Invalid request line (expected 3 tokens): $line")
     }
     return RequestLine(

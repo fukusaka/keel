@@ -43,7 +43,8 @@ data class VertxEngineConfig(
 
 object VertxEngine : EngineBenchmark {
 
-    private val largePayload = "x".repeat(LARGE_PAYLOAD_SIZE)
+    private val helloBytes = "Hello, World!".toByteArray()
+    private val largeBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
 
     override fun start(config: BenchmarkConfig) {
         val s = config.socket
@@ -56,13 +57,13 @@ object VertxEngine : EngineBenchmark {
         router.get("/hello").handler { ctx ->
             val response = ctx.response().putHeader("Content-Type", "text/plain")
             if (config.connectionClose) response.putHeader("Connection", "close")
-            response.end("Hello, World!")
+            response.end(io.vertx.core.buffer.Buffer.buffer(helloBytes))
         }
 
         router.get("/large").handler { ctx ->
             val response = ctx.response().putHeader("Content-Type", "text/plain")
             if (config.connectionClose) response.putHeader("Connection", "close")
-            response.end(largePayload)
+            response.end(io.vertx.core.buffer.Buffer.buffer(largeBytes))
         }
 
         val v = config.engineConfig as? VertxEngineConfig ?: VertxEngineConfig()

@@ -31,6 +31,9 @@ data class NettyRawEngineConfig(
 
 private const val DEFAULT_MAX_CONTENT_LENGTH = 65536
 
+private val nettyRawHelloPayload = Unpooled.unreleasableBuffer(
+    Unpooled.wrappedBuffer("Hello, World!".toByteArray())
+)
 private val nettyRawLargePayload = Unpooled.unreleasableBuffer(
     Unpooled.wrappedBuffer("x".repeat(LARGE_PAYLOAD_SIZE).toByteArray())
 )
@@ -108,7 +111,7 @@ private class BenchmarkHandler(
 
     override fun channelRead0(ctx: ChannelHandlerContext, request: FullHttpRequest) {
         val (content, contentType) = when (request.uri()) {
-            "/hello" -> Unpooled.copiedBuffer("Hello, World!", Charsets.UTF_8) to "text/plain"
+            "/hello" -> nettyRawHelloPayload.retainedDuplicate() to "text/plain"
             "/large" -> nettyRawLargePayload.retainedDuplicate() to "text/plain"
             else -> {
                 val response = DefaultFullHttpResponse(
