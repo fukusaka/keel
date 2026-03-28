@@ -287,11 +287,6 @@ internal class IoUringEventLoop(
      * something to wait on. Called once at startup and again after each wakeup
      * CQE. The SQE is submitted in the next loop iteration's batch.
      *
-     * **Known issue — deadlock risk**: if the SQ ring is full when this is
-     * called, the wakeup SQE is silently dropped (`?: return`). If all real
-     * I/O SQEs subsequently complete (ring becomes empty) and an external
-     * thread calls [dispatch], the EventLoop cannot be woken and blocks
-     * indefinitely in `io_uring_submit_and_wait`.
      * If the SQ ring is full, the submission is deferred: [wakeupSqePending] is
      * set to `true` and the submission is retried at the top of the next loop
      * iteration (before [io_uring_submit_and_wait]). Since the ring being full
