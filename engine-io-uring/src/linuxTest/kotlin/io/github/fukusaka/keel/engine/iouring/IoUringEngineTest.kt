@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.HeapAllocator
 import io.github.fukusaka.keel.io.TrackingAllocator
+import io_uring.io_uring_prep_read
 import io_uring.keel_htons
 import io_uring.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -14,6 +15,10 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -23,12 +28,14 @@ import platform.posix.SOL_SOCKET
 import platform.posix.SO_RCVTIMEO
 import platform.posix.close
 import platform.posix.connect
+import platform.posix.pipe
 import platform.posix.read
 import platform.posix.setsockopt
 import platform.posix.socket
 import platform.posix.sockaddr_in
 import platform.posix.timeval
 import platform.posix.write
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -284,6 +291,77 @@ class IoUringEngineTest {
         client.close()
         server.close()
         engine.close()
+    }
+
+    // --- wakeup SQE retry ---
+
+    /**
+     * Regression test for the submitWakeupSqe silent-drop deadlock.
+     *
+     * With ringSize=4: if (ringSize-1)=3 continuations are resumed during a
+     * single CQE drain and each submits a new SQE (fast path), the subsequent
+     * submitWakeupSqe() call finds the SQ ring full and must defer. Without the
+     * wakeupSqePending retry, the next external dispatch() cannot wake the
+     * EventLoop because no wakeup SQE is in-flight, causing deadlock.
+     *
+     * The test fills the ring with 3 blocking pipe reads, dispatches from an
+     * external thread, then unblocks one pipe to let the EventLoop wake and
+     * process the dispatch. A 2 s timeout detects a deadlock regression.
+     */
+    @Test
+    fun `dispatch from external thread not lost when wakeup SQE was dropped due to full ring`() {
+        val loop = IoUringEventLoop(IoEngineConfig().loggerFactory.logger("test"), ringSize = 4)
+        loop.start()
+
+        val n = 3
+        val readFds = IntArray(n)
+        val writeFds = IntArray(n)
+        for (i in 0 until n) {
+            IntArray(2).also { fds ->
+                fds.usePinned { pipe(it.addressOf(0).reinterpret()) }
+                readFds[i] = fds[0]
+                writeFds[i] = fds[1]
+            }
+        }
+
+        // 1-byte buffers for the pipe reads (NativeBuf; released after loop.close).
+        val readBufs = Array(n) { HeapAllocator.allocate(1) }
+
+        runBlocking {
+            // Fill the SQ ring: submit n=3 blocking reads on the EventLoop.
+            // With ringSize=4 (1 wakeup + 3 reads = full), the next
+            // submitWakeupSqe() call during CQE processing will fail.
+            val readJobs = (0 until n).map { i ->
+                launch(loop) {
+                    loop.submitAndAwait { sqe ->
+                        io_uring_prep_read(sqe, readFds[i], readBufs[i].unsafePointer, 1u, 0u)
+                    }
+                }
+            }
+
+            // Dispatch from an external thread while the ring is under pressure.
+            // If the wakeup SQE was dropped and wakeupSqePending is not retried,
+            // this dispatch will never be processed → timeout = deadlock regression.
+            val dispatched = CompletableDeferred<Unit>()
+            launch(Dispatchers.Default) {
+                loop.dispatch(EmptyCoroutineContext, Runnable { dispatched.complete(Unit) })
+                // Unblock one pipe read to allow the EventLoop to escape
+                // io_uring_submit_and_wait and process the queued dispatch.
+                ByteArray(1) { 0x42 }.usePinned { write(writeFds[0], it.addressOf(0), 1uL) }
+            }
+
+            withTimeout(2000) { dispatched.await() }
+
+            // Unblock remaining reads and wait for all jobs to finish.
+            ByteArray(1) { 0x42 }.usePinned { pinned ->
+                for (i in 1 until n) write(writeFds[i], pinned.addressOf(0), 1uL)
+            }
+            readJobs.joinAll()
+        }
+
+        for (i in 0 until n) { close(readFds[i]); close(writeFds[i]) }
+        for (buf in readBufs) buf.release()
+        loop.close()
     }
 
     // --- NativeBuf leak check ---

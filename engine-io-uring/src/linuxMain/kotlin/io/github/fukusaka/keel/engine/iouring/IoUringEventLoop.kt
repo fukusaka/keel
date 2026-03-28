@@ -154,6 +154,11 @@ internal class IoUringEventLoop(
     private val running = AtomicInt(1)
     private val threadPtr = arena.alloc<pthread_tVar>()
 
+    // True when submitWakeupSqe() was skipped because the SQ ring was full.
+    // Retried at the top of each loop iteration before io_uring_submit_and_wait.
+    // EventLoop-thread-only: no synchronisation needed.
+    private var wakeupSqePending = false
+
     @kotlin.concurrent.Volatile
     private var eventLoopThread: platform.posix.pthread_t? = null
 
@@ -287,11 +292,19 @@ internal class IoUringEventLoop(
      * I/O SQEs subsequently complete (ring becomes empty) and an external
      * thread calls [dispatch], the EventLoop cannot be woken and blocks
      * indefinitely in `io_uring_submit_and_wait`.
-     * Fix: track the missed submission and retry at the top of the next loop
-     * iteration before calling `io_uring_submit_and_wait`.
+     * If the SQ ring is full, the submission is deferred: [wakeupSqePending] is
+     * set to `true` and the submission is retried at the top of the next loop
+     * iteration (before [io_uring_submit_and_wait]). Since the ring being full
+     * implies other SQEs are in-flight, [io_uring_submit_and_wait] will return
+     * when one of them completes, giving the retry a chance to succeed.
      */
     private fun submitWakeupSqe() {
-        val sqe = io_uring_get_sqe(ring.ptr) ?: return // ring full; see KDoc — deadlock risk
+        val sqe = io_uring_get_sqe(ring.ptr)
+        if (sqe == null) {
+            wakeupSqePending = true
+            return
+        }
+        wakeupSqePending = false
         io_uring_prep_read(sqe, wakeupFd, wakeupBuf.ptr, 8u, 0u)
         io_uring_sqe_set_data64(sqe, WAKEUP_TOKEN)
     }
@@ -312,6 +325,12 @@ internal class IoUringEventLoop(
 
             while (running.value != 0) {
                 drainTasks()
+
+                // Retry wakeup SQE submission if it was deferred in a prior
+                // iteration due to a full SQ ring. Without this, an external
+                // dispatch() whose wakeup() write is not caught by any in-flight
+                // wakeup SQE would leave the EventLoop blocked indefinitely.
+                if (wakeupSqePending) submitWakeupSqe()
 
                 // Submit all pending SQEs and wait for at least 1 CQE in a
                 // single io_uring_enter syscall. This halves the per-iteration
