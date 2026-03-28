@@ -41,6 +41,7 @@ import platform.posix.write
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -480,6 +481,63 @@ class IoUringEngineTest {
         buf.release()
         buf2.release()
         loop.close()
+    }
+
+    // --- error ---
+
+    @Test
+    fun `double close is idempotent`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        ch.close()
+        ch.close() // second close must not throw
+
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `connect to refused port throws`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+        server.close()
+
+        val ex = assertFailsWith<IllegalStateException> {
+            withTimeout(3000) {
+                engine.connect("127.0.0.1", port)
+            }
+        }
+        assertTrue(ex.message!!.contains("connect"))
+
+        engine.close()
+    }
+
+    @Test
+    fun `write zero bytes returns zero`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val buf = HeapAllocator.allocate(8)
+        // buf has 0 readableBytes
+        val written = ch.write(buf)
+        assertEquals(0, written)
+
+        buf.release()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
     }
 
     // --- NativeBuf leak check ---
