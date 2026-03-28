@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with zero-copy read/write via `IORING_OP_RECV`/`IORING_OP_SEND`, gather write (`IORING_OP_WRITEV`), and eventfd-based wakeup mechanism
 
+### Fixed
+
+- `engine-io-uring`: fix potential deadlock in `IoUringEventLoop` when the wakeup SQE submission was silently dropped due to a full SQ ring; the submission is now deferred via `wakeupSqePending` and retried at the top of the next loop iteration
+
 ### Changed
 
 - `engine-io-uring`: replace `StableRef`-per-operation with a slot-indexed continuation pool (`IntArray` stack + Kotlin array) eliminating per-I/O GC allocation on the hot path
