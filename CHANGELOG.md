@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with boss/worker `EventLoop` model, zero-copy read/write, gather write (`IORING_OP_WRITEV`), and async connect (`IORING_OP_CONNECT`)
+
 ## [0.3.0] - 2026-03-28
 
 ### Added
