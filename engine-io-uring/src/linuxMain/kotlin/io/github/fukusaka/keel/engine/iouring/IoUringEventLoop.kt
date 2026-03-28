@@ -6,6 +6,7 @@ import io_uring.io_uring_cqe_get_data64
 import io_uring.io_uring_cqe_seen
 import io_uring.io_uring_get_sqe
 import io_uring.io_uring_peek_cqe
+import io_uring.io_uring_prep_cancel64
 import io_uring.io_uring_prep_read
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
@@ -44,6 +45,7 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
@@ -97,6 +99,7 @@ import kotlin.coroutines.resume
  * user_data encoding:
  *   0              — reserved (unused; safety skip)
  *   WAKEUP_TOKEN   — wakeup eventfd READ SQE
+ *   CANCEL_TOKEN   — IORING_OP_ASYNC_CANCEL SQE; CQE is discarded
  *   slot + SLOT_BASE — real I/O SQE; slot is an index into contSlots[]
  *
  * EventLoop thread (single loop iteration):
@@ -104,6 +107,7 @@ import kotlin.coroutines.resume
  *   2. io_uring_submit_and_wait(1)   — batch-submit SQEs + block for ≥1 CQE
  *   3. drain CQEs (io_uring_peek_cqe):
  *        WAKEUP_TOKEN   → re-submit wakeup SQE, continue
+ *        CANCEL_TOKEN   → discard (cancel SQE completed; original CQE follows)
  *        slot+SLOT_BASE → contSlots[slot].resume(res), releaseSlot(slot)
  *        (resumed continuations may prepare new SQEs inline — submitted next iter)
  * ```
@@ -245,6 +249,12 @@ internal class IoUringEventLoop(
      * A slot index is stored in `sqe.user_data`; the continuation is kept in
      * [contSlots] at that index. No [StableRef] is allocated.
      *
+     * **Cancellation**: if the coroutine is cancelled while waiting for the CQE,
+     * `IORING_OP_ASYNC_CANCEL` is submitted targeting the original SQE's user_data.
+     * The cancel CQE arrives with [CANCEL_TOKEN] and is discarded. The original
+     * SQE's CQE arrives with -ECANCELED; resuming the already-cancelled continuation
+     * with that value is a safe no-op. The slot is always released.
+     *
      * **Thread safety**: `io_uring_get_sqe()` and SQE field writes must occur
      * on the EventLoop thread to avoid races with `io_uring_submit_and_wait()`.
      * If called from an external thread, SQE preparation is dispatched to the
@@ -257,27 +267,60 @@ internal class IoUringEventLoop(
      */
     internal suspend fun submitAndAwait(prepare: (CPointer<io_uring_sqe>) -> Unit): Int {
         return suspendCancellableCoroutine { cont ->
-            // Hot-path allocation note:
-            // [prepare] lambda: allocated by every call site (read/write/accept). Captures local
-            // variables (fd, ptr, size), so a new closure object is created each time. Eliminated
-            // only by replacing the generic lambda API with typed methods (submitRecv, submitSend).
-            //
-            // [doSubmit] Runnable: needed only in the slow path (!inEventLoop). Currently allocated
-            // unconditionally; the fast path inlines doSubmit.run() but the Runnable is still
-            // created. Moving the if/else before Runnable construction would eliminate fast-path
-            // allocation at the cost of code duplication.
-            val doSubmit = Runnable {
+            if (inEventLoop()) {
+                // Fast path: prepare SQE synchronously on the EventLoop thread.
+                // SQE user_data (slot index) is known immediately, so invokeOnCancellation
+                // captures it directly without AtomicLong.
+                //
+                // Remaining hot-path allocations: [prepare] lambda (always, captures fd/ptr/size)
+                // and the invokeOnCancellation lambda (always, captures userData). Eliminated only
+                // by replacing the generic lambda API with typed methods (submitRecv, submitSend).
                 val sqe = io_uring_get_sqe(ring.ptr)
                     ?: error("io_uring SQ ring full (size=$ringSize)")
                 prepare(sqe)
                 val slot = acquireSlot()
                 contSlots[slot] = cont
-                io_uring_sqe_set_data64(sqe, slot.toULong() + SLOT_BASE)
-            }
-            if (inEventLoop()) {
-                doSubmit.run()
+                val userData = slot.toULong() + SLOT_BASE
+                io_uring_sqe_set_data64(sqe, userData)
+                cont.invokeOnCancellation {
+                    // Dispatch ASYNC_CANCEL to the EventLoop thread: io_uring_get_sqe()
+                    // must be called from the EventLoop thread only.
+                    // If the ring is full, the cancel SQE is silently dropped; the original
+                    // SQE will complete on its own and the slot will be released normally.
+                    dispatch(EmptyCoroutineContext, Runnable {
+                        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
+                        io_uring_prep_cancel64(cancelSqe, userData, 0)
+                        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+                    })
+                }
             } else {
-                dispatch(EmptyCoroutineContext, doSubmit)
+                // Slow path: dispatch SQE preparation to the EventLoop thread.
+                // AtomicLong bridges the race between the dispatch Runnable (EventLoop
+                // thread, writes userData after SQE submission) and invokeOnCancellation
+                // (arbitrary thread, reads userData to decide whether to cancel).
+                val submittedUserData = AtomicLong(0L)
+                cont.invokeOnCancellation {
+                    val ud = submittedUserData.value
+                    if (ud == 0L) return@invokeOnCancellation
+                    dispatch(EmptyCoroutineContext, Runnable {
+                        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
+                        io_uring_prep_cancel64(cancelSqe, ud.toULong(), 0)
+                        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+                    })
+                }
+                dispatch(EmptyCoroutineContext, Runnable {
+                    // If cancelled before this Runnable ran, skip SQE submission:
+                    // the caller will receive CancellationException without any in-flight SQE.
+                    if (!cont.isActive) return@Runnable
+                    val sqe = io_uring_get_sqe(ring.ptr)
+                        ?: error("io_uring SQ ring full (size=$ringSize)")
+                    prepare(sqe)
+                    val slot = acquireSlot()
+                    contSlots[slot] = cont
+                    val userData = slot.toULong() + SLOT_BASE
+                    io_uring_sqe_set_data64(sqe, userData)
+                    submittedUserData.value = userData.toLong()
+                })
             }
         }
     }
@@ -369,6 +412,10 @@ internal class IoUringEventLoop(
                         continue
                     }
 
+                    // ASYNC_CANCEL completion: discard. The original SQE's CQE (-ECANCELED)
+                    // arrives separately and is handled via the normal slot path below.
+                    if (userData == CANCEL_TOKEN) continue
+
                     if (userData < SLOT_BASE) continue // safety: skip reserved values
 
                     // Real I/O completion: retrieve continuation from slot, resume it.
@@ -413,6 +460,13 @@ internal class IoUringEventLoop(
          * Must not conflict with slot-encoded user_data values (slot + SLOT_BASE).
          */
         internal const val WAKEUP_TOKEN = 1UL
+
+        /**
+         * Special user_data value for `IORING_OP_ASYNC_CANCEL` SQEs.
+         * The CQE for a cancel SQE is discarded; the original SQE's CQE
+         * (with -ECANCELED) arrives separately via the normal slot path.
+         */
+        internal const val CANCEL_TOKEN = ULong.MAX_VALUE
 
         /**
          * Offset added to slot indices when encoding into user_data.
