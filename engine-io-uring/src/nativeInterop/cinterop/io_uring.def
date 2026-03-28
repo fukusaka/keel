@@ -14,8 +14,9 @@ compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
 
 /*
  * htons is sometimes a macro/inline on Linux; expose as wrapper for safety.
- * Marked static to avoid symbol collisions when linked with engine-epoll,
- * which defines the same wrappers under the same names.
+ * Marked static to avoid symbol collisions when multiple engine modules are
+ * linked into the same binary (e.g., benchmark links both epoll and io_uring).
+ * All engine cinterop modules use static for these wrappers.
  */
 static uint16_t keel_htons(uint16_t x) { return htons(x); }
 static uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }

@@ -11,24 +11,27 @@ headers = sys/epoll.h sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/eventf
 
 /*
  * htons is sometimes a macro/inline on Linux; expose as wrapper for safety.
+ * Marked static to avoid symbol collisions when linked with engine-io-uring,
+ * which defines the same wrappers under the same names.
  */
-uint16_t keel_htons(uint16_t x) { return htons(x); }
-uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
-uint32_t keel_htonl(uint32_t x) { return htonl(x); }
+static uint16_t keel_htons(uint16_t x) { return htons(x); }
+static uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
+static uint32_t keel_htonl(uint32_t x) { return htonl(x); }
 
 /* 127.0.0.1 in network byte order */
-uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+static uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
 
 /*
  * inet_pton / inet_ntop wrappers for Kotlin/Native cinterop.
  * On Linux, these are in arpa/inet.h but may not be directly
  * bindable via platform.posix on all Kotlin/Native versions.
+ * Marked static — same rationale as keel_htons above.
  */
-int keel_inet_pton(int af, const char *src, void *dst) {
+static int keel_inet_pton(int af, const char *src, void *dst) {
     return inet_pton(af, src, dst);
 }
 
-const char *keel_inet_ntop(int af, const void *src, char *dst, uint32_t size) {
+static const char *keel_inet_ntop(int af, const void *src, char *dst, uint32_t size) {
     return inet_ntop(af, src, dst, (socklen_t)size);
 }
 
@@ -36,17 +39,18 @@ const char *keel_inet_ntop(int af, const void *src, char *dst, uint32_t size) {
  * eventfd wrappers for EventLoop wakeup mechanism.
  * eventfd(2) provides a more efficient wakeup than pipe(2) on Linux:
  * single fd instead of two, and kernel-optimized for signaling.
+ * Marked static — same rationale as keel_htons above.
  */
-int keel_eventfd_create(void) {
+static int keel_eventfd_create(void) {
     return eventfd(0, EFD_NONBLOCK);
 }
 
-int keel_eventfd_write(int fd) {
+static int keel_eventfd_write(int fd) {
     uint64_t val = 1;
     return write(fd, &val, sizeof(val));
 }
 
-int keel_eventfd_read(int fd) {
+static int keel_eventfd_read(int fd) {
     uint64_t val;
     return read(fd, &val, sizeof(val));
 }
@@ -55,8 +59,9 @@ int keel_eventfd_read(int fd) {
  * writev wrapper for gather-write optimization.
  * Accepts parallel arrays of base pointers and lengths, builds
  * iovec internally, and calls writev in a single syscall.
+ * Marked static — same rationale as keel_htons above.
  */
-ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
     struct iovec iov[count];
     for (int i = 0; i < count; i++) {
         iov[i].iov_base = (void *)bases[i];
