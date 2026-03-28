@@ -10,23 +10,26 @@ compilerOpts = -D_DARWIN_C_SOURCE
 /*
  * EV_SET is a C macro and cannot be bound directly by cinterop.
  * This wrapper exposes it as a regular function.
+ * Marked static to prevent symbol collisions if multiple kqueue-based
+ * modules are ever linked into the same binary.
  */
-void keel_ev_set(struct kevent *kev, uintptr_t ident,
-                 int16_t filter, uint16_t flags,
-                 uint32_t fflags, intptr_t data, void *udata) {
+static void keel_ev_set(struct kevent *kev, uintptr_t ident,
+                        int16_t filter, uint16_t flags,
+                        uint32_t fflags, intptr_t data, void *udata) {
     EV_SET(kev, ident, filter, flags, fflags, data, udata);
 }
 
 /*
  * htons/ntohs are C macros (byte-swap builtins) on Darwin and cannot
  * be bound directly by cinterop. These wrappers expose them as functions.
+ * Marked static — same rationale as keel_ev_set above.
  */
-uint16_t keel_htons(uint16_t x) { return htons(x); }
-uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
-uint32_t keel_htonl(uint32_t x) { return htonl(x); }
+static uint16_t keel_htons(uint16_t x) { return htons(x); }
+static uint16_t keel_ntohs(uint16_t x) { return ntohs(x); }
+static uint32_t keel_htonl(uint32_t x) { return htonl(x); }
 
 /* 127.0.0.1 in network byte order */
-uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+static uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
 
 /*
  * writev wrapper for gather-write optimization.
@@ -35,8 +38,9 @@ uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
  *
  * This avoids exposing struct iovec to Kotlin/Native (not available
  * in platform.posix on Darwin).
+ * Marked static — same rationale as keel_ev_set above.
  */
-ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
     struct iovec iov[count];
     for (int i = 0; i < count; i++) {
         iov[i].iov_base = (void *)bases[i];
