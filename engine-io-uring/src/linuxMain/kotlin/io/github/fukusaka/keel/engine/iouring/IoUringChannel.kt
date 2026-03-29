@@ -5,9 +5,6 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.io.NativeBuf
 import io_uring.iovec
-import io_uring.io_uring_prep_recv
-import io_uring.io_uring_prep_send
-import io_uring.io_uring_prep_writev
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
 import kotlinx.cinterop.COpaquePointerVar
@@ -56,7 +53,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * **iovec lifetime**: For gather writes, [keel_alloc_iovec] heap-allocates the
  * iovec array before submitting the SQE. The kernel reads this array while
  * the write operation is in flight. The array is freed by [keel_free_iovec]
- * after [submitAndAwait] returns (i.e., after the CQE arrives).
+ * after the CQE arrives (i.e., after the CQE arrives).
  *
  * **Partial write handling**: `IORING_OP_WRITE` / `IORING_OP_WRITEV` may return
  * fewer bytes than requested. We retry with a new SQE for the remainder until
@@ -68,13 +65,13 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * ```
  * Read path:
- *   submitAndAwait { io_uring_prep_recv(sqe, fd, buf.ptr + writerIndex, writableBytes, 0) }
+ *   submitRecv(fd, ptr, writableBytes, 0) → CQE.res
  *   CQE.res > 0 → advance writerIndex, return
  *   CQE.res = 0 → EOF; CQE.res < 0 → error
  *
  * Write path:
  *   write(buf)  → retain buf, record offset/length in PendingWrite
- *   flush()     → IORING_OP_SEND or IORING_OP_WRITEV SQE → release buffers on CQE
+ *   flush()     → submitSend / submitWritev → release buffers on CQE
  * ```
  *
  * @param fd        The connected socket file descriptor.
@@ -117,9 +114,7 @@ internal class IoUringChannel(
         check(_open) { "Channel is closed" }
 
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        val res = eventLoop.submitAndAwait { sqe ->
-            io_uring_prep_recv(sqe, fd, ptr, buf.writableBytes.toULong(), 0)
-        }
+        val res = eventLoop.submitRecv(fd, ptr, buf.writableBytes.toULong(), 0)
         return when {
             res > 0 -> {
                 buf.writerIndex += res
@@ -184,9 +179,7 @@ internal class IoUringChannel(
             while (written < pw.length) {
                 val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
                 val remaining = (pw.length - written).toULong()
-                val res = eventLoop.submitAndAwait { sqe ->
-                    io_uring_prep_send(sqe, fd, ptr, remaining, 0)
-                }
+                val res = eventLoop.submitSend(fd, ptr, remaining, 0)
                 if (res > 0) written += res else break
             }
         } finally {
@@ -199,7 +192,7 @@ internal class IoUringChannel(
      *
      * [keel_alloc_iovec] creates a heap-allocated iovec array from the pending
      * write pointers and lengths. The array must remain valid until the CQE
-     * arrives, so it is freed via [keel_free_iovec] after [submitAndAwait] returns.
+     * arrives, so it is freed via [keel_free_iovec] after the CQE arrives.
      *
      * On partial writev, walks the PendingWrite list to find the split point:
      * fully-written buffers are released, the remainder falls through to [flushSingle].
@@ -222,9 +215,7 @@ internal class IoUringChannel(
 
         val writtenBytes: Int
         try {
-            val res = eventLoop.submitAndAwait { sqe ->
-                io_uring_prep_writev(sqe, fd, iovecs, count.toUInt(), 0u)
-            }
+            val res = eventLoop.submitWritev(fd, iovecs, count.toUInt())
             writtenBytes = if (res > 0) res else 0
         } catch (e: Throwable) {
             keel_free_iovec(iovecs)

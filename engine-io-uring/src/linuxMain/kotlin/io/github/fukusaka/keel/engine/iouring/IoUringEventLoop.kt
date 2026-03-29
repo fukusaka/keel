@@ -8,6 +8,10 @@ import io_uring.io_uring_get_sqe
 import io_uring.io_uring_peek_cqe
 import io_uring.io_uring_prep_cancel64
 import io_uring.io_uring_prep_read
+import io_uring.io_uring_prep_recv
+import io_uring.io_uring_prep_send
+import io_uring.io_uring_prep_writev
+import io_uring.iovec
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
@@ -16,6 +20,7 @@ import io_uring.io_uring_submit_and_wait
 import io_uring.keel_eventfd_create
 import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
+import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -321,6 +326,80 @@ internal class IoUringEventLoop(
                 })
             }
         }
+    }
+
+    // --- Typed SQE submission (hot-path, zero lambda allocation) ---
+
+    /**
+     * Submits `IORING_OP_RECV` and suspends until the CQE arrives.
+     *
+     * On the EventLoop thread (hot path), prepares the SQE inline without
+     * allocating a `prepare` lambda. Falls back to [submitAndAwait] on
+     * external threads.
+     */
+    internal suspend fun submitRecv(fd: Int, buf: COpaquePointer, len: ULong, flags: Int): Int {
+        if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_recv(sqe, fd, buf, len, flags) }
+        return suspendCancellableCoroutine { cont ->
+            val sqe = io_uring_get_sqe(ring.ptr)
+                ?: error("io_uring SQ ring full (size=$ringSize)")
+            io_uring_prep_recv(sqe, fd, buf, len, flags)
+            submitSqe(sqe, cont)
+        }
+    }
+
+    /**
+     * Submits `IORING_OP_SEND` and suspends until the CQE arrives.
+     *
+     * On the EventLoop thread (hot path), prepares the SQE inline without
+     * allocating a `prepare` lambda. Falls back to [submitAndAwait] on
+     * external threads.
+     */
+    internal suspend fun submitSend(fd: Int, buf: COpaquePointer, len: ULong, flags: Int): Int {
+        if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_send(sqe, fd, buf, len, flags) }
+        return suspendCancellableCoroutine { cont ->
+            val sqe = io_uring_get_sqe(ring.ptr)
+                ?: error("io_uring SQ ring full (size=$ringSize)")
+            io_uring_prep_send(sqe, fd, buf, len, flags)
+            submitSqe(sqe, cont)
+        }
+    }
+
+    /**
+     * Submits `IORING_OP_WRITEV` and suspends until the CQE arrives.
+     *
+     * On the EventLoop thread (hot path), prepares the SQE inline without
+     * allocating a `prepare` lambda. Falls back to [submitAndAwait] on
+     * external threads.
+     */
+    internal suspend fun submitWritev(fd: Int, iovecs: CPointer<iovec>, count: UInt): Int {
+        if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_writev(sqe, fd, iovecs, count, 0u) }
+        return suspendCancellableCoroutine { cont ->
+            val sqe = io_uring_get_sqe(ring.ptr)
+                ?: error("io_uring SQ ring full (size=$ringSize)")
+            io_uring_prep_writev(sqe, fd, iovecs, count, 0u)
+            submitSqe(sqe, cont)
+        }
+    }
+
+    /**
+     * Common fast-path SQE submission: assigns a slot, stores the continuation,
+     * and sets user_data. Called after the SQE is already prepared by
+     * [submitRecv]/[submitSend]/[submitWritev].
+     *
+     * **No invokeOnCancellation**: The typed API methods are used on the hot
+     * path (read/write/flush) where cancellation is handled by `Channel.close()`
+     * → `close(fd)` → kernel cancels in-flight SQEs → CQE with -ECANCELED
+     * → slot released via normal CQE drain. This avoids allocating a cancellation
+     * lambda on every I/O operation. The generic [submitAndAwait] still registers
+     * `IORING_OP_ASYNC_CANCEL` for non-hot-path operations (connect, accept).
+     *
+     * Must be called on the EventLoop thread only.
+     */
+    private fun submitSqe(sqe: CPointer<io_uring_sqe>, cont: CancellableContinuation<Int>) {
+        val slot = acquireSlot()
+        contSlots[slot] = cont
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
     }
 
     // --- Wakeup ---

@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary (including `keel_alloc_iovec` / `keel_free_iovec` added in a follow-up)
+- `engine-io-uring`: add typed `submitRecv`/`submitSend`/`submitWritev` methods eliminating `prepare` lambda allocation on the hot path; `invokeOnCancellation` lambda removed from typed API (cancellation handled by fd close)
 - `engine-io-uring`: extract magic numbers to named constants (`LISTEN_BACKLOG`, `INET_ADDRSTRLEN`) in `SocketUtils`
 - `engine-io-uring`: use index-based loop in `drainTasks` to avoid `Iterator` allocation on the hot path
 - `engine-io-uring`: replace `Pair` return in `IoUringEventLoopGroup.next()` with index-based accessors (`nextIndex`/`loopAt`/`allocatorAt`)
