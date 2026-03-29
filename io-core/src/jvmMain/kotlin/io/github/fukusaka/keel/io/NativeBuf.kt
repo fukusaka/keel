@@ -21,15 +21,15 @@ import java.nio.ByteBuffer
  * set `limit` to a smaller value, causing subsequent `put(index, value)`
  * to throw [IndexOutOfBoundsException] if index >= limit.
  */
-actual class NativeBuf private constructor(
+class HeapNativeBuf private constructor(
     private val buf: ByteBuffer,
-    actual val capacity: Int,
-) {
+    override val capacity: Int,
+) : NativeBuf, PoolableNativeBuf {
+
     /**
-     * Creates a [NativeBuf] backed by a newly allocated direct [ByteBuffer].
-     * Matches the expect constructor signature.
+     * Creates a [HeapNativeBuf] backed by a newly allocated direct [ByteBuffer].
      */
-    internal actual constructor(capacity: Int) : this(
+    constructor(capacity: Int) : this(
         ByteBuffer.allocateDirect(capacity),
         capacity,
     )
@@ -37,20 +37,20 @@ actual class NativeBuf private constructor(
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
     private var refCount = 1
-    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
-    internal actual var nextLink: NativeBuf? = null
+    override var deallocator: ((NativeBuf) -> Unit)? = null
+    override var nextLink: NativeBuf? = null
 
-    actual var readerIndex: Int = 0
-    actual var writerIndex: Int = 0
+    override var readerIndex: Int = 0
+    override var writerIndex: Int = 0
 
-    actual val readableBytes: Int get() = writerIndex - readerIndex
-    actual val writableBytes: Int get() = capacity - writerIndex
+    override val readableBytes: Int get() = writerIndex - readerIndex
+    override val writableBytes: Int get() = capacity - writerIndex
 
-    actual fun writeByte(value: Byte) {
+    override fun writeByte(value: Byte) {
         buf.put(writerIndex++, value)
     }
 
-    actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+    override fun writeBytes(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         // ByteBuffer.put(src, offset, length) uses optimized bulk copy.
         // Must set position first since put(byte[], off, len) writes at position.
@@ -59,7 +59,7 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
-    actual fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+    override fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             buf.put(writerIndex + i, src[srcOffset + i].code.toByte())
@@ -67,24 +67,25 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
-    actual fun copyTo(dest: NativeBuf, length: Int) {
+    override fun copyTo(dest: NativeBuf, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
+        val destBuf = (dest as HeapNativeBuf).buf
         val srcView = buf.duplicate()
         srcView.position(readerIndex)
         srcView.limit(readerIndex + length)
-        dest.buf.position(dest.writerIndex)
-        dest.buf.put(srcView)
+        destBuf.position(dest.writerIndex)
+        destBuf.put(srcView)
         readerIndex += length
         dest.writerIndex += length
     }
 
-    actual fun readByte(): Byte = buf.get(readerIndex++)
+    override fun readByte(): Byte = buf.get(readerIndex++)
 
-    actual fun getByte(index: Int): Byte = buf.get(index)
+    override fun getByte(index: Int): Byte = buf.get(index)
 
-    actual fun compact() {
+    override fun compact() {
         if (readerIndex > 0) {
             val readable = readableBytes
             if (readable > 0) {
@@ -101,7 +102,7 @@ actual class NativeBuf private constructor(
         }
     }
 
-    actual fun clear() {
+    override fun clear() {
         readerIndex = 0
         writerIndex = 0
         // Reset DirectByteBuffer position/limit to match. Without this,
@@ -112,7 +113,7 @@ actual class NativeBuf private constructor(
         buf.limit(capacity)
     }
 
-    actual fun resetForReuse() {
+    override fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
@@ -121,13 +122,13 @@ actual class NativeBuf private constructor(
         buf.limit(capacity)
     }
 
-    actual fun retain(): NativeBuf {
+    override fun retain(): NativeBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
         refCount++
         return this
     }
 
-    actual fun release(): Boolean {
+    override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
             val d = deallocator
@@ -141,7 +142,7 @@ actual class NativeBuf private constructor(
         return false
     }
 
-    actual fun close() {
+    override fun close() {
         refCount = 0
         // ByteBuffer is GC-managed; nothing to do here.
         // For external buffers, the deallocator handles cleanup (e.g., Netty ByteBuf.release()).
@@ -149,7 +150,7 @@ actual class NativeBuf private constructor(
 
     companion object {
         /**
-         * Wraps an externally-owned [ByteBuffer] as a [NativeBuf] without allocation.
+         * Wraps an externally-owned [ByteBuffer] as a [HeapNativeBuf] without allocation.
          *
          * The returned buffer does NOT own the [ByteBuffer]; [close] is a no-op
          * for memory management. Set [deallocator] to handle cleanup (e.g.,
@@ -157,13 +158,25 @@ actual class NativeBuf private constructor(
          *
          * @param buffer        The external [ByteBuffer] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @return A [NativeBuf] wrapping the external buffer.
+         * @return A [HeapNativeBuf] wrapping the external buffer.
          */
         internal fun wrapExternal(
             buffer: ByteBuffer,
             bytesWritten: Int,
-        ): NativeBuf = NativeBuf(buffer, buffer.capacity()).also {
+        ): HeapNativeBuf = HeapNativeBuf(buffer, buffer.capacity()).also {
             it.writerIndex = bytesWritten
         }
     }
 }
+
+/**
+ * Extension property for engine-layer zero-copy I/O.
+ *
+ * Exposes the direct [ByteBuffer] from a [HeapNativeBuf].
+ * Engine modules use this to pass buffer memory directly to NIO SocketChannel.
+ */
+val NativeBuf.unsafeBuffer: ByteBuffer
+    get() = (this as HeapNativeBuf).unsafeBuffer
+
+@Suppress("NativeBufLeak") // Factory returns ownership to caller
+internal actual fun createHeapNativeBuf(capacity: Int): NativeBuf = HeapNativeBuf(capacity)
