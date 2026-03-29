@@ -118,7 +118,11 @@ internal class IoUringServerChannel(
                 io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
             },
             onCqe = { res, flags ->
-                if (!_active) return@submitMultishot
+                if (!_active) {
+                    // Close fds accepted between close() and the final CQE drain.
+                    if (res >= 0) platform.posix.close(res)
+                    return@submitMultishot
+                }
                 if (res >= 0) {
                     val cont = pendingAcceptCont
                     if (cont != null) {

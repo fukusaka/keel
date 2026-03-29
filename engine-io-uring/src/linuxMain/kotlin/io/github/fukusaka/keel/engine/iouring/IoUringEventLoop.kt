@@ -445,19 +445,22 @@ internal class IoUringEventLoop(
     }
 
     /**
-     * Cancels a multishot SQE and releases its slot.
+     * Cancels a multishot SQE.
      *
-     * Submits `IORING_OP_ASYNC_CANCEL` targeting the multishot SQE's user_data.
-     * The callback is cleared immediately; any subsequent CQEs for the cancelled
-     * SQE are silently discarded via the safety check in the CQE drain loop.
+     * Submits `IORING_OP_ASYNC_CANCEL` targeting the multishot SQE's user_data
+     * and replaces the callback with a no-op. The slot is NOT released here;
+     * it is released by the CQE drain loop when the final CQE arrives with
+     * `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response). This
+     * prevents a slot reuse race where a new operation could be assigned the
+     * same slot before the kernel delivers the cancellation CQE.
      *
      * Must be called on the EventLoop thread only.
      *
      * @param slot The slot index returned by [submitMultishot].
      */
     internal fun cancelMultishot(slot: Int) {
-        multishotCallbacks[slot] = null
-        releaseSlot(slot)
+        // Replace with no-op; the drain loop releases the slot on F_MORE=0.
+        multishotCallbacks[slot] = { _, _ -> }
         val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return
         val userData = slot.toULong() + SLOT_BASE
         io_uring_prep_cancel64(cancelSqe, userData, 0)
