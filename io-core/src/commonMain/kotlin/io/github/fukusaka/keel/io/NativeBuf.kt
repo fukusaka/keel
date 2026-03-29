@@ -20,28 +20,18 @@ package io.github.fukusaka.keel.io
  * Thread safety: single-threaded (EventLoop model). AtomicInt deferred
  * to Phase (b) if needed.
  *
- * **Engine-layer zero-copy access**: platform-specific actual classes
+ * **Engine-layer zero-copy access**: platform-specific implementations
  * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or
- * `unsafeBuffer` (JVM: `ByteBuffer`) for passing directly to OS syscalls.
- * These are not in the expect declaration because the types are
- * platform-specific.
+ * `unsafeBuffer` (JVM: `ByteBuffer`) via extension properties. These
+ * are not on this interface because the types are platform-specific.
  *
- * @param capacity Buffer size in bytes.
+ * **Custom implementations**: engines can implement this interface
+ * directly (e.g., wrapping kernel-managed buffers) instead of using
+ * the heap-allocated [HeapNativeBuf][createHeapNativeBuf].
  */
-expect class NativeBuf internal constructor(capacity: Int) {
+interface NativeBuf {
     /** Buffer capacity in bytes. */
     val capacity: Int
-
-    /**
-     * Callback invoked when [release] decrements the reference count to zero.
-     *
-     * Set by the [BufferAllocator] that created this buffer. Pool-based
-     * allocators set this to return the buffer to the pool instead of
-     * freeing the underlying memory.
-     *
-     * When `null`, [release] falls back to [close] (direct memory free).
-     */
-    internal var deallocator: ((NativeBuf) -> Unit)?
 
     /** Current read position. */
     var readerIndex: Int
@@ -117,32 +107,6 @@ expect class NativeBuf internal constructor(capacity: Int) {
      */
     fun clear()
 
-    /**
-     * Intrusive link for lock-free pool freelists (Treiber stack).
-     *
-     * Non-null only while this buffer resides in a pool's freelist.
-     * Used by [PooledDirectAllocator] and future [AdaptiveAllocator] to
-     * build freelists without wrapper node allocations. Also reusable
-     * for segment chain linking (exclusive ownership: a buffer is either
-     * in a freelist or in a chain, never both).
-     */
-    internal var nextLink: NativeBuf?
-
-    /**
-     * Resets the buffer for reuse without freeing the underlying memory.
-     *
-     * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
-     * and [nextLink] to null. [deallocator] is preserved across reuses.
-     *
-     * Used by pool-based allocators when recycling a released buffer, and
-     * by engine-layer code that pre-allocates wrappers to avoid per-event
-     * object creation on hot paths.
-     *
-     * **Caller contract**: the caller must ensure no other references to
-     * this buffer exist when calling [resetForReuse].
-     */
-    fun resetForReuse()
-
     /** Increments the reference count and returns this buffer for chaining. */
     fun retain(): NativeBuf
 
@@ -161,3 +125,51 @@ expect class NativeBuf internal constructor(capacity: Int) {
      */
     fun close()
 }
+
+/**
+ * Extended [NativeBuf] interface for pool-managed buffers.
+ *
+ * Adds [deallocator] callback, [nextLink] for intrusive freelist,
+ * and [resetForReuse] for pool recycling. Used internally by
+ * [BufferAllocator] implementations within io-core.
+ */
+internal interface PoolableNativeBuf : NativeBuf {
+
+    /**
+     * Callback invoked when [release] decrements the reference count to zero.
+     *
+     * Set by the [BufferAllocator] that created this buffer. Pool-based
+     * allocators set this to return the buffer to the pool instead of
+     * freeing the underlying memory.
+     *
+     * When `null`, [release] falls back to [close] (direct memory free).
+     */
+    var deallocator: ((NativeBuf) -> Unit)?
+
+    /**
+     * Intrusive link for lock-free pool freelists (Treiber stack).
+     *
+     * Non-null only while this buffer resides in a pool's freelist.
+     * Used by pool-based allocators to build freelists without wrapper
+     * node allocations.
+     */
+    var nextLink: NativeBuf?
+
+    /**
+     * Resets the buffer for reuse without freeing the underlying memory.
+     *
+     * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
+     * and [nextLink] to null. [deallocator] is preserved across reuses.
+     */
+    fun resetForReuse()
+}
+
+/**
+ * Creates a heap-allocated [NativeBuf] instance for the current platform.
+ *
+ * Platform implementations:
+ * - **Native**: `nativeHeap.allocArray<ByteVar>(capacity)`
+ * - **JVM**: `ByteBuffer.allocateDirect(capacity)`
+ * - **JS**: `Int8Array(capacity)`
+ */
+internal expect fun createHeapNativeBuf(capacity: Int): NativeBuf
