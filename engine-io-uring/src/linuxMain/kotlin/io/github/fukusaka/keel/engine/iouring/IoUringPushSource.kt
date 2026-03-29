@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.io.HeapNativeBuf
 import io.github.fukusaka.keel.io.NativeBuf
 import io.github.fukusaka.keel.io.PushSuspendSource
 import io_uring.keel_cqe_get_buf_id
@@ -58,16 +57,12 @@ internal class IoUringPushSource(
     private val bufferRing: ProvidedBufferRing,
 ) : PushSuspendSource {
 
-    // Pre-allocated NativeBuf wrappers for each buffer slot. Created once at
-    // construction to eliminate both NativeBuf object creation and deallocator
-    // lambda allocation on the CQE hot path. Each wrapper is bound to a fixed
-    // buffer slot with a fixed deallocator that returns the buffer to the ring.
-    // Safe to reuse: the kernel guarantees a bufId is not reissued until
-    // returnBuffer() adds it back to the ring.
+    // Pre-allocated RingBufferNativeBuf wrappers for each buffer slot. Created
+    // once at construction — zero allocation on the CQE hot path. Each wrapper
+    // is permanently bound to a buffer slot; the kernel guarantees a bufId is
+    // not reissued until returnBuffer() adds it back to the ring.
     private val wrappers = Array(bufferRing.bufferCount) { bufId ->
-        HeapNativeBuf.wrapExternal(
-            bufferRing.getPointer(bufId), bufferRing.bufferSize, 0,
-        ) { _ -> bufferRing.returnBuffer(bufId) }
+        RingBufferNativeBuf(bufId, bufferRing) { _ -> bufferRing.returnBuffer(bufId) }
     }
 
     // Buffered NativeBufs delivered by CQE callbacks but not yet claimed by readOwned().
@@ -151,7 +146,7 @@ internal class IoUringPushSource(
                         // buffer slot — zero allocation on the CQE hot path.
                         val bufId = keel_cqe_get_buf_id(flags).toInt()
                         val buf = wrappers[bufId]
-                        buf.resetForReuse()
+                        buf.reset()
                         buf.writerIndex = res
 
                         val cont = pendingReadCont
