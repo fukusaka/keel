@@ -127,8 +127,9 @@ class IoUringEngine(
 
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
+        val bufferRing = workerGroup.bufferRingAt(wi)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return IoUringChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
+        return IoUringChannel(fd, workerLoop, allocator, bufferRing, remoteAddr, localAddr)
     }
 
     override fun close() {
