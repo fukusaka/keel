@@ -383,8 +383,15 @@ internal class IoUringEventLoop(
 
     /**
      * Common fast-path SQE submission: assigns a slot, stores the continuation,
-     * sets user_data, and registers cancellation. Called after the SQE is
-     * already prepared by [submitRecv]/[submitSend]/[submitWritev].
+     * and sets user_data. Called after the SQE is already prepared by
+     * [submitRecv]/[submitSend]/[submitWritev].
+     *
+     * **No invokeOnCancellation**: The typed API methods are used on the hot
+     * path (read/write/flush) where cancellation is handled by `Channel.close()`
+     * → `close(fd)` → kernel cancels in-flight SQEs → CQE with -ECANCELED
+     * → slot released via normal CQE drain. This avoids allocating a cancellation
+     * lambda on every I/O operation. The generic [submitAndAwait] still registers
+     * `IORING_OP_ASYNC_CANCEL` for non-hot-path operations (connect, accept).
      *
      * Must be called on the EventLoop thread only.
      */
@@ -393,13 +400,6 @@ internal class IoUringEventLoop(
         contSlots[slot] = cont
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
-        cont.invokeOnCancellation {
-            dispatch(EmptyCoroutineContext, Runnable {
-                val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
-                io_uring_prep_cancel64(cancelSqe, userData, 0)
-                io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
-            })
-        }
     }
 
     // --- Wakeup ---
