@@ -53,7 +53,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * **iovec lifetime**: For gather writes, [keel_alloc_iovec] heap-allocates the
  * iovec array before submitting the SQE. The kernel reads this array while
  * the write operation is in flight. The array is freed by [keel_free_iovec]
- * after the CQE arrives (i.e., after the CQE arrives).
+ * after the CQE arrives.
  *
  * **Partial write handling**: `IORING_OP_WRITE` / `IORING_OP_WRITEV` may return
  * fewer bytes than requested. We retry with a new SQE for the remainder until
