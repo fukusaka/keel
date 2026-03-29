@@ -9,6 +9,10 @@ import java.nio.ByteBuffer
  * can be passed directly to NIO `SocketChannel.read/write` without
  * copying. The [unsafeBuffer] property exposes the underlying [ByteBuffer].
  *
+ * **External memory** ([wrapExternal] factory): wraps a caller-provided
+ * [ByteBuffer] without allocation. Use [deallocator] to handle cleanup
+ * (e.g., releasing a Netty ByteBuf).
+ *
  * **Reference counting**: non-atomic (single-threaded EventLoop model).
  * [close] is a no-op since the [ByteBuffer] is GC-managed.
  *
@@ -17,8 +21,18 @@ import java.nio.ByteBuffer
  * set `limit` to a smaller value, causing subsequent `put(index, value)`
  * to throw [IndexOutOfBoundsException] if index >= limit.
  */
-actual class NativeBuf internal actual constructor(actual val capacity: Int) {
-    private val buf: ByteBuffer = ByteBuffer.allocateDirect(capacity)
+actual class NativeBuf private constructor(
+    private val buf: ByteBuffer,
+    actual val capacity: Int,
+) {
+    /**
+     * Creates a [NativeBuf] backed by a newly allocated direct [ByteBuffer].
+     * Matches the expect constructor signature.
+     */
+    internal actual constructor(capacity: Int) : this(
+        ByteBuffer.allocateDirect(capacity),
+        capacity,
+    )
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
@@ -116,6 +130,27 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
 
     actual fun close() {
         refCount = 0
-        // ByteBuffer is GC-managed; nothing to do here
+        // ByteBuffer is GC-managed; nothing to do here.
+        // For external buffers, the deallocator handles cleanup (e.g., Netty ByteBuf.release()).
+    }
+
+    companion object {
+        /**
+         * Wraps an externally-owned [ByteBuffer] as a [NativeBuf] without allocation.
+         *
+         * The returned buffer does NOT own the [ByteBuffer]; [close] is a no-op
+         * for memory management. Set [deallocator] to handle cleanup (e.g.,
+         * releasing a Netty ByteBuf).
+         *
+         * @param buffer        The external [ByteBuffer] to wrap.
+         * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @return A [NativeBuf] wrapping the external buffer.
+         */
+        internal fun wrapExternal(
+            buffer: ByteBuffer,
+            bytesWritten: Int,
+        ): NativeBuf = NativeBuf(buffer, buffer.capacity()).also {
+            it.writerIndex = bytesWritten
+        }
     }
 }
