@@ -16,10 +16,16 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.SHUT_WR
 import platform.posix.close
+import platform.posix.memcpy
 import platform.posix.shutdown
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.resume
 
 /**
  * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
@@ -31,43 +37,37 @@ import platform.posix.shutdown
 private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
 
 /**
+ * A chunk of received data from the provided buffer ring.
+ * Holds the buffer ID, byte offset, and remaining byte count so the buffer
+ * can be partially consumed across multiple [IoUringChannel.read] calls
+ * and recycled after all data is copied.
+ */
+private class ReceivedChunk(val bufId: Int, var offset: Int, var remaining: Int)
+
+/**
  * io_uring-based [Channel] implementation for Linux.
  *
- * **Completion model**: Unlike epoll's readiness model (which requires retrying
- * the syscall on EAGAIN), io_uring delivers the operation result directly in
- * the CQE. Each read/write submits an SQE and suspends; the EventLoop resumes
- * the coroutine with the CQE result.
+ * **Multi-shot receive**: read uses `IORING_RECV_MULTISHOT` with provided buffers.
+ * The kernel selects a buffer from the [ProvidedBufferRing] for each incoming
+ * packet and delivers the result as a CQE with the buffer ID. One SQE produces
+ * multiple CQEs, eliminating per-read SQE resubmission and suspension overhead.
+ * Data is pushed to [receiveQueue] by the EventLoop via [onRecvCompletion];
+ * [read] pops from the queue without suspension when data is available.
  *
- * **Zero-copy I/O**: read passes [NativeBuf.unsafePointer] directly to
- * `IORING_OP_RECV`; flush passes NativeBuf pointers to `IORING_OP_SEND` /
- * `IORING_OP_WRITEV`. No intermediate ByteArray copy.
- *
- * **RECV/SEND vs READ/WRITE**: Socket I/O uses `IORING_OP_RECV`/`IORING_OP_SEND`
- * rather than `IORING_OP_READ`/`IORING_OP_WRITE`. The RECV/SEND opcodes are
- * optimised for socket file descriptors and support socket-specific flags.
- *
- * **Write/flush separation**: [write] retains the [NativeBuf] and records the
- * byte range. [flush] submits a single `IORING_OP_WRITEV` SQE for all pending
- * buffers (gather write) or `IORING_OP_WRITE` for a single buffer.
+ * **Write path**: uses typed `submitSend` / `submitWritev` (single-shot).
+ * Write/flush separation enables writev/gather-write optimisation.
  *
  * **iovec lifetime**: For gather writes, [keel_alloc_iovec] heap-allocates the
  * iovec array before submitting the SQE. The kernel reads this array while
  * the write operation is in flight. The array is freed by [keel_free_iovec]
  * after the CQE arrives.
  *
- * **Partial write handling**: `IORING_OP_WRITE` / `IORING_OP_WRITEV` may return
- * fewer bytes than requested. We retry with a new SQE for the remainder until
- * all bytes are sent or an error occurs.
- *
- * **Ordering**: At most one write SQE is in-flight per channel at a time.
- * Since flush() awaits the CQE before returning, subsequent flush() calls are
- * always serialised, guaranteeing TCP send order.
- *
  * ```
- * Read path:
- *   submitRecv(fd, ptr, writableBytes, 0) → CQE.res
- *   CQE.res > 0 → advance writerIndex, return
- *   CQE.res = 0 → EOF; CQE.res < 0 → error
+ * Read path (multi-shot):
+ *   armMultishotRecv() → RECV_MULTISHOT SQE (once per channel)
+ *   CQE arrives → onRecvCompletion(res, bufId, hasMore) → receiveQueue.addLast
+ *   read(buf) → dequeue → memcpy → returnBuffer → return bytesRead
+ *   (if queue empty: suspend until next CQE)
  *
  * Write path:
  *   write(buf)  → retain buf, record offset/length in PendingWrite
@@ -77,6 +77,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * @param fd        The connected socket file descriptor.
  * @param eventLoop The [IoUringEventLoop] for SQE submission and CQE dispatch.
  * @param allocator Buffer allocator for read operations.
+ * @param bufferRing Provided buffer ring for multi-shot recv.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringChannel(
@@ -85,6 +86,7 @@ internal class IoUringChannel(
     override val allocator: BufferAllocator,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
+    private val bufferRing: ProvidedBufferRing,
 ) : Channel {
 
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
@@ -95,6 +97,15 @@ internal class IoUringChannel(
     private var _active = true
     private var outputShutdown = false
 
+    // --- Multi-shot recv state ---
+    private val receiveQueue = ArrayDeque<ReceivedChunk>(4)
+    private var readWaiter: CancellableContinuation<Unit>? = null
+    private var multishotArmed = false
+    private var eof = false
+
+    /** Channel slot ID for multi-shot CQE routing in the EventLoop. */
+    internal var channelSlot: Int = -1
+
     override val isOpen: Boolean get() = _open
     override val isActive: Boolean get() = _active
 
@@ -102,25 +113,89 @@ internal class IoUringChannel(
     override suspend fun awaitClosed() {}
 
     /**
-     * Reads bytes into [buf] via `IORING_OP_READ`.
+     * Arms the multi-shot recv SQE for this channel.
      *
-     * Submits a READ SQE targeting the NativeBuf's write region and suspends until
-     * the CQE arrives. Unlike epoll, there is no EAGAIN: the kernel holds the
-     * operation pending until data arrives or an error occurs.
+     * On the EventLoop thread, arms immediately (no dispatch overhead).
+     * From an external thread, dispatches to the EventLoop thread because
+     * `io_uring_get_sqe` must be called from the EventLoop thread only.
+     */
+    internal fun armMultishotRecv() {
+        if (multishotArmed || !_open) return
+        multishotArmed = true
+        if (eventLoop.inEventLoop()) {
+            eventLoop.armMultishotRecv(fd, channelSlot)
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable {
+                if (_open) eventLoop.armMultishotRecv(fd, channelSlot)
+            })
+        }
+    }
+
+    /**
+     * Called by the EventLoop when a multi-shot recv CQE arrives for this channel.
      *
-     * @return number of bytes read, or -1 on EOF (CQE.res=0) or error.
+     * @param res CQE result: positive = bytes received, 0 = EOF, negative = -errno.
+     * @param bufId Buffer ID from the provided buffer ring, or -1 if the CQE has no
+     *              associated buffer (e.g. EOF or error without IORING_CQE_F_BUFFER).
+     * @param hasMore True if the multi-shot SQE is still armed (IORING_CQE_F_MORE).
+     */
+    internal fun onRecvCompletion(res: Int, bufId: Int, hasMore: Boolean) {
+        if (!hasMore) multishotArmed = false
+        if (res <= 0) {
+            // EOF or error. Return the buffer to the ring if one was allocated
+            // (kernel may set IORING_CQE_F_BUFFER even on error CQEs).
+            if (bufId >= 0) bufferRing.returnBuffer(bufId)
+            eof = true
+            readWaiter?.let { it.resume(Unit); readWaiter = null }
+            return
+        }
+        receiveQueue.addLast(ReceivedChunk(bufId, 0, res))
+        readWaiter?.let { it.resume(Unit); readWaiter = null }
+    }
+
+    /**
+     * Reads bytes into [buf] from the multi-shot receive queue.
+     *
+     * If data is already queued (common case under load), copies it directly
+     * without suspension — eliminating the per-read suspend/resume overhead
+     * that was the primary performance bottleneck vs epoll.
+     *
+     * If the queue is empty, suspends until the EventLoop pushes data via
+     * [onRecvCompletion].
+     *
+     * @return number of bytes read, or -1 on EOF or error.
      */
     override suspend fun read(buf: NativeBuf): Int {
         check(_open) { "Channel is closed" }
 
-        val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        val res = eventLoop.submitRecv(fd, ptr, buf.writableBytes.toULong(), 0)
-        return when {
-            res > 0 -> {
-                buf.writerIndex += res
-                res
+        while (true) {
+            val chunk = receiveQueue.firstOrNull()
+            if (chunk != null) {
+                val toCopy = minOf(chunk.remaining, buf.writableBytes)
+                memcpy(
+                    (buf.unsafePointer + buf.writerIndex)!!,
+                    (bufferRing.getPointer(chunk.bufId) + chunk.offset)!!,
+                    toCopy.toULong(),
+                )
+                buf.writerIndex += toCopy
+                chunk.offset += toCopy
+                chunk.remaining -= toCopy
+                if (chunk.remaining == 0) {
+                    receiveQueue.removeFirst()
+                    bufferRing.returnBuffer(chunk.bufId)
+                }
+                // Re-arm multi-shot if it was terminated (e.g. buffer exhaustion)
+                if (!multishotArmed && _open) armMultishotRecv()
+                return toCopy
             }
-            else -> -1 // 0 = EOF, negative = error (e.g. -ECONNRESET)
+            if (eof) return -1
+            // Queue empty — suspend until data arrives or EOF
+            suspendCancellableCoroutine { cont ->
+                readWaiter = cont
+                cont.invokeOnCancellation { readWaiter = null }
+                // Arm multi-shot if not already armed (first read or after re-arm)
+                if (!multishotArmed && _open) armMultishotRecv()
+            }
         }
     }
 
@@ -273,15 +348,33 @@ internal class IoUringChannel(
     }
 
     /**
-     * Closes the socket and releases all pending writes.
-     * Unflushed data is discarded; retained buffers are released without sending.
+     * Closes the socket and releases all resources.
+     *
+     * Closing the fd causes the kernel to cancel any in-flight multi-shot recv SQE.
+     * The CQE arrives with `-ECANCELED` and no `IORING_CQE_F_MORE`, which
+     * [onRecvCompletion] handles by setting [multishotArmed] to false.
+     * Queued receive chunks are drained and their buffers returned to the ring.
+     * Unflushed write buffers are released without sending.
      */
     override fun close() {
         if (_open) {
             _open = false
             _active = false
+            // Drain pending writes
             for (pw in pendingWrites) pw.buf.release()
             pendingWrites.clear()
+            // Drain receive queue — return buffers to the ring
+            while (receiveQueue.isNotEmpty()) {
+                val chunk = receiveQueue.removeFirst()
+                bufferRing.returnBuffer(chunk.bufId)
+            }
+            // Release channel slot
+            if (channelSlot >= 0) {
+                eventLoop.releaseChannelSlot(channelSlot)
+                channelSlot = -1
+            }
+            // Resume any suspended reader
+            readWaiter?.let { it.resume(Unit); readWaiter = null }
             close(fd)
         }
     }
