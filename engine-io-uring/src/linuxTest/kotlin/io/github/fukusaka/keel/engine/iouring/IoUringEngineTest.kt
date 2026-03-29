@@ -2,9 +2,9 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.TrackingAllocator
-import io.github.fukusaka.keel.io.unsafePointer
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.buf.unsafePointer
 import io_uring.io_uring_prep_read
 import io_uring.keel_htons
 import io_uring.keel_loopback_addr
@@ -158,7 +158,7 @@ class IoUringEngineTest {
 
         rawWrite(clientFd, "hello")
 
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { serverCh.read(readBuf) }
         assertEquals(5, n)
 
@@ -186,7 +186,7 @@ class IoUringEngineTest {
 
         close(clientFd)
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { ch.read(buf) }
         assertEquals(-1, n)
 
@@ -205,7 +205,7 @@ class IoUringEngineTest {
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
 
@@ -233,11 +233,11 @@ class IoUringEngineTest {
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
 
-        val buf1 = HeapAllocator.allocate(4)
+        val buf1 = DefaultAllocator.allocate(4)
         buf1.writeByte(0x41)
         buf1.writeByte(0x42)
 
-        val buf2 = HeapAllocator.allocate(4)
+        val buf2 = DefaultAllocator.allocate(4)
         buf2.writeByte(0x43)
         buf2.writeByte(0x44)
 
@@ -257,7 +257,7 @@ class IoUringEngineTest {
     }
 
     @Test
-    fun `read advances NativeBuf writerIndex`() = runBlocking {
+    fun `read advances IoBuf writerIndex`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -267,7 +267,7 @@ class IoUringEngineTest {
 
         rawWrite(clientFd, "abc")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         withTimeout(5000) { ch.read(buf) }
         assertEquals(3, buf.writerIndex)
@@ -319,7 +319,7 @@ class IoUringEngineTest {
 
         rawWrite(clientFd, "hi")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { ch.read(buf) }
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -382,8 +382,8 @@ class IoUringEngineTest {
             }
         }
 
-        // 1-byte buffers for the pipe reads (NativeBuf; released after loop.close).
-        val readBufs = Array(n) { HeapAllocator.allocate(1) }
+        // 1-byte buffers for the pipe reads (IoBuf; released after loop.close).
+        val readBufs = Array(n) { DefaultAllocator.allocate(1) }
 
         runBlocking {
             // Fill the SQ ring: submit n=3 blocking reads on the EventLoop.
@@ -445,8 +445,8 @@ class IoUringEngineTest {
         fds.usePinned { pipe(it.addressOf(0).reinterpret()) }
         val readFd = fds[0]
         val writeFd = fds[1]
-        val buf = HeapAllocator.allocate(1)
-        val buf2 = HeapAllocator.allocate(1)
+        val buf = DefaultAllocator.allocate(1)
+        val buf2 = DefaultAllocator.allocate(1)
 
         runBlocking {
             // Launch a coroutine on the EventLoop that blocks on a pipe read.
@@ -530,7 +530,7 @@ class IoUringEngineTest {
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         // buf has 0 readableBytes
         val written = ch.write(buf)
         assertEquals(0, written)
@@ -542,11 +542,11 @@ class IoUringEngineTest {
         engine.close()
     }
 
-    // --- NativeBuf leak check ---
+    // --- IoBuf leak check ---
 
     @Test
-    fun `no NativeBuf leak when channel closed with pending writes`() = runBlocking {
-        val tracking = TrackingAllocator(HeapAllocator)
+    fun `no IoBuf leak when channel closed with pending writes`() = runBlocking {
+        val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -572,12 +572,12 @@ class IoUringEngineTest {
         server.close()
         engine.close()
 
-        assertEquals(0, tracking.outstandingCount, "NativeBuf leak detected")
+        assertEquals(0, tracking.outstandingCount, "IoBuf leak detected")
     }
 
     @Test
-    fun `no NativeBuf leak on echo`() = runBlocking {
-        val tracking = TrackingAllocator(HeapAllocator)
+    fun `no IoBuf leak on echo`() = runBlocking {
+        val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -599,7 +599,7 @@ class IoUringEngineTest {
         server.close()
         engine.close()
 
-        assertEquals(0, tracking.outstandingCount, "NativeBuf leak detected")
+        assertEquals(0, tracking.outstandingCount, "IoBuf leak detected")
     }
 
     // --- multishot accept ---
@@ -640,7 +640,7 @@ class IoUringEngineTest {
             val msg = "msg$i"
             rawWrite(clientFd, msg)
 
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             val n = withTimeout(5000) { ch.read(buf) }
             assertEquals(msg.length, n)
 
@@ -692,7 +692,7 @@ class IoUringEngineTest {
         rawWrite(clientFd, "hello")
 
         val source = ch.asSuspendSource()
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { source.read(buf) }
         assertEquals(5, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -721,7 +721,7 @@ class IoUringEngineTest {
         close(clientFd)
 
         val source = ch.asSuspendSource()
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { source.read(buf) }
         assertEquals(-1, n)
 
@@ -744,7 +744,7 @@ class IoUringEngineTest {
         rawWrite(clientFd, "ping")
 
         val source = ch.asSuspendSource()
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = withTimeout(5000) { source.read(readBuf) }
         assertEquals(4, n)
 
@@ -774,12 +774,12 @@ class IoUringEngineTest {
         val source = ch.asSuspendSource()
 
         rawWrite(clientFd, "AAA")
-        val buf1 = HeapAllocator.allocate(64)
+        val buf1 = DefaultAllocator.allocate(64)
         val n1 = withTimeout(5000) { source.read(buf1) }
         assertTrue(n1 > 0)
 
         rawWrite(clientFd, "BBB")
-        val buf2 = HeapAllocator.allocate(64)
+        val buf2 = DefaultAllocator.allocate(64)
         val n2 = withTimeout(5000) { source.read(buf2) }
         assertTrue(n2 > 0)
 
@@ -803,7 +803,7 @@ class IoUringEngineTest {
 
         rawWrite(clientFd, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
 
-        val source = BufferedSuspendSource(ch.asSuspendSource(), HeapAllocator)
+        val source = BufferedSuspendSource(ch.asSuspendSource(), DefaultAllocator)
         val line1 = withTimeout(5000) { source.readLine() }
         assertEquals("GET / HTTP/1.1", line1)
         val line2 = withTimeout(5000) { source.readLine() }
@@ -830,7 +830,7 @@ class IoUringEngineTest {
         // Read once to arm the multishot recv SQE.
         rawWrite(clientFd, "data")
         val source = ch.asSuspendSource()
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         withTimeout(5000) { source.read(buf) }
         buf.release()
 

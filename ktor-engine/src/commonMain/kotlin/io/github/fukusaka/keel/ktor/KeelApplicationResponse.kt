@@ -22,7 +22,7 @@ import kotlinx.coroutines.*
  * 3. [sendResponseHead] serialises the status line + headers using codec-http's
  *    suspend [writeResponseHead]
  *
- * Zero-copy I/O: uses [BufferedSuspendSink] backed by NativeBuf. No kotlinx-io
+ * Zero-copy I/O: uses [BufferedSuspendSink] backed by IoBuf. No kotlinx-io
  * Buffer intermediary, no runBlocking.
  */
 internal class KeelApplicationResponse(

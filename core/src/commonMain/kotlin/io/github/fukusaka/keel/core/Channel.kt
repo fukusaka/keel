@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.SuspendSink
 import io.github.fukusaka.keel.io.SuspendSource
 import kotlinx.coroutines.CoroutineDispatcher
@@ -15,8 +15,8 @@ import kotlinx.coroutines.Dispatchers
  * ```
  * Layer          API                       Copy
  * -----          ---                       ----
- * Engine layer:  read/write(NativeBuf)       0  (zero-copy via unsafePointer)
- * Codec layer:   asSuspendSource/Sink()      0  (NativeBuf direct, zero-copy)
+ * Engine layer:  read/write(IoBuf)       0  (zero-copy via unsafePointer)
+ * Codec layer:   asSuspendSource/Sink()      0  (IoBuf direct, zero-copy)
  * ```
  *
  * **Write/flush separation**: [write] buffers data without sending.
@@ -61,29 +61,29 @@ interface Channel : AutoCloseable {
     // --- Zero-copy I/O (engine layer) ---
 
     /**
-     * Reads bytes into [buf] starting at its [NativeBuf.writerIndex].
-     * Advances [NativeBuf.writerIndex] by the number of bytes read.
+     * Reads bytes into [buf] starting at its [IoBuf.writerIndex].
+     * Advances [IoBuf.writerIndex] by the number of bytes read.
      *
-     * Engine implementations pass [NativeBuf.unsafePointer] (Native) or
-     * [NativeBuf.unsafeBuffer] (JVM) directly to the OS read syscall
+     * Engine implementations pass [IoBuf.unsafePointer] (Native) or
+     * [IoBuf.unsafeBuffer] (JVM) directly to the OS read syscall
      * for zero-copy I/O.
      *
      * @return number of bytes read, or -1 on EOF.
      */
-    suspend fun read(buf: NativeBuf): Int
+    suspend fun read(buf: IoBuf): Int
 
     /**
-     * Writes bytes from [buf] between [NativeBuf.readerIndex] and [NativeBuf.writerIndex].
-     * Advances [NativeBuf.readerIndex] by the number of bytes consumed.
+     * Writes bytes from [buf] between [IoBuf.readerIndex] and [IoBuf.writerIndex].
+     * Advances [IoBuf.readerIndex] by the number of bytes consumed.
      * Data is buffered until [flush] is called.
      *
-     * **Ownership**: the implementation calls [NativeBuf.retain] on [buf] and
+     * **Ownership**: the implementation calls [IoBuf.retain] on [buf] and
      * records the byte range. [flush] releases the retained reference after
      * writing. The caller may reuse or release the buffer after this call returns.
      *
      * @return number of bytes written to the outbound buffer.
      */
-    suspend fun write(buf: NativeBuf): Int
+    suspend fun write(buf: IoBuf): Int
 
     /**
      * Flushes all buffered outbound data to the network.
@@ -152,7 +152,7 @@ interface Channel : AutoCloseable {
     /**
      * Returns a [SuspendSource] view for reading from this channel.
      *
-     * Zero-copy: delegates to [read] which writes directly into [NativeBuf].
+     * Zero-copy: delegates to [read] which writes directly into [IoBuf].
      * Use [BufferedSuspendSource] to wrap the result for readLine/readByte.
      *
      * Default implementation delegates to [read] via [SuspendChannelSource].
@@ -163,7 +163,7 @@ interface Channel : AutoCloseable {
     /**
      * Returns a [SuspendSink] view for writing to this channel.
      *
-     * Zero-copy: delegates to [write]/[flush] which read directly from [NativeBuf].
+     * Zero-copy: delegates to [write]/[flush] which read directly from [IoBuf].
      * Use [BufferedSuspendSink] to wrap the result for writeString/writeByte.
      *
      * Default implementation delegates to [write]/[flush] via [SuspendChannelSink].

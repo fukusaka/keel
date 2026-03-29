@@ -76,7 +76,7 @@ potential-bugs:
 
 # keel custom rules (detekt-rules module)
 keel:
-  NativeBufLeak:
+  IoBufLeak:
     active: true
   ArenaLeak:
     active: true

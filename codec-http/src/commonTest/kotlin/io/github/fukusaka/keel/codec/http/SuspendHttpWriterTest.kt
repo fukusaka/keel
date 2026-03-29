@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.io.BufferedSuspendSink
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.SuspendSink
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -12,7 +12,7 @@ class SuspendHttpWriterTest {
 
     private class CollectingSink : SuspendSink {
         val chunks = mutableListOf<ByteArray>()
-        override suspend fun write(buf: NativeBuf): Int {
+        override suspend fun write(buf: IoBuf): Int {
             val bytes = ByteArray(buf.readableBytes)
             for (i in bytes.indices) bytes[i] = buf.readByte()
             chunks.add(bytes)
@@ -28,7 +28,7 @@ class SuspendHttpWriterTest {
     @Test
     fun `writeResponseHead suspend variant writes status and headers`() = runBlocking {
         val sink = CollectingSink()
-        val buffered = BufferedSuspendSink(sink, HeapAllocator)
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
         val headers = HttpHeaders()
             .add("Content-Length", "13")

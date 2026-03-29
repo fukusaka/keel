@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.io.BufferAllocator
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafeArray
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafeArray
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -11,7 +11,7 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
 /**
  * Snapshot of a buffered write.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * Node.js `net.Socket`-based [KeelChannel] implementation for JS.
@@ -22,7 +22,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * is available.
  *
  * **Read path (copy)**: Node.js Buffer (`dynamic`) is copied byte-by-byte
- * into [NativeBuf]. Same structural constraint as Netty/NWConnection —
+ * into [IoBuf]. Same structural constraint as Netty/NWConnection —
  * push model engines deliver data before the user provides a buffer.
  *
  * Phase (a): all suspend functions use `suspendCoroutine` with Node.js
@@ -96,7 +96,7 @@ internal class NodeChannel(
      *
      * @return number of bytes read, or -1 on EOF/error.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         val data: dynamic = if (readQueue.isNotEmpty()) {
@@ -111,7 +111,7 @@ internal class NodeChannel(
 
         if (data == null) return -1
 
-        // Copy Node.js Buffer to NativeBuf via bulk copy.
+        // Copy Node.js Buffer to IoBuf via bulk copy.
         // Node.js Buffer is a Uint8Array subclass; we extract bytes into
         // a ByteArray and use writeBytes() for efficient transfer.
         val dataLength = data.length as Int
@@ -124,7 +124,7 @@ internal class NodeChannel(
         return length
     }
 
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -139,7 +139,7 @@ internal class NodeChannel(
     override suspend fun flush() {
         check(_open) { "Channel is closed" }
         for (pw in pendingWrites) {
-            // Read bytes from NativeBuf's backing Int8Array at the recorded offset.
+            // Read bytes from IoBuf's backing Int8Array at the recorded offset.
             // Cannot use readByte() because readerIndex was already advanced in write().
             val src = pw.buf.unsafeArray
             val jsArray = js("[]")

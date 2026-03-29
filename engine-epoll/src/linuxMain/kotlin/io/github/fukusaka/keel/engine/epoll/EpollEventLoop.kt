@@ -13,7 +13,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
-import io.github.fukusaka.keel.io.MpscQueue
+import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation

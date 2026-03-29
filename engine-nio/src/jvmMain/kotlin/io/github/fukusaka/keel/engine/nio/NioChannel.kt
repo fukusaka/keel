@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafeBuffer
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -13,18 +13,18 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 
 /**
- * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
+ * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
  *
- * We record offset/length separately because [NativeBuf.readerIndex] is
+ * We record offset/length separately because [IoBuf.readerIndex] is
  * advanced at write() time so the caller can reuse the buffer immediately.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * Java NIO [SocketChannel]-based [Channel] implementation for JVM.
  *
- * **Zero-copy I/O**: read/write pass [NativeBuf.unsafeBuffer] (DirectByteBuffer)
+ * **Zero-copy I/O**: read/write pass [IoBuf.unsafeBuffer] (DirectByteBuffer)
  * directly to [SocketChannel.read]/[SocketChannel.write] — no intermediate
  * ByteArray copy.
  *
@@ -33,13 +33,13 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * via [NioEventLoop.setInterest] instead of re-registering with the Selector.
  * This eliminates per-read JNI overhead (Netty uses the same pattern).
  *
- * **Write/flush separation**: [write] retains the [NativeBuf] and records
+ * **Write/flush separation**: [write] retains the [IoBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
  * [SocketChannel.write] for each (gather-write for multiple buffers).
  *
  * ```
  * Read path (zero-copy, async via EventLoop):
- *   SocketChannel.read(ByteBuffer) → NativeBuf.unsafeBuffer
+ *   SocketChannel.read(ByteBuffer) → IoBuf.unsafeBuffer
  *   If n == 0: setInterest(key, OP_READ, cont) → select() → resume → retry
  *
  * Write path (buffered, zero-copy flush):
@@ -101,7 +101,7 @@ internal class NioChannel(
      *
      * @return number of bytes read, or -1 on EOF.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         while (true) {
@@ -128,7 +128,7 @@ internal class NioChannel(
      *
      * @return number of bytes buffered.
      */
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes

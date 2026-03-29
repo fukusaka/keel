@@ -2,8 +2,8 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -82,13 +82,13 @@ class NodeEngineTest {
         val serverCh = server.accept()
 
         // Client sends "hello"
-        val writeBuf = HeapAllocator.allocate(64)
+        val writeBuf = DefaultAllocator.allocate(64)
         for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
         // Server reads
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
@@ -97,7 +97,7 @@ class NodeEngineTest {
         serverCh.flush()
 
         // Client receives
-        val echoBuf = HeapAllocator.allocate(64)
+        val echoBuf = DefaultAllocator.allocate(64)
         val n2 = clientCh.read(echoBuf)
         assertEquals(5, n2)
 
@@ -124,7 +124,7 @@ class NodeEngineTest {
 
         clientCh.close() // Client closes -> EOF
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = serverCh.read(buf)
         assertEquals(-1, n)
 
@@ -143,7 +143,7 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41) // 'A'
         buf.writeByte(0x42) // 'B'
 
@@ -152,7 +152,7 @@ class NodeEngineTest {
 
         serverCh.flush()
 
-        val readBuf = HeapAllocator.allocate(8)
+        val readBuf = DefaultAllocator.allocate(8)
         val n = clientCh.read(readBuf)
         assertEquals(2, n)
         assertEquals(0x41.toByte(), readBuf.readByte())
@@ -167,7 +167,7 @@ class NodeEngineTest {
     }
 
     @Test
-    fun readAdvancesNativeBufWriterIndex() = runTest {
+    fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -175,12 +175,12 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val writeBuf = HeapAllocator.allocate(8)
+        val writeBuf = DefaultAllocator.allocate(8)
         for (b in "abc".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         serverCh.read(buf)
         assertEquals(3, buf.writerIndex)
@@ -195,7 +195,7 @@ class NodeEngineTest {
     }
 
     @Test
-    fun writeAdvancesNativeBufReaderIndex() = runTest {
+    fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -203,7 +203,7 @@ class NodeEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0, buf.readerIndex)
@@ -234,7 +234,7 @@ class NodeEngineTest {
         serverCh.shutdownOutput()
 
         // Client should see EOF
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         val n = clientCh.read(buf)
         assertEquals(-1, n)
 
@@ -256,12 +256,12 @@ class NodeEngineTest {
 
         serverCh.shutdownOutput()
 
-        val writeBuf = HeapAllocator.allocate(8)
+        val writeBuf = DefaultAllocator.allocate(8)
         for (b in "hi".encodeToByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         clientCh.flush()
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = serverCh.read(buf)
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -326,7 +326,7 @@ class NodeEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.read(HeapAllocator.allocate(8))
+            ch.read(DefaultAllocator.allocate(8))
         }
 
         server.close()
@@ -344,7 +344,7 @@ class NodeEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.write(HeapAllocator.allocate(8))
+            ch.write(DefaultAllocator.allocate(8))
         }
 
         server.close()
@@ -386,7 +386,7 @@ class NodeEngineTest {
         val ch = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         val written = ch.write(buf)
         assertEquals(0, written)
 
@@ -409,7 +409,7 @@ class NodeEngineTest {
         val serverCh = server.accept()
 
         // Write via client
-        val writeBuf = HeapAllocator.allocate(8)
+        val writeBuf = DefaultAllocator.allocate(8)
         writeBuf.writeByte(0x41)
         writeBuf.writeByte(0x42)
         clientCh.write(writeBuf)
@@ -417,7 +417,7 @@ class NodeEngineTest {
         writeBuf.release()
 
         // Read via asSuspendSource bridge
-        val source = BufferedSuspendSource(serverCh.asSuspendSource(), HeapAllocator)
+        val source = BufferedSuspendSource(serverCh.asSuspendSource(), DefaultAllocator)
         val b1 = source.readByte()
         val b2 = source.readByte()
         assertEquals(0x41.toByte(), b1)
@@ -440,14 +440,14 @@ class NodeEngineTest {
         val serverCh = server.accept()
 
         // Write via asSuspendSink bridge
-        val sink = BufferedSuspendSink(serverCh.asSuspendSink(), HeapAllocator)
+        val sink = BufferedSuspendSink(serverCh.asSuspendSink(), DefaultAllocator)
         sink.writeByte(0x43)
         sink.writeByte(0x44)
         sink.flush()
         sink.close()
 
         // Read via client
-        val readBuf = HeapAllocator.allocate(8)
+        val readBuf = DefaultAllocator.allocate(8)
         val n = clientCh.read(readBuf)
         assertEquals(2, n)
         assertEquals(0x43.toByte(), readBuf.readByte())
@@ -473,7 +473,7 @@ class NodeEngineTest {
         clientCh.close()
 
         val source = serverCh.asSuspendSource()
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         val n = source.read(buf)
         assertEquals(-1, n)
         buf.release()

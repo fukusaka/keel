@@ -71,7 +71,7 @@ fun parseResponseHead(source: Source): HttpResponseHead {
 /**
  * Suspend variant of [parseRequestHead] using [BufferedSuspendSource].
  *
- * Zero-copy: reads directly from NativeBuf without kotlinx-io Buffer copy.
+ * Zero-copy: reads directly from IoBuf without kotlinx-io Buffer copy.
  * No runBlocking needed — suspends naturally on I/O wait.
  */
 suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {

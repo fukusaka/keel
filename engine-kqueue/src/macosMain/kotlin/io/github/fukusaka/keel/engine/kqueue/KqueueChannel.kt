@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafePointer
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.cinterop.ByteVar
@@ -28,21 +28,21 @@ import platform.posix.shutdown
 import platform.posix.write
 
 /**
- * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
+ * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
  *
- * We record offset/length separately because [NativeBuf.readerIndex] is
+ * We record offset/length separately because [IoBuf.readerIndex] is
  * advanced at write() time so the caller can reuse the buffer immediately.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * kqueue-based [Channel] implementation for macOS.
  *
- * **Zero-copy I/O**: read/write pass [NativeBuf.unsafePointer] directly to
+ * **Zero-copy I/O**: read/write pass [IoBuf.unsafePointer] directly to
  * POSIX `read()`/`write()` — no intermediate ByteArray copy.
  *
- * **Write/flush separation**: [write] retains the [NativeBuf] and records
+ * **Write/flush separation**: [write] retains the [IoBuf] and records
  * the byte range to send. [flush] iterates all pending writes and calls
  * POSIX `write()` for each, then releases the buffers. Uses `writev()`
  * gather-write for multiple pending buffers.
@@ -54,7 +54,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *
  * ```
  * Read path (zero-copy, async via EventLoop):
- *   POSIX read(fd) --> NativeBuf.unsafePointer + writerIndex
+ *   POSIX read(fd) --> IoBuf.unsafePointer + writerIndex
  *   If EAGAIN: suspendCancellableCoroutine + eventLoop.register(fd, READ)
  *   EventLoop kevent() fires --> continuation.resume(Unit) --> retry read
  *
@@ -113,11 +113,11 @@ internal class KqueueChannel(
      *
      * @return number of bytes read, or -1 on EOF/error.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         while (true) {
-            // Zero-copy: write directly into NativeBuf's backing memory
+            // Zero-copy: write directly into IoBuf's backing memory
             val ptr = (buf.unsafePointer + buf.writerIndex)!!
             val n = read(fd, ptr, buf.writableBytes.convert())
             when {
@@ -147,13 +147,13 @@ internal class KqueueChannel(
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      *
-     * The caller's [NativeBuf.readerIndex] is advanced immediately so the
+     * The caller's [IoBuf.readerIndex] is advanced immediately so the
      * buffer can be reused or released by the caller. The actual POSIX write
      * happens on [flush].
      *
      * @return number of bytes buffered.
      */
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes
@@ -170,7 +170,7 @@ internal class KqueueChannel(
      * Sends all buffered writes to the network via POSIX write.
      *
      * Each [PendingWrite] is written using zero-copy pointer access,
-     * then the retained [NativeBuf] is released.
+     * then the retained [IoBuf] is released.
      *
      * **EAGAIN / short write handling**: Non-blocking sockets may return
      * EAGAIN (send buffer full) or a short write (fewer bytes than requested).

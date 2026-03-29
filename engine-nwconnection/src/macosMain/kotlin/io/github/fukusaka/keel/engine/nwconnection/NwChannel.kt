@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
-import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafePointer
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
@@ -26,13 +26,13 @@ import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_t
 
 /**
- * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
+ * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
  *
- * We record offset/length separately because [NativeBuf.readerIndex] is
+ * We record offset/length separately because [IoBuf.readerIndex] is
  * advanced at write() time so the caller can reuse the buffer immediately.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * Result of an async NWConnection read operation.
@@ -46,12 +46,12 @@ private data class ReadResult(val bytesRead: Int, val isComplete: Boolean, val f
  *
  * **Read path (copy from dispatch_data_t, async)**:
  * Unlike kqueue/epoll which use zero-copy POSIX `read()` directly into
- * [NativeBuf], NWConnection delivers received data as `dispatch_data_t`.
+ * [IoBuf], NWConnection delivers received data as `dispatch_data_t`.
  * The C wrapper [keel_nw_read_async] copies data segment-by-segment via
  * `dispatch_data_apply` + `memcpy`, then invokes a callback that resumes
  * the suspended coroutine. No thread blocking occurs.
  *
- * **Write/flush separation**: [write] retains the [NativeBuf] and records
+ * **Write/flush separation**: [write] retains the [IoBuf] and records
  * the byte range to send. [flush] concatenates all pending writes into a
  * single `dispatch_data_t` via [keel_nw_writev_async] and sends in one
  * `nw_connection_send` call. The concatenation is zero-copy
@@ -126,7 +126,7 @@ internal class NwChannel(
      *
      * @return number of bytes read, or -1 on EOF/error.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         val result = suspendCancellableCoroutine<ReadResult> { cont ->
@@ -150,13 +150,13 @@ internal class NwChannel(
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      *
-     * The caller's [NativeBuf.readerIndex] is advanced immediately so the
+     * The caller's [IoBuf.readerIndex] is advanced immediately so the
      * buffer can be reused or released by the caller. The actual NWConnection
      * send happens on [flush].
      *
      * @return number of bytes buffered.
      */
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes

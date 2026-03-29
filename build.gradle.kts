@@ -33,7 +33,7 @@ subprojects {
         // detekt type resolution crashes on Netty's external API with NPE
         // in IgnoredReturnValue → DescriptorUtilKt.findPackage (detekt 1.23.8).
         // Standard rules still work via the `detekt` task (lint-only).
-        // Custom rules (NativeBufLeak etc.) are excluded because they
+        // Custom rules (IoBufLeak etc.) are excluded because they
         // produce false positives without type resolution.
         // Type resolution tasks (detektJvmMain etc.) must NOT be run for
         // this module — use `detekt` task only.

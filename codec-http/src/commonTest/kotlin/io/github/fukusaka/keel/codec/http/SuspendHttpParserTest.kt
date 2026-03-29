@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.SuspendSource
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -13,7 +13,7 @@ class SuspendHttpParserTest {
     private fun sourceOf(data: String): SuspendSource = object : SuspendSource {
         private val bytes = data.encodeToByteArray()
         private var pos = 0
-        override suspend fun read(buf: NativeBuf): Int {
+        override suspend fun read(buf: IoBuf): Int {
             if (pos >= bytes.size) return -1
             val n = minOf(bytes.size - pos, buf.writableBytes)
             for (i in 0 until n) buf.writeByte(bytes[pos++])
@@ -25,7 +25,7 @@ class SuspendHttpParserTest {
     @Test
     fun `parseRequestHead suspend variant parses GET request`() = runBlocking {
         val raw = "GET /hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+        val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
         val head = parseRequestHead(source)
 
@@ -40,7 +40,7 @@ class SuspendHttpParserTest {
     @Test
     fun `parseRequestHead suspend variant parses POST request`() = runBlocking {
         val raw = "POST /submit HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
-        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+        val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
         val head = parseRequestHead(source)
 
@@ -58,7 +58,7 @@ class SuspendHttpParserTest {
     @Test
     fun `parseResponseHead suspend variant parses 200 OK`() = runBlocking {
         val raw = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
-        val source = BufferedSuspendSource(sourceOf(raw), HeapAllocator)
+        val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
         val head = parseResponseHead(source)
 
