@@ -9,9 +9,14 @@ import io_uring.io_uring_peek_cqe
 import io_uring.io_uring_prep_cancel64
 import io_uring.io_uring_prep_read
 import io_uring.io_uring_prep_recv
+import io_uring.io_uring_prep_recv_multishot
 import io_uring.io_uring_prep_send
 import io_uring.io_uring_prep_writev
 import io_uring.iovec
+import io_uring.keel_cqe_get_buf_id
+import io_uring.keel_cqe_has_buffer
+import io_uring.keel_cqe_has_more
+import io_uring.keel_sqe_set_buffer_select
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
@@ -102,18 +107,20 @@ import kotlin.coroutines.resume
  *
  * ```
  * user_data encoding:
- *   0              — reserved (unused; safety skip)
- *   WAKEUP_TOKEN   — wakeup eventfd READ SQE
- *   CANCEL_TOKEN   — IORING_OP_ASYNC_CANCEL SQE; CQE is discarded
- *   slot + SLOT_BASE — real I/O SQE; slot is an index into contSlots[]
+ *   0                          — reserved (unused; safety skip)
+ *   WAKEUP_TOKEN (1)           — wakeup eventfd READ SQE
+ *   CANCEL_TOKEN (MAX)         — IORING_OP_ASYNC_CANCEL SQE; CQE is discarded
+ *   slot + SLOT_BASE (2+)      — single-shot I/O SQE; index into contSlots[]
+ *   slot + MULTISHOT_BASE      — multi-shot recv SQE; index into channelSlots[]
  *
  * EventLoop thread (single loop iteration):
  *   1. drainTasks()                  — run task queue; SQEs are prepared here
  *   2. io_uring_submit_and_wait(1)   — batch-submit SQEs + block for ≥1 CQE
  *   3. drain CQEs (io_uring_peek_cqe):
- *        WAKEUP_TOKEN   → re-submit wakeup SQE, continue
- *        CANCEL_TOKEN   → discard (cancel SQE completed; original CQE follows)
- *        slot+SLOT_BASE → contSlots[slot].resume(res), releaseSlot(slot)
+ *        WAKEUP_TOKEN     → re-submit wakeup SQE, continue
+ *        CANCEL_TOKEN     → discard (cancel SQE completed; original CQE follows)
+ *        ≥MULTISHOT_BASE  → channelSlots[slot].onRecvCompletion(res, bufId, hasMore)
+ *        ≥SLOT_BASE       → contSlots[slot].resume(res), releaseSlot(slot)
  *        (resumed continuations may prepare new SQEs inline — submitted next iter)
  * ```
  *
@@ -165,6 +172,71 @@ internal class IoUringEventLoop(
         freeSlots[freeSlotsTop++] = slot
     }
 
+    // --- Multi-shot recv: channel slot pool ---
+    //
+    // Maps channel slot IDs to IoUringChannel instances for routing multi-shot
+    // recv CQEs. Unlike contSlots (one-shot, released per CQE), channelSlots
+    // persist for the lifetime of the channel.
+    //
+    // Sized to ringSize (same as contSlots). Each concurrent connection uses
+    // one slot, so this supports up to ringSize concurrent connections per
+    // EventLoop. If connection count and ring size need to scale independently,
+    // this should be split into a separate parameter.
+    private val channelSlots = arrayOfNulls<IoUringChannel>(ringSize)
+    private val freeChannelSlots = IntArray(ringSize) { it }
+    private var freeChannelSlotsTop = ringSize
+
+    /** Provided buffer ring for multi-shot recv. Created lazily via [initBufferRing]. */
+    internal var bufferRing: ProvidedBufferRing? = null
+        private set
+
+    /**
+     * Initialises the provided buffer ring for this EventLoop.
+     * Must be called before any multi-shot recv is armed.
+     */
+    internal fun initBufferRing() {
+        if (bufferRing == null) {
+            bufferRing = ProvidedBufferRing(ring.ptr)
+        }
+    }
+
+    /**
+     * Allocates a channel slot for multi-shot recv CQE routing.
+     * The returned slot ID is encoded in user_data as `slot + MULTISHOT_BASE`.
+     */
+    internal fun acquireChannelSlot(channel: IoUringChannel): Int {
+        check(freeChannelSlotsTop > 0) { "Channel slot pool exhausted (ringSize=$ringSize)" }
+        val slot = freeChannelSlots[--freeChannelSlotsTop]
+        channelSlots[slot] = channel
+        return slot
+    }
+
+    /**
+     * Releases a channel slot when the channel is closed.
+     */
+    internal fun releaseChannelSlot(slot: Int) {
+        channelSlots[slot] = null
+        freeChannelSlots[freeChannelSlotsTop++] = slot
+    }
+
+    /**
+     * Arms a multi-shot recv SQE for [channel] on the given [fd].
+     *
+     * The SQE uses `IORING_RECV_MULTISHOT` + `IOSQE_BUFFER_SELECT` so the kernel
+     * selects a buffer from [bufferRing] for each incoming packet. One SQE produces
+     * multiple CQEs until the channel is closed or buffers are exhausted.
+     *
+     * @param fd Socket file descriptor.
+     * @param channelSlot Channel slot ID (from [acquireChannelSlot]).
+     */
+    internal fun armMultishotRecv(fd: Int, channelSlot: Int) {
+        val br = bufferRing ?: error("Buffer ring not initialised")
+        val sqe = io_uring_get_sqe(ring.ptr) ?: return // ring full, caller retries later
+        io_uring_prep_recv_multishot(sqe, fd, null, 0u, 0)
+        keel_sqe_set_buffer_select(sqe, br.bgid.toUShort())
+        io_uring_sqe_set_data64(sqe, channelSlot.toULong() + MULTISHOT_BASE)
+    }
+
     private val wakeupFd: Int
     private val running = AtomicInt(1)
     private val threadPtr = arena.alloc<pthread_tVar>()
@@ -202,7 +274,7 @@ internal class IoUringEventLoop(
         }
     }
 
-    private fun inEventLoop(): Boolean {
+    internal fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
         return pthread_equal(pthread_self(), t) != 0
     }
@@ -237,6 +309,7 @@ internal class IoUringEventLoop(
             if (t != null) {
                 pthread_join(t, null)
             }
+            bufferRing?.close()
             io_uring_queue_exit(ring.ptr)
             close(wakeupFd)
             arena.clear()
@@ -480,24 +553,32 @@ internal class IoUringEventLoop(
                     val cqe = cqePtrVar.value ?: break
                     val userData = io_uring_cqe_get_data64(cqe)
                     val res = cqe.pointed.res
+                    val flags = cqe.pointed.flags.toUInt()
                     io_uring_cqe_seen(ring.ptr, cqe)
 
                     if (userData == WAKEUP_TOKEN) {
-                        // Wakeup fired — re-submit for the next round.
-                        // The new SQE is submitted at the next io_uring_submit_and_wait().
                         submitWakeupSqe()
                         continue
                     }
 
-                    // ASYNC_CANCEL completion: discard. The original SQE's CQE (-ECANCELED)
-                    // arrives separately and is handled via the normal slot path below.
                     if (userData == CANCEL_TOKEN) continue
 
-                    if (userData < SLOT_BASE) continue // safety: skip reserved values
+                    // Multi-shot recv CQE: route to the channel's receive queue.
+                    if (userData >= MULTISHOT_BASE) {
+                        val channelSlot = (userData - MULTISHOT_BASE).toInt()
+                        val channel = channelSlots[channelSlot] ?: continue
+                        val hasMore = keel_cqe_has_more(flags) != 0
+                        val hasBuffer = keel_cqe_has_buffer(flags) != 0
+                        val bufId = if (hasBuffer) keel_cqe_get_buf_id(flags).toInt() else -1
+                        channel.onRecvCompletion(res, bufId, hasMore)
+                        continue
+                    }
 
-                    // Real I/O completion: retrieve continuation from slot, resume it.
+                    if (userData < SLOT_BASE) continue
+
+                    // Single-shot I/O completion.
                     val slot = (userData - SLOT_BASE).toInt()
-                    val cont = contSlots[slot] ?: continue // safety
+                    val cont = contSlots[slot] ?: continue
                     contSlots[slot] = null
                     releaseSlot(slot)
                     cont.resume(res)
@@ -549,5 +630,13 @@ internal class IoUringEventLoop(
          * Keeps slot 0 → user_data=2, safely above the reserved range (0, WAKEUP_TOKEN=1).
          */
         internal const val SLOT_BASE = 2UL
+
+        /**
+         * Base offset for multi-shot recv user_data encoding.
+         * Channel slot IDs are encoded as `slot + MULTISHOT_BASE`.
+         * Must not overlap with SLOT_BASE range (max slot = ringSize - 1 = 1023,
+         * so SLOT_BASE range is 2..1025, well below MULTISHOT_BASE).
+         */
+        internal const val MULTISHOT_BASE = 0x1000_0000_0000_0000UL
     }
 }
