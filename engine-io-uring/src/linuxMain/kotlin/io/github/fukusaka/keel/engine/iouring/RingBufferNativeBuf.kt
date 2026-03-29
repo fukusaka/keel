@@ -39,7 +39,9 @@ internal class RingBufferNativeBuf(
     private val onRelease: (RingBufferNativeBuf) -> Unit,
 ) : NativeBuf, NativePointerAccess {
 
-    private val ptr: CPointer<ByteVar> get() = bufferRing.getPointer(bufId)
+    // Cached pointer to the buffer slot. Pointer arithmetic (basePtr + bufId * bufferSize)
+    // is computed once at construction and on reset(), not on every property access.
+    private var ptr: CPointer<ByteVar> = bufferRing.getPointer(bufId)
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     override val capacity: Int get() = bufferRing.bufferSize
 
