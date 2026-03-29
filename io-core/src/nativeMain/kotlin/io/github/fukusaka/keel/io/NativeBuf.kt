@@ -16,7 +16,7 @@ import platform.posix.memmove
 /**
  * Native [NativeBuf] implementation backed by [nativeHeap] memory or external memory.
  *
- * **Owned memory** ([internal actual constructor][NativeBuf]): allocated via
+ * **Owned memory** (primary constructor): allocated via
  * `nativeHeap.allocArray<ByteVar>(capacity)` and freed in [close] via `nativeHeap.free`.
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided pointer
@@ -31,16 +31,16 @@ import platform.posix.memmove
  * A `freed` flag prevents double-free in [close].
  */
 @OptIn(ExperimentalForeignApi::class)
-actual class NativeBuf private constructor(
+class HeapNativeBuf private constructor(
     private val ptr: CPointer<ByteVar>,
-    actual val capacity: Int,
+    override val capacity: Int,
     private val ownsMemory: Boolean,
-) {
+) : NativeBuf, PoolableNativeBuf {
+
     /**
-     * Creates a [NativeBuf] backed by newly allocated [nativeHeap] memory.
-     * Matches the expect constructor signature.
+     * Creates a [HeapNativeBuf] backed by newly allocated [nativeHeap] memory.
      */
-    internal actual constructor(capacity: Int) : this(
+    constructor(capacity: Int) : this(
         nativeHeap.allocArray<ByteVar>(capacity),
         capacity,
         ownsMemory = true,
@@ -50,20 +50,20 @@ actual class NativeBuf private constructor(
     val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
-    internal actual var deallocator: ((NativeBuf) -> Unit)? = null
-    internal actual var nextLink: NativeBuf? = null
+    override var deallocator: ((NativeBuf) -> Unit)? = null
+    override var nextLink: NativeBuf? = null
 
-    actual var readerIndex: Int = 0
-    actual var writerIndex: Int = 0
+    override var readerIndex: Int = 0
+    override var writerIndex: Int = 0
 
-    actual val readableBytes: Int get() = writerIndex - readerIndex
-    actual val writableBytes: Int get() = capacity - writerIndex
+    override val readableBytes: Int get() = writerIndex - readerIndex
+    override val writableBytes: Int get() = capacity - writerIndex
 
-    actual fun writeByte(value: Byte) {
+    override fun writeByte(value: Byte) {
         ptr[writerIndex++] = value
     }
 
-    actual fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+    override fun writeBytes(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         if (length == 0) return
         src.usePinned { pinned ->
@@ -72,7 +72,7 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
-    actual fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+    override fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             ptr[writerIndex + i] = src[srcOffset + i].code.toByte()
@@ -80,20 +80,24 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
-    actual fun copyTo(dest: NativeBuf, length: Int) {
+    override fun copyTo(dest: NativeBuf, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
-        memcpy(dest.ptr + dest.writerIndex, ptr + readerIndex, length.toULong())
+        val destPtr = when (dest) {
+            is HeapNativeBuf -> dest.ptr + dest.writerIndex
+            else -> error("copyTo requires HeapNativeBuf destination on Native")
+        }
+        memcpy(destPtr, ptr + readerIndex, length.toULong())
         readerIndex += length
         dest.writerIndex += length
     }
 
-    actual fun readByte(): Byte = ptr[readerIndex++]
+    override fun readByte(): Byte = ptr[readerIndex++]
 
-    actual fun getByte(index: Int): Byte = ptr[index]
+    override fun getByte(index: Int): Byte = ptr[index]
 
-    actual fun compact() {
+    override fun compact() {
         if (readerIndex > 0) {
             val readable = readableBytes
             if (readable > 0) {
@@ -105,7 +109,7 @@ actual class NativeBuf private constructor(
         }
     }
 
-    actual fun clear() {
+    override fun clear() {
         readerIndex = 0
         writerIndex = 0
     }
@@ -116,7 +120,7 @@ actual class NativeBuf private constructor(
      * Preserves [ownsMemory] and [ptr] so external-memory wrappers created
      * via [wrapExternal] can be safely reused without re-wrapping.
      */
-    actual fun resetForReuse() {
+    override fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
@@ -124,13 +128,13 @@ actual class NativeBuf private constructor(
         nextLink = null
     }
 
-    actual fun retain(): NativeBuf {
+    override fun retain(): NativeBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
         refCount++
         return this
     }
 
-    actual fun release(): Boolean {
+    override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
             val d = deallocator
@@ -144,7 +148,7 @@ actual class NativeBuf private constructor(
         return false
     }
 
-    actual fun close() {
+    override fun close() {
         if (!freed) {
             freed = true
             refCount = 0
@@ -156,7 +160,7 @@ actual class NativeBuf private constructor(
 
     companion object {
         /**
-         * Wraps an externally-owned memory region as a [NativeBuf] without allocation.
+         * Wraps an externally-owned memory region as a [HeapNativeBuf] without allocation.
          *
          * The returned buffer does NOT own the memory: [close] will not call
          * `nativeHeap.free`. The [deallocator] callback handles recycling
@@ -169,16 +173,29 @@ actual class NativeBuf private constructor(
          * @param capacity      Size of the memory region in bytes.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
          * @param deallocator   Called on [release] when refCount reaches 0.
-         * @return A [NativeBuf] wrapping the external memory.
+         * @return A [HeapNativeBuf] wrapping the external memory.
          */
         fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
             deallocator: ((NativeBuf) -> Unit)? = null,
-        ): NativeBuf = NativeBuf(ptr, capacity, ownsMemory = false).also {
+        ): HeapNativeBuf = HeapNativeBuf(ptr, capacity, ownsMemory = false).also {
             it.writerIndex = bytesWritten
             it.deallocator = deallocator
         }
     }
 }
+
+/**
+ * Extension property for engine-layer zero-copy I/O.
+ *
+ * Exposes the raw `CPointer<ByteVar>` from a [HeapNativeBuf].
+ * Engine modules use this to pass buffer memory directly to POSIX syscalls.
+ */
+@OptIn(ExperimentalForeignApi::class)
+val NativeBuf.unsafePointer: CPointer<ByteVar>
+    get() = (this as HeapNativeBuf).unsafePointer
+
+@Suppress("NativeBufLeak") // Factory returns ownership to caller
+internal actual fun createHeapNativeBuf(capacity: Int): NativeBuf = HeapNativeBuf(capacity)
