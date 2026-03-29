@@ -72,3 +72,37 @@ static struct iovec *keel_alloc_iovec(const void **bases, const size_t *lens, in
 static void keel_free_iovec(struct iovec *iov) {
     free(iov);
 }
+
+/*
+ * Provided buffer ring helpers for multi-shot receive.
+ *
+ * Multi-shot recv (IORING_RECV_MULTISHOT) combined with provided buffers
+ * (IOSQE_BUFFER_SELECT) allows the kernel to select a buffer from a
+ * pre-registered ring for each incoming packet. One SQE produces multiple
+ * CQEs, eliminating per-read SQE resubmission overhead.
+ *
+ * Wrappers are needed because IORING_CQE_BUFFER_SHIFT and IOSQE_BUFFER_SELECT
+ * are preprocessor constants that Kotlin/Native cinterop cannot bind directly.
+ * Marked static — same rationale as keel_htons above.
+ */
+
+/* Extract buffer ID from CQE flags (flags >> IORING_CQE_BUFFER_SHIFT). */
+static unsigned short keel_cqe_get_buf_id(unsigned int cqe_flags) {
+    return cqe_flags >> IORING_CQE_BUFFER_SHIFT;
+}
+
+/* Check if CQE has the BUFFER flag set (provided buffer was used). */
+static int keel_cqe_has_buffer(unsigned int cqe_flags) {
+    return (cqe_flags & IORING_CQE_F_BUFFER) != 0;
+}
+
+/* Check if CQE has the MORE flag set (multi-shot SQE still armed). */
+static int keel_cqe_has_more(unsigned int cqe_flags) {
+    return (cqe_flags & IORING_CQE_F_MORE) != 0;
+}
+
+/* Set IOSQE_BUFFER_SELECT flag and buf_group on an SQE for provided buffers. */
+static void keel_sqe_set_buffer_select(struct io_uring_sqe *sqe, unsigned short bgid) {
+    sqe->flags |= IOSQE_BUFFER_SELECT;
+    sqe->buf_group = bgid;
+}
