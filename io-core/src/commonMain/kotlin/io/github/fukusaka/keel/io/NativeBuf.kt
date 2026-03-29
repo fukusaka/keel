@@ -80,6 +80,18 @@ expect class NativeBuf internal constructor(capacity: Int) {
      */
     fun writeAsciiString(src: String, srcOffset: Int, length: Int)
 
+    /**
+     * Bulk copy: copies [length] bytes from this buffer's current [readerIndex]
+     * into [dest] at its current [writerIndex] using platform-optimized copy
+     * (memcpy on Native, ByteBuffer.put on JVM, Int8Array.set on JS).
+     *
+     * After this call, this buffer's [readerIndex] and [dest]'s [writerIndex]
+     * both advance by [length].
+     *
+     * @throws IllegalArgumentException if [length] exceeds [readableBytes] or [dest]'s [writableBytes].
+     */
+    fun copyTo(dest: NativeBuf, length: Int)
+
     /** Reads a byte from the current read position and advances [readerIndex]. */
     fun readByte(): Byte
 
