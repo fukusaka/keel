@@ -31,9 +31,12 @@ internal class IoUringEventLoopGroup(
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val index = AtomicInt(0)
 
-    /** Starts all EventLoop threads. */
+    /** Starts all EventLoop threads and initialises their provided buffer rings. */
     fun start() {
-        for (loop in loops) loop.start()
+        for (loop in loops) {
+            loop.initBufferRing()
+            loop.start()
+        }
     }
 
     /**

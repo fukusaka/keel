@@ -128,7 +128,12 @@ class IoUringEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return IoUringChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
+        val br = workerLoop.bufferRing
+            ?: error("Buffer ring not initialised on worker EventLoop")
+        val channel = IoUringChannel(fd, workerLoop, allocator, remoteAddr, localAddr, br)
+        channel.channelSlot = workerLoop.acquireChannelSlot(channel)
+        channel.armMultishotRecv()
+        return channel
     }
 
     override fun close() {

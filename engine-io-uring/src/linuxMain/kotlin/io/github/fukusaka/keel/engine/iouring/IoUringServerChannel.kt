@@ -70,7 +70,18 @@ internal class IoUringServerChannel(
             val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
             val localAddr = SocketUtils.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()
-            return IoUringChannel(clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi), remoteAddr, localAddr)
+            val workerLoop = workerGroup.loopAt(wi)
+            val br = workerLoop.bufferRing
+                ?: error("Buffer ring not initialised on worker EventLoop")
+            val channel = IoUringChannel(
+                clientFd, workerLoop, workerGroup.allocatorAt(wi),
+                remoteAddr, localAddr, br,
+            )
+            channel.channelSlot = workerLoop.acquireChannelSlot(channel)
+            // Arm multi-shot recv immediately so data arriving before the
+            // first read() call is captured in the receive queue.
+            channel.armMultishotRecv()
+            return channel
         } catch (e: Throwable) {
             platform.posix.close(clientFd)
             throw e
