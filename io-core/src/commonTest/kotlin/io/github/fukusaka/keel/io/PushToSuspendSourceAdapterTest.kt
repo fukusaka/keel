@@ -22,7 +22,7 @@ class PushToSuspendSourceAdapterTest {
     }
 
     private fun filledBuf(vararg bytes: Byte): NativeBuf {
-        val buf = NativeBuf(bytes.size)
+        val buf = createHeapNativeBuf(bytes.size)
         for (b in bytes) buf.writeByte(b)
         return buf
     }
@@ -32,7 +32,7 @@ class PushToSuspendSourceAdapterTest {
         val source = ListPushSource(listOf(filledBuf(0x41, 0x42, 0x43)))
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = NativeBuf(8)
+        val dst = createHeapNativeBuf(8)
         val n = adapter.read(dst)
         assertEquals(3, n)
         assertEquals('A'.code.toByte(), dst.readByte())
@@ -48,7 +48,7 @@ class PushToSuspendSourceAdapterTest {
         val source = ListPushSource(emptyList())
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = NativeBuf(8)
+        val dst = createHeapNativeBuf(8)
         val n = adapter.read(dst)
         assertEquals(-1, n)
 
@@ -62,7 +62,7 @@ class PushToSuspendSourceAdapterTest {
         val adapter = PushToSuspendSourceAdapter(source)
 
         // First read: only 3 writable bytes, 2 bytes left over.
-        val dst1 = NativeBuf(3)
+        val dst1 = createHeapNativeBuf(3)
         assertEquals(3, adapter.read(dst1))
         assertEquals(1.toByte(), dst1.readByte())
         assertEquals(2.toByte(), dst1.readByte())
@@ -70,14 +70,14 @@ class PushToSuspendSourceAdapterTest {
         dst1.release()
 
         // Second read: drains leftover (2 bytes) without calling readOwned().
-        val dst2 = NativeBuf(8)
+        val dst2 = createHeapNativeBuf(8)
         assertEquals(2, adapter.read(dst2))
         assertEquals(4.toByte(), dst2.readByte())
         assertEquals(5.toByte(), dst2.readByte())
         dst2.release()
 
         // Third read: source is empty → EOF.
-        val dst3 = NativeBuf(8)
+        val dst3 = createHeapNativeBuf(8)
         assertEquals(-1, adapter.read(dst3))
         dst3.release()
 
@@ -94,7 +94,7 @@ class PushToSuspendSourceAdapterTest {
         )
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = NativeBuf(8)
+        val dst = createHeapNativeBuf(8)
         assertEquals(2, adapter.read(dst))
         assertEquals(2, adapter.read(dst))
         assertEquals(-1, adapter.read(dst)) // EOF

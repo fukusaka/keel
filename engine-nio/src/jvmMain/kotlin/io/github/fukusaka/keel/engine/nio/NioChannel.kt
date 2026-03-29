@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.unsafeBuffer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers

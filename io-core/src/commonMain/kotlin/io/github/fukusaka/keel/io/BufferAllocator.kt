@@ -46,7 +46,7 @@ interface BufferAllocator {
  */
 object HeapAllocator : BufferAllocator {
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
-    override fun allocate(capacity: Int): NativeBuf = NativeBuf(capacity)
+    override fun allocate(capacity: Int): NativeBuf = createHeapNativeBuf(capacity)
 }
 
 /**

@@ -32,7 +32,7 @@ class PooledDirectAllocator(
     private val maxPoolSize: Int = DEFAULT_MAX_POOL_SIZE,
 ) : BufferAllocator {
 
-    private val head = AtomicReference<NativeBuf?>(null)
+    private val head = AtomicReference<HeapNativeBuf?>(null)
     private val poolSize = AtomicInteger(0)
 
     override fun createForEventLoop(): BufferAllocator =
@@ -40,19 +40,19 @@ class PooledDirectAllocator(
 
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
-        val buf = if (capacity == bufferSize) {
+        val buf: HeapNativeBuf = if (capacity == bufferSize) {
             pop()?.also { it.resetForReuse() }
         } else {
             null
-        } ?: NativeBuf(capacity)
+        } ?: HeapNativeBuf(capacity)
         buf.deallocator = ::returnToPool
         return buf
     }
 
-    private fun pop(): NativeBuf? {
+    private fun pop(): HeapNativeBuf? {
         while (true) {
             val cur = head.get() ?: return null
-            if (head.compareAndSet(cur, cur.nextLink)) {
+            if (head.compareAndSet(cur, cur.nextLink as HeapNativeBuf?)) {
                 cur.nextLink = null  // detach from freelist
                 poolSize.decrementAndGet()
                 return cur
@@ -65,14 +65,15 @@ class PooledDirectAllocator(
             buf.close()
             return
         }
+        val poolBuf = buf as HeapNativeBuf
         // Increment-then-check: strictly enforces maxPoolSize even under
         // concurrent access. If the pool is full, undo the increment.
         val newSize = poolSize.incrementAndGet()
         if (newSize <= maxPoolSize) {
             while (true) {
                 val cur = head.get()
-                buf.nextLink = cur
-                if (head.compareAndSet(cur, buf)) return
+                poolBuf.nextLink = cur
+                if (head.compareAndSet(cur, poolBuf)) return
             }
         } else {
             poolSize.decrementAndGet()

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.io.HeapNativeBuf
 import io.github.fukusaka.keel.io.NativeBuf
 import io.github.fukusaka.keel.io.PushSuspendSource
 import io_uring.keel_cqe_get_buf_id
@@ -64,7 +65,7 @@ internal class IoUringPushSource(
     // Safe to reuse: the kernel guarantees a bufId is not reissued until
     // returnBuffer() adds it back to the ring.
     private val wrappers = Array(bufferRing.bufferCount) { bufId ->
-        NativeBuf.wrapExternal(
+        HeapNativeBuf.wrapExternal(
             bufferRing.getPointer(bufId), bufferRing.bufferSize, 0,
         ) { _ -> bufferRing.returnBuffer(bufId) }
     }

@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.unsafePointer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.cinterop.ByteVar

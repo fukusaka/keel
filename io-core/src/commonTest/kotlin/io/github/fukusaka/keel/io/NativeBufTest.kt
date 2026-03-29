@@ -10,7 +10,7 @@ class NativeBufTest {
 
     @Test
     fun writeByte_readByte_roundTrip() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0x41.toByte(), buf.readByte())
@@ -20,7 +20,7 @@ class NativeBufTest {
 
     @Test
     fun readerIndex_writerIndex_tracking() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         assertEquals(0, buf.readerIndex)
         assertEquals(0, buf.writerIndex)
 
@@ -37,7 +37,7 @@ class NativeBufTest {
 
     @Test
     fun readableBytes_writableBytes() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         assertEquals(0, buf.readableBytes)
         assertEquals(8, buf.writableBytes)
 
@@ -55,7 +55,7 @@ class NativeBufTest {
 
     @Test
     fun retain_release_lifecycle() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         val same = buf.retain()
         assertTrue(same === buf)
 
@@ -67,13 +67,13 @@ class NativeBufTest {
 
     @Test
     fun release_returns_true_when_freed() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         assertTrue(buf.release())
     }
 
     @Test
     fun release_after_retain_returns_false() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.retain() // refCount = 2
         assertFalse(buf.release()) // refCount = 1
         assertTrue(buf.release())  // refCount = 0
@@ -81,7 +81,7 @@ class NativeBufTest {
 
     @Test
     fun double_release_throws() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.release()
         assertFailsWith<IllegalStateException> {
             buf.release()
@@ -90,7 +90,7 @@ class NativeBufTest {
 
     @Test
     fun retain_after_release_throws() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.release()
         assertFailsWith<IllegalStateException> {
             buf.retain()
@@ -99,7 +99,7 @@ class NativeBufTest {
 
     @Test
     fun readerIndex_writerIndex_are_settable() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         buf.writeByte(0x01)
         buf.writeByte(0x02)
         buf.writeByte(0x03)
@@ -118,7 +118,7 @@ class NativeBufTest {
 
     @Test
     fun compactMovesReadableBytesToBeginning() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         buf.writeByte(0x43)
@@ -141,7 +141,7 @@ class NativeBufTest {
 
     @Test
     fun compactNoOpWhenReaderIndexIsZero() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         buf.writeByte(0x41)
         buf.compact()
         assertEquals(0, buf.readerIndex)
@@ -151,7 +151,7 @@ class NativeBufTest {
 
     @Test
     fun compactWithEmptyBuffer() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         buf.writeByte(0x41)
         buf.readByte() // empty
         buf.compact()
@@ -164,7 +164,7 @@ class NativeBufTest {
 
     @Test
     fun writeBytesBasic() {
-        val buf = NativeBuf(16)
+        val buf = createHeapNativeBuf(16)
         val src = byteArrayOf(0x41, 0x42, 0x43)
         buf.writeBytes(src, 0, 3)
         assertEquals(3, buf.writerIndex)
@@ -176,7 +176,7 @@ class NativeBufTest {
 
     @Test
     fun writeBytesWithOffset() {
-        val buf = NativeBuf(16)
+        val buf = createHeapNativeBuf(16)
         val src = byteArrayOf(0x10, 0x20, 0x30, 0x40)
         buf.writeBytes(src, 1, 2)
         assertEquals(2, buf.writerIndex)
@@ -187,7 +187,7 @@ class NativeBufTest {
 
     @Test
     fun writeBytesExceedsCapacityThrows() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         val src = byteArrayOf(0x01, 0x02, 0x03, 0x04, 0x05)
         assertFailsWith<IllegalArgumentException> {
             buf.writeBytes(src, 0, 5)
@@ -197,7 +197,7 @@ class NativeBufTest {
 
     @Test
     fun writeBytesZeroLength() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.writeBytes(byteArrayOf(), 0, 0)
         assertEquals(0, buf.writerIndex)
         buf.release()
@@ -205,7 +205,7 @@ class NativeBufTest {
 
     @Test
     fun writeBytesFullCapacity() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         val src = byteArrayOf(0x01, 0x02, 0x03, 0x04)
         buf.writeBytes(src, 0, 4)
         assertEquals(4, buf.writerIndex)
@@ -221,7 +221,7 @@ class NativeBufTest {
 
     @Test
     fun writeAsciiStringBasic() {
-        val buf = NativeBuf(16)
+        val buf = createHeapNativeBuf(16)
         buf.writeAsciiString("ABC", 0, 3)
         assertEquals(3, buf.writerIndex)
         assertEquals(0x41.toByte(), buf.readByte())
@@ -232,7 +232,7 @@ class NativeBufTest {
 
     @Test
     fun writeAsciiStringWithOffset() {
-        val buf = NativeBuf(16)
+        val buf = createHeapNativeBuf(16)
         buf.writeAsciiString("Hello", 1, 3)
         assertEquals(3, buf.writerIndex)
         assertEquals('e'.code.toByte(), buf.readByte())
@@ -243,7 +243,7 @@ class NativeBufTest {
 
     @Test
     fun writeAsciiStringExceedsCapacityThrows() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         assertFailsWith<IllegalArgumentException> {
             buf.writeAsciiString("Hello", 0, 5)
         }
@@ -252,7 +252,7 @@ class NativeBufTest {
 
     @Test
     fun writeAsciiStringZeroLength() {
-        val buf = NativeBuf(4)
+        val buf = createHeapNativeBuf(4)
         buf.writeAsciiString("Hello", 0, 0)
         assertEquals(0, buf.writerIndex)
         buf.release()
@@ -262,7 +262,7 @@ class NativeBufTest {
 
     @Test
     fun clearResetsBothIndices() {
-        val buf = NativeBuf(8)
+        val buf = createHeapNativeBuf(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         buf.readByte()
