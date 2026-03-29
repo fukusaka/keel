@@ -46,6 +46,7 @@ fun main(args: Array<String>) {
     signal(SIGINT, staticCFunction { _ -> shutdownRequested.value = 1 })
 
     println("Starting benchmark server: ${config.summary()}")
+    @Suppress("UNUSED_VARIABLE") // stop callback unused; exitProcess(0) handles shutdown
     val stop = eb.start(config)
 
     // Wait for shutdown signal.
