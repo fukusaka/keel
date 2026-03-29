@@ -25,6 +25,8 @@ package io.github.fukusaka.keel.benchmark
  *   tuned            — maximum performance (TCP_NODELAY, higher backlog)
  *   keel-equiv-0.1   — match keel 0.1.x Phase (a): Connection: close, sync I/O
  *   keel-equiv-0.2   — match keel 0.2.x Phase (b): keep-alive, async I/O (future)
+ *
+ * Registers a JVM shutdown hook for graceful server shutdown on SIGTERM/SIGINT.
  */
 fun main(args: Array<String>) {
     val engines = engineRegistry()
@@ -42,5 +44,12 @@ fun main(args: Array<String>) {
     }
 
     println("Starting benchmark server: ${config.summary()}")
-    engines[config.engine]!!.start(config)
+    val stop = engines[config.engine]!!.start(config)
+
+    Runtime.getRuntime().addShutdownHook(Thread {
+        stop()
+    })
+
+    // Block the main thread until the JVM exits (shutdown hook triggers stop).
+    Thread.currentThread().join()
 }

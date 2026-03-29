@@ -8,14 +8,15 @@ import io.ktor.server.engine.*
 /** keel + NWConnection (Apple Network.framework). */
 object KeelNwConnectionEngine : EngineBenchmark {
 
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
-        embeddedServer(Keel, rootConfig) {
+        val engine = embeddedServer(Keel, rootConfig) {
             connector { port = config.port }
-            engine = NwEngine()
-        }.start(wait = true)
+            this.engine = NwEngine()
+        }.start(wait = false)
+        return { engine.stop(500, 1000) }
     }
 
     override fun socketDefaults(os: OsSocketDefaults) = keelSocketDefaults(os)

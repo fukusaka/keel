@@ -25,13 +25,13 @@ data class KtorNettyEngineConfig(
 
 /** Ktor Netty engine. */
 object KtorNettyEngine : EngineBenchmark {
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val netty = config.engineConfig as? KtorNettyEngineConfig ?: KtorNettyEngineConfig()
         val s = config.socket
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
-        embeddedServer(KtorNetty, rootConfig) {
+        val engine = embeddedServer(KtorNetty, rootConfig) {
             connector { this.port = config.port }
             s.threads?.let {
                 workerGroupSize = it
@@ -46,7 +46,8 @@ object KtorNettyEngine : EngineBenchmark {
                 s.receiveBuffer?.let { childOption(ChannelOption.SO_RCVBUF, it) }
                 s.reuseAddress?.let { option(ChannelOption.SO_REUSEADDR, it) }
             }
-        }.start(wait = true)
+        }.start(wait = false)
+        return { engine.stop(500, 1000) }
     }
 
     override fun tunedSocket(s: SocketConfig, cpuCores: Int): SocketConfig = s.copy(

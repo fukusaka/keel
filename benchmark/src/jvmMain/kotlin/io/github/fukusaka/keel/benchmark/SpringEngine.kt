@@ -74,7 +74,7 @@ data class SpringEngineConfig(
 
 object SpringEngine : EngineBenchmark {
 
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val sp = config.engineConfig as? SpringEngineConfig ?: SpringEngineConfig()
         val props = mutableMapOf<String, Any>(
             "server.port" to config.port.toString(),
@@ -106,7 +106,8 @@ object SpringEngine : EngineBenchmark {
 
         val app = SpringApplication(SpringBenchmarkApp::class.java)
         app.setDefaultProperties(props)
-        app.run()
+        val context = app.run()
+        return { context.close() }
     }
 
     // Reactor Netty already sets tcpNoDelay=true, reuseAddress=true

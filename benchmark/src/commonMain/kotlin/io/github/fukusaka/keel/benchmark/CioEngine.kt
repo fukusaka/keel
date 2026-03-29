@@ -19,16 +19,17 @@ data class CioEngineConfig(
 
 /** Ktor CIO engine. */
 object CioEngine : EngineBenchmark {
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val cio = config.engineConfig as? CioEngineConfig ?: CioEngineConfig()
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
-        embeddedServer(CIO, rootConfig) {
+        val engine = embeddedServer(CIO, rootConfig) {
             connector { this.port = config.port }
             config.socket.reuseAddress?.let { reuseAddress = it }
             cio.idleTimeout?.let { connectionIdleTimeoutSeconds = it }
-        }.start(wait = true)
+        }.start(wait = false)
+        return { engine.stop(500, 1000) }
     }
 
     override fun tunedSocket(s: SocketConfig, cpuCores: Int): SocketConfig = s.copy(

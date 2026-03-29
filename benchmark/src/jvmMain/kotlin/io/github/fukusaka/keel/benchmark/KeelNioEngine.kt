@@ -5,10 +5,11 @@ import io.ktor.server.engine.*
 
 /** keel NIO engine — no tunable options. */
 object KeelNioEngine : EngineBenchmark {
-    override fun start(config: BenchmarkConfig) {
-        embeddedServer(Keel, port = config.port) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
+        val engine = embeddedServer(Keel, port = config.port) {
             benchmarkModule(config.connectionClose)
-        }.start(wait = true)
+        }.start(wait = false)
+        return { engine.stop(500, 1000) }
     }
 
     override fun socketDefaults(os: OsSocketDefaults): SocketConfig.SocketDefaults {
