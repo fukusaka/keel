@@ -599,4 +599,80 @@ class IoUringEngineTest {
 
         assertEquals(0, tracking.outstandingCount, "NativeBuf leak detected")
     }
+
+    // --- multishot accept ---
+
+    @Test
+    fun `multishot accept delivers multiple connections`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFds = IntArray(5) { connectRawClient(port) }
+
+        val channels = (0 until 5).map {
+            withTimeout(5000) { server.accept() }
+        }
+
+        assertEquals(5, channels.size)
+        channels.forEach { ch ->
+            assertTrue(ch.isActive)
+            ch.close()
+        }
+
+        clientFds.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `multishot accept echo works for each connection`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        repeat(3) { i ->
+            val clientFd = connectRawClient(port)
+            val ch = withTimeout(5000) { server.accept() }
+
+            val msg = "msg$i"
+            rawWrite(clientFd, msg)
+
+            val buf = HeapAllocator.allocate(64)
+            val n = withTimeout(5000) { ch.read(buf) }
+            assertEquals(msg.length, n)
+
+            ch.write(buf)
+            ch.flush()
+
+            val echo = rawRead(clientFd, msg.length)
+            assertEquals(msg, echo)
+
+            buf.release()
+            ch.close()
+            close(clientFd)
+        }
+
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `close server channel while multishot armed`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        // Accept one connection to arm the multishot SQE.
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+        ch.close()
+        close(clientFd)
+
+        // Close while multishot is armed — must not throw or leak.
+        server.close()
+        assertFalse(server.isActive)
+
+        engine.close()
+    }
 }

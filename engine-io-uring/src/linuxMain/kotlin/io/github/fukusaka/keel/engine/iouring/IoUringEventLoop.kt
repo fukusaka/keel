@@ -17,6 +17,7 @@ import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
+import io_uring.keel_cqe_has_more
 import io_uring.keel_eventfd_create
 import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
@@ -113,7 +114,9 @@ import kotlin.coroutines.resume
  *   3. drain CQEs (io_uring_peek_cqe):
  *        WAKEUP_TOKEN   → re-submit wakeup SQE, continue
  *        CANCEL_TOKEN   → discard (cancel SQE completed; original CQE follows)
- *        slot+SLOT_BASE → contSlots[slot].resume(res), releaseSlot(slot)
+ *        slot+SLOT_BASE → multishot: multishotCallbacks[slot](res, flags),
+ *                         release slot when IORING_CQE_F_MORE drops
+ *                       → single-shot: contSlots[slot].resume(res), releaseSlot(slot)
  *        (resumed continuations may prepare new SQEs inline — submitted next iter)
  * ```
  *
@@ -152,7 +155,13 @@ internal class IoUringEventLoop(
     //
     // freeSlots is an IntArray-backed stack: push/pop are plain array
     // reads/writes with no boxing or heap allocation.
+    //
+    // For multishot SQEs (one SQE → multiple CQEs), multishotCallbacks[]
+    // stores a callback instead of a continuation. The slot is held until
+    // IORING_CQE_F_MORE drops, indicating the kernel will produce no more
+    // CQEs for that SQE.
     private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
+    private val multishotCallbacks = arrayOfNulls<(Int, UInt) -> Unit>(ringSize)
     private val freeSlots = IntArray(ringSize) { it }
     private var freeSlotsTop = ringSize
 
@@ -402,6 +411,62 @@ internal class IoUringEventLoop(
         io_uring_sqe_set_data64(sqe, userData)
     }
 
+    // --- Multishot SQE submission ---
+
+    /**
+     * Submits a multishot SQE and routes all resulting CQEs to [onCqe].
+     *
+     * Unlike [submitAndAwait] which resumes a single continuation on one CQE,
+     * a multishot SQE produces multiple CQEs (e.g., `IORING_OP_ACCEPT` with
+     * `IORING_ACCEPT_MULTISHOT`). The [onCqe] callback receives each CQE's
+     * `(res, flags)` pair. The slot is held until `IORING_CQE_F_MORE` drops,
+     * indicating the kernel will produce no more CQEs for this SQE.
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param prepare Fills in the SQE via `io_uring_prep_*` functions.
+     * @param onCqe   Callback invoked on the EventLoop thread for each CQE.
+     *                `res` is the CQE result; `flags` contains CQE flags
+     *                (check `keel_cqe_has_more` for continuation).
+     * @return The slot index, needed for [cancelMultishot].
+     */
+    internal fun submitMultishot(
+        prepare: (CPointer<io_uring_sqe>) -> Unit,
+        onCqe: (res: Int, flags: UInt) -> Unit,
+    ): Int {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        prepare(sqe)
+        val slot = acquireSlot()
+        multishotCallbacks[slot] = onCqe
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+        return slot
+    }
+
+    /**
+     * Cancels a multishot SQE.
+     *
+     * Submits `IORING_OP_ASYNC_CANCEL` targeting the multishot SQE's user_data
+     * and replaces the callback with a no-op. The slot is NOT released here;
+     * it is released by the CQE drain loop when the final CQE arrives with
+     * `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response). This
+     * prevents a slot reuse race where a new operation could be assigned the
+     * same slot before the kernel delivers the cancellation CQE.
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param slot The slot index returned by [submitMultishot].
+     */
+    internal fun cancelMultishot(slot: Int) {
+        // Replace with no-op; the drain loop releases the slot on F_MORE=0.
+        multishotCallbacks[slot] = { _, _ -> }
+        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_prep_cancel64(cancelSqe, userData, 0)
+        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+    }
+
     // --- Wakeup ---
 
     private fun wakeup() {
@@ -480,6 +545,7 @@ internal class IoUringEventLoop(
                     val cqe = cqePtrVar.value ?: break
                     val userData = io_uring_cqe_get_data64(cqe)
                     val res = cqe.pointed.res
+                    val cqeFlags = cqe.pointed.flags
                     io_uring_cqe_seen(ring.ptr, cqe)
 
                     if (userData == WAKEUP_TOKEN) {
@@ -495,8 +561,21 @@ internal class IoUringEventLoop(
 
                     if (userData < SLOT_BASE) continue // safety: skip reserved values
 
-                    // Real I/O completion: retrieve continuation from slot, resume it.
                     val slot = (userData - SLOT_BASE).toInt()
+
+                    // Multishot path: invoke callback, release slot only when
+                    // IORING_CQE_F_MORE drops (kernel will produce no more CQEs).
+                    val msCb = multishotCallbacks[slot]
+                    if (msCb != null) {
+                        msCb(res, cqeFlags)
+                        if (keel_cqe_has_more(cqeFlags) == 0) {
+                            multishotCallbacks[slot] = null
+                            releaseSlot(slot)
+                        }
+                        continue
+                    }
+
+                    // Single-shot path: retrieve continuation from slot, resume it.
                     val cont = contSlots[slot] ?: continue // safety
                     contSlots[slot] = null
                     releaseSlot(slot)
