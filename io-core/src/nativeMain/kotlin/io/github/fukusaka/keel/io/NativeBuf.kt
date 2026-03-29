@@ -80,6 +80,15 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
+    actual fun copyTo(dest: NativeBuf, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
+        if (length == 0) return
+        memcpy(dest.ptr + dest.writerIndex, ptr + readerIndex, length.toULong())
+        readerIndex += length
+        dest.writerIndex += length
+    }
+
     actual fun readByte(): Byte = ptr[readerIndex++]
 
     actual fun getByte(index: Int): Byte = ptr[index]

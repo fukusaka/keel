@@ -59,6 +59,16 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
+    actual fun copyTo(dest: NativeBuf, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
+        if (length == 0) return
+        // Int8Array.set(source, offset) is V8-optimized for bulk typed array copy.
+        dest.buf.set(buf.subarray(readerIndex, readerIndex + length), dest.writerIndex)
+        readerIndex += length
+        dest.writerIndex += length
+    }
+
     actual fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()
 
     actual fun getByte(index: Int): Byte = (buf.asDynamic()[index] as Int).toByte()

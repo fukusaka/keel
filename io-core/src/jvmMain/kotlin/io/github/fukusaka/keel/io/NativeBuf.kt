@@ -67,6 +67,19 @@ actual class NativeBuf private constructor(
         writerIndex += length
     }
 
+    actual fun copyTo(dest: NativeBuf, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
+        if (length == 0) return
+        val srcView = buf.duplicate()
+        srcView.position(readerIndex)
+        srcView.limit(readerIndex + length)
+        dest.buf.position(dest.writerIndex)
+        dest.buf.put(srcView)
+        readerIndex += length
+        dest.writerIndex += length
+    }
+
     actual fun readByte(): Byte = buf.get(readerIndex++)
 
     actual fun getByte(index: Int): Byte = buf.get(index)

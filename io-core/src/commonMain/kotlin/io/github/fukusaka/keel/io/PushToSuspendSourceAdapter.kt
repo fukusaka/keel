@@ -8,10 +8,10 @@ package io.github.fukusaka.keel.io
  * buffer. This enables push-model engines to work with the existing
  * [BufferedSuspendSource] codec layer without modification.
  *
- * **Copy overhead**: One memcpy-equivalent per read (engine buffer -> caller buffer).
- * This is the same overhead as the current pull-model path for push engines
- * (e.g., Netty's ByteBuf -> NativeBuf copy). For true zero-copy, use
- * [PushSuspendSource.readOwned] directly (future BufferedSuspendSource push mode).
+ * **Copy overhead**: One [NativeBuf.copyTo] per read (platform-optimized bulk copy:
+ * memcpy on Native, ByteBuffer.put on JVM, Int8Array.set on JS). For true
+ * zero-copy, use [PushSuspendSource.readOwned] directly (future
+ * BufferedSuspendSource push mode).
  *
  * **Leftover handling**: When the engine-owned buffer contains more data than
  * the caller's buffer can accept, the owned buffer is retained and drained
@@ -40,15 +40,8 @@ class PushToSuspendSourceAdapter(
         val owned = leftover ?: pushSource.readOwned() ?: return -1
         leftover = null
 
-        val readable = owned.readableBytes
-        val writable = buf.writableBytes
-        val length = minOf(readable, writable)
-        // Byte-by-byte copy via common NativeBuf API.
-        // Platform-optimized bulk copy (memcpy / ByteBuffer.put) deferred
-        // to a future NativeBuf.copyTo() method or BufferedSuspendSource push mode.
-        for (i in 0 until length) {
-            buf.writeByte(owned.readByte())
-        }
+        val length = minOf(owned.readableBytes, buf.writableBytes)
+        owned.copyTo(buf, length)
 
         if (owned.readableBytes > 0) {
             // Retain for the next read() call.
