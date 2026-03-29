@@ -4,7 +4,6 @@ import io_uring.io_uring
 import io_uring.io_uring_buf_ring
 import io_uring.io_uring_buf_ring_add
 import io_uring.io_uring_buf_ring_advance
-import io_uring.io_uring_buf_ring_init
 import io_uring.io_uring_buf_ring_mask
 import io_uring.io_uring_free_buf_ring
 import io_uring.io_uring_setup_buf_ring
@@ -81,7 +80,8 @@ internal class ProvidedBufferRing(
         }
 
         mask = io_uring_buf_ring_mask(bufferCount.toUInt()).toInt()
-        io_uring_buf_ring_init(bufRing)
+        // io_uring_buf_ring_init is already called by io_uring_setup_buf_ring
+        // (see liburing src/setup.c), so we skip it here.
 
         // Add all buffers to the ring so the kernel can start selecting them.
         for (i in 0 until bufferCount) {
