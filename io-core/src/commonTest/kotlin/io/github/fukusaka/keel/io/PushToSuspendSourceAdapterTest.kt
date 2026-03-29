@@ -1,18 +1,20 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.createDefaultIoBuf
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class PushToSuspendSourceAdapterTest {
 
-    /** A [PushSuspendSource] backed by a list of pre-filled [NativeBuf]s. */
-    private class ListPushSource(bufs: List<NativeBuf>) : PushSuspendSource {
+    /** A [PushSuspendSource] backed by a list of pre-filled [IoBuf]s. */
+    private class ListPushSource(bufs: List<IoBuf>) : PushSuspendSource {
         private val queue = ArrayDeque(bufs)
         var closed = false
             private set
 
-        override suspend fun readOwned(): NativeBuf? =
+        override suspend fun readOwned(): IoBuf? =
             if (queue.isNotEmpty()) queue.removeFirst() else null
 
         override fun close() {
@@ -21,8 +23,8 @@ class PushToSuspendSourceAdapterTest {
         }
     }
 
-    private fun filledBuf(vararg bytes: Byte): NativeBuf {
-        val buf = createHeapNativeBuf(bytes.size)
+    private fun filledBuf(vararg bytes: Byte): IoBuf {
+        val buf = createDefaultIoBuf(bytes.size)
         for (b in bytes) buf.writeByte(b)
         return buf
     }
@@ -32,7 +34,7 @@ class PushToSuspendSourceAdapterTest {
         val source = ListPushSource(listOf(filledBuf(0x41, 0x42, 0x43)))
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = createHeapNativeBuf(8)
+        val dst = createDefaultIoBuf(8)
         val n = adapter.read(dst)
         assertEquals(3, n)
         assertEquals('A'.code.toByte(), dst.readByte())
@@ -48,7 +50,7 @@ class PushToSuspendSourceAdapterTest {
         val source = ListPushSource(emptyList())
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = createHeapNativeBuf(8)
+        val dst = createDefaultIoBuf(8)
         val n = adapter.read(dst)
         assertEquals(-1, n)
 
@@ -62,7 +64,7 @@ class PushToSuspendSourceAdapterTest {
         val adapter = PushToSuspendSourceAdapter(source)
 
         // First read: only 3 writable bytes, 2 bytes left over.
-        val dst1 = createHeapNativeBuf(3)
+        val dst1 = createDefaultIoBuf(3)
         assertEquals(3, adapter.read(dst1))
         assertEquals(1.toByte(), dst1.readByte())
         assertEquals(2.toByte(), dst1.readByte())
@@ -70,14 +72,14 @@ class PushToSuspendSourceAdapterTest {
         dst1.release()
 
         // Second read: drains leftover (2 bytes) without calling readOwned().
-        val dst2 = createHeapNativeBuf(8)
+        val dst2 = createDefaultIoBuf(8)
         assertEquals(2, adapter.read(dst2))
         assertEquals(4.toByte(), dst2.readByte())
         assertEquals(5.toByte(), dst2.readByte())
         dst2.release()
 
         // Third read: source is empty → EOF.
-        val dst3 = createHeapNativeBuf(8)
+        val dst3 = createDefaultIoBuf(8)
         assertEquals(-1, adapter.read(dst3))
         dst3.release()
 
@@ -94,7 +96,7 @@ class PushToSuspendSourceAdapterTest {
         )
         val adapter = PushToSuspendSourceAdapter(source)
 
-        val dst = createHeapNativeBuf(8)
+        val dst = createDefaultIoBuf(8)
         assertEquals(2, adapter.read(dst))
         assertEquals(2, adapter.read(dst))
         assertEquals(-1, adapter.read(dst)) // EOF

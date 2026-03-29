@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.io.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import kotlinx.coroutines.CancellableContinuation

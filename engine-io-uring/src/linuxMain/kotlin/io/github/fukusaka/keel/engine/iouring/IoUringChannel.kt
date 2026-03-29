@@ -2,9 +2,9 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.io.BufferAllocator
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafePointer
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
 import io.github.fukusaka.keel.io.SuspendSource
 import io_uring.iovec
@@ -25,13 +25,13 @@ import platform.posix.close
 import platform.posix.shutdown
 
 /**
- * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
+ * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
  *
- * We record offset/length separately because [NativeBuf.readerIndex] is
+ * We record offset/length separately because [IoBuf.readerIndex] is
  * advanced at write() time so the caller can reuse the buffer immediately.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * io_uring-based [Channel] implementation for Linux.
@@ -41,15 +41,15 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * the CQE. Each read/write submits an SQE and suspends; the EventLoop resumes
  * the coroutine with the CQE result.
  *
- * **Zero-copy I/O**: read passes [NativeBuf.unsafePointer] directly to
- * `IORING_OP_RECV`; flush passes NativeBuf pointers to `IORING_OP_SEND` /
+ * **Zero-copy I/O**: read passes [IoBuf.unsafePointer] directly to
+ * `IORING_OP_RECV`; flush passes IoBuf pointers to `IORING_OP_SEND` /
  * `IORING_OP_WRITEV`. No intermediate ByteArray copy.
  *
  * **RECV/SEND vs READ/WRITE**: Socket I/O uses `IORING_OP_RECV`/`IORING_OP_SEND`
  * rather than `IORING_OP_READ`/`IORING_OP_WRITE`. The RECV/SEND opcodes are
  * optimised for socket file descriptors and support socket-specific flags.
  *
- * **Write/flush separation**: [write] retains the [NativeBuf] and records the
+ * **Write/flush separation**: [write] retains the [IoBuf] and records the
  * byte range. [flush] submits a single `IORING_OP_WRITEV` SQE for all pending
  * buffers (gather write) or `IORING_OP_WRITE` for a single buffer.
  *
@@ -102,10 +102,10 @@ internal class IoUringChannel(
      * Unlike the default [SuspendChannelSource][io.github.fukusaka.keel.core.SuspendChannelSource]
      * which submits a new SQE per read, this source uses a single multishot recv
      * SQE that produces multiple CQEs with zero allocation per CQE (pre-allocated
-     * NativeBuf wrappers). The [PushToSuspendSourceAdapter] bridges the push-model
+     * IoBuf wrappers). The [PushToSuspendSourceAdapter] bridges the push-model
      * [IoUringPushSource] to the pull-model [SuspendSource] interface, adding one
      * copy per read (byte-by-byte; platform-optimized bulk memcpy deferred to a
-     * future `NativeBuf.copyTo()` method). True zero-copy requires future
+     * future `IoBuf.copyTo()` method). True zero-copy requires future
      * BufferedSuspendSource push mode integration.
      */
     override fun asSuspendSource(): SuspendSource =
@@ -125,13 +125,13 @@ internal class IoUringChannel(
     /**
      * Reads bytes into [buf] via `IORING_OP_READ`.
      *
-     * Submits a READ SQE targeting the NativeBuf's write region and suspends until
+     * Submits a READ SQE targeting the IoBuf's write region and suspends until
      * the CQE arrives. Unlike epoll, there is no EAGAIN: the kernel holds the
      * operation pending until data arrives or an error occurs.
      *
      * @return number of bytes read, or -1 on EOF (CQE.res=0) or error.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
@@ -148,12 +148,12 @@ internal class IoUringChannel(
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      *
-     * The caller's [NativeBuf.readerIndex] is advanced immediately so the
+     * The caller's [IoBuf.readerIndex] is advanced immediately so the
      * buffer can be reused or released by the caller. The actual I/O happens in [flush].
      *
      * @return number of bytes buffered.
      */
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes

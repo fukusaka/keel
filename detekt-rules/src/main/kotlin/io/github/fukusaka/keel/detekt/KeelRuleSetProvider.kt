@@ -8,7 +8,7 @@ import io.gitlab.arturbosch.detekt.api.RuleSetProvider
  * Provides keel-specific detekt rules for resource leak detection.
  *
  * Rules detect common patterns where POSIX/cinterop resources
- * (NativeBuf, Arena, StableRef) are allocated without corresponding
+ * (IoBuf, Arena, StableRef) are allocated without corresponding
  * release in try-finally.
  */
 class KeelRuleSetProvider : RuleSetProvider {
@@ -17,7 +17,7 @@ class KeelRuleSetProvider : RuleSetProvider {
     override fun instance(config: Config): RuleSet = RuleSet(
         ruleSetId,
         listOf(
-            NativeBufLeakRule(config),
+            IoBufLeakRule(config),
             ArenaLeakRule(config),
             StableRefLeakRule(config),
         ),

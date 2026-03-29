@@ -1,12 +1,16 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.BufSlice
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+
 /**
  * Buffered wrapper over [SuspendSource] providing readLine/readByte utilities.
  *
- * Uses a [NativeBuf] as the internal buffer for zero-copy I/O:
+ * Uses a [IoBuf] as the internal buffer for zero-copy I/O:
  * ```
- * kernel → NativeBuf (zero-copy via Channel.read)
- *   → readByte/readLine consume from NativeBuf directly (no copy)
+ * kernel → IoBuf (zero-copy via Channel.read)
+ *   → readByte/readLine consume from IoBuf directly (no copy)
  *   → when buffer is exhausted, compact + refill from source (suspend)
  * ```
  *

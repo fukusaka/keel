@@ -1,25 +1,28 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+
 /**
  * Buffered wrapper over [SuspendSink] providing writeString/writeByte utilities.
  *
- * Uses [NativeBuf] instances from [allocator] for zero-copy I/O.
+ * Uses [IoBuf] instances from [allocator] for zero-copy I/O.
  * The flush strategy is controlled by [deferFlush]:
  *
  * **deferFlush = true** (EventLoop-based engines: kqueue/epoll/NIO):
  * ```
- * writeString/writeByte → NativeBuf (buffer accumulation)
+ * writeString/writeByte → IoBuf (buffer accumulation)
  *   → when buffer is full:
- *     NativeBuf → Channel.write (enqueue) → allocate fresh NativeBuf
+ *     IoBuf → Channel.write (enqueue) → allocate fresh IoBuf
  *   → when flush() is called:
  *     Channel.flush → writev (single syscall for all queued buffers)
  * ```
  *
  * **deferFlush = false** (push-model engines: Netty/NWConnection/Node.js):
  * ```
- * writeString/writeByte → NativeBuf (buffer accumulation)
+ * writeString/writeByte → IoBuf (buffer accumulation)
  *   → when buffer is full:
- *     NativeBuf → Channel.write + Channel.flush (immediate OS write) → clear
+ *     IoBuf → Channel.write + Channel.flush (immediate OS write) → clear
  * ```
  *
  * **Ownership**: this class does NOT own [sink]. Closing this wrapper

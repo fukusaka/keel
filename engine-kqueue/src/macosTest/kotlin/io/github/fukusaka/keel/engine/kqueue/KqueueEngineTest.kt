@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.TrackingAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
@@ -152,7 +152,7 @@ class KqueueEngineTest {
         rawWrite(clientFd, "hello")
 
         // Server reads
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
@@ -182,7 +182,7 @@ class KqueueEngineTest {
 
         close(clientFd) // Client closes → EOF
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(-1, n)
 
@@ -201,7 +201,7 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41) // 'A'
         buf.writeByte(0x42) // 'B'
 
@@ -229,11 +229,11 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        val buf1 = HeapAllocator.allocate(4)
+        val buf1 = DefaultAllocator.allocate(4)
         buf1.writeByte(0x41) // 'A'
         buf1.writeByte(0x42) // 'B'
 
-        val buf2 = HeapAllocator.allocate(4)
+        val buf2 = DefaultAllocator.allocate(4)
         buf2.writeByte(0x43) // 'C'
         buf2.writeByte(0x44) // 'D'
 
@@ -253,7 +253,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun readAdvancesNativeBufWriterIndex() = runBlocking {
+    fun readAdvancesIoBufWriterIndex() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -263,7 +263,7 @@ class KqueueEngineTest {
 
         rawWrite(clientFd, "abc")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         ch.read(buf)
         assertEquals(3, buf.writerIndex)
@@ -277,7 +277,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun writeAdvancesNativeBufReaderIndex() = runBlocking {
+    fun writeAdvancesIoBufReaderIndex() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -285,7 +285,7 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0, buf.readerIndex)
@@ -317,7 +317,7 @@ class KqueueEngineTest {
         val payload = ByteArray(payloadSize) { (it % 256).toByte() }
 
         // Server writes the large payload
-        val buf = HeapAllocator.allocate(payloadSize)
+        val buf = DefaultAllocator.allocate(payloadSize)
         for (b in payload) buf.writeByte(b)
         ch.write(buf)
         ch.flush()
@@ -355,7 +355,7 @@ class KqueueEngineTest {
         // 3 buffers of 64KB each = 192KB total via gather write.
         val chunkSize = 64 * 1024
         val bufs = (0 until 3).map { i ->
-            HeapAllocator.allocate(chunkSize).also { buf ->
+            DefaultAllocator.allocate(chunkSize).also { buf ->
                 for (j in 0 until chunkSize) buf.writeByte(((i * chunkSize + j) % 256).toByte())
             }
         }
@@ -401,7 +401,7 @@ class KqueueEngineTest {
         // the channel can be reused after EAGAIN recovery.
         for (round in 1..3) {
             val data = "round-$round"
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             for (b in data.encodeToByteArray()) buf.writeByte(b)
             ch.write(buf)
             ch.flush()
@@ -457,7 +457,7 @@ class KqueueEngineTest {
         // Client can still send data
         rawWrite(clientFd, "hi")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -539,20 +539,20 @@ class KqueueEngineTest {
 
         // Client writes, server reads and echoes back
         val msg = "async-connect"
-        val writeBuf = HeapAllocator.allocate(64)
+        val writeBuf = DefaultAllocator.allocate(64)
         for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         client.flush()
         writeBuf.release()
 
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(msg.length, n)
         serverCh.write(readBuf)
         serverCh.flush()
         readBuf.release()
 
-        val echoBuf = HeapAllocator.allocate(64)
+        val echoBuf = DefaultAllocator.allocate(64)
         val n2 = client.read(echoBuf)
         assertEquals(msg.length, n2)
         echoBuf.release()
@@ -643,7 +643,7 @@ class KqueueEngineTest {
 
         close(clientFd)
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.asSuspendSource().read(buf)
         assertEquals(-1, n)
 
@@ -666,7 +666,7 @@ class KqueueEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.read(HeapAllocator.allocate(8))
+            ch.read(DefaultAllocator.allocate(8))
         }
 
         close(clientFd)
@@ -685,7 +685,7 @@ class KqueueEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.write(HeapAllocator.allocate(8))
+            ch.write(DefaultAllocator.allocate(8))
         }
 
         close(clientFd)
@@ -729,7 +729,7 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         val written = ch.write(buf)
         assertEquals(0, written)
 
@@ -758,7 +758,7 @@ class KqueueEngineTest {
         // All channels read concurrently
         val results = channels.map { ch ->
             async {
-                val buf = HeapAllocator.allocate(64)
+                val buf = DefaultAllocator.allocate(64)
                 val n = ch.read(buf)
                 val bytes = ByteArray(n)
                 for (j in 0 until n) bytes[j] = buf.readByte()
@@ -817,7 +817,7 @@ class KqueueEngineTest {
         val ch = server.accept()
 
         val readResult = async {
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -849,7 +849,7 @@ class KqueueEngineTest {
         val ch = server.accept()
 
         val readJob = launch {
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -902,7 +902,7 @@ class KqueueEngineTest {
         val threadName = withContext(ch.coroutineDispatcher) {
             // Read/write on EventLoop thread to verify I/O runs there
             rawWrite(clientFd, "x")
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             val n = ch.read(buf)
             assertEquals(1, n)
             buf.release()
@@ -929,7 +929,7 @@ class KqueueEngineTest {
         withContext(ch.coroutineDispatcher) {
             rawWrite(clientFd, "hello")
 
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             val n = ch.read(buf)
             assertEquals(5, n)
 
@@ -982,7 +982,7 @@ class KqueueEngineTest {
                 val msg = "msg-$i"
                 rawWrite(clientFd, msg)
 
-                val buf = HeapAllocator.allocate(64)
+                val buf = DefaultAllocator.allocate(64)
                 val n = ch.read(buf)
                 assertEquals(msg.length, n)
 
@@ -1049,7 +1049,7 @@ class KqueueEngineTest {
 
         // Write → read → echo → read (full round trip)
         rawWrite(clientFd, "leak-check")
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(10, n)
         ch.write(buf)
@@ -1087,7 +1087,7 @@ class KqueueEngineTest {
 
         var totalRead = 0
         while (totalRead < payload.length) {
-            val buf = HeapAllocator.allocate(8192)
+            val buf = DefaultAllocator.allocate(8192)
             val n = ch.read(buf)
             if (n <= 0) {
                 buf.release()
@@ -1120,13 +1120,13 @@ class KqueueEngineTest {
         val serverCh = server.accept()
 
         // Round trip via connect()
-        val writeBuf = HeapAllocator.allocate(64)
+        val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         client.flush()
         writeBuf.release()
 
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         serverCh.read(readBuf)
         readBuf.release()
 
@@ -1154,7 +1154,7 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
         rawWrite(clientFd, "warmup")
-        val warmBuf = HeapAllocator.allocate(64)
+        val warmBuf = DefaultAllocator.allocate(64)
         ch.read(warmBuf)
         warmBuf.release()
 
@@ -1166,7 +1166,7 @@ class KqueueEngineTest {
         // Run 100 echo cycles
         repeat(100) {
             rawWrite(clientFd, "test")
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             val n = ch.read(buf)
             if (n > 0) {
                 ch.write(buf)
@@ -1182,12 +1182,12 @@ class KqueueEngineTest {
         val afterHeap = afterInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
 
         // Heap growth tolerance: fixed 512KB absolute increase.
-        // After GC.collect(), all NativeBuf and coroutine temporaries
+        // After GC.collect(), all IoBuf and coroutine temporaries
         // from the 100 echo cycles should be fully reclaimed. Remaining
         // growth comes from GC internal state (mark bitmaps, free lists),
         // coroutine scheduler caches, and kqueue EventLoop bookkeeping.
         // 512KB is generous enough to absorb these, but tight enough to
-        // catch a real leak (e.g., unreleased NativeBuf = 64 bytes * 100
+        // catch a real leak (e.g., unreleased IoBuf = 64 bytes * 100
         // = 6.4KB, or retained pendingWrites = much larger).
         // Using absolute size rather than percentage because percentage
         // is too lenient for large heaps and too strict for small heaps.

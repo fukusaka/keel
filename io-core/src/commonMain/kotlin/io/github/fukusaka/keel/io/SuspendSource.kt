@@ -1,13 +1,15 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.IoBuf
+
 /**
- * Suspend-capable byte source backed by [NativeBuf].
+ * Suspend-capable byte source backed by [IoBuf].
  *
  * Unlike kotlinx-io's `RawSource` which is non-suspend, this interface
  * supports coroutine suspension for non-blocking I/O. Each [read] call
  * suspends until data is available, matching [Channel.read]'s semantics.
  *
- * kotlinx-io independent — uses keel's own [NativeBuf] type, enabling
+ * kotlinx-io independent — uses keel's own [IoBuf] type, enabling
  * zero-copy I/O from kernel to codec layer when combined with
  * [BufferedSuspendSource].
  *
@@ -16,11 +18,11 @@ package io.github.fukusaka.keel.io
  */
 interface SuspendSource : AutoCloseable {
     /**
-     * Reads bytes into [buf], advancing [NativeBuf.writerIndex].
+     * Reads bytes into [buf], advancing [IoBuf.writerIndex].
      *
      * @return number of bytes read, or -1 on EOF.
      */
-    suspend fun read(buf: NativeBuf): Int
+    suspend fun read(buf: IoBuf): Int
 
     override fun close()
 }

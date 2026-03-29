@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.TrackingAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -114,7 +114,7 @@ class NettyEngineTest {
 
         rawWrite(client, "hello")
 
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
@@ -142,7 +142,7 @@ class NettyEngineTest {
 
         client.close()
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(-1, n)
 
@@ -161,7 +161,7 @@ class NettyEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
 
@@ -189,11 +189,11 @@ class NettyEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf1 = HeapAllocator.allocate(4)
+        val buf1 = DefaultAllocator.allocate(4)
         buf1.writeByte(0x41)
         buf1.writeByte(0x42)
 
-        val buf2 = HeapAllocator.allocate(4)
+        val buf2 = DefaultAllocator.allocate(4)
         buf2.writeByte(0x43)
         buf2.writeByte(0x44)
 
@@ -213,7 +213,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun readAdvancesNativeBufWriterIndex() = runBlocking {
+    fun readAdvancesIoBufWriterIndex() = runBlocking {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -223,7 +223,7 @@ class NettyEngineTest {
 
         rawWrite(client, "abc")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
         ch.read(buf)
         assertEquals(3, buf.writerIndex)
@@ -237,7 +237,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun writeAdvancesNativeBufReaderIndex() = runBlocking {
+    fun writeAdvancesIoBufReaderIndex() = runBlocking {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -245,7 +245,7 @@ class NettyEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
         assertEquals(0, buf.readerIndex)
@@ -297,7 +297,7 @@ class NettyEngineTest {
 
         rawWrite(client, "hi")
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.read(buf)
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
@@ -428,7 +428,7 @@ class NettyEngineTest {
 
         client.close()
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = ch.asSuspendSource().read(buf)
         assertEquals(-1, n)
 
@@ -451,7 +451,7 @@ class NettyEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.read(HeapAllocator.allocate(8))
+            ch.read(DefaultAllocator.allocate(8))
         }
 
         client.close()
@@ -470,7 +470,7 @@ class NettyEngineTest {
         ch.close()
 
         assertFailsWith<IllegalStateException> {
-            ch.write(HeapAllocator.allocate(8))
+            ch.write(DefaultAllocator.allocate(8))
         }
 
         client.close()
@@ -514,7 +514,7 @@ class NettyEngineTest {
         val client = connectRawClient(port)
         val ch = server.accept()
 
-        val buf = HeapAllocator.allocate(8)
+        val buf = DefaultAllocator.allocate(8)
         val written = ch.write(buf)
         assertEquals(0, written)
 
@@ -543,7 +543,7 @@ class NettyEngineTest {
         // All channels read concurrently
         val results = channels.map { ch ->
             async {
-                val buf = HeapAllocator.allocate(64)
+                val buf = DefaultAllocator.allocate(64)
                 val n = ch.read(buf)
                 val bytes = ByteArray(n)
                 for (j in 0 until n) bytes[j] = buf.readByte()
@@ -599,7 +599,7 @@ class NettyEngineTest {
 
         // Start a read that will suspend (no data sent)
         val readResult = async {
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -661,7 +661,7 @@ class NettyEngineTest {
 
         // Start a read that will suspend
         val readResult = async {
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -697,7 +697,7 @@ class NettyEngineTest {
 
         // Start a read that will suspend
         val readJob = launch {
-            val buf = HeapAllocator.allocate(64)
+            val buf = DefaultAllocator.allocate(64)
             try {
                 ch.read(buf)
             } finally {
@@ -738,7 +738,7 @@ class NettyEngineTest {
         client.getOutputStream().write("leak-check".toByteArray())
         client.getOutputStream().flush()
 
-        val buf = HeapAllocator.allocate(64)
+        val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(3000) { ch.read(buf) }
         assertEquals(10, n)
         ch.write(buf)
@@ -779,7 +779,7 @@ class NettyEngineTest {
 
         var totalRead = 0
         while (totalRead < payload.length) {
-            val buf = HeapAllocator.allocate(8192)
+            val buf = DefaultAllocator.allocate(8192)
             val n = withTimeout(5000) { ch.read(buf) }
             if (n <= 0) {
                 buf.release()
@@ -811,13 +811,13 @@ class NettyEngineTest {
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
 
-        val writeBuf = HeapAllocator.allocate(64)
+        val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
         withTimeout(3000) { clientCh.flush() }
         writeBuf.release()
 
-        val readBuf = HeapAllocator.allocate(64)
+        val readBuf = DefaultAllocator.allocate(64)
         withTimeout(3000) { serverCh.read(readBuf) }
         readBuf.release()
 

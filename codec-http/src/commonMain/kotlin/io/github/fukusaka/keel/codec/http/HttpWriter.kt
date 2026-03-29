@@ -54,7 +54,7 @@ fun writeResponseHead(
 /**
  * Suspend variant of [writeResponseHead] using [BufferedSuspendSink].
  *
- * Zero-copy: writes directly into NativeBuf without kotlinx-io Buffer copy.
+ * Zero-copy: writes directly into IoBuf without kotlinx-io Buffer copy.
  * No runBlocking needed — suspends naturally on I/O wait.
  */
 suspend fun writeResponseHead(
@@ -63,7 +63,7 @@ suspend fun writeResponseHead(
     headers: HttpHeaders,
     sink: BufferedSuspendSink,
 ) {
-    // writeAscii writes directly into NativeBuf without intermediate
+    // writeAscii writes directly into IoBuf without intermediate
     // ByteArray allocation (encodeToByteArray). HTTP headers are US-ASCII.
     sink.writeAscii(version.text)
     sink.writeAscii(" ")

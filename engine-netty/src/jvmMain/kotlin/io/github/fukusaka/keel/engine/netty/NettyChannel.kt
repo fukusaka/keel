@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.io.BufferAllocator
-import io.github.fukusaka.keel.io.NativeBuf
-import io.github.fukusaka.keel.io.unsafeBuffer
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
@@ -19,10 +19,10 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
 /**
- * Snapshot of a buffered write: the [NativeBuf] (retained), the byte offset
+ * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
  * where readable data starts, and the number of bytes to write.
  */
-private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
+private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * Netty-based [KeelChannel] implementation for JVM.
@@ -34,8 +34,8 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * handler receives data.
  *
  * **Read path (copy from ByteBuf)**: Unlike kqueue/epoll/NIO which read
- * directly into [NativeBuf], Netty delivers data asynchronously before the
- * user provides a buffer. The [ByteBuf] content is copied into [NativeBuf] via
+ * directly into [IoBuf], Netty delivers data asynchronously before the
+ * user provides a buffer. The [ByteBuf] content is copied into [IoBuf] via
  * [ByteBuf.getBytes]. This is an accepted Phase 5 limitation — same
  * structural constraint as NWConnection's dispatch_data_t copy. Phase 6
  * will introduce MemoryOwner abstraction for zero-copy push model support.
@@ -57,7 +57,7 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  * Read path (auto-read=false, coroutine bridge):
  *   keel coroutine: read(buf) --> suspendCancellableCoroutine + nettyChannel.read()
  *   Netty EventLoop: channelRead(ByteBuf) --> continuation.resume(byteBuf)
- *   keel coroutine: resumed --> copy ByteBuf to NativeBuf --> release ByteBuf
+ *   keel coroutine: resumed --> copy ByteBuf to IoBuf --> release ByteBuf
  *
  * Write path (buffered, async flush):
  *   write(buf) --> retain, record PendingWrite
@@ -127,7 +127,7 @@ internal class NettyChannel(
      *
      * @return number of bytes read, or -1 on EOF/channel inactive.
      */
-    override suspend fun read(buf: NativeBuf): Int {
+    override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
 
         val byteBuf = suspendCancellableCoroutine { cont ->
@@ -161,7 +161,7 @@ internal class NettyChannel(
     /**
      * Buffers a write by retaining [buf] and recording the current readable range.
      */
-    override suspend fun write(buf: NativeBuf): Int {
+    override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
         check(!outputShutdown) { "Output already shut down" }
         val bytes = buf.readableBytes

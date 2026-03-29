@@ -31,7 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `io-core`: add `NativePointerAccess` interface for cross-type unsafe pointer access on Native; `HeapNativeBuf.copyTo()` uses `NativePointerAccess` for polymorphic destination support
+- `io-core`: rename `NativeBuf` to `IoBuf`; platform implementations: `NativeIoBuf` (Native), `DirectIoBuf` (JVM), `TypedArrayIoBuf` (JS); buffer classes moved from `.keel.io` to `.keel.buf` package
+- `io-core`: rename `HeapAllocator` to `DefaultAllocator`
+- `engine-io-uring`: rename `RingBufferNativeBuf` to `RingBufferIoBuf`
+- `io-core`: add `NativePointerAccess` interface for cross-type unsafe pointer access on Native; `NativeIoBuf.copyTo()` uses `NativePointerAccess` for polymorphic destination support
 - `io-core`: extract `NativeBuf` from `expect class` to `interface`; implementation classes renamed to `HeapNativeBuf` per platform; `PoolableNativeBuf` internal interface encapsulates `deallocator`/`nextLink`/`resetForReuse`
 - `io-core`: widen visibility of `NativeBuf.wrapExternal()`, `NativeBuf.resetForReuse()`, and `PushToSuspendSourceAdapter` from `internal` to `public` for use by engine modules; add `deallocator` parameter to `wrapExternal()` for safe callback registration
 - `io-core`: replace byte-by-byte copy in `PushToSuspendSourceAdapter` with `NativeBuf.copyTo()` bulk copy

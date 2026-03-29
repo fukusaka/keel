@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.io.BufferAllocator
-import io.github.fukusaka.keel.io.HeapAllocator
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,7 +11,7 @@ class SuspendChannelBridgeTest {
 
     /** Minimal Channel stub for testing the bridge delegates. */
     private class StubChannel : Channel {
-        override val allocator: BufferAllocator = HeapAllocator
+        override val allocator: BufferAllocator = DefaultAllocator
         override val remoteAddress: SocketAddress? = null
         override val localAddress: SocketAddress? = null
         override val isOpen: Boolean = true
@@ -23,13 +23,13 @@ class SuspendChannelBridgeTest {
 
         override suspend fun awaitClosed() {}
 
-        override suspend fun read(buf: NativeBuf): Int {
+        override suspend fun read(buf: IoBuf): Int {
             readCalled = true
             buf.writeByte(0x42)
             return 1
         }
 
-        override suspend fun write(buf: NativeBuf): Int {
+        override suspend fun write(buf: IoBuf): Int {
             writeCalled = true
             val n = buf.readableBytes
             buf.readerIndex += n
@@ -49,7 +49,7 @@ class SuspendChannelBridgeTest {
         val channel = StubChannel()
         val source = channel.asSuspendSource()
 
-        val buf = HeapAllocator.allocate(16)
+        val buf = DefaultAllocator.allocate(16)
         val n = source.read(buf)
 
         assertEquals(1, n)
@@ -63,7 +63,7 @@ class SuspendChannelBridgeTest {
         val channel = StubChannel()
         val sink = channel.asSuspendSink()
 
-        val buf = HeapAllocator.allocate(16)
+        val buf = DefaultAllocator.allocate(16)
         buf.writeByte(0x41)
         val n = sink.write(buf)
         sink.flush()

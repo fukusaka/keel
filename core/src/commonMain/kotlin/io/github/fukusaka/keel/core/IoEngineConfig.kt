@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.io.BufferAllocator
-import io.github.fukusaka.keel.io.defaultAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.logging.LoggerFactory
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 
@@ -21,7 +21,7 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  * @property allocator Buffer allocator for all channels created by this engine.
  *                     Defaults to the platform's pooled allocator via
  *                     [defaultAllocator] (Native: SlabAllocator, JVM:
- *                     PooledDirectAllocator, JS: HeapAllocator).
+ *                     PooledDirectAllocator, JS: DefaultAllocator).
  * @property threads   Number of worker EventLoop threads. 0 (default) means
  *                     auto-detect based on available CPU cores. Each engine
  *                     resolves 0 to `availableProcessors()` at construction.

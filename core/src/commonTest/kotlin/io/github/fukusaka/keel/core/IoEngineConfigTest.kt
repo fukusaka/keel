@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.io.defaultAllocator
+import io.github.fukusaka.keel.buf.defaultAllocator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs

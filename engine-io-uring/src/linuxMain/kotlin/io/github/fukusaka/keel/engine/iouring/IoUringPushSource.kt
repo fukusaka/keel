@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.PushSuspendSource
 import io_uring.keel_cqe_get_buf_id
 import io_uring.keel_cqe_has_more
@@ -18,17 +18,17 @@ import kotlin.coroutines.resumeWithException
  * Arms a single `IORING_OP_RECV` SQE with `IORING_RECV_MULTISHOT` and
  * `IOSQE_BUFFER_SELECT`. The kernel delivers one CQE per incoming data
  * segment, selecting a buffer from the [ProvidedBufferRing]. Each CQE
- * reuses a pre-allocated [NativeBuf] wrapper bound to the kernel-selected
- * buffer slot via [NativeBuf.resetForReuse].
+ * reuses a pre-allocated [IoBuf] wrapper bound to the kernel-selected
+ * buffer slot via [IoBuf.resetForReuse].
  *
- * **Zero-allocation CQE path**: NativeBuf wrappers and deallocator closures
+ * **Zero-allocation CQE path**: IoBuf wrappers and deallocator closures
  * are pre-allocated at construction (one per buffer slot). The CQE callback
- * calls [NativeBuf.resetForReuse] and sets [NativeBuf.writerIndex] to the
+ * calls [IoBuf.resetForReuse] and sets [IoBuf.writerIndex] to the
  * received byte count — no object creation on the hot path.
  *
- * **Ownership contract**: The returned [NativeBuf] wraps external memory from
- * the provided buffer ring. The [NativeBuf.deallocator] returns the buffer to
- * the ring when [NativeBuf.release] is called. The caller MUST call release.
+ * **Ownership contract**: The returned [IoBuf] wraps external memory from
+ * the provided buffer ring. The [IoBuf.deallocator] returns the buffer to
+ * the ring when [IoBuf.release] is called. The caller MUST call release.
  *
  * **Buffer exhaustion**: When all provided buffers are consumed, the kernel
  * returns `-ENOBUFS` and terminates the multishot SQE. After the caller
@@ -57,19 +57,19 @@ internal class IoUringPushSource(
     private val bufferRing: ProvidedBufferRing,
 ) : PushSuspendSource {
 
-    // Pre-allocated RingBufferNativeBuf wrappers for each buffer slot. Created
+    // Pre-allocated RingBufferIoBuf wrappers for each buffer slot. Created
     // once at construction — zero allocation on the CQE hot path. Each wrapper
     // is permanently bound to a buffer slot; the kernel guarantees a bufId is
     // not reissued until returnBuffer() adds it back to the ring.
     private val wrappers = Array(bufferRing.bufferCount) { bufId ->
-        RingBufferNativeBuf(bufId, bufferRing) { _ -> bufferRing.returnBuffer(bufId) }
+        RingBufferIoBuf(bufId, bufferRing) { _ -> bufferRing.returnBuffer(bufId) }
     }
 
-    // Buffered NativeBufs delivered by CQE callbacks but not yet claimed by readOwned().
-    private val pendingBufs = ArrayDeque<NativeBuf>()
+    // Buffered IoBufs delivered by CQE callbacks but not yet claimed by readOwned().
+    private val pendingBufs = ArrayDeque<IoBuf>()
 
-    // Suspended continuation waiting for the next NativeBuf.
-    private var pendingReadCont: CancellableContinuation<NativeBuf?>? = null
+    // Suspended continuation waiting for the next IoBuf.
+    private var pendingReadCont: CancellableContinuation<IoBuf?>? = null
 
     // Multishot recv slot index. -1 = not yet armed.
     private var multishotSlot: Int = -1
@@ -84,7 +84,7 @@ internal class IoUringPushSource(
     // true when multishot was terminated by -ENOBUFS and needs rearming.
     private var needsRearm = false
 
-    override suspend fun readOwned(): NativeBuf? {
+    override suspend fun readOwned(): IoBuf? {
         if (closed) return null
 
         return suspendCancellableCoroutine { cont ->
@@ -102,7 +102,7 @@ internal class IoUringPushSource(
 
                 when {
                     pendingBufs.isNotEmpty() -> {
-                        // Fast path: NativeBuf already buffered by a prior CQE callback.
+                        // Fast path: IoBuf already buffered by a prior CQE callback.
                         cont.resume(pendingBufs.removeFirst())
                     }
                     eofQueued || closed -> {
@@ -209,7 +209,7 @@ internal class IoUringPushSource(
                 pendingReadCont = null
                 cont.resumeWithException(CancellationException("PushSource closed"))
             }
-            // Release any buffered NativeBufs (triggers deallocator → returnBuffer).
+            // Release any buffered IoBufs (triggers deallocator → returnBuffer).
             while (pendingBufs.isNotEmpty()) {
                 pendingBufs.removeFirst().release()
             }

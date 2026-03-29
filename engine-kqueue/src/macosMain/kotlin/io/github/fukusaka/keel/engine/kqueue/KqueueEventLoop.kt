@@ -15,7 +15,7 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
-import io.github.fukusaka.keel.io.MpscQueue
+import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation
