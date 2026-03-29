@@ -35,7 +35,7 @@ class HeapNativeBuf private constructor(
     private val ptr: CPointer<ByteVar>,
     override val capacity: Int,
     private val ownsMemory: Boolean,
-) : NativeBuf, PoolableNativeBuf {
+) : NativeBuf, PoolableNativeBuf, NativePointerAccess {
 
     /**
      * Creates a [HeapNativeBuf] backed by newly allocated [nativeHeap] memory.
@@ -46,8 +46,7 @@ class HeapNativeBuf private constructor(
         ownsMemory = true,
     )
 
-    /** Raw pointer to the underlying native memory. For engine-layer zero-copy I/O. */
-    val unsafePointer: CPointer<ByteVar> get() = ptr
+    override val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
     override var deallocator: ((NativeBuf) -> Unit)? = null
@@ -84,10 +83,7 @@ class HeapNativeBuf private constructor(
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
-        val destPtr = when (dest) {
-            is HeapNativeBuf -> dest.ptr + dest.writerIndex
-            else -> error("copyTo requires HeapNativeBuf destination on Native")
-        }
+        val destPtr = (dest as NativePointerAccess).unsafePointer + dest.writerIndex
         memcpy(destPtr, ptr + readerIndex, length.toULong())
         readerIndex += length
         dest.writerIndex += length
@@ -175,7 +171,7 @@ class HeapNativeBuf private constructor(
          * @param deallocator   Called on [release] when refCount reaches 0.
          * @return A [HeapNativeBuf] wrapping the external memory.
          */
-        fun wrapExternal(
+        internal fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
@@ -186,16 +182,6 @@ class HeapNativeBuf private constructor(
         }
     }
 }
-
-/**
- * Extension property for engine-layer zero-copy I/O.
- *
- * Exposes the raw `CPointer<ByteVar>` from a [HeapNativeBuf].
- * Engine modules use this to pass buffer memory directly to POSIX syscalls.
- */
-@OptIn(ExperimentalForeignApi::class)
-val NativeBuf.unsafePointer: CPointer<ByteVar>
-    get() = (this as HeapNativeBuf).unsafePointer
 
 @Suppress("NativeBufLeak") // Factory returns ownership to caller
 internal actual fun createHeapNativeBuf(capacity: Int): NativeBuf = HeapNativeBuf(capacity)

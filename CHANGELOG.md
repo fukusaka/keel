@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `io-core`: add `NativeBuf.copyTo()` for platform-optimized bulk buffer-to-buffer copy (memcpy on Native, ByteBuffer.put on JVM, Int8Array.set on JS)
 - `io-core`: add `PushSuspendSource` interface for push-model engines that deliver data in engine-owned buffers, and `PushToSuspendSourceAdapter` for backward-compatible integration with `BufferedSuspendSource`
 - `engine-io-uring`: add `IoUringPushSource` implementing `PushSuspendSource` with multishot recv (`IORING_RECV_MULTISHOT`) and provided buffer ring (`IOSQE_BUFFER_SELECT`) for SQE-resubmission-free data delivery
+- `engine-io-uring`: add `RingBufferNativeBuf` as engine-specific `NativeBuf` implementation for provided buffer ring slots, eliminating `HeapNativeBuf.wrapExternal`/`resetForReuse` dependency
 - `engine-io-uring`: add `keel_prep_recv_multishot` cinterop wrapper combining `io_uring_prep_recv_multishot` with `IOSQE_BUFFER_SELECT`
 - `engine-io-uring`: add per-worker `ProvidedBufferRing` in `IoUringEventLoopGroup` for multishot recv buffer selection
 - `engine-io-uring`: override `IoUringChannel.asSuspendSource()` to use `IoUringPushSource` + `PushToSuspendSourceAdapter` for multishot recv path
@@ -30,10 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: add `NativePointerAccess` interface for cross-type unsafe pointer access on Native; `HeapNativeBuf.copyTo()` uses `NativePointerAccess` for polymorphic destination support
 - `io-core`: extract `NativeBuf` from `expect class` to `interface`; implementation classes renamed to `HeapNativeBuf` per platform; `PoolableNativeBuf` internal interface encapsulates `deallocator`/`nextLink`/`resetForReuse`
 - `io-core`: widen visibility of `NativeBuf.wrapExternal()`, `NativeBuf.resetForReuse()`, and `PushToSuspendSourceAdapter` from `internal` to `public` for use by engine modules; add `deallocator` parameter to `wrapExternal()` for safe callback registration
 - `io-core`: replace byte-by-byte copy in `PushToSuspendSourceAdapter` with `NativeBuf.copyTo()` bulk copy
-- `engine-io-uring`: eliminate per-CQE allocations in `IoUringPushSource` by pre-allocating NativeBuf wrappers and deallocator closures per buffer slot; CQE callback uses `resetForReuse()` instead of `wrapExternal()`
+- `engine-io-uring`: replace `HeapNativeBuf` wrappers with `RingBufferNativeBuf` in `IoUringPushSource`, removing external dependency on `wrapExternal`/`resetForReuse`
+- `io-core`: make `HeapNativeBuf.wrapExternal()` internal (no longer needed by engine modules)
 - `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary (including `keel_alloc_iovec` / `keel_free_iovec` added in a follow-up)
 - `engine-io-uring`: add typed `submitRecv`/`submitSend`/`submitWritev` methods eliminating `prepare` lambda allocation on the hot path; `invokeOnCancellation` lambda removed from typed API (cancellation handled by fd close)
 - `engine-io-uring`: extract magic numbers to named constants (`LISTEN_BACKLOG`, `INET_ADDRSTRLEN`) in `SocketUtils`
