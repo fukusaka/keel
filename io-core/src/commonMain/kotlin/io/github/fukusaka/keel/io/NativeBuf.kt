@@ -117,12 +117,19 @@ expect class NativeBuf internal constructor(capacity: Int) {
     internal var nextLink: NativeBuf?
 
     /**
-     * Resets the buffer for reuse from a pool.
+     * Resets the buffer for reuse without freeing the underlying memory.
+     *
      * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
-     * and [nextLink] to null.
-     * Called by pool-based allocators when recycling a released buffer.
+     * and [nextLink] to null. [deallocator] is preserved across reuses.
+     *
+     * Used by pool-based allocators when recycling a released buffer, and
+     * by engine-layer code that pre-allocates wrappers to avoid per-event
+     * object creation on hot paths.
+     *
+     * **Caller contract**: the caller must ensure no other references to
+     * this buffer exist when calling [resetForReuse].
      */
-    internal fun resetForReuse()
+    fun resetForReuse()
 
     /** Increments the reference count and returns this buffer for chaining. */
     fun retain(): NativeBuf

@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: implement multishot accept (`IORING_ACCEPT_MULTISHOT`, Linux 5.19+) in `IoUringServerChannel`, eliminating per-accept SQE resubmission overhead
 - `io-core`: add `NativeBuf.wrapExternal()` factory for wrapping externally-owned memory (Native: `CPointer<ByteVar>`, JVM: `ByteBuffer`, JS: `Int8Array`) with custom deallocator for buffer recycling
 - `io-core`: add `PushSuspendSource` interface for push-model engines that deliver data in engine-owned buffers, and `PushToSuspendSourceAdapter` for backward-compatible integration with `BufferedSuspendSource`
+- `engine-io-uring`: add `IoUringPushSource` implementing `PushSuspendSource` with multishot recv (`IORING_RECV_MULTISHOT`) and provided buffer ring (`IOSQE_BUFFER_SELECT`) for SQE-resubmission-free data delivery
+- `engine-io-uring`: add `keel_prep_recv_multishot` cinterop wrapper combining `io_uring_prep_recv_multishot` with `IOSQE_BUFFER_SELECT`
+- `engine-io-uring`: add per-worker `ProvidedBufferRing` in `IoUringEventLoopGroup` for multishot recv buffer selection
+- `engine-io-uring`: override `IoUringChannel.asSuspendSource()` to use `IoUringPushSource` + `PushToSuspendSourceAdapter` for multishot recv path
 
 ### Fixed
 
@@ -25,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: widen visibility of `NativeBuf.wrapExternal()`, `NativeBuf.resetForReuse()`, and `PushToSuspendSourceAdapter` from `internal` to `public` for use by engine modules; add `deallocator` parameter to `wrapExternal()` for safe callback registration
+- `engine-io-uring`: eliminate per-CQE allocations in `IoUringPushSource` by pre-allocating NativeBuf wrappers and deallocator closures per buffer slot; CQE callback uses `resetForReuse()` instead of `wrapExternal()`
 - `engine-epoll`, `engine-kqueue`, `engine-io-uring`: mark all C wrapper functions in cinterop `.def` files as `static` to prevent linker symbol collisions when multiple engine modules are linked into the same binary (including `keel_alloc_iovec` / `keel_free_iovec` added in a follow-up)
 - `engine-io-uring`: add typed `submitRecv`/`submitSend`/`submitWritev` methods eliminating `prepare` lambda allocation on the hot path; `invokeOnCancellation` lambda removed from typed API (cancellation handled by fd close)
 - `engine-io-uring`: extract magic numbers to named constants (`LISTEN_BACKLOG`, `INET_ADDRSTRLEN`) in `SocketUtils`

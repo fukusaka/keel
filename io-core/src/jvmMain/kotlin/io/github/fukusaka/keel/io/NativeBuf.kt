@@ -99,7 +99,7 @@ actual class NativeBuf private constructor(
         buf.limit(capacity)
     }
 
-    internal actual fun resetForReuse() {
+    actual fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1

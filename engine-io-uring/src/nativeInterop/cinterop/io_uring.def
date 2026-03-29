@@ -106,3 +106,22 @@ static void keel_sqe_set_buffer_select(struct io_uring_sqe *sqe, unsigned short 
     sqe->flags |= IOSQE_BUFFER_SELECT;
     sqe->buf_group = bgid;
 }
+
+/*
+ * Prepare a multi-shot recv SQE with provided buffer selection.
+ *
+ * io_uring_prep_recv_multishot is an inline function in liburing.h and cannot
+ * be bound directly by Kotlin/Native cinterop. This wrapper combines:
+ * 1. io_uring_prep_recv_multishot(sqe, sockfd, NULL, 0, 0) — multishot recv
+ * 2. IOSQE_BUFFER_SELECT flag + buf_group — kernel selects from provided ring
+ *
+ * The kernel delivers one CQE per incoming data segment, each with
+ * IORING_CQE_F_BUFFER set and the buffer ID in cqe->flags. The SQE remains
+ * armed (IORING_CQE_F_MORE) until the connection closes or buffers are exhausted.
+ */
+static void keel_prep_recv_multishot(struct io_uring_sqe *sqe, int sockfd, unsigned short bgid) {
+    io_uring_prep_recv(sqe, sockfd, NULL, 0, 0);
+    sqe->ioprio |= IORING_RECV_MULTISHOT;
+    sqe->flags |= IOSQE_BUFFER_SELECT;
+    sqe->buf_group = bgid;
+}

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.HeapAllocator
 import io.github.fukusaka.keel.io.TrackingAllocator
@@ -673,6 +674,170 @@ class IoUringEngineTest {
         server.close()
         assertFalse(server.isActive)
 
+        engine.close()
+    }
+
+    // --- asSuspendSource (multishot recv) ---
+
+    @Test
+    fun `asSuspendSource reads data via multishot recv`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        rawWrite(clientFd, "hello")
+
+        val source = ch.asSuspendSource()
+        val buf = HeapAllocator.allocate(64)
+        val n = withTimeout(5000) { source.read(buf) }
+        assertEquals(5, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('e'.code.toByte(), buf.readByte())
+        assertEquals('l'.code.toByte(), buf.readByte())
+        assertEquals('l'.code.toByte(), buf.readByte())
+        assertEquals('o'.code.toByte(), buf.readByte())
+
+        buf.release()
+        source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSource returns minus one on EOF`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        close(clientFd)
+
+        val source = ch.asSuspendSource()
+        val buf = HeapAllocator.allocate(64)
+        val n = withTimeout(5000) { source.read(buf) }
+        assertEquals(-1, n)
+
+        buf.release()
+        source.close()
+        ch.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSource echo round trip`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        rawWrite(clientFd, "ping")
+
+        val source = ch.asSuspendSource()
+        val readBuf = HeapAllocator.allocate(64)
+        val n = withTimeout(5000) { source.read(readBuf) }
+        assertEquals(4, n)
+
+        ch.write(readBuf)
+        ch.flush()
+
+        val echo = rawRead(clientFd, 4)
+        assertEquals("ping", echo)
+
+        readBuf.release()
+        source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSource multiple reads from same connection`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val source = ch.asSuspendSource()
+
+        rawWrite(clientFd, "AAA")
+        val buf1 = HeapAllocator.allocate(64)
+        val n1 = withTimeout(5000) { source.read(buf1) }
+        assertTrue(n1 > 0)
+
+        rawWrite(clientFd, "BBB")
+        val buf2 = HeapAllocator.allocate(64)
+        val n2 = withTimeout(5000) { source.read(buf2) }
+        assertTrue(n2 > 0)
+
+        buf1.release()
+        buf2.release()
+        source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSource with BufferedSuspendSource readLine`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        rawWrite(clientFd, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+
+        val source = BufferedSuspendSource(ch.asSuspendSource(), HeapAllocator)
+        val line1 = withTimeout(5000) { source.readLine() }
+        assertEquals("GET / HTTP/1.1", line1)
+        val line2 = withTimeout(5000) { source.readLine() }
+        assertEquals("Host: localhost", line2)
+        val line3 = withTimeout(5000) { source.readLine() }
+        assertEquals("", line3)
+
+        source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `close channel while multishot recv armed`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        // Read once to arm the multishot recv SQE.
+        rawWrite(clientFd, "data")
+        val source = ch.asSuspendSource()
+        val buf = HeapAllocator.allocate(64)
+        withTimeout(5000) { source.read(buf) }
+        buf.release()
+
+        // Close while multishot recv is armed — must not leak slots or crash.
+        source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
         engine.close()
     }
 }

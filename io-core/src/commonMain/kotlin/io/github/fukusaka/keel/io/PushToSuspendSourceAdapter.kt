@@ -19,7 +19,7 @@ package io.github.fukusaka.keel.io
  *
  * @param pushSource The push-model source to adapt.
  */
-internal class PushToSuspendSourceAdapter(
+class PushToSuspendSourceAdapter(
     private val pushSource: PushSuspendSource,
 ) : SuspendSource {
 

@@ -15,11 +15,17 @@ import kotlin.concurrent.AtomicInt
  * Each EventLoop has its own [BufferAllocator] instance created via
  * [BufferAllocator.createForEventLoop], enabling lock-free pooling.
  *
+ * Each worker EventLoop owns a [ProvidedBufferRing] for multishot recv
+ * with kernel-managed buffer selection. The ring is registered with the
+ * worker's io_uring instance and used by [IoUringPushSource] for zero-copy
+ * data delivery.
+ *
  * @param size Number of EventLoop threads. Must be >= 1.
  * @param logger Logger for each EventLoop in the group.
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
  * @param ringSize SQE ring size per EventLoop. See [IoUringEventLoop.DEFAULT_RING_SIZE].
  */
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 internal class IoUringEventLoopGroup(
     size: Int,
     logger: Logger,
@@ -29,6 +35,9 @@ internal class IoUringEventLoopGroup(
 
     private val loops = Array(size) { IoUringEventLoop(logger, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
+    private val bufferRings = Array(size) { i ->
+        ProvidedBufferRing(loops[i].ringPtr, bgid = i)
+    }
     private val index = AtomicInt(0)
 
     /** Starts all EventLoop threads. */
@@ -38,7 +47,7 @@ internal class IoUringEventLoopGroup(
 
     /**
      * Returns the index of the next EventLoop in round-robin order.
-     * Use [loopAt] and [allocatorAt] to access the EventLoop and allocator.
+     * Use [loopAt], [allocatorAt], and [bufferRingAt] to access resources.
      */
     fun nextIndex(): Int =
         (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
@@ -49,8 +58,12 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop allocator at [i]. */
     fun allocatorAt(i: Int): BufferAllocator = allocators[i]
 
+    /** Returns the per-EventLoop [ProvidedBufferRing] at [i]. */
+    fun bufferRingAt(i: Int): ProvidedBufferRing = bufferRings[i]
+
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
+        for (ring in bufferRings) ring.close()
         for (loop in loops) loop.close()
     }
 }

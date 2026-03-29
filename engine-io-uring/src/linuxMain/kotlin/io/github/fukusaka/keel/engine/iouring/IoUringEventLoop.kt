@@ -19,6 +19,7 @@ import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
 import io_uring.keel_eventfd_create
+import io_uring.keel_prep_recv_multishot
 import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
@@ -134,6 +135,9 @@ internal class IoUringEventLoop(
     private val arena = Arena()
 
     private val ring = arena.alloc<io_uring>()
+
+    /** Exposes the io_uring ring pointer for [ProvidedBufferRing] registration. */
+    internal val ringPtr get() = ring.ptr
 
     // 8-byte buffer for eventfd reads (uint64_t). Arena-allocated so it
     // remains valid for the lifetime of the permanent wakeup READ SQE.
@@ -465,6 +469,36 @@ internal class IoUringEventLoop(
         val userData = slot.toULong() + SLOT_BASE
         io_uring_prep_cancel64(cancelSqe, userData, 0)
         io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+    }
+
+    /**
+     * Submits a multishot recv SQE with provided buffer selection.
+     *
+     * Combines `IORING_RECV_MULTISHOT` and `IOSQE_BUFFER_SELECT` in a single
+     * SQE: the kernel delivers one CQE per incoming data segment, selecting a
+     * buffer from the provided buffer ring identified by [bgid]. This eliminates
+     * per-read SQE resubmission and buffer allocation overhead.
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param fd   The connected socket file descriptor.
+     * @param bgid Buffer group ID for the provided buffer ring.
+     * @param onCqe Callback invoked on the EventLoop thread for each CQE.
+     * @return The slot index, needed for [cancelMultishot].
+     */
+    internal fun submitMultishotRecv(
+        fd: Int,
+        bgid: Int,
+        onCqe: (res: Int, flags: UInt) -> Unit,
+    ): Int {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
+        val slot = acquireSlot()
+        multishotCallbacks[slot] = onCqe
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+        return slot
     }
 
     // --- Wakeup ---

@@ -100,7 +100,7 @@ internal class IoUringServerChannel(
             val wi = workerGroup.nextIndex()
             return IoUringChannel(
                 clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi),
-                remoteAddr, localAddr,
+                workerGroup.bufferRingAt(wi), remoteAddr, localAddr,
             )
         } catch (e: Throwable) {
             platform.posix.close(clientFd)

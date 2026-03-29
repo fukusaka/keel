@@ -4,6 +4,8 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
+import io.github.fukusaka.keel.io.SuspendSource
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -74,21 +76,39 @@ private class PendingWrite(val buf: NativeBuf, val offset: Int, val length: Int)
  *   flush()     → submitSend / submitWritev → release buffers on CQE
  * ```
  *
- * @param fd        The connected socket file descriptor.
- * @param eventLoop The [IoUringEventLoop] for SQE submission and CQE dispatch.
- * @param allocator Buffer allocator for read operations.
+ * @param fd         The connected socket file descriptor.
+ * @param eventLoop  The [IoUringEventLoop] for SQE submission and CQE dispatch.
+ * @param allocator  Buffer allocator for read operations.
+ * @param bufferRing The [ProvidedBufferRing] for multishot recv buffer selection.
+ *                   Used by [asSuspendSource] to create a push-model source.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringChannel(
     private val fd: Int,
     private val eventLoop: IoUringEventLoop,
     override val allocator: BufferAllocator,
+    private val bufferRing: ProvidedBufferRing,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
 ) : Channel {
 
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
+
+    /**
+     * Returns a push-model [SuspendSource] using multishot recv with provided buffers.
+     *
+     * Unlike the default [SuspendChannelSource][io.github.fukusaka.keel.core.SuspendChannelSource]
+     * which submits a new SQE per read, this source uses a single multishot recv
+     * SQE that produces multiple CQEs with zero allocation per CQE (pre-allocated
+     * NativeBuf wrappers). The [PushToSuspendSourceAdapter] bridges the push-model
+     * [IoUringPushSource] to the pull-model [SuspendSource] interface, adding one
+     * copy per read (byte-by-byte; platform-optimized bulk memcpy deferred to a
+     * future `NativeBuf.copyTo()` method). True zero-copy requires future
+     * BufferedSuspendSource push mode integration.
+     */
+    override fun asSuspendSource(): SuspendSource =
+        PushToSuspendSourceAdapter(IoUringPushSource(fd, eventLoop, bufferRing))
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
