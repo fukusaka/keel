@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: add `ProvidedBufferRing` for kernel-managed buffer selection with pre-allocated contiguous buffer pool (64 × 8KB default)
 - `engine-io-uring`: add multishot callback support to `IoUringEventLoop` slot pool for one-SQE-to-many-CQE operations (`submitMultishot`/`cancelMultishot`)
 - `engine-io-uring`: implement multishot accept (`IORING_ACCEPT_MULTISHOT`, Linux 5.19+) in `IoUringServerChannel`, eliminating per-accept SQE resubmission overhead
+- `io-core`: add `NativeBuf.wrapExternal()` factory for wrapping externally-owned memory (Native: `CPointer<ByteVar>`, JVM: `ByteBuffer`, JS: `Int8Array`) with custom deallocator for buffer recycling
 
 ### Fixed
 

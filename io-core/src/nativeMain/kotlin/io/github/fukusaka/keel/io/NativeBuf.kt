@@ -14,19 +14,37 @@ import platform.posix.memcpy
 import platform.posix.memmove
 
 /**
- * Native [NativeBuf] implementation backed by [nativeHeap] memory.
+ * Native [NativeBuf] implementation backed by [nativeHeap] memory or external memory.
  *
- * Memory is allocated via `nativeHeap.allocArray<ByteVar>(capacity)` and
- * freed in [close] via `nativeHeap.free`. The [unsafePointer] property
- * exposes the raw `CPointer<ByteVar>` for zero-copy I/O with POSIX
- * syscalls (read/write/writev).
+ * **Owned memory** ([internal actual constructor][NativeBuf]): allocated via
+ * `nativeHeap.allocArray<ByteVar>(capacity)` and freed in [close] via `nativeHeap.free`.
+ *
+ * **External memory** ([wrapExternal] factory): wraps a caller-provided pointer
+ * without any allocation. The buffer does NOT own the memory; [close] skips
+ * `nativeHeap.free`. Use [deallocator] to return the buffer to its source
+ * (e.g., a provided buffer ring).
+ *
+ * The [unsafePointer] property exposes the raw `CPointer<ByteVar>` for
+ * zero-copy I/O with POSIX syscalls (read/write/writev).
  *
  * **Reference counting**: non-atomic (single-threaded EventLoop model).
  * A `freed` flag prevents double-free in [close].
  */
 @OptIn(ExperimentalForeignApi::class)
-actual class NativeBuf internal actual constructor(actual val capacity: Int) {
-    private val ptr = nativeHeap.allocArray<ByteVar>(capacity)
+actual class NativeBuf private constructor(
+    private val ptr: CPointer<ByteVar>,
+    actual val capacity: Int,
+    private val ownsMemory: Boolean,
+) {
+    /**
+     * Creates a [NativeBuf] backed by newly allocated [nativeHeap] memory.
+     * Matches the expect constructor signature.
+     */
+    internal actual constructor(capacity: Int) : this(
+        nativeHeap.allocArray<ByteVar>(capacity),
+        capacity,
+        ownsMemory = true,
+    )
 
     /** Raw pointer to the underlying native memory. For engine-layer zero-copy I/O. */
     val unsafePointer: CPointer<ByteVar> get() = ptr
@@ -83,6 +101,12 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         writerIndex = 0
     }
 
+    /**
+     * Resets this buffer for pool recycling.
+     *
+     * Preserves [ownsMemory] and [ptr] so external-memory wrappers created
+     * via [wrapExternal] can be safely reused without re-wrapping.
+     */
     internal actual fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
@@ -115,7 +139,34 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
         if (!freed) {
             freed = true
             refCount = 0
-            nativeHeap.free(ptr.rawValue)
+            if (ownsMemory) {
+                nativeHeap.free(ptr.rawValue)
+            }
+        }
+    }
+
+    companion object {
+        /**
+         * Wraps an externally-owned memory region as a [NativeBuf] without allocation.
+         *
+         * The returned buffer does NOT own the memory: [close] will not call
+         * `nativeHeap.free`. Set [deallocator] on the returned buffer to handle
+         * recycling (e.g., returning a buffer to a provided buffer ring).
+         *
+         * For hot-path usage, pre-allocate wrappers at startup and reuse them
+         * via [resetForReuse] to avoid object creation overhead.
+         *
+         * @param ptr           Pointer to the external memory region.
+         * @param capacity      Size of the memory region in bytes.
+         * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @return A [NativeBuf] wrapping the external memory.
+         */
+        internal fun wrapExternal(
+            ptr: CPointer<ByteVar>,
+            capacity: Int,
+            bytesWritten: Int,
+        ): NativeBuf = NativeBuf(ptr, capacity, ownsMemory = false).also {
+            it.writerIndex = bytesWritten
         }
     }
 }
