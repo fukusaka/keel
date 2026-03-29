@@ -80,7 +80,7 @@ actual class NativeBuf private constructor(
         writerIndex = 0
     }
 
-    internal actual fun resetForReuse() {
+    actual fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1

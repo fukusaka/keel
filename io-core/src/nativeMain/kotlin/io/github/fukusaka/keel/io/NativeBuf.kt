@@ -107,7 +107,7 @@ actual class NativeBuf private constructor(
      * Preserves [ownsMemory] and [ptr] so external-memory wrappers created
      * via [wrapExternal] can be safely reused without re-wrapping.
      */
-    internal actual fun resetForReuse() {
+    actual fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
@@ -150,8 +150,8 @@ actual class NativeBuf private constructor(
          * Wraps an externally-owned memory region as a [NativeBuf] without allocation.
          *
          * The returned buffer does NOT own the memory: [close] will not call
-         * `nativeHeap.free`. Set [deallocator] on the returned buffer to handle
-         * recycling (e.g., returning a buffer to a provided buffer ring).
+         * `nativeHeap.free`. The [deallocator] callback handles recycling
+         * (e.g., returning a buffer to a provided buffer ring).
          *
          * For hot-path usage, pre-allocate wrappers at startup and reuse them
          * via [resetForReuse] to avoid object creation overhead.
@@ -159,14 +159,17 @@ actual class NativeBuf private constructor(
          * @param ptr           Pointer to the external memory region.
          * @param capacity      Size of the memory region in bytes.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @param deallocator   Called on [release] when refCount reaches 0.
          * @return A [NativeBuf] wrapping the external memory.
          */
-        internal fun wrapExternal(
+        fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
+            deallocator: ((NativeBuf) -> Unit)? = null,
         ): NativeBuf = NativeBuf(ptr, capacity, ownsMemory = false).also {
             it.writerIndex = bytesWritten
+            it.deallocator = deallocator
         }
     }
 }
