@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with zero-copy read/write via `IORING_OP_RECV`/`IORING_OP_SEND`, gather write (`IORING_OP_WRITEV`), and eventfd-based wakeup mechanism
 - `engine-io-uring`: cancel in-flight SQEs via `IORING_OP_ASYNC_CANCEL` when the waiting coroutine is cancelled; fast path (EventLoop thread) captures user_data directly, slow path (cross-thread) uses `AtomicLong` to bridge the submission/cancellation race
+- `engine-io-uring`: add cinterop bindings for provided buffer ring (`io_uring_setup_buf_ring`, `io_uring_buf_ring_add`, etc.) and multi-shot recv helpers (`keel_cqe_get_buf_id`, `keel_cqe_has_more`, `keel_sqe_set_buffer_select`)
+- `engine-io-uring`: add `ProvidedBufferRing` for kernel-managed buffer selection with pre-allocated contiguous buffer pool (64 × 8KB default)
 
 ### Fixed
 
