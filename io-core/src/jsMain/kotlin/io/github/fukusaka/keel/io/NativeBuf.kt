@@ -10,11 +10,26 @@ import org.khronos.webgl.Int8Array
  * free memory — they only update the reference count for API compatibility
  * with Native/JVM implementations.
  *
+ * **External memory** ([wrapExternal] factory): wraps a caller-provided
+ * [Int8Array] without allocation. Use [deallocator] to handle buffer
+ * recycling if needed.
+ *
  * Note: [Int8Array] provides direct byte-level access without `dynamic`
  * type casts, ensuring type safety in Kotlin/JS IR mode.
  */
-actual class NativeBuf internal actual constructor(actual val capacity: Int) {
-    private val buf = Int8Array(capacity)
+actual class NativeBuf private constructor(
+    private val buf: Int8Array,
+    actual val capacity: Int,
+) {
+    /**
+     * Creates a [NativeBuf] backed by a newly allocated [Int8Array].
+     * Matches the expect constructor signature.
+     */
+    internal actual constructor(capacity: Int) : this(
+        Int8Array(capacity),
+        capacity,
+    )
+
     private var refCount = 1
     internal actual var deallocator: ((NativeBuf) -> Unit)? = null
     internal actual var nextLink: NativeBuf? = null
@@ -99,4 +114,24 @@ actual class NativeBuf internal actual constructor(actual val capacity: Int) {
 
     /** The backing [Int8Array] for engine-layer I/O. */
     val unsafeArray: Int8Array get() = buf
+
+    companion object {
+        /**
+         * Wraps an externally-owned [Int8Array] as a [NativeBuf] without allocation.
+         *
+         * The returned buffer does NOT own the array; [close] is a no-op
+         * for memory management (V8 GC handles the underlying ArrayBuffer).
+         * Set [deallocator] to handle buffer recycling if needed.
+         *
+         * @param array         The external [Int8Array] to wrap.
+         * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @return A [NativeBuf] wrapping the external array.
+         */
+        internal fun wrapExternal(
+            array: Int8Array,
+            bytesWritten: Int,
+        ): NativeBuf = NativeBuf(array, array.length).also {
+            it.writerIndex = bytesWritten
+        }
+    }
 }
