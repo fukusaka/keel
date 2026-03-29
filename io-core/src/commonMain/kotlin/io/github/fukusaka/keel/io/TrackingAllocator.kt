@@ -40,8 +40,9 @@ class TrackingAllocator(
     override fun allocate(capacity: Int): NativeBuf {
         allocateCount++
         val buf = delegate.allocate(capacity)
-        val original = buf.deallocator
-        buf.deallocator = { b ->
+        val poolable = buf as PoolableNativeBuf
+        val original = poolable.deallocator
+        poolable.deallocator = { b ->
             releaseCount++
             original?.invoke(b) ?: b.close()
         }

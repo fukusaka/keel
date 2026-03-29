@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferAllocator
 import io.github.fukusaka.keel.io.NativeBuf
+import io.github.fukusaka.keel.io.unsafePointer
 import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
 import io.github.fukusaka.keel.io.SuspendSource
 import io_uring.iovec

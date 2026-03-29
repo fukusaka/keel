@@ -27,7 +27,7 @@ class SlabAllocator(
     private val maxPoolSize: Int = DEFAULT_MAX_POOL_SIZE,
 ) : BufferAllocator {
 
-    private val pool = ArrayDeque<NativeBuf>(maxPoolSize)
+    private val pool = ArrayDeque<HeapNativeBuf>(maxPoolSize)
     private val lock = AtomicReference(false)
 
     private inline fun <T> withSpinLock(block: () -> T): T {
@@ -44,14 +44,14 @@ class SlabAllocator(
 
     @Suppress("NativeBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): NativeBuf {
-        val buf = if (capacity == bufferSize) {
+        val buf: HeapNativeBuf = if (capacity == bufferSize) {
             withSpinLock {
                 if (pool.isNotEmpty()) pool.removeLast().also { it.resetForReuse() }
                 else null
             }
         } else {
             null
-        } ?: NativeBuf(capacity)
+        } ?: HeapNativeBuf(capacity)
         buf.deallocator = ::returnToPool
         return buf
     }
@@ -63,7 +63,7 @@ class SlabAllocator(
         }
         val closed = withSpinLock {
             if (pool.size < maxPoolSize) {
-                pool.addLast(buf)
+                pool.addLast(buf as HeapNativeBuf)
                 false
             } else {
                 true

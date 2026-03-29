@@ -20,7 +20,7 @@ class NativeBufWrapExternalTest {
         try {
             ptr[0] = 0x41
             ptr[1] = 0x42
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 16, bytesWritten = 2)
+            val buf = HeapNativeBuf.wrapExternal(ptr, capacity = 16, bytesWritten = 2)
             assertEquals(16, buf.capacity)
             assertEquals(0, buf.readerIndex)
             assertEquals(2, buf.writerIndex)
@@ -38,7 +38,7 @@ class NativeBufWrapExternalTest {
         try {
             ptr[0] = 0x48 // 'H'
             ptr[1] = 0x69 // 'i'
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 2)
+            val buf = HeapNativeBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 2)
             assertEquals('H'.code.toByte(), buf.readByte())
             assertEquals('i'.code.toByte(), buf.readByte())
             buf.close()
@@ -52,7 +52,7 @@ class NativeBufWrapExternalTest {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
             ptr[0] = 0x01
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 1)
+            val buf = HeapNativeBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 1)
             buf.close()
             // External memory is still accessible after close.
             assertEquals(0x01.toByte(), ptr[0])
@@ -66,8 +66,10 @@ class NativeBufWrapExternalTest {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
             var deallocatorCalled = false
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 1)
-            buf.deallocator = { deallocatorCalled = true }
+            val buf = HeapNativeBuf.wrapExternal(
+                ptr, capacity = 4, bytesWritten = 1,
+                deallocator = { deallocatorCalled = true },
+            )
             assertFalse(deallocatorCalled)
             buf.release()
             assertTrue(deallocatorCalled)
@@ -81,8 +83,10 @@ class NativeBufWrapExternalTest {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
             var deallocatorCount = 0
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 0)
-            buf.deallocator = { deallocatorCount++ }
+            val buf = HeapNativeBuf.wrapExternal(
+                ptr, capacity = 4, bytesWritten = 0,
+                deallocator = { deallocatorCount++ },
+            )
 
             buf.retain()
             assertFalse(buf.release()) // refCount 2 → 1
@@ -99,7 +103,7 @@ class NativeBufWrapExternalTest {
     fun `wrapExternal write and read`() {
         val ptr = nativeHeap.allocArray<ByteVar>(8)
         try {
-            val buf = NativeBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 0)
+            val buf = HeapNativeBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 0)
             buf.writeByte(0x61) // 'a'
             buf.writeByte(0x62) // 'b'
             assertEquals(2, buf.writerIndex)

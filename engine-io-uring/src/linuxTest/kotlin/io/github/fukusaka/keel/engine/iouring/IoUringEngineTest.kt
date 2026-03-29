@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.HeapAllocator
 import io.github.fukusaka.keel.io.TrackingAllocator
+import io.github.fukusaka.keel.io.unsafePointer
 import io_uring.io_uring_prep_read
 import io_uring.keel_htons
 import io_uring.keel_loopback_addr
