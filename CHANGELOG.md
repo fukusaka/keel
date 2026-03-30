@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io-core`: add push-mode to `BufferedSuspendSource` for zero-copy reading from `PushSuspendSource`; engine-owned `IoBuf` chain consumed directly without copy
+- `io-core`: add `BufSlice` chain support (`next` field) for zero-copy representation of lines spanning buffer boundaries
 - `core`: add `PushChannel` and `PushServerChannel` interfaces for push-model engines; separate from `Channel`/`ServerChannel` (pull-model) with type-level read-model distinction
 - `engine-io-uring`: implement `PushChannel` on `IoUringChannel` and `PushServerChannel` on `IoUringServerChannel` via `asPushSuspendSource()`
 - `engine-io-uring`: add Linux io_uring-based `IoEngine` implementation (`IoUringEngine`) with zero-copy read/write via `IORING_OP_RECV`/`IORING_OP_SEND`, gather write (`IORING_OP_WRITEV`), and eventfd-based wakeup mechanism
