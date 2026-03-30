@@ -30,6 +30,9 @@ import io.github.fukusaka.keel.buf.IoBuf
  * sink. The caller must call [flush] before [close] to ensure all buffered
  * data is written, and must close [sink] independently.
  *
+ * **Thread safety**: not thread-safe. Designed for single-threaded use
+ * within an EventLoop or a single coroutine scope.
+ *
  * @param sink The underlying [SuspendSink] to write to.
  * @param allocator Buffer allocator for the internal buffer.
  * @param deferFlush When true, [flushBuffer] enqueues buffers without OS write,
@@ -150,6 +153,15 @@ class BufferedSuspendSink(
         }
     }
 
+    /**
+     * Releases the internal buffer. Does NOT flush buffered data or
+     * close the underlying [sink].
+     *
+     * Call [flush] before [close] to ensure all buffered data is sent.
+     * Any data remaining in the internal buffer at close time is discarded.
+     *
+     * Safe to call multiple times (idempotent via `closed` flag).
+     */
     override fun close() {
         if (!closed) {
             closed = true
