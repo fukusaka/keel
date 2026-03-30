@@ -28,6 +28,9 @@ package io.github.fukusaka.keel.benchmark
  *
  * Registers a JVM shutdown hook for graceful server shutdown on SIGTERM/SIGINT.
  */
+/** Maximum time to wait for engine.stop() before forcing exit via Runtime.halt(). */
+private const val SHUTDOWN_TIMEOUT_MS = 2000L
+
 fun main(args: Array<String>) {
     val engines = engineRegistry()
     val config = BenchmarkConfig.parse(args)
@@ -47,7 +50,15 @@ fun main(args: Array<String>) {
     val stop = engines[config.engine]!!.start(config)
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        stop()
+        // Run stop() in a separate thread with a timeout. If it hangs
+        // (known issue with some Ktor engine implementations), force exit.
+        val stopThread = Thread { stop() }
+        stopThread.isDaemon = true
+        stopThread.start()
+        stopThread.join(SHUTDOWN_TIMEOUT_MS)
+        if (stopThread.isAlive) {
+            Runtime.getRuntime().halt(0)
+        }
     })
 
     // Block the main thread until the JVM exits (shutdown hook triggers stop).

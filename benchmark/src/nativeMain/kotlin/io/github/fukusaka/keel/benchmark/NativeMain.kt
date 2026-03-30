@@ -4,12 +4,8 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.staticCFunction
 import platform.posix.SIGINT
 import platform.posix.SIGTERM
+import platform.posix._exit
 import platform.posix.signal
-import platform.posix.sleep
-import kotlin.concurrent.AtomicInt
-
-/** Atomic flag set by signal handler to request shutdown. */
-private val shutdownRequested = AtomicInt(0)
 
 /**
  * Kotlin/Native benchmark server entry point.
@@ -41,25 +37,25 @@ fun main(args: Array<String>) {
         return
     }
 
-    // Install signal handlers before starting the server.
-    signal(SIGTERM, staticCFunction { _ -> shutdownRequested.value = 1 })
-    signal(SIGINT, staticCFunction { _ -> shutdownRequested.value = 1 })
-
+    // Install signal handlers that call _exit(0) directly. This is
+    // async-signal-safe and guarantees immediate process termination.
+    // The OS closes all file descriptors (including the listen socket),
+    // freeing the port instantly. Using _exit() instead of exit() avoids
+    // running atexit handlers and C++ destructors that may deadlock.
     println("Starting benchmark server: ${config.summary()}")
-    @Suppress("UNUSED_VARIABLE") // stop callback unused; exitProcess(0) handles shutdown
-    val stop = eb.start(config)
+    eb.start(config)
 
-    // Wait for shutdown signal.
-    while (shutdownRequested.value == 0) {
-        sleep(1u)
+    // Install signal handlers AFTER server start. Kotlin/Native's coroutine
+    // dispatcher (GCD on macOS, MultiWorkerDispatcher on Linux) may modify
+    // signal masks during initialization.
+    val handler = staticCFunction { _: Int -> _exit(0) }
+    signal(SIGTERM, handler)
+    signal(SIGINT, handler)
+
+    // Block main thread. The signal handler terminates the process.
+    while (true) {
+        platform.posix.sleep(60u)
     }
-
-    // Exit immediately. The OS closes all file descriptors on process exit,
-    // freeing the listen port. Calling engine.stop() first would be cleaner
-    // but may block if internal coroutines don't terminate (known issue with
-    // some Ktor engine implementations). For benchmark purposes, immediate
-    // exit is sufficient.
-    kotlin.system.exitProcess(0)
 }
 
 @OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
