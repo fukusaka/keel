@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `io-core`: fix potential double-release in `BufferedSuspendSink` deferFlush path (allocate before release)
+- `io-core`: replace unchecked cast with safe cast (`as?`) in `TrackingAllocator`
 - `benchmark`: add graceful shutdown via SIGTERM/SIGINT signal handling (Native) and JVM shutdown hook; fixes `Address already in use` on consecutive benchmark runs
 - `engine-io-uring`: fix fd leak in `IoUringEngine.connect()` and `IoUringServerChannel.accept()` when an exception (e.g., `CancellationException`) occurs after fd creation but before it is wrapped in a Channel
 - `engine-io-uring`: fix NativeBuf leak in `flushSingle`/`flushGather` when `submitAndAwait` throws (e.g., `CancellationException`); buffers are now released via try-finally
@@ -36,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: eliminate all `!!` assertions in `BufSlice` via `checkNotNull` and parallel segment traversal
+- `io-core`: eliminate all `!!` assertions in `BufferedSuspendSource` via sealed class `Mode` and `fillAndGet()` pattern
 - `io-core`: rename `NativeBuf` to `IoBuf`; platform implementations: `NativeIoBuf` (Native), `DirectIoBuf` (JVM), `TypedArrayIoBuf` (JS); buffer classes moved from `.keel.io` to `.keel.buf` package
 - `io-core`: rename `HeapAllocator` to `DefaultAllocator`
 - `engine-io-uring`: rename `RingBufferNativeBuf` to `RingBufferIoBuf`
