@@ -218,15 +218,17 @@ class BufSlice(
     }
 
     /**
-     * Parses this slice as a decimal integer.
+     * Parses this slice as a non-negative decimal integer.
      *
-     * Used for HTTP status codes (e.g., "200") and chunk sizes.
+     * Used for HTTP status codes (e.g., "200"), Content-Length, and chunk sizes.
+     * Negative numbers (leading '-') are not supported.
      *
-     * @throws NumberFormatException if the slice is not a valid integer.
+     * @throws NumberFormatException if the slice is empty, contains non-digit
+     *         characters, or the value exceeds [Int.MAX_VALUE].
      */
     fun toInt(): Int {
         if (totalLength == 0) throw NumberFormatException("empty BufSlice")
-        var result = 0
+        var result = 0L
         var seg: BufSlice? = this
         var globalIndex = 0
         while (seg != null) {
@@ -236,11 +238,14 @@ class BufSlice(
                     "Invalid digit at index $globalIndex: '${b.toChar()}' in ${decodeToString()}"
                 )
                 result = result * 10 + (b - 0x30)
+                if (result > Int.MAX_VALUE) throw NumberFormatException(
+                    "Value exceeds Int.MAX_VALUE: ${decodeToString()}"
+                )
                 globalIndex++
             }
             seg = seg.next
         }
-        return result
+        return result.toInt()
     }
 
     override fun toString(): String =

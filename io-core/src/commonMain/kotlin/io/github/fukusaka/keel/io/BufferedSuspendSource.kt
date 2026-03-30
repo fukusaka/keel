@@ -137,8 +137,10 @@ class BufferedSuspendSource : AutoCloseable {
      * Reads a single byte, suspending if no data is available.
      *
      * @throws KeelEofException on EOF.
+     * @throws IllegalStateException if this source has been [close]d.
      */
     suspend fun readByte(): Byte {
+        check(!closed) { "BufferedSuspendSource is closed" }
         val cur = currentBuf() ?: fillAndGet() ?: throw KeelEofException("Unexpected EOF")
         return cur.readByte()
     }
@@ -153,8 +155,10 @@ class BufferedSuspendSource : AutoCloseable {
      * per RFC 7230).
      *
      * @return the line without the line terminator, or null on EOF.
+     * @throws IllegalStateException if this source has been [close]d.
      */
     suspend fun readLine(): String? {
+        check(!closed) { "BufferedSuspendSource is closed" }
         lineBuilder.clear()
         while (true) {
             val cur = currentBuf() ?: fillAndGet() ?: run {
@@ -187,6 +191,7 @@ class BufferedSuspendSource : AutoCloseable {
      * @return the line without the line terminator, or null on EOF.
      */
     suspend fun scanLine(): BufSlice? {
+        check(!closed) { "BufferedSuspendSource is closed" }
         return when (val m = mode) {
             is Mode.Pull -> scanLinePull(m)
             is Mode.Push -> scanLinePush(m)
@@ -324,6 +329,7 @@ class BufferedSuspendSource : AutoCloseable {
      * @throws KeelEofException if EOF is reached before [count] bytes.
      */
     suspend fun readByteArray(count: Int): ByteArray {
+        check(!closed) { "BufferedSuspendSource is closed" }
         val result = ByteArray(count)
         var offset = 0
         while (offset < count) {
@@ -345,6 +351,7 @@ class BufferedSuspendSource : AutoCloseable {
      * @return number of bytes read, or -1 on EOF.
      */
     suspend fun readAtMostTo(dest: ByteArray, offset: Int, length: Int): Int {
+        check(!closed) { "BufferedSuspendSource is closed" }
         val cur = currentBuf() ?: fillAndGet() ?: return -1
         val available = cur.readableBytes.coerceAtMost(length)
         for (i in 0 until available) {

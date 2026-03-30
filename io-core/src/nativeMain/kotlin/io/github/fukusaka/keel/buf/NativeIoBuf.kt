@@ -58,6 +58,8 @@ class NativeIoBuf private constructor(
     override val readableBytes: Int get() = writerIndex - readerIndex
     override val writableBytes: Int get() = capacity - writerIndex
 
+    // No bounds check — raw pointer write. Caller must ensure writableBytes > 0.
+    // Bounds check omitted for hot-path performance; see IoBuf.writeByte KDoc.
     override fun writeByte(value: Byte) {
         ptr[writerIndex++] = value
     }
@@ -89,8 +91,10 @@ class NativeIoBuf private constructor(
         dest.writerIndex += length
     }
 
+    // No bounds check — raw pointer read. Caller must ensure readableBytes > 0.
     override fun readByte(): Byte = ptr[readerIndex++]
 
+    // No bounds check — raw pointer read. Caller must ensure 0 <= index < capacity.
     override fun getByte(index: Int): Byte = ptr[index]
 
     override fun compact() {
