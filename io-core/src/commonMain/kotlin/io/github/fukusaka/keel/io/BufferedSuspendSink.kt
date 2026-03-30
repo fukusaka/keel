@@ -131,11 +131,19 @@ class BufferedSuspendSink(
      */
     private suspend fun flushBuffer() {
         if (buf.readableBytes > 0) {
-            sink.write(buf)
             if (deferFlush) {
-                buf.release()
+                // Deferred flush: Channel.write() retains buf internally.
+                // We release our reference and allocate a fresh buffer.
+                // Allocate BEFORE release to ensure buf field always points
+                // to a valid buffer — if allocate throws, buf is still valid
+                // and close() can release it safely.
+                sink.write(buf)
+                val oldBuf = buf
                 buf = allocator.allocate(BUFFER_SIZE)
+                oldBuf.release()
             } else {
+                // Immediate flush: write + flush, then reuse the same buffer.
+                sink.write(buf)
                 sink.flush()
                 buf.clear()
             }
