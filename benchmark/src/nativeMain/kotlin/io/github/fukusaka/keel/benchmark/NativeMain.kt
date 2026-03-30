@@ -45,9 +45,10 @@ fun main(args: Array<String>) {
     println("Starting benchmark server: ${config.summary()}")
     eb.start(config)
 
-    // Install signal handlers AFTER server start. Kotlin/Native's coroutine
-    // dispatcher (GCD on macOS, MultiWorkerDispatcher on Linux) may modify
-    // signal masks during initialization.
+    // Install signal handlers AFTER server start. Ktor/kotlinx-coroutines
+    // overrides SIGTERM/SIGINT handlers during engine initialization
+    // (verified via sigaction: handler address changes after start()).
+    // _exit(0) is async-signal-safe and guarantees immediate termination.
     val handler = staticCFunction { _: Int -> _exit(0) }
     signal(SIGTERM, handler)
     signal(SIGINT, handler)
