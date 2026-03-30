@@ -32,16 +32,16 @@ import io.github.fukusaka.keel.buf.IoBuf
  */
 class BufferedSuspendSource : AutoCloseable {
 
-    // --- Pull-mode fields ---
-    private val source: SuspendSource?
-    private val pullBuf: IoBuf?
+    /**
+     * Internal mode discriminator. Eliminates nullable fields and `!!`
+     * assertions by providing typed access to mode-specific state.
+     */
+    private sealed class Mode {
+        class Pull(val source: SuspendSource, val buf: IoBuf) : Mode()
+        class Push(val pushSource: PushSuspendSource, val bufferChain: ArrayDeque<IoBuf>) : Mode()
+    }
 
-    // --- Push-mode fields ---
-    private val pushSource: PushSuspendSource?
-    private val bufferChain: ArrayDeque<IoBuf>?
-
-    // --- Common fields ---
-    private val pushMode: Boolean
+    private val mode: Mode
     private var eof = false
     private var closed = false
     private val lineBuilder = StringBuilder(INITIAL_LINE_CAPACITY)
@@ -53,11 +53,7 @@ class BufferedSuspendSource : AutoCloseable {
      * @param allocator Buffer allocator for the internal buffer.
      */
     constructor(source: SuspendSource, allocator: BufferAllocator) {
-        this.source = source
-        this.pullBuf = allocator.allocate(BUFFER_SIZE)
-        this.pushSource = null
-        this.bufferChain = null
-        this.pushMode = false
+        this.mode = Mode.Pull(source, allocator.allocate(BUFFER_SIZE))
     }
 
     /**
@@ -69,31 +65,28 @@ class BufferedSuspendSource : AutoCloseable {
      * @param pushSource The push-model source delivering engine-owned buffers.
      */
     constructor(pushSource: PushSuspendSource) {
-        this.source = null
-        this.pullBuf = null
-        this.pushSource = pushSource
-        this.bufferChain = ArrayDeque()
-        this.pushMode = true
+        this.mode = Mode.Push(pushSource, ArrayDeque())
     }
 
     // --- Internal: current buffer access ---
 
     /**
-     * Returns the current buffer to read from.
-     * Pull mode: the single internal buffer.
-     * Push mode: the first buffer in the chain (after releasing consumed ones).
+     * Returns the current buffer to read from, or null if no data is available.
+     * Pull mode: the single internal buffer (may have 0 readable bytes).
+     * Push mode: the first buffer in the chain after releasing consumed ones.
      */
     private fun currentBuf(): IoBuf? {
-        if (pushMode) {
-            releaseConsumedBuffers()
-            return bufferChain!!.firstOrNull()
+        return when (val m = mode) {
+            is Mode.Pull -> m.buf.takeIf { it.readableBytes > 0 }
+            is Mode.Push -> {
+                releaseConsumedBuffers(m.bufferChain)
+                m.bufferChain.firstOrNull()
+            }
         }
-        return pullBuf
     }
 
     /** Releases fully consumed buffers at the front of the push-mode chain. */
-    private fun releaseConsumedBuffers() {
-        val chain = bufferChain ?: return
+    private fun releaseConsumedBuffers(chain: ArrayDeque<IoBuf>) {
         while (chain.isNotEmpty() && chain.first().readableBytes == 0) {
             chain.removeFirst().release()
         }
@@ -102,36 +95,37 @@ class BufferedSuspendSource : AutoCloseable {
     // --- Internal: fill ---
 
     /**
-     * Refills data. Returns true if data is available, false on EOF.
+     * Refills data and returns the buffer containing it, or null on EOF.
+     * Combines fill + currentBuf into one call to eliminate the `!!` pattern
+     * of `if (!fill()) ...; currentBuf()!!`.
      */
-    private suspend fun fill(): Boolean {
-        if (eof) return false
-        return if (pushMode) fillPush() else fillPull()
+    private suspend fun fillAndGet(): IoBuf? {
+        if (eof) return null
+        return when (val m = mode) {
+            is Mode.Pull -> fillPull(m)
+            is Mode.Push -> fillPush(m)
+        }
     }
 
-    /**
-     * Pull-mode fill: compacts and reads from [source] into the internal buffer.
-     */
-    private suspend fun fillPull(): Boolean {
-        val buf = pullBuf!!
+    /** Pull-mode fill: compacts and reads from source into the internal buffer. */
+    private suspend fun fillPull(m: Mode.Pull): IoBuf? {
+        val buf = m.buf
         if (buf.writableBytes < COMPACT_THRESHOLD) {
             buf.compact()
         }
-        val n = source!!.read(buf)
+        val n = m.source.read(buf)
         if (n <= 0) {
             eof = true
-            return false
+            return null
         }
-        return true
+        return buf
     }
 
-    /**
-     * Push-mode fill: requests an engine-owned buffer from [pushSource].
-     */
-    private suspend fun fillPush(): Boolean {
-        val owned = pushSource!!.readOwned() ?: run { eof = true; return false }
-        bufferChain!!.addLast(owned)
-        return true
+    /** Push-mode fill: requests an engine-owned buffer from pushSource. */
+    private suspend fun fillPush(m: Mode.Push): IoBuf? {
+        val owned = m.pushSource.readOwned() ?: run { eof = true; return null }
+        m.bufferChain.addLast(owned)
+        return owned
     }
 
     // --- Public API ---
@@ -142,11 +136,7 @@ class BufferedSuspendSource : AutoCloseable {
      * @throws KeelEofException on EOF.
      */
     suspend fun readByte(): Byte {
-        var cur = currentBuf()
-        if (cur == null || cur.readableBytes == 0) {
-            if (!fill()) throw KeelEofException("Unexpected EOF")
-            cur = currentBuf()!!
-        }
+        val cur = currentBuf() ?: fillAndGet() ?: throw KeelEofException("Unexpected EOF")
         return cur.readByte()
     }
 
@@ -164,12 +154,8 @@ class BufferedSuspendSource : AutoCloseable {
     suspend fun readLine(): String? {
         lineBuilder.clear()
         while (true) {
-            val cur = currentBuf()
-            if (cur == null || cur.readableBytes == 0) {
-                if (!fill()) {
-                    return if (lineBuilder.isEmpty()) null else lineBuilder.toString()
-                }
-                continue
+            val cur = currentBuf() ?: fillAndGet() ?: run {
+                return if (lineBuilder.isEmpty()) null else lineBuilder.toString()
             }
             val b = cur.readByte()
             if (b == LF) {
@@ -198,14 +184,15 @@ class BufferedSuspendSource : AutoCloseable {
      * @return the line without the line terminator, or null on EOF.
      */
     suspend fun scanLine(): BufSlice? {
-        return if (pushMode) scanLinePush() else scanLinePull()
+        return when (val m = mode) {
+            is Mode.Pull -> scanLinePull(m)
+            is Mode.Push -> scanLinePush(m)
+        }
     }
 
-    /**
-     * Pull-mode scanLine: scans the single internal buffer for LF.
-     */
-    private suspend fun scanLinePull(): BufSlice? {
-        val buf = pullBuf!!
+    /** Pull-mode scanLine: scans the single internal buffer for LF. */
+    private suspend fun scanLinePull(m: Mode.Pull): BufSlice? {
+        val buf = m.buf
         while (true) {
             val start = buf.readerIndex
             val end = buf.writerIndex
@@ -218,7 +205,7 @@ class BufferedSuspendSource : AutoCloseable {
                     return slice
                 }
             }
-            if (!fillPull()) {
+            if (fillPull(m) == null) {
                 return if (buf.readableBytes > 0) {
                     val slice = BufSlice(buf, buf.readerIndex, buf.readableBytes)
                     buf.readerIndex = buf.writerIndex
@@ -232,11 +219,11 @@ class BufferedSuspendSource : AutoCloseable {
      * Push-mode scanLine: scans the buffer chain for LF, returning a
      * zero-copy [BufSlice] (single or multi-segment).
      */
-    private suspend fun scanLinePush(): BufSlice? {
-        releaseConsumedBuffers()
+    private suspend fun scanLinePush(m: Mode.Push): BufSlice? {
+        val chain = m.bufferChain
+        releaseConsumedBuffers(chain)
         while (true) {
-            val chain = bufferChain!!
-            if (chain.isEmpty() && !fillPush()) return null
+            if (chain.isEmpty() && fillPush(m) == null) return null
 
             val head = chain.first()
             val start = head.readerIndex
@@ -253,8 +240,7 @@ class BufferedSuspendSource : AutoCloseable {
             }
 
             // LF not in head — need more data
-            if (!fillPush()) {
-                // EOF: return remaining as line
+            if (fillPush(m) == null) {
                 return if (head.readableBytes > 0) {
                     val slice = BufSlice(head, head.readerIndex, head.readableBytes)
                     head.readerIndex = head.writerIndex
@@ -263,7 +249,7 @@ class BufferedSuspendSource : AutoCloseable {
             }
 
             // Line spans head and next buffer(s) — build chained BufSlice
-            return crossBufferScanLine(head, start)
+            return crossBufferScanLine(m, head, start)
         }
     }
 
@@ -274,20 +260,20 @@ class BufferedSuspendSource : AutoCloseable {
      *
      * This path is taken for < 1% of HTTP header lines.
      */
-    private suspend fun crossBufferScanLine(firstBuf: IoBuf, startOffset: Int): BufSlice? {
+    private suspend fun crossBufferScanLine(m: Mode.Push, firstBuf: IoBuf, startOffset: Int): BufSlice? {
         val firstLength = firstBuf.writerIndex - startOffset
         firstBuf.readerIndex = firstBuf.writerIndex // consume first segment
         // Note: firstBuf is now fully consumed (readableBytes=0) but must NOT
         // be released yet — the returned BufSlice will reference it. It will be
         // released on the next scanLine/readLine/close call via releaseConsumedBuffers.
-        // We skip releaseConsumedBuffers here to preserve the reference.
+        // We do NOT call releaseConsumedBuffers here to preserve the reference.
 
         // Search subsequent buffers for LF.
-        // Do NOT call releaseConsumedBuffers() here — firstBuf is consumed
-        // but still referenced by the BufSlice we will return.
+        // Do NOT call releaseConsumedBuffers — firstBuf is consumed but still
+        // referenced by the BufSlice we will return.
+        val chain = m.bufferChain
         while (true) {
-            val chain = bufferChain!!
-            if (chain.size <= 1 && !fillPush()) {
+            if (chain.size <= 1 && fillPush(m) == null) {
                 // EOF: return first segment only
                 return if (firstLength > 0) BufSlice(firstBuf, startOffset, firstLength) else null
             }
@@ -338,13 +324,8 @@ class BufferedSuspendSource : AutoCloseable {
         val result = ByteArray(count)
         var offset = 0
         while (offset < count) {
-            val cur = currentBuf()
-            if (cur == null || cur.readableBytes == 0) {
-                if (!fill()) {
-                    throw KeelEofException("Unexpected EOF: expected $count bytes, got $offset")
-                }
-                continue
-            }
+            val cur = currentBuf() ?: fillAndGet()
+                ?: throw KeelEofException("Unexpected EOF: expected $count bytes, got $offset")
             val available = cur.readableBytes.coerceAtMost(count - offset)
             for (i in 0 until available) {
                 result[offset++] = cur.readByte()
@@ -361,14 +342,10 @@ class BufferedSuspendSource : AutoCloseable {
      * @return number of bytes read, or -1 on EOF.
      */
     suspend fun readAtMostTo(dest: ByteArray, offset: Int, length: Int): Int {
-        val cur = currentBuf()
-        if (cur == null || cur.readableBytes == 0) {
-            if (!fill()) return -1
-        }
-        val buf = currentBuf()!!
-        val available = buf.readableBytes.coerceAtMost(length)
+        val cur = currentBuf() ?: fillAndGet() ?: return -1
+        val available = cur.readableBytes.coerceAtMost(length)
         for (i in 0 until available) {
-            dest[offset + i] = buf.readByte()
+            dest[offset + i] = cur.readByte()
         }
         return available
     }
@@ -376,12 +353,12 @@ class BufferedSuspendSource : AutoCloseable {
     override fun close() {
         if (!closed) {
             closed = true
-            if (pushMode) {
-                val chain = bufferChain!!
-                for (buf in chain) buf.release()
-                chain.clear()
-            } else {
-                pullBuf!!.release()
+            when (val m = mode) {
+                is Mode.Pull -> m.buf.release()
+                is Mode.Push -> {
+                    for (buf in m.bufferChain) buf.release()
+                    m.bufferChain.clear()
+                }
             }
         }
     }
