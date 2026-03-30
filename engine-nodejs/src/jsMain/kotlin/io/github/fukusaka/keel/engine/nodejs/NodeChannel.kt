@@ -120,7 +120,7 @@ internal class NodeChannel(
         for (i in 0 until length) {
             bytes[i] = (data[i] as Int).toByte()
         }
-        buf.writeBytes(bytes, 0, length)
+        buf.writeByteArray(bytes, 0, length)
         return length
     }
 

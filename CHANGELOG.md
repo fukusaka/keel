@@ -38,6 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io-core`: rename `IoBuf.writeBytes` to `writeByteArray` and `writeAsciiString` to `writeAscii` for naming clarity
+- `io-core`: add `IoBuf.readByteArray(dest, offset, length)` for platform-optimized bulk read; symmetric with `writeByteArray`
+- `io-core`: replace per-byte loops in `BufferedSuspendSource.readByteArray`/`readAtMostTo` with `IoBuf.readByteArray` bulk operations
 - `io-core`: eliminate all `!!` assertions in `BufSlice` via `checkNotNull` and parallel segment traversal
 - `io-core`: eliminate all `!!` assertions in `BufferedSuspendSource` via sealed class `Mode` and `fillAndGet()` pattern
 - `io-core`: rename `NativeBuf` to `IoBuf`; platform implementations: `NativeIoBuf` (Native), `DirectIoBuf` (JVM), `TypedArrayIoBuf` (JS); buffer classes moved from `.keel.io` to `.keel.buf` package

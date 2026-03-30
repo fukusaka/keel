@@ -44,14 +44,14 @@ class TypedArrayIoBuf private constructor(
         buf.asDynamic()[writerIndex++] = value
     }
 
-    override fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+    override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             buf.asDynamic()[writerIndex++] = src[offset + i]
         }
     }
 
-    override fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+    override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             buf.asDynamic()[writerIndex + i] = src[srcOffset + i].code.toByte()
@@ -68,6 +68,15 @@ class TypedArrayIoBuf private constructor(
         destBuf.set(buf.subarray(readerIndex, readerIndex + length), dest.writerIndex)
         readerIndex += length
         dest.writerIndex += length
+    }
+
+    override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        if (length == 0) return
+        for (i in 0 until length) {
+            dest[offset + i] = (buf.asDynamic()[readerIndex + i] as Int).toByte()
+        }
+        readerIndex += length
     }
 
     override fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()

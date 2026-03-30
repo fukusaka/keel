@@ -50,7 +50,7 @@ class DirectIoBuf private constructor(
         buf.put(writerIndex++, value)
     }
 
-    override fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+    override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         // ByteBuffer.put(src, offset, length) uses optimized bulk copy.
         // Must set position first since put(byte[], off, len) writes at position.
@@ -59,7 +59,7 @@ class DirectIoBuf private constructor(
         writerIndex += length
     }
 
-    override fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+    override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             buf.put(writerIndex + i, src[srcOffset + i].code.toByte())
@@ -79,6 +79,15 @@ class DirectIoBuf private constructor(
         destBuf.put(srcView)
         readerIndex += length
         dest.writerIndex += length
+    }
+
+    override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        if (length == 0) return
+        val srcView = buf.duplicate()
+        srcView.position(readerIndex)
+        srcView.get(dest, offset, length)
+        readerIndex += length
     }
 
     override fun readByte(): Byte = buf.get(readerIndex++)
