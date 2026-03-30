@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.benchmark
 
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 
@@ -26,6 +27,10 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
         }
         get("/large") {
             call.respondBytes(largePayloadBytes, ContentType.Text.Plain)
+        }
+        post("/echo") {
+            val body = call.receive<ByteArray>()
+            call.respondBytes(body, ContentType.Application.OctetStream)
         }
     }
 }
