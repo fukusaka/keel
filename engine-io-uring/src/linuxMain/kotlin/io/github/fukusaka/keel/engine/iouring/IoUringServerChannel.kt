@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.PushChannel
+import io.github.fukusaka.keel.core.PushServerChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io_uring.io_uring_prep_multishot_accept
@@ -44,7 +46,7 @@ internal class IoUringServerChannel(
     private val bossLoop: IoUringEventLoop,
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
-) : ServerChannel {
+) : ServerChannel, PushServerChannel {
 
     private var _active = true
 
