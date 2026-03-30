@@ -57,7 +57,7 @@ internal class RingBufferIoBuf(
         ptr[writerIndex++] = value
     }
 
-    override fun writeBytes(src: ByteArray, offset: Int, length: Int) {
+    override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         if (length == 0) return
         src.usePinned { pinned ->
@@ -66,7 +66,7 @@ internal class RingBufferIoBuf(
         writerIndex += length
     }
 
-    override fun writeAsciiString(src: String, srcOffset: Int, length: Int) {
+    override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
             ptr[writerIndex + i] = src[srcOffset + i].code.toByte()
@@ -82,6 +82,15 @@ internal class RingBufferIoBuf(
         memcpy(destPtr, ptr + readerIndex, length.toULong())
         readerIndex += length
         dest.writerIndex += length
+    }
+
+    override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
+        require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
+        if (length == 0) return
+        dest.usePinned { pinned ->
+            memcpy(pinned.addressOf(offset), ptr + readerIndex, length.toULong())
+        }
+        readerIndex += length
     }
 
     override fun readByte(): Byte = ptr[readerIndex++]

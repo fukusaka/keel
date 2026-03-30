@@ -231,7 +231,7 @@ class BufferedSuspendSourceTest {
         val buffers = chunks.map { chunk ->
             val bytes = chunk.encodeToByteArray()
             val buf = createDefaultIoBuf(bytes.size)
-            buf.writeBytes(bytes, 0, bytes.size)
+            buf.writeByteArray(bytes, 0, bytes.size)
             buf
         }.toMutableList()
         return object : PushSuspendSource {

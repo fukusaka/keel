@@ -336,9 +336,8 @@ class BufferedSuspendSource : AutoCloseable {
             val cur = currentBuf() ?: fillAndGet()
                 ?: throw KeelEofException("Unexpected EOF: expected $count bytes, got $offset")
             val available = cur.readableBytes.coerceAtMost(count - offset)
-            for (i in 0 until available) {
-                result[offset++] = cur.readByte()
-            }
+            cur.readByteArray(result, offset, available)
+            offset += available
         }
         return result
     }
@@ -354,9 +353,7 @@ class BufferedSuspendSource : AutoCloseable {
         check(!closed) { "BufferedSuspendSource is closed" }
         val cur = currentBuf() ?: fillAndGet() ?: return -1
         val available = cur.readableBytes.coerceAtMost(length)
-        for (i in 0 until available) {
-            dest[offset + i] = cur.readByte()
-        }
+        cur.readByteArray(dest, offset, available)
         return available
     }
 

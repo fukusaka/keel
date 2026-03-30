@@ -77,20 +77,23 @@ interface IoBuf {
      *
      * @throws IllegalArgumentException if [length] exceeds [writableBytes].
      */
-    fun writeBytes(src: ByteArray, offset: Int, length: Int)
+    fun writeByteArray(src: ByteArray, offset: Int, length: Int)
 
     /**
-     * Writes ASCII characters from [src] directly into this buffer without
-     * intermediate ByteArray allocation. Each character is truncated to its
-     * low 8 bits (`char.code.toByte()`), which is correct for US-ASCII
-     * (HTTP headers, status lines).
+     * Writes the low 8 bits of each character from [src] directly into this
+     * buffer without intermediate ByteArray allocation.
      *
-     * This avoids the `String.encodeToByteArray()` allocation that
-     * [writeBytes] would require when the source is a [String].
+     * Suitable for text-based protocols (HTTP/1.1, SMTP, Redis, Memcached)
+     * where commands and headers are ASCII (0x00–0x7F). Also correct for
+     * Latin-1 / ISO 8859-1 (0x80–0xFF). NOT correct for multi-byte
+     * encodings (UTF-8 with codepoints > 0xFF).
+     *
+     * For UTF-8 encoded strings, use `[writeByteArray]` with
+     * `text.encodeToByteArray()`.
      *
      * @throws IllegalArgumentException if [length] exceeds [writableBytes].
      */
-    fun writeAsciiString(src: String, srcOffset: Int, length: Int)
+    fun writeAscii(src: String, srcOffset: Int, length: Int)
 
     /**
      * Bulk copy: copies [length] bytes from this buffer's current [readerIndex]
@@ -107,6 +110,17 @@ interface IoBuf {
      * @throws IllegalArgumentException if [length] exceeds [readableBytes] or [dest]'s [writableBytes].
      */
     fun copyTo(dest: IoBuf, length: Int)
+
+    /**
+     * Bulk read: copies [length] bytes from this buffer's current [readerIndex]
+     * into [dest] starting at [offset]. Uses platform-optimized copy
+     * (memcpy on Native, ByteBuffer.get on JVM) instead of per-byte loop.
+     *
+     * After this call, [readerIndex] advances by [length].
+     *
+     * @throws IllegalArgumentException if [length] exceeds [readableBytes].
+     */
+    fun readByteArray(dest: ByteArray, offset: Int, length: Int)
 
     /**
      * Reads a byte from the current read position and advances [readerIndex].

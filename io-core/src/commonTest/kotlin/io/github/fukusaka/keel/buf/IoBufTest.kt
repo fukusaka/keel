@@ -160,13 +160,13 @@ class IoBufTest {
         buf.release()
     }
 
-    // --- writeBytes ---
+    // --- writeByteArray ---
 
     @Test
-    fun writeBytesBasic() {
+    fun writeByteArrayBasic() {
         val buf = createDefaultIoBuf(16)
         val src = byteArrayOf(0x41, 0x42, 0x43)
-        buf.writeBytes(src, 0, 3)
+        buf.writeByteArray(src, 0, 3)
         assertEquals(3, buf.writerIndex)
         assertEquals(0x41.toByte(), buf.readByte())
         assertEquals(0x42.toByte(), buf.readByte())
@@ -175,10 +175,10 @@ class IoBufTest {
     }
 
     @Test
-    fun writeBytesWithOffset() {
+    fun writeByteArrayWithOffset() {
         val buf = createDefaultIoBuf(16)
         val src = byteArrayOf(0x10, 0x20, 0x30, 0x40)
-        buf.writeBytes(src, 1, 2)
+        buf.writeByteArray(src, 1, 2)
         assertEquals(2, buf.writerIndex)
         assertEquals(0x20.toByte(), buf.readByte())
         assertEquals(0x30.toByte(), buf.readByte())
@@ -186,28 +186,28 @@ class IoBufTest {
     }
 
     @Test
-    fun writeBytesExceedsCapacityThrows() {
+    fun writeByteArrayExceedsCapacityThrows() {
         val buf = createDefaultIoBuf(4)
         val src = byteArrayOf(0x01, 0x02, 0x03, 0x04, 0x05)
         assertFailsWith<IllegalArgumentException> {
-            buf.writeBytes(src, 0, 5)
+            buf.writeByteArray(src, 0, 5)
         }
         buf.release()
     }
 
     @Test
-    fun writeBytesZeroLength() {
+    fun writeByteArrayZeroLength() {
         val buf = createDefaultIoBuf(4)
-        buf.writeBytes(byteArrayOf(), 0, 0)
+        buf.writeByteArray(byteArrayOf(), 0, 0)
         assertEquals(0, buf.writerIndex)
         buf.release()
     }
 
     @Test
-    fun writeBytesFullCapacity() {
+    fun writeByteArrayFullCapacity() {
         val buf = createDefaultIoBuf(4)
         val src = byteArrayOf(0x01, 0x02, 0x03, 0x04)
-        buf.writeBytes(src, 0, 4)
+        buf.writeByteArray(src, 0, 4)
         assertEquals(4, buf.writerIndex)
         assertEquals(0, buf.writableBytes)
         assertEquals(0x01.toByte(), buf.readByte())
@@ -217,12 +217,12 @@ class IoBufTest {
         buf.release()
     }
 
-    // --- writeAsciiString ---
+    // --- writeAscii ---
 
     @Test
-    fun writeAsciiStringBasic() {
+    fun writeAsciiBasic() {
         val buf = createDefaultIoBuf(16)
-        buf.writeAsciiString("ABC", 0, 3)
+        buf.writeAscii("ABC", 0, 3)
         assertEquals(3, buf.writerIndex)
         assertEquals(0x41.toByte(), buf.readByte())
         assertEquals(0x42.toByte(), buf.readByte())
@@ -231,9 +231,9 @@ class IoBufTest {
     }
 
     @Test
-    fun writeAsciiStringWithOffset() {
+    fun writeAsciiWithOffset() {
         val buf = createDefaultIoBuf(16)
-        buf.writeAsciiString("Hello", 1, 3)
+        buf.writeAscii("Hello", 1, 3)
         assertEquals(3, buf.writerIndex)
         assertEquals('e'.code.toByte(), buf.readByte())
         assertEquals('l'.code.toByte(), buf.readByte())
@@ -242,18 +242,18 @@ class IoBufTest {
     }
 
     @Test
-    fun writeAsciiStringExceedsCapacityThrows() {
+    fun writeAsciiExceedsCapacityThrows() {
         val buf = createDefaultIoBuf(4)
         assertFailsWith<IllegalArgumentException> {
-            buf.writeAsciiString("Hello", 0, 5)
+            buf.writeAscii("Hello", 0, 5)
         }
         buf.release()
     }
 
     @Test
-    fun writeAsciiStringZeroLength() {
+    fun writeAsciiZeroLength() {
         val buf = createDefaultIoBuf(4)
-        buf.writeAsciiString("Hello", 0, 0)
+        buf.writeAscii("Hello", 0, 0)
         assertEquals(0, buf.writerIndex)
         buf.release()
     }
@@ -307,7 +307,7 @@ class IoBufTest {
     fun copyToBasic() {
         val src = createDefaultIoBuf(8)
         val dst = createDefaultIoBuf(8)
-        src.writeBytes("Hello".encodeToByteArray(), 0, 5)
+        src.writeByteArray("Hello".encodeToByteArray(), 0, 5)
         src.copyTo(dst, 5)
         assertEquals(5, src.readerIndex)
         assertEquals(0, src.readableBytes)
@@ -336,7 +336,7 @@ class IoBufTest {
     fun copyToFullCapacity() {
         val src = createDefaultIoBuf(4)
         val dst = createDefaultIoBuf(4)
-        src.writeBytes(byteArrayOf(1, 2, 3, 4), 0, 4)
+        src.writeByteArray(byteArrayOf(1, 2, 3, 4), 0, 4)
         src.copyTo(dst, 4)
         assertEquals(4, dst.readableBytes)
         assertEquals(1.toByte(), dst.readByte())
@@ -363,7 +363,7 @@ class IoBufTest {
     fun copyToExceedsWritableThrows() {
         val src = createDefaultIoBuf(8)
         val dst = createDefaultIoBuf(2)
-        src.writeBytes(byteArrayOf(1, 2, 3, 4), 0, 4)
+        src.writeByteArray(byteArrayOf(1, 2, 3, 4), 0, 4)
         assertFailsWith<IllegalArgumentException> {
             src.copyTo(dst, 4) // dest only has 2 writable bytes
         }
@@ -375,7 +375,7 @@ class IoBufTest {
     fun copyToPartialThenMore() {
         val src = createDefaultIoBuf(8)
         val dst = createDefaultIoBuf(8)
-        src.writeBytes("ABCDEF".encodeToByteArray(), 0, 6)
+        src.writeByteArray("ABCDEF".encodeToByteArray(), 0, 6)
         src.copyTo(dst, 3) // copy "ABC"
         assertEquals(3, src.readerIndex)
         assertEquals(3, dst.writerIndex)
