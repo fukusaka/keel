@@ -50,7 +50,8 @@ class BufSlice(
     operator fun get(index: Int): Byte {
         require(index in 0 until totalLength) { "index $index out of bounds (totalLength=$totalLength)" }
         if (index < length) return buf.getByte(offset + index)
-        return next!!.get(index - length)
+        return checkNotNull(next) { "BufSlice chain corrupted: index $index >= segment length $length but next is null" }
+            .get(index - length)
     }
 
     /** Returns `true` if this slice contains no bytes. */
@@ -106,17 +107,24 @@ class BufSlice(
     /** Returns `true` if this slice has the same bytes as [other]. */
     fun contentEquals(other: BufSlice): Boolean {
         if (totalLength != other.totalLength) return false
-        // Segment-aware comparison
-        var i = 0
-        var aSeg: BufSlice? = this
-        var aOff = 0
-        var bSeg: BufSlice? = other
-        var bOff = 0
-        while (i < totalLength) {
-            if (aOff >= aSeg!!.length) { aSeg = aSeg.next; aOff = 0 }
-            if (bOff >= bSeg!!.length) { bSeg = bSeg.next; bOff = 0 }
-            if (aSeg!!.buf.getByte(aSeg.offset + aOff) != bSeg!!.buf.getByte(bSeg.offset + bOff)) return false
-            aOff++; bOff++; i++
+        // Parallel segment traversal. Advances through both chains in
+        // chunk-sized steps (min of remaining bytes in each segment).
+        // No !! assertions — chain exhaustion terminates the loop via ?: break.
+        var aSeg = this; var aOff = 0
+        var bSeg = other; var bOff = 0
+        var remaining = totalLength
+        while (remaining > 0) {
+            val aLen = aSeg.length - aOff
+            val bLen = bSeg.length - bOff
+            val chunk = minOf(aLen, bLen, remaining)
+            for (i in 0 until chunk) {
+                if (aSeg.buf.getByte(aSeg.offset + aOff + i) !=
+                    bSeg.buf.getByte(bSeg.offset + bOff + i)
+                ) return false
+            }
+            aOff += chunk; bOff += chunk; remaining -= chunk
+            if (aOff >= aSeg.length) { aSeg = aSeg.next ?: break; aOff = 0 }
+            if (bOff >= bSeg.length) { bSeg = bSeg.next ?: break; bOff = 0 }
         }
         return true
     }
