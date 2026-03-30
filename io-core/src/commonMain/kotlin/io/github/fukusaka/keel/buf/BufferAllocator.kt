@@ -16,7 +16,7 @@ package io.github.fukusaka.keel.buf
  * PooledDirectAllocator  JVM           NIO / Netty
  * ```
  *
- * io_uring uses its own [ProvidedBufferRing][engine-io-uring] for
+ * io_uring uses its own `ProvidedBufferRing` (in engine-io-uring) for
  * kernel-managed buffer selection, not a [BufferAllocator].
  *
  * **Per-EventLoop support**: engines call [createForEventLoop] once per
