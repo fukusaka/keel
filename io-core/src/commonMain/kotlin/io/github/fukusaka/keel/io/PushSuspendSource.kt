@@ -13,20 +13,25 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * **Ownership contract**: The caller receives ownership of the returned
  * [IoBuf] and MUST call [IoBuf.release] when done reading.
- * The [IoBuf.deallocator] returns the buffer to the engine's pool
+ * The [IoBuf]'s deallocator returns the buffer to the engine's pool
  * (e.g., a provided buffer ring in the io_uring engine).
  *
- * **Integration with codec layer**: Use [PushToSuspendSourceAdapter] to
- * adapt a [PushSuspendSource] to [SuspendSource] for use with
- * [BufferedSuspendSource]. A future push-mode [BufferedSuspendSource]
- * constructor will accept [PushSuspendSource] directly for zero-copy.
+ * **Integration with codec layer**: Use the push-mode
+ * [BufferedSuspendSource] constructor for zero-copy codec integration.
+ * Alternatively, [PushToSuspendSourceAdapter] provides pull-model
+ * compatibility with one [IoBuf.copyTo] per read.
  *
  * **MemoryOwner not used**: A `MemoryOwner<IoBuf>` wrapper was considered
  * but [IoBuf] already provides [IoBuf.retain]/[IoBuf.release] with
  * deallocator callback, making the wrapper redundant. See design.md §4.7.
  *
+ * **Thread safety**: implementations are typically single-threaded
+ * (EventLoop model). [readOwned] dispatches to the EventLoop when
+ * called from an external thread.
+ *
  * @see SuspendSource for the pull-model counterpart
  * @see PushToSuspendSourceAdapter for pull-model compatibility
+ * @see BufferedSuspendSource for zero-copy push-mode reading
  */
 interface PushSuspendSource : AutoCloseable {
     /**
@@ -34,12 +39,21 @@ interface PushSuspendSource : AutoCloseable {
      *
      * The returned [IoBuf] contains data between [IoBuf.readerIndex]
      * and [IoBuf.writerIndex]. The caller MUST call [IoBuf.release]
-     * after reading, which triggers the [IoBuf.deallocator] to return
+     * after reading, which triggers the deallocator to return
      * the buffer to the engine's pool.
      *
-     * @return A [IoBuf] with readable data, or `null` on EOF.
+     * @return An [IoBuf] with readable data, or `null` on EOF.
      */
     suspend fun readOwned(): IoBuf?
 
+    /**
+     * Releases any resources held by this source (e.g., cancels
+     * in-flight multishot recv operations).
+     *
+     * Does NOT release [IoBuf]s already returned by [readOwned] —
+     * the caller is responsible for releasing those.
+     *
+     * Safe to call multiple times (idempotent).
+     */
     override fun close()
 }
