@@ -272,4 +272,119 @@ class IoBufTest {
         assertEquals(8, buf.writableBytes)
         buf.release()
     }
+
+    // --- getByte ---
+
+    @Test
+    fun getByteReadsAtAbsoluteIndex() {
+        val buf = createDefaultIoBuf(8)
+        buf.writeByte(0x41) // 'A'
+        buf.writeByte(0x42) // 'B'
+        buf.writeByte(0x43) // 'C'
+        assertEquals(0x41.toByte(), buf.getByte(0))
+        assertEquals(0x42.toByte(), buf.getByte(1))
+        assertEquals(0x43.toByte(), buf.getByte(2))
+        // getByte does not advance readerIndex
+        assertEquals(0, buf.readerIndex)
+        buf.release()
+    }
+
+    @Test
+    fun getByteAfterReadByte() {
+        val buf = createDefaultIoBuf(8)
+        buf.writeByte(0x41)
+        buf.writeByte(0x42)
+        buf.readByte() // advance readerIndex to 1
+        // getByte uses absolute index, not relative to readerIndex
+        assertEquals(0x41.toByte(), buf.getByte(0))
+        assertEquals(0x42.toByte(), buf.getByte(1))
+        buf.release()
+    }
+
+    // --- copyTo ---
+
+    @Test
+    fun copyToBasic() {
+        val src = createDefaultIoBuf(8)
+        val dst = createDefaultIoBuf(8)
+        src.writeBytes("Hello".encodeToByteArray(), 0, 5)
+        src.copyTo(dst, 5)
+        assertEquals(5, src.readerIndex)
+        assertEquals(0, src.readableBytes)
+        assertEquals(5, dst.writerIndex)
+        assertEquals(5, dst.readableBytes)
+        for (i in 0 until 5) {
+            assertEquals("Hello".encodeToByteArray()[i], dst.readByte())
+        }
+        src.release()
+        dst.release()
+    }
+
+    @Test
+    fun copyToZeroBytes() {
+        val src = createDefaultIoBuf(8)
+        val dst = createDefaultIoBuf(8)
+        src.writeByte(0x41)
+        src.copyTo(dst, 0)
+        assertEquals(0, src.readerIndex) // unchanged
+        assertEquals(0, dst.writerIndex) // unchanged
+        src.release()
+        dst.release()
+    }
+
+    @Test
+    fun copyToFullCapacity() {
+        val src = createDefaultIoBuf(4)
+        val dst = createDefaultIoBuf(4)
+        src.writeBytes(byteArrayOf(1, 2, 3, 4), 0, 4)
+        src.copyTo(dst, 4)
+        assertEquals(4, dst.readableBytes)
+        assertEquals(1.toByte(), dst.readByte())
+        assertEquals(2.toByte(), dst.readByte())
+        assertEquals(3.toByte(), dst.readByte())
+        assertEquals(4.toByte(), dst.readByte())
+        src.release()
+        dst.release()
+    }
+
+    @Test
+    fun copyToExceedsReadableThrows() {
+        val src = createDefaultIoBuf(8)
+        val dst = createDefaultIoBuf(8)
+        src.writeByte(0x41) // 1 readable byte
+        assertFailsWith<IllegalArgumentException> {
+            src.copyTo(dst, 2) // request 2 bytes but only 1 available
+        }
+        src.release()
+        dst.release()
+    }
+
+    @Test
+    fun copyToExceedsWritableThrows() {
+        val src = createDefaultIoBuf(8)
+        val dst = createDefaultIoBuf(2)
+        src.writeBytes(byteArrayOf(1, 2, 3, 4), 0, 4)
+        assertFailsWith<IllegalArgumentException> {
+            src.copyTo(dst, 4) // dest only has 2 writable bytes
+        }
+        src.release()
+        dst.release()
+    }
+
+    @Test
+    fun copyToPartialThenMore() {
+        val src = createDefaultIoBuf(8)
+        val dst = createDefaultIoBuf(8)
+        src.writeBytes("ABCDEF".encodeToByteArray(), 0, 6)
+        src.copyTo(dst, 3) // copy "ABC"
+        assertEquals(3, src.readerIndex)
+        assertEquals(3, dst.writerIndex)
+        src.copyTo(dst, 3) // copy "DEF"
+        assertEquals(6, src.readerIndex)
+        assertEquals(6, dst.writerIndex)
+        assertEquals('A'.code.toByte(), dst.getByte(0))
+        assertEquals('F'.code.toByte(), dst.getByte(5))
+        src.release()
+        dst.release()
+    }
 }

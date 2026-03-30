@@ -162,6 +162,67 @@ class BufferedSuspendSourceTest {
     }
 
     // ============================================================
+    // Pull-mode: buffer boundary tests
+    // ============================================================
+
+    /** Creates a SuspendSource that delivers [data] in fixed-size chunks. */
+    private fun chunkedSourceOf(data: String, chunkSize: Int): SuspendSource = object : SuspendSource {
+        private val bytes = data.encodeToByteArray()
+        private var pos = 0
+        override suspend fun read(buf: IoBuf): Int {
+            if (pos >= bytes.size) return -1
+            val n = minOf(chunkSize, bytes.size - pos, buf.writableBytes)
+            for (i in 0 until n) buf.writeByte(bytes[pos++])
+            return n
+        }
+        override fun close() {}
+    }
+
+    @Test
+    fun pullMode_scanLine_lineAtBufferBoundary() = runBlocking {
+        // Line exactly fills BUFFER_SIZE (8192). The LF is at the buffer boundary.
+        val line = "x".repeat(8191) + "\n"
+        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
+        val result = source.scanLine()?.decodeToString()
+        assertEquals("x".repeat(8191), result)
+        assertNull(source.scanLine())
+        source.close()
+    }
+
+    @Test
+    fun pullMode_scanLine_lineSpansCompact() = runBlocking {
+        // First line consumes most of the buffer. Second line starts near
+        // the end and requires compact + refill.
+        val line1 = "A".repeat(8000) + "\n"
+        val line2 = "B".repeat(500) + "\n"
+        val source = BufferedSuspendSource(sourceOf(line1 + line2), DefaultAllocator)
+        assertEquals("A".repeat(8000), source.scanLine()?.decodeToString())
+        assertEquals("B".repeat(500), source.scanLine()?.decodeToString())
+        assertNull(source.scanLine())
+        source.close()
+    }
+
+    @Test
+    fun pullMode_readLine_largerThanBuffer() = runBlocking {
+        // Line larger than BUFFER_SIZE (8192) — requires multiple refills.
+        val line = "y".repeat(20000) + "\n"
+        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
+        assertEquals("y".repeat(20000), source.readLine())
+        assertNull(source.readLine())
+        source.close()
+    }
+
+    @Test
+    fun pullMode_readByteArray_acrossRefill() = runBlocking {
+        // Request more bytes than initial buffer fill provides.
+        val data = "Z".repeat(100)
+        val source = BufferedSuspendSource(chunkedSourceOf(data, 30), DefaultAllocator)
+        val result = source.readByteArray(100)
+        assertEquals(data, result.decodeToString())
+        source.close()
+    }
+
+    // ============================================================
     // Push-mode tests
     // ============================================================
 
