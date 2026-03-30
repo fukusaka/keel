@@ -46,7 +46,11 @@ class BufSlice(
     /** Total bytes across all segments. Computed once at construction. */
     val totalLength: Int = length + (next?.totalLength ?: 0)
 
-    /** Returns the byte at the given relative [index] across the chain. */
+    /**
+     * Returns the byte at the given relative [index] across the chain.
+     *
+     * @throws IllegalArgumentException if [index] is out of range `[0, totalLength)`.
+     */
     operator fun get(index: Int): Byte {
         require(index in 0 until totalLength) { "index $index out of bounds (totalLength=$totalLength)" }
         if (index < length) return buf.getByte(offset + index)
@@ -62,6 +66,7 @@ class BufSlice(
      *
      * @param from Start index (inclusive), relative to this slice.
      * @param to   End index (exclusive), relative to this slice.
+     * @throws IllegalArgumentException if [from] or [to] is out of range.
      */
     fun slice(from: Int, to: Int): BufSlice {
         require(from in 0..totalLength) { "from $from out of bounds (totalLength=$totalLength)" }
