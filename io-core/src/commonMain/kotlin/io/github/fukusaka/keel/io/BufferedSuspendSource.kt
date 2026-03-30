@@ -320,11 +320,12 @@ class BufferedSuspendSource : AutoCloseable {
                     }
                 }
             }
-            // LF not in this buffer either — continue to next
-            // For 3+ buffer spans (extremely rare), fall back to readLine
-            // and reconstruct. This avoids deeply nested BufSlice chains.
-            // However, for simplicity we continue the chain approach:
-            // firstBuf already consumed, cur will be consumed on next iteration.
+            // LF not in this buffer either — continue filling.
+            // For 3+ buffer spans (extremely rare in HTTP), the loop
+            // continues and crossBufferScanLine returns a 2-segment chain
+            // (first segment + remaining segment where LF is found).
+            // Intermediate fully-consumed buffers are not included in the
+            // chain — they will be released by releaseConsumedBuffers().
         }
     }
 

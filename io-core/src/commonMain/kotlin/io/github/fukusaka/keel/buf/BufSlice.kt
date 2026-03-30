@@ -131,7 +131,6 @@ class BufSlice(
     fun contentEquals(string: String): Boolean {
         if (totalLength != string.length) return false
         var seg: BufSlice? = this
-        var segOff = 0
         var i = 0
         while (seg != null) {
             for (j in 0 until seg.length) {
@@ -139,7 +138,6 @@ class BufSlice(
                 i++
             }
             seg = seg.next
-            segOff = 0
         }
         return true
     }

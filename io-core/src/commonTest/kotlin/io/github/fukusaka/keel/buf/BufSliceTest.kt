@@ -183,4 +183,140 @@ class BufSliceTest {
         assertTrue(uri.contentEquals("/hello"))
         buf.release()
     }
+
+    // ============================================================
+    // Multi-segment (next chain) tests
+    // ============================================================
+
+    private fun chainSlice(first: String, second: String): Triple<BufSlice, IoBuf, IoBuf> {
+        val buf1 = DefaultAllocator.allocate(first.length)
+        for (b in first.encodeToByteArray()) buf1.writeByte(b)
+        val buf2 = DefaultAllocator.allocate(second.length)
+        for (b in second.encodeToByteArray()) buf2.writeByte(b)
+        val slice = BufSlice(buf1, 0, first.length, BufSlice(buf2, 0, second.length))
+        return Triple(slice, buf1, buf2)
+    }
+
+    @Test
+    fun chain_totalLength() {
+        val (slice, buf1, buf2) = chainSlice("Hello", "World")
+        assertEquals(10, slice.totalLength)
+        assertEquals(5, slice.length)
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_get() {
+        val (slice, buf1, buf2) = chainSlice("AB", "CD")
+        assertEquals('A'.code.toByte(), slice[0])
+        assertEquals('B'.code.toByte(), slice[1])
+        assertEquals('C'.code.toByte(), slice[2])
+        assertEquals('D'.code.toByte(), slice[3])
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_indexOf() {
+        val (slice, buf1, buf2) = chainSlice("Hel", "lo!")
+        assertEquals(2, slice.indexOf('l'.code.toByte()))  // in first segment
+        assertEquals(3, slice.indexOf('l'.code.toByte(), 3))  // in second segment
+        assertEquals(5, slice.indexOf('!'.code.toByte()))
+        assertEquals(-1, slice.indexOf('?'.code.toByte()))
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_contentEquals_string() {
+        val (slice, buf1, buf2) = chainSlice("Con", "tent")
+        assertTrue(slice.contentEquals("Content"))
+        assertFalse(slice.contentEquals("Conten"))
+        assertFalse(slice.contentEquals("ContentX"))
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_contentEqualsIgnoreCase() {
+        val (slice, buf1, buf2) = chainSlice("con", "TENT")
+        assertTrue(slice.contentEqualsIgnoreCase("Content"))
+        assertTrue(slice.contentEqualsIgnoreCase("CONTENT"))
+        assertFalse(slice.contentEqualsIgnoreCase("Conten"))
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_contentEquals_bufSlice() {
+        val (slice1, buf1a, buf1b) = chainSlice("He", "llo")
+        val buf2 = DefaultAllocator.allocate(5)
+        for (b in "Hello".encodeToByteArray()) buf2.writeByte(b)
+        val slice2 = BufSlice(buf2, 0, 5)
+        assertTrue(slice1.contentEquals(slice2))
+        buf1a.release(); buf1b.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_decodeToString() {
+        val (slice, buf1, buf2) = chainSlice("Hello", " World")
+        assertEquals("Hello World", slice.decodeToString())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_toByteArray() {
+        val (slice, buf1, buf2) = chainSlice("AB", "CD")
+        val bytes = slice.toByteArray()
+        assertEquals(4, bytes.size)
+        assertEquals("ABCD", bytes.decodeToString())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_toInt() {
+        val (slice, buf1, buf2) = chainSlice("12", "34")
+        assertEquals(1234, slice.toInt())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_trim() {
+        val (slice, buf1, buf2) = chainSlice("  He", "llo  ")
+        val trimmed = slice.trim()
+        assertEquals("Hello", trimmed.decodeToString())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_slice_within_first() {
+        val (slice, buf1, buf2) = chainSlice("Hello", "World")
+        val sub = slice.slice(1, 4) // "ell"
+        assertEquals("ell", sub.decodeToString())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_slice_spanning() {
+        val (slice, buf1, buf2) = chainSlice("Hello", "World")
+        val sub = slice.slice(3, 8) // "loWor"
+        assertEquals("loWor", sub.decodeToString())
+        assertEquals(5, sub.totalLength)
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_slice_within_second() {
+        val (slice, buf1, buf2) = chainSlice("Hello", "World")
+        val sub = slice.slice(6, 9) // "orl"
+        assertEquals("orl", sub.decodeToString())
+        buf1.release(); buf2.release()
+    }
+
+    @Test
+    fun chain_isEmpty() {
+        val buf = DefaultAllocator.allocate(4)
+        buf.writeByte(0)
+        val empty = BufSlice(buf, 0, 0, null)
+        assertTrue(empty.isEmpty())
+        val (nonEmpty, buf1, buf2) = chainSlice("A", "B")
+        assertFalse(nonEmpty.isEmpty())
+        buf.release(); buf1.release(); buf2.release()
+    }
 }
