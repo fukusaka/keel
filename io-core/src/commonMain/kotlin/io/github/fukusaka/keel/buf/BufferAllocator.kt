@@ -4,17 +4,20 @@ package io.github.fukusaka.keel.buf
  * Allocates [IoBuf] instances.
  *
  * Pluggable design: each engine uses the allocator best suited for its
- * platform. Buffer deallocation is handled by the [IoBuf.deallocator]
- * callback set during [allocate] — callers simply call [IoBuf.release].
+ * platform. Buffer deallocation is handled by the deallocator callback
+ * (see [PoolableIoBuf]) set during [allocate] — callers simply call
+ * [IoBuf.release].
  *
  * ```
- * Allocator            Target        Engine
- * ---------            ------        ------
- * DefaultAllocator        all           all (test/fallback)
- * SlabAllocator        Native        epoll / kqueue
- * PooledDirectAlloc    JVM           NIO
- * IoUringFixedAlloc    Native/Linux  io_uring (Phase 8)
+ * Allocator              Target        Engine
+ * ---------              ------        ------
+ * DefaultAllocator       all           all (test/fallback)
+ * SlabAllocator          Native        epoll / kqueue
+ * PooledDirectAllocator  JVM           NIO / Netty
  * ```
+ *
+ * io_uring uses its own [ProvidedBufferRing][engine-io-uring] for
+ * kernel-managed buffer selection, not a [BufferAllocator].
  *
  * **Per-EventLoop support**: engines call [createForEventLoop] once per
  * EventLoop thread. Stateless allocators (e.g. [DefaultAllocator]) return
