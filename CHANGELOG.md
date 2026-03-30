@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `ktor-engine`: use `BufferedSuspendSource` push-mode for `PushChannel` engines (io_uring); eliminates one `IoBuf.copyTo()` per read in the HTTP codec path
 - `io-core`: rename `NativeBuf` to `IoBuf`; platform implementations: `NativeIoBuf` (Native), `DirectIoBuf` (JVM), `TypedArrayIoBuf` (JS); buffer classes moved from `.keel.io` to `.keel.buf` package
 - `io-core`: rename `HeapAllocator` to `DefaultAllocator`
 - `engine-io-uring`: rename `RingBufferNativeBuf` to `RingBufferIoBuf`
