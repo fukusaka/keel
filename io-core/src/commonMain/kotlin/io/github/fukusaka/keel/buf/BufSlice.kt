@@ -1,21 +1,29 @@
 package io.github.fukusaka.keel.buf
 
 /**
- * Zero-copy read-only view over a region of a [IoBuf].
+ * Zero-copy read-only view over a region of one or more [IoBuf]s.
  *
  * Provides byte-level access, searching, comparison, and lazy String
  * conversion without copying the underlying buffer data. Designed for
  * HTTP header parsing where lines are consumed as byte ranges rather
  * than heap-allocated Strings.
  *
+ * **Single-segment** (99% of cases): `next == null`, behaves identically
+ * to a simple (buf, offset, length) triple. [totalLength] == [length].
+ *
+ * **Multi-segment** (cross-buffer lines in push-mode): [next] links to
+ * the continuation in the next [IoBuf]. All methods traverse the chain
+ * at segment granularity — no per-byte branch in the inner loop.
+ *
  * ```
- * IoBuf:
- * +---+---+---+---+---+---+---+---+---+---+
- * | G | E | T |   | / | h | e | l | l | o |
- * +---+---+---+---+---+---+---+---+---+---+
- *       ^               ^
- *       offset=1         offset+length=6
- *       BufSlice("ET / h")
+ * Single segment:
+ *   IoBuf A: [G E T   / h e l l o]
+ *            ^offset    ^offset+length
+ *
+ * Multi-segment (line spans two buffers):
+ *   IoBuf A: [... C o n t e]  ← this (offset=5, length=5)
+ *   IoBuf B: [n t - T y p e]  ← next (offset=0, length=7)
+ *   totalLength = 12, represents "Conte" + "nt-Type"
  * ```
  *
  * **Lifetime**: a BufSlice does not retain the underlying [IoBuf].
@@ -24,24 +32,29 @@ package io.github.fukusaka.keel.buf
  * within a single parse step (between [BufferedSuspendSource.scanLine]
  * calls) and are discarded before the next buffer refill.
  *
- * @param buf    The underlying buffer.
+ * @param buf    The underlying buffer for this segment.
  * @param offset Absolute byte offset in [buf] (not relative to readerIndex).
- * @param length Number of bytes in this slice.
+ * @param length Number of bytes in this segment.
+ * @param next   Continuation segment in the next [IoBuf], or null.
  */
 class BufSlice(
     val buf: IoBuf,
     val offset: Int,
     val length: Int,
+    val next: BufSlice? = null,
 ) {
+    /** Total bytes across all segments. Computed once at construction. */
+    val totalLength: Int = length + (next?.totalLength ?: 0)
 
-    /** Returns the byte at the given relative [index] within this slice. */
+    /** Returns the byte at the given relative [index] across the chain. */
     operator fun get(index: Int): Byte {
-        require(index in 0 until length) { "index $index out of bounds (length=$length)" }
-        return buf.getByte(offset + index)
+        require(index in 0 until totalLength) { "index $index out of bounds (totalLength=$totalLength)" }
+        if (index < length) return buf.getByte(offset + index)
+        return next!!.get(index - length)
     }
 
     /** Returns `true` if this slice contains no bytes. */
-    fun isEmpty(): Boolean = length == 0
+    fun isEmpty(): Boolean = totalLength == 0
 
     /**
      * Returns a sub-slice without copying.
@@ -50,27 +63,60 @@ class BufSlice(
      * @param to   End index (exclusive), relative to this slice.
      */
     fun slice(from: Int, to: Int): BufSlice {
-        require(from in 0..length) { "from $from out of bounds (length=$length)" }
-        require(to in from..length) { "to $to out of bounds (from=$from, length=$length)" }
-        return BufSlice(buf, offset + from, to - from)
+        require(from in 0..totalLength) { "from $from out of bounds (totalLength=$totalLength)" }
+        require(to in from..totalLength) { "to $to out of bounds (from=$from, totalLength=$totalLength)" }
+        val newLength = to - from
+        if (newLength == 0) return BufSlice(buf, offset, 0)
+        if (next == null) return BufSlice(buf, offset + from, newLength)
+
+        // Multi-segment: find starting segment
+        if (from >= length) {
+            // Entirely in next segment(s)
+            return next.slice(from - length, to - length)
+        }
+        val thisPartLength = minOf(length - from, newLength)
+        if (thisPartLength == newLength) {
+            // Entirely in this segment
+            return BufSlice(buf, offset + from, newLength)
+        }
+        // Spans this and next
+        return BufSlice(buf, offset + from, thisPartLength, next.slice(0, newLength - thisPartLength))
     }
 
     /**
      * Returns the relative index of the first occurrence of [byte]
      * at or after [fromIndex], or -1 if not found.
+     *
+     * Traverses segments at segment granularity — no per-byte branch.
      */
     fun indexOf(byte: Byte, fromIndex: Int = 0): Int {
-        for (i in fromIndex until length) {
-            if (buf.getByte(offset + i) == byte) return i
+        var seg: BufSlice? = this
+        var segStart = 0
+        while (seg != null) {
+            val start = maxOf(fromIndex - segStart, 0)
+            for (i in start until seg.length) {
+                if (seg.buf.getByte(seg.offset + i) == byte) return segStart + i
+            }
+            segStart += seg.length
+            seg = seg.next
         }
         return -1
     }
 
     /** Returns `true` if this slice has the same bytes as [other]. */
     fun contentEquals(other: BufSlice): Boolean {
-        if (length != other.length) return false
-        for (i in 0 until length) {
-            if (buf.getByte(offset + i) != other.buf.getByte(other.offset + i)) return false
+        if (totalLength != other.totalLength) return false
+        // Segment-aware comparison
+        var i = 0
+        var aSeg: BufSlice? = this
+        var aOff = 0
+        var bSeg: BufSlice? = other
+        var bOff = 0
+        while (i < totalLength) {
+            if (aOff >= aSeg!!.length) { aSeg = aSeg.next; aOff = 0 }
+            if (bOff >= bSeg!!.length) { bSeg = bSeg.next; bOff = 0 }
+            if (aSeg!!.buf.getByte(aSeg.offset + aOff) != bSeg!!.buf.getByte(bSeg.offset + bOff)) return false
+            aOff++; bOff++; i++
         }
         return true
     }
@@ -83,9 +129,17 @@ class BufSlice(
      * are always ASCII.
      */
     fun contentEquals(string: String): Boolean {
-        if (length != string.length) return false
-        for (i in 0 until length) {
-            if (buf.getByte(offset + i).toInt() and 0xFF != string[i].code) return false
+        if (totalLength != string.length) return false
+        var seg: BufSlice? = this
+        var segOff = 0
+        var i = 0
+        while (seg != null) {
+            for (j in 0 until seg.length) {
+                if (seg.buf.getByte(seg.offset + j).toInt() and 0xFF != string[i].code) return false
+                i++
+            }
+            seg = seg.next
+            segOff = 0
         }
         return true
     }
@@ -97,14 +151,20 @@ class BufSlice(
      * Suitable for HTTP header name comparison (RFC 7230 case-insensitive).
      */
     fun contentEqualsIgnoreCase(string: String): Boolean {
-        if (length != string.length) return false
-        for (i in 0 until length) {
-            val b = buf.getByte(offset + i).toInt() and 0xFF
-            val c = string[i].code
-            if (b == c) continue
-            // ASCII case-insensitive: 'A'..'Z' (65..90) vs 'a'..'z' (97..122)
-            if ((b or 0x20) != (c or 0x20)) return false
-            if ((b or 0x20) !in 0x61..0x7A) return false
+        if (totalLength != string.length) return false
+        var seg: BufSlice? = this
+        var i = 0
+        while (seg != null) {
+            for (j in 0 until seg.length) {
+                val b = seg.buf.getByte(seg.offset + j).toInt() and 0xFF
+                val c = string[i].code
+                if (b != c) {
+                    if ((b or 0x20) != (c or 0x20)) return false
+                    if ((b or 0x20) !in 0x61..0x7A) return false
+                }
+                i++
+            }
+            seg = seg.next
         }
         return true
     }
@@ -115,10 +175,10 @@ class BufSlice(
      */
     fun trim(): BufSlice {
         var start = 0
-        while (start < length && isWhitespace(buf.getByte(offset + start))) start++
-        var end = length
-        while (end > start && isWhitespace(buf.getByte(offset + end - 1))) end--
-        return if (start == 0 && end == length) this else slice(start, end)
+        while (start < totalLength && isWhitespace(get(start))) start++
+        var end = totalLength
+        while (end > start && isWhitespace(get(end - 1))) end--
+        return if (start == 0 && end == totalLength) this else slice(start, end)
     }
 
     /**
@@ -128,19 +188,20 @@ class BufSlice(
      * when a String is truly required (e.g., Ktor API boundary).
      */
     fun decodeToString(): String {
-        if (length == 0) return ""
-        val bytes = ByteArray(length)
-        for (i in 0 until length) {
-            bytes[i] = buf.getByte(offset + i)
-        }
-        return bytes.decodeToString()
+        if (totalLength == 0) return ""
+        return toByteArray().decodeToString()
     }
 
     /** Copies this slice into a new [ByteArray]. */
     fun toByteArray(): ByteArray {
-        val bytes = ByteArray(length)
-        for (i in 0 until length) {
-            bytes[i] = buf.getByte(offset + i)
+        val bytes = ByteArray(totalLength)
+        var seg: BufSlice? = this
+        var pos = 0
+        while (seg != null) {
+            for (i in 0 until seg.length) {
+                bytes[pos++] = seg.buf.getByte(seg.offset + i)
+            }
+            seg = seg.next
         }
         return bytes
     }
@@ -153,19 +214,27 @@ class BufSlice(
      * @throws NumberFormatException if the slice is not a valid integer.
      */
     fun toInt(): Int {
-        if (length == 0) throw NumberFormatException("empty BufSlice")
+        if (totalLength == 0) throw NumberFormatException("empty BufSlice")
         var result = 0
-        for (i in 0 until length) {
-            val b = buf.getByte(offset + i).toInt() and 0xFF
-            if (b !in 0x30..0x39) throw NumberFormatException(
-                "Invalid digit at index $i: '${b.toChar()}' in ${decodeToString()}"
-            )
-            result = result * 10 + (b - 0x30)
+        var seg: BufSlice? = this
+        var globalIndex = 0
+        while (seg != null) {
+            for (i in 0 until seg.length) {
+                val b = seg.buf.getByte(seg.offset + i).toInt() and 0xFF
+                if (b !in 0x30..0x39) throw NumberFormatException(
+                    "Invalid digit at index $globalIndex: '${b.toChar()}' in ${decodeToString()}"
+                )
+                result = result * 10 + (b - 0x30)
+                globalIndex++
+            }
+            seg = seg.next
         }
         return result
     }
 
-    override fun toString(): String = "BufSlice(offset=$offset, length=$length)"
+    override fun toString(): String =
+        if (next == null) "BufSlice(offset=$offset, length=$length)"
+        else "BufSlice(offset=$offset, length=$length, totalLength=$totalLength)"
 
     companion object {
         private fun isWhitespace(b: Byte): Boolean =
