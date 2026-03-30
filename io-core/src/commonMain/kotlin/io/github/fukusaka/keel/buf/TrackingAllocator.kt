@@ -40,7 +40,11 @@ class TrackingAllocator(
     override fun allocate(capacity: Int): IoBuf {
         allocateCount++
         val buf = delegate.allocate(capacity)
-        val poolable = buf as PoolableIoBuf
+        val poolable = buf as? PoolableIoBuf
+            ?: throw IllegalStateException(
+                "TrackingAllocator requires a PoolableIoBuf-compatible allocator, " +
+                    "but delegate returned ${buf::class.simpleName}"
+            )
         val original = poolable.deallocator
         poolable.deallocator = { b ->
             releaseCount++
