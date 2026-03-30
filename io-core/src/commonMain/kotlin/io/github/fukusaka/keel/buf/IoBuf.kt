@@ -3,8 +3,18 @@ package io.github.fukusaka.keel.buf
 /**
  * A fixed-capacity byte buffer backed by platform-native memory.
  *
+ * [IoBuf] is the fundamental data carrier in keel's I/O pipeline.
+ * Data flows from the kernel through [IoBuf] to the codec layer
+ * (HTTP parser, WebSocket framing) and back:
+ *
+ * ```
+ * kernel recv → IoBuf → BufferedSuspendSource → codec (scanLine/readByte)
+ * codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
+ * ```
+ *
  * On JVM, backed by a direct [java.nio.ByteBuffer].
  * On Native targets, backed by memory allocated from [kotlinx.cinterop.nativeHeap].
+ * On JS, backed by [org.khronos.webgl.Int8Array].
  *
  * ```
  * +-------------------+------------------+------------------+
@@ -17,8 +27,9 @@ package io.github.fukusaka.keel.buf
  * **Reference counting**: newly created buffers start with `refCount = 1`.
  * Call [retain] to increment and [release] to decrement.
  * When the count reaches zero, the underlying memory is freed.
- * Thread safety: single-threaded (EventLoop model). AtomicInt deferred
- * to Phase (b) if needed.
+ *
+ * **Thread safety**: designed for single-threaded use (EventLoop model).
+ * Concurrent access from multiple threads requires external synchronisation.
  *
  * **Engine-layer zero-copy access**: platform-specific implementations
  * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or
@@ -27,7 +38,11 @@ package io.github.fukusaka.keel.buf
  *
  * **Custom implementations**: engines can implement this interface
  * directly (e.g., wrapping kernel-managed buffers) instead of using
- * the default [IoBuf][createDefaultIoBuf].
+ * the default platform allocations. See `RingBufferIoBuf` in engine-io-uring
+ * for an example.
+ *
+ * @see BufferAllocator for creating IoBuf instances
+ * @see BufSlice for zero-copy read-only views into IoBuf regions
  */
 interface IoBuf {
     /** Buffer capacity in bytes. */
@@ -45,7 +60,14 @@ interface IoBuf {
     /** Number of writable bytes (`capacity - writerIndex`). */
     val writableBytes: Int
 
-    /** Writes [value] at the current write position and advances [writerIndex]. */
+    /**
+     * Writes [value] at the current write position and advances [writerIndex].
+     *
+     * **Precondition**: caller must ensure `writableBytes > 0`. Behaviour when
+     * the buffer is full is platform-dependent: JVM throws
+     * [IndexOutOfBoundsException], Native silently writes out of bounds
+     * (undefined behaviour).
+     */
     fun writeByte(value: Byte)
 
     /**
@@ -78,17 +100,32 @@ interface IoBuf {
      * After this call, this buffer's [readerIndex] and [dest]'s [writerIndex]
      * both advance by [length].
      *
+     * **Platform constraint**: both buffers must be the same platform type
+     * (e.g., both [NativePointerAccess][io.github.fukusaka.keel.buf.NativePointerAccess]
+     * on Native). Mixing types throws [ClassCastException].
+     *
      * @throws IllegalArgumentException if [length] exceeds [readableBytes] or [dest]'s [writableBytes].
      */
     fun copyTo(dest: IoBuf, length: Int)
 
-    /** Reads a byte from the current read position and advances [readerIndex]. */
+    /**
+     * Reads a byte from the current read position and advances [readerIndex].
+     *
+     * **Precondition**: caller must ensure `readableBytes > 0`. Behaviour when
+     * no data is available is platform-dependent: JVM throws
+     * [IndexOutOfBoundsException], Native reads uninitialised memory
+     * (undefined behaviour).
+     */
     fun readByte(): Byte
 
     /**
      * Reads a byte at the given absolute [index] without modifying [readerIndex].
      *
      * Used by [BufSlice] for random access within a buffer region.
+     *
+     * **Precondition**: caller must ensure `0 <= index < capacity`. Behaviour
+     * for out-of-bounds access is platform-dependent: JVM throws
+     * [IndexOutOfBoundsException], Native is undefined behaviour.
      */
     fun getByte(index: Int): Byte
 
@@ -107,7 +144,11 @@ interface IoBuf {
      */
     fun clear()
 
-    /** Increments the reference count and returns this buffer for chaining. */
+    /**
+     * Increments the reference count and returns this buffer for chaining.
+     *
+     * @throws IllegalStateException if the buffer has already been fully released.
+     */
     fun retain(): IoBuf
 
     /**
@@ -121,6 +162,10 @@ interface IoBuf {
 
     /**
      * Releases the underlying native memory immediately, ignoring the reference count.
+     *
+     * Safe to call multiple times (idempotent on Native via `freed` flag;
+     * no-op on JVM/JS where memory is GC-managed).
+     *
      * Prefer [release] for normal lifecycle management.
      */
     fun close()
@@ -165,11 +210,14 @@ internal interface PoolableIoBuf : IoBuf {
 }
 
 /**
- * Creates a heap-allocated [IoBuf] instance for the current platform.
+ * Creates a platform-default [IoBuf] instance.
  *
  * Platform implementations:
- * - **Native**: `nativeHeap.allocArray<ByteVar>(capacity)`
- * - **JVM**: `ByteBuffer.allocateDirect(capacity)`
- * - **JS**: `Int8Array(capacity)`
+ * - **Native**: [NativeIoBuf] — `nativeHeap.allocArray<ByteVar>(capacity)`
+ * - **JVM**: [DirectIoBuf] — `ByteBuffer.allocateDirect(capacity)`
+ * - **JS**: [TypedArrayIoBuf] — `Int8Array(capacity)`
+ *
+ * Used by [DefaultAllocator]. Engines and tests should prefer
+ * [BufferAllocator.allocate] over calling this directly.
  */
 internal expect fun createDefaultIoBuf(capacity: Int): IoBuf

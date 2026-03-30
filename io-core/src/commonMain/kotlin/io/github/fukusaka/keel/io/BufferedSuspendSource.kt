@@ -29,6 +29,9 @@ import io.github.fukusaka.keel.buf.IoBuf
  * **Ownership**: this class does NOT own the underlying source. Closing
  * this wrapper releases internal/owned buffers but does not close the
  * source. The caller is responsible for closing the source independently.
+ *
+ * **Thread safety**: not thread-safe. Designed for single-threaded use
+ * within an EventLoop or a single coroutine scope.
  */
 class BufferedSuspendSource : AutoCloseable {
 
@@ -350,6 +353,15 @@ class BufferedSuspendSource : AutoCloseable {
         return available
     }
 
+    /**
+     * Releases internal buffers. Does NOT close the underlying source.
+     *
+     * Pull mode: releases the single internal 8 KiB buffer.
+     * Push mode: releases all engine-owned buffers in the chain.
+     *
+     * Safe to call multiple times (idempotent via `closed` flag).
+     * Calling read methods after close is undefined behaviour.
+     */
     override fun close() {
         if (!closed) {
             closed = true
