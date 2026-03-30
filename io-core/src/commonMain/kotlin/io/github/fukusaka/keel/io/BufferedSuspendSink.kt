@@ -48,6 +48,7 @@ class BufferedSuspendSink(
 ) : AutoCloseable {
 
     private var buf = allocator.allocate(BUFFER_SIZE)
+    private var closed = false
 
     /**
      * Writes a single byte, flushing the buffer if full.
@@ -168,8 +169,6 @@ class BufferedSuspendSink(
             buf.release()
         }
     }
-
-    private var closed = false
 
     companion object {
         /**
