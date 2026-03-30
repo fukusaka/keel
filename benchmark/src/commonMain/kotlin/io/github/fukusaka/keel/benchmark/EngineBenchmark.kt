@@ -13,8 +13,13 @@ package io.github.fukusaka.keel.benchmark
  */
 interface EngineBenchmark {
 
-    /** Start the server with the given config. */
-    fun start(config: BenchmarkConfig)
+    /**
+     * Start the server with the given config.
+     *
+     * Returns a stop callback for lifecycle management. The caller invokes
+     * this callback when the process receives a shutdown signal (SIGTERM/SIGINT).
+     */
+    fun start(config: BenchmarkConfig): () -> Unit
 
     /** Apply tuned socket overrides. CLI args already in [s] take precedence via `?:`. */
     fun tunedSocket(s: SocketConfig, cpuCores: Int): SocketConfig = s

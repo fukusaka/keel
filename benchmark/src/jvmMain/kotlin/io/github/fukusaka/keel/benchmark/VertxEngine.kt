@@ -46,7 +46,7 @@ object VertxEngine : EngineBenchmark {
     private val helloBytes = "Hello, World!".toByteArray()
     private val largeBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
 
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val s = config.socket
         val vertxOptions = VertxOptions()
         s.threads?.let { vertxOptions.eventLoopPoolSize = it }
@@ -90,6 +90,7 @@ object VertxEngine : EngineBenchmark {
             .listen()
             .onSuccess { server ->
                 println("Vert.x server started on port ${server.actualPort()}")
+                latch.countDown()
             }
             .onFailure { err ->
                 System.err.println("Failed to start Vert.x server: ${err.message}")
@@ -97,6 +98,7 @@ object VertxEngine : EngineBenchmark {
             }
 
         latch.await()
+        return { vertx.close() }
     }
 
     // Vert.x already sets tcpNoDelay=true, reuseAddress=true

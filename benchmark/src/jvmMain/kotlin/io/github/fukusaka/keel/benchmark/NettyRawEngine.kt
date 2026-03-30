@@ -40,7 +40,7 @@ private val nettyRawLargePayload = Unpooled.unreleasableBuffer(
 
 object NettyRawEngine : EngineBenchmark {
 
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val nr = config.engineConfig as? NettyRawEngineConfig ?: NettyRawEngineConfig()
         val s = config.socket
         val bossGroup = NioEventLoopGroup(1)
@@ -69,10 +69,11 @@ object NettyRawEngine : EngineBenchmark {
 
         val channel = bootstrap.bind(config.port).sync().channel()
         println("Netty raw server started on port ${config.port}")
-        channel.closeFuture().sync()
-
-        bossGroup.shutdownGracefully()
-        workerGroup.shutdownGracefully()
+        return {
+            channel.close().sync()
+            bossGroup.shutdownGracefully()
+            workerGroup.shutdownGracefully()
+        }
     }
 
     // netty-raw: Netty default cpu*2 is already optimal for EventLoop model

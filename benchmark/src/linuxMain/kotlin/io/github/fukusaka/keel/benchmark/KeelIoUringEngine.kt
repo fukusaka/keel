@@ -8,14 +8,15 @@ import io.ktor.server.engine.*
 /** keel + IoUringEngine (Linux io_uring). */
 object KeelIoUringEngine : EngineBenchmark {
 
-    override fun start(config: BenchmarkConfig) {
+    override fun start(config: BenchmarkConfig): () -> Unit {
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
-        embeddedServer(Keel, rootConfig) {
+        val engine = embeddedServer(Keel, rootConfig) {
             connector { port = config.port }
-            engine = IoUringEngine()
-        }.start(wait = true)
+            this.engine = IoUringEngine()
+        }.start(wait = false)
+        return { engine.stop(500, 1000) }
     }
 
     override fun socketDefaults(os: OsSocketDefaults) = keelSocketDefaults(os)

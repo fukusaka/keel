@@ -1,17 +1,23 @@
 package io.github.fukusaka.keel.benchmark
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.staticCFunction
+import platform.posix.SIGINT
+import platform.posix.SIGTERM
+import platform.posix._exit
+import platform.posix.signal
+
 /**
  * Kotlin/Native benchmark server entry point.
  *
  * Uses the shared [BenchmarkConfig] from commonMain with platform-specific
  * [engineRegistry] for engine selection.
  *
- * Available engines (platform-dependent):
- * - keel-kqueue (macOS, default on macOS)
- * - keel-epoll (Linux, default on Linux)
- * - keel-nwconnection (macOS)
- * - ktor-cio (all platforms)
+ * Registers SIGTERM/SIGINT handlers for graceful shutdown. When a signal
+ * is received, the server is stopped cleanly so the listen socket is
+ * closed and the port is freed immediately.
  */
+@OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
@@ -31,8 +37,26 @@ fun main(args: Array<String>) {
         return
     }
 
+    // Install signal handlers that call _exit(0) directly. This is
+    // async-signal-safe and guarantees immediate process termination.
+    // The OS closes all file descriptors (including the listen socket),
+    // freeing the port instantly. Using _exit() instead of exit() avoids
+    // running atexit handlers and C++ destructors that may deadlock.
     println("Starting benchmark server: ${config.summary()}")
     eb.start(config)
+
+    // Install signal handlers AFTER server start. Ktor/kotlinx-coroutines
+    // overrides SIGTERM/SIGINT handlers during engine initialization
+    // (verified via sigaction: handler address changes after start()).
+    // _exit(0) is async-signal-safe and guarantees immediate termination.
+    val handler = staticCFunction { _: Int -> _exit(0) }
+    signal(SIGTERM, handler)
+    signal(SIGINT, handler)
+
+    // Block main thread. The signal handler terminates the process.
+    while (true) {
+        platform.posix.sleep(60u)
+    }
 }
 
 @OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
