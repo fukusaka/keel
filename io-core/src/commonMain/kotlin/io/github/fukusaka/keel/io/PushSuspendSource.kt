@@ -18,7 +18,12 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * **Integration with codec layer**: Use [PushToSuspendSourceAdapter] to
  * adapt a [PushSuspendSource] to [SuspendSource] for use with
- * [BufferedSuspendSource].
+ * [BufferedSuspendSource]. A future push-mode [BufferedSuspendSource]
+ * constructor will accept [PushSuspendSource] directly for zero-copy.
+ *
+ * **MemoryOwner not used**: A `MemoryOwner<IoBuf>` wrapper was considered
+ * but [IoBuf] already provides [IoBuf.retain]/[IoBuf.release] with
+ * deallocator callback, making the wrapper redundant. See design.md §4.7.
  *
  * @see SuspendSource for the pull-model counterpart
  * @see PushToSuspendSourceAdapter for pull-model compatibility

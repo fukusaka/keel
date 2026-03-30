@@ -1,10 +1,12 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.io.PushSuspendSource
 import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
 import io.github.fukusaka.keel.io.SuspendSource
 import io_uring.iovec
@@ -91,25 +93,23 @@ internal class IoUringChannel(
     private val bufferRing: ProvidedBufferRing,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
-) : Channel {
+) : Channel, PushChannel {
 
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
 
+    override fun asPushSuspendSource(): PushSuspendSource =
+        IoUringPushSource(fd, eventLoop, bufferRing)
+
     /**
-     * Returns a push-model [SuspendSource] using multishot recv with provided buffers.
+     * Returns a pull-model [SuspendSource] by bridging the push-model
+     * [IoUringPushSource] via [PushToSuspendSourceAdapter].
      *
-     * Unlike the default [SuspendChannelSource][io.github.fukusaka.keel.core.SuspendChannelSource]
-     * which submits a new SQE per read, this source uses a single multishot recv
-     * SQE that produces multiple CQEs with zero allocation per CQE (pre-allocated
-     * IoBuf wrappers). The [PushToSuspendSourceAdapter] bridges the push-model
-     * [IoUringPushSource] to the pull-model [SuspendSource] interface, adding one
-     * copy per read (byte-by-byte; platform-optimized bulk memcpy deferred to a
-     * future `IoBuf.copyTo()` method). True zero-copy requires future
-     * BufferedSuspendSource push mode integration.
+     * This adds one [IoBuf.copyTo] per read. For zero-copy, use
+     * [asPushSuspendSource] directly with BufferedSuspendSource push-mode.
      */
     override fun asSuspendSource(): SuspendSource =
-        PushToSuspendSourceAdapter(IoUringPushSource(fd, eventLoop, bufferRing))
+        PushToSuspendSourceAdapter(asPushSuspendSource())
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
