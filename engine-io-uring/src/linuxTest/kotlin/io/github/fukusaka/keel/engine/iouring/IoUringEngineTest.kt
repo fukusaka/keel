@@ -280,6 +280,126 @@ class IoUringEngineTest {
         engine.close()
     }
 
+    @Test
+    fun `read write exact buffer size 8192 bytes`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val payloadSize = 8192
+        val payload = ByteArray(payloadSize) { (it % 256).toByte() }
+
+        // Client sends exactly BUFFER_SIZE bytes
+        payload.usePinned { pinned ->
+            var written = 0
+            while (written < payloadSize) {
+                val n = write(clientFd, pinned.addressOf(written), (payloadSize - written).convert())
+                if (n <= 0) break
+                written += n.toInt()
+            }
+        }
+
+        // Server reads all bytes
+        var totalRead = 0
+        val received = ByteArray(payloadSize)
+        while (totalRead < payloadSize) {
+            val buf = DefaultAllocator.allocate(payloadSize)
+            val n = withTimeout(5000) { ch.read(buf) }
+            if (n <= 0) { buf.release(); break }
+            for (i in 0 until n) received[totalRead + i] = buf.readByte()
+            totalRead += n
+            buf.release()
+        }
+        assertEquals(payloadSize, totalRead)
+        assertTrue(payload.contentEquals(received))
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `read write buffer size plus one 8193 bytes`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val payloadSize = 8193
+        val payload = ByteArray(payloadSize) { (it % 256).toByte() }
+
+        payload.usePinned { pinned ->
+            var written = 0
+            while (written < payloadSize) {
+                val n = write(clientFd, pinned.addressOf(written), (payloadSize - written).convert())
+                if (n <= 0) break
+                written += n.toInt()
+            }
+        }
+
+        var totalRead = 0
+        val received = ByteArray(payloadSize)
+        while (totalRead < payloadSize) {
+            val buf = DefaultAllocator.allocate(payloadSize)
+            val n = withTimeout(5000) { ch.read(buf) }
+            if (n <= 0) { buf.release(); break }
+            for (i in 0 until n) received[totalRead + i] = buf.readByte()
+            totalRead += n
+            buf.release()
+        }
+        assertEquals(payloadSize, totalRead)
+        assertTrue(payload.contentEquals(received))
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `large payload flush writes all bytes`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        // 256KB — large enough to trigger short writes or EAGAIN
+        // when the kernel send buffer fills up.
+        val payloadSize = 256 * 1024
+        val payload = ByteArray(payloadSize) { (it % 256).toByte() }
+
+        val buf = DefaultAllocator.allocate(payloadSize)
+        for (b in payload) buf.writeByte(b)
+        ch.write(buf)
+        ch.flush()
+        buf.release()
+
+        val received = ByteArray(payloadSize)
+        var totalRead = 0
+        while (totalRead < payloadSize) {
+            val n = received.usePinned { pinned ->
+                read(clientFd, pinned.addressOf(totalRead), (payloadSize - totalRead).convert())
+            }
+            if (n <= 0) break
+            totalRead += n.toInt()
+        }
+        assertEquals(payloadSize, totalRead)
+        assertTrue(payload.contentEquals(received))
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
     // --- half-close ---
 
     @Test
