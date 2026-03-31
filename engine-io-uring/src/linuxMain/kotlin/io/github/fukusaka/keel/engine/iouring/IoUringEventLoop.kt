@@ -20,6 +20,7 @@ import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
 import io_uring.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
+import io_uring.keel_prep_send_zc
 import io_uring.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
@@ -166,6 +167,9 @@ internal class IoUringEventLoop(
     // CQEs for that SQE.
     private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
     private val multishotCallbacks = arrayOfNulls<(Int, UInt) -> Unit>(ringSize)
+    // SEND_ZC: stores the first CQE result while waiting for the second (notification) CQE.
+    // SEND_ZC_UNUSED marks the slot as not in SEND_ZC mode.
+    private val sendZcPendingResult = IntArray(ringSize) { SEND_ZC_UNUSED }
     private val freeSlots = IntArray(ringSize) { it }
     private var freeSlotsTop = ringSize
 
@@ -374,6 +378,32 @@ internal class IoUringEventLoop(
                 ?: error("io_uring SQ ring full (size=$ringSize)")
             io_uring_prep_send(sqe, fd, buf, len, flags)
             submitSqe(sqe, cont)
+        }
+    }
+
+    /**
+     * Submits `IORING_OP_SEND_ZC` and suspends until BOTH CQEs arrive.
+     *
+     * SEND_ZC produces two CQEs:
+     * 1. Send result (bytes sent) — stored in [sendZcPendingResult]
+     * 2. Buffer release notification — triggers continuation resume
+     *
+     * The continuation is NOT resumed on the first CQE. It is held until
+     * the second CQE arrives, ensuring the caller's buffer is safe to
+     * release after resume. Zero allocation per call — no lambda capture.
+     *
+     * Must be called on the EventLoop thread only.
+     */
+    internal suspend fun submitSendZc(fd: Int, buf: COpaquePointer, len: ULong, flags: Int): Int {
+        return suspendCancellableCoroutine { cont ->
+            val sqe = io_uring_get_sqe(ring.ptr)
+                ?: error("io_uring SQ ring full (size=$ringSize)")
+            keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
+            val slot = acquireSlot()
+            contSlots[slot] = cont
+            sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1 // mark as "awaiting first CQE"
+            val userData = slot.toULong() + SLOT_BASE
+            io_uring_sqe_set_data64(sqe, userData)
         }
     }
 
@@ -609,6 +639,35 @@ internal class IoUringEventLoop(
                         continue
                     }
 
+                    // SEND_ZC path: two CQEs per operation.
+                    // First CQE: store send result, wait for second.
+                    // Second CQE: resume continuation with stored result.
+                    val zcPending = sendZcPendingResult[slot]
+                    if (zcPending != SEND_ZC_UNUSED) {
+                        if (zcPending == SEND_ZC_UNUSED + 1) {
+                            // First CQE: store send result
+                            sendZcPendingResult[slot] = res
+                            if (keel_cqe_has_more(cqeFlags) == 0) {
+                                // No notification CQE — resume immediately
+                                sendZcPendingResult[slot] = SEND_ZC_UNUSED
+                                val cont = contSlots[slot] ?: continue
+                                contSlots[slot] = null
+                                releaseSlot(slot)
+                                cont.resume(res)
+                            }
+                            // F_MORE set → wait for second CQE
+                        } else {
+                            // Second CQE: buffer release notification
+                            val sendResult = zcPending
+                            sendZcPendingResult[slot] = SEND_ZC_UNUSED
+                            val cont = contSlots[slot] ?: continue
+                            contSlots[slot] = null
+                            releaseSlot(slot)
+                            cont.resume(sendResult)
+                        }
+                        continue
+                    }
+
                     // Single-shot path: retrieve continuation from slot, resume it.
                     val cont = contSlots[slot] ?: continue // safety
                     contSlots[slot] = null
@@ -662,5 +721,12 @@ internal class IoUringEventLoop(
          * Keeps slot 0 → user_data=2, safely above the reserved range (0, WAKEUP_TOKEN=1).
          */
         internal const val SLOT_BASE = 2UL
+
+        /**
+         * Marker value for [sendZcPendingResult] indicating the slot is not
+         * in SEND_ZC mode. Chosen to be distinguishable from any valid CQE
+         * result (which is a byte count or negative errno).
+         */
+        private const val SEND_ZC_UNUSED = Int.MIN_VALUE
     }
 }

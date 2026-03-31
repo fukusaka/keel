@@ -195,6 +195,7 @@ internal class IoUringChannel(
                 when (mode) {
                     IoMode.CQE -> flushSingleViaCqe(pendingWrites[0])
                     IoMode.FALLBACK_CQE -> flushSingleDirect(pendingWrites[0])
+                    IoMode.SEND_ZC -> flushSingleViaZc(pendingWrites[0])
                 }
             } else {
                 // Gather write always uses CQE — batching amortises SQE overhead,
@@ -270,6 +271,33 @@ internal class IoUringChannel(
                         break // other error (ECONNRESET, EPIPE, etc.)
                     }
                 }
+            }
+        } finally {
+            pw.buf.release()
+        }
+    }
+
+    /**
+     * Sends a single [PendingWrite] via zero-copy `IORING_OP_SEND_ZC`.
+     *
+     * The kernel sends data directly from user-space memory. [submitSendZc]
+     * suspends until BOTH CQEs arrive (send result + buffer release notification),
+     * so the buffer is safe to release after resume.
+     *
+     * Structure is identical to [flushSingleViaCqe] but uses [submitSendZc]
+     * instead of [submitSend][IoUringEventLoop.submitSend].
+     */
+    private suspend fun flushSingleViaZc(pw: PendingWrite) {
+        try {
+            var written = 0
+            while (written < pw.length) {
+                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+                val remaining = (pw.length - written).toULong()
+                val res = eventLoop.submitSendZc(fd, ptr, remaining, 0)
+                if (res > 0) {
+                    written += res
+                    flushBytesWritten += res
+                } else break
             }
         } finally {
             pw.buf.release()

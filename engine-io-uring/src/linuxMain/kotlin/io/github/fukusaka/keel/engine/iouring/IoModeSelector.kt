@@ -37,6 +37,14 @@ object IoModeSelectors {
     val FALLBACK_CQE = IoModeSelector { IoMode.FALLBACK_CQE }
 
     /**
+     * Always use zero-copy send (Linux 6.0+). Two CQEs per operation.
+     *
+     * Manual selection only — not included in adaptive strategies.
+     * See [IoMode.SEND_ZC] for limitations and applicable scenarios.
+     */
+    val SEND_ZC = IoModeSelector { IoMode.SEND_ZC }
+
+    /**
      * Adaptive strategy: starts with [IoMode.FALLBACK_CQE] (direct syscall).
      * Switches to [IoMode.CQE] when the recent EAGAIN rate (EMA) exceeds
      * [ratio] after [minSamples] flush operations.
