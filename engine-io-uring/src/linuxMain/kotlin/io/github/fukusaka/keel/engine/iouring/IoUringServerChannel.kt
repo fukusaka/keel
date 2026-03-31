@@ -46,6 +46,7 @@ internal class IoUringServerChannel(
     private val bossLoop: IoUringEventLoop,
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
 ) : ServerChannel, PushServerChannel {
 
     private var _active = true
@@ -102,7 +103,7 @@ internal class IoUringServerChannel(
             val wi = workerGroup.nextIndex()
             return IoUringChannel(
                 clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi),
-                workerGroup.bufferRingAt(wi), remoteAddr, localAddr,
+                workerGroup.bufferRingAt(wi), remoteAddr, localAddr, writeModeSelector,
             )
         } catch (e: Throwable) {
             platform.posix.close(clientFd)
