@@ -864,6 +864,30 @@ class IoUringEngineTest {
         engine.close()
     }
 
+    // --- round-robin EventLoop assignment ---
+
+    @Test
+    fun `accepted channels are assigned to worker EventLoops in round-robin order`() = runBlocking {
+        val engine = IoUringEngine(IoEngineConfig(threads = 2))
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        // Accept 4 connections: should cycle through 2 workers
+        val clientFds = IntArray(4) { connectRawClient(port) }
+        val channels = (0 until 4).map { withTimeout(5000) { server.accept() } }
+
+        // channel[0] and channel[2] should share the same dispatcher (worker 0)
+        // channel[1] and channel[3] should share the same dispatcher (worker 1)
+        assertEquals(channels[0].coroutineDispatcher, channels[2].coroutineDispatcher)
+        assertEquals(channels[1].coroutineDispatcher, channels[3].coroutineDispatcher)
+        assertFalse(channels[0].coroutineDispatcher == channels[1].coroutineDispatcher)
+
+        channels.forEach { it.close() }
+        clientFds.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
     // --- asSuspendSource (multishot recv) ---
 
     @Test
