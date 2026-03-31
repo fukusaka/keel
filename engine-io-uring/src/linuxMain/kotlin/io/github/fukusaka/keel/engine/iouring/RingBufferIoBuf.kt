@@ -57,6 +57,7 @@ internal class RingBufferIoBuf(
         ptr[writerIndex++] = value
     }
 
+    /** @throws IllegalArgumentException if [length] exceeds [writableBytes]. */
     override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         if (length == 0) return
@@ -66,6 +67,7 @@ internal class RingBufferIoBuf(
         writerIndex += length
     }
 
+    /** @throws IllegalArgumentException if [length] exceeds [writableBytes]. */
     override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
@@ -74,6 +76,7 @@ internal class RingBufferIoBuf(
         writerIndex += length
     }
 
+    /** @throws IllegalArgumentException if [length] exceeds [readableBytes] or dest's [writableBytes][IoBuf.writableBytes]. */
     override fun copyTo(dest: IoBuf, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
@@ -84,6 +87,7 @@ internal class RingBufferIoBuf(
         dest.writerIndex += length
     }
 
+    /** @throws IllegalArgumentException if [length] exceeds [readableBytes]. */
     override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         if (length == 0) return
@@ -123,12 +127,19 @@ internal class RingBufferIoBuf(
         refCount = 1
     }
 
+    /** @throws IllegalStateException if the buffer has already been released. */
     override fun retain(): IoBuf {
         check(refCount > 0) { "Cannot retain a released buffer" }
         refCount++
         return this
     }
 
+    /**
+     * Decrements the reference count. When it reaches 0, invokes [onRelease]
+     * which returns the buffer slot to the [ProvidedBufferRing].
+     *
+     * @throws IllegalStateException if the buffer has already been released.
+     */
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
@@ -138,8 +149,15 @@ internal class RingBufferIoBuf(
         return false
     }
 
+    /**
+     * Abandons this buffer without returning the slot to the [ProvidedBufferRing].
+     *
+     * Unlike [release], this does **not** invoke [onRelease]. The buffer slot
+     * is permanently lost until the [ProvidedBufferRing] is closed. Use [release]
+     * for normal lifecycle; this method exists only for [AutoCloseable] compatibility.
+     * Idempotent: safe to call multiple times.
+     */
     override fun close() {
-        // Memory is owned by ProvidedBufferRing; nothing to free.
         refCount = 0
     }
 }
