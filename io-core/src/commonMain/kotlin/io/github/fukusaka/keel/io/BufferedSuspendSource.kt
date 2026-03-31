@@ -41,7 +41,10 @@ class BufferedSuspendSource : AutoCloseable {
      */
     private sealed class Mode {
         class Pull(val source: SuspendSource, val buf: IoBuf) : Mode()
-        class Push(val pushSource: PushSuspendSource, val bufferChain: ArrayDeque<IoBuf>) : Mode()
+        class Push(val pushSource: PushSuspendSource, val bufferChain: ArrayDeque<IoBuf>) : Mode() {
+            /** Cached head of bufferChain to avoid ArrayDeque lookup on every readByte. */
+            var cachedHead: IoBuf? = null
+        }
     }
 
     private val mode: Mode
@@ -82,16 +85,25 @@ class BufferedSuspendSource : AutoCloseable {
         return when (val m = mode) {
             is Mode.Pull -> m.buf.takeIf { it.readableBytes > 0 }
             is Mode.Push -> {
-                releaseConsumedBuffers(m.bufferChain)
-                m.bufferChain.firstOrNull()
+                // Fast path: cached head still has data — skip ArrayDeque lookup.
+                val cached = m.cachedHead
+                if (cached != null && cached.readableBytes > 0) return cached
+                // Slow path: advance to next buffer in chain.
+                releaseConsumedBuffers(m)
+                val head = m.bufferChain.firstOrNull()
+                m.cachedHead = head
+                head
             }
         }
     }
 
     /** Releases fully consumed buffers at the front of the push-mode chain. */
-    private fun releaseConsumedBuffers(chain: ArrayDeque<IoBuf>) {
+    private fun releaseConsumedBuffers(m: Mode.Push) {
+        val chain = m.bufferChain
         while (chain.isNotEmpty() && chain.first().readableBytes == 0) {
-            chain.removeFirst().release()
+            val released = chain.removeFirst()
+            if (m.cachedHead === released) m.cachedHead = null
+            released.release()
         }
     }
 
@@ -229,7 +241,7 @@ class BufferedSuspendSource : AutoCloseable {
      */
     private suspend fun scanLinePush(m: Mode.Push): BufSlice? {
         val chain = m.bufferChain
-        releaseConsumedBuffers(chain)
+        releaseConsumedBuffers(m)
         while (true) {
             if (chain.isEmpty() && fillPush(m) == null) return null
 
@@ -374,6 +386,7 @@ class BufferedSuspendSource : AutoCloseable {
                 is Mode.Push -> {
                     for (buf in m.bufferChain) buf.release()
                     m.bufferChain.clear()
+                    m.cachedHead = null
                 }
             }
         }

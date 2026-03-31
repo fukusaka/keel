@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `ktor-engine`: use `BufferedSuspendSource` push-mode for `PushChannel` engines (io_uring); eliminates `IoBuf.copyTo()` per read in the HTTP codec path
 - `io-core`: rename `IoBuf.writeBytes` to `writeByteArray` and `writeAsciiString` to `writeAscii` for naming clarity
 - `io-core`: add `IoBuf.readByteArray(dest, offset, length)` for platform-optimized bulk read; symmetric with `writeByteArray`
 - `io-core`: replace per-byte loops in `BufferedSuspendSource.readByteArray`/`readAtMostTo` with `IoBuf.readByteArray` bulk operations
