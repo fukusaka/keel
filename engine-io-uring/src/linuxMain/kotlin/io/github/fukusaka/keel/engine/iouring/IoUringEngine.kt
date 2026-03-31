@@ -80,13 +80,6 @@ class IoUringEngine(
                 providedBufferRing = kv >= KernelVersion(5, 19),
                 // Preliminary: will be refined by opcode probe below.
                 sendZc = kv >= KernelVersion(6, 0),
-                // SINGLE_ISSUER disabled: causes test timeouts. The current
-                // EventLoop design dispatches from multiple threads (e.g., test
-                // coroutines), violating the single-issuer assumption.
-                singleIssuer = false,
-                // COOP_TASKRUN disabled: causes test hangs due to changed
-                // io_uring_submit_and_wait behavior. Requires EventLoop adaptation.
-                coopTaskrun = false,
             )
         }
 

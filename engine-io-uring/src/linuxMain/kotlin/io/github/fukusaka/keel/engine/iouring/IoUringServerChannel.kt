@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.PushServerChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -69,33 +70,10 @@ internal class IoUringServerChannel(
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
 
-        val clientFd = suspendCancellableCoroutine { cont ->
-            bossLoop.dispatch(cont.context) {
-                if (!cont.isActive) return@dispatch
-
-                // Arm multishot accept lazily on first call.
-                if (multishotSlot == -1) {
-                    if (capabilities.multishotAccept) {
-                        armMultishotAccept()
-                    } else {
-                        error("Single-shot accept not yet implemented (requires kernel 5.19+ for multishot)")
-                    }
-                }
-
-                if (pendingFds.isNotEmpty()) {
-                    // Fast path: fd already buffered by a prior CQE callback.
-                    cont.resume(pendingFds.removeFirst())
-                } else {
-                    // Slow path: suspend until the next CQE callback delivers an fd.
-                    pendingAcceptCont = cont
-                    cont.invokeOnCancellation {
-                        // Dispatch cleanup to bossLoop to avoid cross-thread access.
-                        bossLoop.dispatch(cont.context) {
-                            if (pendingAcceptCont === cont) pendingAcceptCont = null
-                        }
-                    }
-                }
-            }
+        val clientFd = if (capabilities.multishotAccept) {
+            acceptMultishot()
+        } else {
+            acceptSingleShot()
         }
 
         if (clientFd < 0) {
@@ -123,6 +101,32 @@ internal class IoUringServerChannel(
      * Arms (or rearms) the multishot accept SQE on [bossLoop].
      * Must be called on the bossLoop thread.
      */
+    /** Multishot accept: arms one SQE, receives multiple CQEs. */
+    private suspend fun acceptMultishot(): Int = suspendCancellableCoroutine { cont ->
+        bossLoop.dispatch(cont.context) {
+            if (!cont.isActive) return@dispatch
+            if (multishotSlot == -1) armMultishotAccept()
+
+            if (pendingFds.isNotEmpty()) {
+                cont.resume(pendingFds.removeFirst())
+            } else {
+                pendingAcceptCont = cont
+                cont.invokeOnCancellation {
+                    bossLoop.dispatch(cont.context) {
+                        if (pendingAcceptCont === cont) pendingAcceptCont = null
+                    }
+                }
+            }
+        }
+    }
+
+    /** Single-shot accept fallback: one SQE per accept. */
+    private suspend fun acceptSingleShot(): Int {
+        return bossLoop.submitAndAwait { sqe ->
+            io_uring_prep_accept(sqe, serverFd, null, null, 0)
+        }
+    }
+
     private fun armMultishotAccept() {
         multishotSlot = bossLoop.submitMultishot(
             prepare = { sqe ->
