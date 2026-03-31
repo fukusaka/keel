@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -628,6 +629,19 @@ class IoUringEngineTest {
     }
 
     @Test
+    fun `connect to invalid host address throws`() = runBlocking {
+        val engine = IoUringEngine()
+
+        // Non-numeric hostname is not supported by keel_inet_pton;
+        // check() fails before submitting any SQE.
+        assertFailsWith<IllegalStateException> {
+            engine.connect("not.a.valid.ip", 80)
+        }
+
+        engine.close()
+    }
+
+    @Test
     fun `connect to refused port throws`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
@@ -798,6 +812,79 @@ class IoUringEngineTest {
         server.close()
         assertFalse(server.isActive)
 
+        engine.close()
+    }
+
+    // --- asSuspendSink ---
+
+    @Test
+    fun `asSuspendSink writes data via BufferedSuspendSink`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
+        sink.writeString("hello")
+        sink.flush()
+
+        val received = rawRead(clientFd, 5)
+        assertEquals("hello", received)
+
+        sink.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSink multiple writes in one flush`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
+        sink.writeString("foo")
+        sink.writeString("bar")
+        sink.flush()
+
+        val received = rawRead(clientFd, 6)
+        assertEquals("foobar", received)
+
+        sink.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    // --- round-robin EventLoop assignment ---
+
+    @Test
+    fun `accepted channels are assigned to worker EventLoops in round-robin order`() = runBlocking {
+        val engine = IoUringEngine(IoEngineConfig(threads = 2))
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        // Accept 4 connections: should cycle through 2 workers
+        val clientFds = IntArray(4) { connectRawClient(port) }
+        val channels = (0 until 4).map { withTimeout(5000) { server.accept() } }
+
+        // channel[0] and channel[2] should share the same dispatcher (worker 0)
+        // channel[1] and channel[3] should share the same dispatcher (worker 1)
+        assertEquals(channels[0].coroutineDispatcher, channels[2].coroutineDispatcher)
+        assertEquals(channels[1].coroutineDispatcher, channels[3].coroutineDispatcher)
+        assertFalse(channels[0].coroutineDispatcher == channels[1].coroutineDispatcher)
+
+        channels.forEach { it.close() }
+        clientFds.forEach { close(it) }
+        server.close()
         engine.close()
     }
 
