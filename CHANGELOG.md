@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: fix stale KDoc referencing `IORING_OP_READ`/`IORING_OP_WRITE` in `IoUringChannel`; actual opcodes are `IORING_OP_RECV`/`IORING_OP_SEND`
+- `engine-io-uring`: fix stale `[buildSockAddr]` KDoc link in `SocketUtils`; replaced with `[IoUringEngine.connect]`
 - `engine-io-uring`, `engine-epoll`, `engine-kqueue`: fix fd leak in `createServerSocket()` when `bind()`, `listen()`, or address parsing fails after `socket()` succeeds; fd is now closed via try-catch before rethrowing
 - `io-core`: fix potential double-release in `BufferedSuspendSink` deferFlush path (allocate before release)
 - `io-core`: replace unchecked cast with safe cast (`as?`) in `TrackingAllocator`

@@ -49,7 +49,7 @@ import platform.posix.strerror
  * io_uring.def because `htons`/`ntohs` are macros on Linux.
  *
  * Note: connect() is not here — io_uring uses IORING_OP_CONNECT,
- * so [IoUringEngine] prepares the sockaddr directly via [buildSockAddr].
+ * so [IoUringEngine] prepares the sockaddr directly in [IoUringEngine.connect].
  */
 @OptIn(ExperimentalForeignApi::class)
 internal object SocketUtils {
