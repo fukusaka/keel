@@ -226,6 +226,7 @@ class BufSlice(
      * @throws NumberFormatException if the slice is empty, contains non-digit
      *         characters, or the value exceeds [Int.MAX_VALUE].
      */
+    @Suppress("ThrowsCount") // Three distinct error cases: empty, non-digit, overflow
     fun toInt(): Int {
         if (totalLength == 0) throw NumberFormatException("empty BufSlice")
         var result = 0L
