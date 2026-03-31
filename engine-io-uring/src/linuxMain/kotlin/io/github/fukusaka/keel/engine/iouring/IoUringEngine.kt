@@ -58,6 +58,7 @@ import io_uring.keel_inet_pton
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
+    private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
 ) : IoEngine {
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
@@ -80,7 +81,7 @@ class IoUringEngine(
         val serverFd = SocketUtils.createServerSocket(host, port)
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return IoUringServerChannel(serverFd, bossLoop, workerGroup, localAddr)
+        return IoUringServerChannel(serverFd, bossLoop, workerGroup, localAddr, writeModeSelector)
     }
 
     /**
@@ -129,7 +130,7 @@ class IoUringEngine(
         val localAddr = SocketUtils.getLocalAddress(fd)
         val bufferRing = workerGroup.bufferRingAt(wi)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return IoUringChannel(fd, workerLoop, allocator, bufferRing, remoteAddr, localAddr)
+        return IoUringChannel(fd, workerLoop, allocator, bufferRing, remoteAddr, localAddr, writeModeSelector)
     }
 
     override fun close() {
