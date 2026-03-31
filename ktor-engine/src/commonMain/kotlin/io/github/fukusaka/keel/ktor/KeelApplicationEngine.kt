@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
+import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.error
 import kotlin.coroutines.ContinuationInterceptor
@@ -262,7 +263,14 @@ public class KeelApplicationEngine(
      * consumed from the source.
      */
     private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
-        val source = BufferedSuspendSource(channel.asSuspendSource(), channel.allocator)
+        // Push-model engines (io_uring multishot recv) deliver data in engine-owned
+        // IoBufs. BufferedSuspendSource push-mode consumes them directly (zero-copy).
+        // Pull-model engines use the traditional adapter path.
+        val source = if (channel is PushChannel) {
+            BufferedSuspendSource(channel.asPushSuspendSource())
+        } else {
+            BufferedSuspendSource(channel.asSuspendSource(), channel.allocator)
+        }
         val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush)
         try {
             val serverKeepAlive = configuration.keepAlive
