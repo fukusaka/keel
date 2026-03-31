@@ -628,6 +628,19 @@ class IoUringEngineTest {
     }
 
     @Test
+    fun `connect to invalid host address throws`() = runBlocking {
+        val engine = IoUringEngine()
+
+        // Non-numeric hostname is not supported by keel_inet_pton;
+        // check() fails before submitting any SQE.
+        assertFailsWith<IllegalStateException> {
+            engine.connect("not.a.valid.ip", 80)
+        }
+
+        engine.close()
+    }
+
+    @Test
     fun `connect to refused port throws`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
