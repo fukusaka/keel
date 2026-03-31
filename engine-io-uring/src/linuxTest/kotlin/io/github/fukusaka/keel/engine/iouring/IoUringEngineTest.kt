@@ -340,12 +340,15 @@ class IoUringEngineTest {
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
 
-        launch { server.accept() }
+        val accepted = CompletableDeferred<io.github.fukusaka.keel.core.Channel>()
+        launch { accepted.complete(server.accept()) }
 
         val client = withTimeout(5000) { engine.connect("127.0.0.1", port) }
         assertTrue(client.isOpen)
         assertTrue(client.isActive)
 
+        val serverCh = withTimeout(5000) { accepted.await() }
+        serverCh.close()
         client.close()
         server.close()
         engine.close()
