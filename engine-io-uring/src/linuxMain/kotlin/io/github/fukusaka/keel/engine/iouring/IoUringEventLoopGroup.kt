@@ -23,6 +23,7 @@ import kotlin.concurrent.AtomicInt
  * @param size Number of EventLoop threads. Must be >= 1.
  * @param logger Logger for each EventLoop in the group.
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
+ * @param capabilities Runtime-detected io_uring kernel capabilities.
  * @param ringSize SQE ring size per EventLoop. See [IoUringEventLoop.DEFAULT_RING_SIZE].
  */
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
@@ -30,13 +31,16 @@ internal class IoUringEventLoopGroup(
     size: Int,
     logger: Logger,
     allocator: BufferAllocator,
+    capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
 ) {
 
-    private val loops = Array(size) { IoUringEventLoop(logger, ringSize) }
+    private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
-    private val bufferRings = Array(size) { i ->
-        ProvidedBufferRing(loops[i].ringPtr, bgid = i)
+    private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
+        Array(size) { i -> ProvidedBufferRing(loops[i].ringPtr, bgid = i) }
+    } else {
+        arrayOfNulls(size)
     }
     private val index = AtomicInt(0)
 
@@ -58,12 +62,12 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop allocator at [i]. */
     fun allocatorAt(i: Int): BufferAllocator = allocators[i]
 
-    /** Returns the per-EventLoop [ProvidedBufferRing] at [i]. */
-    fun bufferRingAt(i: Int): ProvidedBufferRing = bufferRings[i]
+    /** Returns the per-EventLoop [ProvidedBufferRing] at [i], or null if not supported. */
+    fun bufferRingAt(i: Int): ProvidedBufferRing? = bufferRings[i]
 
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
-        for (ring in bufferRings) ring.close()
+        for (ring in bufferRings) ring?.close()
         for (loop in loops) loop.close()
     }
 }

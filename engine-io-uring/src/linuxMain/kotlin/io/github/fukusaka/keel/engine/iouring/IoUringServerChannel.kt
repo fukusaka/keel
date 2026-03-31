@@ -47,6 +47,7 @@ internal class IoUringServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
+    private val capabilities: IoUringCapabilities = IoUringCapabilities(),
 ) : ServerChannel, PushServerChannel {
 
     private var _active = true
@@ -68,27 +69,10 @@ internal class IoUringServerChannel(
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
 
-        val clientFd = suspendCancellableCoroutine { cont ->
-            bossLoop.dispatch(cont.context) {
-                if (!cont.isActive) return@dispatch
-
-                // Arm multishot accept lazily on first call.
-                if (multishotSlot == -1) armMultishotAccept()
-
-                if (pendingFds.isNotEmpty()) {
-                    // Fast path: fd already buffered by a prior CQE callback.
-                    cont.resume(pendingFds.removeFirst())
-                } else {
-                    // Slow path: suspend until the next CQE callback delivers an fd.
-                    pendingAcceptCont = cont
-                    cont.invokeOnCancellation {
-                        // Dispatch cleanup to bossLoop to avoid cross-thread access.
-                        bossLoop.dispatch(cont.context) {
-                            if (pendingAcceptCont === cont) pendingAcceptCont = null
-                        }
-                    }
-                }
-            }
+        val clientFd = if (capabilities.multishotAccept) {
+            acceptMultishot()
+        } else {
+            acceptSingleShot()
         }
 
         if (clientFd < 0) {
@@ -104,6 +88,7 @@ internal class IoUringServerChannel(
             return IoUringChannel(
                 clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi),
                 workerGroup.bufferRingAt(wi), remoteAddr, localAddr, writeModeSelector,
+                capabilities,
             )
         } catch (e: Throwable) {
             platform.posix.close(clientFd)
@@ -115,6 +100,30 @@ internal class IoUringServerChannel(
      * Arms (or rearms) the multishot accept SQE on [bossLoop].
      * Must be called on the bossLoop thread.
      */
+    /** Multishot accept: arms one SQE, receives multiple CQEs. */
+    private suspend fun acceptMultishot(): Int = suspendCancellableCoroutine { cont ->
+        bossLoop.dispatch(cont.context) {
+            if (!cont.isActive) return@dispatch
+            if (multishotSlot == -1) armMultishotAccept()
+
+            if (pendingFds.isNotEmpty()) {
+                cont.resume(pendingFds.removeFirst())
+            } else {
+                pendingAcceptCont = cont
+                cont.invokeOnCancellation {
+                    bossLoop.dispatch(cont.context) {
+                        if (pendingAcceptCont === cont) pendingAcceptCont = null
+                    }
+                }
+            }
+        }
+    }
+
+    /** Single-shot accept fallback: one SQE per accept. Zero-lambda hot path. */
+    private suspend fun acceptSingleShot(): Int {
+        return bossLoop.submitAccept(serverFd)
+    }
+
     private fun armMultishotAccept() {
         multishotSlot = bossLoop.submitMultishot(
             prepare = { sqe ->

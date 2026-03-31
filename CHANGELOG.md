@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-io-uring`: add `IoUringCapabilities` for runtime kernel feature detection (opcode probe + kernel version); user-overridable via `IoUringEngine(capabilities = ...)`
+- `engine-io-uring`: apply `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_COOP_TASKRUN` ring init flags with automatic fallback on older kernels
+- `engine-io-uring`: guard all features (multishot accept/recv, provided buffer ring, SEND_ZC) with capabilities; graceful fallback instead of crash on unsupported kernels
 - `engine-io-uring`: add `IoMode.SEND_ZC` for zero-copy send via `IORING_OP_SEND_ZC` (Linux 6.0+); kernel sends directly from user-space buffer without socket buffer copy; two-CQE model handled transparently by EventLoop
 - `engine-io-uring`: add hybrid I/O mode (`IoMode.CQE` / `IoMode.FALLBACK_CQE`) with `IoModeSelector` for runtime write strategy selection; default `eagainThreshold(0.1)` starts with direct `send()` syscall and auto-switches to CQE on high EAGAIN rate
 - `io-core`: add push-mode to `BufferedSuspendSource` for zero-copy reading from `PushSuspendSource`; engine-owned `IoBuf` chain consumed directly without copy

@@ -8,6 +8,7 @@ import io_uring.io_uring_get_sqe
 import io_uring.io_uring_peek_cqe
 import io_uring.io_uring_prep_cancel64
 import io_uring.io_uring_prep_read
+import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_recv
 import io_uring.io_uring_prep_send
 import io_uring.io_uring_prep_writev
@@ -128,6 +129,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
     private val logger: Logger,
+    private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
 ) : CoroutineDispatcher() {
 
@@ -425,9 +427,26 @@ internal class IoUringEventLoop(
     }
 
     /**
+     * Submits `IORING_OP_ACCEPT` (single-shot) and suspends until the CQE arrives.
+     *
+     * Used as fallback when multishot accept is not available (kernel < 5.19).
+     * On the EventLoop thread (hot path), prepares the SQE inline without
+     * allocating a `prepare` lambda.
+     */
+    internal suspend fun submitAccept(serverFd: Int): Int {
+        if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) }
+        return suspendCancellableCoroutine { cont ->
+            val sqe = io_uring_get_sqe(ring.ptr)
+                ?: error("io_uring SQ ring full (size=$ringSize)")
+            io_uring_prep_accept(sqe, serverFd, null, null, 0)
+            submitSqe(sqe, cont)
+        }
+    }
+
+    /**
      * Common fast-path SQE submission: assigns a slot, stores the continuation,
      * and sets user_data. Called after the SQE is already prepared by
-     * [submitRecv]/[submitSend]/[submitWritev].
+     * [submitRecv]/[submitSend]/[submitWritev]/[submitAccept].
      *
      * **No invokeOnCancellation**: The typed API methods are used on the hot
      * path (read/write/flush) where cancellation is handled by `Channel.close()`

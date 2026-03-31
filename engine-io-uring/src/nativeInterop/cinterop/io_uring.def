@@ -1,4 +1,4 @@
-headers = liburing.h sys/socket.h netinet/in.h arpa/inet.h sys/eventfd.h sys/uio.h
+headers = liburing.h sys/socket.h netinet/in.h arpa/inet.h sys/eventfd.h sys/uio.h sys/utsname.h
 linkerOpts.linux = -luring-ffi -L/usr/lib/x86_64-linux-gnu
 compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
 
@@ -143,3 +143,62 @@ static void keel_prep_send_zc(struct io_uring_sqe *sqe, int sockfd,
                               unsigned int zc_flags) {
     io_uring_prep_send_zc(sqe, sockfd, buf, len, flags, zc_flags);
 }
+
+/* ====================================================================
+ * Capability probing
+ * ==================================================================== */
+
+/* Opcode probe: checks if the running kernel supports a specific io_uring opcode. */
+static struct io_uring_probe *keel_get_probe_ring(struct io_uring *ring) {
+    return io_uring_get_probe_ring(ring);
+}
+static int keel_opcode_supported(const struct io_uring_probe *p, int op) {
+    return io_uring_opcode_supported(p, op);
+}
+static void keel_probe_free(struct io_uring_probe *probe) {
+    io_uring_free_probe(probe);
+}
+
+/* Kernel version extraction via uname(2). Manual parsing to avoid sscanf
+ * (glibc 2.38 introduces __isoc23_sscanf which causes link errors). */
+#include <sys/utsname.h>
+static int keel_parse_version(const char *s, int idx) {
+    int v[2] = {0, 0};
+    int part = 0;
+    for (const char *p = s; *p && part < 2; p++) {
+        if (*p >= '0' && *p <= '9') {
+            v[part] = v[part] * 10 + (*p - '0');
+        } else if (*p == '.') {
+            part++;
+        } else {
+            break;
+        }
+    }
+    return v[idx];
+}
+static int keel_kernel_version_major(void) {
+    struct utsname buf;
+    uname(&buf);
+    return keel_parse_version(buf.release, 0);
+}
+static int keel_kernel_version_minor(void) {
+    struct utsname buf;
+    uname(&buf);
+    return keel_parse_version(buf.release, 1);
+}
+
+/* IORING_OP constants for probe (may not be in older liburing headers). */
+#ifndef IORING_OP_SEND_ZC
+#define IORING_OP_SEND_ZC 53
+#endif
+
+/* Ring setup flags (may not be in older liburing headers). */
+#ifndef IORING_SETUP_SINGLE_ISSUER
+#define IORING_SETUP_SINGLE_ISSUER (1U << 12)
+#endif
+#ifndef IORING_SETUP_COOP_TASKRUN
+#define IORING_SETUP_COOP_TASKRUN (1U << 8)
+#endif
+
+static unsigned int keel_setup_single_issuer(void) { return IORING_SETUP_SINGLE_ISSUER; }
+static unsigned int keel_setup_coop_taskrun(void) { return IORING_SETUP_COOP_TASKRUN; }
