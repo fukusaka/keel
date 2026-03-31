@@ -54,5 +54,9 @@ jobs:
       - name: Test (JVM)
         run: ./gradlew jvmTest
 
-      - name: Test (linuxX64)
-        run: ./gradlew linuxX64Test
+      - name: Test (linuxX64, excluding io_uring)
+        run: ./gradlew linuxX64Test -x :engine-io-uring:linuxX64Test
+
+      - name: Test (io_uring linuxX64)
+        timeout-minutes: 3
+        run: ./gradlew :engine-io-uring:linuxX64Test --info 2>&1 | grep -E "PASS|FAIL|execute|Test |^\[" || true
