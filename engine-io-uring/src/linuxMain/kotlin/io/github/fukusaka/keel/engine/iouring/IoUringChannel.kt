@@ -144,9 +144,9 @@ internal class IoUringChannel(
     override suspend fun awaitClosed() {}
 
     /**
-     * Reads bytes into [buf] via `IORING_OP_READ`.
+     * Reads bytes into [buf] via `IORING_OP_RECV`.
      *
-     * Submits a READ SQE targeting the IoBuf's write region and suspends until
+     * Submits a RECV SQE targeting the IoBuf's write region and suspends until
      * the CQE arrives. Unlike epoll, there is no EAGAIN: the kernel holds the
      * operation pending until data arrives or an error occurs.
      *
@@ -189,7 +189,8 @@ internal class IoUringChannel(
     /**
      * Sends all buffered writes to the network.
      *
-     * For a single pending buffer: submits `IORING_OP_WRITE`.
+     * For a single pending buffer: submits `IORING_OP_SEND` (or direct `send()`
+     * syscall in [IoMode.FALLBACK_CQE] mode).
      * For multiple pending buffers: builds a heap-allocated iovec array via
      * [keel_alloc_iovec] and submits `IORING_OP_WRITEV` for a gather write.
      * Partial writes are retried via [flushSingleViaCqe].
