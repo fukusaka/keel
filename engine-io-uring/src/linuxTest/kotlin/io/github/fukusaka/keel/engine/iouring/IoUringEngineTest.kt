@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -811,6 +812,55 @@ class IoUringEngineTest {
         server.close()
         assertFalse(server.isActive)
 
+        engine.close()
+    }
+
+    // --- asSuspendSink ---
+
+    @Test
+    fun `asSuspendSink writes data via BufferedSuspendSink`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
+        sink.writeString("hello")
+        sink.flush()
+
+        val received = rawRead(clientFd, 5)
+        assertEquals("hello", received)
+
+        sink.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `asSuspendSink multiple writes in one flush`() = runBlocking {
+        val engine = IoUringEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = server.localAddress.port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(5000) { server.accept() }
+
+        val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
+        sink.writeString("foo")
+        sink.writeString("bar")
+        sink.flush()
+
+        val received = rawRead(clientFd, 6)
+        assertEquals("foobar", received)
+
+        sink.close()
+        ch.close()
+        close(clientFd)
+        server.close()
         engine.close()
     }
 
