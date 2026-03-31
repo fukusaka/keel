@@ -22,6 +22,8 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.coroutines.CoroutineDispatcher
+import platform.posix.EAGAIN
+import platform.posix.EWOULDBLOCK
 import platform.posix.SHUT_WR
 import platform.posix.close
 import platform.posix.shutdown
@@ -93,10 +95,14 @@ internal class IoUringChannel(
     private val bufferRing: ProvidedBufferRing,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
+    private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
 ) : Channel, PushChannel {
 
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
+
+    /** Per-connection I/O statistics for adaptive mode selection. */
+    private val stats = ConnectionStats()
 
     override fun asPushSuspendSource(): PushSuspendSource =
         IoUringPushSource(fd, eventLoop, bufferRing)
@@ -171,37 +177,93 @@ internal class IoUringChannel(
      * For a single pending buffer: submits `IORING_OP_WRITE`.
      * For multiple pending buffers: builds a heap-allocated iovec array via
      * [keel_alloc_iovec] and submits `IORING_OP_WRITEV` for a gather write.
-     * Partial writes are retried via [flushSingle].
+     * Partial writes are retried via [flushSingleViaCqe].
      */
     override suspend fun flush() {
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
+        val mode = writeModeSelector.select(stats)
         try {
             if (pendingWrites.size == 1) {
-                flushSingle(pendingWrites[0])
+                when (mode) {
+                    IoMode.CQE -> flushSingleViaCqe(pendingWrites[0])
+                    IoMode.FALLBACK_CQE -> flushSingleDirect(pendingWrites[0])
+                }
             } else {
-                flushGather()
+                // Gather write always uses CQE — batching amortises SQE overhead,
+                // and adding keel_writev to the cinterop .def is not justified
+                // for the low-frequency gather path (/large responses).
+                flushGatherViaCqe()
             }
         } finally {
+            stats.totalFlushes++
             pendingWrites.clear()
         }
     }
 
     /**
-     * Sends a single [PendingWrite] via `IORING_OP_WRITE` with partial-write retry.
+     * Sends a single [PendingWrite] via io_uring `IORING_OP_SEND` SQE/CQE.
      *
      * Loops until all bytes in [pw] are sent, submitting a new SQE on each
      * partial write until the full length is covered or an error occurs.
      */
-    private suspend fun flushSingle(pw: PendingWrite) {
+    private suspend fun flushSingleViaCqe(pw: PendingWrite) {
         try {
             var written = 0
             while (written < pw.length) {
                 val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
                 val remaining = (pw.length - written).toULong()
                 val res = eventLoop.submitSend(fd, ptr, remaining, 0)
-                if (res > 0) written += res else break
+                if (res > 0) {
+                    written += res
+                    stats.totalBytesWritten += res
+                } else break
+            }
+        } finally {
+            pw.buf.release()
+        }
+    }
+
+    /**
+     * Sends a single [PendingWrite] via direct POSIX `send()` syscall.
+     *
+     * Attempts the syscall directly, bypassing io_uring SQE/CQE overhead.
+     * If `send()` returns EAGAIN (socket send buffer full), falls back to
+     * [flushSingleViaCqe] for the remainder. The buffer for the CQE fallback
+     * is retained before delegating.
+     *
+     * For small responses (e.g., HTTP /hello 13B), the direct syscall
+     * completes immediately without io_uring round-trip.
+     */
+    private suspend fun flushSingleDirect(pw: PendingWrite) {
+        try {
+            var written = 0
+            while (written < pw.length) {
+                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+                val remaining = (pw.length - written).toULong()
+                val n = platform.posix.send(fd, ptr, remaining, 0)
+                when {
+                    n > 0 -> {
+                        written += n.toInt()
+                        stats.totalBytesWritten += n
+                    }
+                    n == 0L -> break
+                    else -> {
+                        val err = platform.posix.errno
+                        if (err == EAGAIN || err == EWOULDBLOCK) {
+                            stats.writeEagainCount++
+                            // CQE fallback: retain buf for the new PendingWrite,
+                            // flushSingleViaCqe will release it.
+                            pw.buf.retain()
+                            flushSingleViaCqe(
+                                PendingWrite(pw.buf, pw.offset + written, pw.length - written)
+                            )
+                            return
+                        }
+                        break // other error (ECONNRESET, EPIPE, etc.)
+                    }
+                }
             }
         } finally {
             pw.buf.release()
@@ -216,9 +278,9 @@ internal class IoUringChannel(
      * arrives, so it is freed via [keel_free_iovec] after the CQE arrives.
      *
      * On partial writev, walks the PendingWrite list to find the split point:
-     * fully-written buffers are released, the remainder falls through to [flushSingle].
+     * fully-written buffers are released, the remainder falls through to [flushSingleViaCqe].
      */
-    private suspend fun flushGather() {
+    private suspend fun flushGatherViaCqe() {
         val count = pendingWrites.size
         val totalBytes = pendingWrites.sumOf { it.length }
 
@@ -252,7 +314,7 @@ internal class IoUringChannel(
         }
 
         // Partial writev: release fully-written buffers, retry the rest individually.
-        // If flushSingle throws (e.g. CancellationException), it releases its own buffer
+        // If flushSingleViaCqe throws (e.g. CancellationException), it releases its own buffer
         // via try-finally, but subsequent buffers in the list must also be released.
         var i = 0
         var consumed = 0
@@ -264,14 +326,14 @@ internal class IoUringChannel(
                     pw.buf.release()
                 } else {
                     val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                    flushSingle(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
+                    flushSingleViaCqe(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
                     consumed += pw.length
                 }
                 i++
             }
         } catch (e: Throwable) {
             // Release remaining buffers that were not yet processed.
-            // The buffer at index i was already released by flushSingle's try-finally.
+            // The buffer at index i was already released by flushSingleViaCqe's try-finally.
             for (j in i + 1 until pendingWrites.size) {
                 pendingWrites[j].buf.release()
             }
