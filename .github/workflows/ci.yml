@@ -59,4 +59,4 @@ jobs:
 
       - name: Test (io_uring linuxX64)
         timeout-minutes: 3
-        run: ./gradlew :engine-io-uring:linuxX64Test --info 2>&1 | grep -E "PASS|FAIL|execute|Test |^\[" || true
+        run: ./gradlew :engine-io-uring:linuxX64Test
