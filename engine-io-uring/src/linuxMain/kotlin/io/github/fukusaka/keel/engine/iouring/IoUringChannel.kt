@@ -43,6 +43,11 @@ private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 /**
  * io_uring-based [Channel] implementation for Linux.
  *
+ * **Thread safety**: All public methods must be called from coroutines
+ * dispatched on the owning [IoUringEventLoop] (accessible via
+ * [coroutineDispatcher]). The channel has no internal synchronisation;
+ * concurrent access from multiple threads causes undefined behaviour.
+ *
  * **Completion model**: Unlike epoll's readiness model (which requires retrying
  * the syscall on EAGAIN), io_uring delivers the operation result directly in
  * the CQE. Each read/write submits an SQE and suspends; the EventLoop resumes
@@ -58,14 +63,14 @@ private class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
  *
  * **Write/flush separation**: [write] retains the [IoBuf] and records the
  * byte range. [flush] submits a single `IORING_OP_WRITEV` SQE for all pending
- * buffers (gather write) or `IORING_OP_WRITE` for a single buffer.
+ * buffers (gather write) or `IORING_OP_SEND` for a single buffer.
  *
  * **iovec lifetime**: For gather writes, [keel_alloc_iovec] heap-allocates the
  * iovec array before submitting the SQE. The kernel reads this array while
  * the write operation is in flight. The array is freed by [keel_free_iovec]
  * after the CQE arrives.
  *
- * **Partial write handling**: `IORING_OP_WRITE` / `IORING_OP_WRITEV` may return
+ * **Partial write handling**: `IORING_OP_SEND` / `IORING_OP_WRITEV` may return
  * fewer bytes than requested. We retry with a new SQE for the remainder until
  * all bytes are sent or an error occurs.
  *
@@ -151,6 +156,7 @@ internal class IoUringChannel(
      * operation pending until data arrives or an error occurs.
      *
      * @return number of bytes read, or -1 on EOF (CQE.res=0) or error.
+     * @throws IllegalStateException if the channel is closed.
      */
     override suspend fun read(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
@@ -173,6 +179,7 @@ internal class IoUringChannel(
      * buffer can be reused or released by the caller. The actual I/O happens in [flush].
      *
      * @return number of bytes buffered.
+     * @throws IllegalStateException if the channel is closed or output is shut down.
      */
     override suspend fun write(buf: IoBuf): Int {
         check(_open) { "Channel is closed" }
@@ -194,6 +201,8 @@ internal class IoUringChannel(
      * For multiple pending buffers: builds a heap-allocated iovec array via
      * [keel_alloc_iovec] and submits `IORING_OP_WRITEV` for a gather write.
      * Partial writes are retried via [flushSingleViaCqe].
+     *
+     * @throws IllegalStateException if the channel is closed.
      */
     // Tracks whether EAGAIN occurred during the current flush for stats recording.
     private var flushHadEagain = false
@@ -409,7 +418,10 @@ internal class IoUringChannel(
 
     /**
      * Closes the socket and releases all pending writes.
+     *
      * Unflushed data is discarded; retained buffers are released without sending.
+     * Does **not** call [flush] — any buffered writes are lost.
+     * Idempotent: subsequent calls are no-ops.
      */
     override fun close() {
         if (_open) {
