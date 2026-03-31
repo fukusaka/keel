@@ -52,9 +52,40 @@ data class IoUringCapabilities(
     val providedBufferRing: Boolean = true,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
-    /** IORING_SETUP_SINGLE_ISSUER (Linux 6.0+). Kernel lock reduction. */
+    /**
+     * IORING_SETUP_SINGLE_ISSUER (Linux 6.0+). Kernel lock reduction.
+     *
+     * **Currently disabled by default** in [detect] due to incompatibility
+     * with the EventLoop threading model. SINGLE_ISSUER requires all SQE
+     * submissions to originate from a single thread, but the current
+     * EventLoop receives `dispatch()` calls from external threads (e.g.,
+     * test coroutines, Ktor pipeline on Dispatchers.Default). Enabling
+     * this causes SIGTERM-like failures in `io_uring_enter()` from
+     * external threads.
+     *
+     * Force-enabling via `IoUringCapabilities(singleIssuer = true)` will
+     * apply the flag to `io_uring_queue_init`, but may cause test hangs
+     * or timeouts. Requires EventLoop redesign to guarantee single-thread
+     * SQE submission before enabling.
+     */
     val singleIssuer: Boolean = true,
-    /** IORING_SETUP_COOP_TASKRUN (Linux 5.19+). CQE scheduling optimisation. */
+    /**
+     * IORING_SETUP_COOP_TASKRUN (Linux 5.19+). CQE scheduling optimisation.
+     *
+     * **Currently disabled by default** in [detect] due to incompatibility
+     * with the EventLoop's `io_uring_submit_and_wait(1)` blocking loop.
+     * COOP_TASKRUN defers CQE generation to the next `io_uring_enter()`
+     * call instead of delivering via kernel task-work interrupts. This
+     * creates a deadlock: the EventLoop blocks in `submit_and_wait`
+     * waiting for a CQE, but the CQE won't be generated until the next
+     * `io_uring_enter()`.
+     *
+     * Resolving this requires switching to `io_uring_submit_and_wait_timeout`
+     * or polling with `IORING_SETUP_TASKRUN_FLAG` to detect pending CQEs.
+     *
+     * Force-enabling via `IoUringCapabilities(coopTaskrun = true)` will
+     * apply the flag to `io_uring_queue_init`, but will cause deadlocks.
+     */
     val coopTaskrun: Boolean = true,
 ) {
     companion object {
