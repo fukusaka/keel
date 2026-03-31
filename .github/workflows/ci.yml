@@ -55,4 +55,7 @@ jobs:
         run: ./gradlew jvmTest
 
       - name: Test (linuxX64)
-        run: ./gradlew linuxX64Test
+        # Exclude engine-io-uring: io_uring syscalls may be restricted
+        # on GitHub Actions runners, causing tests to hang indefinitely.
+        # io_uring tests are run on luna.local (dedicated Linux host).
+        run: ./gradlew linuxX64Test -x :engine-io-uring:linuxX64Test
