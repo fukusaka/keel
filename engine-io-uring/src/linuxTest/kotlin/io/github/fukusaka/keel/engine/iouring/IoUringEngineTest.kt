@@ -50,6 +50,13 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineTest {
 
+    private fun trace(msg: String) {
+        val bytes = (msg + "\n").encodeToByteArray()
+        bytes.usePinned { pinned ->
+            write(2, pinned.addressOf(0), bytes.size.convert())
+        }
+    }
+
     // --- Helper ---
 
     private fun connectRawClient(port: Int): Int {
@@ -93,14 +100,14 @@ class IoUringEngineTest {
 
     @Test
     fun `engine create and close`() {
-        println("[TEST] START: engine create and close")
+        trace("[TEST] START: engine create and close")
         val engine = IoUringEngine()
         engine.close()
     }
 
     @Test
     fun `bind returns active server channel`() = runBlocking {
-        println("[TEST] START: bind returns active server channel")
+        trace("[TEST] START: bind returns active server channel")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         assertTrue(server.isActive)
@@ -110,7 +117,7 @@ class IoUringEngineTest {
 
     @Test
     fun `server channel local address`() = runBlocking {
-        println("[TEST] START: server channel local address")
+        trace("[TEST] START: server channel local address")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         assertEquals("0.0.0.0", server.localAddress.host)
@@ -121,7 +128,7 @@ class IoUringEngineTest {
 
     @Test
     fun `server channel close stops listening`() = runBlocking {
-        println("[TEST] START: server channel close stops listening")
+        trace("[TEST] START: server channel close stops listening")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         server.close()
@@ -131,7 +138,7 @@ class IoUringEngineTest {
 
     @Test
     fun `channel lifecycle after close`() = runBlocking {
-        println("[TEST] START: channel lifecycle after close")
+        trace("[TEST] START: channel lifecycle after close")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -154,7 +161,7 @@ class IoUringEngineTest {
 
     @Test
     fun `echo round trip`() = runBlocking {
-        println("[TEST] START: echo round trip")
+        trace("[TEST] START: echo round trip")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -183,7 +190,7 @@ class IoUringEngineTest {
 
     @Test
     fun `read returns minus one on EOF`() = runBlocking {
-        println("[TEST] START: read returns minus one on EOF")
+        trace("[TEST] START: read returns minus one on EOF")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -205,7 +212,7 @@ class IoUringEngineTest {
 
     @Test
     fun `write and flush`() = runBlocking {
-        println("[TEST] START: write and flush")
+        trace("[TEST] START: write and flush")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -234,7 +241,7 @@ class IoUringEngineTest {
 
     @Test
     fun `multiple writes single flush`() = runBlocking {
-        println("[TEST] START: multiple writes single flush")
+        trace("[TEST] START: multiple writes single flush")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -267,7 +274,7 @@ class IoUringEngineTest {
 
     @Test
     fun `read advances IoBuf writerIndex`() = runBlocking {
-        println("[TEST] START: read advances IoBuf writerIndex")
+        trace("[TEST] START: read advances IoBuf writerIndex")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -294,7 +301,7 @@ class IoUringEngineTest {
 
     @Test
     fun `shutdownOutput sends FIN to peer`() = runBlocking {
-        println("[TEST] START: shutdownOutput sends FIN to peer")
+        trace("[TEST] START: shutdownOutput sends FIN to peer")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -319,7 +326,7 @@ class IoUringEngineTest {
 
     @Test
     fun `read after shutdownOutput still works`() = runBlocking {
-        println("[TEST] START: read after shutdownOutput still works")
+        trace("[TEST] START: read after shutdownOutput still works")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -348,7 +355,7 @@ class IoUringEngineTest {
 
     @Test
     fun `connect creates active channel`() = runBlocking {
-        println("[TEST] START: connect creates active channel")
+        trace("[TEST] START: connect creates active channel")
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -381,7 +388,7 @@ class IoUringEngineTest {
      */
     @Test
     fun `dispatch from external thread not lost when wakeup SQE was dropped due to full ring`() {
-        println("[TEST] START: dispatch from external thread not lost when wakeup SQE was dropped due to full ring")
+        trace("[TEST] START: dispatch from external thread not lost when wakeup SQE was dropped due to full ring")
         val loop = IoUringEventLoop(IoEngineConfig().loggerFactory.logger("test"), ringSize = 4)
         loop.start()
 
@@ -452,7 +459,7 @@ class IoUringEngineTest {
      */
     @Test
     fun `cancelled submitAndAwait submits ASYNC_CANCEL and leaves EventLoop functional`() {
-        println("[TEST] START: cancelled submitAndAwait submits ASYNC_CANCEL and leaves EventLoop functional")
+        trace("[TEST] START: cancelled submitAndAwait submits ASYNC_CANCEL and leaves EventLoop functional")
         val loop = IoUringEventLoop(IoEngineConfig().loggerFactory.logger("test"))
         loop.start()
 
@@ -504,7 +511,7 @@ class IoUringEngineTest {
 
     @Test
     fun `double close is idempotent`() = runBlocking {
-        println("[TEST] START: double close is idempotent")
+        trace("[TEST] START: double close is idempotent")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -522,7 +529,7 @@ class IoUringEngineTest {
 
     @Test
     fun `connect to refused port throws`() = runBlocking {
-        println("[TEST] START: connect to refused port throws")
+        trace("[TEST] START: connect to refused port throws")
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -540,7 +547,7 @@ class IoUringEngineTest {
 
     @Test
     fun `write zero bytes returns zero`() = runBlocking {
-        println("[TEST] START: write zero bytes returns zero")
+        trace("[TEST] START: write zero bytes returns zero")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -564,7 +571,7 @@ class IoUringEngineTest {
 
     @Test
     fun `no IoBuf leak when channel closed with pending writes`() = runBlocking {
-        println("[TEST] START: no IoBuf leak when channel closed with pending writes")
+        trace("[TEST] START: no IoBuf leak when channel closed with pending writes")
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
@@ -596,7 +603,7 @@ class IoUringEngineTest {
 
     @Test
     fun `no IoBuf leak on echo`() = runBlocking {
-        println("[TEST] START: no IoBuf leak on echo")
+        trace("[TEST] START: no IoBuf leak on echo")
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
@@ -626,7 +633,7 @@ class IoUringEngineTest {
 
     @Test
     fun `multishot accept delivers multiple connections`() = runBlocking {
-        println("[TEST] START: multishot accept delivers multiple connections")
+        trace("[TEST] START: multishot accept delivers multiple connections")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -650,7 +657,7 @@ class IoUringEngineTest {
 
     @Test
     fun `multishot accept echo works for each connection`() = runBlocking {
-        println("[TEST] START: multishot accept echo works for each connection")
+        trace("[TEST] START: multishot accept echo works for each connection")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -683,7 +690,7 @@ class IoUringEngineTest {
 
     @Test
     fun `close server channel while multishot armed`() = runBlocking {
-        println("[TEST] START: close server channel while multishot armed")
+        trace("[TEST] START: close server channel while multishot armed")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -705,7 +712,7 @@ class IoUringEngineTest {
 
     @Test
     fun `asSuspendSource reads data via multishot recv`() = runBlocking {
-        println("[TEST] START: asSuspendSource reads data via multishot recv")
+        trace("[TEST] START: asSuspendSource reads data via multishot recv")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -735,7 +742,7 @@ class IoUringEngineTest {
 
     @Test
     fun `asSuspendSource returns minus one on EOF`() = runBlocking {
-        println("[TEST] START: asSuspendSource returns minus one on EOF")
+        trace("[TEST] START: asSuspendSource returns minus one on EOF")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -759,7 +766,7 @@ class IoUringEngineTest {
 
     @Test
     fun `asSuspendSource echo round trip`() = runBlocking {
-        println("[TEST] START: asSuspendSource echo round trip")
+        trace("[TEST] START: asSuspendSource echo round trip")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -790,7 +797,7 @@ class IoUringEngineTest {
 
     @Test
     fun `asSuspendSource multiple reads from same connection`() = runBlocking {
-        println("[TEST] START: asSuspendSource multiple reads from same connection")
+        trace("[TEST] START: asSuspendSource multiple reads from same connection")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -821,7 +828,7 @@ class IoUringEngineTest {
 
     @Test
     fun `asSuspendSource with BufferedSuspendSource readLine`() = runBlocking {
-        println("[TEST] START: asSuspendSource with BufferedSuspendSource readLine")
+        trace("[TEST] START: asSuspendSource with BufferedSuspendSource readLine")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -848,7 +855,7 @@ class IoUringEngineTest {
 
     @Test
     fun `close channel while multishot recv armed`() = runBlocking {
-        println("[TEST] START: close channel while multishot recv armed")
+        trace("[TEST] START: close channel while multishot recv armed")
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
