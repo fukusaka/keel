@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: add `keel_prep_recv_multishot` cinterop wrapper combining `io_uring_prep_recv_multishot` with `IOSQE_BUFFER_SELECT`
 - `engine-io-uring`: add per-worker `ProvidedBufferRing` in `IoUringEventLoopGroup` for multishot recv buffer selection
 - `engine-io-uring`: override `IoUringChannel.asSuspendSource()` to use `IoUringPushSource` + `PushToSuspendSourceAdapter` for multishot recv path
+- `engine-io-uring`: add tests for `asSuspendSink` via `BufferedSuspendSink`, round-robin worker EventLoop assignment, and `connect` with invalid host address
 
 ### Fixed
 
