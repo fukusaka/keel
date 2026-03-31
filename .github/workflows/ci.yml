@@ -54,12 +54,5 @@ jobs:
       - name: Test (JVM)
         run: ./gradlew jvmTest
 
-      - name: Debug io_uring support
-        run: |
-          uname -r
-          cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo "io_uring_disabled: not found"
-          ulimit -l
-          ls -la /usr/lib/x86_64-linux-gnu/liburing* 2>/dev/null || echo "no liburing libs"
-
       - name: Test (linuxX64)
         run: ./gradlew linuxX64Test
