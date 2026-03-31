@@ -19,6 +19,7 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
+import platform.posix.close
 import platform.posix.F_GETFL
 import platform.posix.F_SETFL
 import platform.posix.INADDR_ANY
