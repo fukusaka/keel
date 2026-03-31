@@ -47,6 +47,7 @@ internal class IoUringServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
+    private val capabilities: IoUringCapabilities = IoUringCapabilities(),
 ) : ServerChannel, PushServerChannel {
 
     private var _active = true
@@ -73,7 +74,13 @@ internal class IoUringServerChannel(
                 if (!cont.isActive) return@dispatch
 
                 // Arm multishot accept lazily on first call.
-                if (multishotSlot == -1) armMultishotAccept()
+                if (multishotSlot == -1) {
+                    if (capabilities.multishotAccept) {
+                        armMultishotAccept()
+                    } else {
+                        error("Single-shot accept not yet implemented (requires kernel 5.19+ for multishot)")
+                    }
+                }
 
                 if (pendingFds.isNotEmpty()) {
                     // Fast path: fd already buffered by a prior CQE callback.
@@ -104,6 +111,7 @@ internal class IoUringServerChannel(
             return IoUringChannel(
                 clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi),
                 workerGroup.bufferRingAt(wi), remoteAddr, localAddr, writeModeSelector,
+                capabilities,
             )
         } catch (e: Throwable) {
             platform.posix.close(clientFd)

@@ -9,6 +9,9 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.PushSuspendSource
 import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
 import io.github.fukusaka.keel.io.SuspendSource
+
+// SuspendChannelSource is internal to core; pull-model fallback uses
+// Channel's default asSuspendSource() via super call.
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -92,10 +95,11 @@ internal class IoUringChannel(
     private val fd: Int,
     private val eventLoop: IoUringEventLoop,
     override val allocator: BufferAllocator,
-    private val bufferRing: ProvidedBufferRing,
+    private val bufferRing: ProvidedBufferRing?,
     override val remoteAddress: SocketAddress?,
     override val localAddress: SocketAddress?,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
+    private val capabilities: IoUringCapabilities = IoUringCapabilities(),
 ) : Channel, PushChannel {
 
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
@@ -104,18 +108,29 @@ internal class IoUringChannel(
     /** Per-connection I/O statistics for adaptive mode selection. */
     private val stats = ConnectionStats()
 
-    override fun asPushSuspendSource(): PushSuspendSource =
-        IoUringPushSource(fd, eventLoop, bufferRing)
+    override fun asPushSuspendSource(): PushSuspendSource {
+        val ring = bufferRing
+            ?: error("Push source requires provided buffer ring (kernel 5.19+)")
+        return IoUringPushSource(fd, eventLoop, ring)
+    }
 
     /**
-     * Returns a pull-model [SuspendSource] by bridging the push-model
-     * [IoUringPushSource] via [PushToSuspendSourceAdapter].
+     * Returns a [SuspendSource] for reading from this channel.
      *
-     * This adds one [IoBuf.copyTo] per read. For zero-copy, use
-     * [asPushSuspendSource] directly with BufferedSuspendSource push-mode.
+     * If multishot recv and provided buffer ring are available, uses the
+     * push-model [IoUringPushSource] via [PushToSuspendSourceAdapter].
+     * Otherwise, falls back to the pull-model [SuspendChannelSource].
      */
-    override fun asSuspendSource(): SuspendSource =
-        PushToSuspendSourceAdapter(asPushSuspendSource())
+    override fun asSuspendSource(): SuspendSource {
+        return if (capabilities.multishotRecv && capabilities.providedBufferRing && bufferRing != null) {
+            PushToSuspendSourceAdapter(IoUringPushSource(fd, eventLoop, bufferRing))
+        } else {
+            // Pull-model fallback: use Channel's default asSuspendSource()
+            // which delegates to SuspendChannelSource (internal to core module).
+            @Suppress("RedundantOverride") // intentional: dispatches to Channel default
+            super<Channel>.asSuspendSource()
+        }
+    }
 
     private val pendingWrites = mutableListOf<PendingWrite>()
     private var _open = true
@@ -189,7 +204,9 @@ internal class IoUringChannel(
 
         flushHadEagain = false
         flushBytesWritten = 0L
-        val mode = writeModeSelector.select(stats)
+        val rawMode = writeModeSelector.select(stats)
+        // Fall back to CQE if SEND_ZC is not supported by the kernel.
+        val mode = if (rawMode == IoMode.SEND_ZC && !capabilities.sendZc) IoMode.CQE else rawMode
         try {
             if (pendingWrites.size == 1) {
                 when (mode) {

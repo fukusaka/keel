@@ -22,6 +22,8 @@ import io_uring.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_eventfd_write
+import io_uring.keel_setup_coop_taskrun
+import io_uring.keel_setup_single_issuer
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
@@ -128,6 +130,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
     private val logger: Logger,
+    private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
 ) : CoroutineDispatcher() {
 
@@ -195,7 +198,15 @@ internal class IoUringEventLoop(
     private var eventLoopThread: platform.posix.pthread_t? = null
 
     init {
-        val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, 0u)
+        // Apply SINGLE_ISSUER and COOP_TASKRUN flags if kernel supports them.
+        // On failure, retry without flags (older kernel fallback).
+        var initFlags = 0u
+        if (capabilities.singleIssuer) initFlags = initFlags or keel_setup_single_issuer()
+        if (capabilities.coopTaskrun) initFlags = initFlags or keel_setup_coop_taskrun()
+        var ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, initFlags)
+        if (ret != 0 && initFlags != 0u) {
+            ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, 0u)
+        }
         check(ret == 0) { "io_uring_queue_init() failed: $ret" }
 
         wakeupFd = keel_eventfd_create()

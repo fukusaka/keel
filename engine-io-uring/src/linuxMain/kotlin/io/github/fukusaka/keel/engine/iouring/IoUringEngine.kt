@@ -59,18 +59,54 @@ import io_uring.keel_inet_pton
 class IoUringEngine(
     private val config: IoEngineConfig = IoEngineConfig(),
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
+    capabilities: IoUringCapabilities? = null,
 ) : IoEngine {
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
-    private val bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"))
-    private val workerGroup = IoUringEventLoopGroup(
-        size = resolveThreads(config),
-        logger = config.loggerFactory.logger("IoUringEventLoop"),
-        allocator = config.allocator,
-    )
+    private val resolvedCapabilities: IoUringCapabilities
+    private val bossLoop: IoUringEventLoop
+    private val workerGroup: IoUringEventLoopGroup
     private var closed = false
 
     init {
+        // Detect capabilities using kernel version. Opcode probe (SEND_ZC)
+        // requires a ring, so create boss loop first with default capabilities,
+        // then probe from its ring.
+        val defaultCaps = capabilities ?: run {
+            val kv = KernelVersion.current()
+            IoUringCapabilities(
+                multishotAccept = kv >= KernelVersion(5, 19),
+                multishotRecv = kv >= KernelVersion(6, 0),
+                providedBufferRing = kv >= KernelVersion(5, 19),
+                // Preliminary: will be refined by opcode probe below.
+                sendZc = kv >= KernelVersion(6, 0),
+                // SINGLE_ISSUER disabled: causes test timeouts. The current
+                // EventLoop design dispatches from multiple threads (e.g., test
+                // coroutines), violating the single-issuer assumption.
+                singleIssuer = false,
+                // COOP_TASKRUN disabled: causes test hangs due to changed
+                // io_uring_submit_and_wait behavior. Requires EventLoop adaptation.
+                coopTaskrun = false,
+            )
+        }
+
+        bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"), defaultCaps)
+
+        // Refine sendZc via opcode probe if auto-detecting.
+        resolvedCapabilities = if (capabilities != null) {
+            defaultCaps
+        } else {
+            val probed = IoUringCapabilities.detect(bossLoop.ringPtr)
+            defaultCaps.copy(sendZc = probed.sendZc)
+        }
+
+        workerGroup = IoUringEventLoopGroup(
+            size = resolveThreads(config),
+            logger = config.loggerFactory.logger("IoUringEventLoop"),
+            allocator = config.allocator,
+            capabilities = resolvedCapabilities,
+        )
+
         bossLoop.start()
         workerGroup.start()
     }
@@ -81,7 +117,9 @@ class IoUringEngine(
         val serverFd = SocketUtils.createServerSocket(host, port)
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return IoUringServerChannel(serverFd, bossLoop, workerGroup, localAddr, writeModeSelector)
+        return IoUringServerChannel(
+            serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities,
+        )
     }
 
     /**
@@ -130,7 +168,10 @@ class IoUringEngine(
         val localAddr = SocketUtils.getLocalAddress(fd)
         val bufferRing = workerGroup.bufferRingAt(wi)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return IoUringChannel(fd, workerLoop, allocator, bufferRing, remoteAddr, localAddr, writeModeSelector)
+        return IoUringChannel(
+            fd, workerLoop, allocator, bufferRing, remoteAddr, localAddr,
+            writeModeSelector, resolvedCapabilities,
+        )
     }
 
     override fun close() {
