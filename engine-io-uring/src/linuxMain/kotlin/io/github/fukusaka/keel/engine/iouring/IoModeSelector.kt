@@ -38,11 +38,11 @@ object IoModeSelectors {
 
     /**
      * Adaptive strategy: starts with [IoMode.FALLBACK_CQE] (direct syscall).
-     * Switches to [IoMode.CQE] when EAGAIN rate exceeds [ratio] after
-     * [minSamples] flush operations.
+     * Switches to [IoMode.CQE] when the recent EAGAIN rate (EMA) exceeds
+     * [ratio] after [minSamples] flush operations.
      *
-     * Reverts to [IoMode.FALLBACK_CQE] if the EAGAIN rate drops below
-     * [ratio] (e.g., after load decreases).
+     * Reverts to [IoMode.FALLBACK_CQE] automatically as the EMA decays
+     * when load decreases (exponential decay, half-life ~14 flushes).
      *
      * @param ratio EAGAIN rate threshold (0.0–1.0). Default 0.1 (10%).
      * @param minSamples Minimum flush count before switching. Default 100.
@@ -51,7 +51,7 @@ object IoModeSelectors {
         ratio: Double = 0.1,
         minSamples: Long = 100,
     ) = IoModeSelector { stats ->
-        if (stats.totalFlushes >= minSamples && stats.eagainRatio > ratio)
+        if (stats.totalFlushes >= minSamples && stats.recentEagainRate > ratio)
             IoMode.CQE
         else
             IoMode.FALLBACK_CQE

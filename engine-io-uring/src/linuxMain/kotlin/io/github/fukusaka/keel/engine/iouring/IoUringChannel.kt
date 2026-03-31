@@ -179,10 +179,16 @@ internal class IoUringChannel(
      * [keel_alloc_iovec] and submits `IORING_OP_WRITEV` for a gather write.
      * Partial writes are retried via [flushSingleViaCqe].
      */
+    // Tracks whether EAGAIN occurred during the current flush for stats recording.
+    private var flushHadEagain = false
+    private var flushBytesWritten = 0L
+
     override suspend fun flush() {
         check(_open) { "Channel is closed" }
         if (pendingWrites.isEmpty()) return
 
+        flushHadEagain = false
+        flushBytesWritten = 0L
         val mode = writeModeSelector.select(stats)
         try {
             if (pendingWrites.size == 1) {
@@ -197,7 +203,7 @@ internal class IoUringChannel(
                 flushGatherViaCqe()
             }
         } finally {
-            stats.totalFlushes++
+            stats.recordFlush(flushHadEagain, flushBytesWritten)
             pendingWrites.clear()
         }
     }
@@ -217,7 +223,7 @@ internal class IoUringChannel(
                 val res = eventLoop.submitSend(fd, ptr, remaining, 0)
                 if (res > 0) {
                     written += res
-                    stats.totalBytesWritten += res
+                    flushBytesWritten += res
                 } else break
             }
         } finally {
@@ -246,13 +252,13 @@ internal class IoUringChannel(
                 when {
                     n > 0 -> {
                         written += n.toInt()
-                        stats.totalBytesWritten += n
+                        flushBytesWritten += n
                     }
                     n == 0L -> break
                     else -> {
                         val err = platform.posix.errno
                         if (err == EAGAIN || err == EWOULDBLOCK) {
-                            stats.writeEagainCount++
+                            flushHadEagain = true
                             // CQE fallback: retain buf for the new PendingWrite,
                             // flushSingleViaCqe will release it.
                             pw.buf.retain()
