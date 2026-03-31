@@ -5,7 +5,6 @@ import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.PushServerChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
-import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -120,11 +119,9 @@ internal class IoUringServerChannel(
         }
     }
 
-    /** Single-shot accept fallback: one SQE per accept. */
+    /** Single-shot accept fallback: one SQE per accept. Zero-lambda hot path. */
     private suspend fun acceptSingleShot(): Int {
-        return bossLoop.submitAndAwait { sqe ->
-            io_uring_prep_accept(sqe, serverFd, null, null, 0)
-        }
+        return bossLoop.submitAccept(serverFd)
     }
 
     private fun armMultishotAccept() {
