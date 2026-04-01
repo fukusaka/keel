@@ -8,7 +8,7 @@ on:
   release:
     types: [published]
   pull_request:
-    types: [labeled]
+    types: [labeled, synchronize]
   workflow_dispatch:
 
 # Comma-separated list of users allowed to trigger deploy via deploy-docs label.
@@ -19,20 +19,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Deploy to Cloudflare Pages
+  # --- Docusaurus (all events) ---
+
+  build-docusaurus:
+    name: Build Docusaurus
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'release' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       github.event.label.name == 'deploy-docs' &&
+       contains(github.event.pull_request.labels.*.name, 'deploy-docs') &&
        contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      # --- Docusaurus ---
 
       - uses: actions/setup-node@v4
         with:
@@ -51,19 +51,38 @@ jobs:
           SITE_URL: https://keel-kt.pages.dev
           BASE_URL: /
 
-      # --- Dokka (release and manual only) ---
+      - name: Upload Docusaurus build
+        uses: actions/upload-artifact@v4
+        with:
+          name: docusaurus-build
+          path: website/build
+          retention-days: 1
+
+  # --- Dokka: Linux modules (release, manual, deploy-docs label) ---
+
+  dokka-linux:
+    name: Dokka (Linux)
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'deploy-docs') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install liburing-dev
+        run: sudo apt-get install -y liburing-dev
 
       - uses: actions/setup-java@v5
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         with:
           java-version: '21'
           distribution: 'temurin'
 
       - uses: gradle/actions/setup-gradle@v5
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
 
       - name: Cache Kotlin/Native toolchain
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/cache@v5
         with:
           path: ~/.konan
@@ -71,18 +90,101 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       - name: Generate API docs (Dokka)
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         run: ./gradlew dokkaGeneratePublicationHtml
 
-      - name: Copy Dokka output to website build
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        run: cp -r build/dokka/html website/build/api
+      - name: Upload Dokka output
+        uses: actions/upload-artifact@v4
+        with:
+          name: dokka-linux
+          path: build/dokka/html
+          retention-days: 1
 
-      # --- Deploy ---
+  # --- Dokka: macOS modules (release, manual, deploy-docs label) ---
+
+  dokka-macos:
+    name: Dokka (macOS)
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'deploy-docs') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      - name: Generate API docs (Dokka)
+        run: ./gradlew dokkaGeneratePublicationHtml
+
+      - name: Upload Dokka output
+        uses: actions/upload-artifact@v4
+        with:
+          name: dokka-macos
+          path: build/dokka/html
+          retention-days: 1
+
+  # --- Deploy ---
+
+  deploy:
+    name: Deploy to Cloudflare Pages
+    needs: [build-docusaurus, dokka-linux, dokka-macos]
+    # Always run after docusaurus build; dokka jobs may be skipped (push event)
+    if: >-
+      always() &&
+      needs.build-docusaurus.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
+        with:
+          sparse-checkout: scripts/merge-dokka.py
+
+      - name: Download Docusaurus build
+        uses: actions/download-artifact@v4
+        with:
+          name: docusaurus-build
+          path: website-build
+
+      # Merge Dokka outputs from both platforms
+      - name: Download Dokka (Linux)
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: dokka-linux
+          path: dokka-linux
+
+      - name: Download Dokka (macOS)
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: dokka-macos
+          path: dokka-macos
+
+      - name: Merge Dokka outputs
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
+        run: |
+          python3 scripts/merge-dokka.py \
+            --macos-dir dokka-macos \
+            --linux-dir dokka-linux \
+            website-build/api
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy website/build --project-name=keel-kt
+          command: pages deploy website-build --project-name=keel-kt
