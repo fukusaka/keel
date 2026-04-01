@@ -127,7 +127,8 @@ import kotlin.coroutines.resume
  * @param ringSize Number of SQE entries in the submission ring. Must be a power of 2.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class IoUringEventLoop(
+@io.github.fukusaka.keel.core.InternalKeelApi
+class IoUringEventLoop(
     private val logger: Logger,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
@@ -140,7 +141,7 @@ internal class IoUringEventLoop(
     private val ring = arena.alloc<io_uring>()
 
     /** Exposes the io_uring ring pointer for [ProvidedBufferRing] registration. */
-    internal val ringPtr get() = ring.ptr
+    val ringPtr get() = ring.ptr
 
     // 8-byte buffer for eventfd reads (uint64_t). Arena-allocated so it
     // remains valid for the lifetime of the permanent wakeup READ SQE.
@@ -483,7 +484,7 @@ internal class IoUringEventLoop(
      *                (check `keel_cqe_has_more` for continuation).
      * @return The slot index, needed for [cancelMultishot].
      */
-    internal fun submitMultishot(
+    fun submitMultishot(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
@@ -511,7 +512,7 @@ internal class IoUringEventLoop(
      *
      * @param slot The slot index returned by [submitMultishot].
      */
-    internal fun cancelMultishot(slot: Int) {
+    fun cancelMultishot(slot: Int) {
         // Replace with no-op; the drain loop releases the slot on F_MORE=0.
         multishotCallbacks[slot] = { _, _ -> }
         val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return
@@ -535,7 +536,7 @@ internal class IoUringEventLoop(
      * @param onCqe Callback invoked on the EventLoop thread for each CQE.
      * @return The slot index, needed for [cancelMultishot].
      */
-    internal fun submitMultishotRecv(
+    fun submitMultishotRecv(
         fd: Int,
         bgid: Int,
         onCqe: (res: Int, flags: UInt) -> Unit,

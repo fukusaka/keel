@@ -48,7 +48,8 @@ import kotlinx.cinterop.value
  *             multiple rings are needed (currently one per EventLoop).
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class ProvidedBufferRing(
+@io.github.fukusaka.keel.core.InternalKeelApi
+class ProvidedBufferRing(
     private val uring: CPointer<io_uring>,
     val bufferCount: Int = DEFAULT_BUFFER_COUNT,
     val bufferSize: Int = DEFAULT_BUFFER_SIZE,
