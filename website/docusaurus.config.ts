@@ -2,6 +2,8 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+const baseUrl = process.env.BASE_URL ?? '/keel/';
+
 const config: Config = {
   title: 'keel',
   tagline: 'KMP Native Network I/O Engine',
@@ -12,7 +14,7 @@ const config: Config = {
   },
 
   url: process.env.SITE_URL ?? 'https://fukusaka.github.io',
-  baseUrl: process.env.BASE_URL ?? '/keel/',
+  baseUrl,
 
   organizationName: 'fukusaka',
   projectName: 'keel',
@@ -57,6 +59,11 @@ const config: Config = {
           label: 'Docs',
         },
         {
+          type: 'html',
+          position: 'left',
+          value: `<a href="${baseUrl}api/" class="navbar__item navbar__link">API</a>`,
+        },
+        {
           href: 'https://github.com/fukusaka/keel',
           label: 'GitHub',
           position: 'right',
@@ -83,7 +90,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} fukusaka. Licensed under Apache 2.0.`,
+      copyright: `Copyright © ${new Date().getFullYear()} fukusaka — Code: <a href="https://www.apache.org/licenses/LICENSE-2.0" style="color:inherit;text-decoration:underline">Apache 2.0</a> · Docs: <a href="https://creativecommons.org/licenses/by/4.0/" style="color:inherit;text-decoration:underline">CC BY 4.0</a>`,
     },
     prism: {
       theme: prismThemes.github,
