@@ -72,6 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install liburing-dev
+        run: sudo apt-get install -y liburing-dev
+
       - uses: actions/setup-java@v5
         with:
           java-version: '21'
