@@ -23,6 +23,7 @@ Examples:
 """
 
 import argparse
+import datetime
 import os
 import re
 import shutil
@@ -195,7 +196,6 @@ def inject_custom_css(output_dir):
 
 def replace_footer_copyright(output_dir):
     """Replace Dokka's default copyright with project-specific one."""
-    import datetime
     year = datetime.date.today().year
     old = f'\u00a9 {year} Copyright'
     new = (

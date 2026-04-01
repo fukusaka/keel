@@ -47,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- build: conditionally apply Dokka plugin based on host OS; skip platform-specific cinterop modules (engine-io-uring on macOS, engine-kqueue/engine-nwconnection on Linux) to prevent build failures
+- build: add missing modules (logging, io-core, ktor-engine) to root Dokka aggregation
+- build: add `scripts/merge-dokka.py` for cross-platform Dokka HTML merging with Docusaurus-aligned theme
+- ci: generate complete Dokka API docs via parallel macOS + Linux jobs on release and deploy-docs label
+- website: add API navbar link; update footer with dual-license notice (Code: Apache 2.0, Docs: CC BY 4.0)
 - `ktor-engine`: use `BufferedSuspendSource` push-mode for `PushChannel` engines (io_uring); eliminates `IoBuf.copyTo()` per read in the HTTP codec path
 - `io-core`: rename `IoBuf.writeBytes` to `writeByteArray` and `writeAsciiString` to `writeAscii` for naming clarity
 - `io-core`: add `IoBuf.readByteArray(dest, offset, length)` for platform-optimized bulk read; symmetric with `writeByteArray`
