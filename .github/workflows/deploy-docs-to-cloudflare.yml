@@ -18,6 +18,17 @@ concurrency:
   group: deploy-docs-cloudflare
   cancel-in-progress: true
 
+# Reusable condition: events that include full Dokka API docs.
+# - release (published)
+# - workflow_dispatch (manual)
+# - pull_request with deploy-docs label (preview)
+env:
+  INCLUDE_DOKKA: >-
+    ${{ github.event_name == 'release' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' &&
+         github.event.label.name == 'deploy-docs') }}
+
 jobs:
   # --- Docusaurus (all events) ---
 
@@ -58,11 +69,16 @@ jobs:
           path: website/build
           retention-days: 1
 
-  # --- Dokka: Linux modules (release and manual only) ---
+  # --- Dokka: Linux modules (release, manual, deploy-docs label) ---
 
   dokka-linux:
     name: Dokka (Linux)
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'deploy-docs' &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -91,11 +107,16 @@ jobs:
           path: build/dokka/html
           retention-days: 1
 
-  # --- Dokka: macOS modules (release and manual only) ---
+  # --- Dokka: macOS modules (release, manual, deploy-docs label) ---
 
   dokka-macos:
     name: Dokka (macOS)
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'deploy-docs' &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -128,15 +149,15 @@ jobs:
 
   deploy:
     name: Deploy to Cloudflare Pages
-    needs: [build-docusaurus]
-    # Always run after docusaurus build; dokka jobs are optional (release only)
+    needs: [build-docusaurus, dokka-linux, dokka-macos]
+    # Always run after docusaurus build; dokka jobs may be skipped (push event)
     if: >-
       always() &&
       needs.build-docusaurus.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
         with:
           sparse-checkout: scripts/merge-dokka.py
 
@@ -146,23 +167,23 @@ jobs:
           name: docusaurus-build
           path: website-build
 
-      # Merge Dokka outputs from both platforms (release/manual only)
+      # Merge Dokka outputs from both platforms
       - name: Download Dokka (Linux)
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: dokka-linux
           path: dokka-linux
 
       - name: Download Dokka (macOS)
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: dokka-macos
           path: dokka-macos
 
       - name: Merge Dokka outputs
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        if: needs.dokka-linux.result == 'success' && needs.dokka-macos.result == 'success'
         run: |
           python3 scripts/merge-dokka.py \
             --macos-dir dokka-macos \
