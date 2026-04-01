@@ -21,7 +21,10 @@ internal object ReferenceCountUtil {
             try {
                 msg.release()
             } catch (_: IllegalStateException) {
-                // Already released — ignore.
+                // Already released — typically indicates a double-release bug
+                // in a handler. Silently ignored here because the pipeline's
+                // safety net should not throw; the root cause should be fixed
+                // in the handler itself.
             }
         }
     }

@@ -245,13 +245,34 @@ internal class DefaultChannelPipeline(
 
     // --- DefaultContext ---
 
+    /**
+     * A node in the doubly-linked list that forms the [DefaultChannelPipeline].
+     *
+     * Each context wraps a single [ChannelHandler] and provides the
+     * [ChannelHandlerContext] interface for that handler to propagate
+     * events to the next handler in the chain.
+     *
+     * **Inbound navigation** ([findNextInbound]): follows [next] pointers
+     * from head toward tail, skipping non-[ChannelInboundHandler] nodes.
+     *
+     * **Outbound navigation** ([findPrevOutbound]): follows [prev] pointers
+     * from tail toward head, skipping non-[ChannelOutboundHandler] nodes.
+     *
+     * **Invoke methods** (`invokeOn*`): wrap handler callbacks with try-catch
+     * to prevent IoBuf leaks on exceptions. [invokeOnRead] releases the message
+     * on exception; [invokeOnError] logs the secondary exception to avoid
+     * infinite error propagation loops.
+     */
     internal class DefaultContext(
         private val pipelineRef: DefaultChannelPipeline,
         override val name: String,
         override val handler: ChannelHandler,
     ) : ChannelHandlerContext {
 
+        /** Previous node toward HEAD (outbound direction). Null when detached. */
         var prev: DefaultContext? = null
+
+        /** Next node toward TAIL (inbound direction). Null when detached. */
         var next: DefaultContext? = null
 
         override val channel: PipelinedChannel get() = pipelineRef.channel
