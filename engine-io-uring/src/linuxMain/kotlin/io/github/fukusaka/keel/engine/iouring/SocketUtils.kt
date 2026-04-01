@@ -70,40 +70,8 @@ object SocketUtils {
      * @param port Port number. 0 lets the OS assign an ephemeral port.
      * @return The server socket file descriptor.
      */
-    fun createServerSocket(host: String, port: Int): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
-
-        try {
-            intArrayOf(1).usePinned { pinned ->
-                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-            }
-
-            setNonBlocking(fd)
-
-            memScoped {
-                val addr = alloc<sockaddr_in>()
-                addr.sin_family = AF_INET.convert()
-                addr.sin_port = keel_htons(port.toUShort())
-                if (host == "0.0.0.0") {
-                    addr.sin_addr.s_addr = INADDR_ANY
-                } else {
-                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-                    check(rc == 1) { "Invalid address: $host" }
-                }
-                val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-                check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
-            }
-
-            val result = listen(fd, LISTEN_BACKLOG)
-            check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
-        } catch (e: Throwable) {
-            close(fd)
-            throw e
-        }
-
-        return fd
-    }
+    fun createServerSocket(host: String, port: Int): Int =
+        createServerSocketImpl(host, port, reusePort = false)
 
     /**
      * Creates a TCP server socket with `SO_REUSEPORT` in addition to `SO_REUSEADDR`.
@@ -120,14 +88,23 @@ object SocketUtils {
      * @param port Port number.
      * @return The server socket file descriptor.
      */
-    fun createReusePortServerSocket(host: String, port: Int): Int {
+    fun createReusePortServerSocket(host: String, port: Int): Int =
+        createServerSocketImpl(host, port, reusePort = true)
+
+    /**
+     * Shared implementation for [createServerSocket] and [createReusePortServerSocket].
+     * Sets SO_REUSEPORT only when [reusePort] is true.
+     */
+    private fun createServerSocketImpl(host: String, port: Int, reusePort: Boolean): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
 
         try {
             intArrayOf(1).usePinned { pinned ->
                 setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                if (reusePort) {
+                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                }
             }
 
             setNonBlocking(fd)

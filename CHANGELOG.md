@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: add `InternalKeelApi` opt-in annotation for cross-module internal API access without making declarations public
+- `engine-io-uring`: expose `IoUringEventLoop`, `ProvidedBufferRing`, `SocketUtils` as `@InternalKeelApi` for benchmark access
+- `engine-io-uring`: add `SocketUtils.createReusePortServerSocket` for `SO_REUSEPORT` multi-thread accept distribution
+- `benchmark`: add `raw-io-uring` zero-suspend benchmark engine (EventLoopGroup + SO_REUSEPORT + pre-pinned responses)
 - `engine-io-uring`: add `IoUringCapabilities` for runtime kernel feature detection (opcode probe + kernel version); user-overridable via `IoUringEngine(capabilities = ...)`
 - `engine-io-uring`: apply `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_COOP_TASKRUN` ring init flags with automatic fallback on older kernels
 - `engine-io-uring`: guard all features (multishot accept/recv, provided buffer ring, SEND_ZC) with capabilities; graceful fallback instead of crash on unsupported kernels
