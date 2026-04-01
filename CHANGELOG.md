@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: add `ChannelPipeline` framework for zero-suspend protocol processing with `notify*`/`propagate*`/`on*` naming convention, construction-time type chain validation, and `TypedChannelInboundHandler` with reified factory
+- `core`: add `IoTransport` internal interface for shared write/flush between Channel (suspend) and pipeline HeadHandler (fire-and-forget)
 - `engine-io-uring`: add `IoUringCapabilities` for runtime kernel feature detection (opcode probe + kernel version); user-overridable via `IoUringEngine(capabilities = ...)`
 - `engine-io-uring`: apply `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_COOP_TASKRUN` ring init flags with automatic fallback on older kernels
 - `engine-io-uring`: guard all features (multishot accept/recv, provided buffer ring, SEND_ZC) with capabilities; graceful fallback instead of crash on unsupported kernels
