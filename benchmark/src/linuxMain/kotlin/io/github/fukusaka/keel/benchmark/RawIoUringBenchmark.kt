@@ -53,7 +53,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 object RawIoUringBenchmark : EngineBenchmark {
 
     override fun start(config: BenchmarkConfig): () -> Unit {
-        val numThreads = maxOf(1, availableProcessors())
+        val numThreads = maxOf(1, config.socket.threads ?: availableProcessors())
         val loops = Array(numThreads) { IoUringEventLoop(NoopLoggerFactory.logger("raw-io-uring-$it")) }
         // RECV_BUFFER_COUNT per EventLoop: each loop handles connections independently.
         val bufferRings = Array(numThreads) { i ->
