@@ -40,7 +40,7 @@ internal class NwIoTransport(
     private val conn: nw_connection_t,
 ) : IoTransport {
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
+    private var pendingWrites = mutableListOf<PendingWrite>()
 
     override var onFlushComplete: (() -> Unit)? = null
 
@@ -65,9 +65,10 @@ internal class NwIoTransport(
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
 
-        // Capture writes to release in callback.
-        val writes = pendingWrites.toList()
-        pendingWrites.clear()
+        // Transfer ownership to FlushContext for release in callback.
+        // Avoids List copy by swapping the backing list.
+        val writes = pendingWrites
+        pendingWrites = mutableListOf()
 
         if (writes.size == 1) {
             val pw = writes[0]

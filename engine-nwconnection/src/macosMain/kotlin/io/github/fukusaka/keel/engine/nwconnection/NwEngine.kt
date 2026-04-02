@@ -179,6 +179,11 @@ class NwEngine(
                         "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
                     )
                     nw_connection_set_queue(conn, connQueue)
+                    // Fire-and-forget start: nw_connection_receive can be called
+                    // immediately after start — NWConnection queues the receive
+                    // internally until the connection reaches the ready state.
+                    // Unlike NwServerChannel.accept() which awaits ready via
+                    // keel_nw_start_conn_async, pipeline skips the suspend.
                     nw_connection_start(conn)
 
                     val transport = NwIoTransport(conn)
