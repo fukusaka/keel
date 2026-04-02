@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io_uring.io_uring_prep_send
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -17,6 +18,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
+import platform.posix.MSG_NOSIGNAL
 
 /**
  * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
@@ -86,12 +88,95 @@ internal class IoUringIoTransport(
      *
      * @return true if flush completed synchronously, false if async pending.
      */
+    /**
+     * Fire-and-forget flush for the pipeline HeadHandler path.
+     *
+     * Attempts direct `send()` for each pending write. If EAGAIN occurs,
+     * submits a SEND SQE via [IoUringEventLoop.submitMultishot] and returns
+     * false (async pending). The [onFlushComplete] callback is invoked when
+     * all async sends complete.
+     *
+     * Unlike [flushSuspend], this method never suspends and is safe to call
+     * from CQE callbacks on the EventLoop thread.
+     */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
-        // Fire-and-forget flush using submitMultishot callback will be
-        // implemented when IoUringPipelinedChannel is added (Step 1 PR B).
-        // Until then, only the suspend-based flushSuspend() path is used.
-        TODO("fire-and-forget flush not yet implemented; use flushSuspend() via Channel")
+        flushHadEagain = false
+        flushBytesWritten = 0L
+        try {
+            for (pw in pendingWrites) {
+                if (!flushSingleFireAndForget(pw)) {
+                    // Async send pending — remaining writes will be flushed
+                    // after the async send completes (chained in callback).
+                    return false
+                }
+            }
+        } finally {
+            stats.recordFlush(flushHadEagain, flushBytesWritten)
+            pendingWrites.clear()
+        }
+        return true
+    }
+
+    /**
+     * Sends a single [PendingWrite] via direct send() with EAGAIN → SEND SQE fallback.
+     *
+     * @return true if fully sent synchronously, false if async SEND SQE submitted.
+     */
+    private fun flushSingleFireAndForget(pw: PendingWrite): Boolean {
+        var written = 0
+        while (written < pw.length) {
+            val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+            val remaining = (pw.length - written).toULong()
+            val n = platform.posix.send(fd, ptr, remaining, MSG_NOSIGNAL)
+            when {
+                n > 0 -> {
+                    written += n.toInt()
+                    flushBytesWritten += n
+                }
+                n == 0L -> break
+                else -> {
+                    val err = platform.posix.errno
+                    if (err == EAGAIN || err == EWOULDBLOCK) {
+                        flushHadEagain = true
+                        // Submit SEND SQE for the remainder via callback (fire-and-forget).
+                        submitAsyncSend(pw.buf, pw.offset + written, pw.length - written)
+                        pw.buf.release()
+                        return false
+                    }
+                    break // unrecoverable error
+                }
+            }
+        }
+        pw.buf.release()
+        return true
+    }
+
+    /**
+     * Submits a SEND SQE via [IoUringEventLoop.submitMultishot] for async delivery.
+     *
+     * The buffer is retained for the duration of the async send and released
+     * when the CQE callback fires. Partial sends recurse until complete.
+     */
+    private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
+        buf.retain()
+        val ptr = (buf.unsafePointer + offset)!!
+        eventLoop.submitMultishot(
+            prepare = { sqe ->
+                io_uring_prep_send(sqe, fd, ptr, length.convert(), MSG_NOSIGNAL)
+            },
+            onCqe = { res, _ ->
+                val newOffset = if (res > 0) offset + res else offset
+                val done = res <= 0 || newOffset >= offset + length
+                if (!done) {
+                    buf.release()
+                    submitAsyncSend(buf, newOffset, offset + length - newOffset)
+                } else {
+                    buf.release()
+                    onFlushComplete?.invoke()
+                }
+            },
+        )
     }
 
     override var onFlushComplete: (() -> Unit)? = null
