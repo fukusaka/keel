@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: add `IoUringPipelinedChannel` and `IoUringPipelinedServerChannel` for zero-suspend pipeline processing with multishot recv + SO_REUSEPORT
 - `engine-io-uring`: add `IoUringEngine.bindPipeline()` for callback-driven server without coroutine overhead
 - `engine-io-uring`: add `SocketUtils.createReusePortServerSocket()` for multi-thread accept distribution
+- `benchmark`: rewrite `raw-io-uring` benchmark using pipeline API (`bindPipeline` + `typedHandler<IoBuf>`) — no `@InternalKeelApi` access
 - `engine-io-uring`: add `IoUringCapabilities` for runtime kernel feature detection (opcode probe + kernel version); user-overridable via `IoUringEngine(capabilities = ...)`
 - `engine-io-uring`: apply `IORING_SETUP_SINGLE_ISSUER` + `IORING_SETUP_COOP_TASKRUN` ring init flags with automatic fallback on older kernels
 - `engine-io-uring`: guard all features (multishot accept/recv, provided buffer ring, SEND_ZC) with capabilities; graceful fallback instead of crash on unsupported kernels
