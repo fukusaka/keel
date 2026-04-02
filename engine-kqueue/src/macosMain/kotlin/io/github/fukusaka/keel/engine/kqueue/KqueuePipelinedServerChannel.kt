@@ -94,6 +94,13 @@ internal class KqueuePipelinedServerChannel(
         channel.armRead()
     }
 
+    /**
+     * Stops accepting and closes the server socket fd.
+     *
+     * Pending accept callbacks become no-ops (closed flag check).
+     * Does NOT close worker EventLoops or existing client channels —
+     * caller (typically [KqueueEngine.close]) is responsible. Idempotent.
+     */
     override fun close() {
         if (closed) return
         closed = true

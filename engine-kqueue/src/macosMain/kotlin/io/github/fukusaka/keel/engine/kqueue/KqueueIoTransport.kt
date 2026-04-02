@@ -73,6 +73,14 @@ internal class KqueueIoTransport(
         return flushGather()
     }
 
+    /**
+     * Releases all pending write buffers and closes the socket fd.
+     *
+     * Unsent data is discarded — no flush is attempted. Does NOT unregister
+     * any pending EVFILT_WRITE callback from the EventLoop (the callback will
+     * find the fd closed and become a no-op). Idempotent for buffer release,
+     * but `close(fd)` is called unconditionally — caller must ensure single close.
+     */
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()

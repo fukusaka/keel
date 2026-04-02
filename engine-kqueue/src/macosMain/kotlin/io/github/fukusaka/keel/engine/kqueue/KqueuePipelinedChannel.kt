@@ -98,6 +98,13 @@ internal class KqueuePipelinedChannel(
         }
     }
 
+    /**
+     * Closes this channel by delegating to [KqueueIoTransport.close].
+     *
+     * Releases pending write buffers and closes the socket fd.
+     * Does NOT unregister pending EVFILT_READ callbacks — the closed flag
+     * prevents further processing if the callback fires. Idempotent.
+     */
     fun close() {
         if (closed) return
         closed = true
