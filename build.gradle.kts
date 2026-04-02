@@ -6,9 +6,36 @@ plugins {
 }
 
 // Shorten package names in Dokka navigation sidebar.
+// customAssets only injects into root index.html; subpages need the script
+// in scripts/ directory alongside navigation-loader.js.
 dokka {
     pluginsConfiguration.html {
         customAssets.from("dokka/scripts/shorten-packages.js")
+    }
+}
+
+// Copy shorten-packages.js to Dokka scripts/ directory so all pages load it.
+tasks.named("dokkaGeneratePublicationHtml") {
+    doLast {
+        val scriptsDir = layout.buildDirectory.dir("dokka/html/scripts").get().asFile
+        val source = project.file("dokka/scripts/shorten-packages.js")
+        source.copyTo(scriptsDir.resolve("shorten-packages.js"), overwrite = true)
+        // Inject script tag into all HTML files that reference navigation-loader.js
+        val htmlDir = layout.buildDirectory.dir("dokka/html").get().asFile
+        htmlDir.walkTopDown().filter { it.extension == "html" }.forEach { file ->
+            val content = file.readText()
+            if ("shorten-packages.js" !in content && "navigation-loader.js" in content) {
+                val replacement = content.replace(
+                    "</head>",
+                    """<script type="text/javascript" src="${"scripts/shorten-packages.js".let { script ->
+                        // Compute relative path based on depth
+                        val depth = file.relativeTo(htmlDir).path.count { it == '/' }
+                        "../".repeat(depth) + script
+                    }}" defer></script></head>""",
+                )
+                file.writeText(replacement)
+            }
+        }
     }
 }
 

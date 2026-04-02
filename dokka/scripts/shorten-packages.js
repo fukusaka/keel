@@ -1,5 +1,5 @@
 /*
- * Shortens package names in Dokka 2.x navigation by removing the common prefix.
+ * Shortens package names in Dokka 2.x by removing the common prefix.
  *
  * "io.github.fukusaka.keel.core" → "core"
  * "io.github.fukusaka.keel.engine.kqueue" → "engine.kqueue"
@@ -7,52 +7,59 @@
  * Dokka 2.x loads navigation asynchronously via fetch() in navigation-loader.js.
  * This script observes the #sideMenu container for DOM changes and applies
  * shortening after navigation is rendered.
+ *
+ * DOM structure (Dokka 2.x):
+ *   #sideMenu > .sideMenu > .toc--part[data-nesting-level="0"] (module)
+ *     > .toc--part[data-nesting-level="1"] (package)
+ *       > .toc--row > a.toc--link (package name with <span> + <wbr>)
+ *
+ * Breadcrumbs: .breadcrumbs > span.current (package name as plain text)
  */
 (function () {
     var PREFIX = 'io.github.fukusaka.keel.';
 
     function shorten() {
-        var changed = false;
-
-        // Navigation sidebar: package-level toc links (nesting level 1)
-        var parts = document.querySelectorAll('.toc--part[data-nesting-level="1"] > a.toc--link');
-        for (var i = 0; i < parts.length; i++) {
-            var text = parts[i].textContent;
+        // Navigation sidebar: package-level links
+        var links = document.querySelectorAll(
+            '.toc--part[data-nesting-level="1"] > .toc--row > a.toc--link'
+        );
+        for (var i = 0; i < links.length; i++) {
+            var text = links[i].textContent;
             if (text && text.indexOf(PREFIX) === 0) {
-                parts[i].textContent = text.substring(PREFIX.length);
-                changed = true;
+                links[i].textContent = text.substring(PREFIX.length);
             }
         }
 
-        // Breadcrumbs
-        var breadcrumbs = document.querySelectorAll('.breadcrumbs a');
-        for (var j = 0; j < breadcrumbs.length; j++) {
-            var bt = breadcrumbs[j].textContent;
+        // Navigation button aria-labels (for accessibility)
+        var buttons = document.querySelectorAll(
+            '.toc--part[data-nesting-level="1"] > .toc--row > button.toc--button'
+        );
+        for (var j = 0; j < buttons.length; j++) {
+            var label = buttons[j].getAttribute('aria-label');
+            if (label && label.indexOf(PREFIX) === 0) {
+                buttons[j].setAttribute('aria-label', label.substring(PREFIX.length));
+            }
+        }
+
+        // Breadcrumbs: current page name
+        var breadcrumbs = document.querySelectorAll('.breadcrumbs .current');
+        for (var k = 0; k < breadcrumbs.length; k++) {
+            var bt = breadcrumbs[k].textContent;
             if (bt && bt.indexOf(PREFIX) === 0) {
-                breadcrumbs[j].textContent = bt.substring(PREFIX.length);
-                changed = true;
+                breadcrumbs[k].textContent = bt.substring(PREFIX.length);
             }
         }
 
-        // Package heading on content pages
-        var headings = document.querySelectorAll('.cover h1');
-        for (var k = 0; k < headings.length; k++) {
-            var ht = headings[k].textContent;
-            if (ht && ht.indexOf(PREFIX) === 0) {
-                headings[k].textContent = ht.substring(PREFIX.length);
-                changed = true;
-            }
+        // Page title in <title> and heading
+        var title = document.title;
+        if (title && title.indexOf(PREFIX) === 0) {
+            document.title = title.substring(PREFIX.length);
         }
-
-        return changed;
     }
 
-    // Wait for #sideMenu to be populated by navigation-loader.js.
-    // The loader fetches navigation.html asynchronously and sets innerHTML.
     function waitForNavigation() {
         var sideMenu = document.getElementById('sideMenu');
         if (!sideMenu) {
-            // sideMenu not in DOM yet — retry after delay.
             setTimeout(waitForNavigation, 100);
             return;
         }
@@ -69,7 +76,6 @@
         observer.observe(sideMenu, { childList: true, subtree: true });
     }
 
-    // Also shorten breadcrumbs and headings on current page (already in DOM).
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function () {
             shorten();
