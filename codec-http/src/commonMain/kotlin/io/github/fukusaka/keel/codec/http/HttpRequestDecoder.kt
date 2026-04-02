@@ -85,7 +85,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                                 "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)"
                             )
                         }
-                        lineBuffer.append(b.toInt().toChar())
+                        lineBuffer.append((b.toInt() and 0xFF).toChar())
                     }
                 }
                 State.SKIP_BODY -> {

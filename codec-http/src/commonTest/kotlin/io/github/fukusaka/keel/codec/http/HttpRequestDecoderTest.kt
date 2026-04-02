@@ -204,6 +204,22 @@ class HttpRequestDecoderTest {
     }
 
     @Test
+    fun `Content-Length body split across IoBufs is skipped correctly`() {
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // Body arrives in a separate IoBuf from the headers.
+        pipeline.notifyRead(bufOf("POST /upload HTTP/1.1\r\nContent-Length: 6\r\n\r\nabc"))
+        assertEquals(1, collector.heads.size, "head emitted after empty line")
+
+        // Remaining 3 body bytes + next request.
+        pipeline.notifyRead(bufOf("defGET /after HTTP/1.1\r\n\r\n"))
+        assertEquals(2, collector.heads.size)
+        assertEquals("/upload", collector.heads[0].path)
+        assertEquals("/after", collector.heads[1].path)
+    }
+
+    @Test
     fun `POST followed by GET in same IoBuf skips body correctly`() {
         val collector = HeadCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
