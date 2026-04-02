@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -166,6 +167,40 @@ class IoUringEngine(
             fd, workerLoop, transport, allocator, bufferRing, remoteAddr, localAddr,
             resolvedCapabilities,
         )
+    }
+
+    /**
+     * Creates a pipeline-based server with SO_REUSEPORT multi-thread accept.
+     *
+     * Each worker EventLoop owns a private server socket. The kernel
+     * distributes incoming connections across workers by 4-tuple hash.
+     * For each connection, [pipelineInitializer] is called to set up the
+     * handler chain, then multishot recv is armed for zero-suspend I/O.
+     *
+     * Unlike [bind] (which returns a suspend-based [ServerChannel]), this
+     * method creates a fully callback-driven server with no coroutine overhead.
+     *
+     * @param host Bind address (e.g., "0.0.0.0").
+     * @param port Port number.
+     * @param pipelineInitializer Called per accepted connection to add handlers.
+     * @return Server handle for lifecycle management.
+     */
+    fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (ChannelPipeline) -> Unit,
+    ): AutoCloseable {
+        check(!closed) { "Engine is closed" }
+
+        val serverFds = IntArray(workerGroup.size) {
+            SocketUtils.createReusePortServerSocket(host, port)
+        }
+        val server = IoUringPipelinedServerChannel(
+            workerGroup, serverFds, pipelineInitializer, resolvedCapabilities, logger,
+        )
+        server.start()
+        logger.debug { "Pipeline server bound to $host:$port (${workerGroup.size} workers)" }
+        return server
     }
 
     override fun close() {

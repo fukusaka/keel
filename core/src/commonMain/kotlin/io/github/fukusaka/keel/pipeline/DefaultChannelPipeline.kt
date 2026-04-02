@@ -23,7 +23,7 @@ import io.github.fukusaka.keel.logging.warn
  * [acceptedType]/[producedType] declarations. Validation is skipped when
  * either type is [Any] (the default).
  */
-internal class DefaultChannelPipeline(
+class DefaultChannelPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
     private val logger: Logger,
