@@ -12,6 +12,20 @@ data class HttpRequestHead(
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
 ) {
+    /** The path component of [uri], excluding query string and fragment. */
+    val path: String get() = uri.substringBefore('?').substringBefore('#')
+
+    /**
+     * The query string component of [uri] (without leading '?'), or null if absent.
+     *
+     * Fragment identifier is excluded.
+     */
+    val queryString: String?
+        get() {
+            val idx = uri.indexOf('?')
+            return if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
+        }
+
     /**
      * Returns true if this request supports HTTP keep-alive.
      *
@@ -20,13 +34,13 @@ data class HttpRequestHead(
      * HTTP/1.0 connections are close by default; returns true only
      * if `Connection: keep-alive` is explicitly set.
      */
-    fun isKeepAlive(): Boolean {
-        val connection = headers["Connection"]
-        return when {
-            connection.equals("close", ignoreCase = true) -> false
-            version == HttpVersion.HTTP_1_1 -> true
-            connection.equals("keep-alive", ignoreCase = true) -> true
-            else -> false
+    val isKeepAlive: Boolean
+        get() {
+            val conn = headers.connection
+            return when {
+                conn?.contains("close", ignoreCase = true) == true -> false
+                conn?.contains("keep-alive", ignoreCase = true) == true -> true
+                else -> version == HttpVersion.HTTP_1_1
+            }
         }
-    }
 }
