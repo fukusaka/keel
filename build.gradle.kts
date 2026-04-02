@@ -5,6 +5,40 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+// Shorten package names in Dokka navigation sidebar.
+// customAssets only injects into root index.html; subpages need the script
+// in scripts/ directory alongside navigation-loader.js.
+dokka {
+    pluginsConfiguration.html {
+        customAssets.from("dokka/scripts/shorten-packages.js")
+    }
+}
+
+// Copy shorten-packages.js to Dokka scripts/ directory so all pages load it.
+tasks.named("dokkaGeneratePublicationHtml") {
+    doLast {
+        val scriptsDir = layout.buildDirectory.dir("dokka/html/scripts").get().asFile
+        val source = project.file("dokka/scripts/shorten-packages.js")
+        source.copyTo(scriptsDir.resolve("shorten-packages.js"), overwrite = true)
+        // Inject script tag into all HTML files that reference navigation-loader.js
+        val htmlDir = layout.buildDirectory.dir("dokka/html").get().asFile
+        htmlDir.walkTopDown().filter { it.extension == "html" }.forEach { file ->
+            val content = file.readText()
+            if ("shorten-packages.js" !in content && "navigation-loader.js" in content) {
+                val replacement = content.replace(
+                    "</head>",
+                    """<script type="text/javascript" src="${"scripts/shorten-packages.js".let { script ->
+                        // Compute relative path based on depth
+                        val depth = file.relativeTo(htmlDir).path.count { it == '/' }
+                        "../".repeat(depth) + script
+                    }}" defer></script></head>""",
+                )
+                file.writeText(replacement)
+            }
+        }
+    }
+}
+
 // Modules requiring platform-specific cinterop headers unavailable on other hosts.
 // Dokka triggers cinterop tasks which fail when the required headers are missing.
 val hostOs = System.getProperty("os.name").lowercase()
@@ -60,13 +94,32 @@ subprojects {
                 enabled = false
             }
         }
-        // Suppress cross-architecture source sets to avoid cinterop failures.
-        if (suppressedDokkaSourceSets.isNotEmpty()) {
-            extensions.findByType<org.jetbrains.dokka.gradle.DokkaExtension>()?.apply {
-                dokkaSourceSets.configureEach {
-                    if (name in suppressedDokkaSourceSets) {
-                        suppress.set(true)
-                    }
+        extensions.findByType<org.jetbrains.dokka.gradle.DokkaExtension>()?.apply {
+            dokkaSourceSets.configureEach {
+                // Document all visibility levels for complete API reference.
+                documentedVisibilities.set(setOf(
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Public,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Internal,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Protected,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Private,
+                ))
+
+                // Link each declaration to its source on GitHub.
+                sourceLink {
+                    localDirectory.set(project.projectDir.resolve("src"))
+                    remoteUrl("https://github.com/fukusaka/keel/blob/main/${project.name}/src")
+                    remoteLineSuffix.set("#L")
+                }
+
+                // Module and package documentation.
+                val moduleDoc = project.file("module.md")
+                if (moduleDoc.exists()) {
+                    includes.from(moduleDoc)
+                }
+
+                // Suppress cross-architecture source sets to avoid cinterop failures.
+                if (name in suppressedDokkaSourceSets) {
+                    suppress.set(true)
                 }
             }
         }

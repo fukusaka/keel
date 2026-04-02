@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- Dokka: document all visibility levels (public, internal, protected, private) for complete API reference
+- Dokka: add source links to GitHub for each declaration
+- Dokka: add `module.md` for all 13 modules with module and package descriptions
+- Dokka: shorten navigation package names by removing `io.github.fukusaka.keel.` prefix via custom JavaScript
+
 ### Added
 
 - `engine-kqueue`: add `KqueueEngine.bindPipeline()` for callback-driven pipeline server without coroutine overhead
