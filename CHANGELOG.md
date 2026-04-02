@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`: add `KqueueIoTransport`, `KqueuePipelinedChannel`, `KqueuePipelinedServerChannel` for zero-suspend pipeline I/O
 - `engine-kqueue`: add `registerCallback()` / `unregisterCallback()` to `KqueueEventLoop` for one-shot fd readiness callbacks
 - `benchmark`: add `pipeline-http-kqueue` engine using `HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder` on `KqueueEngine.bindPipeline()`
+- `engine-nwconnection`: add `NwEngine.bindPipeline()` for pipeline server via NWConnection dispatch queues
+- `engine-nwconnection`: add `NwIoTransport`, `NwPipelinedChannel` for async pipeline I/O
+- `benchmark`: add `pipeline-http-nwconnection` engine for macOS NWConnection pipeline comparison
 
 ### Fixed
 
