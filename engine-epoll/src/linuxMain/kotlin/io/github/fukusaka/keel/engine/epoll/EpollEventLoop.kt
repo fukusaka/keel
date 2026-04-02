@@ -112,6 +112,8 @@ internal class EpollEventLoop(
         pthread_mutex_init(ptr, null)
     }
     private val registrations = mutableMapOf<Long, Registration>()
+    // Callback registrations for pipeline (non-suspend) I/O.
+    private val callbackRegistrations = mutableMapOf<Long, () -> Unit>()
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
@@ -219,17 +221,17 @@ internal class EpollEventLoop(
         }
         val key = registrationKey(fd, interest)
 
-        // Add fd to epoll before registering continuation to avoid
-        // missing events that arrive between registration and epoll_wait.
+        // Register continuation BEFORE adding to epoll to close the race window
+        // where epoll fires before the map entry exists.
+        withRegLock {
+            registrations[key] = Registration(fd, interest, cont)
+        }
+
         memScoped {
             val ev = alloc<epoll_event>()
             ev.events = events.toUInt()
             ev.data.fd = fd
             epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
-        }
-
-        withRegLock {
-            registrations[key] = Registration(fd, interest, cont)
         }
         wakeup()
     }
@@ -242,6 +244,40 @@ internal class EpollEventLoop(
         val key = registrationKey(fd, interest)
         withRegLock {
             registrations.remove(key)
+        }
+    }
+
+    /**
+     * Registers a callback for fd readiness notification (pipeline / non-suspend path).
+     *
+     * When `epoll_wait()` reports the fd as ready, [callback] is invoked directly
+     * on the EventLoop thread. The registration is one-shot.
+     */
+    fun registerCallback(fd: Int, interest: Interest, callback: () -> Unit) {
+        val events = when (interest) {
+            Interest.READ -> EPOLLIN
+            Interest.WRITE -> EPOLLOUT
+        }
+        val key = registrationKey(fd, interest)
+
+        withRegLock {
+            callbackRegistrations[key] = callback
+        }
+
+        memScoped {
+            val ev = alloc<epoll_event>()
+            ev.events = events.toUInt()
+            ev.data.fd = fd
+            epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
+        }
+        wakeup()
+    }
+
+    /** Removes a pending callback registration. */
+    fun unregisterCallback(fd: Int, interest: Interest) {
+        val key = registrationKey(fd, interest)
+        withRegLock {
+            callbackRegistrations.remove(key)
         }
     }
 
@@ -314,8 +350,13 @@ internal class EpollEventLoop(
                         Interest.WRITE
                     }
                     val key = registrationKey(fd, interest)
-                    val reg = withRegLock { registrations.remove(key) }
-                    reg?.continuation?.resume(Unit)
+                    val cb = withRegLock { callbackRegistrations.remove(key) }
+                    if (cb != null) {
+                        cb()
+                    } else {
+                        val reg = withRegLock { registrations.remove(key) }
+                        reg?.continuation?.resume(Unit)
+                    }
                 }
             }
         }

@@ -135,6 +135,38 @@ class EpollEngine(
         return EpollChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
     }
 
+    /**
+     * Binds a pipeline-based server on [host]:[port].
+     *
+     * Creates a callback-driven server that processes connections entirely
+     * through [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     *
+     * @param pipelineInitializer Callback to configure the pipeline for each connection.
+     * @return An [AutoCloseable] that stops the server when closed.
+     */
+    fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+    ): AutoCloseable {
+        check(!closed) { "Engine is closed" }
+
+        val serverFd = SocketUtils.createServerSocket(host, port)
+
+        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
+
+        val serverChannel = EpollPipelinedServerChannel(
+            serverFd = serverFd,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            logger = logger,
+            pipelineInitializer = pipelineInitializer,
+        )
+        serverChannel.start()
+        return serverChannel
+    }
+
     override fun close() {
         if (!closed) {
             closed = true
