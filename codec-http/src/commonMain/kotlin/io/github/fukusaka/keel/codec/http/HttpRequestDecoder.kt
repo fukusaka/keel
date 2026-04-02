@@ -141,7 +141,12 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     }
 
     private fun emitHead(ctx: ChannelHandlerContext) {
-        val head = HttpRequestHead(method!!, uri!!, version!!, headers)
+        val head = HttpRequestHead(
+            checkNotNull(method) { "method not parsed" },
+            checkNotNull(uri) { "uri not parsed" },
+            checkNotNull(version) { "version not parsed" },
+            headers,
+        )
         // Reset parser state before emitting to allow re-entrant pipeline processing.
         method = null
         uri = null
