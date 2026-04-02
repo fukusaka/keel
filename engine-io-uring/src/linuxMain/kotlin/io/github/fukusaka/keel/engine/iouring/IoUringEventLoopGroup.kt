@@ -35,6 +35,9 @@ internal class IoUringEventLoopGroup(
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
 ) {
 
+    /** Number of EventLoop threads in this group. */
+    val size: Int = size
+
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
