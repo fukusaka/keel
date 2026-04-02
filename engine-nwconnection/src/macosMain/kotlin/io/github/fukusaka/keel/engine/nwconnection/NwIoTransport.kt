@@ -108,7 +108,7 @@ internal class NwIoTransport(
 
     companion object {
         private val flushCallback = staticCFunction { error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<FlushContext>()
+            val ref = checkNotNull(ctx) { "flush callback ctx is null" }.asStableRef<FlushContext>()
             val flushCtx = ref.get()
             for (pw in flushCtx.writes) pw.buf.release()
             flushCtx.onComplete?.invoke()

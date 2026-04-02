@@ -101,7 +101,7 @@ internal class NwPipelinedChannel(
 
         private val readCallback = staticCFunction {
                 len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<ReadContext>()
+            val ref = checkNotNull(ctx) { "read callback ctx is null" }.asStableRef<ReadContext>()
             val readCtx = ref.get()
             ref.dispose()
             readCtx.channel.onReadComplete(readCtx.buf, len.toInt(), isComplete != 0, error != 0)
