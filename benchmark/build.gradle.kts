@@ -33,7 +33,9 @@ kotlin {
         }
         jvmMain {
             dependencies {
+                implementation(project(":engine-nio"))
                 implementation(project(":engine-netty"))
+                implementation(project(":codec-http"))
                 implementation(libs.ktor.server.netty)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
