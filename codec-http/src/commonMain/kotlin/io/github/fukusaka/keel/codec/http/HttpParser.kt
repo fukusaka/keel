@@ -191,8 +191,8 @@ internal fun parseHeaders(source: Source): HttpHeaders {
  * which mitigates HTTP Request Smuggling when both headers are present.
  */
 internal fun readBody(source: Source, headers: HttpHeaders): ByteArray? {
-    if (headers.isChunked()) return readChunkedBody(source)
-    val length = headers.contentLength() ?: return null
+    if (headers.isChunked) return readChunkedBody(source)
+    val length = headers.contentLength ?: return null
     return if (length == 0L) null else readBodyByContentLength(source, length)
 }
 

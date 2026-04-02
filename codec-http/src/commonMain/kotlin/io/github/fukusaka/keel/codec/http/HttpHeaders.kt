@@ -3,71 +3,173 @@ package io.github.fukusaka.keel.codec.http
 /**
  * HTTP header fields (RFC 7230 §3.2).
  *
+ * Stores header values in a [LinkedHashMap] keyed by lowercase field name for O(1) lookup.
+ * The original header name case is preserved for HTTP/1.1 serialization.
+ *
  * - Field names are case-insensitive tokens (RFC 7230 §3.2).
  * - Insertion order is preserved; same-name fields keep their relative order (RFC 7230 §3.2.2).
- * - Set-Cookie must not be comma-joined (RFC 6265) — use getAll() + individual output.
+ * - Set-Cookie must not be comma-joined (RFC 6265) — use [getAll] + individual output.
  * - OWS (optional whitespace) in field values is stripped by the parser before storage.
  */
-class HttpHeaders {
+class HttpHeaders private constructor(
+    private val map: LinkedHashMap<String, MutableList<String>>,
+    private val originalNames: LinkedHashMap<String, String>,
+) {
+    constructor() : this(LinkedHashMap(), LinkedHashMap())
 
-    private val entries = mutableListOf<Pair<String, String>>()
+    // Lazily computed flat list for O(1) indexed access.
+    // Invalidated on mutation; rebuilt on first access after mutation.
+    private var flatEntries: List<Pair<String, String>>? = null
+
+    private fun ensureFlatEntries(): List<Pair<String, String>> {
+        flatEntries?.let { return it }
+        val list = buildList {
+            for ((key, values) in map) {
+                val name = originalNames[key] ?: key
+                for (value in values) {
+                    add(name to value)
+                }
+            }
+        }
+        flatEntries = list
+        return list
+    }
+
+    private fun invalidateCache() {
+        flatEntries = null
+    }
+
+    // --- Access ---
+
+    /** Returns the first value for [name] (case-insensitive), or null if absent. */
+    operator fun get(name: String): String? = map[name.lowercase()]?.firstOrNull()
+
+    /** Returns all values for [name] (case-insensitive) in insertion order. */
+    fun getAll(name: String): List<String> = map[name.lowercase()] ?: emptyList()
+
+    /** Returns true if at least one field with [name] exists (case-insensitive). */
+    operator fun contains(name: String): Boolean = name.lowercase() in map
+
+    /** Total number of header field values (counting multi-valued headers individually). */
+    val size: Int get() = ensureFlatEntries().size
+
+    /** True if no header fields are present. */
+    val isEmpty: Boolean get() = map.isEmpty()
+
+    // --- Mutation ---
 
     /** Append a header field. Allows multiple values for the same name. */
     fun add(name: String, value: String): HttpHeaders {
-        entries.add(name to value)
+        val key = name.lowercase()
+        map.getOrPut(key) { mutableListOf() }.add(value)
+        if (key !in originalNames) originalNames[key] = name
+        invalidateCache()
         return this
     }
 
     /** Replace all existing values for [name] with a single [value]. */
     operator fun set(name: String, value: String): HttpHeaders {
-        entries.removeAll { it.first.equals(name, ignoreCase = true) }
-        entries.add(name to value)
+        val key = name.lowercase()
+        map[key] = mutableListOf(value)
+        originalNames[key] = name
+        invalidateCache()
         return this
     }
-
-    /** Returns the first value for [name] (case-insensitive), or null if absent. */
-    operator fun get(name: String): String? =
-        entries.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
-
-    /** Returns all values for [name] (case-insensitive) in insertion order. */
-    fun getAll(name: String): List<String> =
-        entries.filter { it.first.equals(name, ignoreCase = true) }.map { it.second }
-
-    /** Returns true if at least one field with [name] exists (case-insensitive). */
-    operator fun contains(name: String): Boolean =
-        entries.any { it.first.equals(name, ignoreCase = true) }
 
     /** Removes all fields with [name] (case-insensitive). */
     fun remove(name: String): HttpHeaders {
-        entries.removeAll { it.first.equals(name, ignoreCase = true) }
+        val key = name.lowercase()
+        map.remove(key)
+        originalNames.remove(key)
+        invalidateCache()
         return this
     }
 
-    /** Number of header fields. */
-    val size: Int get() = entries.size
+    // --- Iteration ---
 
-    /** Returns the name of the header at [index] (insertion order). */
-    fun nameAt(index: Int): String = entries[index].first
+    /**
+     * Iterates all header fields in insertion order, preserving original name case.
+     *
+     * Multi-valued headers yield one call per value.
+     */
+    fun forEach(action: (name: String, value: String) -> Unit) {
+        for ((name, value) in ensureFlatEntries()) {
+            action(name, value)
+        }
+    }
 
-    /** Returns the value of the header at [index] (insertion order). */
-    fun valueAt(index: Int): String = entries[index].second
+    /** Returns all unique header names in insertion order, preserving original case. */
+    fun names(): Set<String> {
+        val result = linkedSetOf<String>()
+        for ((key, _) in map) {
+            result.add(originalNames[key] ?: key)
+        }
+        return result
+    }
 
-    /** Iterates all header fields in insertion order. */
-    fun forEach(action: (name: String, value: String) -> Unit) =
-        entries.forEach { (n, v) -> action(n, v) }
+    /** Returns all header fields as a list of (name, value) pairs, preserving original case. */
+    fun entries(): List<Pair<String, String>> = ensureFlatEntries()
 
-    /** Returns all header fields as a list of (name, value) pairs in insertion order. */
-    fun entries(): List<Pair<String, String>> = entries.toList()
+    // --- Indexed access (for suspend writer that cannot use inline forEach) ---
 
-    // Convenience accessors
+    /** Returns the name of the header at [index] (insertion order, original case). O(1). */
+    fun nameAt(index: Int): String = ensureFlatEntries()[index].first
+
+    /** Returns the value of the header at [index] (insertion order). O(1). */
+    fun valueAt(index: Int): String = ensureFlatEntries()[index].second
+
+    // --- Typed properties ---
 
     /** Parsed value of the Content-Length header, or null if absent or malformed. */
-    fun contentLength(): Long? = get(HttpHeaderName.CONTENT_LENGTH)?.trim()?.toLongOrNull()
+    val contentLength: Long? get() = get(HttpHeaderName.CONTENT_LENGTH)?.trim()?.toLongOrNull()
 
     /** Value of the Content-Type header, or null if absent. */
-    fun contentType(): String? = get(HttpHeaderName.CONTENT_TYPE)
+    val contentType: String? get() = get(HttpHeaderName.CONTENT_TYPE)
 
-    /** True if Transfer-Encoding is "chunked" (case-insensitive). */
-    fun isChunked(): Boolean =
-        get(HttpHeaderName.TRANSFER_ENCODING)?.trim().equals("chunked", ignoreCase = true)
+    /** True if Transfer-Encoding contains "chunked" (case-insensitive). */
+    val isChunked: Boolean
+        get() = get(HttpHeaderName.TRANSFER_ENCODING)?.contains("chunked", ignoreCase = true) == true
+
+    /** Value of the Connection header, or null if absent. */
+    val connection: String? get() = get(HttpHeaderName.CONNECTION)
+
+    /**
+     * Equality is based on the normalized (lowercase) header map.
+     *
+     * Two [HttpHeaders] instances with the same header values but different original
+     * name casing (e.g. "Content-Type" vs "content-type") are considered equal,
+     * since HTTP header names are case-insensitive (RFC 7230 §3.2).
+     */
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is HttpHeaders) return false
+        return map == other.map
+    }
+
+    override fun hashCode(): Int = map.hashCode()
+
+    override fun toString(): String = buildString {
+        append("HttpHeaders(")
+        val pairs = entries()
+        pairs.forEachIndexed { i, (name, value) ->
+            if (i > 0) append(", ")
+            append("$name: $value")
+        }
+        append(")")
+    }
+
+    companion object {
+
+        /** Builds an [HttpHeaders] instance using the given [block]. */
+        fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
+
+        /** Creates an [HttpHeaders] from the given name-value [pairs]. */
+        fun of(vararg pairs: Pair<String, String>): HttpHeaders {
+            val headers = HttpHeaders()
+            for ((name, value) in pairs) {
+                headers.add(name, value)
+            }
+            return headers
+        }
+    }
 }

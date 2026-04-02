@@ -289,12 +289,12 @@ public class KeelApplicationEngine(
                     break
                 }
 
-                val keepAlive = serverKeepAlive && head.isKeepAlive()
+                val keepAlive = serverKeepAlive && head.isKeepAlive
 
                 // Bridge request body: pull from BufferedSuspendSource → push to ByteReadChannel.
                 // The bridge coroutine reads exactly contentLength bytes from source
                 // and pipes them into bodyChannel for Ktor's push-based API.
-                val contentLength = head.headers.contentLength()
+                val contentLength = head.headers.contentLength
                 var bodyBridgeJob: Job? = null
                 val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
                     val bodyChannel = ByteChannel()

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `codec-http`: reimplement `HttpHeaders` with `LinkedHashMap`-based storage for O(1) lookup with lowercase normalization and original case preservation
+- `codec-http`: convert `HttpHeaders` convenience accessors from methods to properties (`contentLength`, `contentType`, `isChunked`, `connection`)
+- `codec-http`: add `HttpHeaders.build {}` DSL, `HttpHeaders.of()` factory, `names()`, and `isEmpty` property
+- `codec-http`: convert `HttpRequest` to data class with `path`/`queryString` lazy properties, `isKeepAlive` property, and `get()`/`post()` factory methods
+- `codec-http`: convert `HttpResponse` to data class with `ok()`/`notFound()`/`of()` factory methods that auto-set Content-Type/Content-Length headers
+- `codec-http`: add `path`/`queryString` properties and convert `isKeepAlive()` to property on `HttpRequestHead`
+
 ### Added
 
 - `core`: add `ChannelPipeline` framework for zero-suspend protocol processing with `notify*`/`propagate*`/`on*` naming convention, construction-time type chain validation, and `TypedChannelInboundHandler` with reified factory

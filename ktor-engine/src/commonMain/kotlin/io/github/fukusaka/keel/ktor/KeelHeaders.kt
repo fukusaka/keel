@@ -17,11 +17,7 @@ internal class KeelHeaders(
         return values.ifEmpty { null }
     }
 
-    override fun names(): Set<String> {
-        val result = linkedSetOf<String>()
-        keelHeaders.forEach { name, _ -> result.add(name) }
-        return result
-    }
+    override fun names(): Set<String> = keelHeaders.names()
 
     override fun entries(): Set<Map.Entry<String, List<String>>> {
         val map = linkedMapOf<String, MutableList<String>>()
@@ -31,11 +27,7 @@ internal class KeelHeaders(
         return map.entries
     }
 
-    override fun isEmpty(): Boolean {
-        var empty = true
-        keelHeaders.forEach { _, _ -> empty = false }
-        return empty
-    }
+    override fun isEmpty(): Boolean = keelHeaders.isEmpty
 
     override fun get(name: String): String? = keelHeaders[name]
 
