@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- `codec-http`: cache `path` and `queryString` in `HttpRequestHead` and `HttpRequest` to eliminate per-access String allocations on the hot path
+- `codec-http`: replace `List<Pair>` flatEntries with parallel arrays in `HttpHeaders` to eliminate Pair object allocations per cache rebuild
+- `codec-http`: add pre-lowered header name constants and `getByLowercaseKey()` to avoid `String.lowercase()` allocation in typed property access
+
 ### Changed
 
 - `codec-http`: reimplement `HttpHeaders` with `LinkedHashMap`-based storage for O(1) lookup with lowercase normalization and original case preservation
