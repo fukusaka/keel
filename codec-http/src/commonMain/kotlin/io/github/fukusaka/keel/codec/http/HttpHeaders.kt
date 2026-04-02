@@ -17,6 +17,28 @@ class HttpHeaders private constructor(
 ) {
     constructor() : this(LinkedHashMap(), LinkedHashMap())
 
+    // Lazily computed flat list for O(1) indexed access.
+    // Invalidated on mutation; rebuilt on first access after mutation.
+    private var flatEntries: List<Pair<String, String>>? = null
+
+    private fun ensureFlatEntries(): List<Pair<String, String>> {
+        flatEntries?.let { return it }
+        val list = buildList {
+            for ((key, values) in map) {
+                val name = originalNames[key] ?: key
+                for (value in values) {
+                    add(name to value)
+                }
+            }
+        }
+        flatEntries = list
+        return list
+    }
+
+    private fun invalidateCache() {
+        flatEntries = null
+    }
+
     // --- Access ---
 
     /** Returns the first value for [name] (case-insensitive), or null if absent. */
@@ -29,7 +51,7 @@ class HttpHeaders private constructor(
     operator fun contains(name: String): Boolean = name.lowercase() in map
 
     /** Total number of header field values (counting multi-valued headers individually). */
-    val size: Int get() = map.values.sumOf { it.size }
+    val size: Int get() = ensureFlatEntries().size
 
     /** True if no header fields are present. */
     val isEmpty: Boolean get() = map.isEmpty()
@@ -41,6 +63,7 @@ class HttpHeaders private constructor(
         val key = name.lowercase()
         map.getOrPut(key) { mutableListOf() }.add(value)
         if (key !in originalNames) originalNames[key] = name
+        invalidateCache()
         return this
     }
 
@@ -49,6 +72,7 @@ class HttpHeaders private constructor(
         val key = name.lowercase()
         map[key] = mutableListOf(value)
         originalNames[key] = name
+        invalidateCache()
         return this
     }
 
@@ -57,6 +81,7 @@ class HttpHeaders private constructor(
         val key = name.lowercase()
         map.remove(key)
         originalNames.remove(key)
+        invalidateCache()
         return this
     }
 
@@ -68,11 +93,8 @@ class HttpHeaders private constructor(
      * Multi-valued headers yield one call per value.
      */
     fun forEach(action: (name: String, value: String) -> Unit) {
-        for ((key, values) in map) {
-            val name = originalNames[key] ?: key
-            for (value in values) {
-                action(name, value)
-            }
+        for ((name, value) in ensureFlatEntries()) {
+            action(name, value)
         }
     }
 
@@ -86,36 +108,15 @@ class HttpHeaders private constructor(
     }
 
     /** Returns all header fields as a list of (name, value) pairs, preserving original case. */
-    fun entries(): List<Pair<String, String>> = buildList {
-        forEach { name, value -> add(name to value) }
-    }
+    fun entries(): List<Pair<String, String>> = ensureFlatEntries()
 
     // --- Indexed access (for suspend writer that cannot use inline forEach) ---
 
-    /** Returns the name of the header at [index] (insertion order, original case). */
-    fun nameAt(index: Int): String {
-        var i = 0
-        for ((key, values) in map) {
-            val name = originalNames[key] ?: key
-            for (v in values) {
-                if (i == index) return name
-                i++
-            }
-        }
-        throw IndexOutOfBoundsException("index=$index, size=$size")
-    }
+    /** Returns the name of the header at [index] (insertion order, original case). O(1). */
+    fun nameAt(index: Int): String = ensureFlatEntries()[index].first
 
-    /** Returns the value of the header at [index] (insertion order). */
-    fun valueAt(index: Int): String {
-        var i = 0
-        for ((_, values) in map) {
-            for (v in values) {
-                if (i == index) return v
-                i++
-            }
-        }
-        throw IndexOutOfBoundsException("index=$index, size=$size")
-    }
+    /** Returns the value of the header at [index] (insertion order). O(1). */
+    fun valueAt(index: Int): String = ensureFlatEntries()[index].second
 
     // --- Typed properties ---
 
@@ -132,6 +133,13 @@ class HttpHeaders private constructor(
     /** Value of the Connection header, or null if absent. */
     val connection: String? get() = get(HttpHeaderName.CONNECTION)
 
+    /**
+     * Equality is based on the normalized (lowercase) header map.
+     *
+     * Two [HttpHeaders] instances with the same header values but different original
+     * name casing (e.g. "Content-Type" vs "content-type") are considered equal,
+     * since HTTP header names are case-insensitive (RFC 7230 §3.2).
+     */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is HttpHeaders) return false

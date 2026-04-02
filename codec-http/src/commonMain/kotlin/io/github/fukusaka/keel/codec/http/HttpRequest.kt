@@ -77,7 +77,7 @@ data class HttpRequest(
     }
 }
 
-private fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean = when {
+internal fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean = when {
     this === other -> true
     this == null || other == null -> false
     else -> contentEquals(other)
