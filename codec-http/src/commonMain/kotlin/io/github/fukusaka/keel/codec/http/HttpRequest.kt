@@ -17,15 +17,12 @@ data class HttpRequest(
     val body: ByteArray? = null,
 ) {
     // Cached to avoid per-access String allocation (same rationale as HttpRequestHead).
-    private var _path: String? = null
-    private var _queryString: String? = UNSET_QUERY
+    // NONE — no synchronization needed; instances are confined to a single EventLoop thread.
 
     /** The path component of [uri], excluding query string and fragment. Cached on first access. */
-    val path: String
-        get() {
-            _path?.let { return it }
-            return uri.substringBefore('?').substringBefore('#').also { _path = it }
-        }
+    val path: String by lazy(LazyThreadSafetyMode.NONE) {
+        uri.substringBefore('?').substringBefore('#')
+    }
 
     /**
      * The query string component of [uri] (without leading '?'), or null if absent.
@@ -33,14 +30,10 @@ data class HttpRequest(
      *
      * Fragment identifier is excluded.
      */
-    val queryString: String?
-        get() {
-            if (_queryString !== UNSET_QUERY) return _queryString
-            val idx = uri.indexOf('?')
-            val qs = if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
-            _queryString = qs
-            return qs
-        }
+    val queryString: String? by lazy(LazyThreadSafetyMode.NONE) {
+        val idx = uri.indexOf('?')
+        if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
+    }
 
     /**
      * Returns true if this request supports HTTP keep-alive.
@@ -88,9 +81,6 @@ data class HttpRequest(
             HttpRequest(HttpMethod.POST, uri, headers = headers, body = body)
     }
 }
-
-/** Sentinel for distinguishing "not yet computed" from "computed as null". */
-private val UNSET_QUERY: String? = charArrayOf('\u0000').concatToString()
 
 internal fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean = when {
     this === other -> true

@@ -19,11 +19,12 @@ class HttpHeaders private constructor(
 
     // Parallel arrays for O(1) indexed access without Pair allocation.
     // Invalidated on mutation; rebuilt on first access after mutation.
-    private var flatNames: Array<String>? = null
-    private var flatValues: Array<String>? = null
+    private var flatNames: Array<String> = EMPTY_STRING_ARRAY
+    private var flatValues: Array<String> = EMPTY_STRING_ARRAY
+    private var flatValid = false
 
     private fun ensureFlatArrays() {
-        if (flatNames != null) return
+        if (flatValid) return
         var count = 0
         for ((_, values) in map) count += values.size
         val names = Array(count) { "" }
@@ -39,11 +40,11 @@ class HttpHeaders private constructor(
         }
         flatNames = names
         flatValues = values
+        flatValid = true
     }
 
     private fun invalidateCache() {
-        flatNames = null
-        flatValues = null
+        flatValid = false
     }
 
     // --- Access ---
@@ -58,7 +59,7 @@ class HttpHeaders private constructor(
     operator fun contains(name: String): Boolean = name.lowercase() in map
 
     /** Total number of header field values (counting multi-valued headers individually). */
-    val size: Int get() { ensureFlatArrays(); return flatNames!!.size }
+    val size: Int get() { ensureFlatArrays(); return flatNames.size }
 
     /** True if no header fields are present. */
     val isEmpty: Boolean get() = map.isEmpty()
@@ -101,10 +102,8 @@ class HttpHeaders private constructor(
      */
     fun forEach(action: (name: String, value: String) -> Unit) {
         ensureFlatArrays()
-        val names = flatNames!!
-        val values = flatValues!!
-        for (i in names.indices) {
-            action(names[i], values[i])
+        for (i in flatNames.indices) {
+            action(flatNames[i], flatValues[i])
         }
     }
 
@@ -120,18 +119,16 @@ class HttpHeaders private constructor(
     /** Returns all header fields as a list of (name, value) pairs, preserving original case. */
     fun entries(): List<Pair<String, String>> {
         ensureFlatArrays()
-        val names = flatNames!!
-        val values = flatValues!!
-        return List(names.size) { i -> names[i] to values[i] }
+        return List(flatNames.size) { i -> flatNames[i] to flatValues[i] }
     }
 
     // --- Indexed access (for suspend writer that cannot use inline forEach) ---
 
     /** Returns the name of the header at [index] (insertion order, original case). O(1). */
-    fun nameAt(index: Int): String { ensureFlatArrays(); return flatNames!![index] }
+    fun nameAt(index: Int): String { ensureFlatArrays(); return flatNames[index] }
 
     /** Returns the value of the header at [index] (insertion order). O(1). */
-    fun valueAt(index: Int): String { ensureFlatArrays(); return flatValues!![index] }
+    fun valueAt(index: Int): String { ensureFlatArrays(); return flatValues[index] }
 
     // --- Direct lookup (bypasses lowercase() allocation) ---
 
@@ -184,6 +181,7 @@ class HttpHeaders private constructor(
     }
 
     companion object {
+        private val EMPTY_STRING_ARRAY = emptyArray<String>()
 
         /** Builds an [HttpHeaders] instance using the given [block]. */
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
