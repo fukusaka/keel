@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EAGAIN
+import platform.posix.EWOULDBLOCK
 import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
@@ -67,7 +68,7 @@ internal class KqueuePipelinedServerChannel(
             val clientFd = accept(serverFd, null, null)
             if (clientFd < 0) {
                 val err = errno
-                if (err == EAGAIN) break
+                if (err == EAGAIN || err == EWOULDBLOCK) break
                 // Transient error — log and continue accepting.
                 logger.error { "accept() failed: errno=$err" }
                 break

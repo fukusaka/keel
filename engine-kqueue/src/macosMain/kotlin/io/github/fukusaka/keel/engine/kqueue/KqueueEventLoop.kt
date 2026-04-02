@@ -230,8 +230,13 @@ internal class KqueueEventLoop(
         }
         val key = registrationKey(fd, interest)
 
-        // Add fd to kqueue before registering continuation to avoid
-        // missing events that arrive between registration and kevent.
+        // Register continuation BEFORE adding to kqueue to close the race window
+        // where kevent fires before the map entry exists. The event loop checks
+        // the map under the same lock, so the continuation is always found.
+        withRegLock {
+            registrations[key] = Registration(fd, interest, cont)
+        }
+
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -239,10 +244,6 @@ internal class KqueueEventLoop(
                 EV_ADD.convert(), 0u, 0, null,
             )
             kevent(kqFd, kev.ptr, 1, null, 0, null)
-        }
-
-        withRegLock {
-            registrations[key] = Registration(fd, interest, cont)
         }
         wakeup()
     }
@@ -272,6 +273,11 @@ internal class KqueueEventLoop(
         }
         val key = registrationKey(fd, interest)
 
+        // Register callback BEFORE adding to kqueue (same rationale as register()).
+        withRegLock {
+            callbackRegistrations[key] = callback
+        }
+
         memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
@@ -279,10 +285,6 @@ internal class KqueueEventLoop(
                 EV_ADD.convert(), 0u, 0, null,
             )
             kevent(kqFd, kev.ptr, 1, null, 0, null)
-        }
-
-        withRegLock {
-            callbackRegistrations[key] = callback
         }
         wakeup()
     }
