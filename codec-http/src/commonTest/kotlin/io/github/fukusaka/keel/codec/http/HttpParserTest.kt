@@ -260,7 +260,7 @@ class HttpParserTest {
         val src = buffer("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
         val head = parseRequestHead(src)
         assertEquals(HttpMethod.POST, head.method)
-        assertTrue(head.headers.isChunked())
+        assertTrue(head.headers.isChunked)
         // Chunked body remains unread
         assertEquals("5\r\nhello\r\n0\r\n\r\n", src.readString())
     }
