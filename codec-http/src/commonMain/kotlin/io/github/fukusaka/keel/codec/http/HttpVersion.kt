@@ -9,8 +9,16 @@ enum class HttpVersion(val text: String, val major: Int, val minor: Int) {
     HTTP_1_1("HTTP/1.1", 1, 1);
 
     companion object {
-        fun of(text: String): HttpVersion =
-            entries.firstOrNull { it.text == text }
-                ?: throw HttpParseException("Unsupported HTTP version: $text")
+        /**
+         * Returns the [HttpVersion] for [text], or throws [HttpParseException].
+         *
+         * Uses a `when` expression rather than `firstOrNull { }` to avoid allocating
+         * a capturing lambda on every call (hot path: one call per HTTP request).
+         */
+        fun of(text: String): HttpVersion = when (text) {
+            HTTP_1_1.text -> HTTP_1_1
+            HTTP_1_0.text -> HTTP_1_0
+            else -> throw HttpParseException("Unsupported HTTP version: $text")
+        }
     }
 }
