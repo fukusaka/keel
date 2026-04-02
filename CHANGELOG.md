@@ -12,10 +12,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`: add `KqueueIoTransport`, `KqueuePipelinedChannel`, `KqueuePipelinedServerChannel` for zero-suspend pipeline I/O
 - `engine-kqueue`: add `registerCallback()` / `unregisterCallback()` to `KqueueEventLoop` for one-shot fd readiness callbacks
 - `benchmark`: add `pipeline-http-kqueue` engine using `HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder` on `KqueueEngine.bindPipeline()`
+- `engine-epoll`: add `EpollEngine.bindPipeline()` for callback-driven pipeline server on Linux
+- `engine-epoll`: add `EpollIoTransport`, `EpollPipelinedChannel`, `EpollPipelinedServerChannel` for zero-suspend pipeline I/O
+- `engine-epoll`: add `registerCallback()` / `unregisterCallback()` to `EpollEventLoop`
+- `benchmark`: add `pipeline-http-epoll` engine for Linux pipeline throughput comparison
+- `engine-nwconnection`: add `NwEngine.bindPipeline()` for pipeline server via NWConnection dispatch queues
+- `engine-nwconnection`: add `NwIoTransport`, `NwPipelinedChannel` for async pipeline I/O
+- `benchmark`: add `pipeline-http-nwconnection` engine for macOS NWConnection pipeline comparison
 
 ### Fixed
 
 - `engine-kqueue`: fix registration race window in `KqueueEventLoop.register()` / `registerCallback()` — store map entry before `kevent(EV_ADD)` to prevent event loss
+- `engine-epoll`: fix registration race window in `EpollEventLoop.register()` — store map entry before `epoll_ctl(ADD)` to prevent event loss
 
 ### Performance
 
