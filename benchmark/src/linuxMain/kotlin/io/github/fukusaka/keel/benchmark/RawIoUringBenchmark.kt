@@ -5,7 +5,6 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
 import io.github.fukusaka.keel.pipeline.typedHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.get
