@@ -28,6 +28,9 @@ internal class KqueueEventLoopGroup(size: Int, logger: Logger, allocator: Buffer
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val index = AtomicInt(0)
 
+    /** Number of EventLoops in this group. */
+    val size: Int get() = loops.size
+
     /** Starts all EventLoop threads. */
     fun start() {
         for (loop in loops) loop.start()
@@ -43,6 +46,9 @@ internal class KqueueEventLoopGroup(size: Int, logger: Logger, allocator: Buffer
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i] to allocators[i]
     }
+
+    /** Returns the EventLoop and allocator at the given [index] (direct access, no round-robin). */
+    fun at(index: Int): Pair<KqueueEventLoop, BufferAllocator> = loops[index] to allocators[index]
 
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
