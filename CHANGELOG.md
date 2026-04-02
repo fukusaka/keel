@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- `codec-http`: cache `path` and `queryString` in `HttpRequestHead` and `HttpRequest` to eliminate per-access String allocations on the hot path
+- `codec-http`: replace `List<Pair>` flatEntries with parallel arrays in `HttpHeaders` to eliminate Pair object allocations per cache rebuild
+- `codec-http`: add pre-lowered header name constants and `getByLowercaseKey()` to avoid `String.lowercase()` allocation in typed property access
+
+### Fixed
+
+- `codec-http`: reject HTTP/1.1 requests without mandatory Host header per RFC 7230 §5.4
+- `codec-http`: reject requests with both Content-Length and Transfer-Encoding in pipeline decoder to prevent HTTP Request Smuggling (RFC 7230 §3.3.3)
+- `codec-http`: replace `!!` non-null assertions with `checkNotNull()` in `HttpRequestDecoder.emitHead()`
+
 ### Changed
 
 - `codec-http`: reimplement `HttpHeaders` with `LinkedHashMap`-based storage for O(1) lookup with lowercase normalization and original case preservation

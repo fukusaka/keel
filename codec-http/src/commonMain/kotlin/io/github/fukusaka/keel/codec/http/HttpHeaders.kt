@@ -17,26 +17,34 @@ class HttpHeaders private constructor(
 ) {
     constructor() : this(LinkedHashMap(), LinkedHashMap())
 
-    // Lazily computed flat list for O(1) indexed access.
+    // Parallel arrays for O(1) indexed access without Pair allocation.
     // Invalidated on mutation; rebuilt on first access after mutation.
-    private var flatEntries: List<Pair<String, String>>? = null
+    private var flatNames: Array<String> = EMPTY_STRING_ARRAY
+    private var flatValues: Array<String> = EMPTY_STRING_ARRAY
+    private var flatValid = false
 
-    private fun ensureFlatEntries(): List<Pair<String, String>> {
-        flatEntries?.let { return it }
-        val list = buildList {
-            for ((key, values) in map) {
-                val name = originalNames[key] ?: key
-                for (value in values) {
-                    add(name to value)
-                }
+    private fun ensureFlatArrays() {
+        if (flatValid) return
+        var count = 0
+        for ((_, values) in map) count += values.size
+        val names = Array(count) { "" }
+        val values = Array(count) { "" }
+        var i = 0
+        for ((key, vals) in map) {
+            val name = originalNames[key] ?: key
+            for (value in vals) {
+                names[i] = name
+                values[i] = value
+                i++
             }
         }
-        flatEntries = list
-        return list
+        flatNames = names
+        flatValues = values
+        flatValid = true
     }
 
     private fun invalidateCache() {
-        flatEntries = null
+        flatValid = false
     }
 
     // --- Access ---
@@ -51,7 +59,7 @@ class HttpHeaders private constructor(
     operator fun contains(name: String): Boolean = name.lowercase() in map
 
     /** Total number of header field values (counting multi-valued headers individually). */
-    val size: Int get() = ensureFlatEntries().size
+    val size: Int get() { ensureFlatArrays(); return flatNames.size }
 
     /** True if no header fields are present. */
     val isEmpty: Boolean get() = map.isEmpty()
@@ -93,8 +101,9 @@ class HttpHeaders private constructor(
      * Multi-valued headers yield one call per value.
      */
     fun forEach(action: (name: String, value: String) -> Unit) {
-        for ((name, value) in ensureFlatEntries()) {
-            action(name, value)
+        ensureFlatArrays()
+        for (i in flatNames.indices) {
+            action(flatNames[i], flatValues[i])
         }
     }
 
@@ -108,30 +117,43 @@ class HttpHeaders private constructor(
     }
 
     /** Returns all header fields as a list of (name, value) pairs, preserving original case. */
-    fun entries(): List<Pair<String, String>> = ensureFlatEntries()
+    fun entries(): List<Pair<String, String>> {
+        ensureFlatArrays()
+        return List(flatNames.size) { i -> flatNames[i] to flatValues[i] }
+    }
 
     // --- Indexed access (for suspend writer that cannot use inline forEach) ---
 
     /** Returns the name of the header at [index] (insertion order, original case). O(1). */
-    fun nameAt(index: Int): String = ensureFlatEntries()[index].first
+    fun nameAt(index: Int): String { ensureFlatArrays(); return flatNames[index] }
 
     /** Returns the value of the header at [index] (insertion order). O(1). */
-    fun valueAt(index: Int): String = ensureFlatEntries()[index].second
+    fun valueAt(index: Int): String { ensureFlatArrays(); return flatValues[index] }
+
+    // --- Direct lookup (bypasses lowercase() allocation) ---
+
+    /**
+     * Returns the first value for a pre-lowered [key], or null if absent.
+     *
+     * Callers must pass a key that is already lowercase. This avoids the
+     * [String.lowercase] allocation in [get] on the hot path.
+     */
+    internal fun getByLowercaseKey(key: String): String? = map[key]?.firstOrNull()
 
     // --- Typed properties ---
 
     /** Parsed value of the Content-Length header, or null if absent or malformed. */
-    val contentLength: Long? get() = get(HttpHeaderName.CONTENT_LENGTH)?.trim()?.toLongOrNull()
+    val contentLength: Long? get() = getByLowercaseKey(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toLongOrNull()
 
     /** Value of the Content-Type header, or null if absent. */
-    val contentType: String? get() = get(HttpHeaderName.CONTENT_TYPE)
+    val contentType: String? get() = getByLowercaseKey(HttpHeaderName.CONTENT_TYPE_KEY)
 
     /** True if Transfer-Encoding contains "chunked" (case-insensitive). */
     val isChunked: Boolean
-        get() = get(HttpHeaderName.TRANSFER_ENCODING)?.contains("chunked", ignoreCase = true) == true
+        get() = getByLowercaseKey(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
 
     /** Value of the Connection header, or null if absent. */
-    val connection: String? get() = get(HttpHeaderName.CONNECTION)
+    val connection: String? get() = getByLowercaseKey(HttpHeaderName.CONNECTION_KEY)
 
     /**
      * Equality is based on the normalized (lowercase) header map.
@@ -159,6 +181,7 @@ class HttpHeaders private constructor(
     }
 
     companion object {
+        private val EMPTY_STRING_ARRAY = emptyArray<String>()
 
         /** Builds an [HttpHeaders] instance using the given [block]. */
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)

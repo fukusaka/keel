@@ -16,19 +16,24 @@ data class HttpRequest(
     val headers: HttpHeaders = HttpHeaders(),
     val body: ByteArray? = null,
 ) {
-    /** The path component of [uri], excluding query string and fragment. */
-    val path: String get() = uri.substringBefore('?').substringBefore('#')
+    // Cached to avoid per-access String allocation (same rationale as HttpRequestHead).
+    // NONE — no synchronization needed; instances are confined to a single EventLoop thread.
+
+    /** The path component of [uri], excluding query string and fragment. Cached on first access. */
+    val path: String by lazy(LazyThreadSafetyMode.NONE) {
+        uri.substringBefore('?').substringBefore('#')
+    }
 
     /**
      * The query string component of [uri] (without leading '?'), or null if absent.
+     * Cached on first access.
      *
      * Fragment identifier is excluded.
      */
-    val queryString: String?
-        get() {
-            val idx = uri.indexOf('?')
-            return if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
-        }
+    val queryString: String? by lazy(LazyThreadSafetyMode.NONE) {
+        val idx = uri.indexOf('?')
+        if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
+    }
 
     /**
      * Returns true if this request supports HTTP keep-alive.

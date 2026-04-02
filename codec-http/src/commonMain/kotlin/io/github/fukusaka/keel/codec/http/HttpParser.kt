@@ -49,6 +49,7 @@ fun parseRequestHead(source: Source): HttpRequestHead {
     val line = source.readLine() ?: throw HttpEofException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
+    validateRequestHeaders(version, headers)
     return HttpRequestHead(method, uri, version, headers)
 }
 
@@ -79,6 +80,7 @@ suspend fun parseRequestHead(source: BufferedSuspendSource): HttpRequestHead {
         ?: throw HttpEofException("Unexpected EOF reading request line")
     val (method, uri, version) = parseRequestLine(line)
     val headers = parseHeaders(source)
+    validateRequestHeaders(version, headers)
     return HttpRequestHead(method, uri, version, headers)
 }
 
@@ -113,6 +115,21 @@ internal suspend fun parseHeaders(source: BufferedSuspendSource): HttpHeaders {
         headers.add(name, value)
     }
     return headers
+}
+
+/**
+ * Validates request headers per RFC 7230.
+ *
+ * - §5.4: HTTP/1.1 requests MUST include a Host header.
+ *
+ * Content-Length + Transfer-Encoding conflict (§3.3.3) is not checked here;
+ * [readBody] handles it by preferring Transfer-Encoding. Strict rejection
+ * is performed in [HttpRequestDecoder] for the pipeline server path.
+ */
+internal fun validateRequestHeaders(version: HttpVersion, headers: HttpHeaders) {
+    if (version == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers) {
+        throw HttpParseException("Missing required Host header (RFC 7230 §5.4)")
+    }
 }
 
 // ---------------------------------------------------------------------------

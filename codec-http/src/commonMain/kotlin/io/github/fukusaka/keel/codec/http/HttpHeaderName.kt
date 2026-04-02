@@ -52,4 +52,11 @@ object HttpHeaderName {
     const val SET_COOKIE         = "Set-Cookie"   // RFC 6265 — must NOT be comma-joined
     const val VARY               = "Vary"
     const val WWW_AUTHENTICATE   = "WWW-Authenticate"
+
+    // Pre-lowered keys for typed property access in HttpHeaders.
+    // Avoids String.lowercase() allocation on every get() call on the hot path.
+    internal const val CONTENT_LENGTH_KEY     = "content-length"
+    internal const val CONTENT_TYPE_KEY       = "content-type"
+    internal const val TRANSFER_ENCODING_KEY  = "transfer-encoding"
+    internal const val CONNECTION_KEY         = "connection"
 }
