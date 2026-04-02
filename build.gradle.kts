@@ -60,13 +60,32 @@ subprojects {
                 enabled = false
             }
         }
-        // Suppress cross-architecture source sets to avoid cinterop failures.
-        if (suppressedDokkaSourceSets.isNotEmpty()) {
-            extensions.findByType<org.jetbrains.dokka.gradle.DokkaExtension>()?.apply {
-                dokkaSourceSets.configureEach {
-                    if (name in suppressedDokkaSourceSets) {
-                        suppress.set(true)
-                    }
+        extensions.findByType<org.jetbrains.dokka.gradle.DokkaExtension>()?.apply {
+            dokkaSourceSets.configureEach {
+                // Document all visibility levels for complete API reference.
+                documentedVisibilities.set(setOf(
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Public,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Internal,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Protected,
+                    org.jetbrains.dokka.gradle.engine.parameters.VisibilityModifier.Private,
+                ))
+
+                // Link each declaration to its source on GitHub.
+                sourceLink {
+                    localDirectory.set(project.projectDir.resolve("src"))
+                    remoteUrl("https://github.com/fukusaka/keel/blob/main/${project.name}/src")
+                    remoteLineSuffix.set("#L")
+                }
+
+                // Module and package documentation.
+                val moduleDoc = project.file("module.md")
+                if (moduleDoc.exists()) {
+                    includes.from(moduleDoc)
+                }
+
+                // Suppress cross-architecture source sets to avoid cinterop failures.
+                if (name in suppressedDokkaSourceSets) {
+                    suppress.set(true)
                 }
             }
         }
