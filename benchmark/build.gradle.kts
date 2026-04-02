@@ -42,11 +42,12 @@ kotlin {
         nativeMain {
         }
 
-        // macOS: keel-kqueue + keel-nwconnection engines
+        // macOS: keel-kqueue + keel-nwconnection engines + HTTP codec for pipeline benchmark
         val macosMain by getting {
             dependencies {
                 implementation(project(":engine-kqueue"))
                 implementation(project(":engine-nwconnection"))
+                implementation(project(":codec-http"))
             }
         }
 

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `engine-kqueue`: add `KqueueEngine.bindPipeline()` for callback-driven pipeline server without coroutine overhead
+- `engine-kqueue`: add `KqueueIoTransport`, `KqueuePipelinedChannel`, `KqueuePipelinedServerChannel` for zero-suspend pipeline I/O
+- `engine-kqueue`: add `registerCallback()` / `unregisterCallback()` to `KqueueEventLoop` for one-shot fd readiness callbacks
+- `benchmark`: add `pipeline-http-kqueue` engine using `HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder` on `KqueueEngine.bindPipeline()`
+
+### Fixed
+
+- `engine-kqueue`: fix registration race window in `KqueueEventLoop.register()` / `registerCallback()` — store map entry before `kevent(EV_ADD)` to prevent event loss
+
 ### Performance
 
 - `codec-http`: cache `path` and `queryString` in `HttpRequestHead` and `HttpRequest` to eliminate per-access String allocations on the hot path

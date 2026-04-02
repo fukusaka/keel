@@ -143,6 +143,46 @@ class KqueueEngine(
         return KqueueChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
     }
 
+    /**
+     * Binds a pipeline-based server on [host]:[port].
+     *
+     * Unlike [bind] which returns a suspend-based [ServerChannel], this creates
+     * a callback-driven server that processes connections entirely through
+     * [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     *
+     * The boss EventLoop accepts connections and distributes them to worker
+     * EventLoops in round-robin order. Each worker creates a
+     * [KqueuePipelinedChannel] and arms read callbacks.
+     *
+     * @param host Bind address (e.g. "0.0.0.0").
+     * @param port Bind port.
+     * @param pipelineInitializer Callback to configure the pipeline for each
+     *        accepted connection (add handlers via addLast).
+     * @return An [AutoCloseable] that stops the server when closed.
+     */
+    fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+    ): AutoCloseable {
+        check(!closed) { "Engine is closed" }
+
+        val serverFd = SocketUtils.createServerSocket(host, port)
+
+        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
+
+        val serverChannel = KqueuePipelinedServerChannel(
+            serverFd = serverFd,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            logger = logger,
+            pipelineInitializer = pipelineInitializer,
+        )
+        serverChannel.start()
+        return serverChannel
+    }
+
     override fun close() {
         if (!closed) {
             closed = true
