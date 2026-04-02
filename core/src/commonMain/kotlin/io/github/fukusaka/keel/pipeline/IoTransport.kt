@@ -18,7 +18,7 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * All methods must be called on the EventLoop thread.
  */
-internal interface IoTransport {
+interface IoTransport {
 
     /**
      * Buffers [buf] for a subsequent [flush].
