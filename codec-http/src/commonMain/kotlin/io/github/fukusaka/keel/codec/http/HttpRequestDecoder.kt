@@ -103,10 +103,17 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private fun processLine(ctx: ChannelHandlerContext, line: String) {
         when (state) {
             State.READ_REQUEST_LINE -> {
-                val (m, u, v) = parseRequestLine(line)
-                method = m
-                uri = u
-                version = v
+                // Inline request-line parsing to avoid allocating the intermediate
+                // RequestLine data class on every request (hot path).
+                val sp1 = line.indexOf(' ')
+                if (sp1 < 1) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+                val sp2 = line.indexOf(' ', sp1 + 1)
+                if (sp2 < 0 || line.indexOf(' ', sp2 + 1) >= 0) {
+                    throw HttpParseException("Invalid request line (expected 3 tokens): $line")
+                }
+                method = HttpMethod.of(line.substring(0, sp1))
+                uri = line.substring(sp1 + 1, sp2)
+                version = HttpVersion.of(line.substring(sp2 + 1))
                 state = State.READ_HEADERS
             }
             State.READ_HEADERS -> {
