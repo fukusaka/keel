@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `codec-http`: add `HttpRequestDecoder` pipeline handler that decodes inbound `IoBuf` chunks into `HttpRequestHead` messages with state machine parsing, partial-read support across `IoBuf` boundaries, HTTP pipelining, Content-Length body skipping, and max-line-size guard
+- `codec-http`: add `HttpResponseEncoder` pipeline handler that encodes `HttpResponse` into a single pre-sized `IoBuf` with direct `writeAscii`/`writeByte` calls — no intermediate String/ByteArray allocation on the hot path
 
 - `core`: add `ChannelPipeline` framework for zero-suspend protocol processing with `notify*`/`propagate*`/`on*` naming convention, construction-time type chain validation, and `TypedChannelInboundHandler` with reified factory
 - `core`: make `IoTransport` public for cross-module implementation by engine modules
