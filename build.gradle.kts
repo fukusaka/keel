@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+// Shorten package names in Dokka navigation sidebar.
+dokka {
+    pluginsConfiguration.html {
+        customAssets.from("dokka/scripts/shorten-packages.js")
+    }
+}
+
 // Modules requiring platform-specific cinterop headers unavailable on other hosts.
 // Dokka triggers cinterop tasks which fail when the required headers are missing.
 val hostOs = System.getProperty("os.name").lowercase()
