@@ -85,9 +85,11 @@ internal class IoUringServerChannel(
             val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
             val localAddr = SocketUtils.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()
+            val workerLoop = workerGroup.loopAt(wi)
+            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector)
             return IoUringChannel(
-                clientFd, workerGroup.loopAt(wi), workerGroup.allocatorAt(wi),
-                workerGroup.bufferRingAt(wi), remoteAddr, localAddr, writeModeSelector,
+                clientFd, workerLoop, transport, workerGroup.allocatorAt(wi),
+                workerGroup.bufferRingAt(wi), remoteAddr, localAddr,
                 capabilities,
             )
         } catch (e: Throwable) {
