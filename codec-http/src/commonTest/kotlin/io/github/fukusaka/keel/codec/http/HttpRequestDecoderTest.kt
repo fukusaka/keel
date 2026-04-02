@@ -162,7 +162,7 @@ class HttpRequestDecoderTest {
         val collector = HeadCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
-        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nX-Custom: hel"))
+        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nHost: example.com\r\nX-Custom: hel"))
         assertEquals(0, collector.heads.size)
 
         pipeline.notifyRead(bufOf("lo\r\n\r\n"))
@@ -175,7 +175,7 @@ class HttpRequestDecoderTest {
         val collector = HeadCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
-        val request = "GET / HTTP/1.1\r\n\r\n"
+        val request = "GET / HTTP/1.1\r\nHost: h\r\n\r\n"
         for (b in request.encodeToByteArray()) {
             pipeline.notifyRead(bufOf(b.toInt().toChar().toString()))
         }
@@ -209,11 +209,11 @@ class HttpRequestDecoderTest {
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         // Body arrives in a separate IoBuf from the headers.
-        pipeline.notifyRead(bufOf("POST /upload HTTP/1.1\r\nContent-Length: 6\r\n\r\nabc"))
+        pipeline.notifyRead(bufOf("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 6\r\n\r\nabc"))
         assertEquals(1, collector.heads.size, "head emitted after empty line")
 
         // Remaining 3 body bytes + next request.
-        pipeline.notifyRead(bufOf("defGET /after HTTP/1.1\r\n\r\n"))
+        pipeline.notifyRead(bufOf("defGET /after HTTP/1.1\r\nHost: example.com\r\n\r\n"))
         assertEquals(2, collector.heads.size)
         assertEquals("/upload", collector.heads[0].path)
         assertEquals("/after", collector.heads[1].path)
@@ -226,8 +226,8 @@ class HttpRequestDecoderTest {
 
         pipeline.notifyRead(
             bufOf(
-                "POST /data HTTP/1.1\r\nContent-Length: 4\r\n\r\nBODY" +
-                "GET /next HTTP/1.1\r\n\r\n"
+                "POST /data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nBODY" +
+                "GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n"
             )
         )
 
@@ -300,6 +300,51 @@ class HttpRequestDecoderTest {
     }
 
     @Test
+    fun `missing Host header in HTTP 1_1 request propagates error`() {
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nX-Other: value\r\n\r\n"))
+
+        assertEquals(0, collector.heads.size)
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.errors[0].message!!.contains("Host"))
+    }
+
+    @Test
+    fun `HTTP 1_0 request without Host header is accepted`() {
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(bufOf("GET / HTTP/1.0\r\n\r\n"))
+
+        assertEquals(1, collector.heads.size)
+        assertEquals(HttpVersion.HTTP_1_0, collector.heads[0].version)
+    }
+
+    @Test
+    fun `both Content-Length and Transfer-Encoding propagates error`() {
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(
+            bufOf(
+                "POST / HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "Content-Length: 5\r\n" +
+                "\r\n"
+            )
+        )
+
+        assertEquals(0, collector.heads.size)
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.errors[0].message!!.contains("Transfer-Encoding"))
+    }
+
+    @Test
     fun `decoder resets after parse error and handles next request`() {
         val decoder = HttpRequestDecoder()
         val collector = HeadCollector()
@@ -310,7 +355,7 @@ class HttpRequestDecoderTest {
         assertEquals(1, collector.errors.size)
 
         // After reset, decoder should handle a valid request
-        pipeline.notifyRead(bufOf("GET /ok HTTP/1.1\r\n\r\n"))
+        pipeline.notifyRead(bufOf("GET /ok HTTP/1.1\r\nHost: example.com\r\n\r\n"))
         assertEquals(1, collector.heads.size)
         assertEquals("/ok", collector.heads[0].path)
     }

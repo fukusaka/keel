@@ -39,7 +39,7 @@ class SuspendHttpParserTest {
 
     @Test
     fun `parseRequestHead suspend variant parses POST request`() = runBlocking {
-        val raw = "POST /submit HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
+        val raw = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
         val head = parseRequestHead(source)

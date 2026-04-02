@@ -141,10 +141,22 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     }
 
     private fun emitHead(ctx: ChannelHandlerContext) {
+        val parsedVersion = checkNotNull(version) { "version not parsed" }
+        // RFC 7230 §5.4: Host header is mandatory for HTTP/1.1 requests.
+        if (parsedVersion == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers) {
+            throw HttpParseException("Missing required Host header (RFC 7230 §5.4)")
+        }
+        // RFC 7230 §3.3.3: reject requests with both Content-Length and Transfer-Encoding
+        // to prevent HTTP Request Smuggling.
+        if (headers.isChunked && headers.contentLength != null) {
+            throw HttpParseException(
+                "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)"
+            )
+        }
         val head = HttpRequestHead(
             checkNotNull(method) { "method not parsed" },
             checkNotNull(uri) { "uri not parsed" },
-            checkNotNull(version) { "version not parsed" },
+            parsedVersion,
             headers,
         )
         // Reset parser state before emitting to allow re-entrant pipeline processing.

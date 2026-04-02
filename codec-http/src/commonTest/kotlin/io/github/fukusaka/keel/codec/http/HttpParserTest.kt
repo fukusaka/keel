@@ -203,7 +203,7 @@ class HttpParserTest {
 
     @Test
     fun postWithContentLength() {
-        val src = buffer("POST /submit HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")
+        val src = buffer("POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello")
         val req = parseRequest(src)
         assertEquals(HttpMethod.POST, req.method)
         assertContentEquals("hello".encodeToByteArray(), req.body)
@@ -211,7 +211,7 @@ class HttpParserTest {
 
     @Test
     fun postWithChunked() {
-        val src = buffer("POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+        val src = buffer("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
         val req = parseRequest(src)
         assertContentEquals("hello".encodeToByteArray(), req.body)
     }
@@ -220,7 +220,7 @@ class HttpParserTest {
     fun transferEncodingTakesPrecedence() {
         // Both TE and Content-Length — TE wins (RFC 7230 §3.3.3)
         val src = buffer(
-            "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 999\r\n\r\n" +
+            "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 999\r\n\r\n" +
             "5\r\nhello\r\n0\r\n\r\n"
         )
         val req = parseRequest(src)
@@ -230,8 +230,8 @@ class HttpParserTest {
     @Test
     fun pipeliningLeavesSecondRequest() {
         val src = buffer(
-            "GET /first HTTP/1.1\r\n\r\n" +
-            "GET /second HTTP/1.1\r\n\r\n"
+            "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n" +
+            "GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n"
         )
         val first = parseRequest(src)
         assertEquals("/first", first.uri)
@@ -257,7 +257,7 @@ class HttpParserTest {
 
     @Test
     fun requestHeadLeavesChunkedBodyInSource() {
-        val src = buffer("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+        val src = buffer("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
         val head = parseRequestHead(src)
         assertEquals(HttpMethod.POST, head.method)
         assertTrue(head.headers.isChunked)
@@ -272,6 +272,19 @@ class HttpParserTest {
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/", head.uri)
         assertTrue(src.exhausted())
+    }
+
+    @Test
+    fun missingHostHeaderInHttp11Throws() {
+        val src = buffer("GET / HTTP/1.1\r\nX-Other: value\r\n\r\n")
+        assertFailsWith<HttpParseException>("Host") { parseRequestHead(src) }
+    }
+
+    @Test
+    fun http10WithoutHostHeaderAccepted() {
+        val src = buffer("GET / HTTP/1.0\r\n\r\n")
+        val head = parseRequestHead(src)
+        assertEquals(HttpVersion.HTTP_1_0, head.version)
     }
 
     // --- parseResponseHead ---
