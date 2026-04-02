@@ -133,20 +133,30 @@ class HttpHeaders private constructor(
     /** Returns the value of the header at [index] (insertion order). O(1). */
     fun valueAt(index: Int): String { ensureFlatArrays(); return flatValues!![index] }
 
+    // --- Direct lookup (bypasses lowercase() allocation) ---
+
+    /**
+     * Returns the first value for a pre-lowered [key], or null if absent.
+     *
+     * Callers must pass a key that is already lowercase. This avoids the
+     * [String.lowercase] allocation in [get] on the hot path.
+     */
+    internal fun getByLowercaseKey(key: String): String? = map[key]?.firstOrNull()
+
     // --- Typed properties ---
 
     /** Parsed value of the Content-Length header, or null if absent or malformed. */
-    val contentLength: Long? get() = get(HttpHeaderName.CONTENT_LENGTH)?.trim()?.toLongOrNull()
+    val contentLength: Long? get() = getByLowercaseKey(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toLongOrNull()
 
     /** Value of the Content-Type header, or null if absent. */
-    val contentType: String? get() = get(HttpHeaderName.CONTENT_TYPE)
+    val contentType: String? get() = getByLowercaseKey(HttpHeaderName.CONTENT_TYPE_KEY)
 
     /** True if Transfer-Encoding contains "chunked" (case-insensitive). */
     val isChunked: Boolean
-        get() = get(HttpHeaderName.TRANSFER_ENCODING)?.contains("chunked", ignoreCase = true) == true
+        get() = getByLowercaseKey(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
 
     /** Value of the Connection header, or null if absent. */
-    val connection: String? get() = get(HttpHeaderName.CONNECTION)
+    val connection: String? get() = getByLowercaseKey(HttpHeaderName.CONNECTION_KEY)
 
     /**
      * Equality is based on the normalized (lowercase) header map.
