@@ -88,9 +88,10 @@ internal class IoUringIoTransport(
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
-        // fire-and-forget flush will be implemented in PR B.
-        // For now, return true (no-op for pipeline path).
-        return true
+        // Fire-and-forget flush using submitMultishot callback will be
+        // implemented when IoUringPipelinedChannel is added (Step 1 PR B).
+        // Until then, only the suspend-based flushSuspend() path is used.
+        TODO("fire-and-forget flush not yet implemented; use flushSuspend() via Channel")
     }
 
     override var onFlushComplete: (() -> Unit)? = null
