@@ -131,6 +131,48 @@ class NioEngine(
         return NioChannel(socketChannel, selectionKey, workerLoop, allocator, remoteAddr, localAddr)
     }
 
+    /**
+     * Binds a pipeline-based server on [host]:[port].
+     *
+     * Creates a callback-driven server that processes connections entirely
+     * through [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     *
+     * Unlike Native engines, NIO requires `channel.register()` on the
+     * EventLoop thread (Selector blocks during select). The boss loop
+     * registers the ServerSocketChannel, and worker loops register accepted
+     * client channels via [NioEventLoop.dispatch].
+     *
+     * @param pipelineInitializer Callback to configure the pipeline for each connection.
+     * @return An [AutoCloseable] that stops the server when closed.
+     */
+    suspend fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+    ): AutoCloseable {
+        check(!closed) { "Engine is closed" }
+
+        val serverChannel = java.nio.channels.ServerSocketChannel.open()
+        serverChannel.configureBlocking(false)
+        serverChannel.bind(java.net.InetSocketAddress(host, port))
+
+        val selectionKey = bossLoop.registerChannel(serverChannel)
+
+        val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
+        logger.debug { "Pipeline bound to ${localAddr?.host}:${localAddr?.port}" }
+
+        val serverPipeline = NioPipelinedServerChannel(
+            serverChannel = serverChannel,
+            selectionKey = selectionKey,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            logger = logger,
+            pipelineInitializer = pipelineInitializer,
+        )
+        serverPipeline.start()
+        return serverPipeline
+    }
+
     override fun close() {
         if (!closed) {
             closed = true

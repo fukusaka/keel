@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-epoll`: add `EpollIoTransport`, `EpollPipelinedChannel`, `EpollPipelinedServerChannel` for zero-suspend pipeline I/O
 - `engine-epoll`: add `registerCallback()` / `unregisterCallback()` to `EpollEventLoop`
 - `benchmark`: add `pipeline-http-epoll` engine for Linux pipeline throughput comparison
+- `engine-nio`: add `NioEngine.bindPipeline()` for callback-driven pipeline server on JVM
+- `engine-nio`: add `NioIoTransport`, `NioPipelinedChannel`, `NioPipelinedServerChannel` for non-suspend pipeline I/O
+- `engine-nio`: add `setInterestCallback()` to `NioEventLoop` for one-shot readiness callbacks via SelectionKey
+- `benchmark`: add `pipeline-http-nio` engine for JVM pipeline throughput comparison
 - `engine-nwconnection`: add `NwEngine.bindPipeline()` for pipeline server via NWConnection dispatch queues
 - `engine-nwconnection`: add `NwIoTransport`, `NwPipelinedChannel` for async pipeline I/O
 - `benchmark`: add `pipeline-http-nwconnection` engine for macOS NWConnection pipeline comparison

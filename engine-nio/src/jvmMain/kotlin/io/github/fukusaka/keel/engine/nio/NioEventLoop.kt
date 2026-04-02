@@ -43,7 +43,7 @@ import kotlin.coroutines.resume
  */
 internal class NioEventLoop(name: String, private val logger: Logger) : CoroutineDispatcher() {
 
-    private val selector: Selector = Selector.open()
+    internal val selector: Selector = Selector.open()
     private val regLock = Any()
     private val pendingRegistrations = mutableListOf<ChannelRegistration>()
     private val taskQueue = ConcurrentLinkedQueue<Runnable>()
@@ -123,6 +123,18 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      */
     fun setInterest(key: SelectionKey, ops: Int, cont: CancellableContinuation<Unit>) {
         key.attach(cont)
+        key.interestOps(key.interestOps() or ops)
+        selector.wakeup()
+    }
+
+    /**
+     * Sets interest ops with a callback for readiness notification (pipeline path).
+     *
+     * Unlike the continuation overload, [callback] is invoked directly on the
+     * EventLoop thread when the channel is ready. One-shot: cleared after fire.
+     */
+    fun setInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
+        key.attach(callback)
         key.interestOps(key.interestOps() or ops)
         selector.wakeup()
     }
@@ -218,11 +230,15 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
             val key = iter.next()
             iter.remove()
             try {
-                val cont = key.attachment() as? CancellableContinuation<*> ?: continue
-                // Clear interest instead of cancel — key stays valid for reuse
+                val attachment = key.attachment() ?: continue
                 clearInterest(key)
-                @Suppress("UNCHECKED_CAST")
-                (cont as CancellableContinuation<Unit>).resume(Unit)
+                when (attachment) {
+                    is Runnable -> attachment.run()
+                    is CancellableContinuation<*> -> {
+                        @Suppress("UNCHECKED_CAST")
+                        (attachment as CancellableContinuation<Unit>).resume(Unit)
+                    }
+                }
             } catch (e: Exception) {
                 // Individual key failure must not stop processing other keys.
                 // The channel's coroutine will observe the error on next I/O.
@@ -254,6 +270,12 @@ internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger, 
     private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Number of EventLoops in this group. */
+    val size: Int get() = loops.size
+
+    /** Returns the EventLoop and allocator at the given [index] (direct access, no round-robin). */
+    fun at(index: Int): Pair<NioEventLoop, BufferAllocator> = loops[index] to allocators[index]
 
     /** Returns the next EventLoop and its per-EventLoop allocator in round-robin order. */
     fun next(): Pair<NioEventLoop, BufferAllocator> {
