@@ -90,7 +90,7 @@ data class HttpRequest(
 }
 
 /** Sentinel for distinguishing "not yet computed" from "computed as null". */
-private val UNSET_QUERY: String? = String(charArrayOf('\u0000'))
+private val UNSET_QUERY: String? = charArrayOf('\u0000').concatToString()
 
 internal fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean = when {
     this === other -> true
