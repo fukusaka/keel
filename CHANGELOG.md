@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `codec-http`: add `HttpRequestDecoder` pipeline handler that decodes inbound `IoBuf` chunks into `HttpRequestHead` messages with state machine parsing, partial-read support across `IoBuf` boundaries, HTTP pipelining, Content-Length body skipping, and max-line-size guard
 - `codec-http`: add `HttpResponseEncoder` pipeline handler that encodes `HttpResponse` into a single pre-sized `IoBuf` with direct `writeAscii`/`writeByte` calls — no intermediate String/ByteArray allocation on the hot path
+- `codec-http`: add `RoutingHandler` pipeline handler that routes `HttpRequestHead` messages by path to registered handler functions, returning 404 for unmatched paths
+- `benchmark`: add `pipeline-http-io-uring` engine using `HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder` on `IoUringEngine.bindPipeline()`
 
 - `core`: add `ChannelPipeline` framework for zero-suspend protocol processing with `notify*`/`propagate*`/`on*` naming convention, construction-time type chain validation, and `TypedChannelInboundHandler` with reified factory
 - `core`: make `IoTransport` public for cross-module implementation by engine modules

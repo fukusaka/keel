@@ -50,11 +50,12 @@ kotlin {
             }
         }
 
-        // Linux: keel-epoll + keel-io-uring engines
+        // Linux: keel-epoll + keel-io-uring engines + HTTP codec for pipeline benchmark
         val linuxMain by getting {
             dependencies {
                 implementation(project(":engine-epoll"))
                 implementation(project(":engine-io-uring"))
+                implementation(project(":codec-http"))
             }
         }
     }
