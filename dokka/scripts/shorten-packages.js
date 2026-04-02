@@ -41,20 +41,8 @@
             }
         }
 
-        // Breadcrumbs: current page name
-        var breadcrumbs = document.querySelectorAll('.breadcrumbs .current');
-        for (var k = 0; k < breadcrumbs.length; k++) {
-            var bt = breadcrumbs[k].textContent;
-            if (bt && bt.indexOf(PREFIX) === 0) {
-                breadcrumbs[k].textContent = bt.substring(PREFIX.length);
-            }
-        }
-
-        // Page title in <title> and heading
-        var title = document.title;
-        if (title && title.indexOf(PREFIX) === 0) {
-            document.title = title.substring(PREFIX.length);
-        }
+        // Breadcrumbs and page title are left as-is (full qualified name)
+        // for clarity when navigating deep into the documentation.
     }
 
     function waitForNavigation() {
