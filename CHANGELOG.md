@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-epoll`: add `EpollIoTransport`, `EpollPipelinedChannel`, `EpollPipelinedServerChannel` for zero-suspend pipeline I/O
 - `engine-epoll`: add `registerCallback()` / `unregisterCallback()` to `EpollEventLoop`
 - `benchmark`: add `pipeline-http-epoll` engine for Linux pipeline throughput comparison
+- `engine-nwconnection`: add `NwEngine.bindPipeline()` for pipeline server via NWConnection dispatch queues
+- `engine-nwconnection`: add `NwIoTransport`, `NwPipelinedChannel` for async pipeline I/O
+- `benchmark`: add `pipeline-http-nwconnection` engine for macOS NWConnection pipeline comparison
 
 ### Fixed
 

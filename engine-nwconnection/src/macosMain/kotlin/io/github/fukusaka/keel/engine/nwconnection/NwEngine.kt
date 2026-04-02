@@ -15,6 +15,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_create
+import platform.Network.nw_connection_set_queue
+import platform.Network.nw_connection_start
 import platform.Network.nw_endpoint_create_host
 import platform.Network.nw_endpoint_get_hostname
 import platform.Network.nw_endpoint_get_port
@@ -127,6 +129,78 @@ class NwEngine(
         serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
         logger.debug { "Bound to $host:$assignedPort" }
         return serverChannel
+    }
+
+    /**
+     * Binds a pipeline-based TCP listener on [host]:[port].
+     *
+     * Creates an NWListener with a new-connection handler that wraps each
+     * accepted connection in a [NwPipelinedChannel] and feeds data through
+     * the [ChannelPipeline] — no coroutine suspension on the request hot path.
+     *
+     * Must suspend because NWListener startup is asynchronous (waits for ready state).
+     *
+     * @param pipelineInitializer Callback to configure the pipeline for each connection.
+     * @return An [AutoCloseable] that cancels the listener when closed.
+     */
+    suspend fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+    ): AutoCloseable {
+        check(!closed) { "Engine is closed" }
+
+        val portStr = if (port == 0) "0" else port.toString()
+        val params = keel_nw_create_tcp_params()
+
+        val lsnr = nw_listener_create_with_port(portStr, params)
+            ?: error("nw_listener_create_with_port returned null")
+
+        val listenerQueue = dispatch_queue_create(
+            "io.github.fukusaka.keel.nwconnection.pipeline.listener", null,
+        )
+
+        nw_listener_set_queue(lsnr, listenerQueue)
+
+        val assignedPort = suspendCancellableCoroutine<Int> { cont ->
+            val cbCtx = CallbackContext(cont)
+
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                if (state == nw_listener_state_ready) {
+                    cbCtx.tryResume(nw_listener_get_port(lsnr).toInt())
+                } else if (state == nw_listener_state_failed) {
+                    cbCtx.tryResume(-1)
+                }
+            }
+
+            nw_listener_set_new_connection_handler(lsnr) { conn ->
+                if (conn != null) {
+                    val connQueue = dispatch_queue_create(
+                        "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
+                    )
+                    nw_connection_set_queue(conn, connQueue)
+                    // Fire-and-forget start: nw_connection_receive can be called
+                    // immediately after start — NWConnection queues the receive
+                    // internally until the connection reaches the ready state.
+                    // Unlike NwServerChannel.accept() which awaits ready via
+                    // keel_nw_start_conn_async, pipeline skips the suspend.
+                    nw_connection_start(conn)
+
+                    val transport = NwIoTransport(conn)
+                    val channel = NwPipelinedChannel(conn, transport, config.allocator, logger)
+                    pipelineInitializer(channel.pipeline)
+                    channel.armRead()
+                }
+            }
+
+            nw_listener_start(lsnr)
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
+        }
+
+        check(assignedPort > 0) { "NWListener failed to start" }
+        logger.debug { "Pipeline bound to $host:$assignedPort" }
+
+        return AutoCloseable { nw_listener_cancel(lsnr) }
     }
 
     /**
