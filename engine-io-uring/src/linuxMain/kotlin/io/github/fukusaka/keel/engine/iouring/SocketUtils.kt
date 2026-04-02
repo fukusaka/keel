@@ -28,6 +28,7 @@ import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_ERROR
 import platform.posix.SO_REUSEADDR
+import platform.posix.SO_REUSEPORT
 import platform.posix.bind
 import platform.posix.errno
 import platform.posix.fcntl
@@ -75,6 +76,54 @@ internal object SocketUtils {
         try {
             intArrayOf(1).usePinned { pinned ->
                 setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
+            }
+
+            setNonBlocking(fd)
+
+            memScoped {
+                val addr = alloc<sockaddr_in>()
+                addr.sin_family = AF_INET.convert()
+                addr.sin_port = keel_htons(port.toUShort())
+                if (host == "0.0.0.0") {
+                    addr.sin_addr.s_addr = INADDR_ANY
+                } else {
+                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+                    check(rc == 1) { "Invalid address: $host" }
+                }
+                val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+                check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
+            }
+
+            val result = listen(fd, LISTEN_BACKLOG)
+            check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
+        } catch (e: Throwable) {
+            close(fd)
+            throw e
+        }
+
+        return fd
+    }
+
+    /**
+     * Creates a non-blocking TCP server socket with `SO_REUSEPORT`.
+     *
+     * `SO_REUSEPORT` allows multiple sockets to bind to the same address/port.
+     * The kernel distributes incoming connections across these sockets by
+     * hashing the connection 4-tuple. Used by [IoUringPipelinedServerChannel]
+     * for multi-thread accept without boss EventLoop coordination.
+     *
+     * @param host Bind address. "0.0.0.0" binds to all interfaces.
+     * @param port Port number.
+     * @return The server socket file descriptor.
+     */
+    fun createReusePortServerSocket(host: String, port: Int): Int {
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
+
+        try {
+            intArrayOf(1).usePinned { pinned ->
+                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
             }
 
             setNonBlocking(fd)
