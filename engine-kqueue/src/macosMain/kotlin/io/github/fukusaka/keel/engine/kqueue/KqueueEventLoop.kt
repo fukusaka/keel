@@ -115,6 +115,9 @@ internal class KqueueEventLoop(
         pthread_mutex_init(ptr, null)
     }
     private val registrations = mutableMapOf<Long, Registration>()
+    // Callback registrations for pipeline (non-suspend) I/O.
+    // Separated from coroutine registrations to avoid sealed-class overhead.
+    private val callbackRegistrations = mutableMapOf<Long, () -> Unit>()
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
@@ -255,6 +258,45 @@ internal class KqueueEventLoop(
         }
     }
 
+    /**
+     * Registers a callback for fd readiness notification (pipeline / non-suspend path).
+     *
+     * Unlike [register], this does not use coroutine continuations. When `kevent()`
+     * reports the fd as ready, [callback] is invoked directly on the EventLoop thread.
+     * The registration is one-shot: removed after the callback fires.
+     */
+    fun registerCallback(fd: Int, interest: Interest, callback: () -> Unit) {
+        val filter = when (interest) {
+            Interest.READ -> EVFILT_READ
+            Interest.WRITE -> EVFILT_WRITE
+        }
+        val key = registrationKey(fd, interest)
+
+        memScoped {
+            val kev = alloc<kevent>()
+            keel_ev_set(
+                kev.ptr, fd.convert(), filter.convert(),
+                EV_ADD.convert(), 0u, 0, null,
+            )
+            kevent(kqFd, kev.ptr, 1, null, 0, null)
+        }
+
+        withRegLock {
+            callbackRegistrations[key] = callback
+        }
+        wakeup()
+    }
+
+    /**
+     * Removes a pending callback registration for the given fd and interest.
+     */
+    fun unregisterCallback(fd: Int, interest: Interest) {
+        val key = registrationKey(fd, interest)
+        withRegLock {
+            callbackRegistrations.remove(key)
+        }
+    }
+
     // --- Wakeup ---
 
     /**
@@ -333,8 +375,15 @@ internal class KqueueEventLoop(
                         else -> continue
                     }
                     val key = registrationKey(fd, interest)
-                    val reg = withRegLock { registrations.remove(key) }
-                    reg?.continuation?.resume(Unit)
+                    // Check callback registrations first (pipeline path),
+                    // then coroutine registrations (suspend path).
+                    val cb = withRegLock { callbackRegistrations.remove(key) }
+                    if (cb != null) {
+                        cb()
+                    } else {
+                        val reg = withRegLock { registrations.remove(key) }
+                        reg?.continuation?.resume(Unit)
+                    }
                 }
             }
         }
