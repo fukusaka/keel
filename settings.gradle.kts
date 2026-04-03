@@ -37,3 +37,9 @@ include(
 if (providers.gradleProperty("benchmark").isPresent) {
     include(":benchmark", ":sample")
 }
+
+// TLS experiment modules — opt-in.
+//   ./gradlew -Ptls :tls-mbedtls:macosArm64Test
+if (providers.gradleProperty("tls").isPresent) {
+    include(":tls-mbedtls", ":tls-openssl", ":tls-awslc", ":tls-jsse", ":tls-nodejs")
+}

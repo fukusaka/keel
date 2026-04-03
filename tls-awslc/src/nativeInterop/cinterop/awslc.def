@@ -1,0 +1,50 @@
+headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
+compilerOpts = -I/opt/homebrew/opt/aws-lc/include
+linkerOpts = -L/opt/homebrew/opt/aws-lc/lib -lssl -lcrypto
+
+---
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <string.h>
+
+static int keel_awslc_create_server(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -2;
+    }
+    if (listen(fd, 1) < 0) {
+        close(fd);
+        return -3;
+    }
+    return fd;
+}
+
+static int keel_awslc_get_port(int fd) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) return -1;
+    return ntohs(addr.sin_port);
+}
+
+static const char* keel_awslc_err_string(void) {
+    return ERR_reason_error_string(ERR_get_error());
+}
