@@ -35,7 +35,7 @@ import java.nio.channels.SocketChannel
  *   |     |
  *   |     +-- bind() → NioServerChannel (cached SelectionKey)
  *   |           |
- *   |           +-- accept() → registerChannel on workerLoop → NioChannel
+ *   |           +-- accept() → registerChannel on workerLoop → NioPipelinedChannel
  *   |
  *   +-- workerGroup (N worker EventLoops, round-robin)
  *         |
@@ -65,14 +65,14 @@ class NioEngine(
         serverChannel.configureBlocking(false)
         serverChannel.bind(InetSocketAddress(host, port))
 
-        val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
+        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
 
         // One-time registration with the boss Selector
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr)
+        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**
@@ -124,11 +124,14 @@ class NioEngine(
             }
         }
 
-        val remoteAddr = NioChannel.toSocketAddress(socketChannel.remoteAddress)
-        val localAddr = NioChannel.toSocketAddress(socketChannel.localAddress)
+        val remoteAddr = NioPipelinedChannel.toSocketAddress(socketChannel.remoteAddress)
+        val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
-        return NioChannel(socketChannel, selectionKey, workerLoop, allocator, remoteAddr, localAddr)
+        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop)
+        return NioPipelinedChannel(
+            socketChannel, selectionKey, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+        )
     }
 
     /**
@@ -158,7 +161,7 @@ class NioEngine(
 
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
-        val localAddr = NioChannel.toSocketAddress(serverChannel.localAddress)
+        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
         logger.debug { "Pipeline bound to ${localAddr?.host}:${localAddr?.port}" }
 
         val serverPipeline = NioPipelinedServerChannel(

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
+
 ### Fixed
 
 - engine-kqueue: add `check(!closed)` guard to Channel mode `read()`/`write()`/`flush()` to prevent infinite suspend on closed channel
