@@ -95,8 +95,13 @@ internal class KqueuePipelinedChannel(
 
     override suspend fun awaitClosed() {}
 
+    private var outputShutdown = false
+
     override fun shutdownOutput() {
-        // TLS close_notify or TCP FIN — to be implemented per transport.
+        if (!outputShutdown && !closed) {
+            outputShutdown = true
+            platform.posix.shutdown(fd, platform.posix.SHUT_WR)
+        }
     }
 
     /**

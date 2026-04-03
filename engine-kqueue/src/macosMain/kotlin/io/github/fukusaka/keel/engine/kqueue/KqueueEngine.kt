@@ -91,7 +91,7 @@ class KqueueEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr)
+        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**
@@ -140,7 +140,8 @@ class KqueueEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return KqueueChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
+        val transport = KqueueIoTransport(fd, workerLoop)
+        return KqueuePipelinedChannel(fd, transport, workerLoop, allocator, logger, remoteAddr, localAddr)
     }
 
     /**

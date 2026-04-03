@@ -39,6 +39,7 @@ internal class KqueueServerChannel(
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServerChannel"),
 ) : ServerChannel {
 
     private var _active = true
@@ -63,7 +64,10 @@ internal class KqueueServerChannel(
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
-                return KqueueChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+                val transport = KqueueIoTransport(clientFd, workerLoop)
+                return KqueuePipelinedChannel(
+                    clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                )
             }
 
             val err = errno
