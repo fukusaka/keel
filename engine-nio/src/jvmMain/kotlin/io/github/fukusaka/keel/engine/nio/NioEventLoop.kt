@@ -247,6 +247,10 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         }
     }
 
+    /**
+     * Stops the EventLoop thread, waits up to 2 seconds for it to finish,
+     * and closes the Selector. Pending tasks and registrations are discarded.
+     */
     fun close() {
         running = false
         selector.wakeup()
@@ -283,6 +287,7 @@ internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger, 
         return loops[i] to allocators[i]
     }
 
+    /** Closes all EventLoops in this group. Blocks until each thread terminates (up to 2s each). */
     fun close() {
         for (loop in loops) loop.close()
     }
