@@ -1,14 +1,18 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
+import kotlinx.coroutines.CoroutineDispatcher
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
 import platform.posix.close
@@ -16,24 +20,21 @@ import platform.posix.errno
 import platform.posix.read
 
 /**
- * Pipeline channel for kqueue-based I/O on macOS.
+ * Unified kqueue channel supporting both Pipeline mode and Channel mode.
  *
- * Reads are driven by EVFILT_READ callbacks from the [eventLoop]. Each callback
- * allocates a buffer, performs a POSIX `read()`, and feeds the data into the
- * [pipeline] via [ChannelPipeline.notifyRead]. Handlers process the data
- * synchronously on the EventLoop thread — no coroutine suspension.
+ * **Pipeline mode** (push, zero-suspend): engine feeds data into the pipeline
+ * via [armRead] → [ChannelPipeline.notifyRead]. Handlers process data
+ * synchronously. Used by [KqueueEngine.bindPipeline].
  *
- * **Read loop**: unlike io_uring's multishot recv (which receives multiple CQEs
- * per SQE), kqueue requires re-registering EVFILT_READ after each callback.
- * [armRead] is called after each successful read to continue the loop.
- *
- * **Buffer lifecycle**: buffers are allocated from [allocator] per read and
- * released by the pipeline handler chain (typically after encoding the response).
+ * **Channel mode** (pull, suspend): a [SuspendBridgeHandler] is installed
+ * at the end of the pipeline. App calls suspend [read]/[write]/[flush].
+ * Used by [KqueueEngine.bind] and [KqueueEngine.connect].
  *
  * ```
- * kevent(EVFILT_READ) → read(fd, buf) → pipeline.notifyRead(buf)
- *   → decoder → routing → encoder → transport.write(resp) + flush()
- *   → POSIX write(fd) → armRead() (re-register for next read)
+ * Pipeline mode:  HEAD ↔ handlers ↔ TAIL
+ * Channel mode:   HEAD ↔ handlers ↔ SuspendBridgeHandler ↔ TAIL
+ *                                         ↑
+ *                                   App: read() / write() / flush()
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -42,15 +43,61 @@ internal class KqueuePipelinedChannel(
     private val transport: KqueueIoTransport,
     private val eventLoop: KqueueEventLoop,
     override val allocator: BufferAllocator,
-    logger: Logger,
+    private val logger: Logger,
+    override val remoteAddress: SocketAddress? = null,
+    override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {
 
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isActive: Boolean get() = !closed
+    override val isOpen: Boolean get() = !closed
     override val isWritable: Boolean get() = true
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val supportsDeferredFlush: Boolean get() = true
 
     @kotlin.concurrent.Volatile
     private var closed = false
+
+    // Lazily installed when Channel mode is first used (read/write/flush).
+    private var bridge: SuspendBridgeHandler? = null
+    private var readArmed = false
+
+    /**
+     * Installs [SuspendBridgeHandler] and arms the read loop if not already done.
+     * Called on first suspend read/write/flush.
+     */
+    private fun ensureBridge(): SuspendBridgeHandler {
+        bridge?.let { return it }
+        val handler = SuspendBridgeHandler()
+        pipeline.addLast("__suspend_bridge__", handler)
+        bridge = handler
+        if (!readArmed) {
+            readArmed = true
+            armRead()
+        }
+        return handler
+    }
+
+    // --- Channel mode: suspend API ---
+
+    override suspend fun read(buf: IoBuf): Int = ensureBridge().read(buf)
+
+    override suspend fun write(buf: IoBuf): Int {
+        val n = buf.readableBytes
+        if (n == 0) return 0
+        ensureBridge().write(buf)
+        return n
+    }
+
+    override suspend fun flush() {
+        ensureBridge().flush()
+    }
+
+    override suspend fun awaitClosed() {}
+
+    override fun shutdownOutput() {
+        // TLS close_notify or TCP FIN — to be implemented per transport.
+    }
 
     /**
      * Registers EVFILT_READ callback to start the read loop.

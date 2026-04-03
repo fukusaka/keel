@@ -36,7 +36,7 @@ import kotlin.coroutines.resume
  * **Thread safety**: all methods are called on the EventLoop thread.
  * The suspend continuation is resumed on the same thread via EventLoop dispatch.
  */
-internal class SuspendBridgeHandler : ChannelDuplexHandler {
+class SuspendBridgeHandler : ChannelDuplexHandler {
 
     private val readQueue = ArrayDeque<IoBuf>()
     private var readCont: CancellableContinuation<Unit>? = null
