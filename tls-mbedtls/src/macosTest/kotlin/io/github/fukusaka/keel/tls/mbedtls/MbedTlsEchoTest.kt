@@ -144,8 +144,18 @@ class MbedTlsEchoTest {
     }
 
     companion object {
-        // Self-signed certificate and key for testing (generated via openssl).
-        // PEM must include trailing newline for mbedtls_x509_crt_parse.
+        // Self-signed test certificate (CN=localhost, RSA 2048-bit, valid for 365 days).
+        //
+        // Generated with:
+        //   openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
+        //     -days 365 -nodes -subj '/CN=localhost'
+        //
+        // This certificate is ephemeral and exists solely for cinterop prototype
+        // validation. It will be replaced by programmatic certificate generation
+        // when the common TLS interface is introduced. Do not use in production.
+        //
+        // The PEM string must include a trailing newline because
+        // mbedtls_x509_crt_parse expects null-terminated input.
         private val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
@@ -168,6 +178,8 @@ wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
 """.trimIndent() + "\n"
 
+        // Corresponding private key (PKCS#8 unencrypted).
+        // Same provenance and lifecycle as SERVER_CERT above.
         private val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
 MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCyFmiTuQ3QU6bL

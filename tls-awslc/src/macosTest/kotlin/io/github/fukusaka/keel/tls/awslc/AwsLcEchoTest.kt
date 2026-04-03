@@ -110,6 +110,11 @@ class AwsLcEchoTest {
     }
 
     companion object {
+        // Self-signed test certificate (CN=localhost, RSA 2048-bit, valid for 365 days).
+        // Generated with:
+        //   openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
+        //     -days 365 -nodes -subj '/CN=localhost'
+        // Ephemeral — for cinterop prototype validation only. Do not use in production.
         private val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
@@ -132,6 +137,7 @@ wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
 """.trimIndent() + "\n"
 
+        // Corresponding private key (PKCS#8 unencrypted). Same provenance as SERVER_CERT.
         private val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
 MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCyFmiTuQ3QU6bL

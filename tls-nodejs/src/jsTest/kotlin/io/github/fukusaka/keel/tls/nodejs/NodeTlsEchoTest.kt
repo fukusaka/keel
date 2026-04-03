@@ -59,6 +59,11 @@ class NodeTlsEchoTest {
     }
 
     companion object {
+        // Self-signed test certificate (CN=localhost, RSA 2048-bit, valid for 365 days).
+        // Generated with:
+        //   openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
+        //     -days 365 -nodes -subj '/CN=localhost'
+        // Ephemeral — for cinterop prototype validation only. Do not use in production.
         private const val SERVER_CERT = """-----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDQwMzA0MjcxNloXDTI3MDQw
@@ -79,6 +84,7 @@ DckJ9HFnEw1KPYC/9e7a1JUrkfMgCFcgIdRGQA/qMHISUzQND9Zs/ZnPvhaf+x7N
 wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----"""
 
+        // Corresponding private key (PKCS#8 unencrypted). Same provenance as SERVER_CERT.
         private const val SERVER_KEY = """-----BEGIN PRIVATE KEY-----
 MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCyFmiTuQ3QU6bL
 5Bdc8OrhkjQOP9/bQpiPGS7Yd0RwxdBujJj5iHgXQCDdh1AJr1I3BIRFcprHNAJH
