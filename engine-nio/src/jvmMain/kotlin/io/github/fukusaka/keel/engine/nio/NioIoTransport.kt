@@ -28,6 +28,12 @@ internal class NioIoTransport(
 
     override var onFlushComplete: (() -> Unit)? = null
 
+    /**
+     * Buffers [buf] for the next [flush] call.
+     *
+     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
+     * The caller's readerIndex is advanced immediately so it can reuse the buf.
+     */
     override fun write(buf: IoBuf) {
         val bytes = buf.readableBytes
         if (bytes == 0) return
@@ -61,6 +67,12 @@ internal class NioIoTransport(
         if (socketChannel.isOpen) socketChannel.close()
     }
 
+    /**
+     * Writes a single [PendingWrite] via [SocketChannel.write].
+     *
+     * On send buffer full (write returns 0), re-enqueues the remainder
+     * and registers OP_WRITE callback for async retry.
+     */
     private fun flushSingle(pw: PendingWrite): Boolean {
         val bb = pw.buf.unsafeBuffer
         bb.position(pw.offset)
@@ -80,6 +92,12 @@ internal class NioIoTransport(
         return true
     }
 
+    /**
+     * Writes multiple pending buffers via [java.nio.channels.GatheringByteChannel.write].
+     *
+     * On partial write, fully-written buffers are released and the remainder
+     * is re-enqueued with OP_WRITE callback for async retry.
+     */
     private fun flushGather(): Boolean {
         val bbArray = Array(pendingWrites.size) { i ->
             val pw = pendingWrites[i]
@@ -115,6 +133,7 @@ internal class NioIoTransport(
         return false
     }
 
+    /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
         eventLoop.setInterestCallback(selectionKey, SelectionKey.OP_WRITE, Runnable {
             val done = flush()
@@ -124,5 +143,12 @@ internal class NioIoTransport(
         })
     }
 
+    /**
+     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
+     * where readable data starts, and the number of bytes to write.
+     *
+     * Offset/length are recorded separately because [IoBuf.readerIndex] is
+     * advanced at write() time so the caller can reuse the buffer immediately.
+     */
     internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

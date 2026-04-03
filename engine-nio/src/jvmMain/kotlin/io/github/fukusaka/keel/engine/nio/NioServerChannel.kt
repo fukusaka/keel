@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resumeWithException
+import io.github.fukusaka.keel.logging.Logger
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 
@@ -26,7 +27,7 @@ import java.nio.channels.ServerSocketChannel
  *   bossLoop: setInterest(key, OP_ACCEPT) → select() → resume
  *   ServerSocketChannel.accept() → client SocketChannel
  *   workerLoop.registerChannel(client) → cached SelectionKey
- *   → NioChannel(client, key, workerLoop, ...)
+ *   → NioPipelinedChannel(client, key, transport, workerLoop, ...)
  * ```
  *
  * @param serverChannel The listening ServerSocketChannel (non-blocking).
@@ -41,6 +42,7 @@ internal class NioServerChannel(
     private val bossLoop: NioEventLoop,
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServerChannel"),
 ) : ServerChannel {
 
     private var _active = true
@@ -49,7 +51,7 @@ internal class NioServerChannel(
     override val isActive: Boolean get() = _active
 
     /**
-     * Suspends until an incoming connection arrives, then returns a [NioChannel]
+     * Suspends until an incoming connection arrives, then returns a [NioPipelinedChannel]
      * assigned to the next worker EventLoop with a cached [SelectionKey].
      */
     override suspend fun accept(): Channel {
@@ -59,13 +61,16 @@ internal class NioServerChannel(
             val client = serverChannel.accept()
             if (client != null) {
                 client.configureBlocking(false)
-                val remoteAddr = NioChannel.toSocketAddress(client.remoteAddress)
-                val localAddr = NioChannel.toSocketAddress(client.localAddress)
+                val remoteAddr = NioPipelinedChannel.toSocketAddress(client.remoteAddress)
+                val localAddr = NioPipelinedChannel.toSocketAddress(client.localAddress)
                 val (workerLoop, allocator) = workerGroup.next()
                 // One-time registration with the worker's Selector.
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
-                return NioChannel(client, clientKey, workerLoop, allocator, remoteAddr, localAddr)
+                val transport = NioIoTransport(client, clientKey, workerLoop)
+                return NioPipelinedChannel(
+                    client, clientKey, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                )
             }
 
             suspendCancellableCoroutine<Unit> { cont ->

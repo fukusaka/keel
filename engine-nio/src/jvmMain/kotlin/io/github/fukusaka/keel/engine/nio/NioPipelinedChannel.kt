@@ -1,23 +1,37 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 
 /**
- * Pipeline channel for NIO-based I/O on JVM.
+ * Unified NIO channel supporting both Pipeline mode and Channel mode.
  *
- * Reads are driven by OP_READ callbacks from the [eventLoop]. Each callback
- * allocates a buffer, performs a [SocketChannel.read], and feeds the data
- * into the [pipeline] via [ChannelPipeline.notifyRead].
+ * **Pipeline mode** (push, zero-suspend): engine feeds data into the pipeline
+ * via [armRead] → [ChannelPipeline.notifyRead]. Handlers process data
+ * synchronously. Used by [NioEngine.bindPipeline].
  *
- * Same architecture as kqueue/epoll pipeline channels but using JVM NIO
- * (Selector + SelectionKey) instead of POSIX syscalls.
+ * **Channel mode** (pull, suspend): a [SuspendBridgeHandler] is installed
+ * at the end of the pipeline. App calls suspend [read]/[write]/[flush].
+ * Used by [NioEngine.bind] and [NioEngine.connect].
+ *
+ * ```
+ * Pipeline mode:  HEAD ↔ handlers ↔ TAIL
+ * Channel mode:   HEAD ↔ handlers ↔ SuspendBridgeHandler ↔ TAIL
+ *                                         ↑
+ *                                   App: read() / write() / flush()
+ * ```
  *
  * **Thread model**: all callbacks execute on the [eventLoop] thread.
  */
@@ -27,12 +41,109 @@ internal class NioPipelinedChannel(
     private val transport: NioIoTransport,
     private val eventLoop: NioEventLoop,
     override val allocator: BufferAllocator,
-    logger: Logger,
+    private val logger: Logger,
+    override val remoteAddress: SocketAddress? = null,
+    override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {
 
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isActive: Boolean get() = socketChannel.isOpen
+    override val isOpen: Boolean get() = socketChannel.isOpen
     override val isWritable: Boolean get() = true
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val supportsDeferredFlush: Boolean get() = true
+
+    /** ForkJoinPool work-stealing outperforms EventLoop fixed-partition for pipeline. */
+    @Suppress("InjectDispatcher") // Intentional: NIO pipeline runs on Dispatchers.Default (design.md §17)
+    override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+
+    // Lazily installed when Channel mode is first used (read/write/flush).
+    private var bridge: SuspendBridgeHandler? = null
+    private var readArmed = false
+
+    /**
+     * Installs [SuspendBridgeHandler] and arms the read loop if not already done.
+     * Called on first suspend read/write/flush.
+     */
+    private fun ensureBridge(): SuspendBridgeHandler {
+        bridge?.let { return it }
+        val handler = SuspendBridgeHandler()
+        pipeline.addLast("__suspend_bridge__", handler)
+        bridge = handler
+        if (!readArmed) {
+            readArmed = true
+            armRead()
+        }
+        return handler
+    }
+
+    // --- Channel mode: suspend API ---
+
+    /**
+     * Reads decrypted/decoded data via [SuspendBridgeHandler].
+     *
+     * On first call, installs [SuspendBridgeHandler] into the pipeline
+     * and starts the read loop ([armRead]). Suspends until data arrives
+     * from the pipeline's inbound path.
+     *
+     * @return number of bytes read, or -1 on EOF.
+     * @throws IllegalStateException if the channel is closed.
+     */
+    override suspend fun read(buf: IoBuf): Int {
+        check(socketChannel.isOpen) { "Channel is closed" }
+        return ensureBridge().read(buf)
+    }
+
+    /**
+     * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
+     *
+     * Delegates to [io.github.fukusaka.keel.pipeline.ChannelHandlerContext.propagateWrite]
+     * which traverses outbound handlers (e.g. TLS encrypt, HTTP encode) before
+     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport].
+     *
+     * @return number of bytes buffered (actual send happens on [flush]).
+     * @throws IllegalStateException if the channel is closed or output is shut down.
+     */
+    override suspend fun write(buf: IoBuf): Int {
+        check(socketChannel.isOpen) { "Channel is closed" }
+        check(!outputShutdown) { "Output already shut down" }
+        val n = buf.readableBytes
+        if (n == 0) return 0
+        ensureBridge().write(buf)
+        return n
+    }
+
+    /**
+     * Flushes buffered writes through the pipeline's outbound path.
+     *
+     * Delegates to [SuspendBridgeHandler.flush] → [NioIoTransport.flush].
+     * Fire-and-forget: if the send buffer is full, the transport registers
+     * OP_WRITE callback and retries asynchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
+     */
+    override suspend fun flush() {
+        check(socketChannel.isOpen) { "Channel is closed" }
+        ensureBridge().flush()
+    }
+
+    /** No-op. JVM SocketChannel has no close-completion callback. */
+    override suspend fun awaitClosed() {}
+
+    private var outputShutdown = false
+
+    /**
+     * Sends TCP FIN to the peer via [SocketChannel.shutdownOutput].
+     * Idempotent — safe to call multiple times.
+     */
+    override fun shutdownOutput() {
+        if (!outputShutdown && socketChannel.isOpen) {
+            outputShutdown = true
+            socketChannel.shutdownOutput()
+        }
+    }
+
+    // --- Pipeline mode: callback-driven read ---
 
     /** Registers OP_READ callback to start the read loop. Must be called on EventLoop thread. */
     fun armRead() {
@@ -70,14 +181,24 @@ internal class NioPipelinedChannel(
     }
 
     /**
-     * Closes this channel by delegating to [NioIoTransport.close].
-     * Releases pending write buffers and closes the socket channel. Idempotent.
+     * Closes this channel. Cancels the SelectionKey and delegates to
+     * [NioIoTransport.close] which releases pending buffers and closes
+     * the SocketChannel. Idempotent.
      */
     override fun close() {
-        transport.close()
+        if (socketChannel.isOpen) {
+            selectionKey.cancel()
+            transport.close()
+        }
     }
 
-    private companion object {
+    companion object {
         private const val READ_BUFFER_SIZE = 8192
+
+        /** Extracts [SocketAddress] from a Java NIO [InetSocketAddress]. */
+        internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
+            val inet = addr as? InetSocketAddress ?: return null
+            return SocketAddress(inet.address.hostAddress, inet.port)
+        }
     }
 }

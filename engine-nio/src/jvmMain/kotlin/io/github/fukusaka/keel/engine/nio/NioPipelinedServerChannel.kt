@@ -74,6 +74,13 @@ internal class NioPipelinedServerChannel(
         channel.armRead()
     }
 
+    /**
+     * Stops accepting and closes the ServerSocketChannel.
+     *
+     * Pending accept callbacks become no-ops (closed flag check).
+     * Does NOT close worker EventLoops or existing client channels —
+     * caller (typically [NioEngine.close]) is responsible. Idempotent.
+     */
     override fun close() {
         if (closed) return
         closed = true
