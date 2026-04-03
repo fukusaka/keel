@@ -1,0 +1,46 @@
+headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
+compilerOpts = -I/opt/homebrew/opt/openssl@3/include
+linkerOpts = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
+
+---
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+
+// Wrapper: create a TCP server socket, bind, listen, and return fd.
+// OpenSSL does not provide net_bind like Mbed TLS — use POSIX directly.
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+static int keel_openssl_create_server(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -2;
+    }
+    if (listen(fd, 1) < 0) {
+        close(fd);
+        return -3;
+    }
+    return fd;
+}
+
+// Wrapper: get human-readable error string from OpenSSL error queue.
+static const char* keel_openssl_err_string(void) {
+    return ERR_reason_error_string(ERR_get_error());
+}
