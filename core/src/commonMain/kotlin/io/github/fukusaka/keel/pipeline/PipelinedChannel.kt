@@ -30,11 +30,20 @@ interface PipelinedChannel : Channel {
     val isWritable: Boolean
 
     // --- Channel defaults for gradual migration ---
-    // Engines override these. Default implementations throw to catch
-    // unimplemented methods during migration.
+    // Engines must override lifecycle methods (close, shutdownOutput) and
+    // may override suspend I/O methods if Channel mode is supported.
+    // Default suspend I/O throws UnsupportedOperationException — this is
+    // a transitional measure (LSP violation) that will be resolved when
+    // all engines are migrated to PipelinedChannel.
 
     override val remoteAddress: SocketAddress? get() = null
     override val localAddress: SocketAddress? get() = null
+
+    /**
+     * Default: delegates to [isActive]. Engines should override if they
+     * distinguish "transport open" from "ready for I/O" (e.g. half-close:
+     * isOpen=true but isActive=false after shutdownOutput).
+     */
     override val isOpen: Boolean get() = isActive
 
     override suspend fun read(buf: IoBuf): Int {
@@ -56,6 +65,18 @@ interface PipelinedChannel : Channel {
     }
 
     override suspend fun awaitClosed() {}
+
+    /**
+     * Default no-op. Engine implementations MUST override to send TCP FIN.
+     * Empty default is a transitional measure during engine migration.
+     */
     override fun shutdownOutput() {}
+
+    /**
+     * Default no-op. Engine implementations MUST override to release
+     * transport resources (fd, buffers). Empty default is a transitional
+     * measure during engine migration — failure to override will cause
+     * resource leaks.
+     */
     override fun close() {}
 }

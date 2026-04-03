@@ -15,8 +15,8 @@ import kotlin.coroutines.resume
  *
  * **Inbound (push → pull)**:
  * - [onRead]: buffers incoming [IoBuf] in an internal queue
- * - [read]: suspends until data is available, then dequeues and copies
- * - [onInactive]: signals EOF so [read] returns -1
+ * - [read]: suspends until data is available, then dequeues and bulk-copies
+ * - [onInactive]: signals EOF, drains and releases queued buffers, so [read] returns -1
  *
  * **Outbound (direct propagation)**:
  * - [write]: delegates to [ChannelHandlerContext.propagateWrite]
@@ -33,8 +33,13 @@ import kotlin.coroutines.resume
  *            App → flush()    → propagateFlush → handlers → HEAD → IoTransport
  * ```
  *
- * **Thread safety**: all methods are called on the EventLoop thread.
- * The suspend continuation is resumed on the same thread via EventLoop dispatch.
+ * **Thread safety**: all methods — [onRead], [onInactive], [read], [write], [flush] —
+ * must be called on the same EventLoop thread. The handler is not thread-safe.
+ * The suspend continuation is resumed on the EventLoop thread via dispatch.
+ *
+ * **Single reader**: only one coroutine may call [read] at a time. Concurrent
+ * readers will overwrite the pending continuation, causing the earlier reader
+ * to hang indefinitely. This matches the Channel contract (single-threaded I/O).
  */
 class SuspendBridgeHandler : ChannelDuplexHandler {
 
@@ -52,7 +57,10 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
     override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
         if (msg is IoBuf) {
             readQueue.addLast(msg)
-            readCont?.let { cont ->
+            // Resume the single waiting reader, if any.
+            // Safe: onRead runs on EventLoop thread, same as read().
+            val cont = readCont
+            if (cont != null) {
                 readCont = null
                 cont.resume(Unit)
             }
@@ -65,7 +73,14 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
 
     override fun onInactive(ctx: ChannelHandlerContext) {
         eof = true
-        readCont?.let { cont ->
+        // Release all queued buffers that will never be consumed.
+        for (buf in readQueue) {
+            buf.release()
+        }
+        readQueue.clear()
+        // Resume the waiting reader so it returns -1 (EOF).
+        val cont = readCont
+        if (cont != null) {
             readCont = null
             cont.resume(Unit)
         }
@@ -75,7 +90,10 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
     // --- App-facing suspend API ---
 
     /**
-     * Suspends until inbound data is available, then copies into [buf].
+     * Suspends until inbound data is available, then bulk-copies into [buf].
+     *
+     * **Single reader only**: only one coroutine may be suspended in [read]
+     * at a time. Concurrent calls overwrite the pending continuation.
      *
      * @return number of bytes read, or -1 on EOF (peer closed / notifyInactive).
      */
@@ -91,10 +109,8 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
 
         val received = readQueue.removeFirst()
         val n = minOf(received.readableBytes, buf.writableBytes)
-        // Copy bytes from received into buf.
-        repeat(n) {
-            buf.writeByte(received.readByte())
-        }
+        // Bulk copy from received into buf.
+        received.copyTo(buf, n)
         if (received.readableBytes > 0) {
             // Partial consumption — put back for next read.
             readQueue.addFirst(received)
