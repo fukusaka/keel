@@ -118,7 +118,7 @@ internal class IoUringPipelinedChannel(
      * Cancels the multishot recv, releases pending write buffers,
      * and closes the socket fd. Idempotent.
      */
-    fun close() {
+    override fun close() {
         if (!closed) {
             closed = true
             if (multishotSlot >= 0) {

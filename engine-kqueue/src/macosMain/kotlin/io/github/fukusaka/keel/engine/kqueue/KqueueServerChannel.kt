@@ -25,7 +25,7 @@ import platform.posix.errno
  *   bossLoop: kevent() fires EVFILT_READ on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → KqueueChannel(clientFd, workerLoop, allocator)
+ *   → KqueuePipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
@@ -39,6 +39,7 @@ internal class KqueueServerChannel(
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServerChannel"),
 ) : ServerChannel {
 
     private var _active = true
@@ -52,6 +53,13 @@ internal class KqueueServerChannel(
      * Uses POSIX `accept()` in non-blocking mode. If no connection is
      * pending (EAGAIN), registers the server fd with the [KqueueEventLoop]
      * and suspends until readiness is reported.
+     *
+     * The accepted connection is assigned to the next worker EventLoop
+     * in round-robin order and returned as a [KqueuePipelinedChannel]
+     * supporting both Pipeline mode and Channel mode.
+     *
+     * @throws IllegalStateException if the server channel is already closed.
+     * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.
      */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
@@ -63,7 +71,10 @@ internal class KqueueServerChannel(
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
-                return KqueueChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+                val transport = KqueueIoTransport(clientFd, workerLoop)
+                return KqueuePipelinedChannel(
+                    clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                )
             }
 
             val err = errno
