@@ -61,9 +61,11 @@ class OpenSslEchoTest {
         EVP_PKEY_free(pkey)
         BIO_free(keyBio)
 
-        // --- Create server socket ---
-        val serverFd = keel_openssl_create_server(PORT)
+        // --- Create server socket (port 0 = OS assigns ephemeral port) ---
+        val serverFd = keel_openssl_create_server(0)
         check(serverFd >= 0) { "create_server failed: $serverFd" }
+        val port = keel_openssl_get_port(serverFd)
+        check(port > 0) { "failed to get assigned port" }
 
         // --- Start curl client in background ---
         val pid = platform.posix.fork()
@@ -72,7 +74,7 @@ class OpenSslEchoTest {
             platform.posix.execl(
                 "/usr/bin/curl", "curl",
                 "-k", "-s",
-                "https://localhost:$PORT/hello",
+                "https://localhost:$port/hello",
                 null,
             )
             platform.posix._exit(1)
@@ -123,8 +125,6 @@ class OpenSslEchoTest {
     }
 
     companion object {
-        private const val PORT = 14434
-
         private val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL

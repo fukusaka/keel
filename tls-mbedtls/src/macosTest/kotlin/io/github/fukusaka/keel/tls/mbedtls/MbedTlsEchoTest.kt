@@ -76,21 +76,22 @@ class MbedTlsEchoTest {
         ret = mbedtls_ssl_setup(ssl.ptr, conf.ptr)
         check(ret == 0) { "ssl_setup failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
 
-        // --- Bind server ---
+        // --- Bind server (port 0 = OS assigns ephemeral port) ---
         val listenFd = alloc<mbedtls_net_context>()
         mbedtls_net_init(listenFd.ptr)
-        ret = mbedtls_net_bind(listenFd.ptr, null, PORT, mbedtls.MBEDTLS_NET_PROTO_TCP)
+        ret = mbedtls_net_bind(listenFd.ptr, null, "0", mbedtls.MBEDTLS_NET_PROTO_TCP)
         check(ret == 0) { "net_bind failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
+        val port = keel_mbedtls_get_port(listenFd.ptr)
+        check(port > 0) { "failed to get assigned port" }
 
         // --- Start curl client in background ---
-        // curl sends an HTTP GET over TLS; server reads the request and echoes back.
         val pid = platform.posix.fork()
         if (pid == 0) {
-            platform.posix.usleep(300_000u) // Wait for server to accept
+            platform.posix.usleep(300_000u)
             platform.posix.execl(
                 "/usr/bin/curl", "curl",
-                "-k", "-s",  // skip cert verification, silent
-                "https://localhost:$PORT/hello",
+                "-k", "-s",
+                "https://localhost:$port/hello",
                 null,
             )
             platform.posix._exit(1)
@@ -143,8 +144,6 @@ class MbedTlsEchoTest {
     }
 
     companion object {
-        private const val PORT = "14433"
-
         // Self-signed certificate and key for testing (generated via openssl).
         // PEM must include trailing newline for mbedtls_x509_crt_parse.
         private val SERVER_CERT = """

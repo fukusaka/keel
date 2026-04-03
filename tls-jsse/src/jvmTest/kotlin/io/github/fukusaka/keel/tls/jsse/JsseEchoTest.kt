@@ -45,13 +45,14 @@ class JsseEchoTest {
         sslContext.init(kmf.keyManagers, tmf.trustManagers, null)
 
         // --- Create server socket ---
-        val serverSocket = sslContext.serverSocketFactory.createServerSocket(PORT)
+        val serverSocket = sslContext.serverSocketFactory.createServerSocket(0)
+        val port = serverSocket.localPort
 
         // --- curl client in background ---
         val clientThread = Thread {
             Thread.sleep(300)
             try {
-                ProcessBuilder("curl", "-k", "-s", "https://localhost:$PORT/hello")
+                ProcessBuilder("curl", "-k", "-s", "https://localhost:$port/hello")
                     .redirectErrorStream(true)
                     .start()
                     .waitFor()
@@ -111,9 +112,5 @@ class JsseEchoTest {
         val ks = KeyStore.getInstance("PKCS12")
         tmpFile.inputStream().use { ks.load(it, "changeit".toCharArray()) }
         return ks
-    }
-
-    companion object {
-        private const val PORT = 14436
     }
 }

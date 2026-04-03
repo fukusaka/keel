@@ -38,6 +38,13 @@ static int keel_awslc_create_server(int port) {
     return fd;
 }
 
+static int keel_awslc_get_port(int fd) {
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) return -1;
+    return ntohs(addr.sin_port);
+}
+
 static const char* keel_awslc_err_string(void) {
     return ERR_reason_error_string(ERR_get_error());
 }

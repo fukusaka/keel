@@ -38,9 +38,10 @@ class NodeTlsEchoTest {
                     }
                 }
 
-                server.listen(PORT) {
-                    // Start curl client after server is listening.
-                    val curl = childProcess.spawn("curl", js("[\"-k\", \"-s\", \"https://localhost:$PORT/hello\"]"))
+                server.listen(0) {
+                    // Start curl client after server is listening (port 0 = OS assigns).
+                    val port = server.address().port
+                    val curl = childProcess.spawn("curl", js("[\"-k\", \"-s\", \"https://localhost:\" + port + \"/hello\"]"))
                     curl.on("close") { _: dynamic ->
                         server.close {
                             resolve(Unit)
@@ -58,8 +59,6 @@ class NodeTlsEchoTest {
     }
 
     companion object {
-        private const val PORT = 14437
-
         private const val SERVER_CERT = """-----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDQwMzA0MjcxNloXDTI3MDQw

@@ -53,8 +53,10 @@ class AwsLcEchoTest {
         BIO_free(keyBio)
 
         // --- Server socket ---
-        val serverFd = keel_awslc_create_server(PORT)
+        val serverFd = keel_awslc_create_server(0)
         check(serverFd >= 0) { "create_server failed: $serverFd" }
+        val port = keel_awslc_get_port(serverFd)
+        check(port > 0) { "failed to get assigned port" }
 
         // --- curl client ---
         val pid = platform.posix.fork()
@@ -62,7 +64,7 @@ class AwsLcEchoTest {
             platform.posix.usleep(300_000u)
             platform.posix.execl(
                 "/usr/bin/curl", "curl", "-k", "-s",
-                "https://localhost:$PORT/hello", null,
+                "https://localhost:$port/hello", null,
             )
             platform.posix._exit(1)
         }
@@ -108,8 +110,6 @@ class AwsLcEchoTest {
     }
 
     companion object {
-        private const val PORT = 14435
-
         private val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
