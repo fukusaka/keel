@@ -88,7 +88,7 @@ internal class NwPipelinedChannel(
      * Cancels the NWConnection and releases pending write buffers.
      * Does NOT release the read buffer — the read callback handles it. Idempotent.
      */
-    fun close() {
+    override fun close() {
         if (closed) return
         closed = true
         transport.close()

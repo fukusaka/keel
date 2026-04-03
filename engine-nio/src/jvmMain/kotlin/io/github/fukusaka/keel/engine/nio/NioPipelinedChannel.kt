@@ -73,7 +73,7 @@ internal class NioPipelinedChannel(
      * Closes this channel by delegating to [NioIoTransport.close].
      * Releases pending write buffers and closes the socket channel. Idempotent.
      */
-    fun close() {
+    override fun close() {
         transport.close()
     }
 

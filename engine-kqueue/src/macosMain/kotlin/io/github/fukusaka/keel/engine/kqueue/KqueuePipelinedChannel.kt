@@ -105,7 +105,7 @@ internal class KqueuePipelinedChannel(
      * Does NOT unregister pending EVFILT_READ callbacks — the closed flag
      * prevents further processing if the callback fires. Idempotent.
      */
-    fun close() {
+    override fun close() {
         if (closed) return
         closed = true
         transport.close()

@@ -83,7 +83,7 @@ internal class EpollPipelinedChannel(
      * Closes this channel by delegating to [EpollIoTransport.close].
      * Releases pending write buffers and closes the socket fd. Idempotent.
      */
-    fun close() {
+    override fun close() {
         if (closed) return
         closed = true
         transport.close()
