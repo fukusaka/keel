@@ -58,6 +58,15 @@ class NioEngine(
     private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker", eventLoopLogger, config.allocator)
     private var closed = false
 
+    /**
+     * Binds a suspend-based server on [host]:[port].
+     *
+     * Opens a [ServerSocketChannel] in non-blocking mode, registers it with
+     * the boss EventLoop's Selector, and returns a [NioServerChannel] whose
+     * [accept][NioServerChannel.accept] returns [NioPipelinedChannel] instances.
+     *
+     * @throws IllegalStateException if the engine is closed.
+     */
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
@@ -176,6 +185,12 @@ class NioEngine(
         return serverPipeline
     }
 
+    /**
+     * Closes the engine, stopping both boss and worker EventLoops.
+     *
+     * Does NOT close existing channels — caller is responsible for closing
+     * active connections before shutting down the engine. Idempotent.
+     */
     override fun close() {
         if (!closed) {
             closed = true
