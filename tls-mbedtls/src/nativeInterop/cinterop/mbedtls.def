@@ -1,0 +1,37 @@
+headers = mbedtls/ssl.h mbedtls/x509_crt.h mbedtls/pk.h mbedtls/error.h \
+          mbedtls/net_sockets.h mbedtls/debug.h psa/crypto.h
+compilerOpts = -I/opt/homebrew/include
+linkerOpts = -L/opt/homebrew/lib -lmbedtls -lmbedx509 -lmbedcrypto
+
+---
+
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/error.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/debug.h>
+#include <psa/crypto.h>
+#include <mbedtls/psa_util.h>
+
+// Wrapper: mbedtls_ssl_conf_rng expects a function pointer that Kotlin/Native
+// can't easily provide for mbedtls_psa_get_random (may be a macro or inline).
+static int keel_mbedtls_rng(void *ctx, unsigned char *buf, size_t len) {
+    (void)ctx;
+    return mbedtls_psa_get_random(MBEDTLS_PSA_RANDOM_STATE, buf, len);
+}
+
+// Error string helper (mbedtls_strerror writes to a caller-provided buffer).
+static char keel_mbedtls_err_buf[256];
+static const char* keel_mbedtls_strerror(int ret) {
+    mbedtls_strerror(ret, keel_mbedtls_err_buf, sizeof(keel_mbedtls_err_buf));
+    return keel_mbedtls_err_buf;
+}
+
+// Wrapper: set BIO callbacks for mbedtls_net_context (blocking I/O).
+// mbedtls_net_send/recv are not directly usable as CFunction pointers from Kotlin.
+static void keel_mbedtls_ssl_set_bio_net(mbedtls_ssl_context *ssl,
+                                          mbedtls_net_context *ctx) {
+    mbedtls_ssl_set_bio(ssl, ctx,
+                        mbedtls_net_send, mbedtls_net_recv, NULL);
+}
