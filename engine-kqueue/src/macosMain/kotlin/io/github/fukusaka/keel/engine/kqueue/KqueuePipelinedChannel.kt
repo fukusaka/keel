@@ -90,8 +90,12 @@ internal class KqueuePipelinedChannel(
      * from the pipeline's inbound path.
      *
      * @return number of bytes read, or -1 on EOF.
+     * @throws IllegalStateException if the channel is closed.
      */
-    override suspend fun read(buf: IoBuf): Int = ensureBridge().read(buf)
+    override suspend fun read(buf: IoBuf): Int {
+        check(!closed) { "Channel is closed" }
+        return ensureBridge().read(buf)
+    }
 
     /**
      * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
@@ -101,8 +105,10 @@ internal class KqueuePipelinedChannel(
      * [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport].
      *
      * @return number of bytes buffered (actual send happens on [flush]).
+     * @throws IllegalStateException if the channel is closed.
      */
     override suspend fun write(buf: IoBuf): Int {
+        check(!closed) { "Channel is closed" }
         val n = buf.readableBytes
         if (n == 0) return 0
         ensureBridge().write(buf)
@@ -115,8 +121,11 @@ internal class KqueuePipelinedChannel(
      * Delegates to [ChannelHandlerContext.propagateFlush] → [KqueueIoTransport.flush].
      * Fire-and-forget: if EAGAIN, the transport registers EVFILT_WRITE callback
      * and retries asynchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
      */
     override suspend fun flush() {
+        check(!closed) { "Channel is closed" }
         ensureBridge().flush()
     }
 
