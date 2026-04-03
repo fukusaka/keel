@@ -67,6 +67,15 @@ class KqueueEngine(
         workerGroup.start()
     }
 
+    /**
+     * Binds a TCP server on [host]:[port] and returns a [ServerChannel].
+     *
+     * Creates a server socket, registers it with the boss EventLoop's kqueue,
+     * and returns a [KqueueServerChannel] whose [accept][ServerChannel.accept]
+     * distributes connections to worker EventLoops in round-robin.
+     *
+     * @throws IllegalStateException if the engine is already closed.
+     */
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
@@ -106,6 +115,9 @@ class KqueueEngine(
      * After connection, `getsockopt(SO_ERROR)` verifies success.
      * The connected channel is assigned to the next worker EventLoop
      * in round-robin order.
+     *
+     * @throws IllegalStateException if the engine is already closed.
+     * @throws IllegalStateException if connect fails (SO_ERROR non-zero).
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
@@ -184,6 +196,12 @@ class KqueueEngine(
         return serverChannel
     }
 
+    /**
+     * Stops the boss EventLoop and all worker EventLoops, then releases resources.
+     *
+     * Pending registrations on the boss/worker loops are abandoned (continuations
+     * are not resumed). Idempotent — safe to call multiple times.
+     */
     override fun close() {
         if (!closed) {
             closed = true

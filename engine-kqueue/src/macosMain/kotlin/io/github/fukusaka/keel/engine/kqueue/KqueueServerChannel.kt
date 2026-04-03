@@ -53,6 +53,13 @@ internal class KqueueServerChannel(
      * Uses POSIX `accept()` in non-blocking mode. If no connection is
      * pending (EAGAIN), registers the server fd with the [KqueueEventLoop]
      * and suspends until readiness is reported.
+     *
+     * The accepted connection is assigned to the next worker EventLoop
+     * in round-robin order and returned as a [KqueuePipelinedChannel]
+     * supporting both Pipeline mode and Channel mode.
+     *
+     * @throws IllegalStateException if the server channel is already closed.
+     * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.
      */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }

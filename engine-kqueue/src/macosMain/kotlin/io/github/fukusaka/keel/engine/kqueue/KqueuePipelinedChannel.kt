@@ -79,9 +79,29 @@ internal class KqueuePipelinedChannel(
     }
 
     // --- Channel mode: suspend API ---
+    // These methods lazily install SuspendBridgeHandler on first use.
+    // Pipeline mode never calls these — handler chain processes data directly.
 
+    /**
+     * Reads decrypted/decoded data via [SuspendBridgeHandler].
+     *
+     * On first call, installs [SuspendBridgeHandler] into the pipeline
+     * and starts the read loop ([armRead]). Suspends until data arrives
+     * from the pipeline's inbound path.
+     *
+     * @return number of bytes read, or -1 on EOF.
+     */
     override suspend fun read(buf: IoBuf): Int = ensureBridge().read(buf)
 
+    /**
+     * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
+     *
+     * Delegates to [ChannelHandlerContext.propagateWrite] which traverses
+     * outbound handlers (e.g. TLS encrypt, HTTP encode) before reaching
+     * [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport].
+     *
+     * @return number of bytes buffered (actual send happens on [flush]).
+     */
     override suspend fun write(buf: IoBuf): Int {
         val n = buf.readableBytes
         if (n == 0) return 0
@@ -89,14 +109,28 @@ internal class KqueuePipelinedChannel(
         return n
     }
 
+    /**
+     * Flushes buffered writes through the pipeline's outbound path.
+     *
+     * Delegates to [ChannelHandlerContext.propagateFlush] → [KqueueIoTransport.flush].
+     * Fire-and-forget: if EAGAIN, the transport registers EVFILT_WRITE callback
+     * and retries asynchronously.
+     */
     override suspend fun flush() {
         ensureBridge().flush()
     }
 
+    /** No-op. EOF is detected via [read] returning -1. */
     override suspend fun awaitClosed() {}
 
     private var outputShutdown = false
 
+    /**
+     * Sends TCP FIN to the peer via POSIX `shutdown(fd, SHUT_WR)`.
+     *
+     * The read side remains open so the peer's remaining data can be consumed.
+     * Idempotent — safe to call multiple times.
+     */
     override fun shutdownOutput() {
         if (!outputShutdown && !closed) {
             outputShutdown = true
