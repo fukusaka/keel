@@ -91,7 +91,10 @@ internal class KqueuePipelinedChannel(
      *
      * @return number of bytes read, or -1 on EOF.
      */
-    override suspend fun read(buf: IoBuf): Int = ensureBridge().read(buf)
+    override suspend fun read(buf: IoBuf): Int {
+        check(!closed) { "Channel is closed" }
+        return ensureBridge().read(buf)
+    }
 
     /**
      * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
@@ -103,6 +106,7 @@ internal class KqueuePipelinedChannel(
      * @return number of bytes buffered (actual send happens on [flush]).
      */
     override suspend fun write(buf: IoBuf): Int {
+        check(!closed) { "Channel is closed" }
         val n = buf.readableBytes
         if (n == 0) return 0
         ensureBridge().write(buf)
@@ -117,6 +121,7 @@ internal class KqueuePipelinedChannel(
      * and retries asynchronously.
      */
     override suspend fun flush() {
+        check(!closed) { "Channel is closed" }
         ensureBridge().flush()
     }
 
