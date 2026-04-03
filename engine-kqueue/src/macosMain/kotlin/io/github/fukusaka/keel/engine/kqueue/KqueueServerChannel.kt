@@ -25,7 +25,7 @@ import platform.posix.errno
  *   bossLoop: kevent() fires EVFILT_READ on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → KqueueChannel(clientFd, workerLoop, allocator)
+ *   → KqueuePipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).

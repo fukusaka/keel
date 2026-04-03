@@ -164,7 +164,7 @@ internal class KqueuePipelinedChannel(
     }
 
     private companion object {
-        /** Read buffer size. Matches KqueueChannel's default (8 KiB). */
+        /** Default read buffer size (8 KiB). */
         private const val READ_BUFFER_SIZE = 8192
     }
 }

@@ -92,7 +92,7 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
         val received = readQueue.removeFirst()
         val n = minOf(received.readableBytes, buf.writableBytes)
         // Copy bytes from received into buf.
-        for (i in 0 until n) {
+        repeat(n) {
             buf.writeByte(received.readByte())
         }
         if (received.readableBytes > 0) {
