@@ -14,25 +14,38 @@ linkerOpts = -L/opt/homebrew/lib -lmbedtls -lmbedx509 -lmbedcrypto
 #include <mbedtls/debug.h>
 #include <psa/crypto.h>
 #include <mbedtls/psa_util.h>
+#include <string.h>
 
-// Wrapper: mbedtls_ssl_conf_rng expects a function pointer that Kotlin/Native
-// can't easily provide for mbedtls_psa_get_random (may be a macro or inline).
+// ============================================================
+// PSA Crypto RNG wrapper
+// ============================================================
+
+// mbedtls_ssl_conf_rng expects a function pointer. mbedtls_psa_get_random
+// may be a macro or inline — wrap it so Kotlin/Native can pass it.
 static int keel_mbedtls_rng(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
     return mbedtls_psa_get_random(MBEDTLS_PSA_RANDOM_STATE, buf, len);
 }
 
-// Error string helper (mbedtls_strerror writes to a caller-provided buffer).
+// ============================================================
+// Error string helper
+// ============================================================
+
 static char keel_mbedtls_err_buf[256];
 static const char* keel_mbedtls_strerror(int ret) {
     mbedtls_strerror(ret, keel_mbedtls_err_buf, sizeof(keel_mbedtls_err_buf));
     return keel_mbedtls_err_buf;
 }
 
-// Wrapper: get the assigned port from a bound mbedtls_net_context.
-// mbedtls_net_context.fd is MBEDTLS_PRIVATE — not accessible from Kotlin.
+// ============================================================
+// Net context helpers (echo prototype — kept for MbedTlsEchoTest)
+// ============================================================
+
 #include <sys/socket.h>
 #include <netinet/in.h>
+
+// Get the assigned port from a bound mbedtls_net_context.
+// mbedtls_net_context.fd is MBEDTLS_PRIVATE — not accessible from Kotlin.
 static int keel_mbedtls_get_port(mbedtls_net_context *ctx) {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -40,10 +53,62 @@ static int keel_mbedtls_get_port(mbedtls_net_context *ctx) {
     return ntohs(addr.sin_port);
 }
 
-// Wrapper: set BIO callbacks for mbedtls_net_context (blocking I/O).
+// Set BIO callbacks for mbedtls_net_context (blocking I/O).
 // mbedtls_net_send/recv are not directly usable as CFunction pointers from Kotlin.
 static void keel_mbedtls_ssl_set_bio_net(mbedtls_ssl_context *ssl,
                                           mbedtls_net_context *ctx) {
     mbedtls_ssl_set_bio(ssl, ctx,
                         mbedtls_net_send, mbedtls_net_recv, NULL);
+}
+
+// ============================================================
+// Pointer-based BIO adapter for TlsCodec protect/unprotect
+// ============================================================
+
+// BIO context: holds pointers into caller-owned IoBuf memory.
+// Pointers are valid ONLY during a single protect/unprotect call.
+typedef struct {
+    // recv side: input IoBuf (ciphertext for unprotect)
+    const unsigned char* recv_ptr;
+    size_t recv_remaining;
+
+    // send side: output IoBuf (ciphertext for protect, handshake for unprotect)
+    unsigned char* send_ptr;
+    size_t send_capacity;
+    size_t send_written;
+} keel_mbedtls_bio_ctx;
+
+// BIO recv callback: reads from recv_ptr (caller's IoBuf).
+// Returns MBEDTLS_ERR_SSL_WANT_READ when recv buffer is exhausted.
+static int keel_mbedtls_bio_recv(void *ctx, unsigned char *buf, size_t len) {
+    keel_mbedtls_bio_ctx *bio = (keel_mbedtls_bio_ctx *)ctx;
+    if (bio->recv_remaining == 0) {
+        return MBEDTLS_ERR_SSL_WANT_READ;
+    }
+    size_t n = len < bio->recv_remaining ? len : bio->recv_remaining;
+    memcpy(buf, bio->recv_ptr, n);
+    bio->recv_ptr += n;
+    bio->recv_remaining -= n;
+    return (int)n;
+}
+
+// BIO send callback: writes to send_ptr (caller's IoBuf).
+// Returns MBEDTLS_ERR_SSL_WANT_WRITE when send buffer is full.
+static int keel_mbedtls_bio_send(void *ctx, const unsigned char *buf, size_t len) {
+    keel_mbedtls_bio_ctx *bio = (keel_mbedtls_bio_ctx *)ctx;
+    size_t avail = bio->send_capacity - bio->send_written;
+    if (avail == 0) {
+        return MBEDTLS_ERR_SSL_WANT_WRITE;
+    }
+    size_t n = len < avail ? len : avail;
+    memcpy(bio->send_ptr + bio->send_written, buf, n);
+    bio->send_written += n;
+    return (int)n;
+}
+
+// Register pointer-based BIO callbacks on an SSL context.
+static void keel_mbedtls_bio_setup(mbedtls_ssl_context *ssl,
+                                    keel_mbedtls_bio_ctx *ctx) {
+    mbedtls_ssl_set_bio(ssl, ctx,
+                        keel_mbedtls_bio_send, keel_mbedtls_bio_recv, NULL);
 }
