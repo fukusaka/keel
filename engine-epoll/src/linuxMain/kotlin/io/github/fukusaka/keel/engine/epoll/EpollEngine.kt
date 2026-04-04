@@ -83,7 +83,7 @@ class EpollEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr)
+        return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**
@@ -132,7 +132,8 @@ class EpollEngine(
         val remoteAddr = SocketUtils.getRemoteAddress(fd)
         val localAddr = SocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return EpollChannel(fd, workerLoop, allocator, remoteAddr, localAddr)
+        val transport = EpollIoTransport(fd, workerLoop)
+        return EpollPipelinedChannel(fd, transport, workerLoop, allocator, logger, remoteAddr, localAddr)
     }
 
     /**

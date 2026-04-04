@@ -22,11 +22,13 @@ import kotlinx.coroutines.Runnable
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.linux.EPOLL_CTL_ADD
+import platform.linux.EPOLL_CTL_MOD
 import platform.linux.epoll_create1
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import platform.linux.epoll_wait
 import platform.posix.EAGAIN
+import platform.posix.EEXIST
 import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.errno
@@ -114,6 +116,9 @@ internal class EpollEventLoop(
     private val registrations = mutableMapOf<Long, Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
     private val callbackRegistrations = mutableMapOf<Long, () -> Unit>()
+    // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
+    // pairs), so ADD/MOD must specify all active interest bits at once.
+    private val fdEvents = mutableMapOf<Int, Int>()
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
@@ -227,12 +232,7 @@ internal class EpollEventLoop(
             registrations[key] = Registration(fd, interest, cont)
         }
 
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = events.toUInt()
-            ev.data.fd = fd
-            epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
-        }
+        addOrModifyEpoll(fd, events)
         wakeup()
     }
 
@@ -264,12 +264,7 @@ internal class EpollEventLoop(
             callbackRegistrations[key] = callback
         }
 
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = events.toUInt()
-            ev.data.fd = fd
-            epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
-        }
+        addOrModifyEpoll(fd, events)
         wakeup()
     }
 
@@ -342,20 +337,13 @@ internal class EpollEventLoop(
                         continue
                     }
 
-                    // Determine interest from epoll event flags.
-                    // EPOLLIN maps to READ, EPOLLOUT maps to WRITE.
-                    val interest = if (ev.events.toInt() and EPOLLIN != 0) {
-                        Interest.READ
-                    } else {
-                        Interest.WRITE
+                    // Process both EPOLLIN and EPOLLOUT if both are set.
+                    val evFlags = ev.events.toInt()
+                    if (evFlags and EPOLLIN != 0) {
+                        dispatchReady(fd, Interest.READ)
                     }
-                    val key = registrationKey(fd, interest)
-                    val cb = withRegLock { callbackRegistrations.remove(key) }
-                    if (cb != null) {
-                        cb()
-                    } else {
-                        val reg = withRegLock { registrations.remove(key) }
-                        reg?.continuation?.resume(Unit)
+                    if (evFlags and EPOLLOUT != 0) {
+                        dispatchReady(fd, Interest.WRITE)
                     }
                 }
             }
@@ -420,6 +408,94 @@ internal class EpollEventLoop(
     }
 
     // --- Helpers ---
+
+    /**
+     * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
+     *
+     * Checks callback registrations first (pipeline path), then suspend
+     * registrations (Channel path). Does NOT call epoll_ctl to remove the
+     * interest — level-triggered epoll will re-fire, but the handler's
+     * [armRead]/[registerCallback] re-registers the callback before the next
+     * epoll_wait, so no spurious wakeup occurs.
+     *
+     * For suspend registrations (Channel path), the interest is removed from
+     * [fdEvents] and epoll is updated via MOD, because the coroutine may not
+     * immediately re-register (unlike Pipeline's synchronous armRead cycle).
+     */
+    private fun dispatchReady(fd: Int, interest: Interest) {
+        val key = registrationKey(fd, interest)
+        val cb = withRegLock { callbackRegistrations.remove(key) }
+        if (cb != null) {
+            // Pipeline path: callback re-arms synchronously (armRead inside
+            // handler chain), so fdEvents stays as-is — no epoll_ctl needed.
+            cb()
+        } else {
+            val reg = withRegLock { registrations.remove(key) }
+            if (reg != null) {
+                // Suspend path: coroutine resumes asynchronously, so remove
+                // the interest from epoll to prevent busy-loop re-fire.
+                removeInterestFromEpoll(fd, interest)
+                reg.continuation.resume(Unit)
+            }
+        }
+    }
+
+    /**
+     * Adds [newEvents] (EPOLLIN or EPOLLOUT) to the epoll registration for [fd].
+     *
+     * Uses EPOLL_CTL_ADD for the first registration. If the fd is already
+     * registered (EEXIST), falls back to EPOLL_CTL_MOD with the combined events.
+     * Skips epoll_ctl entirely when the requested events are already active
+     * (e.g., re-arming READ after a Pipeline callback — zero syscall overhead).
+     */
+    private fun addOrModifyEpoll(fd: Int, newEvents: Int) {
+        val (combined, changed) = withRegLock {
+            val current = fdEvents[fd] ?: 0
+            val merged = current or newEvents
+            fdEvents[fd] = merged
+            merged to (merged != current)
+        }
+        if (!changed) return // same interest already registered — skip epoll_ctl
+        memScoped {
+            val ev = alloc<epoll_event>()
+            ev.events = combined.toUInt()
+            ev.data.fd = fd
+            val rc = epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
+            if (rc < 0 && errno == EEXIST) {
+                epoll_ctl(epFd, EPOLL_CTL_MOD, fd, ev.ptr)
+            }
+        }
+    }
+
+    /**
+     * Removes a specific interest (EPOLLIN or EPOLLOUT) from the epoll registration for [fd].
+     *
+     * Called only from the suspend path in [dispatchReady] to prevent level-triggered
+     * busy-loop when the coroutine has not yet re-registered. Pipeline callbacks
+     * skip this because they re-arm synchronously before returning to epoll_wait.
+     */
+    private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
+        val removeBit = when (interest) {
+            Interest.READ -> EPOLLIN
+            Interest.WRITE -> EPOLLOUT
+        }
+        val remaining = withRegLock {
+            val current = fdEvents[fd] ?: 0
+            val updated = current and removeBit.inv()
+            if (updated == 0) {
+                fdEvents.remove(fd)
+            } else {
+                fdEvents[fd] = updated
+            }
+            updated
+        }
+        memScoped {
+            val ev = alloc<epoll_event>()
+            ev.events = remaining.toUInt()
+            ev.data.fd = fd
+            epoll_ctl(epFd, EPOLL_CTL_MOD, fd, ev.ptr)
+        }
+    }
 
     /**
      * Encodes fd + interest into a single Long key.
