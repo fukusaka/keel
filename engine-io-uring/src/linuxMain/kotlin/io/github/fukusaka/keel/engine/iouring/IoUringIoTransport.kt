@@ -289,21 +289,65 @@ internal class IoUringIoTransport(
                 for (pw in writes) pw.buf.release()
                 onAsyncFlushDone()
             } else {
-                // Partial writev: release fully-written, retry remainder.
+                // Partial writev: release fully-written, retry remainder sequentially.
                 var consumed = 0
-                for (pw in writes) {
+                var splitIndex = -1
+                for ((i, pw) in writes.withIndex()) {
                     if (consumed + pw.length <= writtenBytes) {
                         consumed += pw.length
                         pw.buf.release()
                     } else {
-                        val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                        submitAsyncSendSequential(
-                            pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten,
-                        ) { onAsyncFlushDone() }
-                        consumed += pw.length
+                        splitIndex = i
+                        break
                     }
                 }
+                if (splitIndex < 0) {
+                    // All buffers fully written (shouldn't happen, but safe)
+                    onAsyncFlushDone()
+                } else {
+                    // Send remaining buffers sequentially via SEND chain.
+                    submitAsyncWritevRemainder(writes, splitIndex, writtenBytes - consumed)
+                }
             }
+        }
+    }
+
+    /**
+     * Sends remaining buffers from a partial writev sequentially.
+     *
+     * The split buffer (at [splitIndex]) may be partially written;
+     * [alreadySent] bytes are skipped. Subsequent buffers are sent in full.
+     * [onAsyncFlushDone] is called after the last buffer completes.
+     */
+    private fun submitAsyncWritevRemainder(
+        writes: List<PendingWrite>, splitIndex: Int, alreadySent: Int,
+    ) {
+        val pw = writes[splitIndex]
+        val offset = pw.offset + alreadySent.coerceAtLeast(0)
+        val length = pw.length - alreadySent.coerceAtLeast(0)
+        submitAsyncSendSequential(pw.buf, offset, length) {
+            // Send remaining buffers after the split point.
+            val nextIndex = splitIndex + 1
+            if (nextIndex >= writes.size) {
+                onAsyncFlushDone()
+            } else {
+                submitAsyncWritevRemainderFrom(writes, nextIndex)
+            }
+        }
+    }
+
+    /**
+     * Sends buffers from [startIndex] to end sequentially.
+     * Each buffer starts after the previous completes.
+     */
+    private fun submitAsyncWritevRemainderFrom(writes: List<PendingWrite>, startIndex: Int) {
+        if (startIndex >= writes.size) {
+            onAsyncFlushDone()
+            return
+        }
+        val pw = writes[startIndex]
+        submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
+            submitAsyncWritevRemainderFrom(writes, startIndex + 1)
         }
     }
 
