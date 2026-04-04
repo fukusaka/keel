@@ -88,6 +88,7 @@ internal class EpollPipelinedChannel(
      * from the pipeline's inbound path.
      *
      * @return number of bytes read, or -1 on EOF.
+     * @throws IllegalStateException if the channel is closed.
      */
     override suspend fun read(buf: IoBuf): Int {
         check(!closed) { "Channel is closed" }
@@ -97,10 +98,16 @@ internal class EpollPipelinedChannel(
     /**
      * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
      *
+     * Delegates to [io.github.fukusaka.keel.pipeline.ChannelHandlerContext.propagateWrite]
+     * which traverses outbound handlers before reaching
+     * [io.github.fukusaka.keel.pipeline.HeadHandler] → [EpollIoTransport].
+     *
      * @return number of bytes buffered (actual send happens on [flush]).
+     * @throws IllegalStateException if the channel is closed or output is shut down.
      */
     override suspend fun write(buf: IoBuf): Int {
         check(!closed) { "Channel is closed" }
+        check(!outputShutdown) { "Output already shut down" }
         val n = buf.readableBytes
         if (n == 0) return 0
         ensureBridge().write(buf)
@@ -111,6 +118,10 @@ internal class EpollPipelinedChannel(
      * Flushes buffered writes through the pipeline's outbound path.
      *
      * Delegates to [SuspendBridgeHandler.flush] → [EpollIoTransport.flush].
+     * Fire-and-forget: if EAGAIN, the transport registers EPOLLOUT callback
+     * and retries asynchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
      */
     override suspend fun flush() {
         check(!closed) { "Channel is closed" }

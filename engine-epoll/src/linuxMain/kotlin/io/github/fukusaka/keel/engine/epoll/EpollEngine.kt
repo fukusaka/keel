@@ -66,6 +66,15 @@ class EpollEngine(
         workerGroup.start()
     }
 
+    /**
+     * Binds a suspend-based server on [host]:[port].
+     *
+     * Creates a server socket, registers it with the boss EventLoop's epoll,
+     * and returns an [EpollServerChannel] whose [accept][EpollServerChannel.accept]
+     * returns [EpollPipelinedChannel] instances.
+     *
+     * @throws IllegalStateException if the engine is closed.
+     */
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
@@ -168,6 +177,12 @@ class EpollEngine(
         return serverChannel
     }
 
+    /**
+     * Closes the engine, stopping both boss and worker EventLoops.
+     *
+     * Does NOT close existing channels — caller is responsible for closing
+     * active connections before shutting down the engine. Idempotent.
+     */
     override fun close() {
         if (!closed) {
             closed = true
