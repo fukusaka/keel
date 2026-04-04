@@ -39,8 +39,8 @@ enum class IoMode {
      * 2. Buffer release notification (kernel done with user buffer)
      *
      * The buffer MUST NOT be freed until the second CQE arrives.
-     * [submitSendZc][IoUringEventLoop] handles this by suspending
-     * until the notification CQE completes.
+     * [submitSendZcCallback][IoUringEventLoop] handles this via callback,
+     * invoking the completion handler after the notification CQE arrives.
      *
      * **Limitations in the current keel architecture**:
      * - Small payloads (< 64KB): the two-CQE round-trip overhead and
