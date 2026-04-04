@@ -132,7 +132,8 @@ internal class IoUringPipelinedChannel(
 
     /**
      * Installs [SuspendBridgeHandler] and arms the multishot recv if not already done.
-     * Called on first suspend read/write/flush.
+     * Called on first suspend [read]. Write/flush bypass this to avoid arming
+     * a second multishot recv (see [write] KDoc for rationale).
      */
     private fun ensureBridge(): SuspendBridgeHandler {
         bridge?.let { return it }
