@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ULongVar
@@ -180,13 +181,35 @@ internal class KqueueIoTransport(
 
     // --- Async write readiness ---
 
+    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+
     private fun registerWriteCallback() {
         eventLoop.registerCallback(fd, KqueueEventLoop.Interest.WRITE) {
             // Retry flush when fd becomes writable.
             val done = flush()
             if (done) {
+                flushContinuation?.let { cont ->
+                    flushContinuation = null
+                    cont.resume(Unit)
+                }
                 onFlushComplete?.invoke()
             }
+        }
+    }
+
+    /**
+     * Suspends until all pending async flush operations complete.
+     *
+     * Returns immediately if no async flush is pending (pendingWrites is empty).
+     * Called from Channel mode's [KqueuePipelinedChannel.awaitFlushComplete].
+     *
+     * Must be called on the EventLoop thread (no synchronisation needed).
+     */
+    override suspend fun awaitPendingFlush() {
+        if (pendingWrites.isEmpty()) return
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            flushContinuation = cont
+            cont.invokeOnCancellation { flushContinuation = null }
         }
     }
 

@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
@@ -100,6 +101,7 @@ internal class IoUringIoTransport(
                 if (!flushSingleFireAndForget(pw)) {
                     // EAGAIN: pw is handled by submitAsyncSend.
                     // Submit remaining writes as async chain.
+                    asyncFlushPending = true
                     submitAsyncSendChain(i + 1)
                     return false
                 }
@@ -169,7 +171,7 @@ internal class IoUringIoTransport(
      */
     private fun submitAsyncSendChain(startIndex: Int) {
         if (startIndex >= pendingWrites.size) {
-            onFlushComplete?.invoke()
+            onAsyncFlushDone()
             return
         }
         val pw = pendingWrites[startIndex]
@@ -219,11 +221,45 @@ internal class IoUringIoTransport(
      */
     private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
         submitAsyncSendSequential(buf, offset, length) {
-            onFlushComplete?.invoke()
+            onAsyncFlushDone()
         }
     }
 
     override var onFlushComplete: (() -> Unit)? = null
+
+    // --- Await pending async flush (Channel mode) ---
+
+    private var asyncFlushPending = false
+    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+
+    /**
+     * Called when all async sends in a flush chain complete.
+     * Resumes the Channel mode continuation and invokes [onFlushComplete].
+     */
+    private fun onAsyncFlushDone() {
+        asyncFlushPending = false
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.resume(Unit)
+        }
+        onFlushComplete?.invoke()
+    }
+
+    /**
+     * Suspends until all pending async flush operations complete.
+     *
+     * Returns immediately if the last [flush] completed synchronously.
+     * Called from Channel mode's [IoUringPipelinedChannel.awaitFlushComplete].
+     *
+     * Must be called on the EventLoop thread (no synchronisation needed).
+     */
+    override suspend fun awaitPendingFlush() {
+        if (!asyncFlushPending) return
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            flushContinuation = cont
+            cont.invokeOnCancellation { flushContinuation = null }
+        }
+    }
 
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
