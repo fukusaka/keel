@@ -276,6 +276,20 @@ internal class EpollEventLoop(
         }
     }
 
+    /**
+     * Removes all tracking state for [fd] from [fdEvents].
+     *
+     * Called when a channel closes its fd. Prevents stale entries from
+     * accumulating if the OS recycles the fd number for a new socket.
+     * Does NOT call `epoll_ctl(DEL)` — closing the fd automatically
+     * removes it from epoll.
+     */
+    fun cleanupFd(fd: Int) {
+        withRegLock {
+            fdEvents.remove(fd)
+        }
+    }
+
     // --- Wakeup ---
 
     /**

@@ -189,6 +189,7 @@ internal class EpollPipelinedChannel(
     override fun close() {
         if (closed) return
         closed = true
+        eventLoop.cleanupFd(fd)
         transport.close()
     }
 

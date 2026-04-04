@@ -10,11 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
 - engine-epoll: unify `EpollChannel` into `EpollPipelinedChannel` — same Channel/Pipeline unification pattern
-- engine-epoll: fix `EpollEventLoop` fd registration to support concurrent READ + WRITE interests via `EPOLL_CTL_MOD` fallback
 
 ### Fixed
 
 - engine-kqueue: add `check(!closed)` guard to Channel mode `read()`/`write()`/`flush()` to prevent infinite suspend on closed channel
+- engine-epoll: fix `EpollEventLoop` fd registration to support concurrent READ + WRITE interests via `EPOLL_CTL_MOD` fallback
 
 ### Documentation
 
