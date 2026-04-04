@@ -26,6 +26,7 @@ include(
     ":engine-nwconnection",
     ":codec-http",
     ":codec-websocket",
+    ":tls",
     ":ktor-engine",
     ":detekt-rules",
 )
