@@ -18,8 +18,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class NettyEngineTest {
+
+    private val testTimeout = 10.seconds
+
+    private fun runTest(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) =
+        runBlocking { withTimeout(testTimeout, block) }
 
     // --- Helper ---
 
@@ -54,7 +60,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun bindReturnsActiveServerChannel() = runBlocking {
+    fun bindReturnsActiveServerChannel() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         assertTrue(server.isActive)
@@ -63,7 +69,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun serverChannelLocalAddress() = runBlocking {
+    fun serverChannelLocalAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         assertEquals("127.0.0.1", server.localAddress.host)
@@ -73,7 +79,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun serverChannelCloseStopsListening() = runBlocking {
+    fun serverChannelCloseStopsListening() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         server.close()
@@ -82,7 +88,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun channelLifecycleAfterClose() = runBlocking {
+    fun channelLifecycleAfterClose() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -104,7 +110,7 @@ class NettyEngineTest {
     // --- read/write ---
 
     @Test
-    fun echoRoundTrip() = runBlocking {
+    fun echoRoundTrip() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -132,7 +138,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun readReturnsMinusOneOnEof() = runBlocking {
+    fun readReturnsMinusOneOnEof() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -153,7 +159,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun writeAndFlush() = runBlocking {
+    fun writeAndFlush() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -181,7 +187,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun multipleWritesSingleFlush() = runBlocking {
+    fun multipleWritesSingleFlush() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -213,7 +219,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun readAdvancesIoBufWriterIndex() = runBlocking {
+    fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -237,7 +243,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runBlocking {
+    fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -265,7 +271,7 @@ class NettyEngineTest {
     // --- Half-close ---
 
     @Test
-    fun shutdownOutputSendsFin() = runBlocking {
+    fun shutdownOutputSendsFin() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -285,7 +291,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun readAfterShutdownOutputStillWorks() = runBlocking {
+    fun readAfterShutdownOutputStillWorks() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -313,7 +319,7 @@ class NettyEngineTest {
     // --- connect ---
 
     @Test
-    fun connectToListeningServer() = runBlocking {
+    fun connectToListeningServer() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -331,7 +337,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun connectRemoteAddress() = runBlocking {
+    fun connectRemoteAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -349,7 +355,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun connectLocalAddress() = runBlocking {
+    fun connectLocalAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -369,7 +375,7 @@ class NettyEngineTest {
     // --- asSuspendSource/asSuspendSink ---
 
     @Test
-    fun asSuspendSourceReadsData() = runBlocking {
+    fun asSuspendSourceReadsData() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -393,7 +399,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun asSuspendSinkWritesData() = runBlocking {
+    fun asSuspendSinkWritesData() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -418,7 +424,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
+    fun asSuspendSourceEofReturnsMinusOne() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -441,7 +447,7 @@ class NettyEngineTest {
     // --- Error ---
 
     @Test
-    fun readOnClosedChannelThrows() = runBlocking {
+    fun readOnClosedChannelThrows() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -460,7 +466,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun writeOnClosedChannelThrows() = runBlocking {
+    fun writeOnClosedChannelThrows() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -489,7 +495,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun `double close is idempotent`() = runBlocking {
+    fun `double close is idempotent`() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -506,7 +512,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun `write zero bytes returns zero`() = runBlocking {
+    fun `write zero bytes returns zero`() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -528,7 +534,7 @@ class NettyEngineTest {
     // --- Concurrent ---
 
     @Test
-    fun concurrentReadOnMultipleChannels() = runBlocking {
+    fun concurrentReadOnMultipleChannels() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -562,7 +568,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun concurrentAcceptMultipleClients() = runBlocking {
+    fun concurrentAcceptMultipleClients() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -589,7 +595,7 @@ class NettyEngineTest {
     // --- Close race ---
 
     @Test
-    fun closeChannelWhileReadIsSuspended() = runBlocking {
+    fun closeChannelWhileReadIsSuspended() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -623,7 +629,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun closeServerChannelWhileAcceptIsSuspended() = runBlocking {
+    fun closeServerChannelWhileAcceptIsSuspended() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
 
@@ -651,7 +657,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun clientDisconnectDuringRead() = runBlocking {
+    fun clientDisconnectDuringRead() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -687,7 +693,7 @@ class NettyEngineTest {
     // --- Cancellation ---
 
     @Test
-    fun cancelReadCoroutine() = runBlocking {
+    fun cancelReadCoroutine() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -726,7 +732,7 @@ class NettyEngineTest {
     // --- Resource leak detection ---
 
     @Test
-    fun `echo with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `echo with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
@@ -761,7 +767,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun `large payload with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `large payload with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
@@ -802,7 +808,7 @@ class NettyEngineTest {
     }
 
     @Test
-    fun `connect with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `connect with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)

@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlin.time.Duration.Companion.seconds
 import java.net.InetAddress
 import java.net.Socket
 import kotlin.test.Test
@@ -19,6 +20,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class NioEngineTest {
+
+    private val testTimeout = 10.seconds
+
+    private fun runTest(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) =
+        runBlocking { withTimeout(testTimeout, block) }
 
     // --- Helper: connect a raw Java client to a server port ---
 
@@ -53,7 +59,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun bindReturnsActiveServerChannel() = runBlocking {
+    fun bindReturnsActiveServerChannel() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         assertTrue(server.isActive)
@@ -62,7 +68,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun serverChannelLocalAddress() = runBlocking {
+    fun serverChannelLocalAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         assertEquals("127.0.0.1", server.localAddress.host)
@@ -72,7 +78,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun serverChannelCloseStopsListening() = runBlocking {
+    fun serverChannelCloseStopsListening() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         server.close()
@@ -81,7 +87,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun channelLifecycleAfterClose() = runBlocking {
+    fun channelLifecycleAfterClose() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -103,7 +109,7 @@ class NioEngineTest {
     // --- read/write ---
 
     @Test
-    fun echoRoundTrip() = runBlocking {
+    fun echoRoundTrip() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -131,7 +137,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun readReturnsMinusOneOnEof() = runBlocking {
+    fun readReturnsMinusOneOnEof() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -152,7 +158,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun writeAndFlush() = runBlocking {
+    fun writeAndFlush() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -180,7 +186,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun multipleWritesSingleFlush() = runBlocking {
+    fun multipleWritesSingleFlush() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -212,7 +218,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun readAdvancesIoBufWriterIndex() = runBlocking {
+    fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -236,7 +242,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runBlocking {
+    fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -264,7 +270,7 @@ class NioEngineTest {
     // --- Half-close ---
 
     @Test
-    fun shutdownOutputSendsFin() = runBlocking {
+    fun shutdownOutputSendsFin() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -285,7 +291,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun readAfterShutdownOutputStillWorks() = runBlocking {
+    fun readAfterShutdownOutputStillWorks() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -313,7 +319,7 @@ class NioEngineTest {
     // --- connect ---
 
     @Test
-    fun connectToListeningServer() = runBlocking {
+    fun connectToListeningServer() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -331,7 +337,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun connectRemoteAddress() = runBlocking {
+    fun connectRemoteAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -349,7 +355,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun connectLocalAddress() = runBlocking {
+    fun connectLocalAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -367,7 +373,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `connect and echo round trip`() = runBlocking {
+    fun `connect and echo round trip`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -403,7 +409,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `connect to refused port throws or succeeds`() = runBlocking {
+    fun `connect to refused port throws or succeeds`() = runTest {
         val engine = NioEngine()
         // Bind to get a port, then close the server so the port is refused.
         // On JVM, loopback connect may succeed if the OS hasn't fully
@@ -428,7 +434,7 @@ class NioEngineTest {
     // --- asSuspendSource/asSuspendSink ---
 
     @Test
-    fun asSuspendSourceReadsData() = runBlocking {
+    fun asSuspendSourceReadsData() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -452,7 +458,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun asSuspendSinkWritesData() = runBlocking {
+    fun asSuspendSinkWritesData() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -477,7 +483,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
+    fun asSuspendSourceEofReturnsMinusOne() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -500,7 +506,7 @@ class NioEngineTest {
     // --- Error ---
 
     @Test
-    fun readOnClosedChannelThrows() = runBlocking {
+    fun readOnClosedChannelThrows() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -519,7 +525,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun writeOnClosedChannelThrows() = runBlocking {
+    fun writeOnClosedChannelThrows() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -548,7 +554,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `double close is idempotent`() = runBlocking {
+    fun `double close is idempotent`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -565,7 +571,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `write zero bytes returns zero`() = runBlocking {
+    fun `write zero bytes returns zero`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = server.localAddress.port
@@ -587,7 +593,7 @@ class NioEngineTest {
     // --- Concurrent ---
 
     @Test
-    fun concurrentReadOnMultipleChannels() = runBlocking {
+    fun concurrentReadOnMultipleChannels() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -619,7 +625,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun concurrentAcceptMultipleClients() = runBlocking {
+    fun concurrentAcceptMultipleClients() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -644,7 +650,7 @@ class NioEngineTest {
     // --- Close race ---
 
     @Test
-    fun clientDisconnectDuringRead() = runBlocking {
+    fun clientDisconnectDuringRead() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -675,7 +681,7 @@ class NioEngineTest {
     // --- Cancellation ---
 
     @Test
-    fun cancelReadCoroutine() = runBlocking {
+    fun cancelReadCoroutine() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -705,7 +711,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `close ServerChannel cancels pending accept`() = runBlocking {
+    fun `close ServerChannel cancels pending accept`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
 
@@ -725,7 +731,7 @@ class NioEngineTest {
     // --- SelectionKey caching ---
 
     @Test
-    fun `multiple read-write cycles reuse SelectionKey`() = runBlocking {
+    fun `multiple read-write cycles reuse SelectionKey`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -761,7 +767,7 @@ class NioEngineTest {
     // --- Large payload (flush EAGAIN / OP_WRITE) ---
 
     @Test
-    fun `flush large payload completes without data loss`() = runBlocking {
+    fun `flush large payload completes without data loss`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -807,7 +813,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `flush multiple large buffers with gather write`() = runBlocking {
+    fun `flush multiple large buffers with gather write`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -856,7 +862,7 @@ class NioEngineTest {
     // --- Resource leak detection ---
 
     @Test
-    fun `echo with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `echo with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
@@ -891,7 +897,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `large payload with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `large payload with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
@@ -929,7 +935,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `connect with TrackingAllocator has no buffer leak`() = runBlocking {
+    fun `connect with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
