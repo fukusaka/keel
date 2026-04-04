@@ -34,12 +34,12 @@ import platform.posix.errno
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueueServerChannel(
+internal class KqueueServer(
     private val serverFd: Int,
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServerChannel"),
+    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServer"),
 ) : ServerChannel {
 
     private var _active = true

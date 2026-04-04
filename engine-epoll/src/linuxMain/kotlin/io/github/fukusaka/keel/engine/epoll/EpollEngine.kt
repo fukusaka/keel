@@ -36,7 +36,7 @@ import platform.posix.strerror
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → EpollServerChannel
+ *   |     +-- bind() → EpollServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -70,7 +70,7 @@ class EpollEngine(
      * Binds a suspend-based server on [host]:[port].
      *
      * Creates a server socket, registers it with the boss EventLoop's epoll,
-     * and returns an [EpollServerChannel] whose [accept][EpollServerChannel.accept]
+     * and returns an [EpollServer] whose [accept][EpollServer.accept]
      * returns [EpollPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
@@ -92,7 +92,7 @@ class EpollEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return EpollServerChannel(serverFd, bossLoop, workerGroup, localAddr, logger)
+        return EpollServer(serverFd, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**

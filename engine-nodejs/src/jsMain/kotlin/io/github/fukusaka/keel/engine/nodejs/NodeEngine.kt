@@ -24,7 +24,7 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * ```
  * NodeEngine
  *   |
- *   +-- bind() --> NodeServerChannel (wraps net.Server)
+ *   +-- bind() --> NodeServer (wraps net.Server)
  *   |                |
  *   |                +-- accept() --> NodeChannel (wraps net.Socket)
  *   |
@@ -52,7 +52,7 @@ class NodeEngine(
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = SocketAddress(host, assignedPort)
-                val serverChannel = NodeServerChannel(srv, localAddr, config.allocator)
+                val serverChannel = NodeServer(srv, localAddr, config.allocator)
 
                 // Wire connection events to the ServerChannel's accept queue
                 srv.on("connection") { socket: dynamic ->

@@ -98,8 +98,8 @@ class IoUringEngine(
     /**
      * Binds a suspend-based server on [host]:[port].
      *
-     * Creates a server socket and returns an [IoUringServerChannel] whose
-     * [accept][IoUringServerChannel.accept] returns [IoUringPipelinedChannel] instances.
+     * Creates a server socket and returns an [IoUringServer] whose
+     * [accept][IoUringServer.accept] returns [IoUringPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
@@ -109,7 +109,7 @@ class IoUringEngine(
         val serverFd = SocketUtils.createServerSocket(host, port)
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return IoUringServerChannel(
+        return IoUringServer(
             serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities, logger,
         )
     }

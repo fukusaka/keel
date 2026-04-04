@@ -37,7 +37,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  *   Netty EventLoop: initChannel(ch) --> onNewChannel(keelCh) --> resume
  * ```
  */
-internal class NettyServerChannel private constructor() : ServerChannel {
+internal class NettyServer private constructor() : ServerChannel {
 
     private lateinit var serverChannel: NettyNativeChannel
     private lateinit var _localAddress: SocketAddress
@@ -140,9 +140,9 @@ internal class NettyServerChannel private constructor() : ServerChannel {
 
     companion object {
         /**
-         * Creates an uninitialized [NettyServerChannel]. Call [init] after
+         * Creates an uninitialized [NettyServer]. Call [init] after
          * the Netty server channel is bound to complete initialization.
          */
-        fun create(): NettyServerChannel = NettyServerChannel()
+        fun create(): NettyServer = NettyServer()
     }
 }

@@ -46,7 +46,7 @@ import platform.darwin.dispatch_queue_create
  * ```
  * NwEngine
  *   |
- *   +-- bind() --> NwServerChannel (wraps nw_listener_t)
+ *   +-- bind() --> NwServer (wraps nw_listener_t)
  *   |                |
  *   |                +-- accept() --> NwChannel (wraps nw_connection_t)
  *   |
@@ -89,7 +89,7 @@ class NwEngine(
         // onNewConnection can be called immediately if connections
         // arrive during startup. localAddress is updated after the
         // assigned port is known.
-        val serverChannel = NwServerChannel(
+        val serverChannel = NwServer(
             lsnr, SocketAddress(host, 0), config.allocator,
         )
 
@@ -182,7 +182,7 @@ class NwEngine(
                     // Fire-and-forget start: nw_connection_receive can be called
                     // immediately after start — NWConnection queues the receive
                     // internally until the connection reaches the ready state.
-                    // Unlike NwServerChannel.accept() which awaits ready via
+                    // Unlike NwServer.accept() which awaits ready via
                     // keel_nw_start_conn_async, pipeline skips the suspend.
                     nw_connection_start(conn)
 
@@ -251,7 +251,7 @@ class NwEngine(
     }
 
     companion object {
-        // Same callback as NwServerChannel.startCallback. Duplicated because
+        // Same callback as NwServer.startCallback. Duplicated because
         // staticCFunction must be defined in the companion of the using class
         // (cannot reference another class's companion private val).
         /** C callback for [keel_nw_start_conn_async]. */

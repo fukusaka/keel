@@ -36,13 +36,13 @@ import java.nio.channels.ServerSocketChannel
  * @param workerGroup   Worker EventLoopGroup for accepted channels.
  * @param localAddress  Bind address of this server channel.
  */
-internal class NioServerChannel(
+internal class NioServer(
     private val serverChannel: ServerSocketChannel,
     private val selectionKey: SelectionKey,
     private val bossLoop: NioEventLoop,
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServerChannel"),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServer"),
 ) : ServerChannel {
 
     private var _active = true

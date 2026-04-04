@@ -38,7 +38,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  * ```
  * NettyEngine (owns NioEventLoopGroups)
  *   |
- *   +-- bind() --> NettyServerChannel (wraps Netty ServerChannel)
+ *   +-- bind() --> NettyServer (wraps Netty ServerChannel)
  *   |                |
  *   |                +-- accept() --> NettyChannel (wraps Netty SocketChannel)
  *   |
@@ -61,11 +61,11 @@ class NettyEngine(
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        // Two-phase init: create NettyServerChannel before bind so the
+        // Two-phase init: create NettyServer before bind so the
         // ChannelInitializer closure can call onNewChannel(). The underlying
         // Netty server channel and local address are set via init() after
         // the bind future completes.
-        val serverChannel = NettyServerChannel.create()
+        val serverChannel = NettyServer.create()
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
