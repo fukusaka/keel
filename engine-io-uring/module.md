@@ -50,17 +50,27 @@ io_uring CQE (multishot recv)
 App:                      suspend channel.read(buf) ← dequeue
 ```
 
-## I/O Mode Selection
+## Write/Flush Path
 
-Write/flush uses adaptive mode selection per connection via `IoModeSelector`:
+Both Pipeline and Channel modes share the same outbound path through `IoUringIoTransport`:
+
+```
+Pipeline:  handler → ctx.propagateWriteAndFlush → HeadHandler → IoTransport
+Channel:   channel.write(buf) → pipeline.requestWrite → HeadHandler → IoTransport
+           channel.requestFlush() → pipeline.requestFlush → HeadHandler → IoTransport.flush()
+           channel.awaitFlushComplete() → transport.awaitPendingFlush()
+```
+
+`IoTransport.flush()` is fire-and-forget with `IoModeSelector`-driven strategy:
 
 | Mode | Strategy | Best for |
 |------|----------|----------|
-| `FALLBACK_CQE` | Direct `send()`, EAGAIN → SEND SQE | Low-latency (default) |
-| `CQE` | Always via SEND SQE/CQE | High-throughput, backpressure |
-| `SEND_ZC` | `IORING_OP_SEND_ZC` (zero-copy, two CQEs) | Large payloads |
+| `FALLBACK_CQE` | Direct `send()`, EAGAIN → async SEND SQE | Low-latency (default) |
+| `CQE` | SEND SQE (single) or WRITEV SQE (gather) | High-throughput, backpressure |
+| `SEND_ZC` | `IORING_OP_SEND_ZC` (zero-copy, two CQEs) | Large payloads, real network |
 
-`ConnectionStats` tracks per-connection EAGAIN rate (EMA) for adaptive switching.
+`ConnectionStats` tracks per-connection EAGAIN rate (EMA) for adaptive switching
+via `IoModeSelectors.eagainThreshold()`.
 
 ## Key Classes
 
@@ -77,6 +87,10 @@ Write/flush uses adaptive mode selection per connection via `IoModeSelector`:
 | `RingBufferIoBuf` | Zero-allocation `IoBuf` wrapper over provided buffers |
 | `IoUringCapabilities` | Runtime kernel feature detection (multishot, sendZc, etc.) |
 | `KernelVersion` | Parses `/proc/version` for feature gating |
+| `IoMode` | Flush strategy enum: CQE, FALLBACK_CQE, SEND_ZC |
+| `IoModeSelector` | Per-connection strategy selection based on `ConnectionStats` |
+| `ConnectionStats` | Per-connection EAGAIN rate (EMA) for adaptive mode switching |
+| `SocketUtils` | POSIX socket helpers (bind, connect, address conversion) |
 
 # Package io.github.fukusaka.keel.engine.iouring
 
