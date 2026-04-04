@@ -1,7 +1,11 @@
 headers = mbedtls/ssl.h mbedtls/x509_crt.h mbedtls/pk.h mbedtls/error.h \
           mbedtls/net_sockets.h mbedtls/debug.h psa/crypto.h
-compilerOpts = -I/opt/homebrew/include -DMBEDTLS_ALLOW_PRIVATE_ACCESS
-linkerOpts = -L/opt/homebrew/lib -lmbedtls -lmbedx509 -lmbedcrypto
+compilerOpts = -DMBEDTLS_ALLOW_PRIVATE_ACCESS
+compilerOpts.osx = -I/opt/homebrew/include
+compilerOpts.linux = -I/usr/local/include
+linkerOpts = -lmbedtls -lmbedx509 -lmbedcrypto
+linkerOpts.osx = -L/opt/homebrew/lib
+linkerOpts.linux = -L/usr/local/lib
 
 ---
 

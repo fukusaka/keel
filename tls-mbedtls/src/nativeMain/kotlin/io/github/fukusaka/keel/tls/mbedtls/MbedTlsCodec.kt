@@ -184,11 +184,14 @@ class MbedTlsCodec internal constructor(
                 TlsCodecResult(TlsResult.NEED_WRAP, bytesConsumed, 0)
             ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ->
                 TlsCodecResult(TlsResult.CLOSED, bytesConsumed, 0)
-            else -> throw TlsException(
-                "mbedtls_ssl_read failed: ${errorString(ret)}",
-                TlsErrorCategory.PROTOCOL_ERROR,
-                ret.toLong(),
-            )
+            else -> {
+                val op = if (isHandshakeComplete) "ssl_read" else "ssl_handshake"
+                throw TlsException(
+                    "mbedtls_$op failed: ${errorString(ret)}",
+                    TlsErrorCategory.PROTOCOL_ERROR,
+                    ret.toLong(),
+                )
+            }
         }
     }
 
@@ -225,11 +228,14 @@ class MbedTlsCodec internal constructor(
                 TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, sendWritten)
             ret == MBEDTLS_ERR_SSL_WANT_WRITE ->
                 TlsCodecResult(TlsResult.NEED_WRAP, 0, sendWritten)
-            else -> throw TlsException(
-                "mbedtls_ssl_write failed: ${errorString(ret)}",
-                TlsErrorCategory.PROTOCOL_ERROR,
-                ret.toLong(),
-            )
+            else -> {
+                val op = if (isHandshakeComplete) "ssl_write" else "ssl_handshake"
+                throw TlsException(
+                    "mbedtls_$op failed: ${errorString(ret)}",
+                    TlsErrorCategory.PROTOCOL_ERROR,
+                    ret.toLong(),
+                )
+            }
         }
     }
 
@@ -251,7 +257,7 @@ class MbedTlsCodec internal constructor(
     // --- Internal ---
 
     private fun parsePemCert(pem: String) {
-        val bytes = pem.encodeToByteArray() + 0 // null-terminated
+        val bytes = pem.encodeToByteArray() + byteArrayOf(0) // null-terminated for mbedtls PEM parser
         val ret = bytes.usePinned { pinned ->
             mbedtls_x509_crt_parse(srvcert.ptr, pinned.addressOf(0).reinterpret(), bytes.size.toULong())
         }
@@ -259,7 +265,7 @@ class MbedTlsCodec internal constructor(
     }
 
     private fun parsePemKey(pem: String) {
-        val bytes = pem.encodeToByteArray() + 0 // null-terminated
+        val bytes = pem.encodeToByteArray() + byteArrayOf(0) // null-terminated for mbedtls PEM parser
         val ret = bytes.usePinned { pinned ->
             mbedtls_pk_parse_key(pkey.ptr, pinned.addressOf(0).reinterpret(), bytes.size.toULong(), null, 0u)
         }

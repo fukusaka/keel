@@ -17,6 +17,20 @@ kotlin {
             }
         }
     }
+    linuxX64 {
+        compilations["main"].cinterops {
+            create("mbedtls") {
+                defFile("src/nativeInterop/cinterop/mbedtls.def")
+            }
+        }
+    }
+    linuxArm64 {
+        compilations["main"].cinterops {
+            create("mbedtls") {
+                defFile("src/nativeInterop/cinterop/mbedtls.def")
+            }
+        }
+    }
 
     applyDefaultHierarchyTemplate()
 
@@ -26,14 +40,23 @@ kotlin {
                 implementation(project(":tls"))
             }
         }
-        val macosTest by getting {
+        nativeTest {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(project(":logging"))
-                implementation(project(":engine-kqueue"))
                 implementation(project(":codec-http"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+        val macosTest by getting {
+            dependencies {
+                implementation(project(":engine-kqueue"))
+            }
+        }
+        val linuxTest by getting {
+            dependencies {
+                implementation(project(":engine-epoll"))
             }
         }
     }
