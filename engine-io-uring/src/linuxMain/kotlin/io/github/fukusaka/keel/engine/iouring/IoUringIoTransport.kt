@@ -156,9 +156,14 @@ internal class IoUringIoTransport(
      *
      * Called when [flushSingleFireAndForget] encounters EAGAIN. Buffers are
      * sent one at a time in order: the next buffer is submitted only after
-     * the current one fully completes. This guarantees TCP byte-stream order
-     * even with partial sends (io_uring CQEs for concurrent SQEs on the
-     * same fd do not guarantee completion order).
+     * the current one fully completes via CQE callback chaining. This
+     * guarantees TCP byte-stream order even with partial sends (io_uring
+     * CQEs for concurrent SQEs on the same fd do not guarantee completion order).
+     *
+     * **Future optimization**: `IOSQE_IO_LINK` (Linux 5.3+) could submit
+     * all SQEs in one batch while preserving order. However, partial sends
+     * break the link chain, requiring fallback logic. Deferred per YAGNI —
+     * EAGAIN with multiple PendingWrites is rare on typical workloads.
      *
      * [onFlushComplete] is invoked after the last buffer completes.
      */
