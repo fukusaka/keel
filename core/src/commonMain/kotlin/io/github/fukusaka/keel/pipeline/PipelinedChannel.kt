@@ -58,9 +58,15 @@ interface PipelinedChannel : Channel {
         )
     }
 
-    override suspend fun flush() {
+    override fun requestFlush() {
         throw UnsupportedOperationException(
-            "suspend flush() not available. Install SuspendBridgeHandler or use Pipeline mode."
+            "requestFlush() not available. Install SuspendBridgeHandler or use Pipeline mode."
+        )
+    }
+
+    override suspend fun awaitFlushComplete() {
+        throw UnsupportedOperationException(
+            "awaitFlushComplete() not available. Install SuspendBridgeHandler or use Pipeline mode."
         )
     }
 

@@ -86,13 +86,43 @@ interface Channel : AutoCloseable {
     suspend fun write(buf: IoBuf): Int
 
     /**
-     * Flushes all buffered outbound data to the network.
+     * Flushes all buffered outbound data to the network and suspends
+     * until all bytes are sent.
      *
-     * Enables writev/gather-write optimisation when multiple [write]
-     * calls precede a single [flush]. Retained buffers are released
-     * after the data is sent.
+     * Equivalent to [requestFlush] + [awaitFlushComplete]. Enables
+     * writev/gather-write optimisation when multiple [write] calls
+     * precede a single flush. Retained buffers are released after
+     * the data is sent.
+     *
+     * For fire-and-forget flushing (no completion wait), call
+     * [requestFlush] directly.
      */
-    suspend fun flush()
+    suspend fun flush() {
+        requestFlush()
+        awaitFlushComplete()
+    }
+
+    /**
+     * Initiates a flush of all buffered outbound data without waiting
+     * for completion (fire-and-forget).
+     *
+     * Data is submitted to the OS send buffer (or queued for async
+     * send on EAGAIN). Use [awaitFlushComplete] to wait for all
+     * pending data to be sent.
+     *
+     * **Thread safety**: must be called on the EventLoop thread.
+     */
+    fun requestFlush()
+
+    /**
+     * Suspends until all pending flush operations complete.
+     *
+     * Returns immediately if no async flush is pending (i.e., the
+     * last [requestFlush] completed synchronously).
+     *
+     * **Thread safety**: must be called on the EventLoop thread.
+     */
+    suspend fun awaitFlushComplete()
 
     // --- Dispatcher ---
 

@@ -39,10 +39,21 @@ interface IoTransport {
     /**
      * Callback invoked when an async flush completes.
      *
-     * Set by Channel to resume the suspended coroutine.
-     * Left null by HeadHandler (fire-and-forget).
+     * Set by the transport's write-readiness callback to signal
+     * completion. Used internally by [awaitPendingFlush].
+     * Pipeline HeadHandler does not set this (fire-and-forget).
      */
     var onFlushComplete: (() -> Unit)?
+
+    /**
+     * Suspends until all pending async flush operations complete.
+     *
+     * Returns immediately if the last [flush] completed synchronously
+     * (returned true). Called by Channel mode's [io.github.fukusaka.keel.core.Channel.awaitFlushComplete].
+     *
+     * Default implementation is no-op (for transports that always flush synchronously).
+     */
+    suspend fun awaitPendingFlush() {}
 
     /** Closes the transport and releases resources. */
     fun close()
