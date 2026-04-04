@@ -105,6 +105,14 @@ class IoUringEngine(
         workerGroup.start()
     }
 
+    /**
+     * Binds a suspend-based server on [host]:[port].
+     *
+     * Creates a server socket and returns an [IoUringServerChannel] whose
+     * [accept][IoUringServerChannel.accept] returns [IoUringPipelinedChannel] instances.
+     *
+     * @throws IllegalStateException if the engine is closed.
+     */
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
@@ -112,7 +120,7 @@ class IoUringEngine(
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return IoUringServerChannel(
-            serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities,
+            serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities, logger,
         )
     }
 
@@ -163,8 +171,8 @@ class IoUringEngine(
         val bufferRing = workerGroup.bufferRingAt(wi)
         val transport = IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return IoUringChannel(
-            fd, workerLoop, transport, allocator, bufferRing, remoteAddr, localAddr,
+        return IoUringPipelinedChannel(
+            fd, transport, workerLoop, bufferRing, allocator, logger, remoteAddr, localAddr,
             resolvedCapabilities,
         )
     }
@@ -203,6 +211,12 @@ class IoUringEngine(
         return server
     }
 
+    /**
+     * Closes the engine, stopping both boss and worker EventLoops.
+     *
+     * Does NOT close existing channels — caller is responsible for closing
+     * active connections before shutting down the engine. Idempotent.
+     */
     override fun close() {
         if (!closed) {
             closed = true

@@ -8,7 +8,7 @@ package io.github.fukusaka.keel.engine.iouring
  * the half-life is ~14 flushes — old data decays exponentially and
  * the selector responds to load changes within ~20 flushes.
  *
- * Updated by [IoUringChannel] after each flush operation. All fields
+ * Updated by [IoUringIoTransport] after each flush operation. All fields
  * are accessed from the EventLoop thread only (no synchronisation needed).
  *
  * Properties are read-only from external code (`internal set`).

@@ -33,7 +33,7 @@ internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
  * io_uring transport-layer I/O operations.
  *
  * Encapsulates the write buffering, I/O mode selection, and flush logic
- * that is shared between [IoUringChannel] (suspend-based) and the pipeline
+ * that is shared between [IoUringPipelinedChannel] (suspend/pipeline) and the pipeline
  * HeadHandler (fire-and-forget, to be added in a follow-up PR).
  *
  * **I/O modes**: three flush strategies selected by [IoModeSelector]:
@@ -192,7 +192,7 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
     }
 
-    // --- Suspend-based flush (used by IoUringChannel) ---
+    // --- Suspend-based flush (used by IoUringPipelinedChannel Channel mode) ---
 
     /**
      * Returns true if there are pending writes to flush.
@@ -202,7 +202,7 @@ internal class IoUringIoTransport(
     /**
      * Sends all buffered writes via suspend-based I/O.
      *
-     * Called by [IoUringChannel.flush]. Uses [IoModeSelector] to choose
+     * Called by Channel mode flush. Uses [IoModeSelector] to choose
      * the optimal strategy per connection.
      */
     internal suspend fun flushSuspend() {
