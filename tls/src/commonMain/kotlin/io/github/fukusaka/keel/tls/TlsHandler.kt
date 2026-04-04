@@ -34,14 +34,15 @@ class TlsHandler(
     private val codec: TlsCodec,
 ) : ChannelDuplexHandler {
 
+    companion object {
+        // TLS record max: 16384 payload + 5 header + 256 expansion (CBC) = ~16645.
+        // 17408 = 17 * 1024, comfortably above TLS record max.
+        private const val OUTPUT_BUF_SIZE = 17 * 1024
+    }
+
     private var ctx: ChannelHandlerContext? = null
     private var accumulate: IoBuf? = null
     private var handshakeNotified = false
-
-    // -- Scratch buffer size for protect/unprotect output.
-    // TLS record max: 16384 payload + 5 header + 256 expansion (CBC) = ~16645.
-    // 17408 = 17 * 1024, comfortably above TLS record max.
-    private val outputBufSize = 17 * 1024
 
     override fun handlerAdded(ctx: ChannelHandlerContext) {
         this.ctx = ctx
@@ -74,7 +75,7 @@ class TlsHandler(
         val input = mergeWithAccumulate(ctx, cipherBuf)
 
         while (input.readableBytes > 0) {
-            val plainBuf = ctx.allocator.allocate(outputBufSize)
+            val plainBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
             val result = codec.unprotect(input, plainBuf)
             input.readerIndex += result.bytesConsumed
 
@@ -190,7 +191,7 @@ class TlsHandler(
 
     private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
         while (plainBuf.readableBytes > 0) {
-            val cipherBuf = ctx.allocator.allocate(outputBufSize)
+            val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
             val result = codec.protect(plainBuf, cipherBuf)
             plainBuf.readerIndex += result.bytesConsumed
 
@@ -218,7 +219,7 @@ class TlsHandler(
     // --- Handshake support ---
 
     private fun flushHandshakeResponse(ctx: ChannelHandlerContext) {
-        val cipherBuf = ctx.allocator.allocate(outputBufSize)
+        val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
         val emptyBuf = ctx.allocator.allocate(0)
         try {
             codec.protect(emptyBuf, cipherBuf)
