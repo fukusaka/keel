@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.PushServerChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.Logger
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -48,6 +48,7 @@ internal class IoUringServerChannel(
     override val localAddress: SocketAddress,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServerChannel"),
 ) : ServerChannel, PushServerChannel {
 
     private var _active = true
@@ -87,9 +88,9 @@ internal class IoUringServerChannel(
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector)
-            return IoUringChannel(
-                clientFd, workerLoop, transport, workerGroup.allocatorAt(wi),
-                workerGroup.bufferRingAt(wi), remoteAddr, localAddr,
+            return IoUringPipelinedChannel(
+                clientFd, transport, workerLoop, workerGroup.bufferRingAt(wi),
+                workerGroup.allocatorAt(wi), logger, remoteAddr, localAddr,
                 capabilities,
             )
         } catch (e: Throwable) {

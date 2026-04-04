@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 /**
  * Selects the [IoMode] for an I/O operation based on [ConnectionStats].
  *
- * Called by [IoUringChannel] before each flush to determine whether to
+ * Called by [IoUringIoTransport] before each flush to determine whether to
  * use direct POSIX syscall or io_uring SQE/CQE.
  *
  * Implementations must be lightweight — called on the hot path per flush.

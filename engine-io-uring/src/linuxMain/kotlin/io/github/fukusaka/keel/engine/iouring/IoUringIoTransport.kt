@@ -33,7 +33,7 @@ internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
  * io_uring transport-layer I/O operations.
  *
  * Encapsulates the write buffering, I/O mode selection, and flush logic
- * that is shared between [IoUringChannel] (suspend-based) and the pipeline
+ * that is shared between [IoUringPipelinedChannel] (suspend/pipeline) and the pipeline
  * HeadHandler (fire-and-forget, to be added in a follow-up PR).
  *
  * **I/O modes**: three flush strategies selected by [IoModeSelector]:
@@ -83,12 +83,9 @@ internal class IoUringIoTransport(
      * Fire-and-forget flush for the pipeline HeadHandler path.
      *
      * Attempts direct `send()` for each pending write. If EAGAIN occurs,
-     * submits a SEND SQE via [IoUringEventLoop.submitMultishot] and returns
-     * false (async pending). The [onFlushComplete] callback is invoked when
-     * all async sends complete.
-     *
-     * Unlike [flushSuspend], this method never suspends and is safe to call
-     * from CQE callbacks on the EventLoop thread.
+     * the current and remaining writes are submitted as async SEND SQEs
+     * via [submitAsyncSendChain]. The [onFlushComplete] callback is invoked
+     * when ALL async sends complete.
      *
      * @return true if flush completed synchronously, false if async pending.
      */
@@ -101,11 +98,9 @@ internal class IoUringIoTransport(
             while (i < pendingWrites.size) {
                 val pw = pendingWrites[i]
                 if (!flushSingleFireAndForget(pw)) {
-                    // Async send pending for pw. Release remaining writes that
-                    // were not attempted (pw itself was handled by submitAsyncSend).
-                    for (j in i + 1 until pendingWrites.size) {
-                        pendingWrites[j].buf.release()
-                    }
+                    // EAGAIN: pw is handled by submitAsyncSend.
+                    // Submit remaining writes as async chain.
+                    submitAsyncSendChain(i + 1)
                     return false
                 }
                 i++
@@ -156,15 +151,46 @@ internal class IoUringIoTransport(
     }
 
     /**
-     * Submits a SEND SQE via [IoUringEventLoop.submitMultishot] for async delivery.
+     * Submits remaining [pendingWrites] from [startIndex] as a sequential
+     * async SEND chain.
+     *
+     * Called when [flushSingleFireAndForget] encounters EAGAIN. Buffers are
+     * sent one at a time in order: the next buffer is submitted only after
+     * the current one fully completes via CQE callback chaining. This
+     * guarantees TCP byte-stream order even with partial sends (io_uring
+     * CQEs for concurrent SQEs on the same fd do not guarantee completion order).
+     *
+     * **Future optimization**: `IOSQE_IO_LINK` (Linux 5.3+) could submit
+     * all SQEs in one batch while preserving order. However, partial sends
+     * break the link chain, requiring fallback logic. Deferred per YAGNI —
+     * EAGAIN with multiple PendingWrites is rare on typical workloads.
+     *
+     * [onFlushComplete] is invoked after the last buffer completes.
+     */
+    private fun submitAsyncSendChain(startIndex: Int) {
+        if (startIndex >= pendingWrites.size) {
+            onFlushComplete?.invoke()
+            return
+        }
+        val pw = pendingWrites[startIndex]
+        submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
+            submitAsyncSendChain(startIndex + 1)
+        }
+    }
+
+    /**
+     * Submits a SEND SQE and invokes [onComplete] when all bytes are sent.
      *
      * Takes ownership of [buf] (already retained by the caller's write()).
-     * The buffer is released when the CQE callback fires after all bytes are sent.
-     * Partial sends recurse until complete.
+     * The buffer is released after all bytes are sent or on error.
+     * Partial sends recurse until complete, then [onComplete] is called.
      */
-    private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
-        // buf is already retained from the original write() call.
-        // No additional retain needed here.
+    private fun submitAsyncSendSequential(
+        buf: IoBuf,
+        offset: Int,
+        length: Int,
+        onComplete: () -> Unit,
+    ) {
         val ptr = (buf.unsafePointer + offset)!!
         eventLoop.submitMultishot(
             prepare = { sqe ->
@@ -175,14 +201,26 @@ internal class IoUringIoTransport(
                 val remaining = length - sent
                 if (remaining > 0 && res > 0) {
                     // Partial send: submit another SQE for the remainder.
-                    submitAsyncSend(buf, offset + sent, remaining)
+                    submitAsyncSendSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     // Done (all sent, or error): release the buffer.
                     buf.release()
-                    onFlushComplete?.invoke()
+                    onComplete()
                 }
             },
         )
+    }
+
+    /**
+     * Submits a SEND SQE for a single buffer (standalone, not part of a chain).
+     *
+     * Used by [flushSingleFireAndForget] when only one PendingWrite exists.
+     * Invokes [onFlushComplete] after all bytes are sent.
+     */
+    private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
+        submitAsyncSendSequential(buf, offset, length) {
+            onFlushComplete?.invoke()
+        }
     }
 
     override var onFlushComplete: (() -> Unit)? = null
@@ -192,7 +230,7 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
     }
 
-    // --- Suspend-based flush (used by IoUringChannel) ---
+    // --- Suspend-based flush (used by IoUringPipelinedChannel Channel mode) ---
 
     /**
      * Returns true if there are pending writes to flush.
@@ -202,7 +240,7 @@ internal class IoUringIoTransport(
     /**
      * Sends all buffered writes via suspend-based I/O.
      *
-     * Called by [IoUringChannel.flush]. Uses [IoModeSelector] to choose
+     * Called by Channel mode flush. Uses [IoModeSelector] to choose
      * the optimal strategy per connection.
      */
     internal suspend fun flushSuspend() {
