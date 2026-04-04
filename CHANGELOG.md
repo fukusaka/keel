@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - engine-io-uring: unify `IoUringChannel` into `IoUringPipelinedChannel` — same Channel/Pipeline unification pattern
 - engine-kqueue, engine-epoll, engine-nio: Channel mode `write()`/`flush()` now use `pipeline.requestWrite/Flush` directly instead of `ensureBridge()`, preventing read-path side effects on outbound operations
 - core: add `requestFlush()` (fire-and-forget) and `awaitFlushComplete()` (completion wait) to Channel interface; `flush()` is now `requestFlush() + awaitFlushComplete()` by default
+- engine-io-uring: integrate `IoModeSelector` into fire-and-forget `flush()` — CQE (with writev gather write), FALLBACK_CQE, and SEND_ZC modes all supported; remove `flushSuspend()` and suspend flush strategies
 
 ### Fixed
 
