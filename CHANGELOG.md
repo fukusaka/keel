@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
 - engine-epoll: unify `EpollChannel` into `EpollPipelinedChannel` — same Channel/Pipeline unification pattern
 - engine-io-uring: unify `IoUringChannel` into `IoUringPipelinedChannel` — same Channel/Pipeline unification pattern
+- engine-kqueue, engine-epoll, engine-nio: Channel mode `write()`/`flush()` now use `pipeline.requestWrite/Flush` directly instead of `ensureBridge()`, preventing read-path side effects on outbound operations
 
 ### Fixed
 

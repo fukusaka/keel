@@ -95,11 +95,15 @@ internal class NioPipelinedChannel(
     }
 
     /**
-     * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
+     * Writes [buf] through the pipeline's outbound path.
      *
-     * Delegates to [io.github.fukusaka.keel.pipeline.ChannelHandlerContext.propagateWrite]
-     * which traverses outbound handlers (e.g. TLS encrypt, HTTP encode) before
-     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport].
+     * Enters the pipeline from TAIL and traverses outbound handlers
+     * (e.g. TLS encrypt, HTTP encode) before reaching
+     * [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport].
+     *
+     * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
+     * the read loop. This prevents conflict when [asSuspendSource] has
+     * already set up its own read path.
      *
      * @return number of bytes buffered (actual send happens on [flush]).
      * @throws IllegalStateException if the channel is closed or output is shut down.
@@ -109,14 +113,15 @@ internal class NioPipelinedChannel(
         check(!outputShutdown) { "Output already shut down" }
         val n = buf.readableBytes
         if (n == 0) return 0
-        ensureBridge().write(buf)
+        pipeline.requestWrite(buf)
         return n
     }
 
     /**
      * Flushes buffered writes through the pipeline's outbound path.
      *
-     * Delegates to [SuspendBridgeHandler.flush] → [NioIoTransport.flush].
+     * Enters the pipeline from TAIL and traverses outbound handlers before
+     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport.flush].
      * Fire-and-forget: if the send buffer is full, the transport registers
      * OP_WRITE callback and retries asynchronously.
      *
@@ -124,7 +129,7 @@ internal class NioPipelinedChannel(
      */
     override suspend fun flush() {
         check(socketChannel.isOpen) { "Channel is closed" }
-        ensureBridge().flush()
+        pipeline.requestFlush()
     }
 
     /** No-op. JVM SocketChannel has no close-completion callback. */
