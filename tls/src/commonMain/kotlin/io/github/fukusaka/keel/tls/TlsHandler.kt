@@ -77,7 +77,6 @@ class TlsHandler(
             val plainBuf = ctx.allocator.allocate(outputBufSize)
             val result = codec.unprotect(input, plainBuf)
             input.readerIndex += result.bytesConsumed
-            plainBuf.writerIndex += result.bytesProduced
 
             when (result.status) {
                 TlsResult.OK -> {
@@ -196,7 +195,6 @@ class TlsHandler(
             val cipherBuf = ctx.allocator.allocate(outputBufSize)
             val result = codec.protect(plainBuf, cipherBuf)
             plainBuf.readerIndex += result.bytesConsumed
-            cipherBuf.writerIndex += result.bytesProduced
 
             if (cipherBuf.readableBytes > 0) {
                 ctx.propagateWrite(cipherBuf)
@@ -225,8 +223,7 @@ class TlsHandler(
         val cipherBuf = ctx.allocator.allocate(outputBufSize)
         val emptyBuf = ctx.allocator.allocate(0)
         try {
-            val result = codec.protect(emptyBuf, cipherBuf)
-            cipherBuf.writerIndex += result.bytesProduced
+            codec.protect(emptyBuf, cipherBuf)
             if (cipherBuf.readableBytes > 0) {
                 ctx.propagateWrite(cipherBuf)
                 ctx.propagateFlush()

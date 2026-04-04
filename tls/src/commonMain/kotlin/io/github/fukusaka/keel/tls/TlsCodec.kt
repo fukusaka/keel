@@ -29,7 +29,9 @@ interface TlsCodec {
      * Removes TLS record protection: decrypts and verifies ciphertext.
      *
      * Reads from [ciphertext] starting at its readerIndex and writes decrypted
-     * plaintext into [plaintext] starting at its writerIndex.
+     * plaintext into [plaintext] starting at its writerIndex. The implementation
+     * advances [plaintext]'s writerIndex by the number of bytes produced.
+     * The caller advances [ciphertext]'s readerIndex by [TlsCodecResult.bytesConsumed].
      *
      * @param ciphertext Input buffer containing TLS records from the network.
      * @param plaintext Output buffer for decrypted application data.
@@ -42,7 +44,9 @@ interface TlsCodec {
      * Applies TLS record protection: encrypts and authenticates plaintext.
      *
      * Reads from [plaintext] starting at its readerIndex and writes encrypted
-     * TLS records into [ciphertext] starting at its writerIndex.
+     * TLS records into [ciphertext] starting at its writerIndex. The implementation
+     * advances [ciphertext]'s writerIndex by the number of bytes produced.
+     * The caller advances [plaintext]'s readerIndex by [TlsCodecResult.bytesConsumed].
      *
      * During handshake, call with an empty [plaintext] (readableBytes == 0)
      * to produce handshake messages (e.g., ServerHello, Finished).
