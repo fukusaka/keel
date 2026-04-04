@@ -68,6 +68,9 @@ interface ChannelPipeline {
     /** Notifies the pipeline that an error has occurred. */
     fun notifyError(cause: Throwable): ChannelPipeline
 
+    /** Fires a user-defined event through the pipeline (inbound, HEAD → TAIL). */
+    fun notifyUserEvent(event: Any): ChannelPipeline
+
     // --- Outbound: external code requests operations ---
 
     /** Requests a write through the pipeline. */

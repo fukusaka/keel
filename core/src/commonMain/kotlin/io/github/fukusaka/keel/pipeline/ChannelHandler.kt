@@ -72,6 +72,20 @@ interface ChannelInboundHandler : ChannelHandler {
     fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
         ctx.propagateError(cause)
     }
+
+    /**
+     * Called when a user-defined event is fired in the pipeline.
+     *
+     * User events flow inbound (HEAD → TAIL), like other inbound events.
+     * Handlers that are interested in a specific event type should check
+     * `event` and either handle it or propagate to the next handler.
+     *
+     * Example: [TlsHandler] fires `TlsHandshakeComplete` after a
+     * successful TLS handshake so downstream handlers can act on it.
+     */
+    fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+        ctx.propagateUserEvent(event)
+    }
 }
 
 /**

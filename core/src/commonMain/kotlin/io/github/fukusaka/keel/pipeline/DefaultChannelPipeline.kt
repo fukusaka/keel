@@ -148,6 +148,11 @@ class DefaultChannelPipeline(
         return this
     }
 
+    override fun notifyUserEvent(event: Any): ChannelPipeline {
+        head.invokeOnUserEvent(event)
+        return this
+    }
+
     // --- Outbound entry ---
 
     override fun requestWrite(msg: Any): ChannelPipeline {
@@ -306,6 +311,11 @@ class DefaultChannelPipeline(
             nextCtx.invokeOnError(cause)
         }
 
+        override fun propagateUserEvent(event: Any) {
+            val nextCtx = findNextInbound() ?: return
+            nextCtx.invokeOnUserEvent(event)
+        }
+
         // --- Outbound propagation ---
 
         override fun propagateWrite(msg: Any) {
@@ -390,6 +400,19 @@ class DefaultChannelPipeline(
                 }
             } else {
                 propagateError(cause)
+            }
+        }
+
+        internal fun invokeOnUserEvent(event: Any) {
+            val h = handler
+            if (h is ChannelInboundHandler) {
+                try {
+                    h.onUserEvent(this, event)
+                } catch (e: Throwable) {
+                    propagateError(e)
+                }
+            } else {
+                propagateUserEvent(event)
             }
         }
 

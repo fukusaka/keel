@@ -37,4 +37,8 @@ internal class TailHandler(
     override fun onInactive(ctx: ChannelHandlerContext) {
         // Terminal — do not propagate.
     }
+
+    override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+        logger.warn { "Unhandled user event reached TAIL: ${event::class.simpleName}" }
+    }
 }
