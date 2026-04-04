@@ -25,32 +25,22 @@ import io_uring.keel_inet_pton
 /**
  * Linux io_uring-based [IoEngine] implementation with multi-threaded EventLoop.
  *
- * Uses a boss/worker EventLoop model (same as [EpollEngine][io.github.fukusaka.keel.engine.epoll.EpollEngine]):
- * - **Boss EventLoop**: handles `accept()` operations on server fds via `IORING_OP_ACCEPT`
- * - **Worker EventLoopGroup**: handles `read`/`write`/`flush` on accepted channels
+ * Supports two server modes:
  *
- * New connections are assigned to worker EventLoops in round-robin order.
+ * **Channel mode** ([bind]/[connect]): boss EventLoop accepts via `IORING_OP_ACCEPT`
+ * (multishot on Linux 5.19+) and distributes connections to workers in round-robin.
+ * App drives I/O via suspend `read()`/`write()`/`flush()`.
+ *
+ * **Pipeline mode** ([bindPipeline]): each worker owns a private server socket
+ * with `SO_REUSEPORT`. The kernel distributes connections by 4-tuple hash —
+ * no boss EventLoop bottleneck. Handlers process data synchronously via callbacks.
+ *
  * Each worker thread runs its own io_uring ring and acts as a
  * [CoroutineDispatcher][kotlinx.coroutines.CoroutineDispatcher], so all
  * I/O + request processing for a channel runs on a single thread.
  *
  * **Minimum kernel requirement**: Linux 5.1+ for io_uring basic support.
- * Optimal performance requires 5.19+ (multishot accept, deferred accept).
- *
- * ```
- * IoUringEngine
- *   |
- *   +-- bossLoop (accept EventLoop, dedicated io_uring ring)
- *   |     |
- *   |     +-- bind() → IoUringServerChannel
- *   |           |
- *   |           +-- accept() → IORING_OP_ACCEPT → assign to workerGroup[nextIndex]
- *   |
- *   +-- workerGroup (N worker EventLoops, round-robin)
- *         |
- *         +-- worker[0]: Channel A, D, ...
- *         +-- worker[1]: Channel B, E, ...
- * ```
+ * Optimal performance requires 5.19+ (multishot accept, provided buffer ring).
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
@@ -130,6 +120,8 @@ class IoUringEngine(
      * Unlike epoll (which uses non-blocking `connect()` + EPOLLOUT), io_uring
      * handles the async connect natively. The SQE carries the full sockaddr
      * and completes when the connection is established (CQE.res=0) or fails.
+     *
+     * @throws IllegalStateException if the engine is closed or the address is invalid.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
@@ -192,6 +184,7 @@ class IoUringEngine(
      * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
      * @return Server handle for lifecycle management.
+     * @throws IllegalStateException if the engine is closed.
      */
     fun bindPipeline(
         host: String,

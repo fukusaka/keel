@@ -46,6 +46,7 @@ import kotlinx.cinterop.value
  * @param bufferSize Size of each buffer in bytes.
  * @param bgid Buffer group ID. Each EventLoop should use a unique group ID if
  *             multiple rings are needed (currently one per EventLoop).
+ * @throws IllegalStateException if bufferCount is not a power of 2 or kernel registration fails.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class ProvidedBufferRing(
