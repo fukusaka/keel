@@ -6,8 +6,12 @@ import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.engine.iouring.IoModeSelectors
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
+import platform.posix.getenv
 
 /**
  * Pipeline HTTP benchmark using [IoUringEngine] with [HttpRequestDecoder],
@@ -25,13 +29,21 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  */
 object PipelineHttpIoUringBenchmark : EngineBenchmark {
 
+    @OptIn(ExperimentalForeignApi::class)
     override fun start(config: BenchmarkConfig): () -> Unit {
         val threads = config.socket.threads ?: 0 // 0 = auto (availableProcessors)
+        val modeSelector = when (getenv("BENCH_IO_MODE")?.toKString()) {
+            "cqe" -> IoModeSelectors.CQE
+            "fallback" -> IoModeSelectors.FALLBACK_CQE
+            "sendzc" -> IoModeSelectors.SEND_ZC
+            else -> IoModeSelectors.eagainThreshold() // default: adaptive
+        }
         val engine = IoUringEngine(
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = NoopLoggerFactory,
             ),
+            writeModeSelector = modeSelector,
         )
 
         // Pre-built responses: headers and body are computed once at startup.
