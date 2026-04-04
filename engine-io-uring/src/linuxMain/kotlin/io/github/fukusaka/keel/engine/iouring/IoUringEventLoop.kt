@@ -117,7 +117,7 @@ import kotlin.coroutines.resume
  *   3. drain CQEs (io_uring_peek_cqe):
  *        WAKEUP_TOKEN   → re-submit wakeup SQE, continue
  *        CANCEL_TOKEN   → discard (cancel SQE completed; original CQE follows)
- *        slot+SLOT_BASE → multishot: multishotCallbacks[slot](res, flags),
+ *        slot+SLOT_BASE → multishot: callbackSlots[slot](res, flags),
  *                         release slot when IORING_CQE_F_MORE drops
  *                       → single-shot: contSlots[slot].resume(res), releaseSlot(slot)
  *        (resumed continuations may prepare new SQEs inline — submitted next iter)
@@ -168,10 +168,17 @@ internal class IoUringEventLoop(
     // IORING_CQE_F_MORE drops, indicating the kernel will produce no more
     // CQEs for that SQE.
     private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
-    private val multishotCallbacks = arrayOfNulls<(Int, UInt) -> Unit>(ringSize)
+    // Callback slots shared by submitMultishot (multishot SQEs) and
+    // submitCallback (single-shot fire-and-forget SQEs). The slot is held
+    // until IORING_CQE_F_MORE drops — for single-shot SQEs this is always
+    // the first (and only) CQE, so the slot is released immediately.
+    private val callbackSlots = arrayOfNulls<(Int, UInt) -> Unit>(ringSize)
     // SEND_ZC: stores the first CQE result while waiting for the second (notification) CQE.
     // SEND_ZC_UNUSED marks the slot as not in SEND_ZC mode.
     private val sendZcPendingResult = IntArray(ringSize) { SEND_ZC_UNUSED }
+    // SEND_ZC fire-and-forget: callback invoked with send result after both CQEs arrive.
+    // Used by submitSendZcCallback as alternative to contSlots for non-suspend callers.
+    private val sendZcCallbacks = arrayOfNulls<(Int) -> Unit>(ringSize)
     private val freeSlots = IntArray(ringSize) { it }
     private var freeSlotsTop = ringSize
 
@@ -182,6 +189,25 @@ internal class IoUringEventLoop(
 
     private fun releaseSlot(slot: Int) {
         freeSlots[freeSlotsTop++] = slot
+    }
+
+    /**
+     * Completes a SEND_ZC slot by resuming the continuation or invoking the callback.
+     *
+     * Checks [contSlots] first (suspend path), then [sendZcCallbacks] (fire-and-forget).
+     */
+    private fun completeZcSlot(slot: Int, result: Int) {
+        val cont = contSlots[slot]
+        if (cont != null) {
+            contSlots[slot] = null
+            releaseSlot(slot)
+            cont.resume(result)
+        } else {
+            val cb = sendZcCallbacks[slot]
+            sendZcCallbacks[slot] = null
+            releaseSlot(slot)
+            cb?.invoke(result)
+        }
     }
 
     private val wakeupFd: Int
@@ -410,6 +436,50 @@ internal class IoUringEventLoop(
     }
 
     /**
+     * Fire-and-forget `IORING_OP_SEND_ZC` — callback version of [submitSendZc].
+     *
+     * Submits a SEND_ZC SQE and invokes [onComplete] with the send result
+     * after BOTH CQEs arrive (send result + buffer release notification).
+     * The caller's buffer is safe to release inside [onComplete].
+     *
+     * Uses [sendZcCallbacks] instead of [contSlots] for the callback slot.
+     * CQE dispatch checks `sendZcCallbacks[slot]` when `contSlots[slot]` is null.
+     *
+     * Must be called on the EventLoop thread only.
+     */
+    internal fun submitSendZcCallback(
+        fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
+        onComplete: (bytesOrError: Int) -> Unit,
+    ) {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
+        val slot = acquireSlot()
+        sendZcCallbacks[slot] = onComplete
+        sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+    }
+
+    /**
+     * Fire-and-forget `IORING_OP_WRITEV` — callback version of [submitWritev].
+     *
+     * Submits a WRITEV SQE and invokes [onComplete] with the total bytes
+     * written (or negative errno) when the single CQE arrives.
+     *
+     * Must be called on the EventLoop thread only.
+     */
+    internal fun submitWritevCallback(
+        fd: Int, iovecs: CPointer<iovec>, count: UInt,
+        onComplete: (bytesOrError: Int) -> Unit,
+    ) {
+        submitCallback(
+            prepare = { sqe -> io_uring_prep_writev(sqe, fd, iovecs, count, 0u) },
+            onCqe = { res, _ -> onComplete(res) },
+        )
+    }
+
+    /**
      * Submits `IORING_OP_WRITEV` and suspends until the CQE arrives.
      *
      * On the EventLoop thread (hot path), prepares the SQE inline without
@@ -491,10 +561,36 @@ internal class IoUringEventLoop(
             ?: error("io_uring SQ ring full (size=$ringSize)")
         prepare(sqe)
         val slot = acquireSlot()
-        multishotCallbacks[slot] = onCqe
+        callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
         return slot
+    }
+
+    /**
+     * Submits a single-shot SQE and routes the CQE to [onCqe] (fire-and-forget).
+     *
+     * Unlike [submitMultishot], this is for SQEs that produce exactly one CQE
+     * (e.g., SEND, WRITEV). The slot is released after the first callback.
+     * Does not return a slot index (cancellation not supported — use
+     * `close(fd)` for implicit kernel cancellation).
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param prepare Fills in the SQE via `io_uring_prep_*` functions.
+     * @param onCqe   Callback invoked with `(res, flags)` when the CQE arrives.
+     */
+    internal fun submitCallback(
+        prepare: (CPointer<io_uring_sqe>) -> Unit,
+        onCqe: (res: Int, flags: UInt) -> Unit,
+    ) {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        prepare(sqe)
+        val slot = acquireSlot()
+        callbackSlots[slot] = onCqe
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
     }
 
     /**
@@ -513,7 +609,7 @@ internal class IoUringEventLoop(
      */
     internal fun cancelMultishot(slot: Int) {
         // Replace with no-op; the drain loop releases the slot on F_MORE=0.
-        multishotCallbacks[slot] = { _, _ -> }
+        callbackSlots[slot] = { _, _ -> }
         val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return
         val userData = slot.toULong() + SLOT_BASE
         io_uring_prep_cancel64(cancelSqe, userData, 0)
@@ -544,7 +640,7 @@ internal class IoUringEventLoop(
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
         val slot = acquireSlot()
-        multishotCallbacks[slot] = onCqe
+        callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
         return slot
@@ -646,13 +742,14 @@ internal class IoUringEventLoop(
 
                     val slot = (userData - SLOT_BASE).toInt()
 
-                    // Multishot path: invoke callback, release slot only when
-                    // IORING_CQE_F_MORE drops (kernel will produce no more CQEs).
-                    val msCb = multishotCallbacks[slot]
+                    // Callback path (multishot + single-shot fire-and-forget):
+                    // invoke callback, release slot when F_MORE drops.
+                    // Single-shot SQEs never set F_MORE, so slot is released on first CQE.
+                    val msCb = callbackSlots[slot]
                     if (msCb != null) {
                         msCb(res, cqeFlags)
                         if (keel_cqe_has_more(cqeFlags) == 0) {
-                            multishotCallbacks[slot] = null
+                            callbackSlots[slot] = null
                             releaseSlot(slot)
                         }
                         continue
@@ -660,29 +757,23 @@ internal class IoUringEventLoop(
 
                     // SEND_ZC path: two CQEs per operation.
                     // First CQE: store send result, wait for second.
-                    // Second CQE: resume continuation with stored result.
+                    // Second CQE: resume continuation or invoke callback with stored result.
                     val zcPending = sendZcPendingResult[slot]
                     if (zcPending != SEND_ZC_UNUSED) {
                         if (zcPending == SEND_ZC_UNUSED + 1) {
                             // First CQE: store send result
                             sendZcPendingResult[slot] = res
                             if (keel_cqe_has_more(cqeFlags) == 0) {
-                                // No notification CQE — resume immediately
+                                // No notification CQE — complete immediately
                                 sendZcPendingResult[slot] = SEND_ZC_UNUSED
-                                val cont = contSlots[slot] ?: continue
-                                contSlots[slot] = null
-                                releaseSlot(slot)
-                                cont.resume(res)
+                                completeZcSlot(slot, res)
                             }
                             // F_MORE set → wait for second CQE
                         } else {
                             // Second CQE: buffer release notification
                             val sendResult = zcPending
                             sendZcPendingResult[slot] = SEND_ZC_UNUSED
-                            val cont = contSlots[slot] ?: continue
-                            contSlots[slot] = null
-                            releaseSlot(slot)
-                            cont.resume(sendResult)
+                            completeZcSlot(slot, sendResult)
                         }
                         continue
                     }

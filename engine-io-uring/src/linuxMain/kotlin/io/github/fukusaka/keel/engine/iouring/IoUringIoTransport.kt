@@ -34,8 +34,8 @@ internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
  * io_uring transport-layer I/O operations.
  *
  * Encapsulates the write buffering, I/O mode selection, and flush logic
- * that is shared between [IoUringPipelinedChannel] (suspend/pipeline) and the pipeline
- * HeadHandler (fire-and-forget, to be added in a follow-up PR).
+ * for both Pipeline mode (fire-and-forget via HeadHandler) and Channel mode
+ * (fire-and-forget + [awaitPendingFlush] for completion guarantee).
  *
  * **I/O modes**: three flush strategies selected by [IoModeSelector]:
  * - [IoMode.CQE]: pure io_uring path (submit SEND SQE, wait for CQE)
@@ -81,35 +81,54 @@ internal class IoUringIoTransport(
     }
 
     /**
-     * Fire-and-forget flush for the pipeline HeadHandler path.
+     * Fire-and-forget flush with [IoModeSelector]-driven strategy.
      *
-     * Attempts direct `send()` for each pending write. If EAGAIN occurs,
-     * the current and remaining writes are submitted as async SEND SQEs
-     * via [submitAsyncSendChain]. The [onFlushComplete] callback is invoked
-     * when ALL async sends complete.
+     * Selects the I/O mode per connection and dispatches to the appropriate
+     * flush strategy. All three modes are supported as fire-and-forget:
+     * - [IoMode.FALLBACK_CQE]: direct `send()`, EAGAIN → async SEND SQE
+     * - [IoMode.CQE]: async SEND SQE (single) or WRITEV SQE (gather)
+     * - [IoMode.SEND_ZC]: async SEND_ZC SQE with 2-CQE callback
      *
      * @return true if flush completed synchronously, false if async pending.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+
+        val rawMode = writeModeSelector.select(stats)
+        val mode = if (rawMode == IoMode.SEND_ZC && !capabilities.sendZc) IoMode.CQE else rawMode
+
         flushHadEagain = false
         flushBytesWritten = 0L
-        var i = 0
         try {
-            while (i < pendingWrites.size) {
-                val pw = pendingWrites[i]
-                if (!flushSingleFireAndForget(pw)) {
-                    // EAGAIN: pw is handled by submitAsyncSend.
-                    // Submit remaining writes as async chain.
-                    asyncFlushPending = true
-                    submitAsyncSendChain(i + 1)
-                    return false
-                }
-                i++
+            return when (mode) {
+                IoMode.FALLBACK_CQE -> flushDirectSend()
+                IoMode.CQE -> { flushCqe(); false }
+                IoMode.SEND_ZC -> { flushSendZc(); false }
             }
         } finally {
             stats.recordFlush(flushHadEagain, flushBytesWritten)
             pendingWrites.clear()
+        }
+    }
+
+    // --- FALLBACK_CQE: direct send → EAGAIN → async SEND SQE ---
+
+    /**
+     * Attempts direct POSIX `send()` for each pending write.
+     * On EAGAIN, falls back to async SEND SQE for the remainder.
+     *
+     * @return true if all data sent synchronously, false if async pending.
+     */
+    private fun flushDirectSend(): Boolean {
+        var i = 0
+        while (i < pendingWrites.size) {
+            val pw = pendingWrites[i]
+            if (!flushDirectSendSingle(pw)) {
+                asyncFlushPending = true
+                submitAsyncSendChain(i + 1)
+                return false
+            }
+            i++
         }
         return true
     }
@@ -119,11 +138,10 @@ internal class IoUringIoTransport(
      *
      * On success, releases the buffer and returns true.
      * On EAGAIN, submits async send (which retains the buffer) and returns false.
-     * The buffer ownership is transferred to [submitAsyncSend] on EAGAIN.
      *
      * @return true if fully sent synchronously, false if async SEND SQE submitted.
      */
-    private fun flushSingleFireAndForget(pw: PendingWrite): Boolean {
+    private fun flushDirectSendSingle(pw: PendingWrite): Boolean {
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
@@ -194,7 +212,7 @@ internal class IoUringIoTransport(
         onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
-        eventLoop.submitMultishot(
+        eventLoop.submitCallback(
             prepare = { sqe ->
                 io_uring_prep_send(sqe, fd, ptr, length.convert(), MSG_NOSIGNAL)
             },
@@ -216,12 +234,172 @@ internal class IoUringIoTransport(
     /**
      * Submits a SEND SQE for a single buffer (standalone, not part of a chain).
      *
-     * Used by [flushSingleFireAndForget] when only one PendingWrite exists.
-     * Invokes [onFlushComplete] after all bytes are sent.
+     * Used by [flushDirectSend] (EAGAIN fallback) and [flushCqe] (single buffer).
      */
     private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
         submitAsyncSendSequential(buf, offset, length) {
             onAsyncFlushDone()
+        }
+    }
+
+    // --- CQE mode: all I/O via io_uring SQE/CQE ---
+
+    /**
+     * Submits all pending writes as io_uring SQEs without direct syscall attempt.
+     *
+     * Single buffer uses SEND SQE; multiple buffers use WRITEV SQE (gather write).
+     */
+    private fun flushCqe() {
+        asyncFlushPending = true
+        if (pendingWrites.size == 1) {
+            val pw = pendingWrites[0]
+            submitAsyncSend(pw.buf, pw.offset, pw.length)
+        } else {
+            submitAsyncWritev()
+        }
+    }
+
+    /**
+     * Submits all pending writes as a single WRITEV SQE via callback.
+     *
+     * On partial writev, fully-written buffers are released and the remainder
+     * is retried via [submitAsyncSendSequential].
+     */
+    private fun submitAsyncWritev() {
+        val count = pendingWrites.size
+        val totalBytes = pendingWrites.sumOf { it.length }
+        val writes = ArrayList(pendingWrites) // snapshot before clear
+
+        val iovecs: kotlinx.cinterop.CPointer<io_uring.iovec>
+        memScoped {
+            val bases = allocArray<COpaquePointerVar>(count)
+            val lens = allocArray<ULongVar>(count)
+            for ((i, pw) in writes.withIndex()) {
+                bases[i] = (pw.buf.unsafePointer + pw.offset)
+                lens[i] = pw.length.convert()
+            }
+            iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
+                ?: error("keel_alloc_iovec failed (OOM)")
+        }
+
+        eventLoop.submitWritevCallback(fd, iovecs, count.toUInt()) { res ->
+            io_uring.keel_free_iovec(iovecs)
+            val writtenBytes = if (res > 0) res else 0
+            if (writtenBytes >= totalBytes) {
+                for (pw in writes) pw.buf.release()
+                onAsyncFlushDone()
+            } else {
+                // Partial writev: release fully-written, retry remainder sequentially.
+                var consumed = 0
+                var splitIndex = -1
+                for ((i, pw) in writes.withIndex()) {
+                    if (consumed + pw.length <= writtenBytes) {
+                        consumed += pw.length
+                        pw.buf.release()
+                    } else {
+                        splitIndex = i
+                        break
+                    }
+                }
+                if (splitIndex < 0) {
+                    // All buffers fully written (shouldn't happen, but safe)
+                    onAsyncFlushDone()
+                } else {
+                    // Send remaining buffers sequentially via SEND chain.
+                    submitAsyncWritevRemainder(writes, splitIndex, writtenBytes - consumed)
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends remaining buffers from a partial writev sequentially.
+     *
+     * The split buffer (at [splitIndex]) may be partially written;
+     * [alreadySent] bytes are skipped. Subsequent buffers are sent in full.
+     * [onAsyncFlushDone] is called after the last buffer completes.
+     */
+    private fun submitAsyncWritevRemainder(
+        writes: List<PendingWrite>, splitIndex: Int, alreadySent: Int,
+    ) {
+        val pw = writes[splitIndex]
+        val offset = pw.offset + alreadySent.coerceAtLeast(0)
+        val length = pw.length - alreadySent.coerceAtLeast(0)
+        submitAsyncSendSequential(pw.buf, offset, length) {
+            // Send remaining buffers after the split point.
+            val nextIndex = splitIndex + 1
+            if (nextIndex >= writes.size) {
+                onAsyncFlushDone()
+            } else {
+                submitAsyncWritevRemainderFrom(writes, nextIndex)
+            }
+        }
+    }
+
+    /**
+     * Sends buffers from [startIndex] to end sequentially.
+     * Each buffer starts after the previous completes.
+     */
+    private fun submitAsyncWritevRemainderFrom(writes: List<PendingWrite>, startIndex: Int) {
+        if (startIndex >= writes.size) {
+            onAsyncFlushDone()
+            return
+        }
+        val pw = writes[startIndex]
+        submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
+            submitAsyncWritevRemainderFrom(writes, startIndex + 1)
+        }
+    }
+
+    // --- SEND_ZC mode: zero-copy send via 2-CQE callback ---
+
+    /**
+     * Submits all pending writes as SEND_ZC SQEs.
+     *
+     * Buffers are sent sequentially (next buffer starts after previous completes)
+     * because `IORING_OP_SENDMSG_ZC` (gather zero-copy) is not implemented.
+     */
+    private fun flushSendZc() {
+        asyncFlushPending = true
+        submitAsyncSendZcChain(0)
+    }
+
+    /**
+     * Submits [pendingWrites] from [index] as sequential SEND_ZC SQEs.
+     *
+     * Each buffer is sent after the previous fully completes, preserving
+     * TCP byte-stream order. [onAsyncFlushDone] is called after the last buffer.
+     */
+    private fun submitAsyncSendZcChain(index: Int) {
+        if (index >= pendingWrites.size) {
+            onAsyncFlushDone()
+            return
+        }
+        val pw = pendingWrites[index]
+        submitAsyncSendZcSequential(pw.buf, pw.offset, pw.length) {
+            submitAsyncSendZcChain(index + 1)
+        }
+    }
+
+    /**
+     * Submits a single SEND_ZC SQE and invokes [onComplete] after all bytes are sent.
+     *
+     * Handles partial sends by recursively submitting for the remainder.
+     * Buffer is released after completion.
+     */
+    private fun submitAsyncSendZcSequential(
+        buf: IoBuf, offset: Int, length: Int, onComplete: () -> Unit,
+    ) {
+        val ptr = (buf.unsafePointer + offset)!!
+        eventLoop.submitSendZcCallback(fd, ptr, length.convert(), MSG_NOSIGNAL) { res ->
+            val sent = if (res > 0) res else 0
+            val remaining = length - sent
+            if (remaining > 0 && res > 0) {
+                submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
+            } else {
+                buf.release()
+                onComplete()
+            }
         }
     }
 
@@ -266,192 +444,4 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
     }
 
-    // --- Suspend-based flush (used by IoUringPipelinedChannel Channel mode) ---
-
-    /**
-     * Returns true if there are pending writes to flush.
-     */
-    internal fun hasPendingWrites(): Boolean = pendingWrites.isNotEmpty()
-
-    /**
-     * Sends all buffered writes via suspend-based I/O.
-     *
-     * Called by Channel mode flush. Uses [IoModeSelector] to choose
-     * the optimal strategy per connection.
-     */
-    internal suspend fun flushSuspend() {
-        flushHadEagain = false
-        flushBytesWritten = 0L
-        val rawMode = writeModeSelector.select(stats)
-        val mode = if (rawMode == IoMode.SEND_ZC && !capabilities.sendZc) IoMode.CQE else rawMode
-        try {
-            if (pendingWrites.size == 1) {
-                when (mode) {
-                    IoMode.CQE -> flushSingleViaCqe(pendingWrites[0])
-                    IoMode.FALLBACK_CQE -> flushSingleDirect(pendingWrites[0])
-                    IoMode.SEND_ZC -> flushSingleViaZc(pendingWrites[0])
-                }
-            } else {
-                // Gather write always uses CQE — batching amortises SQE overhead.
-                flushGatherViaCqe()
-            }
-        } finally {
-            stats.recordFlush(flushHadEagain, flushBytesWritten)
-            pendingWrites.clear()
-        }
-    }
-
-    // --- Flush strategies ---
-
-    /**
-     * Sends a single [PendingWrite] via io_uring `IORING_OP_SEND` SQE/CQE.
-     *
-     * Loops until all bytes are sent, submitting a new SQE on each partial
-     * write until the full length is covered or an error occurs.
-     */
-    internal suspend fun flushSingleViaCqe(pw: PendingWrite) {
-        try {
-            var written = 0
-            while (written < pw.length) {
-                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-                val remaining = (pw.length - written).toULong()
-                val res = eventLoop.submitSend(fd, ptr, remaining, 0)
-                if (res > 0) {
-                    written += res
-                    flushBytesWritten += res
-                } else break
-            }
-        } finally {
-            pw.buf.release()
-        }
-    }
-
-    /**
-     * Sends a single [PendingWrite] via direct POSIX `send()` syscall.
-     *
-     * Attempts the syscall directly, bypassing io_uring SQE/CQE overhead.
-     * If `send()` returns EAGAIN (socket send buffer full), falls back to
-     * [flushSingleViaCqe] for the remainder.
-     */
-    private suspend fun flushSingleDirect(pw: PendingWrite) {
-        try {
-            var written = 0
-            while (written < pw.length) {
-                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-                val remaining = (pw.length - written).toULong()
-                val n = platform.posix.send(fd, ptr, remaining, 0)
-                when {
-                    n > 0 -> {
-                        written += n.toInt()
-                        flushBytesWritten += n
-                    }
-                    n == 0L -> break
-                    else -> {
-                        val err = platform.posix.errno
-                        if (err == EAGAIN || err == EWOULDBLOCK) {
-                            flushHadEagain = true
-                            // CQE fallback: retain buf for the new PendingWrite.
-                            pw.buf.retain()
-                            flushSingleViaCqe(
-                                PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                            )
-                            return
-                        }
-                        break
-                    }
-                }
-            }
-        } finally {
-            pw.buf.release()
-        }
-    }
-
-    /**
-     * Sends a single [PendingWrite] via zero-copy `IORING_OP_SEND_ZC`.
-     *
-     * The kernel sends data directly from user-space memory. [submitSendZc]
-     * suspends until BOTH CQEs arrive (send result + buffer release).
-     */
-    private suspend fun flushSingleViaZc(pw: PendingWrite) {
-        try {
-            var written = 0
-            while (written < pw.length) {
-                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-                val remaining = (pw.length - written).toULong()
-                val res = eventLoop.submitSendZc(fd, ptr, remaining, 0)
-                if (res > 0) {
-                    written += res
-                    flushBytesWritten += res
-                } else break
-            }
-        } finally {
-            pw.buf.release()
-        }
-    }
-
-    /**
-     * Sends all pending buffers via `IORING_OP_WRITEV` (gather write).
-     *
-     * [keel_alloc_iovec] creates a heap-allocated iovec array from the pending
-     * write pointers and lengths. The array must remain valid until the CQE
-     * arrives, so it is freed after the CQE.
-     *
-     * On partial writev, walks the PendingWrite list to find the split point:
-     * fully-written buffers are released, the remainder retries via [flushSingleViaCqe].
-     */
-    private suspend fun flushGatherViaCqe() {
-        val count = pendingWrites.size
-        val totalBytes = pendingWrites.sumOf { it.length }
-
-        val iovecs: kotlinx.cinterop.CPointer<iovec>
-        memScoped {
-            val bases = allocArray<COpaquePointerVar>(count)
-            val lens = allocArray<ULongVar>(count)
-            for ((i, pw) in pendingWrites.withIndex()) {
-                bases[i] = (pw.buf.unsafePointer + pw.offset)
-                lens[i] = pw.length.convert()
-            }
-            iovecs = keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
-                ?: error("keel_alloc_iovec failed (OOM)")
-        }
-
-        val writtenBytes: Int
-        try {
-            val res = eventLoop.submitWritev(fd, iovecs, count.toUInt())
-            writtenBytes = if (res > 0) res else 0
-        } catch (e: Throwable) {
-            keel_free_iovec(iovecs)
-            for (pw in pendingWrites) pw.buf.release()
-            throw e
-        }
-        keel_free_iovec(iovecs)
-
-        if (writtenBytes >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
-            return
-        }
-
-        // Partial writev: release fully-written buffers, retry the rest.
-        var i = 0
-        var consumed = 0
-        try {
-            while (i < pendingWrites.size) {
-                val pw = pendingWrites[i]
-                if (consumed + pw.length <= writtenBytes) {
-                    consumed += pw.length
-                    pw.buf.release()
-                } else {
-                    val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                    flushSingleViaCqe(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
-                    consumed += pw.length
-                }
-                i++
-            }
-        } catch (e: Throwable) {
-            for (j in i + 1 until pendingWrites.size) {
-                pendingWrites[j].buf.release()
-            }
-            throw e
-        }
-    }
 }
