@@ -80,8 +80,8 @@ interface ChannelInboundHandler : ChannelHandler {
      * Handlers that are interested in a specific event type should check
      * `event` and either handle it or propagate to the next handler.
      *
-     * Example: [TlsHandler] fires `TlsHandshakeComplete` after a
-     * successful TLS handshake so downstream handlers can act on it.
+     * Example: a TLS handler fires a handshake-complete event so
+     * downstream handlers can act on it (e.g., start sending data).
      */
     fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
         ctx.propagateUserEvent(event)
