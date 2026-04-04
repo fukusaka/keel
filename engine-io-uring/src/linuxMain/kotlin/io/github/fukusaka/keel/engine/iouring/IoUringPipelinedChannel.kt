@@ -193,14 +193,25 @@ internal class IoUringPipelinedChannel(
      *
      * Enters the pipeline from TAIL and traverses outbound handlers before
      * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [IoUringIoTransport.flush].
-     * Fire-and-forget: if send buffer is full, the transport submits async
-     * SEND SQE and retries via CQE callback.
+     * If send buffer is full, the transport submits async SEND SQE
+     * and retries via CQE callback.
      *
      * @throws IllegalStateException if the channel is closed.
      */
-    override suspend fun flush() {
+    override fun requestFlush() {
         check(!closed) { "Channel is closed" }
         pipeline.requestFlush()
+    }
+
+    /**
+     * Suspends until pending async flush completes.
+     * Returns immediately if the last flush completed synchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
+     */
+    override suspend fun awaitFlushComplete() {
+        check(!closed) { "Channel is closed" }
+        transport.awaitPendingFlush()
     }
 
     /** No-op. EOF is detected via [read] returning -1. */

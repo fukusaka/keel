@@ -122,14 +122,24 @@ internal class EpollPipelinedChannel(
      *
      * Enters the pipeline from TAIL and traverses outbound handlers before
      * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [EpollIoTransport.flush].
-     * Fire-and-forget: if EAGAIN, the transport registers EPOLLOUT callback
-     * and retries asynchronously.
+     * If EAGAIN, the transport registers EPOLLOUT callback and retries asynchronously.
      *
      * @throws IllegalStateException if the channel is closed.
      */
-    override suspend fun flush() {
+    override fun requestFlush() {
         check(!closed) { "Channel is closed" }
         pipeline.requestFlush()
+    }
+
+    /**
+     * Suspends until pending async flush completes.
+     * Returns immediately if the last flush completed synchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
+     */
+    override suspend fun awaitFlushComplete() {
+        check(!closed) { "Channel is closed" }
+        transport.awaitPendingFlush()
     }
 
     /** No-op. EOF is detected via [read] returning -1. */

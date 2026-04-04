@@ -118,18 +118,29 @@ internal class NioPipelinedChannel(
     }
 
     /**
-     * Flushes buffered writes through the pipeline's outbound path.
+     * Initiates a flush through the pipeline's outbound path (fire-and-forget).
      *
      * Enters the pipeline from TAIL and traverses outbound handlers before
      * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport.flush].
-     * Fire-and-forget: if the send buffer is full, the transport registers
-     * OP_WRITE callback and retries asynchronously.
+     * If the send buffer is full, the transport registers OP_WRITE callback
+     * and retries asynchronously.
      *
      * @throws IllegalStateException if the channel is closed.
      */
-    override suspend fun flush() {
+    override fun requestFlush() {
         check(socketChannel.isOpen) { "Channel is closed" }
         pipeline.requestFlush()
+    }
+
+    /**
+     * Suspends until pending async flush completes.
+     * Returns immediately if the last flush completed synchronously.
+     *
+     * @throws IllegalStateException if the channel is closed.
+     */
+    override suspend fun awaitFlushComplete() {
+        check(socketChannel.isOpen) { "Channel is closed" }
+        transport.awaitPendingFlush()
     }
 
     /** No-op. JVM SocketChannel has no close-completion callback. */

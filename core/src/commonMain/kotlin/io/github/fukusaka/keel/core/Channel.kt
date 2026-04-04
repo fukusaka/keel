@@ -89,10 +89,9 @@ interface Channel : AutoCloseable {
      * Flushes all buffered outbound data to the network and suspends
      * until all bytes are sent.
      *
-     * Equivalent to [requestFlush] + [awaitFlushComplete]. Enables
-     * writev/gather-write optimisation when multiple [write] calls
-     * precede a single flush. Retained buffers are released after
-     * the data is sent.
+     * Default implementation calls [requestFlush] + [awaitFlushComplete].
+     * Engines that override this directly (e.g., Netty, NWConnection) do
+     * not need to implement [requestFlush]/[awaitFlushComplete].
      *
      * For fire-and-forget flushing (no completion wait), call
      * [requestFlush] directly.
@@ -110,9 +109,13 @@ interface Channel : AutoCloseable {
      * send on EAGAIN). Use [awaitFlushComplete] to wait for all
      * pending data to be sent.
      *
-     * **Thread safety**: must be called on the EventLoop thread.
+     * Default: throws [UnsupportedOperationException]. Engines that use
+     * the [requestFlush] + [awaitFlushComplete] pattern must override.
+     * Engines that override [flush] directly do not need this.
      */
-    fun requestFlush()
+    fun requestFlush() {
+        throw UnsupportedOperationException("requestFlush() not implemented. Override flush() or requestFlush()+awaitFlushComplete().")
+    }
 
     /**
      * Suspends until all pending flush operations complete.
@@ -120,9 +123,11 @@ interface Channel : AutoCloseable {
      * Returns immediately if no async flush is pending (i.e., the
      * last [requestFlush] completed synchronously).
      *
-     * **Thread safety**: must be called on the EventLoop thread.
+     * Default: no-op (assumes [flush] override handles completion).
+     * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
+     * must override.
      */
-    suspend fun awaitFlushComplete()
+    suspend fun awaitFlushComplete() {}
 
     // --- Dispatcher ---
 

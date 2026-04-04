@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ULongVar
@@ -164,13 +165,27 @@ internal class EpollIoTransport(
         return false
     }
 
+    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+
     /** Registers EPOLLOUT callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
         eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE) {
             val done = flush()
             if (done) {
+                flushContinuation?.let { cont ->
+                    flushContinuation = null
+                    cont.resume(Unit)
+                }
                 onFlushComplete?.invoke()
             }
+        }
+    }
+
+    override suspend fun awaitPendingFlush() {
+        if (pendingWrites.isEmpty()) return
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            flushContinuation = cont
+            cont.invokeOnCancellation { flushContinuation = null }
         }
     }
 
