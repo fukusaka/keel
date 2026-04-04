@@ -60,7 +60,7 @@ import kotlinx.cinterop.ptr
  * @param allocator   Passed to accepted [NwChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class NwServerChannel(
+internal class NwServer(
     private val listener: nw_listener_t,
     localAddress: SocketAddress,
     private val allocator: BufferAllocator,

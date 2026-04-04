@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.core
 
 /**
- * Marker interface for a [ServerChannel] whose accepted connections
+ * Marker interface for a [Server] whose accepted connections
  * implement [PushChannel] (push-model read).
  *
- * A class implementing [PushServerChannel] MUST also implement [ServerChannel].
+ * A class implementing [PushServerChannel] MUST also implement [Server].
  * The [ServerChannel.accept] method returns [Channel] instances that also
  * implement [PushChannel], enabling callers to use
  * [PushChannel.asPushSuspendSource] for zero-copy reading.

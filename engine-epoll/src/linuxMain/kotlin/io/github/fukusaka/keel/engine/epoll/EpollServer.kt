@@ -35,12 +35,12 @@ import io.github.fukusaka.keel.logging.Logger
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollServerChannel(
+internal class EpollServer(
     private val serverFd: Int,
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServerChannel"),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
 ) : ServerChannel {
 
     private var _active = true

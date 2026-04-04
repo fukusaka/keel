@@ -37,7 +37,7 @@ import platform.posix.strerror
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → KqueueServerChannel
+ *   |     +-- bind() → KqueueServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -71,7 +71,7 @@ class KqueueEngine(
      * Binds a TCP server on [host]:[port] and returns a [ServerChannel].
      *
      * Creates a server socket, registers it with the boss EventLoop's kqueue,
-     * and returns a [KqueueServerChannel] whose [accept][ServerChannel.accept]
+     * and returns a [KqueueServer] whose [accept][ServerChannel.accept]
      * distributes connections to worker EventLoops in round-robin.
      *
      * @throws IllegalStateException if the engine is already closed.
@@ -100,7 +100,7 @@ class KqueueEngine(
 
         val localAddr = SocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return KqueueServerChannel(serverFd, bossLoop, workerGroup, localAddr, logger)
+        return KqueueServer(serverFd, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**

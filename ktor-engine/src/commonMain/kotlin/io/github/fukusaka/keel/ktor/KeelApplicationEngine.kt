@@ -12,7 +12,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.PushChannel
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.logging.error
 import kotlin.coroutines.ContinuationInterceptor
 import io.ktor.events.*
@@ -160,7 +160,7 @@ public class KeelApplicationEngine(
             applicationProvider().parentCoroutineContext + Dispatchers.Default
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
-            val servers = mutableListOf<ServerChannel>()
+            val servers = mutableListOf<Server>()
 
             try {
                 val resolved = connectors.map { connector ->
@@ -197,7 +197,7 @@ public class KeelApplicationEngine(
      * CPU spin. The delay resets on a successful accept (exponential
      * backoff mode).
      */
-    private suspend fun CoroutineScope.acceptLoop(server: ServerChannel) {
+    private suspend fun CoroutineScope.acceptLoop(server: Server) {
         var currentDelayMs = when (val b = configuration.acceptBackoff) {
             is AcceptBackoff.Fixed -> b.delayMs
             is AcceptBackoff.Exponential -> b.initialMs

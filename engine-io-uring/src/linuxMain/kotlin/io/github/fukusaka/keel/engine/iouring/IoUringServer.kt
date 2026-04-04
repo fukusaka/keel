@@ -41,14 +41,14 @@ import kotlin.coroutines.resumeWithException
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class IoUringServerChannel(
+internal class IoUringServer(
     private val serverFd: Int,
     private val bossLoop: IoUringEventLoop,
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServerChannel"),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
 ) : ServerChannel, PushServerChannel {
 
     private var _active = true

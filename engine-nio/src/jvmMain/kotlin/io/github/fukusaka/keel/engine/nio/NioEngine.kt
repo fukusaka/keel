@@ -33,7 +33,7 @@ import java.nio.channels.SocketChannel
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → NioServerChannel (cached SelectionKey)
+ *   |     +-- bind() → NioServer (cached SelectionKey)
  *   |           |
  *   |           +-- accept() → registerChannel on workerLoop → NioPipelinedChannel
  *   |
@@ -62,8 +62,8 @@ class NioEngine(
      * Binds a suspend-based server on [host]:[port].
      *
      * Opens a [ServerSocketChannel] in non-blocking mode, registers it with
-     * the boss EventLoop's Selector, and returns a [NioServerChannel] whose
-     * [accept][NioServerChannel.accept] returns [NioPipelinedChannel] instances.
+     * the boss EventLoop's Selector, and returns a [NioServer] whose
+     * [accept][NioServer.accept] returns [NioPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
@@ -81,7 +81,7 @@ class NioEngine(
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return NioServerChannel(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, logger)
+        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, logger)
     }
 
     /**

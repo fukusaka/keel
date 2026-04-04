@@ -24,7 +24,7 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * @param localAddress Bind address of this server channel.
  * @param allocator    Passed to accepted [NodeChannel]s.
  */
-internal class NodeServerChannel(
+internal class NodeServer(
     private val server: Server,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,

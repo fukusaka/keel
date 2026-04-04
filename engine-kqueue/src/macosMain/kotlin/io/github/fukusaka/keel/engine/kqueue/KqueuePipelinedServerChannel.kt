@@ -19,7 +19,7 @@ import platform.posix.errno
  * worker EventLoops in round-robin, where each creates a
  * [KqueuePipelinedChannel] and arms read callbacks.
  *
- * Unlike [KqueueServerChannel] (suspend-based), this server channel uses
+ * Unlike [KqueueServer] (suspend-based), this server channel uses
  * callback-based registration for non-suspend pipeline processing.
  *
  * ```
