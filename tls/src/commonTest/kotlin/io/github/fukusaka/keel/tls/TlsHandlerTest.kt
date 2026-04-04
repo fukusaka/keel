@@ -293,6 +293,93 @@ class TlsHandlerTest {
     }
 
     @Test
+    fun `handshake error from protect propagates error and stops processing`() {
+        val errorCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                throw TlsException("certificate rejected", TlsErrorCategory.CERTIFICATE_INVALID)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(errorCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+
+        // Error should be propagated, not thrown.
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.CERTIFICATE_INVALID, (recorder.errors[0] as TlsException).category)
+        // No plaintext should reach downstream.
+        assertTrue(recorder.reads.isEmpty())
+    }
+
+    @Test
+    fun `handshake flush stall propagates error`() {
+        val stallCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, 0, 0) // stalled: no progress
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(stallCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.PROTOCOL_ERROR, (recorder.errors[0] as TlsException).category)
+    }
+
+    @Test
+    fun `unprotect TlsException propagates error`() {
+        val errorCodec = object : TlsCodec {
+            override var isHandshakeComplete = true
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                throw TlsException("bad record MAC", TlsErrorCategory.PROTOCOL_ERROR)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.OK, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(errorCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.PROTOCOL_ERROR, (recorder.errors[0] as TlsException).category)
+    }
+
+    @Test
     fun `handlerRemoved releases accumulate buffer and closes codec`() {
         val codec = MockTlsCodec()
         val handler = TlsHandler(codec)

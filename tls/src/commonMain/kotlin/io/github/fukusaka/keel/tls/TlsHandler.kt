@@ -70,7 +70,13 @@ class TlsHandler(
 
         while (input.readableBytes > 0) {
             val plainBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
-            val result = codec.unprotect(input, plainBuf)
+            val result = try {
+                codec.unprotect(input, plainBuf)
+            } catch (e: TlsException) {
+                plainBuf.release()
+                ctx.propagateError(e)
+                return
+            }
             input.readerIndex += result.bytesConsumed
 
             when (result.status) {
@@ -90,7 +96,7 @@ class TlsHandler(
                 }
                 TlsResult.NEED_WRAP -> {
                     plainBuf.release()
-                    flushHandshakeResponse(ctx)
+                    if (!flushHandshakeResponse(ctx)) return
                     // After sending handshake response, retry unprotect.
                 }
                 TlsResult.BUFFER_OVERFLOW -> {
@@ -219,8 +225,11 @@ class TlsHandler(
      * Handles errors from protect (TlsException, BUFFER_OVERFLOW, CLOSED)
      * by propagating to the pipeline, ensuring the connection is cleaned up
      * on handshake failures such as certificate rejection or protocol errors.
+     *
+     * @return true if handshake flush succeeded, false if an error was
+     *         propagated (caller must stop processing).
      */
-    private fun flushHandshakeResponse(ctx: ChannelHandlerContext) {
+    private fun flushHandshakeResponse(ctx: ChannelHandlerContext): Boolean {
         val emptyBuf = ctx.allocator.allocate(0)
         try {
             var iterations = 0
@@ -239,7 +248,7 @@ class TlsHandler(
                         cipherBuf.release()
                     }
                     ctx.propagateError(e)
-                    return
+                    return false
                 }
                 if (cipherBuf.readableBytes > 0) {
                     ctx.propagateWrite(cipherBuf)
@@ -255,14 +264,14 @@ class TlsHandler(
                                 "Handshake flush stalled: NEED_WRAP with 0 bytes produced",
                                 TlsErrorCategory.PROTOCOL_ERROR,
                             ))
-                            return
+                            return false
                         }
                         if (++iterations >= MAX_FLUSH_ITERATIONS) {
                             ctx.propagateError(TlsException(
                                 "Handshake flush exceeded $MAX_FLUSH_ITERATIONS iterations",
                                 TlsErrorCategory.PROTOCOL_ERROR,
                             ))
-                            return
+                            return false
                         }
                     }
                     TlsResult.BUFFER_OVERFLOW -> {
@@ -270,11 +279,11 @@ class TlsHandler(
                             "Output buffer overflow during handshake flush",
                             TlsErrorCategory.BUFFER_ERROR,
                         ))
-                        return
+                        return false
                     }
                     TlsResult.CLOSED -> {
                         ctx.propagateInactive()
-                        return
+                        return false
                     }
                 }
             }
@@ -282,6 +291,7 @@ class TlsHandler(
             emptyBuf.release()
         }
         checkHandshakeComplete(ctx)
+        return true
     }
 
     private fun checkHandshakeComplete(ctx: ChannelHandlerContext) {
