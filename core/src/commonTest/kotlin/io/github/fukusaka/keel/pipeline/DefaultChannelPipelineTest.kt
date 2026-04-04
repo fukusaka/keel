@@ -74,6 +74,11 @@ class DefaultChannelPipelineTest {
             events.add("error:${cause.message}")
             ctx.propagateError(cause)
         }
+
+        override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+            events.add("userEvent:$event")
+            ctx.propagateUserEvent(event)
+        }
     }
 
     private class RecordingOutboundHandler : ChannelOutboundHandler {
@@ -444,5 +449,72 @@ class DefaultChannelPipelineTest {
     fun `context returns null for non-existent handler`() {
         val pipeline = createPipeline()
         assertNull(pipeline.context("non-existent"))
+    }
+
+    // --- User event propagation ---
+
+    @Test
+    fun `notifyUserEvent propagates through inbound handlers`() {
+        val pipeline = createPipeline()
+        val h1 = RecordingInboundHandler()
+        val h2 = RecordingInboundHandler()
+        pipeline.addLast("h1", h1)
+        pipeline.addLast("h2", h2)
+
+        pipeline.notifyUserEvent("handshake-complete")
+
+        assertEquals(listOf("userEvent:handshake-complete"), h1.events)
+        assertEquals(listOf("userEvent:handshake-complete"), h2.events)
+    }
+
+    @Test
+    fun `notifyUserEvent skips outbound-only handlers`() {
+        val pipeline = createPipeline()
+        val outbound = RecordingOutboundHandler()
+        val inbound = RecordingInboundHandler()
+        pipeline.addLast("out", outbound)
+        pipeline.addLast("in", inbound)
+
+        pipeline.notifyUserEvent("event")
+
+        assertTrue(outbound.events.isEmpty())
+        assertEquals(listOf("userEvent:event"), inbound.events)
+    }
+
+    @Test
+    fun `userEvent handler can consume event without propagating`() {
+        val pipeline = createPipeline()
+        val consumer = object : ChannelInboundHandler {
+            var received: Any? = null
+            override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+                received = event
+                // Do not propagate
+            }
+        }
+        val downstream = RecordingInboundHandler()
+        pipeline.addLast("consumer", consumer)
+        pipeline.addLast("downstream", downstream)
+
+        pipeline.notifyUserEvent("consumed")
+
+        assertEquals("consumed", consumer.received)
+        assertTrue(downstream.events.isEmpty())
+    }
+
+    @Test
+    fun `userEvent exception propagates as error`() {
+        val pipeline = createPipeline()
+        val failing = object : ChannelInboundHandler {
+            override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+                throw RuntimeException("event error")
+            }
+        }
+        val errorHandler = RecordingInboundHandler()
+        pipeline.addLast("fail", failing)
+        pipeline.addLast("errors", errorHandler)
+
+        pipeline.notifyUserEvent("bad-event")
+
+        assertEquals(listOf("error:event error"), errorHandler.events)
     }
 }

@@ -50,6 +50,9 @@ interface ChannelHandlerContext {
     /** Propagates an error to the next inbound handler. */
     fun propagateError(cause: Throwable)
 
+    /** Propagates a user event to the next inbound handler. */
+    fun propagateUserEvent(event: Any)
+
     // --- Outbound propagation: next outbound handler ---
 
     /** Propagates a write request to the next outbound handler. */
