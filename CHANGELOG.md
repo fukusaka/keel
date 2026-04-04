@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - tls: add `:tls` module with `TlsCodec`/`TlsCodecFactory` buffer-to-buffer protection API (RFC 8446/9001 terminology: `protect`/`unprotect`)
 - tls: add `TlsHandler` ChannelDuplexHandler for Pipeline integration with zero-copy recv fast path
 - tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
+- tls-mbedtls: add `MbedTlsCodec` TlsCodec implementation with pointer-based BIO adapter (Mbed TLS 4.x, PSA Crypto)
 
 ### Fixed
 
