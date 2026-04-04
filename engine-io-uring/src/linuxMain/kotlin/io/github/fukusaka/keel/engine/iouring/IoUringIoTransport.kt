@@ -212,7 +212,7 @@ internal class IoUringIoTransport(
         onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
-        eventLoop.submitMultishot(
+        eventLoop.submitCallback(
             prepare = { sqe ->
                 io_uring_prep_send(sqe, fd, ptr, length.convert(), MSG_NOSIGNAL)
             },
