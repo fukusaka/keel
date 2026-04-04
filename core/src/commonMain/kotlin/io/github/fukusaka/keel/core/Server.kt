@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.core
 
 /**
- * A server-side channel that listens for incoming connections.
+ * A server that listens for incoming connections.
  *
  * Created by [IoEngine.bind]. Each call to [accept] suspends until
  * a new client connects, then returns a [Channel] for that connection.
@@ -18,7 +18,7 @@ package io.github.fukusaka.keel.core
  * Callers who need Flow semantics can write an extension function wrapping
  * the accept loop above.
  */
-interface ServerChannel : AutoCloseable {
+interface Server : AutoCloseable {
 
     /** Local address this server is bound to. */
     val localAddress: SocketAddress
@@ -37,3 +37,7 @@ interface ServerChannel : AutoCloseable {
     /** Stops listening and releases the server socket. */
     override fun close()
 }
+
+/** Backward-compatibility alias. Use [Server] for new code. */
+@Deprecated("Renamed to Server", ReplaceWith("Server"))
+typealias ServerChannel = Server

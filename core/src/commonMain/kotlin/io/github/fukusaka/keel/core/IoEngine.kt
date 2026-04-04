@@ -35,9 +35,9 @@ interface IoEngine : AutoCloseable {
      *
      * @param host Bind address (e.g. "0.0.0.0" for all interfaces, "127.0.0.1" for loopback).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
-     * @return a [ServerChannel] that accepts incoming connections.
+     * @return a [Server] that accepts incoming connections.
      */
-    suspend fun bind(host: String, port: Int): ServerChannel
+    suspend fun bind(host: String, port: Int): Server
 
     /**
      * Opens an outbound connection to a remote peer.
