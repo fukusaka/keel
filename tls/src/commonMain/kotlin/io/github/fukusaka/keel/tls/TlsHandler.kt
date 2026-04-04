@@ -129,20 +129,18 @@ class TlsHandler(
     private fun mergeWithAccumulate(ctx: ChannelHandlerContext, cipherBuf: IoBuf): IoBuf {
         val acc = accumulate ?: return cipherBuf
         // Append new data to existing accumulate buffer.
+        // copyTo advances both source.readerIndex and dest.writerIndex.
         if (acc.writableBytes < cipherBuf.readableBytes) {
             // Grow: allocate a new buffer large enough for both.
             val newSize = acc.readableBytes + cipherBuf.readableBytes
             val newBuf = ctx.allocator.allocate(newSize)
             acc.copyTo(newBuf, acc.readableBytes)
-            newBuf.writerIndex += acc.readableBytes
             acc.release()
             cipherBuf.copyTo(newBuf, cipherBuf.readableBytes)
-            newBuf.writerIndex += cipherBuf.readableBytes
             accumulate = newBuf
             return newBuf
         }
         cipherBuf.copyTo(acc, cipherBuf.readableBytes)
-        acc.writerIndex += cipherBuf.readableBytes
         return acc
     }
 
@@ -164,9 +162,9 @@ class TlsHandler(
             input.compact()
         } else {
             // Fast path → slow path transition: copy remaining bytes.
+            // copyTo advances both input.readerIndex and acc.writerIndex.
             val acc = ctx.allocator.allocate(remaining)
             input.copyTo(acc, remaining)
-            acc.writerIndex += remaining
             accumulate = acc
         }
     }
