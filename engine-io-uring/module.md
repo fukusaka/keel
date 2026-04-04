@@ -50,6 +50,18 @@ io_uring CQE (multishot recv)
 App:                      suspend channel.read(buf) ← dequeue
 ```
 
+**Ktor path** (`asSuspendSource`): bypasses the pipeline entirely. A separate
+`IoUringPushSource` arms its own multishot recv and delivers data directly
+to `PushToSuspendSourceAdapter` → `BufferedSuspendSource`. This avoids
+`SuspendBridgeHandler`'s `IoBuf.copyTo` overhead.
+
+```
+io_uring CQE (multishot recv, IoUringPushSource)
+  → RingBufferIoBuf → PushToSuspendSourceAdapter
+                         ↓
+Ktor:        BufferedSuspendSource.read() ← zero-copy
+```
+
 ## Write/Flush Path
 
 Both Pipeline and Channel modes share the same outbound path through `IoUringIoTransport`:
