@@ -98,27 +98,33 @@ internal class KqueuePipelinedChannel(
     }
 
     /**
-     * Writes [buf] through the pipeline's outbound path via [SuspendBridgeHandler].
+     * Writes [buf] through the pipeline's outbound path.
      *
-     * Delegates to [ChannelHandlerContext.propagateWrite] which traverses
-     * outbound handlers (e.g. TLS encrypt, HTTP encode) before reaching
+     * Enters the pipeline from TAIL and traverses outbound handlers
+     * (e.g. TLS encrypt, HTTP encode) before reaching
      * [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport].
      *
+     * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
+     * the read loop. This prevents conflict when [asSuspendSource] has
+     * already set up its own read path.
+     *
      * @return number of bytes buffered (actual send happens on [flush]).
-     * @throws IllegalStateException if the channel is closed.
+     * @throws IllegalStateException if the channel is closed or output is shut down.
      */
     override suspend fun write(buf: IoBuf): Int {
         check(!closed) { "Channel is closed" }
+        check(!outputShutdown) { "Output already shut down" }
         val n = buf.readableBytes
         if (n == 0) return 0
-        ensureBridge().write(buf)
+        pipeline.requestWrite(buf)
         return n
     }
 
     /**
      * Flushes buffered writes through the pipeline's outbound path.
      *
-     * Delegates to [ChannelHandlerContext.propagateFlush] → [KqueueIoTransport.flush].
+     * Enters the pipeline from TAIL and traverses outbound handlers before
+     * reaching [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport.flush].
      * Fire-and-forget: if EAGAIN, the transport registers EVFILT_WRITE callback
      * and retries asynchronously.
      *
@@ -126,7 +132,7 @@ internal class KqueuePipelinedChannel(
      */
     override suspend fun flush() {
         check(!closed) { "Channel is closed" }
-        ensureBridge().flush()
+        pipeline.requestFlush()
     }
 
     /** No-op. EOF is detected via [read] returning -1. */
