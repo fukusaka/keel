@@ -238,6 +238,148 @@ class TlsHandlerTest {
     }
 
     @Test
+    fun `handshake flush loops when protect returns NEED_WRAP`() {
+        // Codec that requires 3 protect calls to complete the handshake flight:
+        // protect #1 → NEED_WRAP (partial), #2 → NEED_WRAP (partial), #3 → OK (done).
+        val multiFlushCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+            private var unprotectCalled = false
+            private var flushCount = 0
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                if (!unprotectCalled) {
+                    unprotectCalled = true
+                    return TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+                }
+                // After handshake, decrypt by copying.
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult {
+                flushCount++
+                ciphertext.writeByte(flushCount.toByte())
+                return if (flushCount < 3) {
+                    TlsCodecResult(TlsResult.NEED_WRAP, 0, 1)
+                } else {
+                    isHandshakeComplete = true
+                    TlsCodecResult(TlsResult.OK, 0, 1)
+                }
+            }
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(multiFlushCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        // All 3 flush iterations should have produced transport writes.
+        assertEquals(3, transport.written.size)
+        assertTrue(transport.flushed)
+        transport.written.forEach { it.release() }
+
+        // Handshake should be complete.
+        assertEquals(1, recorder.userEvents.size)
+        assertIs<TlsHandshakeComplete>(recorder.userEvents[0])
+    }
+
+    @Test
+    fun `handshake error from protect propagates error and stops processing`() {
+        val errorCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                throw TlsException("certificate rejected", TlsErrorCategory.CERTIFICATE_INVALID)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(errorCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+
+        // Error should be propagated, not thrown.
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.CERTIFICATE_INVALID, (recorder.errors[0] as TlsException).category)
+        // No plaintext should reach downstream.
+        assertTrue(recorder.reads.isEmpty())
+    }
+
+    @Test
+    fun `handshake flush stall propagates error`() {
+        val stallCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, 0, 0) // stalled: no progress
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(stallCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.PROTOCOL_ERROR, (recorder.errors[0] as TlsException).category)
+    }
+
+    @Test
+    fun `unprotect TlsException propagates error`() {
+        val errorCodec = object : TlsCodec {
+            override var isHandshakeComplete = true
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                throw TlsException("bad record MAC", TlsErrorCategory.PROTOCOL_ERROR)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.OK, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(errorCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        assertEquals(1, recorder.errors.size)
+        assertIs<TlsException>(recorder.errors[0])
+        assertEquals(TlsErrorCategory.PROTOCOL_ERROR, (recorder.errors[0] as TlsException).category)
+    }
+
+    @Test
     fun `handlerRemoved releases accumulate buffer and closes codec`() {
         val codec = MockTlsCodec()
         val handler = TlsHandler(codec)
