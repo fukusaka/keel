@@ -151,31 +151,41 @@ internal class IoUringIoTransport(
     }
 
     /**
-     * Submits remaining [pendingWrites] from [startIndex] as async SEND SQEs.
+     * Submits remaining [pendingWrites] from [startIndex] as a sequential
+     * async SEND chain.
      *
-     * Called when [flushSingleFireAndForget] encounters EAGAIN. Each remaining
-     * PendingWrite is submitted as a chained async send that fires after the
-     * previous one completes. [onFlushComplete] is invoked only after the
-     * last buffer in the chain is fully sent.
+     * Called when [flushSingleFireAndForget] encounters EAGAIN. Buffers are
+     * sent one at a time in order: the next buffer is submitted only after
+     * the current one fully completes. This guarantees TCP byte-stream order
+     * even with partial sends (io_uring CQEs for concurrent SQEs on the
+     * same fd do not guarantee completion order).
+     *
+     * [onFlushComplete] is invoked after the last buffer completes.
      */
     private fun submitAsyncSendChain(startIndex: Int) {
-        for (j in startIndex until pendingWrites.size) {
-            val pw = pendingWrites[j]
-            submitAsyncSend(pw.buf, pw.offset, pw.length, isLast = j == pendingWrites.size - 1)
+        if (startIndex >= pendingWrites.size) {
+            onFlushComplete?.invoke()
+            return
+        }
+        val pw = pendingWrites[startIndex]
+        submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
+            submitAsyncSendChain(startIndex + 1)
         }
     }
 
     /**
-     * Submits a SEND SQE via [IoUringEventLoop.submitMultishot] for async delivery.
+     * Submits a SEND SQE and invokes [onComplete] when all bytes are sent.
      *
      * Takes ownership of [buf] (already retained by the caller's write()).
-     * The buffer is released when the CQE callback fires after all bytes are sent.
-     * Partial sends recurse until complete.
-     *
-     * @param isLast true if this is the last buffer in the flush chain.
-     *               [onFlushComplete] is invoked only when the last buffer completes.
+     * The buffer is released after all bytes are sent or on error.
+     * Partial sends recurse until complete, then [onComplete] is called.
      */
-    private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int, isLast: Boolean = true) {
+    private fun submitAsyncSendSequential(
+        buf: IoBuf,
+        offset: Int,
+        length: Int,
+        onComplete: () -> Unit,
+    ) {
         val ptr = (buf.unsafePointer + offset)!!
         eventLoop.submitMultishot(
             prepare = { sqe ->
@@ -186,16 +196,26 @@ internal class IoUringIoTransport(
                 val remaining = length - sent
                 if (remaining > 0 && res > 0) {
                     // Partial send: submit another SQE for the remainder.
-                    submitAsyncSend(buf, offset + sent, remaining, isLast)
+                    submitAsyncSendSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     // Done (all sent, or error): release the buffer.
                     buf.release()
-                    if (isLast) {
-                        onFlushComplete?.invoke()
-                    }
+                    onComplete()
                 }
             },
         )
+    }
+
+    /**
+     * Submits a SEND SQE for a single buffer (standalone, not part of a chain).
+     *
+     * Used by [flushSingleFireAndForget] when only one PendingWrite exists.
+     * Invokes [onFlushComplete] after all bytes are sent.
+     */
+    private fun submitAsyncSend(buf: IoBuf, offset: Int, length: Int) {
+        submitAsyncSendSequential(buf, offset, length) {
+            onFlushComplete?.invoke()
+        }
     }
 
     override var onFlushComplete: (() -> Unit)? = null
