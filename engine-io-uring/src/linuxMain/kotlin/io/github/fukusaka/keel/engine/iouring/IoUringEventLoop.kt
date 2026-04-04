@@ -374,7 +374,7 @@ internal class IoUringEventLoop(
     // --- Typed SQE submission (hot-path, zero lambda allocation) ---
 
     /**
-     * Fire-and-forget `IORING_OP_SEND_ZC` — callback version of [submitSendZc].
+     * Fire-and-forget `IORING_OP_SEND_ZC` with 2-CQE callback handling.
      *
      * Submits a SEND_ZC SQE and invokes [onComplete] with the send result
      * after BOTH CQEs arrive (send result + buffer release notification).
