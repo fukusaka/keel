@@ -219,15 +219,22 @@ class TlsHandler(
     // --- Handshake support ---
 
     private fun flushHandshakeResponse(ctx: ChannelHandlerContext) {
-        val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
         val emptyBuf = ctx.allocator.allocate(0)
         try {
-            codec.protect(emptyBuf, cipherBuf)
-            if (cipherBuf.readableBytes > 0) {
-                ctx.propagateWrite(cipherBuf)
-                ctx.propagateFlush()
-            } else {
-                cipherBuf.release()
+            // Loop: protect may need multiple calls if the handshake flight
+            // exceeds OUTPUT_BUF_SIZE (e.g., long certificate chains).
+            // NEED_WRAP = output buffer was full, flush and retry.
+            // OK / NEED_MORE_INPUT = done sending, stop.
+            while (true) {
+                val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
+                val result = codec.protect(emptyBuf, cipherBuf)
+                if (cipherBuf.readableBytes > 0) {
+                    ctx.propagateWrite(cipherBuf)
+                    ctx.propagateFlush()
+                } else {
+                    cipherBuf.release()
+                }
+                if (result.status != TlsResult.NEED_WRAP) break
             }
         } finally {
             emptyBuf.release()
