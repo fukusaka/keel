@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - core: add `onUserEvent`/`propagateUserEvent`/`notifyUserEvent` to Pipeline framework for user-defined inbound events (e.g., TLS handshake completion)
+- tls: add `:tls` module with `TlsCodec`/`TlsCodecFactory` buffer-to-buffer protection API (RFC 8446/9001 terminology: `protect`/`unprotect`)
+- tls: add `TlsHandler` ChannelDuplexHandler for Pipeline integration with zero-copy recv fast path
+- tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
 
 ### Changed
 
