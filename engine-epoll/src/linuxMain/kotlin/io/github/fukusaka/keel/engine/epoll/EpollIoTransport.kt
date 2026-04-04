@@ -43,6 +43,12 @@ internal class EpollIoTransport(
 
     override var onFlushComplete: (() -> Unit)? = null
 
+    /**
+     * Buffers [buf] for the next [flush] call.
+     *
+     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
+     * The caller's readerIndex is advanced immediately so it can reuse the buf.
+     */
     override fun write(buf: IoBuf) {
         val bytes = buf.readableBytes
         if (bytes == 0) return
@@ -72,6 +78,12 @@ internal class EpollIoTransport(
         close(fd)
     }
 
+    /**
+     * Writes a single [PendingWrite] via POSIX `write()`.
+     *
+     * On EAGAIN, re-enqueues the remainder and registers EPOLLOUT
+     * callback for async retry.
+     */
     private fun flushSingle(pw: PendingWrite): Boolean {
         var written = 0
         while (written < pw.length) {
@@ -96,6 +108,12 @@ internal class EpollIoTransport(
         return true
     }
 
+    /**
+     * Writes multiple pending buffers via `writev()` (gather write).
+     *
+     * On partial write, fully-written buffers are released and the remainder
+     * is re-enqueued with EPOLLOUT callback for async retry.
+     */
     private fun flushGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
         val writtenBytes: Int
@@ -146,6 +164,7 @@ internal class EpollIoTransport(
         return false
     }
 
+    /** Registers EPOLLOUT callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
         eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE) {
             val done = flush()
@@ -155,5 +174,12 @@ internal class EpollIoTransport(
         }
     }
 
+    /**
+     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
+     * where readable data starts, and the number of bytes to write.
+     *
+     * Offset/length are recorded separately because [IoBuf.readerIndex] is
+     * advanced at write() time so the caller can reuse the buffer immediately.
+     */
     internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

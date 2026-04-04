@@ -12,6 +12,7 @@ import platform.posix.EAGAIN
 import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
+import io.github.fukusaka.keel.logging.Logger
 
 /**
  * epoll-based [ServerChannel] implementation for Linux.
@@ -25,7 +26,7 @@ import platform.posix.errno
  *   bossLoop: epoll_wait() fires EPOLLIN on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → EpollChannel(clientFd, workerLoop, allocator)
+ *   → EpollPipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
@@ -39,6 +40,7 @@ internal class EpollServerChannel(
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServerChannel"),
 ) : ServerChannel {
 
     private var _active = true
@@ -63,7 +65,10 @@ internal class EpollServerChannel(
                 val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
                 val localAddr = SocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
-                return EpollChannel(clientFd, workerLoop, allocator, remoteAddr, localAddr)
+                val transport = EpollIoTransport(clientFd, workerLoop)
+                return EpollPipelinedChannel(
+                    clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                )
             }
 
             val err = errno
