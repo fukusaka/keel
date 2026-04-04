@@ -130,6 +130,8 @@ class IoUringEngine(
      * Unlike epoll (which uses non-blocking `connect()` + EPOLLOUT), io_uring
      * handles the async connect natively. The SQE carries the full sockaddr
      * and completes when the connection is established (CQE.res=0) or fails.
+     *
+     * @throws IllegalStateException if the engine is closed or the address is invalid.
      */
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
@@ -192,6 +194,7 @@ class IoUringEngine(
      * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
      * @return Server handle for lifecycle management.
+     * @throws IllegalStateException if the engine is closed.
      */
     fun bindPipeline(
         host: String,

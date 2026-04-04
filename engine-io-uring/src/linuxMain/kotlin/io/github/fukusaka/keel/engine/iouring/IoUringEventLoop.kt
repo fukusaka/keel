@@ -310,6 +310,7 @@ internal class IoUringEventLoop(
      *
      * @return CQE result: positive = bytes transferred, 0 = EOF/closed,
      *         negative = -errno error code.
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal suspend fun submitAndAwait(prepare: (CPointer<io_uring_sqe>) -> Unit): Int {
         return suspendCancellableCoroutine { cont ->
@@ -320,7 +321,7 @@ internal class IoUringEventLoop(
                 //
                 // Remaining hot-path allocations: [prepare] lambda (always, captures fd/ptr/size)
                 // and the invokeOnCancellation lambda (always, captures userData). Eliminated only
-                // by replacing the generic lambda API with typed methods (submitRecv, submitSend).
+                // by replacing the generic lambda API with typed methods (submitAccept, submitCallback).
                 val sqe = io_uring_get_sqe(ring.ptr)
                     ?: error("io_uring SQ ring full (size=$ringSize)")
                 prepare(sqe)
@@ -384,6 +385,8 @@ internal class IoUringEventLoop(
      * CQE dispatch checks `sendZcCallbacks[slot]` when `contSlots[slot]` is null.
      *
      * Must be called on the EventLoop thread only.
+     *
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitSendZcCallback(
         fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
@@ -400,7 +403,7 @@ internal class IoUringEventLoop(
     }
 
     /**
-     * Fire-and-forget `IORING_OP_WRITEV` — callback version of [submitWritev].
+     * Fire-and-forget `IORING_OP_WRITEV` with single-CQE callback.
      *
      * Submits a WRITEV SQE and invokes [onComplete] with the total bytes
      * written (or negative errno) when the single CQE arrives.
@@ -423,6 +426,8 @@ internal class IoUringEventLoop(
      * Used as fallback when multishot accept is not available (kernel < 5.19).
      * On the EventLoop thread (hot path), prepares the SQE inline without
      * allocating a `prepare` lambda.
+     *
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal suspend fun submitAccept(serverFd: Int): Int {
         if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) }
@@ -473,6 +478,7 @@ internal class IoUringEventLoop(
      *                `res` is the CQE result; `flags` contains CQE flags
      *                (check `keel_cqe_has_more` for continuation).
      * @return The slot index, needed for [cancelMultishot].
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitMultishot(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
@@ -500,6 +506,7 @@ internal class IoUringEventLoop(
      *
      * @param prepare Fills in the SQE via `io_uring_prep_*` functions.
      * @param onCqe   Callback invoked with `(res, flags)` when the CQE arrives.
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitCallback(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
@@ -551,6 +558,7 @@ internal class IoUringEventLoop(
      * @param bgid Buffer group ID for the provided buffer ring.
      * @param onCqe Callback invoked on the EventLoop thread for each CQE.
      * @return The slot index, needed for [cancelMultishot].
+     * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitMultishotRecv(
         fd: Int,

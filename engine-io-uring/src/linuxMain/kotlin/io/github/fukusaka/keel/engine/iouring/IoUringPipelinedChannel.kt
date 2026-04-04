@@ -93,6 +93,8 @@ internal class IoUringPipelinedChannel(
      * Arms multishot recv and notifies the pipeline that the channel is active.
      *
      * Must be called on the EventLoop thread after the pipeline is initialized.
+     *
+     * @throws IllegalStateException if provided buffer ring is not available.
      */
     fun armRecv() {
         val ring = bufferRing ?: error("armRecv requires provided buffer ring")
@@ -232,6 +234,11 @@ internal class IoUringPipelinedChannel(
 
     // --- PushChannel ---
 
+    /**
+     * Returns a push-model [PushSuspendSource] backed by multishot recv with provided buffers.
+     *
+     * @throws IllegalStateException if provided buffer ring is not available.
+     */
     override fun asPushSuspendSource(): PushSuspendSource {
         val ring = bufferRing
             ?: error("Push source requires provided buffer ring (kernel 5.19+)")

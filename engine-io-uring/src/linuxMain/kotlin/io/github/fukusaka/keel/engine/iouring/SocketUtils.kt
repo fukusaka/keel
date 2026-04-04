@@ -68,6 +68,7 @@ internal object SocketUtils {
      * @param host Bind address. "0.0.0.0" binds to all interfaces.
      * @param port Port number. 0 lets the OS assign an ephemeral port.
      * @return The server socket file descriptor.
+     * @throws IllegalStateException if socket/bind/listen fails.
      */
     fun createServerSocket(host: String, port: Int): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -115,6 +116,7 @@ internal object SocketUtils {
      * @param host Bind address. "0.0.0.0" binds to all interfaces.
      * @param port Port number.
      * @return The server socket file descriptor.
+     * @throws IllegalStateException if socket/bind/listen fails.
      */
     fun createReusePortServerSocket(host: String, port: Int): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -155,6 +157,8 @@ internal object SocketUtils {
     /**
      * Creates a TCP client socket for use with IORING_OP_CONNECT.
      * Non-blocking is set so the fd can also be used in a mixed mode if needed.
+     *
+     * @throws IllegalStateException if socket() fails.
      */
     fun createUnconnectedSocket(): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)

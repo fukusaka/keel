@@ -66,6 +66,8 @@ internal class IoUringServerChannel(
      * On the first call, arms the multishot accept SQE. Subsequent calls
      * either dequeue a buffered fd or suspend until the multishot callback
      * delivers one.
+     *
+     * @throws IllegalStateException if the server channel is closed.
      */
     override suspend fun accept(): Channel {
         check(_active) { "ServerChannel is closed" }
