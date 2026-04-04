@@ -238,6 +238,61 @@ class TlsHandlerTest {
     }
 
     @Test
+    fun `handshake flush loops when protect returns NEED_WRAP`() {
+        // Codec that requires 3 protect calls to complete the handshake flight:
+        // protect #1 → NEED_WRAP (partial), #2 → NEED_WRAP (partial), #3 → OK (done).
+        val multiFlushCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+            private var unprotectCalled = false
+            private var flushCount = 0
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                if (!unprotectCalled) {
+                    unprotectCalled = true
+                    return TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+                }
+                // After handshake, decrypt by copying.
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult {
+                flushCount++
+                ciphertext.writeByte(flushCount.toByte())
+                return if (flushCount < 3) {
+                    TlsCodecResult(TlsResult.NEED_WRAP, 0, 1)
+                } else {
+                    isHandshakeComplete = true
+                    TlsCodecResult(TlsResult.OK, 0, 1)
+                }
+            }
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(multiFlushCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1)))
+
+        // All 3 flush iterations should have produced transport writes.
+        assertEquals(3, transport.written.size)
+        assertTrue(transport.flushed)
+        transport.written.forEach { it.release() }
+
+        // Handshake should be complete.
+        assertEquals(1, recorder.userEvents.size)
+        assertIs<TlsHandshakeComplete>(recorder.userEvents[0])
+    }
+
+    @Test
     fun `handlerRemoved releases accumulate buffer and closes codec`() {
         val codec = MockTlsCodec()
         val handler = TlsHandler(codec)

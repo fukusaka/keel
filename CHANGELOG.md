@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - tls: add `TlsHandler` ChannelDuplexHandler for Pipeline integration with zero-copy recv fast path
 - tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
 
+### Fixed
+
+- tls: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights exceeding single output buffer (e.g., long certificate chains)
+
 ### Changed
 
 - engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`

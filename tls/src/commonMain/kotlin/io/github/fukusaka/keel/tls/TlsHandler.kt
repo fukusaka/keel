@@ -34,12 +34,6 @@ class TlsHandler(
     private val codec: TlsCodec,
 ) : ChannelDuplexHandler {
 
-    companion object {
-        // TLS record max: 16384 payload + 5 header + 256 expansion (CBC) = ~16645.
-        // 17408 = 17 * 1024, comfortably above TLS record max.
-        private const val OUTPUT_BUF_SIZE = 17 * 1024
-    }
-
     private var ctx: ChannelHandlerContext? = null
     private var accumulate: IoBuf? = null
     private var handshakeNotified = false
@@ -218,16 +212,71 @@ class TlsHandler(
 
     // --- Handshake support ---
 
+    /**
+     * Flushes pending handshake response by calling [TlsCodec.protect] with
+     * empty plaintext until the codec has no more data to send.
+     *
+     * Handles errors from protect (TlsException, BUFFER_OVERFLOW, CLOSED)
+     * by propagating to the pipeline, ensuring the connection is cleaned up
+     * on handshake failures such as certificate rejection or protocol errors.
+     */
     private fun flushHandshakeResponse(ctx: ChannelHandlerContext) {
-        val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
         val emptyBuf = ctx.allocator.allocate(0)
         try {
-            codec.protect(emptyBuf, cipherBuf)
-            if (cipherBuf.readableBytes > 0) {
-                ctx.propagateWrite(cipherBuf)
-                ctx.propagateFlush()
-            } else {
-                cipherBuf.release()
+            var iterations = 0
+            while (true) {
+                val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
+                val result = try {
+                    codec.protect(emptyBuf, cipherBuf)
+                } catch (e: TlsException) {
+                    // Handshake failure (certificate rejected, protocol error, etc.).
+                    // The codec may have written a fatal alert to cipherBuf — flush it
+                    // before propagating the error so the peer receives the alert.
+                    if (cipherBuf.readableBytes > 0) {
+                        ctx.propagateWrite(cipherBuf)
+                        ctx.propagateFlush()
+                    } else {
+                        cipherBuf.release()
+                    }
+                    ctx.propagateError(e)
+                    return
+                }
+                if (cipherBuf.readableBytes > 0) {
+                    ctx.propagateWrite(cipherBuf)
+                    ctx.propagateFlush()
+                } else {
+                    cipherBuf.release()
+                }
+                when (result.status) {
+                    TlsResult.OK, TlsResult.NEED_MORE_INPUT -> break
+                    TlsResult.NEED_WRAP -> {
+                        if (result.bytesProduced == 0) {
+                            ctx.propagateError(TlsException(
+                                "Handshake flush stalled: NEED_WRAP with 0 bytes produced",
+                                TlsErrorCategory.PROTOCOL_ERROR,
+                            ))
+                            return
+                        }
+                        if (++iterations >= MAX_FLUSH_ITERATIONS) {
+                            ctx.propagateError(TlsException(
+                                "Handshake flush exceeded $MAX_FLUSH_ITERATIONS iterations",
+                                TlsErrorCategory.PROTOCOL_ERROR,
+                            ))
+                            return
+                        }
+                    }
+                    TlsResult.BUFFER_OVERFLOW -> {
+                        ctx.propagateError(TlsException(
+                            "Output buffer overflow during handshake flush",
+                            TlsErrorCategory.BUFFER_ERROR,
+                        ))
+                        return
+                    }
+                    TlsResult.CLOSED -> {
+                        ctx.propagateInactive()
+                        return
+                    }
+                }
             }
         } finally {
             emptyBuf.release()
@@ -245,5 +294,16 @@ class TlsHandler(
                 )
             )
         }
+    }
+
+    companion object {
+        // TLS record max: 16384 payload + 5 header + 256 expansion (CBC) = ~16645.
+        // 17408 = 17 * 1024, comfortably above TLS record max.
+        private const val OUTPUT_BUF_SIZE = 17 * 1024
+
+        // Defense-in-depth: bounds total flushHandshakeResponse iterations.
+        // A TLS 1.2 flight is typically 2-5 KB; 64 × 17 KB = 1 MB far exceeds
+        // any realistic handshake. Complements the bytesProduced == 0 stall check.
+        private const val MAX_FLUSH_ITERATIONS = 64
     }
 }
