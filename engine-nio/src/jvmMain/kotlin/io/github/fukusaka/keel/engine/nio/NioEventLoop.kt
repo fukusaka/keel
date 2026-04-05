@@ -107,6 +107,26 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         }
     }
 
+    /**
+     * Blocking version of [registerChannel] for non-suspend callers.
+     *
+     * Delegates to [registerChannel] via [runBlocking]. Used by
+     * [NioEngine.bindPipeline] which is non-suspend (Pipeline
+     * zero-coroutine principle).
+     */
+    fun registerChannelBlocking(channel: SelectableChannel): SelectionKey =
+        kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeout(BIND_TIMEOUT_MS) {
+                registerChannel(channel)
+            }
+        }
+
+    companion object {
+        // Generous timeout for blocking operations at server startup.
+        // Not on the hot path — only used by bindPipeline.
+        private const val BIND_TIMEOUT_MS = 10_000L
+    }
+
     // --- Interest ops (fast path, no JNI re-register) ---
 
     /**

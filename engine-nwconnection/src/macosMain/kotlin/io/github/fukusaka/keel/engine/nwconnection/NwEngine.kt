@@ -138,12 +138,14 @@ class NwEngine(
      * accepted connection in a [NwPipelinedChannel] and feeds data through
      * the [ChannelPipeline] — no coroutine suspension on the request hot path.
      *
-     * Must suspend because NWListener startup is asynchronous (waits for ready state).
+     * Non-suspend: blocks on dispatch_semaphore until the NWListener reaches
+     * the ready state (Pipeline zero-coroutine principle). NWListener startup
+     * is inherently async; the semaphore bridges it to synchronous return.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
      * @return An [AutoCloseable] that cancels the listener when closed.
      */
-    suspend fun bindPipeline(
+    fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
@@ -162,41 +164,47 @@ class NwEngine(
 
         nw_listener_set_queue(lsnr, listenerQueue)
 
-        val assignedPort = suspendCancellableCoroutine<Int> { cont ->
-            val cbCtx = CallbackContext(cont)
+        // Block until listener reaches ready state.
+        val sem = platform.darwin.dispatch_semaphore_create(0)
+        var assignedPort = -1
 
-            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
-                if (state == nw_listener_state_ready) {
-                    cbCtx.tryResume(nw_listener_get_port(lsnr).toInt())
-                } else if (state == nw_listener_state_failed) {
-                    cbCtx.tryResume(-1)
-                }
+        nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+            if (state == nw_listener_state_ready) {
+                assignedPort = nw_listener_get_port(lsnr).toInt()
+                platform.darwin.dispatch_semaphore_signal(sem)
+            } else if (state == nw_listener_state_failed) {
+                platform.darwin.dispatch_semaphore_signal(sem)
             }
-
-            nw_listener_set_new_connection_handler(lsnr) { conn ->
-                if (conn != null) {
-                    val connQueue = dispatch_queue_create(
-                        "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
-                    )
-                    nw_connection_set_queue(conn, connQueue)
-                    // Fire-and-forget start: nw_connection_receive can be called
-                    // immediately after start — NWConnection queues the receive
-                    // internally until the connection reaches the ready state.
-                    // Unlike NwServer.accept() which awaits ready via
-                    // keel_nw_start_conn_async, pipeline skips the suspend.
-                    nw_connection_start(conn)
-
-                    val transport = NwIoTransport(conn)
-                    val channel = NwPipelinedChannel(conn, transport, config.allocator, logger)
-                    pipelineInitializer(channel.pipeline)
-                    channel.armRead()
-                }
-            }
-
-            nw_listener_start(lsnr)
-            cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
 
+        nw_listener_set_new_connection_handler(lsnr) { conn ->
+            if (conn != null) {
+                val connQueue = dispatch_queue_create(
+                    "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
+                )
+                nw_connection_set_queue(conn, connQueue)
+                // Fire-and-forget start: nw_connection_receive can be called
+                // immediately after start — NWConnection queues the receive
+                // internally until the connection reaches the ready state.
+                nw_connection_start(conn)
+
+                val transport = NwIoTransport(conn)
+                val channel = NwPipelinedChannel(conn, transport, config.allocator, logger)
+                pipelineInitializer(channel.pipeline)
+                channel.armRead()
+            }
+        }
+
+        nw_listener_start(lsnr)
+        // Generous timeout for listener startup, prevents permanent hang
+        // if the dispatch queue or state handler is never delivered.
+        val deadline = platform.darwin.dispatch_time(
+            platform.darwin.DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
+        )
+        val waitResult = platform.darwin.dispatch_semaphore_wait(sem, deadline)
+        check(waitResult == 0L) {
+            "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+        }
         check(assignedPort > 0) { "NWListener failed to start" }
         logger.debug { "Pipeline bound to $host:$assignedPort" }
 
@@ -261,5 +269,9 @@ class NwEngine(
             ref.get().tryResume(result)
             ref.dispose()
         }
+
+        // Generous timeout for blocking operations at server startup.
+        // Not on the hot path — only used by bindPipeline.
+        private const val BIND_TIMEOUT_NS = 10L * 1_000_000_000L
     }
 }
