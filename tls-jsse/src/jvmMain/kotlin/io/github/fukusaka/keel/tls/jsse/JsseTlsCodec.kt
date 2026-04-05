@@ -130,8 +130,14 @@ class JsseTlsCodec internal constructor(
      *
      * Does NOT retry the operation after running tasks — the caller
      * uses [SSLEngine.getHandshakeStatus] to determine the next action.
-     * Retrying would lose bytesConsumed from the first call (the
-     * ByteBuffer position advances but the retry returns 0).
+     * Retrying would lose bytesConsumed from the first call: SunJSSE's
+     * unwrap returns NEED_TASK with bytesConsumed > 0 (the TLS record
+     * is consumed before the delegated task runs), so a retry sees an
+     * empty source and returns bytesConsumed = 0.
+     *
+     * Verified via [SslEngineHandshakeTraceTest]: all three NEED_TASK
+     * occurrences during a TLS 1.3 handshake had bytesConsumed > 0
+     * (440, 127, 1180 bytes respectively).
      */
     private inline fun runWithTasks(
         operation: () -> SSLEngineResult,
