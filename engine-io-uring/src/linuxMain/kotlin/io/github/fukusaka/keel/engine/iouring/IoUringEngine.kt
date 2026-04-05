@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
@@ -183,21 +184,22 @@ class IoUringEngine(
      * @param host Bind address (e.g., "0.0.0.0").
      * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
-     * @return Server handle for lifecycle management.
+     * @return A [PipelinedServer] for lifecycle management.
      * @throws IllegalStateException if the engine is closed.
      */
-    fun bindPipeline(
+    override fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (ChannelPipeline) -> Unit,
-    ): AutoCloseable {
+    ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val serverFds = IntArray(workerGroup.size) {
             SocketUtils.createReusePortServerSocket(host, port)
         }
+        val localAddr = SocketUtils.getLocalAddress(serverFds[0])
         val server = IoUringPipelinedServerChannel(
-            workerGroup, serverFds, pipelineInitializer, resolvedCapabilities, logger,
+            workerGroup, serverFds, localAddr, pipelineInitializer, resolvedCapabilities, logger,
         )
         server.start()
         logger.debug { "Pipeline server bound to $host:$port (${workerGroup.size} workers)" }

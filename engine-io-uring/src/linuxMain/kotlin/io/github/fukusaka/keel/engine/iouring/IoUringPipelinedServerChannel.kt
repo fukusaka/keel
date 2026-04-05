@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_multishot_accept
@@ -36,10 +38,14 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal class IoUringPipelinedServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     private val serverFds: IntArray,
+    private val localAddr: SocketAddress,
     private val pipelineInitializer: (ChannelPipeline) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
-) : AutoCloseable {
+) : PipelinedServer {
+
+    override val localAddress: SocketAddress get() = localAddr
+    override val isActive: Boolean get() = !closed
 
     private var closed = false
 

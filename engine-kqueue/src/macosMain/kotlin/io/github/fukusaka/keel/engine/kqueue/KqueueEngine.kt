@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -171,13 +172,13 @@ class KqueueEngine(
      * @param port Bind port.
      * @param pipelineInitializer Callback to configure the pipeline for each
      *        accepted connection (add handlers via addLast).
-     * @return An [AutoCloseable] that stops the server when closed.
+     * @return A [PipelinedServer] for lifecycle management.
      */
-    fun bindPipeline(
+    override fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
-    ): AutoCloseable {
+    ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val serverFd = SocketUtils.createServerSocket(host, port)
@@ -189,6 +190,7 @@ class KqueueEngine(
             serverFd = serverFd,
             bossLoop = bossLoop,
             workerGroup = workerGroup,
+            localAddr = localAddr,
             logger = logger,
             pipelineInitializer = pipelineInitializer,
         )
