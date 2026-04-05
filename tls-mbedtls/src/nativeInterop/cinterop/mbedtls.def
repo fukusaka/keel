@@ -3,9 +3,11 @@ headers = mbedtls/ssl.h mbedtls/x509_crt.h mbedtls/pk.h mbedtls/error.h \
 compilerOpts = -DMBEDTLS_ALLOW_PRIVATE_ACCESS
 compilerOpts.osx = -I/opt/homebrew/include
 compilerOpts.linux = -I/usr/local/include
-linkerOpts = -lmbedtls -lmbedx509 -lmbedcrypto
-linkerOpts.osx = -L/opt/homebrew/lib
-linkerOpts.linux = -L/usr/local/lib
+linkerOpts.osx = -L/opt/homebrew/lib -lmbedtls -lmbedx509 -lmbedcrypto -ltfpsacrypto
+# Kotlin/Native lld uses --no-allow-shlib-undefined by default, rejecting
+# indirect glibc references (explicit_bzero etc.) in shared libs.
+# --allow-shlib-undefined permits these transitive dependencies.
+linkerOpts.linux = -L/usr/local/lib -lmbedtls -lmbedx509 -lmbedcrypto -ltfpsacrypto --allow-shlib-undefined
 
 ---
 

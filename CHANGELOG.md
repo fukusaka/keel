@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - tls: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights exceeding single output buffer (e.g., long certificate chains)
+- tls-mbedtls: add `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto library separation
+- tls-mbedtls: add `--allow-shlib-undefined` for Linux to resolve lld indirect glibc reference errors
 
 ### Changed
 

@@ -35,8 +35,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
+      - name: Cache Mbed TLS
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/mbedtls
+          key: mbedtls-${{ runner.os }}-${{ hashFiles('scripts/install-mbedtls.sh') }}
+
       - name: Install native dependencies
-        run: sudo apt-get install -y liburing-dev
+        run: |
+          sudo apt-get install -y liburing-dev
+          MBEDTLS_CACHE_DIR=~/.cache/mbedtls ./scripts/install-mbedtls.sh
 
       - name: Cache Kotlin/Native toolchain
         uses: actions/cache@v5

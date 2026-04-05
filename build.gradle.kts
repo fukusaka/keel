@@ -123,24 +123,24 @@ subprojects {
                 }
             }
         }
-        // Disable cinterop tasks for cross-architecture targets.
-        // e.g., cinteropIo_uringLinuxArm64 on x86_64 host fails due to missing headers.
+        // Disable cinterop tasks for cross-platform/cross-architecture targets.
+        // e.g., cinteropMbedtlsLinuxArm64 on macOS fails due to missing Linux headers.
         afterEvaluate {
-            if (isLinux && isX64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("LinuxArm64") }.configureEach {
+            if (isMacos) {
+                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Linux", ignoreCase = true) }.configureEach {
                     enabled = false
                 }
-            } else if (isLinux && isArm64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("LinuxX64") }.configureEach {
+            } else if (isLinux) {
+                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Macos", ignoreCase = true) }.configureEach {
                     enabled = false
                 }
             }
-            if (isMacos && isArm64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("MacosX64") }.configureEach {
+            if (isX64) {
+                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Arm64", ignoreCase = true) }.configureEach {
                     enabled = false
                 }
-            } else if (isMacos && isX64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("MacosArm64") }.configureEach {
+            } else if (isArm64) {
+                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("X64", ignoreCase = true) }.configureEach {
                     enabled = false
                 }
             }
