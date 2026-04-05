@@ -197,6 +197,7 @@ class IoUringEngine(
         val serverFds = IntArray(workerGroup.size) {
             SocketUtils.createReusePortServerSocket(host, port)
         }
+        // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
         val localAddr = SocketUtils.getLocalAddress(serverFds[0])
         val server = IoUringPipelinedServerChannel(
             workerGroup, serverFds, localAddr, pipelineInitializer, resolvedCapabilities, logger,
