@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
 - tls-mbedtls: add `MbedTlsCodec` TlsCodec implementation with pointer-based BIO adapter (Mbed TLS 4.x, PSA Crypto)
 - core: add `PipelinedServer` interface and `IoEngine.bindPipeline` (non-suspend, default throw for unsupported engines)
+- build: add `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions enforcement
 
 ### Removed
 
