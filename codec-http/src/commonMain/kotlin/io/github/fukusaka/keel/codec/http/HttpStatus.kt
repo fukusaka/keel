@@ -12,10 +12,10 @@ data class HttpStatus(val code: Int) {
     }
 
     val isInformational: Boolean get() = code in 100..199
-    val isSuccess:       Boolean get() = code in 200..299
-    val isRedirection:   Boolean get() = code in 300..399
-    val isClientError:   Boolean get() = code in 400..499
-    val isServerError:   Boolean get() = code in 500..599
+    val isSuccess: Boolean get() = code in 200..299
+    val isRedirection: Boolean get() = code in 300..399
+    val isClientError: Boolean get() = code in 400..499
+    val isServerError: Boolean get() = code in 500..599
 
     fun reasonPhrase(): String = REASON_PHRASES[code] ?: "Unknown"
 
@@ -23,48 +23,48 @@ data class HttpStatus(val code: Int) {
 
     companion object {
         // 1xx Informational
-        val CONTINUE            = HttpStatus(100)
+        val CONTINUE = HttpStatus(100)
         val SWITCHING_PROTOCOLS = HttpStatus(101)
 
         // 2xx Success
-        val OK              = HttpStatus(200)
-        val CREATED         = HttpStatus(201)
-        val ACCEPTED        = HttpStatus(202)
-        val NO_CONTENT      = HttpStatus(204)
-        val RESET_CONTENT   = HttpStatus(205)
+        val OK = HttpStatus(200)
+        val CREATED = HttpStatus(201)
+        val ACCEPTED = HttpStatus(202)
+        val NO_CONTENT = HttpStatus(204)
+        val RESET_CONTENT = HttpStatus(205)
         val PARTIAL_CONTENT = HttpStatus(206)
 
         // 3xx Redirection
-        val MOVED_PERMANENTLY  = HttpStatus(301)
-        val FOUND              = HttpStatus(302)
-        val SEE_OTHER          = HttpStatus(303)
-        val NOT_MODIFIED       = HttpStatus(304)
+        val MOVED_PERMANENTLY = HttpStatus(301)
+        val FOUND = HttpStatus(302)
+        val SEE_OTHER = HttpStatus(303)
+        val NOT_MODIFIED = HttpStatus(304)
         val TEMPORARY_REDIRECT = HttpStatus(307)
         val PERMANENT_REDIRECT = HttpStatus(308)
 
         // 4xx Client Error
-        val BAD_REQUEST            = HttpStatus(400)
-        val UNAUTHORIZED           = HttpStatus(401)
-        val FORBIDDEN              = HttpStatus(403)
-        val NOT_FOUND              = HttpStatus(404)
-        val METHOD_NOT_ALLOWED     = HttpStatus(405)
-        val NOT_ACCEPTABLE         = HttpStatus(406)
-        val REQUEST_TIMEOUT        = HttpStatus(408)
-        val CONFLICT               = HttpStatus(409)
-        val GONE                   = HttpStatus(410)
-        val LENGTH_REQUIRED        = HttpStatus(411)
-        val CONTENT_TOO_LARGE      = HttpStatus(413)
+        val BAD_REQUEST = HttpStatus(400)
+        val UNAUTHORIZED = HttpStatus(401)
+        val FORBIDDEN = HttpStatus(403)
+        val NOT_FOUND = HttpStatus(404)
+        val METHOD_NOT_ALLOWED = HttpStatus(405)
+        val NOT_ACCEPTABLE = HttpStatus(406)
+        val REQUEST_TIMEOUT = HttpStatus(408)
+        val CONFLICT = HttpStatus(409)
+        val GONE = HttpStatus(410)
+        val LENGTH_REQUIRED = HttpStatus(411)
+        val CONTENT_TOO_LARGE = HttpStatus(413)
         val UNSUPPORTED_MEDIA_TYPE = HttpStatus(415)
-        val EXPECTATION_FAILED     = HttpStatus(417)
-        val IM_A_TEAPOT            = HttpStatus(418)
-        val TOO_MANY_REQUESTS      = HttpStatus(429)
+        val EXPECTATION_FAILED = HttpStatus(417)
+        val IM_A_TEAPOT = HttpStatus(418)
+        val TOO_MANY_REQUESTS = HttpStatus(429)
 
         // 5xx Server Error
-        val INTERNAL_SERVER_ERROR      = HttpStatus(500)
-        val NOT_IMPLEMENTED            = HttpStatus(501)
-        val BAD_GATEWAY                = HttpStatus(502)
-        val SERVICE_UNAVAILABLE        = HttpStatus(503)
-        val GATEWAY_TIMEOUT            = HttpStatus(504)
+        val INTERNAL_SERVER_ERROR = HttpStatus(500)
+        val NOT_IMPLEMENTED = HttpStatus(501)
+        val BAD_GATEWAY = HttpStatus(502)
+        val SERVICE_UNAVAILABLE = HttpStatus(503)
+        val GATEWAY_TIMEOUT = HttpStatus(504)
         val HTTP_VERSION_NOT_SUPPORTED = HttpStatus(505)
 
         private val REASON_PHRASES = mapOf(

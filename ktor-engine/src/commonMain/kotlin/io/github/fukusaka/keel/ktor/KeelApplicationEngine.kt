@@ -296,7 +296,7 @@ public class KeelApplicationEngine(
                 val head = try {
                     parseRequestHead(source)
                 } catch (_: HttpEofException) {
-                    break  // client closed connection
+                    break // client closed connection
                 } catch (_: HttpParseException) {
                     respondBadRequest(sink)
                     break

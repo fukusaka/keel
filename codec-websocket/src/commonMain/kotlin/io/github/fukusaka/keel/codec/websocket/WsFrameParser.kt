@@ -15,7 +15,7 @@ fun parseFrame(source: Source): WsFrame {
     val byte0 = source.readByte().toInt() and 0xFF
     val byte1 = source.readByte().toInt() and 0xFF
 
-    val fin  = (byte0 and 0x80) != 0
+    val fin = (byte0 and 0x80) != 0
     val rsv1 = (byte0 and 0x40) != 0
     val rsv2 = (byte0 and 0x20) != 0
     val rsv3 = (byte0 and 0x10) != 0

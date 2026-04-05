@@ -153,8 +153,8 @@ internal fun parseRequestLine(line: String): RequestLine {
         throw HttpParseException("Invalid request line (expected 3 tokens): $line")
     }
     return RequestLine(
-        method  = HttpMethod.of(line.substring(0, sp1)),
-        uri     = line.substring(sp1 + 1, sp2),
+        method = HttpMethod.of(line.substring(0, sp1)),
+        uri = line.substring(sp1 + 1, sp2),
         version = HttpVersion.of(line.substring(sp2 + 1)),
     )
 }
@@ -170,8 +170,8 @@ internal fun parseStatusLine(line: String): StatusLine {
         ?: throw HttpParseException("Invalid status code '${parts[1]}' in: $line")
     return StatusLine(
         version = HttpVersion.of(parts[0].trimEnd()),
-        status  = HttpStatus(code),
-        reason  = if (parts.size > 2) parts[2].trim() else "",
+        status = HttpStatus(code),
+        reason = if (parts.size > 2) parts[2].trim() else "",
     )
 }
 
@@ -194,8 +194,8 @@ internal fun parseHeaders(source: Source): HttpHeaders {
         }
         val colon = line.indexOf(':')
         if (colon < 1) throw HttpParseException("Invalid header field (missing ':'): $line")
-        val name  = line.substring(0, colon).trim()
-        val value = line.substring(colon + 1).trim()   // strip OWS
+        val name = line.substring(0, colon).trim()
+        val value = line.substring(colon + 1).trim() // strip OWS
         headers.add(name, value)
     }
     return headers
@@ -246,7 +246,7 @@ internal fun readChunkedBody(source: Source): ByteArray? {
         val data = source.readByteArray(chunkSize.toInt())
         chunks += data
         total += data.size
-        source.readLine()   // trailing CRLF after chunk data
+        source.readLine() // trailing CRLF after chunk data
     }
     if (chunks.isEmpty()) return null
     val result = ByteArray(total)

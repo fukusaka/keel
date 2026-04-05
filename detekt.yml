@@ -78,9 +78,9 @@ potential-bugs:
 # detekt-formatting (ktlint wrapper)
 # See .claude/rules/kotlin-formatting.md for full policy.
 formatting:
-  # Intentional alignment (e.g., HttpStatus val declarations) uses multiple spaces.
+  # Kotlin coding conventions: "avoid horizontal alignment of any kind"
   NoMultipleSpaces:
-    active: false
+    active: true
   # Kotlin coding conventions compliance — see .claude/rules/kotlin-formatting.md
   TrailingCommaOnCallSite:
     active: true
