@@ -8,17 +8,29 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.parseRequestHead
 import io.github.fukusaka.keel.codec.http.writeResponseHead
-import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.Server
+import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
-import kotlin.coroutines.ContinuationInterceptor
 import io.ktor.events.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.util.pipeline.*
 import io.ktor.utils.io.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.ContinuationInterceptor
 
 /**
  * Ktor server engine backed by keel I/O engines.
@@ -155,7 +167,7 @@ public class KeelApplicationEngine(
         // Server lifecycle (bind, accept loop, shutdown) uses Dispatchers.Default.
         // These are coordination tasks, not I/O — no need for EventLoop.
         return CoroutineScope(
-            applicationProvider().parentCoroutineContext + Dispatchers.Default
+            applicationProvider().parentCoroutineContext + Dispatchers.Default,
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
             val servers = mutableListOf<Server>()
@@ -217,7 +229,7 @@ public class KeelApplicationEngine(
                     handleConnection(channel)
                 }
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (e is CancellationException) throw e
                 if (!server.isActive || !isActive) break
                 // Backoff before retrying to prevent CPU spin on
                 // persistent errors (e.g. EMFILE, fd exhaustion).
@@ -339,7 +351,7 @@ public class KeelApplicationEngine(
                 bodyBridgeJob?.join()
             }
         } catch (e: Exception) {
-            if (e !is kotlinx.coroutines.CancellationException) {
+            if (e !is CancellationException) {
                 logger.error(e) { "Connection handling failed" }
             }
         } finally {

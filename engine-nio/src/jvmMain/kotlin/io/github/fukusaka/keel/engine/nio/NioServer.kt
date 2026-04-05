@@ -3,13 +3,13 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.Logger
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.logging.Logger
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
+import kotlin.coroutines.resumeWithException
 
 /**
  * Java NIO [ServerSocketChannel]-based [ServerChannel] implementation for JVM.
@@ -69,7 +69,14 @@ internal class NioServer(
                 val clientKey = workerLoop.registerChannel(client)
                 val transport = NioIoTransport(client, clientKey, workerLoop)
                 return NioPipelinedChannel(
-                    client, clientKey, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                    client,
+                    clientKey,
+                    transport,
+                    workerLoop,
+                    allocator,
+                    logger,
+                    remoteAddr,
+                    localAddr,
                 )
             }
 

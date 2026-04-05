@@ -105,7 +105,7 @@ class TlsHandler(
                         TlsException(
                             "Output buffer overflow during unprotect",
                             TlsErrorCategory.BUFFER_ERROR,
-                        )
+                        ),
                     )
                     return
                 }
@@ -260,25 +260,31 @@ class TlsHandler(
                     TlsResult.OK, TlsResult.NEED_MORE_INPUT -> break
                     TlsResult.NEED_WRAP -> {
                         if (result.bytesProduced == 0) {
-                            ctx.propagateError(TlsException(
-                                "Handshake flush stalled: NEED_WRAP with 0 bytes produced",
-                                TlsErrorCategory.PROTOCOL_ERROR,
-                            ))
+                            ctx.propagateError(
+                                TlsException(
+                                    "Handshake flush stalled: NEED_WRAP with 0 bytes produced",
+                                    TlsErrorCategory.PROTOCOL_ERROR,
+                                ),
+                            )
                             return false
                         }
                         if (++iterations >= MAX_FLUSH_ITERATIONS) {
-                            ctx.propagateError(TlsException(
-                                "Handshake flush exceeded $MAX_FLUSH_ITERATIONS iterations",
-                                TlsErrorCategory.PROTOCOL_ERROR,
-                            ))
+                            ctx.propagateError(
+                                TlsException(
+                                    "Handshake flush exceeded $MAX_FLUSH_ITERATIONS iterations",
+                                    TlsErrorCategory.PROTOCOL_ERROR,
+                                ),
+                            )
                             return false
                         }
                     }
                     TlsResult.BUFFER_OVERFLOW -> {
-                        ctx.propagateError(TlsException(
-                            "Output buffer overflow during handshake flush",
-                            TlsErrorCategory.BUFFER_ERROR,
-                        ))
+                        ctx.propagateError(
+                            TlsException(
+                                "Output buffer overflow during handshake flush",
+                                TlsErrorCategory.BUFFER_ERROR,
+                            ),
+                        )
                         return false
                     }
                     TlsResult.CLOSED -> {
@@ -301,7 +307,7 @@ class TlsHandler(
                 TlsHandshakeComplete(
                     negotiatedProtocol = codec.negotiatedProtocol,
                     cipherSuite = null,
-                )
+                ),
             )
         }
     }

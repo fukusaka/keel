@@ -49,25 +49,25 @@ interface PipelinedChannel : Channel {
 
     override suspend fun read(buf: IoBuf): Int {
         throw UnsupportedOperationException(
-            "suspend read() not available. Install SuspendBridgeHandler or use Pipeline mode."
+            "suspend read() not available. Install SuspendBridgeHandler or use Pipeline mode.",
         )
     }
 
     override suspend fun write(buf: IoBuf): Int {
         throw UnsupportedOperationException(
-            "suspend write() not available. Install SuspendBridgeHandler or use Pipeline mode."
+            "suspend write() not available. Install SuspendBridgeHandler or use Pipeline mode.",
         )
     }
 
     override fun requestFlush() {
         throw UnsupportedOperationException(
-            "requestFlush() not available. Install SuspendBridgeHandler or use Pipeline mode."
+            "requestFlush() not available. Install SuspendBridgeHandler or use Pipeline mode.",
         )
     }
 
     override suspend fun awaitFlushComplete() {
         throw UnsupportedOperationException(
-            "awaitFlushComplete() not available. Install SuspendBridgeHandler or use Pipeline mode."
+            "awaitFlushComplete() not available. Install SuspendBridgeHandler or use Pipeline mode.",
         )
     }
 

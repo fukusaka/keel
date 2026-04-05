@@ -31,8 +31,8 @@ internal class HeadHandler(
             ReferenceCountUtil.safeRelease(msg)
             ctx.propagateError(
                 UnsupportedOperationException(
-                    "Cannot write ${msg::class.simpleName} to transport; expected IoBuf"
-                )
+                    "Cannot write ${msg::class.simpleName} to transport; expected IoBuf",
+                ),
             )
         }
     }

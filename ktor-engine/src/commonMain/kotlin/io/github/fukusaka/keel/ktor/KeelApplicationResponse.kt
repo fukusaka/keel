@@ -1,8 +1,5 @@
 package io.github.fukusaka.keel.ktor
 
-import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
-import io.github.fukusaka.keel.codec.http.HttpStatus as KeelHttpStatus
-import io.github.fukusaka.keel.codec.http.HttpVersion as KeelHttpVersion
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.ktor.http.*
@@ -10,7 +7,12 @@ import io.ktor.http.content.*
 import io.ktor.server.engine.*
 import io.ktor.server.response.*
 import io.ktor.utils.io.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
+import io.github.fukusaka.keel.codec.http.HttpStatus as KeelHttpStatus
+import io.github.fukusaka.keel.codec.http.HttpVersion as KeelHttpVersion
 
 /**
  * Ktor [BaseApplicationResponse] that writes HTTP responses through a keel

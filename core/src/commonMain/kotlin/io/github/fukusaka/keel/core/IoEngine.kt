@@ -63,7 +63,7 @@ interface IoEngine : AutoCloseable {
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
     ): PipelinedServer {
         throw UnsupportedOperationException(
-            "${this::class.simpleName} does not support pipeline mode"
+            "${this::class.simpleName} does not support pipeline mode",
         )
     }
 

@@ -56,7 +56,13 @@ class NioEngine(
     private val logger = config.loggerFactory.logger("NioEngine")
     private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")
     private val bossLoop = NioEventLoop("keel-nio-boss", eventLoopLogger)
-    private val workerGroup = NioEventLoopGroup(resolveThreads(config), "keel-nio-worker", eventLoopLogger, config.allocator)
+    private val workerGroup =
+        NioEventLoopGroup(
+            resolveThreads(config),
+            "keel-nio-worker",
+            eventLoopLogger,
+            config.allocator,
+        )
     private var closed = false
 
     /**
@@ -140,7 +146,14 @@ class NioEngine(
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
         val transport = NioIoTransport(socketChannel, selectionKey, workerLoop)
         return NioPipelinedChannel(
-            socketChannel, selectionKey, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+            socketChannel,
+            selectionKey,
+            transport,
+            workerLoop,
+            allocator,
+            logger,
+            remoteAddr,
+            localAddr,
         )
     }
 
@@ -208,7 +221,10 @@ class NioEngine(
     companion object {
         /** Resolves threads=0 to available CPU cores. */
         private fun resolveThreads(config: IoEngineConfig): Int =
-            if (config.threads > 0) config.threads
-            else Runtime.getRuntime().availableProcessors()
+            if (config.threads > 0) {
+                config.threads
+            } else {
+                Runtime.getRuntime().availableProcessors()
+            }
     }
 }

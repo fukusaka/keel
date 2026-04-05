@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
-import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.utils.io.*
