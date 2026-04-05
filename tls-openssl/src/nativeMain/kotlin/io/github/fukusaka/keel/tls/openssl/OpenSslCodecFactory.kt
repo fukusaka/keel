@@ -11,15 +11,13 @@ import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.value
-import openssl.BIO
 import openssl.OPENSSL_init_ssl
+import openssl.keel_openssl_bio_ctx
 import openssl.SSL
 import openssl.SSL_CTX
 import openssl.SSL_CTX_free
@@ -28,7 +26,6 @@ import openssl.SSL_CTX_set_default_verify_paths
 import openssl.SSL_CTX_set_verify
 import openssl.SSL_VERIFY_NONE
 import openssl.SSL_VERIFY_PEER
-import openssl.SSL_free
 import openssl.SSL_new
 import openssl.SSL_set_accept_state
 import openssl.SSL_set_connect_state
@@ -64,12 +61,12 @@ class OpenSslCodecFactory : TlsCodecFactory {
         )
         SSL_set_accept_state(ssl)
 
-        val (readBio, writeBio) = setupBio(ssl, ctx)
+        val bioCtx = setupBio(ssl)
 
         // SSL_CTX can be freed after SSL_new — SSL holds a reference.
         SSL_CTX_free(ctx)
 
-        return OpenSslCodec(ssl, readBio, writeBio)
+        return OpenSslCodec(ssl, bioCtx)
     }
 
     override fun createClientCodec(config: TlsConfig): TlsCodec {
@@ -82,10 +79,10 @@ class OpenSslCodecFactory : TlsCodecFactory {
 
         configureSni(ssl, config)
 
-        val (readBio, writeBio) = setupBio(ssl, ctx)
+        val bioCtx = setupBio(ssl)
         SSL_CTX_free(ctx)
 
-        return OpenSslCodec(ssl, readBio, writeBio)
+        return OpenSslCodec(ssl, bioCtx)
     }
 
     override fun close() {
@@ -179,30 +176,17 @@ class OpenSslCodecFactory : TlsCodecFactory {
         keel_openssl_set_sni(ssl, name)
     }
 
-    private fun setupBio(
-        ssl: CPointer<SSL>,
-        ctx: CPointer<SSL_CTX>,
-    ): Pair<CPointer<BIO>, CPointer<BIO>> = memScoped {
-        val rbioVar = alloc<CPointerVar<BIO>>()
-        val wbioVar = alloc<CPointerVar<BIO>>()
-        val ret = keel_openssl_bio_setup(ssl, rbioVar.ptr, wbioVar.ptr)
+    private fun setupBio(ssl: CPointer<SSL>): keel_openssl_bio_ctx {
+        val bioCtx = nativeHeap.alloc<keel_openssl_bio_ctx>()
+        val ret = keel_openssl_bio_setup(ssl, bioCtx.ptr)
         if (ret != 0) {
-            SSL_free(ssl)
-            SSL_CTX_free(ctx)
+            nativeHeap.free(bioCtx.rawPtr)
             throw TlsException(
-                "Failed to setup memory BIO: ${errorString()}",
+                "Failed to setup pointer-based BIO: ${errorString()}",
                 TlsErrorCategory.HANDSHAKE_FAILED,
             )
         }
-        val readBio = rbioVar.value ?: throw TlsException(
-            "BIO setup returned null readBio",
-            TlsErrorCategory.HANDSHAKE_FAILED,
-        )
-        val writeBio = wbioVar.value ?: throw TlsException(
-            "BIO setup returned null writeBio",
-            TlsErrorCategory.HANDSHAKE_FAILED,
-        )
-        readBio to writeBio
+        return bioCtx
     }
 
     companion object {

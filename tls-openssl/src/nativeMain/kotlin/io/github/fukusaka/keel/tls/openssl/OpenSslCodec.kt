@@ -20,10 +20,6 @@ import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
-import openssl.BIO
-import openssl.BIO_ctrl_pending
-import openssl.BIO_read
-import openssl.BIO_write
 import openssl.SSL
 import openssl.SSL_ERROR_NONE
 import openssl.SSL_ERROR_WANT_READ
@@ -36,28 +32,27 @@ import openssl.SSL_is_init_finished
 import openssl.SSL_read
 import openssl.SSL_shutdown
 import openssl.SSL_write
+import openssl.keel_openssl_bio_ctx
 import openssl.keel_openssl_err_string
 import openssl.keel_openssl_get_alpn
 import platform.posix.uint32_tVar
 
 /**
- * [TlsCodec] implementation backed by OpenSSL 3.x with memory BIO.
+ * [TlsCodec] implementation backed by OpenSSL 3.x with pointer-based BIO.
  *
- * Uses [BIO_s_mem][openssl.BIO_s_mem] for transport: ciphertext is fed
- * into [readBio] via [BIO_write], and encrypted output is drained from
- * [writeBio] via [BIO_read]. This involves a copy per direction (unlike
- * Mbed TLS's pointer-based BIO), which is acceptable for the initial
- * implementation. Future optimization: custom BIO method via
- * [BIO_meth_new][openssl.BIO_meth_new] for zero-copy.
+ * Uses a custom [BIO_METHOD][openssl.BIO_meth_new] with recv/send callbacks
+ * that read from and write to caller-owned [IoBuf] memory directly — no
+ * intermediate buffer copies beyond the fundamental AEAD encrypt/decrypt.
+ * This mirrors Mbed TLS's [keel_mbedtls_bio_ctx] approach.
  *
- * **Ownership**: [SSL_free] releases both BIOs — do NOT free them separately.
+ * **Ownership**: [SSL_free] releases the BIO — do NOT free it separately.
+ * The [bioCtx] is heap-allocated and freed in [close].
  *
  * **Thread model**: single EventLoop thread, same as all TlsCodec implementations.
  */
 class OpenSslCodec internal constructor(
     private val ssl: CPointer<SSL>,
-    private val readBio: CPointer<BIO>,
-    private val writeBio: CPointer<BIO>,
+    private val bioCtx: keel_openssl_bio_ctx,
 ) : TlsCodec {
 
     private var closed = false
@@ -78,17 +73,20 @@ class OpenSslCodec internal constructor(
         get() = emptyList() // Deferred: peer cert extraction requires i2d_X509 + OPENSSL_free.
 
     override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+        // Set recv pointer to ciphertext IoBuf.
         val cipherPtr = ciphertext.unsafePointer
+        bioCtx.recv_ptr = (cipherPtr + ciphertext.readerIndex)!!.reinterpret<UByteVar>()
+        bioCtx.recv_remaining = ciphertext.readableBytes.toULong()
 
-        // Feed all available ciphertext into the read BIO.
-        val readable = ciphertext.readableBytes
-        if (readable > 0) {
-            BIO_write(
-                readBio,
-                (cipherPtr + ciphertext.readerIndex)!!.reinterpret<UByteVar>(),
-                readable,
-            )
-        }
+        // Do NOT set send pointer during unprotect. Handshake responses
+        // (ServerHello, Certificate, etc.) must go to the ciphertext output
+        // of protect(), not the plaintext output here. If OpenSSL needs
+        // to send during SSL_do_handshake/SSL_read, the write callback
+        // returns -1 with BIO_set_retry_write, causing SSL_ERROR_WANT_WRITE
+        // → NEED_WRAP — the caller then invokes protect() to flush.
+        bioCtx.send_ptr = null
+        bioCtx.send_capacity = 0u
+        bioCtx.send_written = 0u
 
         val plainPtr = plaintext.unsafePointer
 
@@ -103,33 +101,26 @@ class OpenSslCodec internal constructor(
             )
         }
 
-        // Bytes consumed = what we wrote minus what the BIO still holds.
-        val bytesConsumed = readable - BIO_ctrl_pending(readBio).toInt()
+        val bytesConsumed = ciphertext.readableBytes - bioCtx.recv_remaining.toInt()
 
-        // Check if the write BIO has pending handshake output that needs
-        // to be flushed via protect(). This is critical during handshake:
-        // SSL_do_handshake may produce output (e.g., ServerHello) even
-        // when it returns SSL_ERROR_WANT_READ for the next flight.
-        val hasWritePending = BIO_ctrl_pending(writeBio).toInt() > 0
+        // Reset recv pointers — only valid during this call.
+        bioCtx.recv_ptr = null
+        bioCtx.recv_remaining = 0u
 
         return when {
             ret > 0 -> {
                 plaintext.writerIndex += ret
-                val status = if (hasWritePending) TlsResult.NEED_WRAP else TlsResult.OK
-                TlsCodecResult(status, bytesConsumed, ret)
+                TlsCodecResult(TlsResult.OK, bytesConsumed, ret)
             }
             ret == 0 && isHandshakeComplete -> {
                 // SSL_do_handshake returned 0 = success. No plaintext yet.
-                val status = if (hasWritePending) TlsResult.NEED_WRAP else TlsResult.OK
-                TlsCodecResult(status, bytesConsumed, 0)
+                TlsCodecResult(TlsResult.OK, bytesConsumed, 0)
             }
             else -> {
                 val err = SSL_get_error(ssl, ret)
                 when (err) {
-                    SSL_ERROR_WANT_READ -> {
-                        val status = if (hasWritePending) TlsResult.NEED_WRAP else TlsResult.NEED_MORE_INPUT
-                        TlsCodecResult(status, bytesConsumed, 0)
-                    }
+                    SSL_ERROR_WANT_READ ->
+                        TlsCodecResult(TlsResult.NEED_MORE_INPUT, bytesConsumed, 0)
                     SSL_ERROR_WANT_WRITE ->
                         TlsCodecResult(TlsResult.NEED_WRAP, bytesConsumed, 0)
                     SSL_ERROR_ZERO_RETURN ->
@@ -141,6 +132,12 @@ class OpenSslCodec internal constructor(
     }
 
     override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult {
+        // Set send pointer to ciphertext output IoBuf.
+        val cipherPtr = ciphertext.unsafePointer
+        bioCtx.send_ptr = (cipherPtr + ciphertext.writerIndex)!!.reinterpret<UByteVar>()
+        bioCtx.send_capacity = ciphertext.writableBytes.toULong()
+        bioCtx.send_written = 0u
+
         val plainPtr = plaintext.unsafePointer
         val toWrite = plaintext.readableBytes
 
@@ -158,40 +155,29 @@ class OpenSslCodec internal constructor(
             0
         }
 
-        // Drain the write BIO into the ciphertext output.
-        val cipherPtr = ciphertext.unsafePointer
-        val pending = BIO_ctrl_pending(writeBio).toInt()
-        val bytesProduced = if (pending > 0) {
-            BIO_read(
-                writeBio,
-                (cipherPtr + ciphertext.writerIndex)!!.reinterpret<UByteVar>(),
-                minOf(pending, ciphertext.writableBytes),
-            )
-        } else {
-            0
-        }
-        if (bytesProduced > 0) {
-            ciphertext.writerIndex += bytesProduced
-        }
+        val sendWritten = bioCtx.send_written.toInt()
+        ciphertext.writerIndex += sendWritten
+
+        // Reset send pointer.
+        bioCtx.send_ptr = null
 
         return when {
-            ret > 0 -> TlsCodecResult(TlsResult.OK, ret, bytesProduced)
+            ret > 0 -> TlsCodecResult(TlsResult.OK, ret, sendWritten)
             ret == 0 && isHandshakeComplete ->
-                TlsCodecResult(TlsResult.OK, 0, bytesProduced)
-            ret == 0 && !isHandshakeComplete && bytesProduced > 0 ->
-                // Handshake in progress, produced output — caller should flush.
-                TlsCodecResult(TlsResult.OK, 0, bytesProduced)
+                TlsCodecResult(TlsResult.OK, 0, sendWritten)
+            ret == 0 && !isHandshakeComplete && sendWritten > 0 ->
+                TlsCodecResult(TlsResult.OK, 0, sendWritten)
             else -> {
                 val err = SSL_get_error(ssl, ret)
                 when (err) {
                     SSL_ERROR_NONE ->
-                        TlsCodecResult(TlsResult.OK, 0, bytesProduced)
+                        TlsCodecResult(TlsResult.OK, 0, sendWritten)
                     SSL_ERROR_WANT_READ ->
-                        TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, bytesProduced)
+                        TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, sendWritten)
                     SSL_ERROR_WANT_WRITE ->
-                        TlsCodecResult(TlsResult.NEED_WRAP, 0, bytesProduced)
+                        TlsCodecResult(TlsResult.NEED_WRAP, 0, sendWritten)
                     SSL_ERROR_ZERO_RETURN ->
-                        TlsCodecResult(TlsResult.CLOSED, 0, bytesProduced)
+                        TlsCodecResult(TlsResult.CLOSED, 0, sendWritten)
                     else -> throw tlsError("protect", err)
                 }
             }
@@ -202,7 +188,8 @@ class OpenSslCodec internal constructor(
         if (closed) return
         closed = true
         SSL_shutdown(ssl)
-        SSL_free(ssl) // Also frees both BIOs.
+        SSL_free(ssl) // Also frees the BIO.
+        kotlinx.cinterop.nativeHeap.free(bioCtx.rawPtr)
     }
 
     private fun tlsError(op: String, sslError: Int): TlsException {

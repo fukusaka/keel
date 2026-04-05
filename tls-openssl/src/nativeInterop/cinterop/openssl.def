@@ -25,23 +25,92 @@ static const char* keel_openssl_err_string(void) {
 }
 
 // ============================================================
-// Memory BIO setup for TlsCodec protect/unprotect
+// Pointer-based BIO adapter for TlsCodec protect/unprotect
 // ============================================================
+// Mirrors Mbed TLS's keel_mbedtls_bio_ctx: recv/send callbacks
+// read from and write to caller-owned IoBuf memory directly —
+// no intermediate buffer copies beyond AEAD encrypt/decrypt.
 
-// Create two memory BIOs and attach them to the SSL object.
-// SSL takes ownership — do NOT call BIO_free on the returned pointers.
-// Returns 0 on success, -1 on failure.
-static int keel_openssl_bio_setup(SSL *ssl, BIO **rbio_out, BIO **wbio_out) {
-    BIO *rbio = BIO_new(BIO_s_mem());
-    BIO *wbio = BIO_new(BIO_s_mem());
-    if (!rbio || !wbio) {
-        BIO_free(rbio);
-        BIO_free(wbio);
+// BIO context: holds pointers into caller-owned IoBuf memory.
+// Pointers are valid ONLY during a single protect/unprotect call.
+typedef struct {
+    // recv side: input IoBuf (ciphertext for unprotect)
+    const unsigned char* recv_ptr;
+    size_t recv_remaining;
+
+    // send side: output IoBuf (ciphertext for protect, handshake for unprotect)
+    unsigned char* send_ptr;
+    size_t send_capacity;
+    size_t send_written;
+} keel_openssl_bio_ctx;
+
+// BIO read callback: reads from recv_ptr (caller's IoBuf).
+// Returns -1 with BIO_set_retry_read when recv buffer is exhausted.
+static int keel_openssl_bio_read(BIO *bio, char *buf, int len) {
+    keel_openssl_bio_ctx *ctx = (keel_openssl_bio_ctx *)BIO_get_data(bio);
+    if (ctx->recv_remaining == 0) {
+        BIO_set_retry_read(bio);
         return -1;
     }
-    SSL_set_bio(ssl, rbio, wbio);
-    *rbio_out = rbio;
-    *wbio_out = wbio;
+    size_t n = (size_t)len < ctx->recv_remaining ? (size_t)len : ctx->recv_remaining;
+    memcpy(buf, ctx->recv_ptr, n);
+    ctx->recv_ptr += n;
+    ctx->recv_remaining -= n;
+    return (int)n;
+}
+
+// BIO write callback: writes to send_ptr (caller's IoBuf).
+// Returns -1 with BIO_set_retry_write when send buffer is full.
+static int keel_openssl_bio_write(BIO *bio, const char *buf, int len) {
+    keel_openssl_bio_ctx *ctx = (keel_openssl_bio_ctx *)BIO_get_data(bio);
+    size_t avail = ctx->send_capacity - ctx->send_written;
+    if (avail == 0) {
+        BIO_set_retry_write(bio);
+        return -1;
+    }
+    size_t n = (size_t)len < avail ? (size_t)len : avail;
+    memcpy(ctx->send_ptr + ctx->send_written, buf, n);
+    ctx->send_written += n;
+    return (int)n;
+}
+
+// BIO ctrl callback: must handle BIO_CTRL_FLUSH at minimum.
+static long keel_openssl_bio_ctrl(BIO *bio, int cmd, long num, void *ptr) {
+    (void)bio; (void)num; (void)ptr;
+    if (cmd == BIO_CTRL_FLUSH) return 1;
+    return 0;
+}
+
+// Singleton BIO_METHOD — created once, never freed (process-lifetime).
+static BIO_METHOD *keel_openssl_bio_method_instance = NULL;
+
+static BIO_METHOD* keel_openssl_bio_method(void) {
+    if (keel_openssl_bio_method_instance) return keel_openssl_bio_method_instance;
+    // BIO_TYPE_NONE = 0 means custom, user-defined BIO.
+    BIO_METHOD *m = BIO_meth_new(BIO_TYPE_NONE, "keel_openssl_bio");
+    BIO_meth_set_read(m, keel_openssl_bio_read);
+    BIO_meth_set_write(m, keel_openssl_bio_write);
+    BIO_meth_set_ctrl(m, keel_openssl_bio_ctrl);
+    keel_openssl_bio_method_instance = m;
+    return m;
+}
+
+// Create pointer-based BIO and attach to SSL.
+// SSL takes ownership of the BIO — do NOT call BIO_free.
+// The bio_ctx must outlive the SSL object (caller manages lifetime).
+// Returns 0 on success, -1 on failure.
+static int keel_openssl_bio_setup(SSL *ssl, keel_openssl_bio_ctx *ctx) {
+    BIO_METHOD *method = keel_openssl_bio_method();
+    if (!method) return -1;
+    BIO *bio = BIO_new(method);
+    if (!bio) return -1;
+    BIO_set_data(bio, ctx);
+    BIO_set_init(bio, 1);
+    // Use same BIO for both read and write — callbacks distinguish
+    // via recv_ptr/send_ptr in the context.
+    // BIO_up_ref so SSL_set_bio doesn't double-free the single BIO.
+    BIO_up_ref(bio);
+    SSL_set_bio(ssl, bio, bio);
     return 0;
 }
 
