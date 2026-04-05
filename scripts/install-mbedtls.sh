@@ -82,15 +82,16 @@ cmake -S "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}" -B "${WORKDIR}/build" \
     -DENABLE_PROGRAMS=Off
 cmake --build "${WORKDIR}/build" -j "$(nproc)"
 
-echo "Installing..."
-# Install to staging first (for cache), then to /usr/local.
-DESTDIR="$STAGING" cmake --install "${WORKDIR}/build"
-sudo cp -a "${STAGING}${INSTALL_PREFIX}/"* "$INSTALL_PREFIX/"
+echo "Installing to ${INSTALL_PREFIX}..."
+sudo cmake --install "${WORKDIR}/build"
 sudo ldconfig
 
 # Populate cache if MBEDTLS_CACHE_DIR is set.
+# Install a second copy to a staging dir owned by the current user.
 if [ -n "$CACHE_DIR" ]; then
     echo "Populating cache at ${CACHE_DIR}..."
+    STAGING="${WORKDIR}/staging"
+    DESTDIR="$STAGING" cmake --install "${WORKDIR}/build" 2>/dev/null || true
     mkdir -p "${CACHE_DIR}/install"
     cp -a "${STAGING}${INSTALL_PREFIX}/"* "${CACHE_DIR}/install/"
     echo "$MBEDTLS_VERSION" > "${CACHE_DIR}/version.txt"
