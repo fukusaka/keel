@@ -33,12 +33,16 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.pipe
 import platform.posix.pthread_create
+import platform.posix.pthread_equal
 import platform.posix.pthread_join
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import platform.posix.pthread_self
+import platform.posix.pthread_t
+import platform.posix.pthread_tVar
 import platform.posix.read
 import platform.posix.strerror
 import platform.posix.timespec
@@ -129,9 +133,9 @@ internal class KqueueEventLoop(
     private val wakeupWriteBuf = byteArrayOf(1)
     private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
-    private val threadPtr = arena.alloc<platform.posix.pthread_tVar>()
+    private val threadPtr = arena.alloc<pthread_tVar>()
     @kotlin.concurrent.Volatile
-    private var eventLoopThread: platform.posix.pthread_t? = null
+    private var eventLoopThread: pthread_t? = null
 
     /**
      * A pending I/O interest for a file descriptor.
@@ -190,7 +194,7 @@ internal class KqueueEventLoop(
 
     private fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
-        return platform.posix.pthread_equal(platform.posix.pthread_self(), t) != 0
+        return pthread_equal(pthread_self(), t) != 0
     }
 
     // --- Channel registration ---
@@ -337,7 +341,7 @@ internal class KqueueEventLoop(
      * 3. Process ready fds — resume associated coroutine continuations
      */
     private fun loop() {
-        eventLoopThread = platform.posix.pthread_self()
+        eventLoopThread = pthread_self()
         memScoped {
             val eventList = allocArray<kevent>(MAX_EVENTS)
             val zeroTimeout = alloc<timespec>().apply {

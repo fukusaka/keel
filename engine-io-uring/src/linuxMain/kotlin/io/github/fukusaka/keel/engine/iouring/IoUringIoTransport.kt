@@ -20,6 +20,8 @@ import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
 import platform.posix.MSG_NOSIGNAL
+import platform.posix.errno
+import platform.posix.send
 
 /**
  * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
@@ -146,7 +148,7 @@ internal class IoUringIoTransport(
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             val remaining = (pw.length - written).toULong()
-            val n = platform.posix.send(fd, ptr, remaining, MSG_NOSIGNAL)
+            val n = send(fd, ptr, remaining, MSG_NOSIGNAL)
             when {
                 n > 0 -> {
                     written += n.toInt()
@@ -154,7 +156,7 @@ internal class IoUringIoTransport(
                 }
                 n == 0L -> break
                 else -> {
-                    val err = platform.posix.errno
+                    val err = errno
                     if (err == EAGAIN || err == EWOULDBLOCK) {
                         flushHadEagain = true
                         // Transfer buffer ownership to submitAsyncSend.

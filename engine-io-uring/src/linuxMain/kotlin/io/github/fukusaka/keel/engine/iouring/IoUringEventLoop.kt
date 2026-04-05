@@ -50,6 +50,7 @@ import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
 import platform.posix.pthread_self
+import platform.posix.pthread_t
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicLong
@@ -218,7 +219,7 @@ internal class IoUringEventLoop(
     private var wakeupSqePending = false
 
     @kotlin.concurrent.Volatile
-    private var eventLoopThread: platform.posix.pthread_t? = null
+    private var eventLoopThread: pthread_t? = null
 
     init {
         val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, 0u)

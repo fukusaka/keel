@@ -8,15 +8,23 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.parseRequestHead
 import io.github.fukusaka.keel.codec.http.writeResponseHead
+import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
-import io.ktor.events.*
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.util.pipeline.*
-import io.ktor.utils.io.*
+import io.ktor.events.Events
+import io.ktor.events.raiseCatching
+import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationEnvironment
+import io.ktor.server.application.ServerReady
+import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.BaseApplicationEngine
+import io.ktor.server.engine.withPort
+import io.ktor.util.pipeline.execute
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CompletableJob
@@ -272,7 +280,7 @@ public class KeelApplicationEngine(
      * joined before parsing the next request to ensure body bytes are fully
      * consumed from the source.
      */
-    private suspend fun CoroutineScope.handleConnection(channel: io.github.fukusaka.keel.core.Channel) {
+    private suspend fun CoroutineScope.handleConnection(channel: Channel) {
         // PipelinedChannel uses push-mode BufferedSuspendSource via SuspendBridgeHandler
         // (zero-copy readOwned). Other channels fall back to pull-mode (1 copy).
         val source = channel.asBufferedSuspendSource()

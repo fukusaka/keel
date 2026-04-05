@@ -2,10 +2,14 @@ package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.core.SocketAddress
-import io.ktor.http.*
-import io.ktor.server.engine.*
-import io.ktor.server.request.*
-import io.ktor.utils.io.*
+import io.ktor.http.Headers
+import io.ktor.http.HttpMethod
+import io.ktor.http.Parameters
+import io.ktor.http.RequestConnectionPoint
+import io.ktor.http.parseQueryString
+import io.ktor.server.engine.BaseApplicationRequest
+import io.ktor.server.request.RequestCookies
+import io.ktor.utils.io.ByteReadChannel
 
 /**
  * Ktor [BaseApplicationRequest] that reads request metadata from a keel [HttpRequestHead].

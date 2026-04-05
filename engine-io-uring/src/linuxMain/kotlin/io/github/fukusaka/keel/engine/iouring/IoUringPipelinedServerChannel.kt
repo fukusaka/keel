@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_multishot_accept
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.close
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -104,7 +105,7 @@ internal class IoUringPipelinedServerChannel(
         if (!closed) {
             closed = true
             for (fd in serverFds) {
-                platform.posix.close(fd)
+                close(fd)
             }
         }
     }

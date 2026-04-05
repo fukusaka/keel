@@ -90,8 +90,6 @@ formatting:
     useTrailingCommaOnDeclarationSite: true
   NoWildcardImports:
     active: true
-    # Ktor SDK uses wildcard imports idiomatically (io.ktor.* etc.)
-    packagesToUseImportOnDemandProperty: "io.ktor.**"
   NoUnusedImports:
     active: true
   FinalNewline:

@@ -9,7 +9,47 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
-import mbedtls.*
+import mbedtls.MBEDTLS_NET_PROTO_TCP
+import mbedtls.MBEDTLS_SSL_IS_SERVER
+import mbedtls.MBEDTLS_SSL_PRESET_DEFAULT
+import mbedtls.MBEDTLS_SSL_TRANSPORT_STREAM
+import mbedtls.keel_mbedtls_get_port
+import mbedtls.keel_mbedtls_ssl_set_bio_net
+import mbedtls.keel_mbedtls_strerror
+import mbedtls.mbedtls_net_accept
+import mbedtls.mbedtls_net_bind
+import mbedtls.mbedtls_net_context
+import mbedtls.mbedtls_net_free
+import mbedtls.mbedtls_net_init
+import mbedtls.mbedtls_pk_context
+import mbedtls.mbedtls_pk_free
+import mbedtls.mbedtls_pk_init
+import mbedtls.mbedtls_pk_parse_key
+import mbedtls.mbedtls_ssl_conf_ca_chain
+import mbedtls.mbedtls_ssl_conf_own_cert
+import mbedtls.mbedtls_ssl_config
+import mbedtls.mbedtls_ssl_config_defaults
+import mbedtls.mbedtls_ssl_config_free
+import mbedtls.mbedtls_ssl_config_init
+import mbedtls.mbedtls_ssl_context
+import mbedtls.mbedtls_ssl_free
+import mbedtls.mbedtls_ssl_handshake
+import mbedtls.mbedtls_ssl_init
+import mbedtls.mbedtls_ssl_read
+import mbedtls.mbedtls_ssl_setup
+import mbedtls.mbedtls_ssl_write
+import mbedtls.mbedtls_x509_crt
+import mbedtls.mbedtls_x509_crt_free
+import mbedtls.mbedtls_x509_crt_init
+import mbedtls.mbedtls_x509_crt_parse
+import mbedtls.psa_crypto_init
+import platform.posix.SIGTERM
+import platform.posix._exit
+import platform.posix.execl
+import platform.posix.fork
+import platform.posix.kill
+import platform.posix.usleep
+import platform.posix.waitpid
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -79,22 +119,22 @@ class MbedTlsEchoTest {
         // --- Bind server (port 0 = OS assigns ephemeral port) ---
         val listenFd = alloc<mbedtls_net_context>()
         mbedtls_net_init(listenFd.ptr)
-        ret = mbedtls_net_bind(listenFd.ptr, null, "0", mbedtls.MBEDTLS_NET_PROTO_TCP)
+        ret = mbedtls_net_bind(listenFd.ptr, null, "0", MBEDTLS_NET_PROTO_TCP)
         check(ret == 0) { "net_bind failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
         val port = keel_mbedtls_get_port(listenFd.ptr)
         check(port > 0) { "failed to get assigned port" }
 
         // --- Start curl client in background ---
-        val pid = platform.posix.fork()
+        val pid = fork()
         if (pid == 0) {
-            platform.posix.usleep(300_000u)
-            platform.posix.execl(
+            usleep(300_000u)
+            execl(
                 "/usr/bin/curl", "curl",
                 "-k", "-s",
                 "https://localhost:$port/hello",
                 null,
             )
-            platform.posix._exit(1)
+            _exit(1)
         }
 
         // --- Accept client ---
@@ -106,7 +146,7 @@ class MbedTlsEchoTest {
         // --- Set BIO and handshake ---
         // Use C wrapper because mbedtls_net_send/recv can't be passed as
         // CFunction pointers directly from Kotlin/Native.
-        mbedtls.keel_mbedtls_ssl_set_bio_net(ssl.ptr, clientFd.ptr)
+        keel_mbedtls_ssl_set_bio_net(ssl.ptr, clientFd.ptr)
 
         ret = mbedtls_ssl_handshake(ssl.ptr)
         check(ret == 0) { "handshake failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
@@ -138,8 +178,8 @@ class MbedTlsEchoTest {
         mbedtls_pk_free(pkey.ptr)
 
         // Kill client process
-        platform.posix.kill(pid, platform.posix.SIGTERM)
-        platform.posix.waitpid(pid, null, 0)
+        kill(pid, SIGTERM)
+        waitpid(pid, null, 0)
         Unit
     }
 

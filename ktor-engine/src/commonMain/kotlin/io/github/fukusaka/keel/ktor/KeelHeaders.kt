@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.ktor
 
-import io.ktor.http.*
+import io.ktor.http.Headers
 import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
 
 /**

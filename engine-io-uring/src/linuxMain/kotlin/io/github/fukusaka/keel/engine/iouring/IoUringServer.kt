@@ -11,6 +11,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.close
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -96,7 +97,7 @@ internal class IoUringServer(
                 capabilities,
             )
         } catch (e: Throwable) {
-            platform.posix.close(clientFd)
+            close(clientFd)
             throw e
         }
     }
@@ -137,7 +138,7 @@ internal class IoUringServer(
             onCqe = { res, flags ->
                 if (!_active) {
                     // Close fds accepted between close() and the final CQE drain.
-                    if (res >= 0) platform.posix.close(res)
+                    if (res >= 0) close(res)
                     return@submitMultishot
                 }
                 if (res >= 0) {
@@ -164,7 +165,7 @@ internal class IoUringServer(
     override fun close() {
         if (_active) {
             _active = false
-            platform.posix.close(serverFd)
+            close(serverFd)
             if (multishotSlot != -1) {
                 bossLoop.cancelMultishot(multishotSlot)
                 multishotSlot = -1
@@ -175,7 +176,7 @@ internal class IoUringServer(
             }
             // Close any queued fds that haven't been accepted yet.
             while (pendingFds.isNotEmpty()) {
-                platform.posix.close(pendingFds.removeFirst())
+                close(pendingFds.removeFirst())
             }
         }
     }

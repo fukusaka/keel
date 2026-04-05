@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.pipeline.ChannelPipeline
+
 /**
  * Platform-agnostic I/O engine interface.
  *
@@ -44,7 +46,7 @@ interface IoEngine : AutoCloseable {
      *
      * Each accepted connection is configured via [pipelineInitializer],
      * which installs handlers into the connection's
-     * [ChannelPipeline][io.github.fukusaka.keel.pipeline.ChannelPipeline].
+     * [ChannelPipeline].
      * The engine drives I/O via callbacks — no coroutine context required.
      *
      * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
@@ -60,7 +62,7 @@ interface IoEngine : AutoCloseable {
     fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+        pipelineInitializer: (ChannelPipeline) -> Unit,
     ): PipelinedServer {
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not support pipeline mode",

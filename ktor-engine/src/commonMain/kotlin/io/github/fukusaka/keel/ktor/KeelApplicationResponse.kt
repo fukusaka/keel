@@ -2,11 +2,14 @@ package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.io.BufferedSuspendSink
-import io.ktor.http.*
-import io.ktor.http.content.*
-import io.ktor.server.engine.*
-import io.ktor.server.response.*
-import io.ktor.utils.io.*
+import io.ktor.http.HeadersBuilder
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
+import io.ktor.server.engine.BaseApplicationResponse
+import io.ktor.server.response.ResponseHeaders
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch

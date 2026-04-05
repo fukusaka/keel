@@ -1,8 +1,9 @@
 package io.github.fukusaka.keel.ktor
 
-import io.ktor.events.*
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
+import io.ktor.events.Events
+import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationEnvironment
+import io.ktor.server.engine.ApplicationEngineFactory
 
 /**
  * [ApplicationEngineFactory] for the keel I/O engine.

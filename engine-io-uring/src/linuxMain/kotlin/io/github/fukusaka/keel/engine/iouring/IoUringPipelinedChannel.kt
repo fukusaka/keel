@@ -17,6 +17,7 @@ import kotlinx.cinterop.plus
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.posix.ENOBUFS
 import platform.posix.SHUT_WR
+import platform.posix.close
 import platform.posix.shutdown
 
 /**
@@ -263,7 +264,7 @@ internal class IoUringPipelinedChannel(
                 multishotSlot = -1
             }
             transport.close()
-            platform.posix.close(fd)
+            close(fd)
         }
     }
 }
