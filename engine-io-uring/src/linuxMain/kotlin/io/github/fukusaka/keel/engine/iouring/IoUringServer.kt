@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.PushServerChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -50,7 +49,7 @@ internal class IoUringServer(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
-) : ServerChannel, PushServerChannel {
+) : ServerChannel {
 
     private var _active = true
 
