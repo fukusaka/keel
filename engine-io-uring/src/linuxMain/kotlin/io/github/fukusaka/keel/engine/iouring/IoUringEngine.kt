@@ -17,6 +17,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import platform.posix.AF_INET
+import platform.posix.close
 import platform.posix.errno
 import platform.posix.sockaddr_in
 import platform.posix.strerror
@@ -150,12 +151,12 @@ class IoUringEngine(
                 }
             }
         } catch (e: Throwable) {
-            platform.posix.close(fd)
+            close(fd)
             throw e
         }
 
         if (res < 0) {
-            platform.posix.close(fd)
+            close(fd)
             error("connect() failed: ${strerror(-res)?.toKString()} (errno=${-res})")
         }
 

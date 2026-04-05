@@ -3,9 +3,9 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlin.coroutines.resume
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
+import kotlin.coroutines.resume
 
 /**
  * Non-suspend [IoTransport] for NIO pipeline channels.
@@ -138,16 +138,20 @@ internal class NioIoTransport(
 
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
-        eventLoop.setInterestCallback(selectionKey, SelectionKey.OP_WRITE, Runnable {
-            val done = flush()
-            if (done) {
-                flushContinuation?.let { cont ->
-                    flushContinuation = null
-                    cont.resume(Unit)
+        eventLoop.setInterestCallback(
+            selectionKey,
+            SelectionKey.OP_WRITE,
+            Runnable {
+                val done = flush()
+                if (done) {
+                    flushContinuation?.let { cont ->
+                        flushContinuation = null
+                        cont.resume(Unit)
+                    }
+                    onFlushComplete?.invoke()
                 }
-                onFlushComplete?.invoke()
-            }
-        })
+            },
+        )
     }
 
     override suspend fun awaitPendingFlush() {

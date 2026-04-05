@@ -6,7 +6,8 @@ package io.github.fukusaka.keel.codec.http
  */
 enum class HttpVersion(val text: String, val major: Int, val minor: Int) {
     HTTP_1_0("HTTP/1.0", 1, 0),
-    HTTP_1_1("HTTP/1.1", 1, 1);
+    HTTP_1_1("HTTP/1.1", 1, 1),
+    ;
 
     companion object {
         /**

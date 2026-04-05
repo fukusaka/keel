@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.core
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSink
 import io.github.fukusaka.keel.io.SuspendSource
@@ -115,7 +115,9 @@ interface Channel : AutoCloseable {
      * Engines that override [flush] directly do not need this.
      */
     fun requestFlush() {
-        throw UnsupportedOperationException("requestFlush() not implemented. Override flush() or requestFlush()+awaitFlushComplete().")
+        throw UnsupportedOperationException(
+            "requestFlush() not implemented. Override flush() or requestFlush()+awaitFlushComplete().",
+        )
     }
 
     /**

@@ -47,6 +47,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
     private val regLock = Any()
     private val pendingRegistrations = mutableListOf<ChannelRegistration>()
     private val taskQueue = ConcurrentLinkedQueue<Runnable>()
+
     @Volatile
     private var running = true
     private val thread: Thread

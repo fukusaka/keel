@@ -17,6 +17,8 @@ import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.EINPROGRESS
+import platform.posix.close
 import platform.posix.errno
 import platform.posix.strerror
 
@@ -129,23 +131,23 @@ class KqueueEngine(
         val result = SocketUtils.connectNonBlocking(fd, host, port)
         if (result < 0) {
             val err = errno
-            if (err == platform.posix.EINPROGRESS) {
+            if (err == EINPROGRESS) {
                 // Connection in progress — suspend until fd is writable
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
-                        platform.posix.close(fd)
+                        close(fd)
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
                 val error = SocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    platform.posix.close(fd)
+                    close(fd)
                     error("connect() failed: ${strerror(error)?.toKString()}")
                 }
             } else {
-                platform.posix.close(fd)
+                close(fd)
                 error("connect() failed: ${strerror(err)?.toKString()}")
             }
         }

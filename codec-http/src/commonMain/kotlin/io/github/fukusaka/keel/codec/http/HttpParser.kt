@@ -105,7 +105,7 @@ internal suspend fun parseHeaders(source: BufferedSuspendSource): HttpHeaders {
         if (line.isEmpty()) break
         if (line[0] == ' ' || line[0] == '\t') {
             throw HttpParseException(
-                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
+                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)",
             )
         }
         val colon = line.indexOf(':')
@@ -189,7 +189,7 @@ internal fun parseHeaders(source: Source): HttpHeaders {
         // Detect obs-fold: a line that starts with SP or HTAB following a previous field
         if (line[0] == ' ' || line[0] == '\t') {
             throw HttpParseException(
-                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
+                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)",
             )
         }
         val colon = line.indexOf(':')
@@ -251,6 +251,9 @@ internal fun readChunkedBody(source: Source): ByteArray? {
     if (chunks.isEmpty()) return null
     val result = ByteArray(total)
     var offset = 0
-    for (chunk in chunks) { chunk.copyInto(result, offset); offset += chunk.size }
+    for (chunk in chunks) {
+        chunk.copyInto(result, offset)
+        offset += chunk.size
+    }
     return result
 }

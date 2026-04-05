@@ -82,7 +82,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                     } else {
                         if (lineBuffer.length >= MAX_LINE_SIZE) {
                             throw HttpParseException(
-                                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)"
+                                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
                             )
                         }
                         lineBuffer.append((b.toInt() and 0xFF).toChar())
@@ -132,7 +132,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private fun parseHeaderLine(line: String) {
         if (line[0] == ' ' || line[0] == '\t') {
             throw HttpParseException(
-                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)"
+                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)",
             )
         }
         val colon = line.indexOf(':')
@@ -150,7 +150,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         // to prevent HTTP Request Smuggling.
         if (headers.isChunked && headers.contentLength != null) {
             throw HttpParseException(
-                "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)"
+                "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
         }
         val head = HttpRequestHead(

@@ -43,9 +43,13 @@ internal class NioPipelinedServerChannel(
 
     private fun armAccept() {
         if (closed) return
-        bossLoop.setInterestCallback(selectionKey, SelectionKey.OP_ACCEPT, Runnable {
-            onAcceptable()
-        })
+        bossLoop.setInterestCallback(
+            selectionKey,
+            SelectionKey.OP_ACCEPT,
+            Runnable {
+                onAcceptable()
+            },
+        )
     }
 
     private fun onAcceptable() {
@@ -62,9 +66,12 @@ internal class NioPipelinedServerChannel(
         val idx = workerIndex++ % workerGroup.size
         val (workerLoop, allocator) = workerGroup.at(idx)
         // Register on worker thread because NIO Selector.register() blocks during select().
-        workerLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, Runnable {
-            onWorkerAccept(client, workerLoop, allocator)
-        })
+        workerLoop.dispatch(
+            kotlin.coroutines.EmptyCoroutineContext,
+            Runnable {
+                onWorkerAccept(client, workerLoop, allocator)
+            },
+        )
     }
 
     private fun onWorkerAccept(

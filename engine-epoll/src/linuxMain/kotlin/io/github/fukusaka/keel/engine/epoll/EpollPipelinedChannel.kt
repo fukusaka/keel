@@ -15,9 +15,11 @@ import kotlinx.cinterop.plus
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
+import platform.posix.SHUT_WR
 import platform.posix.close
 import platform.posix.errno
 import platform.posix.read
+import platform.posix.shutdown
 
 /**
  * Unified epoll channel supporting both Pipeline mode and Channel mode.
@@ -154,7 +156,7 @@ internal class EpollPipelinedChannel(
     override fun shutdownOutput() {
         if (!outputShutdown && !closed) {
             outputShutdown = true
-            platform.posix.shutdown(fd, platform.posix.SHUT_WR)
+            shutdown(fd, SHUT_WR)
         }
     }
 

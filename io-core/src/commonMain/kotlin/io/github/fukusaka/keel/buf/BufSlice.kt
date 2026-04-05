@@ -54,8 +54,9 @@ class BufSlice(
     operator fun get(index: Int): Byte {
         require(index in 0 until totalLength) { "index $index out of bounds (totalLength=$totalLength)" }
         if (index < length) return buf.getByte(offset + index)
-        return checkNotNull(next) { "BufSlice chain corrupted: index $index >= segment length $length but next is null" }
-            .get(index - length)
+        return checkNotNull(next) {
+            "BufSlice chain corrupted: index $index >= segment length $length but next is null"
+        }.get(index - length)
     }
 
     /** Returns `true` if this slice contains no bytes. */
@@ -115,8 +116,10 @@ class BufSlice(
         // Parallel segment traversal. Advances through both chains in
         // chunk-sized steps (min of remaining bytes in each segment).
         // No !! assertions — chain exhaustion terminates the loop via ?: break.
-        var aSeg = this; var aOff = 0
-        var bSeg = other; var bOff = 0
+        var aSeg = this
+        var aOff = 0
+        var bSeg = other
+        var bOff = 0
         var remaining = totalLength
         while (remaining > 0) {
             val aLen = aSeg.length - aOff
@@ -125,11 +128,21 @@ class BufSlice(
             for (i in 0 until chunk) {
                 if (aSeg.buf.getByte(aSeg.offset + aOff + i) !=
                     bSeg.buf.getByte(bSeg.offset + bOff + i)
-                ) return false
+                ) {
+                    return false
+                }
             }
-            aOff += chunk; bOff += chunk; remaining -= chunk
-            if (aOff >= aSeg.length) { aSeg = aSeg.next ?: break; aOff = 0 }
-            if (bOff >= bSeg.length) { bSeg = bSeg.next ?: break; bOff = 0 }
+            aOff += chunk
+            bOff += chunk
+            remaining -= chunk
+            if (aOff >= aSeg.length) {
+                aSeg = aSeg.next ?: break
+                aOff = 0
+            }
+            if (bOff >= bSeg.length) {
+                bSeg = bSeg.next ?: break
+                bOff = 0
+            }
         }
         return true
     }
@@ -235,13 +248,17 @@ class BufSlice(
         while (seg != null) {
             for (i in 0 until seg.length) {
                 val b = seg.buf.getByte(seg.offset + i).toInt() and 0xFF
-                if (b !in 0x30..0x39) throw NumberFormatException(
-                    "Invalid digit at index $globalIndex: '${b.toChar()}' in ${decodeToString()}"
-                )
+                if (b !in 0x30..0x39) {
+                    throw NumberFormatException(
+                        "Invalid digit at index $globalIndex: '${b.toChar()}' in ${decodeToString()}",
+                    )
+                }
                 result = result * 10 + (b - 0x30)
-                if (result > Int.MAX_VALUE) throw NumberFormatException(
-                    "Value exceeds Int.MAX_VALUE: ${decodeToString()}"
-                )
+                if (result > Int.MAX_VALUE) {
+                    throw NumberFormatException(
+                        "Value exceeds Int.MAX_VALUE: ${decodeToString()}",
+                    )
+                }
                 globalIndex++
             }
             seg = seg.next
@@ -250,8 +267,11 @@ class BufSlice(
     }
 
     override fun toString(): String =
-        if (next == null) "BufSlice(offset=$offset, length=$length)"
-        else "BufSlice(offset=$offset, length=$length, totalLength=$totalLength)"
+        if (next == null) {
+            "BufSlice(offset=$offset, length=$length)"
+        } else {
+            "BufSlice(offset=$offset, length=$length, totalLength=$totalLength)"
+        }
 
     companion object {
         private fun isWhitespace(b: Byte): Boolean =

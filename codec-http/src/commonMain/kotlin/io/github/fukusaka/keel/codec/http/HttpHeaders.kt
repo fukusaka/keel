@@ -59,7 +59,10 @@ class HttpHeaders private constructor(
     operator fun contains(name: String): Boolean = name.lowercase() in map
 
     /** Total number of header field values (counting multi-valued headers individually). */
-    val size: Int get() { ensureFlatArrays(); return flatNames.size }
+    val size: Int get() {
+        ensureFlatArrays()
+        return flatNames.size
+    }
 
     /** True if no header fields are present. */
     val isEmpty: Boolean get() = map.isEmpty()
@@ -125,10 +128,16 @@ class HttpHeaders private constructor(
     // --- Indexed access (for suspend writer that cannot use inline forEach) ---
 
     /** Returns the name of the header at [index] (insertion order, original case). O(1). */
-    fun nameAt(index: Int): String { ensureFlatArrays(); return flatNames[index] }
+    fun nameAt(index: Int): String {
+        ensureFlatArrays()
+        return flatNames[index]
+    }
 
     /** Returns the value of the header at [index] (insertion order). O(1). */
-    fun valueAt(index: Int): String { ensureFlatArrays(); return flatValues[index] }
+    fun valueAt(index: Int): String {
+        ensureFlatArrays()
+        return flatValues[index]
+    }
 
     // --- Direct lookup (bypasses lowercase() allocation) ---
 

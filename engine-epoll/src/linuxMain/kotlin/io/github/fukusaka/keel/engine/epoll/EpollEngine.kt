@@ -16,6 +16,8 @@ import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.EINPROGRESS
+import platform.posix.close
 import platform.posix.errno
 import platform.posix.strerror
 
@@ -118,23 +120,23 @@ class EpollEngine(
         val result = SocketUtils.connectNonBlocking(fd, host, port)
         if (result < 0) {
             val err = errno
-            if (err == platform.posix.EINPROGRESS) {
+            if (err == EINPROGRESS) {
                 // Connection in progress — suspend until fd is writable
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, EpollEventLoop.Interest.WRITE)
-                        platform.posix.close(fd)
+                        close(fd)
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
                 val error = SocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    platform.posix.close(fd)
+                    close(fd)
                     error("connect() failed: ${strerror(error)?.toKString()}")
                 }
             } else {
-                platform.posix.close(fd)
+                close(fd)
                 error("connect() failed: ${strerror(err)?.toKString()}")
             }
         }

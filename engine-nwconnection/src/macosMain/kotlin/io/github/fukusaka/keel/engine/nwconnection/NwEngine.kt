@@ -31,7 +31,12 @@ import platform.Network.nw_listener_state_failed
 import platform.Network.nw_listener_state_ready
 import platform.Network.nw_listener_start
 import platform.Network.nw_listener_t
+import platform.darwin.DISPATCH_TIME_NOW
 import platform.darwin.dispatch_queue_create
+import platform.darwin.dispatch_semaphore_create
+import platform.darwin.dispatch_semaphore_signal
+import platform.darwin.dispatch_semaphore_wait
+import platform.darwin.dispatch_time
 
 /**
  * macOS NWConnection-based [IoEngine] implementation.
@@ -166,15 +171,15 @@ class NwEngine(
         nw_listener_set_queue(lsnr, listenerQueue)
 
         // Block until listener reaches ready state.
-        val sem = platform.darwin.dispatch_semaphore_create(0)
+        val sem = dispatch_semaphore_create(0)
         var assignedPort = -1
 
         nw_listener_set_state_changed_handler(lsnr) { state, _ ->
             if (state == nw_listener_state_ready) {
                 assignedPort = nw_listener_get_port(lsnr).toInt()
-                platform.darwin.dispatch_semaphore_signal(sem)
+                dispatch_semaphore_signal(sem)
             } else if (state == nw_listener_state_failed) {
-                platform.darwin.dispatch_semaphore_signal(sem)
+                dispatch_semaphore_signal(sem)
             }
         }
 
@@ -199,10 +204,10 @@ class NwEngine(
         nw_listener_start(lsnr)
         // Generous timeout for listener startup, prevents permanent hang
         // if the dispatch queue or state handler is never delivered.
-        val deadline = platform.darwin.dispatch_time(
-            platform.darwin.DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
+        val deadline = dispatch_time(
+            DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
         )
-        val waitResult = platform.darwin.dispatch_semaphore_wait(sem, deadline)
+        val waitResult = dispatch_semaphore_wait(sem, deadline)
         check(waitResult == 0L) {
             "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
         }

@@ -12,7 +12,8 @@ enum class WsOpcode(val code: Int) {
     BINARY(0x2),
     CLOSE(0x8),
     PING(0x9),
-    PONG(0xA);
+    PONG(0xA),
+    ;
 
     /** True if this is a control opcode (0x8–0xF). */
     val isControl: Boolean get() = code in 0x8..0xF

@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.core.SocketAddress
-import io.ktor.http.*
+import io.ktor.http.HttpMethod
+import io.ktor.http.RequestConnectionPoint
+import io.ktor.http.URLProtocol
 
 /**
  * Ktor [RequestConnectionPoint] derived from keel [SocketAddress] and the HTTP request head.

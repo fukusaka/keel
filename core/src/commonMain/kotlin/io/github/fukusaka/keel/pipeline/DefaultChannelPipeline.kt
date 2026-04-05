@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
-import io.github.fukusaka.keel.logging.warn
 
 /**
  * Default [ChannelPipeline] implementation using a doubly-linked list of handler contexts.
@@ -234,7 +233,7 @@ class DefaultChannelPipeline(
         if (produced != accepted) {
             throw PipelineTypeException(
                 "Type mismatch in pipeline: '${nameOf(prevHandler)}' produces " +
-                    "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}"
+                    "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}",
             )
         }
     }
@@ -395,7 +394,7 @@ class DefaultChannelPipeline(
                     h.onError(this, cause)
                 } catch (e: Throwable) {
                     pipelineRef.logger.error(e) {
-                        "onError() threw in '${name}' while handling: $cause"
+                        "onError() threw in '$name' while handling: $cause"
                     }
                 }
             } else {

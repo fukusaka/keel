@@ -62,7 +62,11 @@ internal fun sha1(input: ByteArray): ByteArray {
             w[i] = x.rotateLeft(1)
         }
 
-        var a = h0; var b = h1; var c = h2; var d = h3; var e = h4
+        var a = h0
+        var b = h1
+        var c = h2
+        var d = h3
+        var e = h4
 
         for (i in 0..79) {
             val (f, k) = when {
@@ -72,10 +76,18 @@ internal fun sha1(input: ByteArray): ByteArray {
                 else   -> (b xor c xor d) to 0xCA62C1D6.toInt()
             }
             val temp = a.rotateLeft(5) + f + e + k + w[i]
-            e = d; d = c; c = b.rotateLeft(30); b = a; a = temp
+            e = d
+            d = c
+            c = b.rotateLeft(30)
+            b = a
+            a = temp
         }
 
-        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e
+        h0 += a
+        h1 += b
+        h2 += c
+        h3 += d
+        h4 += e
     }
 
     return ByteArray(20).also { out ->

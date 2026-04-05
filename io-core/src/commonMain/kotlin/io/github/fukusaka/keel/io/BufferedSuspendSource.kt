@@ -138,7 +138,10 @@ class BufferedSuspendSource : AutoCloseable {
 
     /** Push-mode fill: requests an engine-owned buffer from pushSource. */
     private suspend fun fillPush(m: Mode.Push): IoBuf? {
-        val owned = m.pushSource.readOwned() ?: run { eof = true; return null }
+        val owned = m.pushSource.readOwned() ?: run {
+            eof = true
+            return null
+        }
         m.bufferChain.addLast(owned)
         return owned
     }
@@ -230,7 +233,9 @@ class BufferedSuspendSource : AutoCloseable {
                     val slice = BufSlice(buf, buf.readerIndex, buf.readableBytes)
                     buf.readerIndex = buf.writerIndex
                     slice
-                } else null
+                } else {
+                    null
+                }
             }
         }
     }
@@ -265,7 +270,9 @@ class BufferedSuspendSource : AutoCloseable {
                     val slice = BufSlice(head, head.readerIndex, head.readableBytes)
                     head.readerIndex = head.writerIndex
                     slice
-                } else null
+                } else {
+                    null
+                }
             }
 
             // Line spans head and next buffer(s) — build chained BufSlice
@@ -395,8 +402,10 @@ class BufferedSuspendSource : AutoCloseable {
     companion object {
         /** Internal buffer size for pull mode. */
         private const val BUFFER_SIZE = 8192
+
         /** Compact threshold for pull mode. */
         private const val COMPACT_THRESHOLD = 1024
+
         /** Initial StringBuilder capacity for readLine. */
         private const val INITIAL_LINE_CAPACITY = 128
         private const val LF = '\n'.code.toByte()

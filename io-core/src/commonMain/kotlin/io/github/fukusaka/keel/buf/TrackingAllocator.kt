@@ -43,7 +43,7 @@ class TrackingAllocator(
         val poolable = buf as? PoolableIoBuf
             ?: throw IllegalStateException(
                 "TrackingAllocator requires a PoolableIoBuf-compatible allocator, " +
-                    "but delegate returned ${buf::class.simpleName}"
+                    "but delegate returned ${buf::class.simpleName}",
             )
         val original = poolable.deallocator
         poolable.deallocator = { b ->

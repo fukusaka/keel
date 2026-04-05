@@ -31,6 +31,7 @@ import platform.posix.setsockopt
 import platform.posix.socket
 import platform.posix.sockaddr_in
 import platform.posix.timeval
+import platform.posix.usleep
 import platform.posix.write
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -1250,7 +1251,7 @@ class KqueueEngineTest {
         }
 
         // Allow server to start accepting.
-        platform.posix.usleep(100_000u) // 100ms
+        usleep(100_000u) // 100ms
 
         val clientFd = connectRawClient(port)
         rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -1280,7 +1281,7 @@ class KqueueEngineTest {
             ))
         }
 
-        platform.posix.usleep(100_000u) // 100ms
+        usleep(100_000u) // 100ms
 
         val clientFd = connectRawClient(port)
         rawWrite(clientFd, "GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -1311,7 +1312,7 @@ class KqueueEngineTest {
             ))
         }
 
-        platform.posix.usleep(100_000u) // 100ms
+        usleep(100_000u) // 100ms
 
         val clientFd = connectRawClient(port)
 

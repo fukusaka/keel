@@ -167,6 +167,7 @@ subprojects {
         if (name != "engine-netty") {
             dependencies {
                 "detektPlugins"(project(":detekt-rules"))
+                "detektPlugins"(rootProject.libs.detekt.formatting)
             }
         } else {
             // Disable type resolution tasks to prevent NPE in CI.

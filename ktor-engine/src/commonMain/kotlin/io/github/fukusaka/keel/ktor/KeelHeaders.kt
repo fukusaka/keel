@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.ktor
 
+import io.ktor.http.Headers
 import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
-import io.ktor.http.*
 
 /**
  * Adapts keel [KeelHttpHeaders] to Ktor [Headers].

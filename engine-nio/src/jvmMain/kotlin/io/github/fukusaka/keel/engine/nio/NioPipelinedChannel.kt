@@ -164,9 +164,13 @@ internal class NioPipelinedChannel(
     /** Registers OP_READ callback to start the read loop. Must be called on EventLoop thread. */
     fun armRead() {
         if (!socketChannel.isOpen) return
-        eventLoop.setInterestCallback(selectionKey, SelectionKey.OP_READ, Runnable {
-            onReadable()
-        })
+        eventLoop.setInterestCallback(
+            selectionKey,
+            SelectionKey.OP_READ,
+            Runnable {
+                onReadable()
+            },
+        )
     }
 
     private fun onReadable() {
