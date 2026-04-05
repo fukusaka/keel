@@ -72,7 +72,6 @@ echo "Extracting..."
 tar xjf "${WORKDIR}/${TARBALL}" -C "$WORKDIR"
 
 echo "Building..."
-STAGING="${WORKDIR}/staging"
 cmake -S "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}" -B "${WORKDIR}/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
