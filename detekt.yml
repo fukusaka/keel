@@ -23,9 +23,10 @@ style:
   # MagicNumber: project uses constants-config.md rule instead
   MagicNumber:
     active: false
-  # ReturnCount: flush/read methods have multiple early returns
+  # ReturnCount: not in Kotlin coding conventions. Early returns for error
+  # handling are idiomatic and improve readability.
   ReturnCount:
-    max: 5
+    active: false
   # UnusedParameter: actual fun implementations may not use all params
   UnusedParameter:
     active: false
@@ -73,6 +74,40 @@ potential-bugs:
   # CastToNullableType: cinterop often requires nullable casts
   CastToNullableType:
     active: false
+
+# detekt-formatting (ktlint wrapper)
+# See .claude/rules/kotlin-formatting.md for full policy.
+formatting:
+  # Intentional alignment (e.g., HttpStatus val declarations) uses multiple spaces.
+  NoMultipleSpaces:
+    active: false
+  # Kotlin coding conventions compliance — see .claude/rules/kotlin-formatting.md
+  TrailingCommaOnCallSite:
+    active: true
+    useTrailingCommaOnCallSite: true
+  TrailingCommaOnDeclarationSite:
+    active: true
+    useTrailingCommaOnDeclarationSite: true
+  NoWildcardImports:
+    active: true
+    # Ktor SDK uses wildcard imports idiomatically (io.ktor.* etc.)
+    packagesToUseImportOnDemandProperty: "io.ktor.**"
+  NoUnusedImports:
+    active: true
+  FinalNewline:
+    active: true
+  NoLineBreakBeforeAssignment:
+    active: true
+  MaximumLineLength:
+    active: true
+    maxLineLength: 140
+  Indentation:
+    active: true
+    indentSize: 4
+  NoSemicolons:
+    active: true
+  NoTrailingSpaces:
+    active: true
 
 # keel custom rules (detekt-rules module)
 keel:
