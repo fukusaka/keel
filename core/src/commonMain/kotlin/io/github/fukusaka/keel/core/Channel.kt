@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSink
 import io.github.fukusaka.keel.io.SuspendSource
 import kotlinx.coroutines.CoroutineDispatcher
@@ -204,6 +205,16 @@ interface Channel : AutoCloseable {
      * Default implementation delegates to [write]/[flush] via [SuspendChannelSink].
      */
     fun asSuspendSink(): SuspendSink = SuspendChannelSink(this)
+
+    /**
+     * Returns a [BufferedSuspendSource] for codec-layer reading.
+     *
+     * Default implementation uses pull-mode (allocates internal buffer, 1 copy per read).
+     * [PipelinedChannel] overrides to use push-mode via [SuspendBridgeHandler]'s
+     * [OwnedSuspendSource], achieving zero-copy.
+     */
+    fun asBufferedSuspendSource(): BufferedSuspendSource =
+        BufferedSuspendSource(asSuspendSource(), allocator)
 
     /** Closes both read and write sides and releases all resources. */
     override fun close()

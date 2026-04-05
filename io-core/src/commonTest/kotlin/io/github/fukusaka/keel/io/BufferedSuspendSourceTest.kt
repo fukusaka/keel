@@ -226,15 +226,15 @@ class BufferedSuspendSourceTest {
     // Push-mode tests
     // ============================================================
 
-    /** Creates a PushSuspendSource that delivers each string as a separate IoBuf. */
-    private fun pushSourceOf(vararg chunks: String): PushSuspendSource {
+    /** Creates a OwnedSuspendSource that delivers each string as a separate IoBuf. */
+    private fun pushSourceOf(vararg chunks: String): OwnedSuspendSource {
         val buffers = chunks.map { chunk ->
             val bytes = chunk.encodeToByteArray()
             val buf = createDefaultIoBuf(bytes.size)
             buf.writeByteArray(bytes, 0, bytes.size)
             buf
         }.toMutableList()
-        return object : PushSuspendSource {
+        return object : OwnedSuspendSource {
             override suspend fun readOwned(): IoBuf? = buffers.removeFirstOrNull()
             override fun close() { buffers.forEach { it.release() } }
         }

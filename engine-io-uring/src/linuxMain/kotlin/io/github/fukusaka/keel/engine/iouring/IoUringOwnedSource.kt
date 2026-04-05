@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.io.PushSuspendSource
+import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io_uring.keel_cqe_get_buf_id
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -13,7 +13,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * [PushSuspendSource] backed by io_uring multishot recv with provided buffers.
+ * [OwnedSuspendSource] backed by io_uring multishot recv with provided buffers.
  *
  * Arms a single `IORING_OP_RECV` SQE with `IORING_RECV_MULTISHOT` and
  * `IOSQE_BUFFER_SELECT`. The kernel delivers one CQE per incoming data
@@ -51,11 +51,11 @@ import kotlin.coroutines.resumeWithException
  * @param bufferRing The [ProvidedBufferRing] for kernel buffer selection.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class IoUringPushSource(
+internal class IoUringOwnedSource(
     private val fd: Int,
     private val eventLoop: IoUringEventLoop,
     private val bufferRing: ProvidedBufferRing,
-) : PushSuspendSource {
+) : OwnedSuspendSource {
 
     // Pre-allocated RingBufferIoBuf wrappers for each buffer slot. Created
     // once at construction — zero allocation on the CQE hot path. Each wrapper

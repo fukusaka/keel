@@ -18,7 +18,7 @@ import io.github.fukusaka.keel.buf.IoBuf
  * (EventLoop model). See the specific implementation's KDoc for details.
  *
  * @see BufferedSuspendSource for readLine/readByte utilities
- * @see PushSuspendSource for the push-model counterpart
+ * @see OwnedSuspendSource for the push-model counterpart
  */
 interface SuspendSource : AutoCloseable {
     /**

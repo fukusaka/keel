@@ -3,16 +3,16 @@ package io.github.fukusaka.keel.io
 import io.github.fukusaka.keel.buf.IoBuf
 
 /**
- * Adapts a [PushSuspendSource] to the pull-model [SuspendSource] interface.
+ * Adapts a [OwnedSuspendSource] to the pull-model [SuspendSource] interface.
  *
- * Each [read] call delegates to [PushSuspendSource.readOwned], copies the
+ * Each [read] call delegates to [OwnedSuspendSource.readOwned], copies the
  * delivered data into the caller's [IoBuf], and releases the engine-owned
  * buffer. This enables push-model engines to work with the existing
  * [BufferedSuspendSource] codec layer without modification.
  *
  * **Copy overhead**: One [IoBuf.copyTo] per read (platform-optimized bulk copy:
  * memcpy on Native, ByteBuffer.put on JVM, Int8Array.set on JS). For true
- * zero-copy, use [PushSuspendSource.readOwned] directly (future
+ * zero-copy, use [OwnedSuspendSource.readOwned] directly (future
  * BufferedSuspendSource push mode).
  *
  * **Leftover handling**: When the engine-owned buffer contains more data than
@@ -21,8 +21,8 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * @param pushSource The push-model source to adapt.
  */
-class PushToSuspendSourceAdapter(
-    private val pushSource: PushSuspendSource,
+class OwnedToSuspendSourceAdapter(
+    private val pushSource: OwnedSuspendSource,
 ) : SuspendSource {
 
     // Retained engine-owned buffer with unconsumed bytes from a previous read().
@@ -30,7 +30,7 @@ class PushToSuspendSourceAdapter(
     private var leftover: IoBuf? = null
 
     /**
-     * Reads bytes into [buf] by delegating to [PushSuspendSource.readOwned].
+     * Reads bytes into [buf] by delegating to [OwnedSuspendSource.readOwned].
      *
      * If a previous read left unconsumed bytes in the engine-owned buffer,
      * those are drained first. Otherwise, a new buffer is requested from the

@@ -6,10 +6,10 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-class PushToSuspendSourceAdapterTest {
+class OwnedToSuspendSourceAdapterTest {
 
-    /** A [PushSuspendSource] backed by a list of pre-filled [IoBuf]s. */
-    private class ListPushSource(bufs: List<IoBuf>) : PushSuspendSource {
+    /** A [OwnedSuspendSource] backed by a list of pre-filled [IoBuf]s. */
+    private class ListPushSource(bufs: List<IoBuf>) : OwnedSuspendSource {
         private val queue = ArrayDeque(bufs)
         var closed = false
             private set
@@ -32,7 +32,7 @@ class PushToSuspendSourceAdapterTest {
     @Test
     fun `read copies data from owned buffer to caller buffer`() = runBlocking {
         val source = ListPushSource(listOf(filledBuf(0x41, 0x42, 0x43)))
-        val adapter = PushToSuspendSourceAdapter(source)
+        val adapter = OwnedToSuspendSourceAdapter(source)
 
         val dst = createDefaultIoBuf(8)
         val n = adapter.read(dst)
@@ -48,7 +48,7 @@ class PushToSuspendSourceAdapterTest {
     @Test
     fun `read returns minus one on EOF`() = runBlocking {
         val source = ListPushSource(emptyList())
-        val adapter = PushToSuspendSourceAdapter(source)
+        val adapter = OwnedToSuspendSourceAdapter(source)
 
         val dst = createDefaultIoBuf(8)
         val n = adapter.read(dst)
@@ -61,7 +61,7 @@ class PushToSuspendSourceAdapterTest {
     @Test
     fun `read caps at writable bytes and retains leftover`() = runBlocking {
         val source = ListPushSource(listOf(filledBuf(1, 2, 3, 4, 5)))
-        val adapter = PushToSuspendSourceAdapter(source)
+        val adapter = OwnedToSuspendSourceAdapter(source)
 
         // First read: only 3 writable bytes, 2 bytes left over.
         val dst1 = createDefaultIoBuf(3)
@@ -94,7 +94,7 @@ class PushToSuspendSourceAdapterTest {
                 filledBuf(0x43, 0x44),
             )
         )
-        val adapter = PushToSuspendSourceAdapter(source)
+        val adapter = OwnedToSuspendSourceAdapter(source)
 
         val dst = createDefaultIoBuf(8)
         assertEquals(2, adapter.read(dst))
@@ -113,7 +113,7 @@ class PushToSuspendSourceAdapterTest {
     @Test
     fun `close delegates to push source`() = runBlocking {
         val source = ListPushSource(listOf(filledBuf(1)))
-        val adapter = PushToSuspendSourceAdapter(source)
+        val adapter = OwnedToSuspendSourceAdapter(source)
 
         adapter.close()
         assertEquals(true, source.closed)

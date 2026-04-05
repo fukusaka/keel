@@ -3,10 +3,8 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.core.PushChannel
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.io.PushSuspendSource
-import io.github.fukusaka.keel.io.PushToSuspendSourceAdapter
+import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSource
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
@@ -67,7 +65,7 @@ internal class IoUringPipelinedChannel(
     override val remoteAddress: SocketAddress? = null,
     override val localAddress: SocketAddress? = null,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
-) : PipelinedChannel, PushChannel {
+) : PipelinedChannel {
 
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isWritable: Boolean get() = true
@@ -179,7 +177,7 @@ internal class IoUringPipelinedChannel(
      *
      * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
      * multishot recv. This prevents conflict when [asSuspendSource] has already
-     * armed its own multishot recv via [IoUringPushSource].
+     * armed its own multishot recv via [IoUringOwnedSource].
      *
      * @return number of bytes buffered (actual send happens on [flush]).
      * @throws IllegalStateException if the channel is closed or output is shut down.
@@ -235,33 +233,20 @@ internal class IoUringPipelinedChannel(
         }
     }
 
-    // --- PushChannel ---
+    // --- Owned read (io_uring ProvidedBufferRing, preserved for future evaluation) ---
 
     /**
-     * Returns a push-model [PushSuspendSource] backed by multishot recv with provided buffers.
+     * Returns a push-model [OwnedSuspendSource] backed by multishot recv with provided buffers.
+     *
+     * **Note**: this bypasses the Pipeline and is incompatible with Pipeline handlers
+     * (TLS, HTTP). Retained for future evaluation; see design.md for context.
      *
      * @throws IllegalStateException if provided buffer ring is not available.
      */
-    override fun asPushSuspendSource(): PushSuspendSource {
+    fun asOwnedSuspendSource(): OwnedSuspendSource {
         val ring = bufferRing
-            ?: error("Push source requires provided buffer ring (kernel 5.19+)")
-        return IoUringPushSource(fd, eventLoop, ring)
-    }
-
-    /**
-     * Returns a [SuspendSource] for reading from this channel.
-     *
-     * If multishot recv and provided buffer ring are available, uses the
-     * push-model [IoUringPushSource] via [PushToSuspendSourceAdapter].
-     * Otherwise, falls back to the pull-model default.
-     */
-    override fun asSuspendSource(): SuspendSource {
-        return if (capabilities.multishotRecv && capabilities.providedBufferRing && bufferRing != null) {
-            PushToSuspendSourceAdapter(IoUringPushSource(fd, eventLoop, bufferRing))
-        } else {
-            @Suppress("RedundantOverride")
-            super<PipelinedChannel>.asSuspendSource()
-        }
+            ?: error("Owned source requires provided buffer ring (kernel 5.19+)")
+        return IoUringOwnedSource(fd, eventLoop, ring)
     }
 
     /**
