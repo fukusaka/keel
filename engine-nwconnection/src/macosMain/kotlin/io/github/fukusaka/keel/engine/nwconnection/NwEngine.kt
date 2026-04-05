@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.debug
@@ -143,13 +144,13 @@ class NwEngine(
      * is inherently async; the semaphore bridges it to synchronous return.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return An [AutoCloseable] that cancels the listener when closed.
+     * @return A [PipelinedServer] that cancels the listener when closed.
      */
-    fun bindPipeline(
+    override fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
-    ): AutoCloseable {
+    ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val portStr = if (port == 0) "0" else port.toString()
@@ -206,9 +207,29 @@ class NwEngine(
             "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
         }
         check(assignedPort > 0) { "NWListener failed to start" }
+        val localAddr = SocketAddress(host, assignedPort)
         logger.debug { "Pipeline bound to $host:$assignedPort" }
 
-        return AutoCloseable { nw_listener_cancel(lsnr) }
+        return NwPipelinedServer(lsnr, localAddr)
+    }
+
+    /** Pipeline server wrapping an NWListener. */
+    private class NwPipelinedServer(
+        private val listener: nw_listener_t,
+        private val localAddr: SocketAddress,
+    ) : PipelinedServer {
+        @kotlin.concurrent.Volatile
+        private var closed = false
+
+        override val localAddress: SocketAddress get() = localAddr
+        override val isActive: Boolean get() = !closed
+
+        override fun close() {
+            if (!closed) {
+                closed = true
+                nw_listener_cancel(listener)
+            }
+        }
     }
 
     /**

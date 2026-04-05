@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
@@ -25,9 +27,13 @@ internal class EpollPipelinedServerChannel(
     private val serverFd: Int,
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
+    private val localAddr: SocketAddress,
     private val logger: Logger,
     private val pipelineInitializer: (ChannelPipeline) -> Unit,
-) : AutoCloseable {
+) : PipelinedServer {
+
+    override val localAddress: SocketAddress get() = localAddr
+    override val isActive: Boolean get() = !closed
 
     @kotlin.concurrent.Volatile
     private var closed = false

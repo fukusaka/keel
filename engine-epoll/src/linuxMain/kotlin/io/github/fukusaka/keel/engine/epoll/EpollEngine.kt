@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -152,13 +153,13 @@ class EpollEngine(
      * through [ChannelPipeline] handlers — no coroutine suspension on the hot path.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return An [AutoCloseable] that stops the server when closed.
+     * @return A [PipelinedServer] for lifecycle management.
      */
-    fun bindPipeline(
+    override fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
-    ): AutoCloseable {
+    ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val serverFd = SocketUtils.createServerSocket(host, port)
@@ -170,6 +171,7 @@ class EpollEngine(
             serverFd = serverFd,
             bossLoop = bossLoop,
             workerGroup = workerGroup,
+            localAddr = localAddr,
             logger = logger,
             pipelineInitializer = pipelineInitializer,
         )

@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -158,13 +159,13 @@ class NioEngine(
      * the ServerSocketChannel synchronously (Pipeline zero-coroutine principle).
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return An [AutoCloseable] that stops the server when closed.
+     * @return A [PipelinedServer] for lifecycle management.
      */
-    fun bindPipeline(
+    override fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
-    ): AutoCloseable {
+    ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val serverChannel = java.nio.channels.ServerSocketChannel.open()
@@ -181,6 +182,7 @@ class NioEngine(
             selectionKey = selectionKey,
             bossLoop = bossLoop,
             workerGroup = workerGroup,
+            localAddr = localAddr ?: error("Failed to get local address"),
             logger = logger,
             pipelineInitializer = pipelineInitializer,
         )

@@ -40,6 +40,34 @@ interface IoEngine : AutoCloseable {
     suspend fun bind(host: String, port: Int): Server
 
     /**
+     * Binds a server socket with Pipeline-mode connection handling.
+     *
+     * Each accepted connection is configured via [pipelineInitializer],
+     * which installs handlers into the connection's
+     * [ChannelPipeline][io.github.fukusaka.keel.pipeline.ChannelPipeline].
+     * The engine drives I/O via callbacks — no coroutine context required.
+     *
+     * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
+     * Engines that require async listener startup (e.g., NWConnection)
+     * block internally until the listener is ready.
+     *
+     * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
+     * @param port Port number. 0 lets the OS assign an ephemeral port.
+     * @param pipelineInitializer Callback to configure the pipeline for each accepted connection.
+     * @return a [PipelinedServer] for lifecycle management.
+     * @throws UnsupportedOperationException if this engine does not support pipeline mode.
+     */
+    fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+    ): PipelinedServer {
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not support pipeline mode"
+        )
+    }
+
+    /**
      * Opens an outbound connection to a remote peer.
      *
      * @param host Remote host (IPv4 literal in Phase (a); DNS resolution deferred).
