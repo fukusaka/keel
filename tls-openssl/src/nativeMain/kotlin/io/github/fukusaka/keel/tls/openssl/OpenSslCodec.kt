@@ -13,8 +13,7 @@ import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.nativeHeap
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
@@ -27,8 +26,6 @@ import openssl.BIO_read
 import openssl.BIO_write
 import openssl.SSL
 import openssl.SSL_ERROR_NONE
-import openssl.SSL_ERROR_SSL
-import openssl.SSL_ERROR_SYSCALL
 import openssl.SSL_ERROR_WANT_READ
 import openssl.SSL_ERROR_WANT_WRITE
 import openssl.SSL_ERROR_ZERO_RETURN
@@ -69,16 +66,12 @@ class OpenSslCodec internal constructor(
         get() = SSL_is_init_finished(ssl) == 1
 
     override val negotiatedProtocol: String?
-        get() {
-            val lenVar = nativeHeap.alloc<uint32_tVar>()
-            try {
-                val data = keel_openssl_get_alpn(ssl, lenVar.ptr)
-                val len = lenVar.value.toInt()
-                if (data == null || len == 0) return null
-                return data.readBytes(len).decodeToString()
-            } finally {
-                nativeHeap.free(lenVar.rawPtr)
-            }
+        get() = memScoped {
+            val lenVar = alloc<uint32_tVar>()
+            val data = keel_openssl_get_alpn(ssl, lenVar.ptr)
+            val len = lenVar.value.toInt()
+            if (data == null || len == 0) return null
+            data.readBytes(len).decodeToString()
         }
 
     override val peerCertificates: List<ByteArray>
