@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel.Companion.SUSPEND_BRIDGE_NAME
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
@@ -60,18 +61,15 @@ internal class KqueuePipelinedChannel(
     @kotlin.concurrent.Volatile
     private var closed = false
 
-    // Lazily installed when Channel mode is first used (read/write/flush).
+    // --- Channel mode: bridge lifecycle ---
+
     private var bridge: SuspendBridgeHandler? = null
     private var readArmed = false
 
-    /**
-     * Installs [SuspendBridgeHandler] and arms the read loop if not already done.
-     * Called on first suspend read/write/flush.
-     */
-    private fun ensureBridge(): SuspendBridgeHandler {
+    override fun ensureBridge(): SuspendBridgeHandler {
         bridge?.let { return it }
         val handler = SuspendBridgeHandler()
-        pipeline.addLast("__suspend_bridge__", handler)
+        pipeline.addLast(SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
         if (!readArmed) {
             readArmed = true
@@ -80,74 +78,11 @@ internal class KqueuePipelinedChannel(
         return handler
     }
 
-    // --- Channel mode: suspend API ---
-    // These methods lazily install SuspendBridgeHandler on first use.
-    // Pipeline mode never calls these — handler chain processes data directly.
-
-    /**
-     * Reads decrypted/decoded data via [SuspendBridgeHandler].
-     *
-     * On first call, installs [SuspendBridgeHandler] into the pipeline
-     * and starts the read loop ([armRead]). Suspends until data arrives
-     * from the pipeline's inbound path.
-     *
-     * @return number of bytes read, or -1 on EOF.
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override suspend fun read(buf: IoBuf): Int {
-        check(!closed) { "Channel is closed" }
-        return ensureBridge().read(buf)
-    }
-
-    /**
-     * Writes [buf] through the pipeline's outbound path.
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers
-     * (e.g. TLS encrypt, HTTP encode) before reaching
-     * [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport].
-     *
-     * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
-     * the read loop. This prevents conflict when [asSuspendSource] has
-     * already set up its own read path.
-     *
-     * @return number of bytes buffered (actual send happens on [flush]).
-     * @throws IllegalStateException if the channel is closed or output is shut down.
-     */
-    override suspend fun write(buf: IoBuf): Int {
-        check(!closed) { "Channel is closed" }
-        check(!outputShutdown) { "Output already shut down" }
-        val n = buf.readableBytes
-        if (n == 0) return 0
-        pipeline.requestWrite(buf)
-        return n
-    }
-
-    /**
-     * Initiates a flush through the pipeline's outbound path (fire-and-forget).
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers before
-     * reaching [HeadHandler][io.github.fukusaka.keel.pipeline.HeadHandler] → [KqueueIoTransport.flush].
-     * If EAGAIN, the transport registers EVFILT_WRITE callback and retries asynchronously.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override fun requestFlush() {
-        check(!closed) { "Channel is closed" }
-        pipeline.requestFlush()
-    }
-
-    /**
-     * Suspends until pending async flush completes.
-     * Returns immediately if the last flush completed synchronously.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
     override suspend fun awaitFlushComplete() {
         check(!closed) { "Channel is closed" }
         transport.awaitPendingFlush()
     }
 
-    /** No-op. EOF is detected via [read] returning -1. */
     override suspend fun awaitClosed() {}
 
     private var outputShutdown = false

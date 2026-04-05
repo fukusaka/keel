@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel.Companion.SUSPEND_BRIDGE_NAME
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import io_uring.keel_cqe_get_buf_id
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -128,97 +129,35 @@ internal class IoUringPipelinedChannel(
         pipeline.notifyActive()
     }
 
-    // --- Channel mode: suspend API via SuspendBridgeHandler ---
+    // --- Channel mode: bridge lifecycle ---
 
-    // Lazily installed when Channel mode is first used (read/write/flush).
     private var bridge: SuspendBridgeHandler? = null
     private var readArmed = false
 
     /**
-     * Installs [SuspendBridgeHandler] and arms the multishot recv if not already done.
-     * Called on first suspend [read]. Write/flush bypass this to avoid arming
-     * a second multishot recv (see [write] KDoc for rationale).
+     * Lazily installs [SuspendBridgeHandler] and arms multishot recv.
+     *
+     * Called on the EventLoop thread (guaranteed by [PipelinedChannel.read]'s
+     * [withContext]). [armRecv] submits a multishot recv SQE to the io_uring
+     * ring, which requires EventLoop thread affinity.
      */
-    private fun ensureBridge(): SuspendBridgeHandler {
+    override fun ensureBridge(): SuspendBridgeHandler {
         bridge?.let { return it }
         val handler = SuspendBridgeHandler()
-        pipeline.addLast("__suspend_bridge__", handler)
+        pipeline.addLast(SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
         if (!readArmed) {
             readArmed = true
-            // armRecv must run on the EventLoop thread because
-            // submitMultishotRecv accesses the io_uring ring (not thread-safe).
-            eventLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-                armRecv()
-            })
+            armRecv()
         }
         return handler
     }
 
-    /**
-     * Reads decrypted/decoded data via [SuspendBridgeHandler].
-     *
-     * On first call, installs [SuspendBridgeHandler] into the pipeline
-     * and arms multishot recv. Suspends until data arrives from the
-     * pipeline's inbound path.
-     *
-     * @return number of bytes read, or -1 on EOF.
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override suspend fun read(buf: IoBuf): Int {
-        check(!closed) { "Channel is closed" }
-        return ensureBridge().read(buf)
-    }
-
-    /**
-     * Writes [buf] through the pipeline's outbound path.
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers before
-     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [IoUringIoTransport].
-     *
-     * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
-     * multishot recv. This prevents conflict when [asSuspendSource] has already
-     * armed its own multishot recv via [IoUringOwnedSource].
-     *
-     * @return number of bytes buffered (actual send happens on [flush]).
-     * @throws IllegalStateException if the channel is closed or output is shut down.
-     */
-    override suspend fun write(buf: IoBuf): Int {
-        check(!closed) { "Channel is closed" }
-        check(!outputShutdown) { "Output already shut down" }
-        val n = buf.readableBytes
-        if (n == 0) return 0
-        pipeline.requestWrite(buf)
-        return n
-    }
-
-    /**
-     * Flushes buffered writes through the pipeline's outbound path.
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers before
-     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [IoUringIoTransport.flush].
-     * If send buffer is full, the transport submits async SEND SQE
-     * and retries via CQE callback.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override fun requestFlush() {
-        check(!closed) { "Channel is closed" }
-        pipeline.requestFlush()
-    }
-
-    /**
-     * Suspends until pending async flush completes.
-     * Returns immediately if the last flush completed synchronously.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
     override suspend fun awaitFlushComplete() {
         check(!closed) { "Channel is closed" }
         transport.awaitPendingFlush()
     }
 
-    /** No-op. EOF is detected via [read] returning -1. */
     override suspend fun awaitClosed() {}
 
     private var outputShutdown = false

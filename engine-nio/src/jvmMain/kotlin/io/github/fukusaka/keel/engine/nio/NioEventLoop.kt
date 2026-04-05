@@ -71,6 +71,9 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         }
     }
 
+    /** Returns true if the current thread is this EventLoop's thread. */
+    fun inEventLoop(): Boolean = Thread.currentThread() == thread
+
     // --- CoroutineDispatcher ---
 
     override fun dispatch(context: CoroutineContext, block: Runnable) {
@@ -79,7 +82,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         // will drain tasks before the next select(). Selector.wakeup()
         // is a pipe write syscall; avoiding it on the hot path (coroutine
         // resume on the same thread) eliminates unnecessary overhead.
-        if (Thread.currentThread() != thread) {
+        if (!inEventLoop()) {
             selector.wakeup()
         }
     }

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferedSuspendSource
+import kotlinx.coroutines.withContext
 
 /**
  * A channel with an associated [ChannelPipeline] for protocol processing.
@@ -30,13 +31,6 @@ interface PipelinedChannel : Channel {
     /** True if the outbound buffer has capacity for more writes. */
     val isWritable: Boolean
 
-    // --- Channel defaults for gradual migration ---
-    // Engines must override lifecycle methods (close, shutdownOutput) and
-    // may override suspend I/O methods if Channel mode is supported.
-    // Default suspend I/O throws UnsupportedOperationException — this is
-    // a transitional measure (LSP violation) that will be resolved when
-    // all engines are migrated to PipelinedChannel.
-
     override val remoteAddress: SocketAddress? get() = null
     override val localAddress: SocketAddress? get() = null
 
@@ -47,29 +41,69 @@ interface PipelinedChannel : Channel {
      */
     override val isOpen: Boolean get() = isActive
 
+    // --- Channel mode: suspend I/O with EventLoop thread guarantee ---
+    //
+    // SuspendBridgeHandler requires all methods (read, onRead, onInactive,
+    // write, flush) to execute on the same EventLoop thread.
+    // withContext(coroutineDispatcher) guarantees this for Channel mode
+    // operations called from any thread (runBlocking, Dispatchers.Default, etc.).
+    // When already on the EventLoop, withContext is a no-op.
+
+    /**
+     * Lazily installs [SuspendBridgeHandler] and arms the read loop.
+     *
+     * Each engine implements this to manage the bridge lifecycle and
+     * call its platform-specific [armRead] to register I/O interest.
+     * Always called on the EventLoop thread (via [withContext]).
+     */
+    fun ensureBridge(): SuspendBridgeHandler
+
+    /**
+     * Reads decoded data via [SuspendBridgeHandler] on the EventLoop thread.
+     *
+     * [withContext] dispatches to [coroutineDispatcher] (EventLoop) to
+     * guarantee single-threaded access to [SuspendBridgeHandler] state.
+     *
+     * @return number of bytes read, or -1 on EOF.
+     */
     override suspend fun read(buf: IoBuf): Int {
-        throw UnsupportedOperationException(
-            "suspend read() not available. Install SuspendBridgeHandler or use Pipeline mode.",
-        )
+        check(isOpen) { "Channel is closed" }
+        return withContext(coroutineDispatcher) {
+            ensureBridge().read(buf)
+        }
     }
 
+    /**
+     * Writes data through the pipeline on the EventLoop thread.
+     *
+     * Engines that support half-close should override to check
+     * `outputShutdown` before delegating to `super.write(buf)`.
+     *
+     * @return number of bytes buffered (actual send happens on [flush]).
+     */
     override suspend fun write(buf: IoBuf): Int {
-        throw UnsupportedOperationException(
-            "suspend write() not available. Install SuspendBridgeHandler or use Pipeline mode.",
-        )
+        check(isOpen) { "Channel is closed" }
+        val n = buf.readableBytes
+        if (n == 0) return 0
+        withContext(coroutineDispatcher) {
+            pipeline.requestWrite(buf)
+        }
+        return n
     }
 
+    /**
+     * Initiates a flush through the pipeline (fire-and-forget).
+     *
+     * Non-suspend: callers must ensure this is called from the EventLoop
+     * thread or an appropriate context. Use [flush] (suspend) for safe
+     * cross-thread flushing.
+     */
     override fun requestFlush() {
-        throw UnsupportedOperationException(
-            "requestFlush() not available. Install SuspendBridgeHandler or use Pipeline mode.",
-        )
+        check(isOpen) { "Channel is closed" }
+        pipeline.requestFlush()
     }
 
-    override suspend fun awaitFlushComplete() {
-        throw UnsupportedOperationException(
-            "awaitFlushComplete() not available. Install SuspendBridgeHandler or use Pipeline mode.",
-        )
-    }
+    override suspend fun awaitFlushComplete() {}
 
     override suspend fun awaitClosed() {}
 

@@ -22,6 +22,7 @@ class TypedChannelInboundHandlerTest {
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = error("not needed in tests")
+        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
     private fun createPipeline(): ChannelPipeline {
