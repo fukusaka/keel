@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.io.BufferedSuspendSource
 
 /**
  * A channel with an associated [ChannelPipeline] for protocol processing.
@@ -85,4 +86,30 @@ interface PipelinedChannel : Channel {
      * resource leaks.
      */
     override fun close() {}
+
+    /**
+     * Returns a [BufferedSuspendSource] for codec-layer reading.
+     *
+     * If a [SuspendBridgeHandler] is already installed in the pipeline
+     * (by a prior [read] call or explicit `ensureBridge()`), returns a
+     * push-mode source backed by [SuspendBridgeHandler]'s [OwnedSuspendSource]
+     * — handler-processed [IoBuf]s are delivered without copying.
+     *
+     * Otherwise, falls back to pull-mode via [asSuspendSource] (1 copy per read).
+     * The pull-mode path triggers [SuspendBridgeHandler] installation on the
+     * first actual read, so it is functionally correct.
+     */
+    override fun asBufferedSuspendSource(): BufferedSuspendSource {
+        val bridge = pipeline.get(SUSPEND_BRIDGE_NAME) as? SuspendBridgeHandler
+        return if (bridge != null) {
+            BufferedSuspendSource(bridge)
+        } else {
+            BufferedSuspendSource(asSuspendSource(), allocator)
+        }
+    }
+
+    companion object {
+        /** Handler name used by engine implementations for [SuspendBridgeHandler]. */
+        const val SUSPEND_BRIDGE_NAME = "__suspend_bridge__"
+    }
 }

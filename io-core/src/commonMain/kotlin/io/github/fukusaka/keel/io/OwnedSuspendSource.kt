@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.buf.IoBuf
  * Push-model byte source that delivers data in engine-owned [IoBuf]s.
  *
  * Unlike [SuspendSource] where the caller provides the buffer, a
- * [PushSuspendSource] allocates (or selects from a pool) the buffer
+ * [OwnedSuspendSource] allocates (or selects from a pool) the buffer
  * and fills it with data before returning. This enables zero-copy I/O
  * for push-model engines (io_uring multishot recv, Netty, NWConnection)
  * where the kernel or runtime delivers data in its own buffer.
@@ -18,7 +18,7 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * **Integration with codec layer**: Use the push-mode
  * [BufferedSuspendSource] constructor for zero-copy codec integration.
- * Alternatively, [PushToSuspendSourceAdapter] provides pull-model
+ * Alternatively, [OwnedToSuspendSourceAdapter] provides pull-model
  * compatibility with one [IoBuf.copyTo] per read.
  *
  * **MemoryOwner not used**: A `MemoryOwner<IoBuf>` wrapper was considered
@@ -30,10 +30,10 @@ import io.github.fukusaka.keel.buf.IoBuf
  * called from an external thread.
  *
  * @see SuspendSource for the pull-model counterpart
- * @see PushToSuspendSourceAdapter for pull-model compatibility
+ * @see OwnedToSuspendSourceAdapter for pull-model compatibility
  * @see BufferedSuspendSource for zero-copy push-mode reading
  */
-interface PushSuspendSource : AutoCloseable {
+interface OwnedSuspendSource : AutoCloseable {
     /**
      * Suspends until the engine delivers data in an engine-owned buffer.
      *

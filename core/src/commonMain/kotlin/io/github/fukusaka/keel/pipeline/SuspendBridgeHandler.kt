@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.io.OwnedSuspendSource
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -41,7 +42,7 @@ import kotlin.coroutines.resume
  * readers will overwrite the pending continuation, causing the earlier reader
  * to hang indefinitely. This matches the Channel contract (single-threaded I/O).
  */
-class SuspendBridgeHandler : ChannelDuplexHandler {
+class SuspendBridgeHandler : ChannelDuplexHandler, OwnedSuspendSource {
 
     private val readQueue = ArrayDeque<IoBuf>()
     private var readCont: CancellableContinuation<Unit>? = null
@@ -119,6 +120,30 @@ class SuspendBridgeHandler : ChannelDuplexHandler {
         }
         return n
     }
+
+    // --- OwnedSuspendSource: zero-copy read from queue ---
+
+    /**
+     * Returns the next handler-processed [IoBuf] from the queue without copying.
+     *
+     * The caller receives ownership of the returned buffer and MUST call
+     * [IoBuf.release] when done reading.
+     *
+     * @return An [IoBuf] with readable data, or `null` on EOF.
+     */
+    override suspend fun readOwned(): IoBuf? {
+        while (readQueue.isEmpty() && !eof) {
+            suspendCancellableCoroutine { cont ->
+                readCont = cont
+                cont.invokeOnCancellation { readCont = null }
+            }
+        }
+        if (readQueue.isEmpty()) return null // EOF
+        return readQueue.removeFirst()
+    }
+
+    /** No-op: resources are released in [onInactive] and [handlerRemoved]. */
+    override fun close() {}
 
     /**
      * Writes [buf] through the Pipeline outbound path.

@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 
 /**
  * Buffered wrapper providing readLine/readByte utilities over either a
- * pull-model [SuspendSource] or a push-model [PushSuspendSource].
+ * pull-model [SuspendSource] or a push-model [OwnedSuspendSource].
  *
  * **Pull mode** (default): Uses a single 8 KiB [IoBuf] as internal buffer.
  * ```
@@ -16,7 +16,7 @@ import io.github.fukusaka.keel.buf.IoBuf
  * ```
  *
  * **Push mode**: Manages a chain of engine-owned [IoBuf]s delivered by
- * [PushSuspendSource.readOwned]. No internal buffer allocation, no copy.
+ * [OwnedSuspendSource.readOwned]. No internal buffer allocation, no copy.
  * ```
  * kernel → engine-owned IoBuf (zero-copy via multishot recv)
  *   → readByte/readLine consume directly from buffer chain
@@ -41,7 +41,7 @@ class BufferedSuspendSource : AutoCloseable {
      */
     private sealed class Mode {
         class Pull(val source: SuspendSource, val buf: IoBuf) : Mode()
-        class Push(val pushSource: PushSuspendSource, val bufferChain: ArrayDeque<IoBuf>) : Mode() {
+        class Push(val pushSource: OwnedSuspendSource, val bufferChain: ArrayDeque<IoBuf>) : Mode() {
             /** Cached head of bufferChain to avoid ArrayDeque lookup on every readByte. */
             var cachedHead: IoBuf? = null
         }
@@ -63,14 +63,14 @@ class BufferedSuspendSource : AutoCloseable {
     }
 
     /**
-     * Push-mode constructor: reads engine-owned [IoBuf]s from a [PushSuspendSource].
+     * Push-mode constructor: reads engine-owned [IoBuf]s from a [OwnedSuspendSource].
      *
      * No internal buffer is allocated. Engine-owned buffers are consumed
      * directly and released back to the engine when fully read.
      *
      * @param pushSource The push-model source delivering engine-owned buffers.
      */
-    constructor(pushSource: PushSuspendSource) {
+    constructor(pushSource: OwnedSuspendSource) {
         this.mode = Mode.Push(pushSource, ArrayDeque())
     }
 
