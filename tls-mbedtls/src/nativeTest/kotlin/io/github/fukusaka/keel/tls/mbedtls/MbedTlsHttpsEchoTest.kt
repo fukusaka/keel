@@ -21,12 +21,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
-import mbedtls.MBEDTLS_NET_PROTO_TCP
-import mbedtls.keel_mbedtls_get_port
-import mbedtls.mbedtls_net_bind
-import mbedtls.mbedtls_net_context
-import mbedtls.mbedtls_net_free
-import mbedtls.mbedtls_net_init
 import platform.posix.SIGTERM
 import platform.posix.STDOUT_FILENO
 import platform.posix._exit
@@ -71,15 +65,14 @@ class MbedTlsHttpsEchoTest {
         val response = HttpResponse.ok("Hello, HTTPS!", contentType = "text/plain")
         response.headers.size // warm flatEntries cache
 
-        val port = findFreePort()
-
-        val server = engine.bindPipeline("127.0.0.1", port) { pipeline ->
+        val server = engine.bindPipeline("127.0.0.1", 0) { pipeline ->
             val codec = factory.createServerCodec(tlsConfig)
             pipeline.addLast("tls", TlsHandler(codec))
             pipeline.addLast("encoder", HttpResponseEncoder())
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
         }
+        val port = server.localAddress.port
 
         usleep(200_000u) // 200ms — allow server to start
 
@@ -100,24 +93,6 @@ class MbedTlsHttpsEchoTest {
     }
 
     // --- Test helpers ---
-
-    /**
-     * Finds an available ephemeral port using mbedtls_net_bind with port "0".
-     *
-     * Binds to port 0 (OS assigns ephemeral port), retrieves the assigned port
-     * via [keel_mbedtls_get_port], then immediately frees the socket.
-     * Small race window between free and bindPipeline, acceptable for tests.
-     */
-    private fun findFreePort(): Int = memScoped {
-        val ctx = alloc<mbedtls_net_context>()
-        mbedtls_net_init(ctx.ptr)
-        val ret = mbedtls_net_bind(ctx.ptr, null, "0", MBEDTLS_NET_PROTO_TCP)
-        check(ret == 0) { "mbedtls_net_bind failed: $ret" }
-        val port = keel_mbedtls_get_port(ctx.ptr)
-        check(port > 0) { "failed to get assigned port" }
-        mbedtls_net_free(ctx.ptr)
-        port
-    }
 
     /**
      * Forks curl to make an HTTPS request and captures its output.
