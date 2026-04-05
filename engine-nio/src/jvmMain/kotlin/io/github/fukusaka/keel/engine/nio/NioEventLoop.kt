@@ -60,8 +60,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      */
     class ChannelRegistration(
         val channel: SelectableChannel,
-        val continuation: CancellableContinuation<SelectionKey>?,
-        val callback: ((SelectionKey?, Throwable?) -> Unit)? = null,
+        val continuation: CancellableContinuation<SelectionKey>,
     )
 
     init {
@@ -111,25 +110,21 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
     /**
      * Blocking version of [registerChannel] for non-suspend callers.
      *
-     * Queues the registration and blocks the calling thread until the
-     * EventLoop thread completes it. Used by [NioEngine.bindPipeline]
-     * which is non-suspend (Pipeline zero-coroutine principle).
+     * Delegates to [registerChannel] via [runBlocking]. Used by
+     * [NioEngine.bindPipeline] which is non-suspend (Pipeline
+     * zero-coroutine principle).
      */
-    fun registerChannelBlocking(channel: SelectableChannel): SelectionKey {
-        val latch = java.util.concurrent.CountDownLatch(1)
-        var result: SelectionKey? = null
-        var error: Throwable? = null
-        synchronized(regLock) {
-            pendingRegistrations.add(ChannelRegistration(channel, null) { key, err ->
-                result = key
-                error = err
-                latch.countDown()
-            })
+    fun registerChannelBlocking(channel: SelectableChannel): SelectionKey =
+        kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeout(BIND_TIMEOUT_MS) {
+                registerChannel(channel)
+            }
         }
-        selector.wakeup()
-        latch.await()
-        error?.let { throw it }
-        return result!!
+
+    companion object {
+        // Generous timeout for blocking operations at server startup.
+        // Not on the hot path — only used by bindPipeline.
+        private const val BIND_TIMEOUT_MS = 10_000L
     }
 
     // --- Interest ops (fast path, no JNI re-register) ---
@@ -218,7 +213,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      * Processes pending initial channel registrations.
      *
      * Each channel is registered with `interestOps=0` and the resulting
-     * [SelectionKey] is delivered to the waiting coroutine or callback.
+     * [SelectionKey] is delivered to the waiting coroutine.
      */
     private fun drainRegistrations() {
         val regs: List<ChannelRegistration>
@@ -230,13 +225,13 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         for (reg in regs) {
             try {
                 if (reg.channel.isOpen) {
+                    // Register with interestOps=0 (no interest).
+                    // The caller uses setInterest() to enable OP_READ etc.
                     val key = reg.channel.register(selector, 0)
-                    reg.continuation?.resume(key)
-                    reg.callback?.invoke(key, null)
+                    reg.continuation.resume(key)
                 }
             } catch (e: Exception) {
-                reg.continuation?.resumeWith(Result.failure(e))
-                reg.callback?.invoke(null, e)
+                reg.continuation.resumeWith(Result.failure(e))
             }
         }
     }

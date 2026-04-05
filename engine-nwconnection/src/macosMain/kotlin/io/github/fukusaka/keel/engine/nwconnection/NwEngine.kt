@@ -183,6 +183,9 @@ class NwEngine(
                     "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
                 )
                 nw_connection_set_queue(conn, connQueue)
+                // Fire-and-forget start: nw_connection_receive can be called
+                // immediately after start — NWConnection queues the receive
+                // internally until the connection reaches the ready state.
                 nw_connection_start(conn)
 
                 val transport = NwIoTransport(conn)
@@ -193,8 +196,15 @@ class NwEngine(
         }
 
         nw_listener_start(lsnr)
-        platform.darwin.dispatch_semaphore_wait(sem, platform.darwin.DISPATCH_TIME_FOREVER)
-
+        // Generous timeout for listener startup, prevents permanent hang
+        // if the dispatch queue or state handler is never delivered.
+        val deadline = platform.darwin.dispatch_time(
+            platform.darwin.DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
+        )
+        val waitResult = platform.darwin.dispatch_semaphore_wait(sem, deadline)
+        check(waitResult == 0L) {
+            "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+        }
         check(assignedPort > 0) { "NWListener failed to start" }
         logger.debug { "Pipeline bound to $host:$assignedPort" }
 
@@ -259,5 +269,9 @@ class NwEngine(
             ref.get().tryResume(result)
             ref.dispose()
         }
+
+        // Generous timeout for blocking operations at server startup.
+        // Not on the hot path — only used by bindPipeline.
+        private const val BIND_TIMEOUT_NS = 10L * 1_000_000_000L
     }
 }
