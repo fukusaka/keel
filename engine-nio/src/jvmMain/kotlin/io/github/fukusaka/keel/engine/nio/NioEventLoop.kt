@@ -60,7 +60,8 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      */
     class ChannelRegistration(
         val channel: SelectableChannel,
-        val continuation: CancellableContinuation<SelectionKey>,
+        val continuation: CancellableContinuation<SelectionKey>?,
+        val callback: ((SelectionKey?, Throwable?) -> Unit)? = null,
     )
 
     init {
@@ -105,6 +106,30 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
             }
             selector.wakeup()
         }
+    }
+
+    /**
+     * Blocking version of [registerChannel] for non-suspend callers.
+     *
+     * Queues the registration and blocks the calling thread until the
+     * EventLoop thread completes it. Used by [NioEngine.bindPipeline]
+     * which is non-suspend (Pipeline zero-coroutine principle).
+     */
+    fun registerChannelBlocking(channel: SelectableChannel): SelectionKey {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var result: SelectionKey? = null
+        var error: Throwable? = null
+        synchronized(regLock) {
+            pendingRegistrations.add(ChannelRegistration(channel, null) { key, err ->
+                result = key
+                error = err
+                latch.countDown()
+            })
+        }
+        selector.wakeup()
+        latch.await()
+        error?.let { throw it }
+        return result!!
     }
 
     // --- Interest ops (fast path, no JNI re-register) ---
@@ -193,7 +218,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      * Processes pending initial channel registrations.
      *
      * Each channel is registered with `interestOps=0` and the resulting
-     * [SelectionKey] is delivered to the waiting coroutine.
+     * [SelectionKey] is delivered to the waiting coroutine or callback.
      */
     private fun drainRegistrations() {
         val regs: List<ChannelRegistration>
@@ -205,13 +230,13 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
         for (reg in regs) {
             try {
                 if (reg.channel.isOpen) {
-                    // Register with interestOps=0 (no interest).
-                    // The caller uses setInterest() to enable OP_READ etc.
                     val key = reg.channel.register(selector, 0)
-                    reg.continuation.resume(key)
+                    reg.continuation?.resume(key)
+                    reg.callback?.invoke(key, null)
                 }
             } catch (e: Exception) {
-                reg.continuation.resumeWith(Result.failure(e))
+                reg.continuation?.resumeWith(Result.failure(e))
+                reg.callback?.invoke(null, e)
             }
         }
     }

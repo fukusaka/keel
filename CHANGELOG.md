@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - io-core: rename `PushSuspendSource` to `OwnedSuspendSource`, `PushToSuspendSourceAdapter` to `OwnedToSuspendSourceAdapter`
 - core: remove `PushChannel` and `PushServerChannel` — Pipeline-incompatible design replaced by `Channel.asBufferedSuspendSource()` + `SuspendBridgeHandler.readOwned()`
 - core: add `Channel.asBufferedSuspendSource()` with zero-copy push-mode override in `PipelinedChannel`
+- engine-nio: make `bindPipeline` non-suspend via `registerChannelBlocking` (Pipeline zero-coroutine principle)
+- engine-nwconnection: make `bindPipeline` non-suspend via `dispatch_semaphore_wait`
 - engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
 - engine-epoll: unify `EpollChannel` into `EpollPipelinedChannel` — same Channel/Pipeline unification pattern
 - engine-io-uring: unify `IoUringChannel` into `IoUringPipelinedChannel` — same Channel/Pipeline unification pattern

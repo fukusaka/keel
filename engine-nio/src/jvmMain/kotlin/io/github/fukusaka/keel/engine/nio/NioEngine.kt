@@ -154,10 +154,13 @@ class NioEngine(
      * registers the ServerSocketChannel, and worker loops register accepted
      * client channels via [NioEventLoop.dispatch].
      *
+     * Non-suspend: uses [NioEventLoop.registerChannelBlocking] to register
+     * the ServerSocketChannel synchronously (Pipeline zero-coroutine principle).
+     *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
      * @return An [AutoCloseable] that stops the server when closed.
      */
-    suspend fun bindPipeline(
+    fun bindPipeline(
         host: String,
         port: Int,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
@@ -168,7 +171,7 @@ class NioEngine(
         serverChannel.configureBlocking(false)
         serverChannel.bind(java.net.InetSocketAddress(host, port))
 
-        val selectionKey = bossLoop.registerChannel(serverChannel)
+        val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 
         val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
         logger.debug { "Pipeline bound to ${localAddr?.host}:${localAddr?.port}" }
