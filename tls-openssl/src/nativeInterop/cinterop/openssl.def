@@ -1,8 +1,10 @@
 headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
 compilerOpts.osx = -I/opt/homebrew/opt/openssl@3/include
-compilerOpts.linux = -I/usr/include
+compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
 linkerOpts.osx = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
-linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto
+# Kotlin/Native lld uses --no-allow-shlib-undefined by default, rejecting
+# indirect glibc references (stat, dlclose etc.) in shared libs.
+linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto --allow-shlib-undefined
 
 ---
 
