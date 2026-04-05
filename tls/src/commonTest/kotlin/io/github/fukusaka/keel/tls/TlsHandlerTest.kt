@@ -164,7 +164,7 @@ class TlsHandlerTest {
         pipeline.notifyRead(allocBuf(cipher))
 
         assertEquals(1, recorder.reads.size)
-        assertEquals("hello", String(recorder.reads[0]))
+        assertEquals("hello", recorder.reads[0].decodeToString())
     }
 
     @Test
