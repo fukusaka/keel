@@ -88,14 +88,16 @@ interface PipelinedChannel : Channel {
     override fun close() {}
 
     /**
-     * Returns a push-mode [BufferedSuspendSource] backed by [SuspendBridgeHandler].
+     * Returns a [BufferedSuspendSource] for codec-layer reading.
      *
-     * The [SuspendBridgeHandler] must be installed in the pipeline (via
-     * `ensureBridge()` in engine implementations) before this is called.
-     * It implements [OwnedSuspendSource], delivering handler-processed
-     * [IoBuf]s from its queue without copying.
+     * If a [SuspendBridgeHandler] is already installed in the pipeline
+     * (by a prior [read] call or explicit `ensureBridge()`), returns a
+     * push-mode source backed by [SuspendBridgeHandler]'s [OwnedSuspendSource]
+     * — handler-processed [IoBuf]s are delivered without copying.
      *
-     * Falls back to pull-mode if no [SuspendBridgeHandler] is found.
+     * Otherwise, falls back to pull-mode via [asSuspendSource] (1 copy per read).
+     * The pull-mode path triggers [SuspendBridgeHandler] installation on the
+     * first actual read, so it is functionally correct.
      */
     override fun asBufferedSuspendSource(): BufferedSuspendSource {
         val bridge = pipeline.get(SUSPEND_BRIDGE_NAME) as? SuspendBridgeHandler
