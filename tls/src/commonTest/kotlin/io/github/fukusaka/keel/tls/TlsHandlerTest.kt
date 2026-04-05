@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -42,6 +43,7 @@ class TlsHandlerTest {
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = this@TlsHandlerTest.allocator
+        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
     private fun createPipeline(tlsHandler: TlsHandler): DefaultChannelPipeline {

@@ -76,6 +76,9 @@ interface PipelinedChannel : Channel {
     /**
      * Writes data through the pipeline on the EventLoop thread.
      *
+     * Engines that support half-close should override to check
+     * `outputShutdown` before delegating to `super.write(buf)`.
+     *
      * @return number of bytes buffered (actual send happens on [flush]).
      */
     override suspend fun write(buf: IoBuf): Int {

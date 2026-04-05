@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -45,6 +46,11 @@ internal class NwPipelinedChannel(
 
     @kotlin.concurrent.Volatile
     private var closed = false
+
+    /** NWConnection is pipeline-only — Channel mode is not supported. */
+    override fun ensureBridge(): SuspendBridgeHandler {
+        throw UnsupportedOperationException("NWConnection does not support Channel mode")
+    }
 
     /**
      * Starts the async read loop via [keel_nw_read_async].

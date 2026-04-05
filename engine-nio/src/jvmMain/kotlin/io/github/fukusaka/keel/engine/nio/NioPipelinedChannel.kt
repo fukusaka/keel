@@ -1,13 +1,13 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel.Companion.SUSPEND_BRIDGE_NAME
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -57,18 +57,22 @@ internal class NioPipelinedChannel(
     @Suppress("InjectDispatcher") // Intentional: NIO pipeline runs on Dispatchers.Default (design.md §17)
     override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
-    // Lazily installed when Channel mode is first used (read/write/flush).
+    // --- Channel mode: bridge lifecycle ---
+
     private var bridge: SuspendBridgeHandler? = null
     private var readArmed = false
 
     /**
-     * Installs [SuspendBridgeHandler] and arms the read loop if not already done.
-     * Called on first suspend read/write/flush.
+     * Lazily installs [SuspendBridgeHandler] and arms the NIO read loop.
+     *
+     * Called on the EventLoop thread (guaranteed by [PipelinedChannel.read]'s
+     * [withContext]). The [armRead] call registers OP_READ interest with the
+     * Selector, which requires EventLoop thread affinity.
      */
-    private fun ensureBridge(): SuspendBridgeHandler {
+    override fun ensureBridge(): SuspendBridgeHandler {
         bridge?.let { return it }
         val handler = SuspendBridgeHandler()
-        pipeline.addLast("__suspend_bridge__", handler)
+        pipeline.addLast(SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
         if (!readArmed) {
             readArmed = true
@@ -77,73 +81,11 @@ internal class NioPipelinedChannel(
         return handler
     }
 
-    // --- Channel mode: suspend API ---
-
-    /**
-     * Reads decrypted/decoded data via [SuspendBridgeHandler].
-     *
-     * On first call, installs [SuspendBridgeHandler] into the pipeline
-     * and starts the read loop ([armRead]). Suspends until data arrives
-     * from the pipeline's inbound path.
-     *
-     * @return number of bytes read, or -1 on EOF.
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override suspend fun read(buf: IoBuf): Int {
-        check(socketChannel.isOpen) { "Channel is closed" }
-        return ensureBridge().read(buf)
-    }
-
-    /**
-     * Writes [buf] through the pipeline's outbound path.
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers
-     * (e.g. TLS encrypt, HTTP encode) before reaching
-     * [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport].
-     *
-     * Unlike [read], write does NOT install [SuspendBridgeHandler] or arm
-     * the read loop. This prevents conflict when [asSuspendSource] has
-     * already set up its own read path.
-     *
-     * @return number of bytes buffered (actual send happens on [flush]).
-     * @throws IllegalStateException if the channel is closed or output is shut down.
-     */
-    override suspend fun write(buf: IoBuf): Int {
-        check(socketChannel.isOpen) { "Channel is closed" }
-        check(!outputShutdown) { "Output already shut down" }
-        val n = buf.readableBytes
-        if (n == 0) return 0
-        pipeline.requestWrite(buf)
-        return n
-    }
-
-    /**
-     * Initiates a flush through the pipeline's outbound path (fire-and-forget).
-     *
-     * Enters the pipeline from TAIL and traverses outbound handlers before
-     * reaching [io.github.fukusaka.keel.pipeline.HeadHandler] → [NioIoTransport.flush].
-     * If the send buffer is full, the transport registers OP_WRITE callback
-     * and retries asynchronously.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
-    override fun requestFlush() {
-        check(socketChannel.isOpen) { "Channel is closed" }
-        pipeline.requestFlush()
-    }
-
-    /**
-     * Suspends until pending async flush completes.
-     * Returns immediately if the last flush completed synchronously.
-     *
-     * @throws IllegalStateException if the channel is closed.
-     */
     override suspend fun awaitFlushComplete() {
-        check(socketChannel.isOpen) { "Channel is closed" }
+        check(isOpen) { "Channel is closed" }
         transport.awaitPendingFlush()
     }
 
-    /** No-op. JVM SocketChannel has no close-completion callback. */
     override suspend fun awaitClosed() {}
 
     private var outputShutdown = false
