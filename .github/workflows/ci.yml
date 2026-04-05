@@ -36,7 +36,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Install native dependencies
-        run: sudo apt-get install -y liburing-dev
+        run: |
+          sudo apt-get install -y liburing-dev
+          ./scripts/install-mbedtls.sh
 
       - name: Cache Kotlin/Native toolchain
         uses: actions/cache@v5
