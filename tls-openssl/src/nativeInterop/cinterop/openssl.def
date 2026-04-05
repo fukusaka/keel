@@ -1,6 +1,8 @@
 headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
-compilerOpts = -I/opt/homebrew/opt/openssl@3/include
-linkerOpts = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
+compilerOpts.osx = -I/opt/homebrew/opt/openssl@3/include
+compilerOpts.linux = -I/usr/include
+linkerOpts.osx = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
+linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto
 
 ---
 
@@ -9,13 +11,157 @@ linkerOpts = -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
 #include <openssl/bio.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
+#include <string.h>
 
-// Wrapper: create a TCP server socket, bind, listen, and return fd.
-// OpenSSL does not provide net_bind like Mbed TLS — use POSIX directly.
+// ============================================================
+// Error string helper
+// ============================================================
+
+// Get human-readable error string from OpenSSL error queue.
+static const char* keel_openssl_err_string(void) {
+    return ERR_reason_error_string(ERR_get_error());
+}
+
+// ============================================================
+// Memory BIO setup for TlsCodec protect/unprotect
+// ============================================================
+
+// Create two memory BIOs and attach them to the SSL object.
+// SSL takes ownership — do NOT call BIO_free on the returned pointers.
+// Returns 0 on success, -1 on failure.
+static int keel_openssl_bio_setup(SSL *ssl, BIO **rbio_out, BIO **wbio_out) {
+    BIO *rbio = BIO_new(BIO_s_mem());
+    BIO *wbio = BIO_new(BIO_s_mem());
+    if (!rbio || !wbio) {
+        BIO_free(rbio);
+        BIO_free(wbio);
+        return -1;
+    }
+    SSL_set_bio(ssl, rbio, wbio);
+    *rbio_out = rbio;
+    *wbio_out = wbio;
+    return 0;
+}
+
+// ============================================================
+// SNI wrapper (SSL_set_tlsext_host_name is a macro)
+// ============================================================
+
+static int keel_openssl_set_sni(SSL *ssl, const char *hostname) {
+    return SSL_set_tlsext_host_name(ssl, hostname);
+}
+
+// ============================================================
+// ALPN helpers
+// ============================================================
+
+// Get the negotiated ALPN protocol. Returns the protocol string pointer
+// (NOT null-terminated) and sets *len_out to the length.
+// Returns NULL if no ALPN was negotiated.
+static const unsigned char* keel_openssl_get_alpn(const SSL *ssl, unsigned int *len_out) {
+    const unsigned char *data = NULL;
+    unsigned int len = 0;
+    SSL_get0_alpn_selected(ssl, &data, &len);
+    *len_out = len;
+    return data;
+}
+
+// ============================================================
+// Certificate and key loading from PEM strings
+// ============================================================
+
+// Load a PEM certificate chain into SSL_CTX.
+// Returns 1 on success, 0 on failure.
+static int keel_openssl_ctx_load_pem_cert(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    if (!cert) {
+        BIO_free(bio);
+        return 0;
+    }
+
+    int ret = SSL_CTX_use_certificate(ctx, cert);
+    X509_free(cert);
+
+    // Load additional chain certificates if present.
+    if (ret == 1) {
+        X509 *chain_cert;
+        while ((chain_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
+            SSL_CTX_add_extra_chain_cert(ctx, chain_cert);
+            // SSL_CTX_add_extra_chain_cert takes ownership — do NOT free chain_cert.
+        }
+        // Clear the error from the last failed PEM_read_bio_X509 (EOF).
+        ERR_clear_error();
+    }
+
+    BIO_free(bio);
+    return ret;
+}
+
+// Load a PEM private key into SSL_CTX.
+// Returns 1 on success, 0 on failure.
+static int keel_openssl_ctx_load_pem_key(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!pkey) return 0;
+
+    int ret = SSL_CTX_use_PrivateKey(ctx, pkey);
+    EVP_PKEY_free(pkey);
+    return ret;
+}
+
+// Load PEM CA certificates into SSL_CTX's trust store.
+// Returns the number of certs loaded (>= 1 on success), 0 on failure.
+static int keel_openssl_ctx_load_ca_pem(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    X509_STORE *store = SSL_CTX_get_cert_store(ctx);
+    int count = 0;
+    X509 *cert;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
+        if (X509_STORE_add_cert(store, cert) == 1) {
+            count++;
+        }
+        X509_free(cert);
+    }
+    ERR_clear_error();
+    BIO_free(bio);
+    return count;
+}
+
+// ============================================================
+// Peer certificate (DER encoding)
+// ============================================================
+
+// Get the peer certificate in DER format.
+// Returns the DER bytes via *out and the length via *len_out.
+// Caller must free *out with OPENSSL_free().
+// Returns 0 on success, -1 if no peer certificate.
+static int keel_openssl_get_peer_cert_der(const SSL *ssl,
+                                           unsigned char **out,
+                                           int *len_out) {
+    X509 *cert = SSL_get0_peer_certificate(ssl);
+    if (!cert) return -1;
+    int len = i2d_X509(cert, out);
+    // SSL_get0_peer_certificate does NOT increment ref count — do NOT free.
+    if (len < 0) return -1;
+    *len_out = len;
+    return 0;
+}
+
+// ============================================================
+// POSIX socket helpers (for OpenSslEchoTest — kept from original)
+// ============================================================
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <fcntl.h>
 
 static int keel_openssl_create_server(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -40,15 +186,9 @@ static int keel_openssl_create_server(int port) {
     return fd;
 }
 
-// Wrapper: get the assigned port from a server socket fd.
 static int keel_openssl_get_port(int fd) {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) return -1;
     return ntohs(addr.sin_port);
-}
-
-// Wrapper: get human-readable error string from OpenSSL error queue.
-static const char* keel_openssl_err_string(void) {
-    return ERR_reason_error_string(ERR_get_error());
 }
