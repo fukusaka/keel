@@ -77,6 +77,7 @@ cmake -S "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}" -B "${WORKDIR}/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
     -DUSE_SHARED_MBEDTLS_LIBRARY=On \
+    -DUSE_STATIC_MBEDTLS_LIBRARY=Off \
     -DENABLE_TESTING=Off \
     -DENABLE_PROGRAMS=Off
 cmake --build "${WORKDIR}/build" -j "$(nproc)"
