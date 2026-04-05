@@ -164,19 +164,20 @@ class JsseTlsCodec internal constructor(
      * Detects handshake completion from either the operation result or the
      * engine's current state.
      *
-     * Three conditions because FINISHED appears only once in the result of
+     * Checks the result first: FINISHED appears only once in the result of
      * the completing wrap/unwrap; subsequent calls return NOT_HANDSHAKING.
-     * The engine check covers the case where NEED_TASK was handled inline
-     * by [runWithTasks] — the result still shows NEED_TASK but the engine
-     * has already transitioned to NOT_HANDSHAKING.
+     * Falls back to engine state to cover the case where NEED_TASK was
+     * handled inline by [runWithTasks] — the result still shows NEED_TASK
+     * but the engine has already transitioned to NOT_HANDSHAKING.
      */
     private fun checkHandshakeFinished(result: SSLEngineResult) {
-        if (!handshakeComplete &&
-            (result.handshakeStatus == SSLEngineResult.HandshakeStatus.FINISHED ||
-                result.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING ||
-                engine.handshakeStatus == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING)
-        ) {
+        if (handshakeComplete) return
+        if (isHandshakeDone(result.handshakeStatus) || isHandshakeDone(engine.handshakeStatus)) {
             handshakeComplete = true
         }
     }
+
+    private fun isHandshakeDone(status: SSLEngineResult.HandshakeStatus): Boolean =
+        status == SSLEngineResult.HandshakeStatus.FINISHED ||
+            status == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING
 }
