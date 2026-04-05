@@ -21,15 +21,15 @@ data class HttpMethod(val name: String) {
     override fun toString() = name
 
     companion object {
-        val GET     = HttpMethod("GET")
-        val HEAD    = HttpMethod("HEAD")
-        val POST    = HttpMethod("POST")
-        val PUT     = HttpMethod("PUT")
-        val DELETE  = HttpMethod("DELETE")
+        val GET = HttpMethod("GET")
+        val HEAD = HttpMethod("HEAD")
+        val POST = HttpMethod("POST")
+        val PUT = HttpMethod("PUT")
+        val DELETE = HttpMethod("DELETE")
         val CONNECT = HttpMethod("CONNECT")
         val OPTIONS = HttpMethod("OPTIONS")
-        val TRACE   = HttpMethod("TRACE")
-        val PATCH   = HttpMethod("PATCH")   // RFC 5789
+        val TRACE = HttpMethod("TRACE")
+        val PATCH = HttpMethod("PATCH") // RFC 5789
 
         /**
          * Returns a cached instance for standard HTTP methods, or creates
@@ -49,7 +49,7 @@ data class HttpMethod(val name: String) {
             else -> HttpMethod(name)
         }
 
-        private val SAFE_METHODS       = setOf(GET, HEAD, OPTIONS, TRACE)
+        private val SAFE_METHODS = setOf(GET, HEAD, OPTIONS, TRACE)
         private val IDEMPOTENT_METHODS = setOf(GET, HEAD, PUT, DELETE, OPTIONS, TRACE)
     }
 }

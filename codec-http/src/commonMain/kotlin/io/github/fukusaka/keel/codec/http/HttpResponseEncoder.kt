@@ -52,7 +52,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         for (i in 0 until response.headers.size) {
             size += response.headers.nameAt(i).length + HEADER_SEPARATOR_SIZE + response.headers.valueAt(i).length + CRLF_SIZE
         }
-        size += CRLF_SIZE             // empty line terminating headers
+        size += CRLF_SIZE // empty line terminating headers
         size += response.body?.size ?: 0
         return size
     }
@@ -87,11 +87,11 @@ class HttpResponseEncoder : ChannelOutboundHandler {
 
     private companion object {
         private const val STATUS_CODE_DIGITS = 3
-        private const val HEADER_SEPARATOR_SIZE = 2  // ": "
-        private const val CRLF_SIZE = 2              // "\r\n"
-        private val SP: Byte    = ' '.code.toByte()
-        private val CR: Byte    = '\r'.code.toByte()
-        private val LF: Byte    = '\n'.code.toByte()
+        private const val HEADER_SEPARATOR_SIZE = 2 // ": "
+        private const val CRLF_SIZE = 2 // "\r\n"
+        private val SP: Byte = ' '.code.toByte()
+        private val CR: Byte = '\r'.code.toByte()
+        private val LF: Byte = '\n'.code.toByte()
         private val COLON: Byte = ':'.code.toByte()
     }
 }

@@ -73,7 +73,7 @@ internal fun sha1(input: ByteArray): ByteArray {
                 i < 20 -> (b and c) or (b.inv() and d) to 0x5A827999
                 i < 40 -> (b xor c xor d) to 0x6ED9EBA1
                 i < 60 -> (b and c) or (b and d) or (c and d) to 0x8F1BBCDC.toInt()
-                else   -> (b xor c xor d) to 0xCA62C1D6.toInt()
+                else -> (b xor c xor d) to 0xCA62C1D6.toInt()
             }
             val temp = a.rotateLeft(5) + f + e + k + w[i]
             e = d
@@ -92,9 +92,9 @@ internal fun sha1(input: ByteArray): ByteArray {
 
     return ByteArray(20).also { out ->
         for (i in 0..3) {
-            out[i]      = (h0 shr ((3 - i) * 8)).toByte()
-            out[4 + i]  = (h1 shr ((3 - i) * 8)).toByte()
-            out[8 + i]  = (h2 shr ((3 - i) * 8)).toByte()
+            out[i] = (h0 shr ((3 - i) * 8)).toByte()
+            out[4 + i] = (h1 shr ((3 - i) * 8)).toByte()
+            out[8 + i] = (h2 shr ((3 - i) * 8)).toByte()
             out[12 + i] = (h3 shr ((3 - i) * 8)).toByte()
             out[16 + i] = (h4 shr ((3 - i) * 8)).toByte()
         }
