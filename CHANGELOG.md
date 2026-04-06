@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - tls-mbedtls: add `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto library separation
 - tls-mbedtls: add `--allow-shlib-undefined` for Linux to resolve lld indirect glibc reference errors
 - core: enforce EventLoop thread for `PipelinedChannel` Channel mode (`read`/`write`/`flush`) via `withContext(coroutineDispatcher)` — fixes JMM visibility bug causing random test hang on 2-core CI
+- tls: remove `msg.release()` from `TlsHandler.onWrite` to fix double-release of outbound plaintext buffer causing `IndexOutOfBoundsException` under high-load HTTPS
 
 ### Changed
 
