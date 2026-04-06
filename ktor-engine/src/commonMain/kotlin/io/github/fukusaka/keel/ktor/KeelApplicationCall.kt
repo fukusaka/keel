@@ -14,6 +14,10 @@ import kotlin.coroutines.CoroutineContext
  *
  * Bridges the parsed [HttpRequestHead] and raw I/O streams ([ByteReadChannel] for request body,
  * [BufferedSuspendSink] for response output) into Ktor's request/response hierarchy.
+ *
+ * The [scheme] parameter ("http" or "https") is propagated to [KeelConnectionPoint]
+ * so that Ktor's [RequestConnectionPoint][io.ktor.http.RequestConnectionPoint] reports
+ * the correct protocol and default port.
  */
 @Suppress("LongParameterList") // scheme added for HTTPS; refactoring to a context object is Phase 10.
 internal class KeelApplicationCall(

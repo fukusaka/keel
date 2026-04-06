@@ -57,6 +57,10 @@ import kotlin.coroutines.ContinuationInterceptor
  * EventLoop with user code. For engines without a dedicated EventLoop
  * (Netty, NWConnection, Node.js), both use [Dispatchers.Default].
  *
+ * Supports HTTP and HTTPS. HTTPS is enabled per-connector via
+ * [Configuration.sslConnector], which installs a [TlsHandler] in the
+ * channel pipeline after accept. HTTP and HTTPS can coexist on different ports.
+ *
  * Supports HTTP/1.1 keep-alive: multiple requests can be processed on a
  * single TCP connection. Keep-alive is enabled by default and can be
  * disabled via [Configuration.keepAlive].
@@ -69,6 +73,13 @@ public class KeelApplicationEngine(
     private val applicationProvider: () -> Application,
 ) : BaseApplicationEngine(environment, monitor, developmentMode) {
 
+    /**
+     * Engine configuration for [KeelApplicationEngine].
+     *
+     * Extends Ktor's [BaseApplicationEngine.Configuration] with keel-specific
+     * settings: I/O engine selection, keep-alive, accept backoff, and TLS
+     * connectors via [sslConnector].
+     */
     public class Configuration : BaseApplicationEngine.Configuration() {
         /**
          * Explicit [IoEngine] instance. When null, the platform default is used
@@ -100,8 +111,13 @@ public class KeelApplicationEngine(
          */
         public var acceptBackoff: AcceptBackoff = AcceptBackoff.Exponential()
 
-        // TLS configuration per connector. Keyed by the EngineConnectorConfig
-        // instance added to the connectors list by sslConnector().
+        /**
+         * TLS configuration per connector.
+         *
+         * Keyed by the [EngineConnectorConfig] instance added to the
+         * [connectors][BaseApplicationEngine.Configuration.connectors] list
+         * by [sslConnector]. Connectors without an entry use plain HTTP.
+         */
         internal val tlsConnectors: MutableMap<EngineConnectorConfig, TlsConnectorConfig> = mutableMapOf()
 
         /**
