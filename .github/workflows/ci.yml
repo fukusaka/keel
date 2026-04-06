@@ -41,10 +41,17 @@ jobs:
           path: ~/.cache/mbedtls
           key: mbedtls-${{ runner.os }}-${{ hashFiles('scripts/install-mbedtls.sh') }}
 
+      - name: Cache AWS-LC
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/awslc
+          key: awslc-${{ runner.os }}-${{ hashFiles('scripts/install-awslc.sh') }}
+
       - name: Install native dependencies
         run: |
-          sudo apt-get install -y liburing-dev
+          sudo apt-get install -y liburing-dev libssl-dev
           MBEDTLS_CACHE_DIR=~/.cache/mbedtls ./scripts/install-mbedtls.sh
+          AWSLC_CACHE_DIR=~/.cache/awslc ./scripts/install-awslc.sh
 
       - name: Cache Kotlin/Native toolchain
         uses: actions/cache@v5
@@ -54,13 +61,13 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       - name: Static analysis (detekt)
-        run: ./gradlew detektMetadataCommonMain detektLinuxX64Main detektJvmMain
+        run: ./gradlew -Ptls detektMetadataCommonMain detektLinuxX64Main detektJvmMain
 
       - name: Compile (JVM + linuxX64)
-        run: ./gradlew compileKotlinJvm compileKotlinLinuxX64
+        run: ./gradlew -Ptls compileKotlinJvm compileKotlinLinuxX64
 
       - name: Test (JVM)
-        run: ./gradlew jvmTest
+        run: ./gradlew -Ptls jvmTest
 
       - name: Test (linuxX64)
-        run: ./gradlew linuxX64Test
+        run: ./gradlew -Ptls linuxX64Test
