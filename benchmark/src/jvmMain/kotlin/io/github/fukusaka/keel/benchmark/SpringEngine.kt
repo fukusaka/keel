@@ -79,6 +79,17 @@ object SpringEngine : EngineBenchmark {
         val props = mutableMapOf<String, Any>(
             "server.port" to config.port.toString(),
         )
+        if (config.tls != null) {
+            val ksFile = java.io.File.createTempFile("benchmark-ks-", ".p12")
+            ksFile.deleteOnExit()
+            val ks = buildBenchmarkKeyStore()
+            ksFile.outputStream().use { ks.store(it, BENCHMARK_KEY_PASSWORD) }
+            props["server.ssl.enabled"] = "true"
+            props["server.ssl.key-store"] = ksFile.absolutePath
+            props["server.ssl.key-store-password"] = String(BENCHMARK_KEY_PASSWORD)
+            props["server.ssl.key-store-type"] = "PKCS12"
+            props["server.ssl.key-alias"] = BENCHMARK_KEY_ALIAS
+        }
         if (config.connectionClose) {
             props["server.netty.idle-timeout"] = "0s"
             System.setProperty("benchmark.connection-close", "true")

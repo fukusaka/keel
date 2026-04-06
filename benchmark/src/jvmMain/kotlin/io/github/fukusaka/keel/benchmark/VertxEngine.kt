@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.benchmark
 import io.vertx.core.Vertx
 import io.vertx.core.VertxOptions
 import io.vertx.core.http.HttpServerOptions
+import io.vertx.core.net.PemKeyCertOptions
 import io.vertx.ext.web.Router
 import java.util.concurrent.CountDownLatch
 
@@ -83,6 +84,14 @@ object VertxEngine : EngineBenchmark {
         v.compressionSupported?.let { serverOptions.setCompressionSupported(it) }
         v.compressionLevel?.let { serverOptions.setCompressionLevel(it) }
         v.idleTimeout?.let { serverOptions.setIdleTimeout(it) }
+        if (config.tls != null) {
+            serverOptions.setSsl(true)
+            serverOptions.setKeyCertOptions(
+                PemKeyCertOptions()
+                    .setCertPath(BENCHMARK_CERT_PATH)
+                    .setKeyPath(BENCHMARK_KEY_PATH),
+            )
+        }
 
         val latch = CountDownLatch(1)
         vertx.createHttpServer(serverOptions)

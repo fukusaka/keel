@@ -32,6 +32,7 @@ package io.github.fukusaka.keel.benchmark
 private const val SHUTDOWN_TIMEOUT_MS = 2000L
 
 fun main(args: Array<String>) {
+    initJvmTlsProvider()
     val engines = engineRegistry()
     val config = BenchmarkConfig.parse(args)
 

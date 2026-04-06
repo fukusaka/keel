@@ -6,8 +6,10 @@
 //      --tcp-nodelay=true --reuse-address=true --backlog=1024
 //      --send-buffer=N --receive-buffer=N --threads=N
 //      --tokio-blocking-threads=N
+//      --tls --tls-cert=PATH --tls-key=PATH
 
 use axum::{middleware, routing::get, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use std::sync::LazyLock;
 use std::net::SocketAddr;
 
@@ -67,16 +69,31 @@ fn main() {
         };
 
         let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-        let socket = config.create_socket().expect("failed to create socket");
-        socket.bind(&addr.into()).expect("failed to bind");
-        socket
-            .listen(config.socket.backlog.unwrap_or(128) as i32)
-            .expect("failed to listen");
-        socket.set_nonblocking(true).unwrap();
-        let std_listener: std::net::TcpListener = socket.into();
-        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
 
-        println!("Rust Axum server started on port {}", config.port);
-        axum::serve(listener, app).await.unwrap();
+        if config.tls.enabled {
+            let tls_config = RustlsConfig::from_pem_file(&config.tls.cert, &config.tls.key)
+                .await
+                .expect("failed to load TLS cert/key");
+            println!(
+                "Rust Axum server started on port {} (TLS)",
+                config.port,
+            );
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        } else {
+            let socket = config.create_socket().expect("failed to create socket");
+            socket.bind(&addr.into()).expect("failed to bind");
+            socket
+                .listen(config.socket.backlog.unwrap_or(128) as i32)
+                .expect("failed to listen");
+            socket.set_nonblocking(true).unwrap();
+            let std_listener: std::net::TcpListener = socket.into();
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+            println!("Rust Axum server started on port {}", config.port);
+            axum::serve(listener, app).await.unwrap();
+        }
     });
 }
