@@ -18,8 +18,8 @@ internal class KeelConnectionPoint(
     override val uri: String,
     private val hostHeaderValue: String?,
     override val method: HttpMethod,
+    override val scheme: String = "http",
 ) : RequestConnectionPoint {
-    override val scheme: String get() = "http"
 
     private val defaultPort = URLProtocol.createOrDefault(scheme).defaultPort
 

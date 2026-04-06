@@ -25,6 +25,7 @@ internal class KeelApplicationCall(
     scope: CoroutineScope,
     override val coroutineContext: CoroutineContext,
     keepAlive: Boolean,
+    scheme: String = "http",
 ) : BaseApplicationCall(application), CoroutineScope {
 
     override val request = KeelApplicationRequest(
@@ -33,6 +34,7 @@ internal class KeelApplicationCall(
         localAddress = localAddress,
         remoteAddress = remoteAddress,
         engineReceiveChannel = requestBody,
+        scheme = scheme,
     )
 
     override val response = KeelApplicationResponse(
