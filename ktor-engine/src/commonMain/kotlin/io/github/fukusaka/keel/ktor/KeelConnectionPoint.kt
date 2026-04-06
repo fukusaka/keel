@@ -10,6 +10,9 @@ import io.ktor.http.URLProtocol
  *
  * Local/remote address information comes from the keel [Channel][io.github.fukusaka.keel.core.Channel].
  * Server host/port fall back to the Host header value when socket address is unavailable.
+ *
+ * [scheme] ("http" or "https") determines the [defaultPort] used by [localPort]
+ * and [serverPort] when the actual port is unknown.
  */
 internal class KeelConnectionPoint(
     private val localAddr: SocketAddress?,
@@ -18,8 +21,8 @@ internal class KeelConnectionPoint(
     override val uri: String,
     private val hostHeaderValue: String?,
     override val method: HttpMethod,
+    override val scheme: String = "http",
 ) : RequestConnectionPoint {
-    override val scheme: String get() = "http"
 
     private val defaultPort = URLProtocol.createOrDefault(scheme).defaultPort
 

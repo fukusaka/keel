@@ -13,6 +13,10 @@ import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.TlsHandler
 import io.ktor.events.Events
 import io.ktor.events.raiseCatching
 import io.ktor.server.application.Application
@@ -20,6 +24,9 @@ import io.ktor.server.application.ApplicationEnvironment
 import io.ktor.server.application.ServerReady
 import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.BaseApplicationEngine
+import io.ktor.server.engine.ConnectorType
+import io.ktor.server.engine.EngineConnectorBuilder
+import io.ktor.server.engine.EngineConnectorConfig
 import io.ktor.server.engine.withPort
 import io.ktor.util.pipeline.execute
 import io.ktor.utils.io.ByteChannel
@@ -50,6 +57,10 @@ import kotlin.coroutines.ContinuationInterceptor
  * EventLoop with user code. For engines without a dedicated EventLoop
  * (Netty, NWConnection, Node.js), both use [Dispatchers.Default].
  *
+ * Supports HTTP and HTTPS. HTTPS is enabled per-connector via
+ * [Configuration.sslConnector], which installs a [TlsHandler] in the
+ * channel pipeline after accept. HTTP and HTTPS can coexist on different ports.
+ *
  * Supports HTTP/1.1 keep-alive: multiple requests can be processed on a
  * single TCP connection. Keep-alive is enabled by default and can be
  * disabled via [Configuration.keepAlive].
@@ -62,6 +73,13 @@ public class KeelApplicationEngine(
     private val applicationProvider: () -> Application,
 ) : BaseApplicationEngine(environment, monitor, developmentMode) {
 
+    /**
+     * Engine configuration for [KeelApplicationEngine].
+     *
+     * Extends Ktor's [BaseApplicationEngine.Configuration] with keel-specific
+     * settings: I/O engine selection, keep-alive, accept backoff, and TLS
+     * connectors via [sslConnector].
+     */
     public class Configuration : BaseApplicationEngine.Configuration() {
         /**
          * Explicit [IoEngine] instance. When null, the platform default is used
@@ -92,6 +110,41 @@ public class KeelApplicationEngine(
          *   failure, resets on success (default: 100ms initial, 1s max)
          */
         public var acceptBackoff: AcceptBackoff = AcceptBackoff.Exponential()
+
+        /**
+         * TLS configuration per connector.
+         *
+         * Keyed by the [EngineConnectorConfig] instance added to the
+         * [connectors][BaseApplicationEngine.Configuration.connectors] list
+         * by [sslConnector]. Connectors without an entry use plain HTTP.
+         */
+        internal val tlsConnectors: MutableMap<EngineConnectorConfig, TlsConnectorConfig> = mutableMapOf()
+
+        /**
+         * Adds an HTTPS connector with keel TLS configuration.
+         *
+         * Uses keel's PEM-based [TlsConfig] instead of Ktor's JVM-only
+         * `KeyStore`-based `sslConnector`. Works on all KMP targets.
+         *
+         * ```
+         * embeddedServer(Keel) {
+         *     sslConnector(tlsConfig, JsseTlsCodecFactory()) { port = 8443 }
+         * }
+         * ```
+         *
+         * @param tlsConfig TLS settings (certificates, trust, verify mode).
+         * @param tlsCodecFactory Factory for per-connection TlsCodec instances.
+         * @param builder Connector builder for host/port configuration.
+         */
+        public fun sslConnector(
+            tlsConfig: TlsConfig,
+            tlsCodecFactory: TlsCodecFactory,
+            builder: EngineConnectorBuilder.() -> Unit,
+        ) {
+            val connector = EngineConnectorBuilder(ConnectorType.HTTPS).apply(builder)
+            connectors.add(connector)
+            tlsConnectors[connector] = TlsConnectorConfig(tlsConfig, tlsCodecFactory)
+        }
     }
 
     /**
@@ -170,6 +223,7 @@ public class KeelApplicationEngine(
 
     private fun initServerJob(): Job {
         val connectors = configuration.connectors
+        val tlsConnectors = configuration.tlsConnectors
         val resolvedDeferred = resolvedConnectorsDeferred
 
         // Server lifecycle (bind, accept loop, shutdown) uses Dispatchers.Default.
@@ -178,17 +232,18 @@ public class KeelApplicationEngine(
             applicationProvider().parentCoroutineContext + Dispatchers.Default,
         ).launch(start = CoroutineStart.LAZY) {
             val ioEngine = configuration.engine ?: defaultEngine()
-            val servers = mutableListOf<Server>()
+            // Pair each server with its connector's TLS config (if any).
+            val serverEntries = mutableListOf<Pair<Server, TlsConnectorConfig?>>()
 
             try {
                 val resolved = connectors.map { connector ->
                     val server = ioEngine.bind(connector.host, connector.port)
-                    servers.add(server)
+                    serverEntries.add(server to tlsConnectors[connector])
                     connector.withPort(server.localAddress.port)
                 }
                 resolvedDeferred.complete(resolved)
             } catch (cause: Throwable) {
-                servers.forEach { runCatching { it.close() } }
+                serverEntries.forEach { (server, _) -> runCatching { server.close() } }
                 ioEngine.close()
                 startupJob.completeExceptionally(cause)
                 throw cause
@@ -196,13 +251,13 @@ public class KeelApplicationEngine(
 
             startupJob.complete(Unit)
 
-            servers.forEach { server ->
-                launch { acceptLoop(server) }
+            serverEntries.forEach { (server, tlsConfig) ->
+                launch { acceptLoop(server, tlsConfig) }
             }
 
             stopRequest.join()
 
-            servers.forEach { runCatching { it.close() } }
+            serverEntries.forEach { (server, _) -> runCatching { server.close() } }
             ioEngine.close()
         }
     }
@@ -214,8 +269,14 @@ public class KeelApplicationEngine(
      * pauses according to [Configuration.acceptBackoff] to prevent
      * CPU spin. The delay resets on a successful accept (exponential
      * backoff mode).
+     *
+     * @param tlsConfig TLS configuration for this connector, or null for plain HTTP.
      */
-    private suspend fun CoroutineScope.acceptLoop(server: Server) {
+    private suspend fun CoroutineScope.acceptLoop(
+        server: Server,
+        tlsConfig: TlsConnectorConfig?,
+    ) {
+        val scheme = if (tlsConfig != null) "https" else "http"
         var currentDelayMs = when (val b = configuration.acceptBackoff) {
             is AcceptBackoff.Fixed -> b.delayMs
             is AcceptBackoff.Exponential -> b.initialMs
@@ -229,12 +290,21 @@ public class KeelApplicationEngine(
                     is AcceptBackoff.Fixed -> b.delayMs
                     is AcceptBackoff.Exponential -> b.initialMs
                 }
+
+                // Install TlsHandler in the channel's pipeline for HTTPS.
+                // All engines return PipelinedChannel from accept().
+                if (tlsConfig != null) {
+                    val pipelinedChannel = channel as PipelinedChannel
+                    val codec = tlsConfig.codecFactory.createServerCodec(tlsConfig.config)
+                    pipelinedChannel.pipeline.addLast("tls", TlsHandler(codec))
+                }
+
                 // Dispatch on EventLoop so read/parse runs on the I/O
                 // thread without cross-thread dispatch. For engines
                 // without a dedicated EventLoop (Netty, NWConnection,
                 // Node.js), this falls back to Dispatchers.Default.
                 launch(channel.coroutineDispatcher) {
-                    handleConnection(channel)
+                    handleConnection(channel, scheme)
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -280,7 +350,7 @@ public class KeelApplicationEngine(
      * joined before parsing the next request to ensure body bytes are fully
      * consumed from the source.
      */
-    private suspend fun CoroutineScope.handleConnection(channel: Channel) {
+    private suspend fun CoroutineScope.handleConnection(channel: Channel, scheme: String = "http") {
         // PipelinedChannel uses push-mode BufferedSuspendSource via SuspendBridgeHandler
         // (zero-copy readOwned). Other channels fall back to pull-mode (1 copy).
         val source = channel.asBufferedSuspendSource()
@@ -338,6 +408,7 @@ public class KeelApplicationEngine(
                     scope = this,
                     coroutineContext = coroutineContext,
                     keepAlive = keepAlive,
+                    scheme = scheme,
                 )
 
                 // Run the Ktor pipeline on channel.appDispatcher.

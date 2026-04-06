@@ -23,6 +23,7 @@ internal class KeelApplicationRequest(
     localAddress: SocketAddress?,
     remoteAddress: SocketAddress?,
     override val engineReceiveChannel: ByteReadChannel,
+    scheme: String = "http",
 ) : BaseApplicationRequest(call) {
 
     override val cookies: RequestCookies by lazy { RequestCookies(this) }
@@ -48,5 +49,6 @@ internal class KeelApplicationRequest(
         uri = head.uri,
         hostHeaderValue = head.headers["Host"],
         method = HttpMethod.parse(head.method.name),
+        scheme = scheme,
     )
 }
