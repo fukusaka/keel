@@ -182,11 +182,12 @@ class TlsHandler(
             ctx.propagateWrite(msg)
             return
         }
-        try {
-            processOutbound(ctx, msg)
-        } finally {
-            msg.release()
-        }
+        processOutbound(ctx, msg)
+        // Do not release msg here. Outbound buffers follow the "caller manages
+        // lifecycle" model: the original owner (e.g. BufferedSuspendSink) releases
+        // the buffer after sink.write() returns. Releasing here would cause
+        // double-release when the caller also releases, corrupting pooled buffer
+        // state (ByteBuffer.limit not restored → IndexOutOfBoundsException).
     }
 
     private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
