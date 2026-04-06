@@ -10,7 +10,8 @@ package io.github.fukusaka.keel.benchmark
 internal fun initJvmTlsProvider() {
     try {
         val clazz = Class.forName("io.github.fukusaka.keel.benchmark.JvmTlsInit")
-        clazz.getMethod("register").invoke(clazz.kotlin.objectInstance)
+        val instance = clazz.getDeclaredField("INSTANCE").get(null)
+        clazz.getMethod("register").invoke(instance)
     } catch (_: ClassNotFoundException) {
         // -Ptls not set — TLS benchmarking unavailable
     }

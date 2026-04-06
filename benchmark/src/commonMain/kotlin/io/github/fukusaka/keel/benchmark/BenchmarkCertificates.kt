@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.tls.TlsVerifyMode
  */
 object BenchmarkCertificates {
 
+    /** Self-signed X.509 certificate for localhost (PEM format). */
     internal val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
@@ -34,6 +35,7 @@ wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
 """.trimIndent() + "\n"
 
+    /** RSA 2048-bit private key for [SERVER_CERT] (PKCS#8 PEM format). */
     internal val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
 MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCyFmiTuQ3QU6bL
