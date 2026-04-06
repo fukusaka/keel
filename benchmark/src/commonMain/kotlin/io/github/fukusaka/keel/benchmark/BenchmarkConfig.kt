@@ -9,6 +9,7 @@ package io.github.fukusaka.keel.benchmark
  * ├── port: Int                    server listen port
  * ├── profile: String              "default" | "tuned" | "keel-equiv-0.1"
  * ├── connectionClose: Boolean     force Connection: close on all engines
+ * ├── tls: String?                 TLS backend: null (HTTP) | "jsse" | "openssl" | "awslc"
  * ├── socket: SocketConfig         common socket options (all engines)
  * │   ├── tcpNoDelay               TCP_NODELAY
  * │   ├── reuseAddress             SO_REUSEADDR
@@ -36,6 +37,7 @@ data class BenchmarkConfig(
     val profile: String = "default",
     val showConfig: Boolean = false,
     val connectionClose: Boolean = false,
+    val tls: String? = null,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -56,6 +58,7 @@ data class BenchmarkConfig(
                     "port" -> config = config.copy(port = value.toInt())
                     "profile" -> config = config.copy(profile = value)
                     "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
+                    "tls" -> config = config.copy(tls = value)
                     // Socket options
                     "tcp-nodelay" -> socket = socket.copy(tcpNoDelay = value.toBooleanStrict())
                     "reuse-address" -> socket = socket.copy(reuseAddress = value.toBooleanStrict())
@@ -117,6 +120,7 @@ data class BenchmarkConfig(
 
     fun summary(): String = buildString {
         append("engine=$engine, port=$port, profile=$profile")
+        if (tls != null) append(", tls=$tls")
         if (connectionClose) append(", connection=close")
         socket.appendTo(this)
         if (engineConfig !is EngineConfig.None) append(", $engineConfig")
@@ -130,6 +134,7 @@ data class BenchmarkConfig(
         fmtLine("engine:", engine)
         fmtLine("port:", "$port")
         fmtLine("profile:", profile)
+        fmtLine("tls:", tls ?: "disabled")
         fmtLine("cpu-cores:", "${availableProcessors()}")
         appendLine()
         appendLine("--- Connection ---")
