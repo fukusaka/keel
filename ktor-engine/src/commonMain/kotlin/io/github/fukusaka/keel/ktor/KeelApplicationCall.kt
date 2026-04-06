@@ -15,6 +15,7 @@ import kotlin.coroutines.CoroutineContext
  * Bridges the parsed [HttpRequestHead] and raw I/O streams ([ByteReadChannel] for request body,
  * [BufferedSuspendSink] for response output) into Ktor's request/response hierarchy.
  */
+@Suppress("LongParameterList") // scheme added for HTTPS; refactoring to a context object is Phase 10.
 internal class KeelApplicationCall(
     application: Application,
     head: HttpRequestHead,
