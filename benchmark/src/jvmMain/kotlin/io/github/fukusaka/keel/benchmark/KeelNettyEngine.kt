@@ -2,8 +2,9 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.ktor.Keel
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
+import io.ktor.server.application.serverConfig
+import io.ktor.server.engine.connector
+import io.ktor.server.engine.embeddedServer
 
 /** keel Netty engine — no tunable options. */
 object KeelNettyEngine : EngineBenchmark {
@@ -11,11 +12,19 @@ object KeelNettyEngine : EngineBenchmark {
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
+        val factory = config.tls?.let { createTlsCodecFactory(it) }
         val engine = embeddedServer(Keel, rootConfig) {
-            connector { this.port = config.port }
+            if (factory != null) {
+                sslConnector(BenchmarkCertificates.tlsConfig(), factory) { port = config.port }
+            } else {
+                connector { this.port = config.port }
+            }
             this.engine = NettyEngine()
         }.start(wait = false)
-        return { engine.stop(500, 1000) }
+        return {
+            factory?.close()
+            engine.stop(500, 1000)
+        }
     }
 
     override fun socketDefaults(os: OsSocketDefaults): SocketConfig.SocketDefaults {

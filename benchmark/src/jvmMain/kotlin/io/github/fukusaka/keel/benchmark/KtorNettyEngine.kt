@@ -32,7 +32,14 @@ object KtorNettyEngine : EngineBenchmark {
             module { benchmarkModule(config.connectionClose) }
         }
         val engine = embeddedServer(KtorNetty, rootConfig) {
-            connector { this.port = config.port }
+            if (config.tls != null) {
+                val ks = buildBenchmarkKeyStore()
+                sslConnector(ks, BENCHMARK_KEY_ALIAS, { BENCHMARK_KEY_PASSWORD }, { BENCHMARK_KEY_PASSWORD }) {
+                    this.port = config.port
+                }
+            } else {
+                connector { this.port = config.port }
+            }
             s.threads?.let {
                 workerGroupSize = it
                 callGroupSize = it

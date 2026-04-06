@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.benchmark
 
-import io.ktor.server.application.*
-import io.ktor.server.cio.*
-import io.ktor.server.engine.*
+import io.ktor.server.application.serverConfig
+import io.ktor.server.cio.CIO
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.connector
+import io.ktor.server.engine.embeddedServer
 
 /** Ktor CIO engine settings. */
 data class CioEngineConfig(
@@ -24,6 +26,7 @@ object CioEngine : EngineBenchmark {
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose) }
         }
+        require(config.tls == null) { "Ktor CIO does not support HTTPS. Use ktor-netty or keel engines instead." }
         val engine = embeddedServer(CIO, rootConfig) {
             connector { this.port = config.port }
             config.socket.reuseAddress?.let { reuseAddress = it }

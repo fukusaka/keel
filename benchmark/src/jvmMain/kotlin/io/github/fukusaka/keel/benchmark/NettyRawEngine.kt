@@ -2,11 +2,23 @@ package io.github.fukusaka.keel.benchmark
 
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.buffer.Unpooled
-import io.netty.channel.*
+import io.netty.channel.ChannelFutureListener
+import io.netty.channel.ChannelHandlerContext
+import io.netty.channel.ChannelInitializer
+import io.netty.channel.ChannelOption
+import io.netty.channel.SimpleChannelInboundHandler
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
-import io.netty.handler.codec.http.*
+import io.netty.handler.codec.http.DefaultFullHttpResponse
+import io.netty.handler.codec.http.FullHttpRequest
+import io.netty.handler.codec.http.HttpHeaderNames
+import io.netty.handler.codec.http.HttpHeaderValues
+import io.netty.handler.codec.http.HttpObjectAggregator
+import io.netty.handler.codec.http.HttpResponseStatus
+import io.netty.handler.codec.http.HttpServerCodec
+import io.netty.handler.codec.http.HttpVersion
+import io.netty.handler.ssl.SslContextBuilder
 
 /**
  * Raw Netty HTTP server for benchmarking.
@@ -51,7 +63,19 @@ object NettyRawEngine : EngineBenchmark {
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
+                private val sslCtx = if (config.tls != null) {
+                    val ks = buildBenchmarkKeyStore()
+                    val kmf = javax.net.ssl.KeyManagerFactory.getInstance(
+                        javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm(),
+                    )
+                    kmf.init(ks, BENCHMARK_KEY_PASSWORD)
+                    SslContextBuilder.forServer(kmf).build()
+                } else {
+                    null
+                }
+
                 override fun initChannel(ch: SocketChannel) {
+                    sslCtx?.let { ch.pipeline().addLast(it.newHandler(ch.alloc())) }
                     ch.pipeline().addLast(
                         HttpServerCodec(),
                         HttpObjectAggregator(maxContent),
