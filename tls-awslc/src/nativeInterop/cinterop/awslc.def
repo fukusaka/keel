@@ -1,6 +1,10 @@
 headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
-compilerOpts = -I/opt/homebrew/opt/aws-lc/include
-linkerOpts = -L/opt/homebrew/opt/aws-lc/lib -lssl -lcrypto
+compilerOpts.osx = -I/opt/homebrew/opt/aws-lc/include
+compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
+linkerOpts.osx = -L/opt/homebrew/opt/aws-lc/lib -lssl -lcrypto
+# Kotlin/Native lld uses --no-allow-shlib-undefined by default, rejecting
+# indirect glibc references (stat, dlclose etc.) in shared libs.
+linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto --allow-shlib-undefined
 
 ---
 
@@ -9,11 +13,190 @@ linkerOpts = -L/opt/homebrew/opt/aws-lc/lib -lssl -lcrypto
 #include <openssl/bio.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
+#include <string.h>
+
+// ============================================================
+// Error string helper
+// ============================================================
+
+static const char* keel_awslc_err_string(void) {
+    return ERR_reason_error_string(ERR_get_error());
+}
+
+// ============================================================
+// Pointer-based BIO adapter for TlsCodec protect/unprotect
+// ============================================================
+// Same approach as keel_openssl_bio_ctx / keel_mbedtls_bio_ctx:
+// recv/send callbacks read from and write to caller-owned IoBuf
+// memory directly — no intermediate buffer copies.
+
+typedef struct {
+    const unsigned char* recv_ptr;
+    size_t recv_remaining;
+
+    unsigned char* send_ptr;
+    size_t send_capacity;
+    size_t send_written;
+} keel_awslc_bio_ctx;
+
+static int keel_awslc_bio_read(BIO *bio, char *buf, int len) {
+    keel_awslc_bio_ctx *ctx = (keel_awslc_bio_ctx *)BIO_get_data(bio);
+    if (ctx->recv_remaining == 0) {
+        BIO_set_retry_read(bio);
+        return -1;
+    }
+    size_t n = (size_t)len < ctx->recv_remaining ? (size_t)len : ctx->recv_remaining;
+    memcpy(buf, ctx->recv_ptr, n);
+    ctx->recv_ptr += n;
+    ctx->recv_remaining -= n;
+    return (int)n;
+}
+
+static int keel_awslc_bio_write(BIO *bio, const char *buf, int len) {
+    keel_awslc_bio_ctx *ctx = (keel_awslc_bio_ctx *)BIO_get_data(bio);
+    size_t avail = ctx->send_capacity - ctx->send_written;
+    if (avail == 0) {
+        BIO_set_retry_write(bio);
+        return -1;
+    }
+    size_t n = (size_t)len < avail ? (size_t)len : avail;
+    memcpy(ctx->send_ptr + ctx->send_written, buf, n);
+    ctx->send_written += n;
+    return (int)n;
+}
+
+static long keel_awslc_bio_ctrl(BIO *bio, int cmd, long num, void *ptr) {
+    (void)bio; (void)num; (void)ptr;
+    if (cmd == BIO_CTRL_FLUSH) return 1;
+    return 0;
+}
+
+static BIO_METHOD *keel_awslc_bio_method_instance = NULL;
+
+static BIO_METHOD* keel_awslc_bio_method(void) {
+    if (keel_awslc_bio_method_instance) return keel_awslc_bio_method_instance;
+    BIO_METHOD *m = BIO_meth_new(BIO_TYPE_NONE, "keel_awslc_bio");
+    BIO_meth_set_read(m, keel_awslc_bio_read);
+    BIO_meth_set_write(m, keel_awslc_bio_write);
+    BIO_meth_set_ctrl(m, keel_awslc_bio_ctrl);
+    keel_awslc_bio_method_instance = m;
+    return m;
+}
+
+static int keel_awslc_bio_setup(SSL *ssl, keel_awslc_bio_ctx *ctx) {
+    BIO_METHOD *method = keel_awslc_bio_method();
+    if (!method) return -1;
+    BIO *bio = BIO_new(method);
+    if (!bio) return -1;
+    BIO_set_data(bio, ctx);
+    BIO_set_init(bio, 1);
+    BIO_up_ref(bio);
+    SSL_set_bio(ssl, bio, bio);
+    return 0;
+}
+
+// ============================================================
+// SNI wrapper
+// ============================================================
+
+static int keel_awslc_set_sni(SSL *ssl, const char *hostname) {
+    return SSL_set_tlsext_host_name(ssl, hostname);
+}
+
+// ============================================================
+// ALPN helpers
+// ============================================================
+
+static const unsigned char* keel_awslc_get_alpn(const SSL *ssl, unsigned int *len_out) {
+    const unsigned char *data = NULL;
+    unsigned int len = 0;
+    SSL_get0_alpn_selected(ssl, &data, &len);
+    *len_out = len;
+    return data;
+}
+
+// ============================================================
+// Certificate and key loading from PEM strings
+// ============================================================
+
+static int keel_awslc_ctx_load_pem_cert(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    if (!cert) {
+        BIO_free(bio);
+        return 0;
+    }
+
+    int ret = SSL_CTX_use_certificate(ctx, cert);
+    X509_free(cert);
+
+    if (ret == 1) {
+        X509 *chain_cert;
+        while ((chain_cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
+            SSL_CTX_add_extra_chain_cert(ctx, chain_cert);
+        }
+        ERR_clear_error();
+    }
+
+    BIO_free(bio);
+    return ret;
+}
+
+static int keel_awslc_ctx_load_pem_key(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    EVP_PKEY *pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!pkey) return 0;
+
+    int ret = SSL_CTX_use_PrivateKey(ctx, pkey);
+    EVP_PKEY_free(pkey);
+    return ret;
+}
+
+static int keel_awslc_ctx_load_ca_pem(SSL_CTX *ctx, const char *pem, int pem_len) {
+    BIO *bio = BIO_new_mem_buf(pem, pem_len);
+    if (!bio) return 0;
+
+    X509_STORE *store = SSL_CTX_get_cert_store(ctx);
+    int count = 0;
+    X509 *cert;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
+        if (X509_STORE_add_cert(store, cert) == 1) {
+            count++;
+        }
+        X509_free(cert);
+    }
+    ERR_clear_error();
+    BIO_free(bio);
+    return count;
+}
+
+// ============================================================
+// Peer certificate (DER encoding)
+// ============================================================
+
+static int keel_awslc_get_peer_cert_der(const SSL *ssl,
+                                         unsigned char **out,
+                                         int *len_out) {
+    X509 *cert = SSL_get_peer_certificate(ssl);
+    if (!cert) return -1;
+    int len = i2d_X509(cert, out);
+    if (len < 0) return -1;
+    *len_out = len;
+    return 0;
+}
+
+// ============================================================
+// POSIX socket helpers (for AwsLcEchoTest)
+// ============================================================
 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <string.h>
 
 static int keel_awslc_create_server(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -43,8 +226,4 @@ static int keel_awslc_get_port(int fd) {
     socklen_t len = sizeof(addr);
     if (getsockname(fd, (struct sockaddr*)&addr, &len) < 0) return -1;
     return ntohs(addr.sin_port);
-}
-
-static const char* keel_awslc_err_string(void) {
-    return ERR_reason_error_string(ERR_get_error());
 }
