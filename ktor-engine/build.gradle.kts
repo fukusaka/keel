@@ -15,6 +15,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(project(":core"))
+                implementation(project(":tls"))
                 implementation(project(":codec-http"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.kotlinx.coroutines.core)
@@ -40,6 +41,15 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
             }
+        }
+    }
+}
+
+// TLS test dependencies — only available with -Ptls (tls-jsse is opt-in).
+if (providers.gradleProperty("tls").isPresent) {
+    kotlin.sourceSets.getByName("jvmTest") {
+        dependencies {
+            implementation(project(":tls-jsse"))
         }
     }
 }
