@@ -14,7 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
 - tls-mbedtls: add `MbedTlsCodec` TlsCodec implementation with pointer-based BIO adapter (Mbed TLS 4.x, PSA Crypto)
 - tls-jsse: add `JsseTlsCodec` and `JsseTlsCodecFactory` — JSSE SSLEngine-backed TlsCodec for JVM
-- tls-openssl: add `OpenSslCodec` and `OpenSslCodecFactory` — OpenSSL 3.x memory BIO-backed TlsCodec for Native
+- tls-openssl: add `OpenSslCodec` and `OpenSslCodecFactory` — OpenSSL 3.x pointer-based BIO TlsCodec for Native
+- tls-awslc: add `AwsLcCodec` and `AwsLcCodecFactory` — AWS-LC (BoringSSL fork) pointer-based BIO TlsCodec for Native
 - core: add `PipelinedServer` interface and `IoEngine.bindPipeline` (non-suspend, default throw for unsupported engines)
 - build: add `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions enforcement
 
