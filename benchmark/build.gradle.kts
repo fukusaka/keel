@@ -25,6 +25,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(project(":core"))
+                implementation(project(":tls"))
                 implementation(project(":ktor-engine"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.ktor.server.cio)
@@ -83,6 +84,33 @@ tasks.register("writeClasspath") {
         val cp = (jvmCompilation.output.allOutputs + jvmCompilation.runtimeDependencyFiles)
             .joinToString(File.pathSeparator)
         outputFile.get().asFile.writeText(cp)
+    }
+}
+
+// TLS benchmark dependencies — only available with -Ptls.
+// Enables --tls=jsse|openssl|awslc CLI flag for HTTPS benchmarking.
+// TLS support code lives in separate source directories (src/{platform}Tls/)
+// so that -Ptls-less builds still compile without TLS class references.
+if (providers.gradleProperty("tls").isPresent) {
+    kotlin.sourceSets.getByName("jvmMain") {
+        kotlin.srcDir("src/jvmTls/kotlin")
+        dependencies {
+            implementation(project(":tls-jsse"))
+        }
+    }
+    val macosMain = kotlin.sourceSets.getByName("macosMain")
+    macosMain.kotlin.srcDir("src/macosTls/kotlin")
+    macosMain.dependencies {
+        implementation(project(":tls-mbedtls"))
+        implementation(project(":tls-openssl"))
+        implementation(project(":tls-awslc"))
+    }
+    val linuxMain = kotlin.sourceSets.getByName("linuxMain")
+    linuxMain.kotlin.srcDir("src/linuxTls/kotlin")
+    linuxMain.dependencies {
+        implementation(project(":tls-mbedtls"))
+        implementation(project(":tls-openssl"))
+        implementation(project(":tls-awslc"))
     }
 }
 
