@@ -78,10 +78,17 @@ jobs:
           path: ~/.cache/mbedtls
           key: mbedtls-${{ runner.os }}-${{ hashFiles('scripts/install-mbedtls.sh') }}
 
+      - name: Cache AWS-LC
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/awslc
+          key: awslc-${{ runner.os }}-${{ hashFiles('scripts/install-awslc.sh') }}
+
       - name: Install native dependencies
         run: |
-          sudo apt-get install -y liburing-dev
+          sudo apt-get install -y liburing-dev libssl-dev
           MBEDTLS_CACHE_DIR=~/.cache/mbedtls ./scripts/install-mbedtls.sh
+          AWSLC_CACHE_DIR=~/.cache/awslc ./scripts/install-awslc.sh
 
       - uses: actions/setup-java@v5
         with:
@@ -98,7 +105,7 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       - name: Generate API docs (Dokka)
-        run: ./gradlew dokkaGeneratePublicationHtml
+        run: ./gradlew -Ptls dokkaGeneratePublicationHtml
 
       - name: Upload Dokka output
         uses: actions/upload-artifact@v4
@@ -121,8 +128,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Mbed TLS
-        run: brew install mbedtls
+      - name: Install native dependencies
+        run: brew install mbedtls openssl@3 aws-lc
 
       - uses: actions/setup-java@v5
         with:
@@ -139,7 +146,7 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       - name: Generate API docs (Dokka)
-        run: ./gradlew dokkaGeneratePublicationHtml
+        run: ./gradlew -Ptls dokkaGeneratePublicationHtml
 
       - name: Upload Dokka output
         uses: actions/upload-artifact@v4
