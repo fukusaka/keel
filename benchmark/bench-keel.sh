@@ -9,7 +9,7 @@
 # Supports the same environment variables as bench-all.sh:
 #   BENCH_ENDPOINT, BENCH_RUNS, BENCH_SHUFFLE, BENCH_COOLDOWN,
 #   BENCH_WRK_THREADS, BENCH_WRK_CONNS, BENCH_WRK_DURATION,
-#   BENCH_PORT, BENCH_HOST_LABEL
+#   BENCH_PORT, BENCH_HOST_LABEL, BENCH_SCHEME, BENCH_TLS
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -25,6 +25,8 @@ READY_TIMEOUT=30
 RUNS=${BENCH_RUNS:-1}
 SHUFFLE=${BENCH_SHUFFLE:-false}
 COOLDOWN=${BENCH_COOLDOWN:-2}
+SCHEME=${BENCH_SCHEME:-http}
+TLS_BACKEND="${BENCH_TLS:-}"
 RESULTS_BASE="benchmark/results"
 HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
 RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
@@ -90,7 +92,7 @@ run_bench() {
 
         local ready=false
         for _ in $(seq 1 "$READY_TIMEOUT"); do
-            if curl -s -o /dev/null "http://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null; then
+            if curl -sk -o /dev/null "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null; then
                 ready=true
                 break
             fi
@@ -106,10 +108,10 @@ run_bench() {
             return
         fi
 
-        wrk -t2 -c10 -d"${WARMUP_DURATION}" "http://127.0.0.1:${engine_port}${ENDPOINT}" >/dev/null 2>&1
+        wrk -t2 -c10 -d"${WARMUP_DURATION}" "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" >/dev/null 2>&1
 
         local result
-        result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${engine_port}${ENDPOINT}" 2>&1)
+        result=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>&1)
 
         local rps
         rps=$(extract_rps "$result")
@@ -216,7 +218,12 @@ if [ "$PROFILE" != "default" ]; then
     PROFILE_ARGS="--profile=${PROFILE}"
 fi
 
-echo "=== keel Benchmark: ${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} runs=${RUNS} shuffle=${SHUFFLE} cooldown=${COOLDOWN}s ==="
+TLS_ARGS=""
+if [ -n "$TLS_BACKEND" ]; then
+    TLS_ARGS="--tls=${TLS_BACKEND}"
+fi
+
+echo "=== keel Benchmark: ${SCHEME}${ENDPOINT} (${WRK_THREADS}t/${WRK_CONNS}c/${WRK_DURATION}) profile=${PROFILE} runs=${RUNS} shuffle=${SHUFFLE} cooldown=${COOLDOWN}s ==="
 echo ""
 printf "  %-28s %12s        %-10s  %-10s\n" "Server" "Req/sec" "p50" "p99"
 printf "  %-28s %12s        %-10s  %-10s\n" "----------------------------" "------------" "----------" "----------"
@@ -236,13 +243,13 @@ while IFS= read -r entry; do
             rest2="${rest#*:}"
             engine="${rest2%%:*}"
             binary="${rest2#*:}"
-            run_bench "${display}:${engine}" "$binary" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
+            run_bench "${display}:${engine}" "$binary" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS} ${TLS_ARGS}
             ;;
         jvm-engine)
             display="${rest%%:*}"
             engine="${rest#*:}"
             if [ -n "$JVM_CP" ]; then
-                run_bench "${display}:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS}
+                run_bench "${display}:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS} ${TLS_ARGS}
             fi
             ;;
     esac

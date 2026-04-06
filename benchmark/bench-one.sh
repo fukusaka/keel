@@ -10,6 +10,7 @@
 #   BENCH_WRK_THREADS    wrk threads (default: 4)
 #   BENCH_WRK_CONNS      wrk connections (default: 100)
 #   BENCH_WRK_DURATION   wrk duration (default: 10s)
+#   BENCH_SCHEME         http or https (default: http)
 #
 # Example:
 #   ./benchmark/bench-one.sh rust-hello benchmark/rust-hello/target/release/rust-hello --port=18090
@@ -28,6 +29,7 @@ ENDPOINT="${BENCH_ENDPOINT:-/hello}"
 RUNS=${BENCH_RUNS:-1}
 COOLDOWN=${BENCH_COOLDOWN:-2}
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
+SCHEME=${BENCH_SCHEME:-http}
 READY_TIMEOUT=60
 
 # Extract --port=N from args if present
@@ -90,7 +92,7 @@ for run in $(seq 1 "$RUNS"); do
     # Wait for server to be ready
     READY=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
-        if curl -s -o /dev/null "http://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null; then
+        if curl -sk -o /dev/null "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null; then
             READY=true
             break
         fi
@@ -106,10 +108,10 @@ for run in $(seq 1 "$RUNS"); do
     fi
 
     # Warmup
-    wrk -t2 -c10 -d"${WARMUP_DURATION}" "http://127.0.0.1:${PORT}${ENDPOINT}" >/dev/null 2>&1
+    wrk -t2 -c10 -d"${WARMUP_DURATION}" "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" >/dev/null 2>&1
 
     # Benchmark
-    RESULT=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "http://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
+    RESULT=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
 
     RPS=$(echo "$RESULT" | grep "Requests/sec" | awk '{print $2}')
     P50=$(echo "$RESULT" | grep "50%" | awk '{print $2}')
