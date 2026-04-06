@@ -5,10 +5,12 @@
 //      --show-config --connection-close=true
 //      --tcp-nodelay=true --reuse-address=true --backlog=N
 //      --send-buffer=N --receive-buffer=N --threads=N
+//      --tls --tls-cert=PATH --tls-key=PATH
 //      (tcp-nodelay/send-buffer/receive-buffer accepted but not applied; managed by SwiftNIO)
 
 import Foundation
 import Hummingbird
+import HummingbirdTLS
 import NIOCore
 import NIOPosix
 #if canImport(Darwin)
@@ -36,12 +38,19 @@ struct BenchConfig {
     var sendBuffer: Int? = nil
     var receiveBuffer: Int? = nil
     var threads: Int? = nil
+    var tls: Bool = false
+    var tlsCert: String = "benchmark/certs/server.crt"
+    var tlsKey: String = "benchmark/certs/server.key"
 
     static func parse() -> BenchConfig {
         var cfg = BenchConfig()
         for arg in CommandLine.arguments.dropFirst() {
             if arg == "--show-config" {
                 cfg.showConfig = true
+                continue
+            }
+            if arg == "--tls" {
+                cfg.tls = true
                 continue
             }
             guard arg.hasPrefix("--"), let eqIdx = arg.firstIndex(of: "=") else { continue }
@@ -58,6 +67,8 @@ struct BenchConfig {
             case "send-buffer": cfg.sendBuffer = Int(value)
             case "receive-buffer": cfg.receiveBuffer = Int(value)
             case "threads": cfg.threads = Int(value)
+            case "tls-cert": cfg.tlsCert = value
+            case "tls-key": cfg.tlsKey = value
             default: break
             }
         }
@@ -145,6 +156,14 @@ struct BenchConfig {
         }
         print()
 
+        print("--- TLS ---")
+        fmt("tls:", "\(tls)")
+        if tls {
+            fmt("tls-cert:", tlsCert)
+            fmt("tls-key:", tlsKey)
+        }
+        print()
+
         print("--- Engine-Specific (swift-hello) ---")
         fmt("(backlog/reuseAddress via Hummingbird)", "")
     }
@@ -226,12 +245,30 @@ if config.showConfig {
         reuseAddress: config.reuseAddress ?? true
     )
 
-    let app = Application(
-        router: router,
-        configuration: appConfig,
-        eventLoopGroupProvider: .shared(eventLoopGroup)
-    )
+    let app: Application<RouterResponder<BasicRequestContext>>
+    if config.tls {
+        let cert = try NIOSSLCertificate.fromPEMFile(config.tlsCert)
+        let key = try NIOSSLPrivateKey(file: config.tlsKey, format: .pem)
+        var tlsConfig = TLSConfiguration.makeServerConfiguration(
+            certificateChain: cert.map { .certificate($0) },
+            privateKey: .privateKey(key)
+        )
+        tlsConfig.applicationProtocols = ["http/1.1"]
+        app = Application(
+            router: router,
+            server: try .tls(tlsConfiguration: tlsConfig),
+            configuration: appConfig,
+            eventLoopGroupProvider: .shared(eventLoopGroup)
+        )
+    } else {
+        app = Application(
+            router: router,
+            configuration: appConfig,
+            eventLoopGroupProvider: .shared(eventLoopGroup)
+        )
+    }
 
-    print("Swift Hummingbird server started on port \(config.port)")
+    let scheme = config.tls ? "https" : "http"
+    print("Swift Hummingbird server started on \(scheme)://0.0.0.0:\(config.port)")
     try await app.runService()
 }

@@ -12,6 +12,7 @@ let package = Package(
             name: "swift-hello",
             dependencies: [
                 .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdTLS", package: "hummingbird"),
             ],
             path: "Sources"
         ),

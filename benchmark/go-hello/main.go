@@ -5,11 +5,13 @@
 //      --show-config --connection-close=true
 //      --tcp-nodelay=true --reuse-address=true
 //      --send-buffer=N --receive-buffer=N --threads=N
+//      --tls --tls-cert=PATH --tls-key=PATH
 //      (--backlog is parsed but not applied; Go uses SOMAXCONN)
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -21,6 +23,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const defaultTlsCertPath = "benchmark/certs/server.crt"
+const defaultTlsKeyPath = "benchmark/certs/server.key"
+
 var helloPayloadBytes = []byte("Hello, World!")
 var largePayloadBytes = []byte(strings.Repeat("x", 102400))
 
@@ -30,6 +35,9 @@ type Config struct {
 	Profile         string
 	ShowConfig      bool
 	ConnectionClose bool
+	Tls             bool
+	TlsCert         string
+	TlsKey          string
 	Socket          SocketConfig
 }
 
@@ -73,11 +81,17 @@ func parseConfig() Config {
 	cfg := Config{
 		Port:    8080,
 		Profile: "default",
+		TlsCert: defaultTlsCertPath,
+		TlsKey:  defaultTlsKeyPath,
 	}
 
 	for _, arg := range os.Args[1:] {
 		if arg == "--show-config" {
 			cfg.ShowConfig = true
+			continue
+		}
+		if arg == "--tls" {
+			cfg.Tls = true
 			continue
 		}
 		if !strings.HasPrefix(arg, "--") || !strings.Contains(arg, "=") {
@@ -112,6 +126,10 @@ func parseConfig() Config {
 		case "threads":
 			v, _ := strconv.Atoi(value)
 			cfg.Socket.Threads = &v
+		case "tls-cert":
+			cfg.TlsCert = value
+		case "tls-key":
+			cfg.TlsKey = value
 		}
 	}
 
@@ -164,6 +182,14 @@ func (c *Config) display() string {
 	f("port:", strconv.Itoa(c.Port))
 	f("profile:", c.Profile)
 	f("cpu-cores:", strconv.Itoa(cpu))
+	b.WriteString("\n")
+
+	b.WriteString("--- TLS ---\n")
+	f("tls:", strconv.FormatBool(c.Tls))
+	if c.Tls {
+		f("tls-cert:", c.TlsCert)
+		f("tls-key:", c.TlsKey)
+	}
 	b.WriteString("\n")
 
 	b.WriteString("--- Connection ---\n")
@@ -279,6 +305,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Go Gin server started on port %d\n", cfg.Port)
+	if cfg.Tls {
+		cert, err := tls.LoadX509KeyPair(cfg.TlsCert, cfg.TlsKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load TLS certificate: %v\n", err)
+			os.Exit(1)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+		listener = tls.NewListener(listener, tlsCfg)
+	}
+
+	protocol := "HTTP"
+	if cfg.Tls {
+		protocol = "HTTPS"
+	}
+	fmt.Printf("Go Gin server started on port %d (%s)\n", cfg.Port, protocol)
 	r.RunListener(listener)
 }

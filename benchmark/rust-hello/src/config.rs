@@ -4,6 +4,12 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{env, process};
 
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub cert: String,
+    pub key: String,
+}
+
 pub struct Config {
     pub port: u16,
     pub profile: String,
@@ -11,6 +17,7 @@ pub struct Config {
     pub connection_close: bool,
     pub socket: SocketConfig,
     pub tokio_blocking_threads: Option<usize>,
+    pub tls: TlsConfig,
 }
 
 pub struct SocketConfig {
@@ -60,11 +67,20 @@ impl Config {
                 threads: None,
             },
             tokio_blocking_threads: None,
+            tls: TlsConfig {
+                enabled: false,
+                cert: "benchmark/certs/server.crt".to_string(),
+                key: "benchmark/certs/server.key".to_string(),
+            },
         };
 
         for arg in env::args().skip(1) {
             if arg == "--show-config" {
                 config.show_config = true;
+                continue;
+            }
+            if arg == "--tls" {
+                config.tls.enabled = true;
                 continue;
             }
             if let Some((key, value)) = arg.strip_prefix("--").and_then(|s| s.split_once('=')) {
@@ -95,6 +111,8 @@ impl Config {
                     "tokio-blocking-threads" => {
                         config.tokio_blocking_threads = Some(value.parse().expect("invalid int"))
                     }
+                    "tls-cert" => config.tls.cert = value.to_string(),
+                    "tls-key" => config.tls.key = value.to_string(),
                     _ => {} // silently ignore unknown args
                 }
             }
@@ -201,6 +219,14 @@ impl Config {
             None => format!("{} (default by Tokio, cpu-cores)", cpu),
         };
         out.push_str(&fmt("threads:", &threads_display));
+        out.push('\n');
+
+        out.push_str("--- TLS ---\n");
+        out.push_str(&fmt("tls:", &self.tls.enabled.to_string()));
+        if self.tls.enabled {
+            out.push_str(&fmt("tls-cert:", &self.tls.cert));
+            out.push_str(&fmt("tls-key:", &self.tls.key));
+        }
         out.push('\n');
 
         out.push_str("--- Engine-Specific (rust-hello) ---\n");
