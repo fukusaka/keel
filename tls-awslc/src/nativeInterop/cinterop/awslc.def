@@ -1,10 +1,12 @@
 headers = openssl/ssl.h openssl/err.h openssl/bio.h openssl/x509.h openssl/pem.h
 compilerOpts.osx = -I/opt/homebrew/opt/aws-lc/include
-compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
+# AWS-LC installs to /usr/local on Linux. Do NOT include /usr/include
+# to avoid picking up system OpenSSL headers or glibc macro conflicts.
+compilerOpts.linux = -I/usr/local/include
 linkerOpts.osx = -L/opt/homebrew/opt/aws-lc/lib -lssl -lcrypto
 # Kotlin/Native lld uses --no-allow-shlib-undefined by default, rejecting
 # indirect glibc references (stat, dlclose etc.) in shared libs.
-linkerOpts.linux = -L/usr/lib/x86_64-linux-gnu -lssl -lcrypto --allow-shlib-undefined
+linkerOpts.linux = -L/usr/local/lib -lssl -lcrypto --allow-shlib-undefined
 
 ---
 
