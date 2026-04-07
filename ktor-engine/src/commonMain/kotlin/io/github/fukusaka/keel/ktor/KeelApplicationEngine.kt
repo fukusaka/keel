@@ -16,7 +16,9 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsHandler
+import io.github.fukusaka.keel.tls.TlsInstaller
 import io.ktor.events.Events
 import io.ktor.events.raiseCatching
 import io.ktor.server.application.Application
@@ -128,7 +130,7 @@ public class KeelApplicationEngine(
          *
          * By default, installs keel's [TlsHandler] in the pipeline. Pass a
          * [TlsInstaller] to override with an engine-specific implementation
-         * (e.g., Netty's `SslHandler` via `NettySslInstaller`).
+         * (e.g., Netty's `SslHandler` via `NettySslInstaller` in `:engine-netty`).
          *
          * ```
          * // Default: keel TlsHandler (all engines)
@@ -136,8 +138,9 @@ public class KeelApplicationEngine(
          *     sslConnector(tlsConfig, JsseTlsCodecFactory()) { port = 8443 }
          * }
          *
-         * // Netty SslHandler (Netty engine only)
+         * // Netty SslHandler (requires :engine-netty dependency)
          * embeddedServer(Keel) {
+         *     engine = NettyEngine(IoEngineConfig())
          *     sslConnector(tlsConfig, JsseTlsCodecFactory(), NettySslInstaller()) { port = 8443 }
          * }
          * ```

@@ -1,9 +1,9 @@
-package io.github.fukusaka.keel.ktor
+package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.engine.netty.NettyPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.TlsInstaller
 import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
 import java.io.ByteArrayInputStream
@@ -28,6 +28,7 @@ import javax.net.ssl.KeyManagerFactory
  * Usage:
  * ```
  * embeddedServer(Keel) {
+ *     engine = NettyEngine(IoEngineConfig())
  *     sslConnector(tlsConfig, JsseTlsCodecFactory(), NettySslInstaller()) {
  *         port = 8443
  *     }

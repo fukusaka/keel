@@ -13,6 +13,7 @@ kotlin {
         }
         jvmMain {
             dependencies {
+                implementation(project(":tls"))
                 implementation(libs.netty.all)
                 implementation(libs.kotlinx.coroutines.core)
             }
