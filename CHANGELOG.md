@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - engine-nwconnection: unify `NwChannel` and `NwPipelinedChannel` into single dual-mode `NwPipelinedChannel` — enables TLS/HTTPS via pipeline `TlsHandler` injection
+- engine-netty: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` — enables TLS/HTTPS via pipeline `TlsHandler` injection (same pattern as NWConnection)
 - benchmark: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` to avoid OpenSSL/AWS-LC symbol conflicts
 - core: rename `ServerChannel` to `Server` — a server is not a channel (`ServerChannel` typealias kept for backward compatibility)
 - all engines: rename `*ServerChannel` to `*Server` (e.g., `KqueueServerChannel` → `KqueueServer`)
