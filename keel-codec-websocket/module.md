@@ -1,4 +1,4 @@
-# Module codec-websocket
+# Module keel-codec-websocket
 
 WebSocket framing codec (RFC 6455) with SHA-1 pure Kotlin implementation.
 

@@ -1,4 +1,4 @@
-# Module ktor-engine
+# Module keel-ktor-engine
 
 Ktor server engine adapter — bridges keel IoEngine to Ktor's ApplicationEngine.
 

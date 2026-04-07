@@ -1,4 +1,4 @@
-# Module engine-nwconnection
+# Module keel-engine-nwconnection
 
 macOS NWConnection-based IoEngine implementation using Apple Network.framework.
 

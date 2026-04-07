@@ -1,4 +1,4 @@
-# Module engine-kqueue
+# Module keel-engine-kqueue
 
 macOS kqueue-based IoEngine implementation with multi-threaded EventLoop.
 

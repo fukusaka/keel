@@ -1,4 +1,4 @@
-# Module engine-netty
+# Module keel-engine-netty
 
 JVM Netty 4.1-based IoEngine implementation.
 

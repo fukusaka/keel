@@ -1,4 +1,4 @@
-# Module engine-io-uring
+# Module keel-engine-io-uring
 
 Linux io_uring-based IoEngine implementation with multishot accept/recv and provided buffer ring.
 

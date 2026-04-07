@@ -1,4 +1,4 @@
-# Module io-core
+# Module keel-io
 
 Buffer primitives and async I/O abstractions for all keel engines.
 

@@ -1,4 +1,4 @@
-# Module codec-http
+# Module keel-codec-http
 
 HTTP/1.1 codec — parser, writer, and pipeline handlers (RFC 7230/7231).
 

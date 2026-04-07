@@ -1,4 +1,4 @@
-# Module engine-nio
+# Module keel-engine-nio
 
 JVM NIO Selector-based IoEngine implementation with multi-threaded EventLoop.
 
