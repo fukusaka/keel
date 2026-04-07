@@ -42,8 +42,8 @@ internal class NettyServer private constructor() : ServerChannel {
     private lateinit var serverChannel: NettyNativeChannel
     private lateinit var _localAddress: SocketAddress
     private val lock = Any()
-    private val pendingConnections = ArrayDeque<NettyChannel>()
-    private var pendingAcceptCont: CancellableContinuation<NettyChannel>? = null
+    private val pendingConnections = ArrayDeque<NettyPipelinedChannel>()
+    private var pendingAcceptCont: CancellableContinuation<NettyPipelinedChannel>? = null
     // @Volatile for isActive property getter read outside lock.
     @Volatile
     private var _active = true
@@ -68,7 +68,7 @@ internal class NettyServer private constructor() : ServerChannel {
      * Thread safety: called from Netty's boss EventLoop thread. Protected
      * by [lock] to synchronize with [accept] on coroutine threads.
      */
-    internal fun onNewChannel(ch: NettyChannel) {
+    internal fun onNewChannel(ch: NettyPipelinedChannel) {
         synchronized(lock) {
             val cont = pendingAcceptCont
             if (cont != null) {
@@ -82,7 +82,7 @@ internal class NettyServer private constructor() : ServerChannel {
 
     /**
      * Suspends until a client connects, then returns the pre-initialized
-     * [NettyChannel]. The handler is already in the Netty pipeline
+     * [NettyPipelinedChannel]. The handler is already in the Netty pipeline
      * (added in [NettyEngine.bind]'s ChannelInitializer) to avoid the
      * race condition where channelRead fires before accept() returns.
      */
