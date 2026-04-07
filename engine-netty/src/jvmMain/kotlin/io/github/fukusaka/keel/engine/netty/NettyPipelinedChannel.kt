@@ -42,9 +42,8 @@ import io.netty.channel.Channel as NettyNativeChannel
  * directly into [IoBuf], Netty delivers data asynchronously via
  * [channelRead] before the user provides a buffer. The [ByteBuf] content
  * is copied into [IoBuf] via [ByteBuf.getBytes]. This is an accepted
- * Phase 5 limitation — same structural constraint as NWConnection's
- * `dispatch_data_t` copy. Phase 6 will introduce MemoryOwner
- * abstraction for zero-copy push model support.
+ * limitation — same structural constraint as NWConnection's
+ * `dispatch_data_t` copy. Zero-copy push model support is future work.
  *
  * **auto-read**: Pipeline mode uses `autoRead = true` (Netty delivers data
  * continuously). Channel mode starts with `autoRead = false` and switches
