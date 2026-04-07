@@ -176,10 +176,16 @@ internal class NwPipelinedChannel(
      * with an error on the dispatch queue. This method polls until
      * [pendingReadBuf] is cleared by [onReadComplete], ensuring all
      * buffers are released before the caller checks for leaks.
+     *
+     * Times out after [AWAIT_CLOSED_TIMEOUT_MS] as a safety net against
+     * dispatch queue deadlock or NWConnection callback not firing.
      */
     override suspend fun awaitClosed() {
+        var elapsed = 0L
         while (pendingReadBuf != null) {
+            if (elapsed >= AWAIT_CLOSED_TIMEOUT_MS) return
             kotlinx.coroutines.delay(AWAIT_CLOSED_POLL_MS)
+            elapsed += AWAIT_CLOSED_POLL_MS
         }
     }
 
@@ -188,6 +194,8 @@ internal class NwPipelinedChannel(
     private companion object {
         private const val READ_BUFFER_SIZE = 8192
         private const val AWAIT_CLOSED_POLL_MS = 10L
+        /** Safety timeout for awaitClosed() to prevent infinite loop if dispatch callback never fires. */
+        private const val AWAIT_CLOSED_TIMEOUT_MS = 5000L
 
         private val readCallback = staticCFunction {
                 len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
