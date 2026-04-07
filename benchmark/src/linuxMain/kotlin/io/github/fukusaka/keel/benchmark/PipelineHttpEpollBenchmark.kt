@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.epoll.EpollEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.tls.TlsHandler
 
 /**
  * Pipeline HTTP benchmark using [EpollEngine] with [HttpRequestDecoder],
@@ -15,6 +16,11 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  *
  * Same pipeline structure as io_uring and kqueue pipeline benchmarks.
  * Enables direct comparison of epoll vs io_uring pipeline throughput on Linux.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
 object PipelineHttpEpollBenchmark : EngineBenchmark {
 
@@ -32,6 +38,8 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
+        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
@@ -41,10 +49,15 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
             pipeline.addLast("encoder", HttpResponseEncoder())
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(routes))
+            if (tlsFactory != null) {
+                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                pipeline.addFirst("tls", TlsHandler(codec))
+            }
         }
 
         return {
             server.close()
+            tlsFactory?.close()
             engine.close()
         }
     }

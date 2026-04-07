@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.iouring.IoModeSelectors
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.tls.TlsHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.posix.getenv
@@ -20,9 +21,9 @@ import platform.posix.getenv
  * The full pipeline path (decode → route → encode) is exercised on every request,
  * allowing measurement of the complete ChannelPipeline HTTP overhead.
  *
- * Pipeline structure (addLast order, outbound propagation travels toward HEAD):
+ * Pipeline structure:
  * ```
- * HEAD ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
  * ```
  * - Inbound (HEAD→TAIL): decoder converts [IoBuf] → [HttpRequestHead] → routing handles it
  * - Outbound (routing→HEAD): encoder converts [HttpResponse] → [IoBuf] → IoTransport
@@ -54,6 +55,8 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         helloResponse.headers.size // warm flatEntries cache
         largeResponse.headers.size // warm flatEntries cache
 
+        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
@@ -63,10 +66,15 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             pipeline.addLast("encoder", HttpResponseEncoder())
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(routes))
+            if (tlsFactory != null) {
+                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                pipeline.addFirst("tls", TlsHandler(codec))
+            }
         }
 
         return {
             server.close()
+            tlsFactory?.close()
             engine.close()
         }
     }

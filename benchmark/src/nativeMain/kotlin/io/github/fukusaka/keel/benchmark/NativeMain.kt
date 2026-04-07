@@ -23,6 +23,7 @@ fun main(args: Array<String>) {
     applyGcTuning(args)
 
     val config = BenchmarkConfig.parse(args)
+    validateTlsBackend(config)
 
     val registry = engineRegistry()
     val eb = registry[config.engine]

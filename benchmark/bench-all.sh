@@ -229,14 +229,14 @@ build_engine_list() {
             NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
         fi
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-keel-kqueue ktor-keel-nwconnection ktor-cio; do
+            for engine in ktor-keel-kqueue pipeline-http-kqueue ktor-keel-nwconnection pipeline-http-nwconnection ktor-cio; do
                 engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
             done
         fi
     elif [ "$(uname)" = "Linux" ]; then
         NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-keel-epoll ktor-cio; do
+            for engine in ktor-keel-epoll pipeline-http-epoll ktor-keel-io-uring pipeline-http-io-uring raw-io-uring ktor-cio; do
                 engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
             done
         fi
@@ -245,7 +245,7 @@ build_engine_list() {
     # JVM servers
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
-        for engine in ktor-keel-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
+        for engine in ktor-keel-nio pipeline-http-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
             engines+=("jvm-engine:jvm:${engine}")
         done
     fi

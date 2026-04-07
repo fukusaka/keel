@@ -6,24 +6,32 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 
 ### JVM (via classpath)
 
-| Engine | Framework | I/O Model |
-|---|---|---|
-| `ktor-keel-nio` | keel + NioEngine | Async (EventLoop + Dispatchers.Default) |
-| `ktor-keel-netty` | keel + NettyEngine | Async (Netty EventLoop) |
-| `ktor-cio` | Ktor CIO | Async (coroutines) |
-| `ktor-netty` | Ktor Netty | Async (EventLoop) |
-| `netty-raw` | Netty ServerBootstrap | Async (EventLoop) |
-| `spring` | Spring WebFlux | Async (Reactor Netty) |
-| `vertx` | Vert.x | Async (EventLoop) |
+| Engine | Framework | Mode | I/O Model |
+|---|---|---|---|
+| `ktor-keel-nio` | keel + NioEngine | Ktor | Async (EventLoop + Dispatchers.Default) |
+| `pipeline-http-nio` | keel + NioEngine | Pipeline | Async (EventLoop) |
+| `ktor-keel-netty` | keel + NettyEngine | Ktor | Async (Netty EventLoop) |
+| ~~`pipeline-http-netty`~~ | keel + NettyEngine | Pipeline | Not yet implemented (NettyEngine.bindPipeline pending) |
+| `ktor-cio` | Ktor CIO | Ktor | Async (coroutines) |
+| `ktor-netty` | Ktor Netty | Ktor | Async (EventLoop) |
+| `netty-raw` | Netty ServerBootstrap | Raw | Async (EventLoop) |
+| `spring` | Spring WebFlux | — | Async (Reactor Netty) |
+| `vertx` | Vert.x | — | Async (EventLoop) |
 
 ### Kotlin/Native (standalone binary)
 
-| Engine | Platform | I/O Model |
-|---|---|---|
-| `ktor-keel-kqueue` | macOS (kqueue) | Async (EventLoop dispatch) |
-| `ktor-keel-epoll` | Linux (epoll) | Async (EventLoop dispatch) |
-| `ktor-keel-nwconnection` | macOS (NWConnection) | Async (dispatch queue) |
-| `ktor-cio` | macOS / Linux | Async (coroutines) |
+| Engine | Platform | Mode | I/O Model |
+|---|---|---|---|
+| `ktor-keel-kqueue` | macOS (kqueue) | Ktor | Async (EventLoop dispatch) |
+| `pipeline-http-kqueue` | macOS (kqueue) | Pipeline | Async (EventLoop) |
+| `ktor-keel-epoll` | Linux (epoll) | Ktor | Async (EventLoop dispatch) |
+| `pipeline-http-epoll` | Linux (epoll) | Pipeline | Async (EventLoop) |
+| `ktor-keel-io-uring` | Linux (io_uring) | Ktor | Async (io_uring SQ/CQ) |
+| `pipeline-http-io-uring` | Linux (io_uring) | Pipeline | Async (io_uring SQ/CQ) |
+| `ktor-keel-nwconnection` | macOS (NWConnection) | Ktor | Async (dispatch queue) |
+| `pipeline-http-nwconnection` | macOS (NWConnection) | Pipeline | Async (dispatch queue) |
+| `raw-io-uring` | Linux (io_uring) | Raw | Pre-encoded bytes (no codec) |
+| `ktor-cio` | macOS / Linux | Ktor | Async (coroutines) |
 
 ### Phase 2 Native (standalone binaries)
 
@@ -50,6 +58,82 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 
 # All engines (/large, 3 runs median, shuffled)
 BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
+```
+
+## TLS / HTTPS Support
+
+### HTTP / HTTPS support matrix
+
+#### keel engines
+
+| Engine | Mode | HTTP | HTTPS | TLS backend |
+|---|---|---|---|---|
+| `ktor-keel-nio` | Ktor | o | o | `--tls=jsse` |
+| `pipeline-http-nio` | Pipeline | o | o | `--tls=jsse` |
+| `ktor-keel-netty` | Ktor | o | o | `--tls=jsse` |
+| `pipeline-http-netty` | Pipeline | — \*4 | — \*4 | |
+| `ktor-keel-kqueue` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `pipeline-http-kqueue` | Pipeline | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `ktor-keel-epoll` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `pipeline-http-epoll` | Pipeline | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `ktor-keel-io-uring` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `pipeline-http-io-uring` | Pipeline | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `ktor-keel-nwconnection` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `pipeline-http-nwconnection` | Pipeline | o | o | `--tls=openssl\|mbedtls\|awslc` |
+| `raw-io-uring` | Raw | o | — \*1 | |
+| `ktor-cio` | Ktor | o | — \*2 | |
+
+\*1 Pre-encoded bytes bypass codec layer; TLS requires pipeline integration.
+\*2 Ktor CIO engine does not expose TLS configuration in keel's benchmark harness.
+
+#### External engines
+
+| Engine | HTTP | HTTPS | TLS implementation |
+|---|---|---|---|
+| `ktor-netty` | o | o | JDK KeyStore |
+| `netty-raw` | o | o | Netty SslContext |
+| `spring` | o | o | Spring SSL properties |
+| `vertx` | o | o | Vert.x PemKeyCert |
+| `rust-hello` | o | o | rustls |
+| `go-hello` | o | o | Go crypto/tls |
+| `swift-hello` | o | o | SwiftNIO SSL |
+| `zig-hello` | o | — \*3 | |
+
+\*3 Zig std.http.Server does not support TLS.
+\*4 NettyEngine.bindPipeline is not yet implemented. Use ktor-keel-netty (Ktor mode) instead.
+
+### TLS backends (keel engines)
+
+| Backend | Platform | Library |
+|---|---|---|
+| `jsse` | JVM | JDK standard JSSE (SSLEngine) |
+| `openssl` | Native | OpenSSL 3.x (cinterop) |
+| `mbedtls` | Native | Mbed TLS 4.x (cinterop) |
+| `awslc` | Native | AWS-LC (cinterop) |
+
+### Build with TLS
+
+```bash
+# JVM + Native with TLS (default: OpenSSL backend for Native)
+./gradlew -Pbenchmark -Ptls :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
+
+# Native with specific TLS backend
+./gradlew -Pbenchmark -Ptls -Ptls-backend=mbedtls :benchmark:linkReleaseExecutableMacosArm64
+```
+
+### Run HTTPS benchmarks
+
+```bash
+# Single engine
+BENCH_SCHEME=https ./benchmark/bench-one.sh ktor-keel-nio-tls \
+  java -cp "$(cat benchmark/build/benchmark-classpath.txt)" \
+  io.github.fukusaka.keel.benchmark.JvmMainKt --engine=ktor-keel-nio --tls=jsse --port=18090
+
+# Full matrix HTTPS (all keel engines)
+BENCH_SCHEME=https ./benchmark/bench-keel.sh
+
+# Full matrix HTTPS (all engines including external)
+BENCH_SCHEME=https ./benchmark/bench-all.sh
 ```
 
 ## Endpoints
@@ -82,6 +166,7 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 | `BENCH_WRK_DURATION` | `10s` | wrk duration |
 | `BENCH_PORT` | `18090` | Starting port |
 | `BENCH_HOST_LABEL` | `$(hostname -s)` | Hostname label for results directory |
+| `BENCH_SCHEME` | `http` | `http` or `https` (requires `--tls` on keel engines) |
 
 ### Recommended Usage
 
@@ -129,6 +214,7 @@ All servers accept the same `--key=value` CLI format.
 | `--profile=NAME` | Profile preset (default: `default`) |
 | `--show-config` | Display resolved config and exit |
 | `--connection-close=BOOL` | Force keep-alive off (Connection: close header) |
+| `--tls=BACKEND` | Enable HTTPS with specified TLS backend (`jsse`, `openssl`, `mbedtls`, `awslc`) |
 
 ### Socket Options
 
@@ -213,8 +299,10 @@ benchmark/
 ├── src/jvmMain/kotlin/.../
 │   ├── JvmMain.kt                   # JVM entry point
 │   ├── EngineRegistry.jvm.kt        # JVM engine registry
-│   ├── KeelNioEngine.kt             # keel NIO adapter
-│   ├── KeelNettyEngine.kt           # keel Netty adapter
+│   ├── KeelNioEngine.kt             # keel NIO adapter (Ktor)
+│   ├── PipelineHttpNioBenchmark.kt  # keel NIO pipeline
+│   ├── KeelNettyEngine.kt           # keel Netty adapter (Ktor)
+│   ├── PipelineHttpNettyBenchmark.kt # keel Netty pipeline
 │   ├── KtorNettyEngine.kt           # Ktor Netty adapter
 │   ├── NettyRawEngine.kt            # Raw Netty ServerBootstrap
 │   ├── SpringEngine.kt              # Spring WebFlux adapter
@@ -224,11 +312,16 @@ benchmark/
 │   └── Platform.native.kt           # Native platform actual
 ├── src/macosMain/kotlin/.../
 │   ├── EngineRegistry.macos.kt      # macOS engine registry
-│   ├── KeelKqueueEngine.kt          # keel kqueue adapter
-│   └── KeelNwConnectionEngine.kt    # keel NWConnection adapter
+│   ├── KeelKqueueEngine.kt          # keel kqueue adapter (Ktor)
+│   ├── PipelineHttpKqueueBenchmark.kt # keel kqueue pipeline
+│   ├── KeelNwConnectionEngine.kt    # keel NWConnection adapter (Ktor)
+│   └── PipelineHttpNwBenchmark.kt   # keel NWConnection pipeline
 ├── src/linuxMain/kotlin/.../
 │   ├── EngineRegistry.linux.kt      # Linux engine registry
-│   └── KeelEpollEngine.kt           # keel epoll adapter
+│   ├── KeelEpollEngine.kt           # keel epoll adapter (Ktor)
+│   ├── PipelineHttpEpollBenchmark.kt # keel epoll pipeline
+│   ├── KeelIoUringEngine.kt        # keel io_uring adapter (Ktor)
+│   └── PipelineHttpIoUringBenchmark.kt # keel io_uring pipeline
 ├── rust-hello/                      # Rust Axum (Phase 2)
 ├── go-hello/                        # Go Gin (Phase 2)
 ├── swift-hello/                     # Swift Hummingbird (Phase 2, macOS only)

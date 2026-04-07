@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.tls.TlsHandler
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -17,6 +18,11 @@ import kotlinx.coroutines.runBlocking
  * JVM NIO Selector-based pipeline. Runs on both macOS and Linux.
  * NioEngine.bindPipeline() is suspend (Selector channel registration
  * requires EventLoop thread), so wrapped in runBlocking.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
 object PipelineHttpNioBenchmark : EngineBenchmark {
 
@@ -34,6 +40,8 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
+        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
@@ -44,11 +52,16 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
                 pipeline.addLast("encoder", HttpResponseEncoder())
                 pipeline.addLast("decoder", HttpRequestDecoder())
                 pipeline.addLast("routing", RoutingHandler(routes))
+                if (tlsFactory != null) {
+                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                    pipeline.addFirst("tls", TlsHandler(codec))
+                }
             }
         }
 
         return {
             server.close()
+            tlsFactory?.close()
             engine.close()
         }
     }

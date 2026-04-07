@@ -35,6 +35,7 @@ fun main(args: Array<String>) {
     initJvmTlsProvider()
     val engines = engineRegistry()
     val config = BenchmarkConfig.parse(args)
+    validateTlsBackend(config)
 
     if (config.engine !in engines) {
         System.err.println("Unknown engine: ${config.engine}")
