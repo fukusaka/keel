@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -67,9 +68,9 @@ internal class KqueueServer(
         while (true) {
             val clientFd = accept(serverFd, null, null)
             if (clientFd >= 0) {
-                SocketUtils.setNonBlocking(clientFd)
-                val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
-                val localAddr = SocketUtils.getLocalAddress(clientFd)
+                PosixSocketUtils.setNonBlocking(clientFd)
+                val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
+                val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = KqueueIoTransport(clientFd, workerLoop)
                 return KqueuePipelinedChannel(

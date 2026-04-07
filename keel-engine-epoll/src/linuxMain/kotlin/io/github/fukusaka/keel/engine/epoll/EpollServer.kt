@@ -3,16 +3,17 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resumeWithException
 import platform.posix.EAGAIN
 import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
-import io.github.fukusaka.keel.logging.Logger
+import kotlin.coroutines.resumeWithException
 
 /**
  * epoll-based [ServerChannel] implementation for Linux.
@@ -61,9 +62,9 @@ internal class EpollServer(
         while (true) {
             val clientFd = accept(serverFd, null, null)
             if (clientFd >= 0) {
-                SocketUtils.setNonBlocking(clientFd)
-                val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
-                val localAddr = SocketUtils.getLocalAddress(clientFd)
+                PosixSocketUtils.setNonBlocking(clientFd)
+                val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
+                val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = EpollIoTransport(clientFd, workerLoop)
                 return EpollPipelinedChannel(

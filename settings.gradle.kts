@@ -16,6 +16,7 @@ dependencyResolutionManagement {
 include(
     ":keel-io",
     ":keel-core",
+    ":keel-native-posix",
     ":keel-engine-epoll",
     ":keel-engine-io-uring",
     ":keel-engine-kqueue",

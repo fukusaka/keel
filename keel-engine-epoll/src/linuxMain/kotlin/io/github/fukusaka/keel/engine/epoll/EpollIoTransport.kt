@@ -20,7 +20,7 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.write
 import kotlinx.cinterop.ByteVar
-import epoll.keel_writev
+import posix_socket.keel_writev
 
 /**
  * Non-suspend [IoTransport] for epoll pipeline channels.

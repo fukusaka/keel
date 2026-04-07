@@ -19,7 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kqueue.keel_loopback_addr
+import posix_socket.keel_loopback_addr
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
@@ -56,7 +56,7 @@ class KqueueEngineTest {
 
             val addr = alloc<sockaddr_in>()
             addr.sin_family = AF_INET.convert()
-            addr.sin_port = kqueue.keel_htons(port.toUShort())
+            addr.sin_port = posix_socket.keel_htons(port.toUShort())
             addr.sin_addr.s_addr = keel_loopback_addr()
             connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
         }

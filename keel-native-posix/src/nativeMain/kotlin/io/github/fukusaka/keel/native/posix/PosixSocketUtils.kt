@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.engine.epoll
+package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ByteVar
@@ -14,10 +14,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
-import epoll.keel_htons
-import epoll.keel_ntohs
 import platform.posix.AF_INET
-import platform.posix.close
 import platform.posix.F_GETFL
 import platform.posix.F_SETFL
 import platform.posix.INADDR_ANY
@@ -26,35 +23,38 @@ import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_ERROR
 import platform.posix.SO_REUSEADDR
+import platform.posix.SO_REUSEPORT
 import platform.posix.bind
+import platform.posix.close
 import platform.posix.connect
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.getpeername
 import platform.posix.getsockname
 import platform.posix.getsockopt
-import epoll.keel_inet_ntop
-import epoll.keel_inet_pton
 import platform.posix.listen
 import platform.posix.setsockopt
 import platform.posix.sockaddr_in
 import platform.posix.socket
 import platform.posix.strerror
+import posix_socket.keel_htons
+import posix_socket.keel_ntohs
 
 /**
- * Low-level POSIX socket utilities for the epoll engine.
+ * Shared POSIX socket utilities for Native engines (epoll, kqueue, io_uring).
  *
  * All functions use IPv4 (AF_INET) only. IPv6 support is deferred.
  *
- * Note: `inet_pton`/`inet_ntop` are imported from `platform.posix`
- * on Linux (on Darwin they come from `platform.darwin`).
- *
- * Note: `keel_htons`/`keel_ntohs` are C wrapper functions defined in
- * epoll.def because `htons`/`ntohs` are macros on Linux and cannot
- * be bound directly by Kotlin/Native cinterop.
+ * Platform-specific `inet_pton`/`inet_ntop` are abstracted via
+ * [inetPton]/[inetNtop] expect/actual functions:
+ * - Linux: C wrapper (`keel_inet_pton`/`keel_inet_ntop`)
+ * - macOS: `platform.darwin.inet_pton`/`inet_ntop` directly
  */
 @OptIn(ExperimentalForeignApi::class)
-internal object SocketUtils {
+object PosixSocketUtils {
+
+    private const val LISTEN_BACKLOG = 128
+    private const val INET_ADDRSTRLEN = 16
 
     /**
      * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
@@ -85,14 +85,63 @@ internal object SocketUtils {
                 if (host == "0.0.0.0") {
                     addr.sin_addr.s_addr = INADDR_ANY
                 } else {
-                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+                    val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
                     check(rc == 1) { "Invalid address: $host" }
                 }
                 val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
                 check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
             }
 
-            val result = listen(fd, 128)
+            val result = listen(fd, LISTEN_BACKLOG)
+            check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
+        } catch (e: Throwable) {
+            close(fd)
+            throw e
+        }
+
+        return fd
+    }
+
+    /**
+     * Creates a non-blocking TCP server socket with SO_REUSEPORT.
+     *
+     * Same as [createServerSocket] but additionally sets SO_REUSEPORT,
+     * allowing multiple sockets to bind to the same port. The kernel
+     * distributes incoming connections across sockets by hashing the
+     * connection 4-tuple.
+     *
+     * @param host Bind address. "0.0.0.0" binds to all interfaces.
+     * @param port Port number.
+     * @return The server socket file descriptor.
+     * @throws IllegalStateException if socket/bind/listen fails.
+     */
+    fun createReusePortServerSocket(host: String, port: Int): Int {
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
+
+        try {
+            intArrayOf(1).usePinned { pinned ->
+                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
+            }
+
+            setNonBlocking(fd)
+
+            memScoped {
+                val addr = alloc<sockaddr_in>()
+                addr.sin_family = AF_INET.convert()
+                addr.sin_port = keel_htons(port.toUShort())
+                if (host == "0.0.0.0") {
+                    addr.sin_addr.s_addr = INADDR_ANY
+                } else {
+                    val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
+                    check(rc == 1) { "Invalid address: $host" }
+                }
+                val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+                check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
+            }
+
+            val result = listen(fd, LISTEN_BACKLOG)
             check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
         } catch (e: Throwable) {
             close(fd)
@@ -129,7 +178,7 @@ internal object SocketUtils {
         val addr = alloc<sockaddr_in>()
         addr.sin_family = AF_INET.convert()
         addr.sin_port = keel_htons(port.toUShort())
-        val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+        val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
         check(rc == 1) { "Invalid address: $host" }
         connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
     }
@@ -184,10 +233,10 @@ internal object SocketUtils {
     }
 
     /** Converts a C `sockaddr_in` to a keel [SocketAddress]. */
-    private fun toSocketAddress(addr: sockaddr_in): SocketAddress = memScoped {
+    fun toSocketAddress(addr: sockaddr_in): SocketAddress = memScoped {
         val port = keel_ntohs(addr.sin_port).toInt()
-        val hostBuf = allocArray<ByteVar>(16) // "xxx.xxx.xxx.xxx\0"
-        keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, 16u)
+        val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
+        inetNtop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
         val host = hostBuf.toKString()
         SocketAddress(host, port)
     }

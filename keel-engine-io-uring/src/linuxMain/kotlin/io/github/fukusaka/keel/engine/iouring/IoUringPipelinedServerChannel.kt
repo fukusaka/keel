@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_multishot_accept
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -82,7 +83,7 @@ internal class IoUringPipelinedServerChannel(
      * to set up handlers, and arms multishot recv.
      */
     private fun onAccept(clientFd: Int, workerIndex: Int) {
-        SocketUtils.setNonBlocking(clientFd)
+        PosixSocketUtils.setNonBlocking(clientFd)
         val loop = workerGroup.loopAt(workerIndex)
         val bufferRing = workerGroup.bufferRingAt(workerIndex)
             ?: error("Pipeline requires provided buffer ring (kernel 5.19+)")

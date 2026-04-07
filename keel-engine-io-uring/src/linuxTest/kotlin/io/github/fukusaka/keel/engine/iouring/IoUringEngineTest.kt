@@ -7,8 +7,8 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.unsafePointer
 import io_uring.io_uring_prep_read
-import io_uring.keel_htons
-import io_uring.keel_loopback_addr
+import posix_socket.keel_htons
+import posix_socket.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
