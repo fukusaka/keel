@@ -42,14 +42,10 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
             }
         }
-    }
-}
-
-// TLS test dependencies — only available with -Ptls (tls-jsse is opt-in).
-if (providers.gradleProperty("tls").isPresent) {
-    kotlin.sourceSets.getByName("jvmTest") {
-        dependencies {
-            implementation(project(":keel-tls-jsse"))
+        jvmTest {
+            dependencies {
+                implementation(project(":keel-tls-jsse"))
+            }
         }
     }
 }
