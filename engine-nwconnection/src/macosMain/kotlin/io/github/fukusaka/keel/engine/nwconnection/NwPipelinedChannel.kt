@@ -15,6 +15,7 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.staticCFunction
+import kotlinx.coroutines.delay
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import platform.Network.nw_connection_t
@@ -184,7 +185,7 @@ internal class NwPipelinedChannel(
         var elapsed = 0L
         while (pendingReadBuf != null) {
             if (elapsed >= AWAIT_CLOSED_TIMEOUT_MS) return
-            kotlinx.coroutines.delay(AWAIT_CLOSED_POLL_MS)
+            delay(AWAIT_CLOSED_POLL_MS)
             elapsed += AWAIT_CLOSED_POLL_MS
         }
     }
