@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -84,9 +85,9 @@ internal class IoUringServer(
         }
 
         try {
-            SocketUtils.setNonBlocking(clientFd)
-            val remoteAddr = SocketUtils.getRemoteAddress(clientFd)
-            val localAddr = SocketUtils.getLocalAddress(clientFd)
+            PosixSocketUtils.setNonBlocking(clientFd)
+            val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
+            val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector)

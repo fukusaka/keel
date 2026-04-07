@@ -17,10 +17,10 @@ import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
-import io_uring.keel_eventfd_create
+import posix_inet.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
-import io_uring.keel_eventfd_write
+import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer

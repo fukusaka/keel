@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.inetPton
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -21,8 +23,7 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.sockaddr_in
 import platform.posix.strerror
-import io_uring.keel_htons
-import io_uring.keel_inet_pton
+import posix_socket.keel_htons
 
 /**
  * Linux io_uring-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -108,8 +109,8 @@ class IoUringEngine(
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = SocketUtils.createServerSocket(host, port)
-        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return IoUringServer(
             serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities, logger,
@@ -128,7 +129,7 @@ class IoUringEngine(
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
 
-        val fd = SocketUtils.createUnconnectedSocket()
+        val fd = PosixSocketUtils.createUnconnectedSocket()
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -139,7 +140,7 @@ class IoUringEngine(
                 val addr = alloc<sockaddr_in>()
                 addr.sin_family = AF_INET.convert()
                 addr.sin_port = keel_htons(port.toUShort())
-                val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
+                val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
                 check(rc == 1) { "Invalid address: $host" }
 
                 workerLoop.submitAndAwait { sqe ->
@@ -160,8 +161,8 @@ class IoUringEngine(
             error("connect() failed: ${strerror(-res)?.toKString()} (errno=${-res})")
         }
 
-        val remoteAddr = SocketUtils.getRemoteAddress(fd)
-        val localAddr = SocketUtils.getLocalAddress(fd)
+        val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
+        val localAddr = PosixSocketUtils.getLocalAddress(fd)
         val bufferRing = workerGroup.bufferRingAt(wi)
         val transport = IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
@@ -196,10 +197,10 @@ class IoUringEngine(
         check(!closed) { "Engine is closed" }
 
         val serverFds = IntArray(workerGroup.size) {
-            SocketUtils.createReusePortServerSocket(host, port)
+            PosixSocketUtils.createReusePortServerSocket(host, port)
         }
         // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
-        val localAddr = SocketUtils.getLocalAddress(serverFds[0])
+        val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
         val server = IoUringPipelinedServerChannel(
             workerGroup, serverFds, localAddr, pipelineInitializer, resolvedCapabilities, logger,
         )
