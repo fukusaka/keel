@@ -50,17 +50,17 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 ```
 keel/
 ├── core/                  # IoEngine / Channel / ServerChannel (expect/actual)
-├── io-core/               # NativeBuf / SuspendSource / SuspendSink / BufferAllocator
+├── keel-io/               # NativeBuf / SuspendSource / SuspendSink / BufferAllocator
 ├── logging/               # Logger / LoggerFactory (zero-dependency)
-├── engine-epoll/          # linuxX64, linuxArm64
-├── engine-kqueue/         # macosArm64, macosX64
-├── engine-nio/            # JVM (java.nio.Selector)
-├── engine-netty/          # JVM (Netty 4.x delegation)
-├── engine-nodejs/         # JS nodejs()
-├── engine-nwconnection/   # macosArm64, macosX64 (Network.framework)
-├── codec-http/            # HTTP/1.1 parser / writer (RFC 7230/7231)
-├── codec-websocket/       # WebSocket framing (RFC 6455)
-└── ktor-engine/           # Ktor server engine adapter
+├── keel-engine-epoll/          # linuxX64, linuxArm64
+├── keel-engine-kqueue/         # macosArm64, macosX64
+├── keel-engine-nio/            # JVM (java.nio.Selector)
+├── keel-engine-netty/          # JVM (Netty 4.x delegation)
+├── keel-engine-nodejs/         # JS nodejs()
+├── keel-engine-nwconnection/   # macosArm64, macosX64 (Network.framework)
+├── keel-codec-http/            # HTTP/1.1 parser / writer (RFC 7230/7231)
+├── keel-codec-websocket/       # WebSocket framing (RFC 6455)
+└── keel-ktor-engine/           # Ktor server engine adapter
 ```
 
 ---
@@ -130,15 +130,15 @@ repositories {
 
 dependencies {
     // Ktor + keel server engine
-    implementation("io.github.fukusaka.keel:ktor-engine:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-ktor-engine:0.3.0")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // Low-level I/O (without Ktor)
-    implementation("io.github.fukusaka.keel:core:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-core:0.3.0")
 
     // Codecs (optional)
-    implementation("io.github.fukusaka.keel:codec-http:0.3.0")
-    implementation("io.github.fukusaka.keel:codec-websocket:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-codec-http:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-codec-websocket:0.3.0")
 }
 ```
 
@@ -179,17 +179,17 @@ fun main() {
 
 ```bash
 # JVM tests
-./gradlew :engine-nio:jvmTest :engine-netty:jvmTest
-./gradlew :codec-http:jvmTest :codec-websocket:jvmTest
+./gradlew :keel-engine-nio:jvmTest :keel-engine-netty:jvmTest
+./gradlew :keel-codec-http:jvmTest :keel-codec-websocket:jvmTest
 
 # macOS Native tests
-./gradlew :engine-kqueue:macosArm64Test
-./gradlew :codec-http:macosArm64Test :codec-websocket:macosArm64Test
+./gradlew :keel-engine-kqueue:macosArm64Test
+./gradlew :keel-codec-http:macosArm64Test :keel-codec-websocket:macosArm64Test
 
 # Linux tests (Docker)
 docker run --rm --platform linux/amd64 \
   -v $(pwd):/work -w /work gradle:8-jdk21 \
-  ./gradlew :engine-epoll:linuxX64Test
+  ./gradlew :keel-engine-epoll:linuxX64Test
 
 # Generate API docs (Dokka)
 ./gradlew dokkaGeneratePublicationHtml

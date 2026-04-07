@@ -8,62 +8,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- core: add `onUserEvent`/`propagateUserEvent`/`notifyUserEvent` to Pipeline framework for user-defined inbound events (e.g., TLS handshake completion)
-- tls: add `:tls` module with `TlsCodec`/`TlsCodecFactory` buffer-to-buffer protection API (RFC 8446/9001 terminology: `protect`/`unprotect`)
-- tls: add `TlsHandler` ChannelDuplexHandler for Pipeline integration with zero-copy recv fast path
-- tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
-- tls-mbedtls: add `MbedTlsCodec` TlsCodec implementation with pointer-based BIO adapter (Mbed TLS 4.x, PSA Crypto)
-- tls-jsse: add `JsseTlsCodec` and `JsseTlsCodecFactory` — JSSE SSLEngine-backed TlsCodec for JVM
-- tls-openssl: add `OpenSslCodec` and `OpenSslCodecFactory` — OpenSSL 3.x pointer-based BIO TlsCodec for Native
-- tls-awslc: add `AwsLcCodec` and `AwsLcCodecFactory` — AWS-LC (BoringSSL fork) pointer-based BIO TlsCodec for Native
-- core: add `PipelinedServer` interface and `IoEngine.bindPipeline` (non-suspend, default throw for unsupported engines)
+- keel-core: add `onUserEvent`/`propagateUserEvent`/`notifyUserEvent` to Pipeline framework for user-defined inbound events (e.g., TLS handshake completion)
+- keel-tls: add `:tls` module with `TlsCodec`/`TlsCodecFactory` buffer-to-buffer protection API (RFC 8446/9001 terminology: `protect`/`unprotect`)
+- keel-tls: add `TlsHandler` ChannelDuplexHandler for Pipeline integration with zero-copy recv fast path
+- keel-tls: add `TlsHandshakeComplete` user event and `TlsErrorCategory` structured error classification
+- keel-tls-mbedtls: add `MbedTlsCodec` TlsCodec implementation with pointer-based BIO adapter (Mbed TLS 4.x, PSA Crypto)
+- keel-tls-jsse: add `JsseTlsCodec` and `JsseTlsCodecFactory` — JSSE SSLEngine-backed TlsCodec for JVM
+- keel-tls-openssl: add `OpenSslCodec` and `OpenSslCodecFactory` — OpenSSL 3.x pointer-based BIO TlsCodec for Native
+- keel-tls-awslc: add `AwsLcCodec` and `AwsLcCodecFactory` — AWS-LC (BoringSSL fork) pointer-based BIO TlsCodec for Native
+- keel-core: add `PipelinedServer` interface and `IoEngine.bindPipeline` (non-suspend, default throw for unsupported engines)
 - build: add `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions enforcement
 - ci: add OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows for tls-openssl/tls-awslc/tls-jsse builds
-- ktor-engine: add HTTPS support via connector-based `sslConnector` DSL with `TlsHandler` pipeline injection
-- tls: add `TlsInstaller` interface for engine-specific TLS implementations
-- tls: add `TlsConnectorConfig` per-connector TLS configuration
-- engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS
+- keel-ktor-engine: add HTTPS support via connector-based `sslConnector` DSL with `TlsHandler` pipeline injection
+- keel-tls: add `TlsInstaller` interface for engine-specific TLS implementations
+- keel-tls: add `TlsConnectorConfig` per-connector TLS configuration
+- keel-engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS
 - benchmark: add `--tls=jsse|openssl|awslc|mbedtls` CLI flag and `BENCH_SCHEME`/`BENCH_TLS` env vars for HTTPS benchmarking across all engines (keel, ktor-netty, netty-raw, spring, vertx, rust, go, swift)
 
 ### Removed
 
-- tls-mbedtls: remove `TestEngine` workaround and `findFreePort` — use `IoEngine.bindPipeline` + `PipelinedServer.localAddress` directly
+- keel-tls-mbedtls: remove `TestEngine` workaround and `findFreePort` — use `IoEngine.bindPipeline` + `PipelinedServer.localAddress` directly
 
 ### Fixed
 
-- tls: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights exceeding single output buffer (e.g., long certificate chains)
-- tls-mbedtls: add `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto library separation
-- tls-mbedtls: add `--allow-shlib-undefined` for Linux to resolve lld indirect glibc reference errors
-- core: enforce EventLoop thread for `PipelinedChannel` Channel mode (`read`/`write`/`flush`) via `withContext(coroutineDispatcher)` — fixes JMM visibility bug causing random test hang on 2-core CI
-- tls: remove `msg.release()` from `TlsHandler.onWrite` to fix double-release of outbound plaintext buffer causing `IndexOutOfBoundsException` under high-load HTTPS
+- keel-tls: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights exceeding single output buffer (e.g., long certificate chains)
+- keel-tls-mbedtls: add `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto library separation
+- keel-tls-mbedtls: add `--allow-shlib-undefined` for Linux to resolve lld indirect glibc reference errors
+- keel-core: enforce EventLoop thread for `PipelinedChannel` Channel mode (`read`/`write`/`flush`) via `withContext(coroutineDispatcher)` — fixes JMM visibility bug causing random test hang on 2-core CI
+- keel-tls: remove `msg.release()` from `TlsHandler.onWrite` to fix double-release of outbound plaintext buffer causing `IndexOutOfBoundsException` under high-load HTTPS
 
 ### Changed
 
-- engine-nwconnection: unify `NwChannel` and `NwPipelinedChannel` into single dual-mode `NwPipelinedChannel` — enables TLS/HTTPS via pipeline `TlsHandler` injection
-- engine-netty: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` — enables TLS/HTTPS via pipeline `TlsHandler` injection (same pattern as NWConnection)
+- build: rename all public modules with `keel-` prefix (e.g., `:core` → `:keel-core`, `:engine-epoll` → `:keel-engine-epoll`, `:io-core` → `:keel-io`)
+- keel-core: merge `:logging` module into `:keel-core` — Logger/LoggerFactory/LogLevel/PrintLogger now ship with core
+- keel-engine-nwconnection: unify `NwChannel` and `NwPipelinedChannel` into single dual-mode `NwPipelinedChannel` — enables TLS/HTTPS via pipeline `TlsHandler` injection
+- keel-engine-netty: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` — enables TLS/HTTPS via pipeline `TlsHandler` injection (same pattern as NWConnection)
 - benchmark: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` to avoid OpenSSL/AWS-LC symbol conflicts
-- core: rename `ServerChannel` to `Server` — a server is not a channel (`ServerChannel` typealias kept for backward compatibility)
-- ktor-engine: remove `engine-netty` and `netty-all` transitive dependency from jvmMain — users needing `NettySslInstaller` add `:engine-netty` explicitly
-- tls-nodejs: change dependency from `:core` to `:tls` for consistent module hierarchy
+- keel-core: rename `ServerChannel` to `Server` — a server is not a channel (`ServerChannel` typealias kept for backward compatibility)
+- keel-ktor-engine: remove `engine-netty` and `netty-all` transitive dependency from jvmMain — users needing `NettySslInstaller` add `:engine-netty` explicitly
+- keel-tls-nodejs: change dependency from `:core` to `:tls` for consistent module hierarchy
 - all engines: rename `*ServerChannel` to `*Server` (e.g., `KqueueServerChannel` → `KqueueServer`)
-- io-core: rename `PushSuspendSource` to `OwnedSuspendSource`, `PushToSuspendSourceAdapter` to `OwnedToSuspendSourceAdapter`
-- core: remove `PushChannel` and `PushServerChannel` — Pipeline-incompatible design replaced by `Channel.asBufferedSuspendSource()` + `SuspendBridgeHandler.readOwned()`
-- core: add `Channel.asBufferedSuspendSource()` with zero-copy push-mode override in `PipelinedChannel`
-- engine-nio: make `bindPipeline` non-suspend via `registerChannelBlocking` (Pipeline zero-coroutine principle)
-- engine-nwconnection: make `bindPipeline` non-suspend via `dispatch_semaphore_wait`
-- engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
-- engine-epoll: unify `EpollChannel` into `EpollPipelinedChannel` — same Channel/Pipeline unification pattern
-- engine-io-uring: unify `IoUringChannel` into `IoUringPipelinedChannel` — same Channel/Pipeline unification pattern
+- keel-io: rename `PushSuspendSource` to `OwnedSuspendSource`, `PushToSuspendSourceAdapter` to `OwnedToSuspendSourceAdapter`
+- keel-core: remove `PushChannel` and `PushServerChannel` — Pipeline-incompatible design replaced by `Channel.asBufferedSuspendSource()` + `SuspendBridgeHandler.readOwned()`
+- keel-core: add `Channel.asBufferedSuspendSource()` with zero-copy push-mode override in `PipelinedChannel`
+- keel-engine-nio: make `bindPipeline` non-suspend via `registerChannelBlocking` (Pipeline zero-coroutine principle)
+- keel-engine-nwconnection: make `bindPipeline` non-suspend via `dispatch_semaphore_wait`
+- keel-engine-nio: unify `NioChannel` into `NioPipelinedChannel` — single type supports both Pipeline (push) and Channel (suspend) modes via `SuspendBridgeHandler`
+- keel-engine-epoll: unify `EpollChannel` into `EpollPipelinedChannel` — same Channel/Pipeline unification pattern
+- keel-engine-io-uring: unify `IoUringChannel` into `IoUringPipelinedChannel` — same Channel/Pipeline unification pattern
 - engine-kqueue, engine-epoll, engine-nio: Channel mode `write()`/`flush()` now use `pipeline.requestWrite/Flush` directly instead of `ensureBridge()`, preventing read-path side effects on outbound operations
-- core: add `requestFlush()` (fire-and-forget) and `awaitFlushComplete()` (completion wait) to Channel interface; `flush()` is now `requestFlush() + awaitFlushComplete()` by default
-- engine-io-uring: integrate `IoModeSelector` into fire-and-forget `flush()` — CQE (with writev gather write), FALLBACK_CQE, and SEND_ZC modes all supported; remove `flushSuspend()` and suspend flush strategies
+- keel-core: add `requestFlush()` (fire-and-forget) and `awaitFlushComplete()` (completion wait) to Channel interface; `flush()` is now `requestFlush() + awaitFlushComplete()` by default
+- keel-engine-io-uring: integrate `IoModeSelector` into fire-and-forget `flush()` — CQE (with writev gather write), FALLBACK_CQE, and SEND_ZC modes all supported; remove `flushSuspend()` and suspend flush strategies
 
 ### Fixed
 
-- engine-kqueue: add `check(!closed)` guard to Channel mode `read()`/`write()`/`flush()` to prevent infinite suspend on closed channel
+- keel-engine-kqueue: add `check(!closed)` guard to Channel mode `read()`/`write()`/`flush()` to prevent infinite suspend on closed channel
 - engine-nio, engine-netty: add 10-second test timeout to all JVM tests to prevent CI hang
-- engine-epoll: fix `EpollEventLoop` fd registration to support concurrent READ + WRITE interests via `EPOLL_CTL_MOD` fallback
-- engine-io-uring: fix `IoUringIoTransport.flush()` data loss when EAGAIN occurs with multiple pending writes
+- keel-engine-epoll: fix `EpollEventLoop` fd registration to support concurrent READ + WRITE interests via `EPOLL_CTL_MOD` fallback
+- keel-engine-io-uring: fix `IoUringIoTransport.flush()` data loss when EAGAIN occurs with multiple pending writes
 
 ### Documentation
 
