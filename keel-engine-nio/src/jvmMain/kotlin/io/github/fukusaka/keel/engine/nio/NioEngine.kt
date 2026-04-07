@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
@@ -13,7 +13,7 @@ import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 
 /**
- * JVM NIO-based [IoEngine] implementation with multi-threaded EventLoop.
+ * JVM NIO-based [StreamEngine] implementation with multi-threaded EventLoop.
  *
  * Uses a boss/worker EventLoop model (same as Netty):
  * - **Boss EventLoop**: handles `accept()` on the ServerSocketChannel
@@ -50,8 +50,8 @@ import java.nio.channels.SocketChannel
  *               to `availableProcessors()`.
  */
 class NioEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
-) : IoEngine {
+    override val config: IoEngineConfig = IoEngineConfig(),
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("NioEngine")
     private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")

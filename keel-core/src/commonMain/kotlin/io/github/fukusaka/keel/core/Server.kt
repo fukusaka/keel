@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.core
 /**
  * A server that listens for incoming connections.
  *
- * Created by [IoEngine.bind]. Each call to [accept] suspends until
+ * Created by [StreamEngine.bind]. Each call to [accept] suspends until
  * a new client connects, then returns a [Channel] for that connection.
  *
  * ```

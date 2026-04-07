@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -22,7 +22,7 @@ import platform.posix.errno
 import platform.posix.strerror
 
 /**
- * Linux epoll-based [IoEngine] implementation with multi-threaded EventLoop.
+ * Linux epoll-based [StreamEngine] implementation with multi-threaded EventLoop.
  *
  * Uses a boss/worker EventLoop model (same as NIO and Netty):
  * - **Boss EventLoop**: handles `accept()` readiness on server fds
@@ -56,8 +56,8 @@ import platform.posix.strerror
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
-) : IoEngine {
+    override val config: IoEngineConfig = IoEngineConfig(),
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("EpollEngine")
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))

@@ -9,8 +9,8 @@ import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.parseRequestHead
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.Server
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -84,10 +84,10 @@ public class KeelApplicationEngine(
      */
     public class Configuration : BaseApplicationEngine.Configuration() {
         /**
-         * Explicit [IoEngine] instance. When null, the platform default is used
+         * Explicit [StreamEngine] instance. When null, the platform default is used
          * (JVM: NioEngine, macOS: KqueueEngine).
          */
-        public var engine: IoEngine? = null
+        public var engine: StreamEngine? = null
 
         /**
          * Enable HTTP/1.1 keep-alive (default: true).
