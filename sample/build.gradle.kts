@@ -8,7 +8,7 @@ kotlin {
     sourceSets {
         jvmMain {
             dependencies {
-                implementation(project(":ktor-engine"))
+                implementation(project(":keel-ktor-engine"))
                 implementation(libs.ktor.server.core)
             }
         }

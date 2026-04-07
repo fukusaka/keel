@@ -24,9 +24,9 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
-                implementation(project(":core"))
-                implementation(project(":tls"))
-                implementation(project(":ktor-engine"))
+                implementation(project(":keel-core"))
+                implementation(project(":keel-tls"))
+                implementation(project(":keel-ktor-engine"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.ktor.server.cio)
                 implementation(libs.kotlinx.coroutines.core)
@@ -34,9 +34,9 @@ kotlin {
         }
         jvmMain {
             dependencies {
-                implementation(project(":engine-nio"))
-                implementation(project(":engine-netty"))
-                implementation(project(":codec-http"))
+                implementation(project(":keel-engine-nio"))
+                implementation(project(":keel-engine-netty"))
+                implementation(project(":keel-codec-http"))
                 implementation(libs.ktor.server.netty)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
@@ -48,18 +48,18 @@ kotlin {
         // macOS: keel-kqueue + keel-nwconnection engines + HTTP codec for pipeline benchmark
         val macosMain by getting {
             dependencies {
-                implementation(project(":engine-kqueue"))
-                implementation(project(":engine-nwconnection"))
-                implementation(project(":codec-http"))
+                implementation(project(":keel-engine-kqueue"))
+                implementation(project(":keel-engine-nwconnection"))
+                implementation(project(":keel-codec-http"))
             }
         }
 
         // Linux: keel-epoll + keel-io-uring engines + HTTP codec for pipeline benchmark
         val linuxMain by getting {
             dependencies {
-                implementation(project(":engine-epoll"))
-                implementation(project(":engine-io-uring"))
-                implementation(project(":codec-http"))
+                implementation(project(":keel-engine-epoll"))
+                implementation(project(":keel-engine-io-uring"))
+                implementation(project(":keel-codec-http"))
             }
         }
     }
@@ -101,7 +101,7 @@ if (providers.gradleProperty("tls").isPresent) {
     kotlin.sourceSets.getByName("jvmMain") {
         kotlin.srcDir("src/jvmTls/kotlin")
         dependencies {
-            implementation(project(":tls-jsse"))
+            implementation(project(":keel-tls-jsse"))
         }
     }
 
