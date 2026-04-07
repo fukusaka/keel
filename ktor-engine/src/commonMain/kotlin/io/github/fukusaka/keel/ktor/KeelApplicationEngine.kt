@@ -126,24 +126,37 @@ public class KeelApplicationEngine(
          * Uses keel's PEM-based [TlsConfig] instead of Ktor's JVM-only
          * `KeyStore`-based `sslConnector`. Works on all KMP targets.
          *
+         * By default, installs keel's [TlsHandler] in the pipeline. Pass a
+         * [TlsInstaller] to override with an engine-specific implementation
+         * (e.g., Netty's `SslHandler` via `NettySslInstaller`).
+         *
          * ```
+         * // Default: keel TlsHandler (all engines)
          * embeddedServer(Keel) {
          *     sslConnector(tlsConfig, JsseTlsCodecFactory()) { port = 8443 }
+         * }
+         *
+         * // Netty SslHandler (Netty engine only)
+         * embeddedServer(Keel) {
+         *     sslConnector(tlsConfig, JsseTlsCodecFactory(), NettySslInstaller()) { port = 8443 }
          * }
          * ```
          *
          * @param tlsConfig TLS settings (certificates, trust, verify mode).
          * @param tlsCodecFactory Factory for per-connection TlsCodec instances.
+         *        Ignored when [tlsInstaller] is set.
+         * @param tlsInstaller Custom TLS installer. null = keel TlsHandler (default).
          * @param builder Connector builder for host/port configuration.
          */
         public fun sslConnector(
             tlsConfig: TlsConfig,
             tlsCodecFactory: TlsCodecFactory,
+            tlsInstaller: TlsInstaller? = null,
             builder: EngineConnectorBuilder.() -> Unit,
         ) {
             val connector = EngineConnectorBuilder(ConnectorType.HTTPS).apply(builder)
             connectors.add(connector)
-            tlsConnectors[connector] = TlsConnectorConfig(tlsConfig, tlsCodecFactory)
+            tlsConnectors[connector] = TlsConnectorConfig(tlsConfig, tlsCodecFactory, tlsInstaller)
         }
     }
 
@@ -291,12 +304,19 @@ public class KeelApplicationEngine(
                     is AcceptBackoff.Exponential -> b.initialMs
                 }
 
-                // Install TlsHandler in the channel's pipeline for HTTPS.
+                // Install TLS in the channel's pipeline for HTTPS.
                 // All engines return PipelinedChannel from accept().
                 if (tlsConfig != null) {
                     val pipelinedChannel = channel as PipelinedChannel
-                    val codec = tlsConfig.codecFactory.createServerCodec(tlsConfig.config)
-                    pipelinedChannel.pipeline.addLast("tls", TlsHandler(codec))
+                    val installer = tlsConfig.installer
+                    if (installer != null) {
+                        // Engine-specific TLS (e.g., Netty SslHandler).
+                        installer.install(pipelinedChannel, tlsConfig.config)
+                    } else {
+                        // Default: keel TlsHandler in the pipeline.
+                        val codec = tlsConfig.codecFactory.createServerCodec(tlsConfig.config)
+                        pipelinedChannel.pipeline.addLast("tls", TlsHandler(codec))
+                    }
                 }
 
                 // Dispatch on EventLoop so read/parse runs on the I/O
