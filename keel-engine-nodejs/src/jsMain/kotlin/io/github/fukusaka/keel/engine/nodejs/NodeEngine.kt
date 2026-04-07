@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -11,7 +11,7 @@ import kotlin.coroutines.suspendCoroutine
 import io.github.fukusaka.keel.core.Channel as KeelChannel
 
 /**
- * Node.js-based [IoEngine] implementation for JS.
+ * Node.js-based [StreamEngine] implementation for JS.
  *
  * Uses Node.js `net` module for TCP I/O. All operations are
  * callback-based internally, bridged to Kotlin coroutines via
@@ -34,8 +34,8 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * @param config Engine-wide configuration (allocator, threads).
  */
 class NodeEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
-) : IoEngine {
+    override val config: IoEngineConfig = IoEngineConfig(),
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("NodeEngine")
     private var closed = false

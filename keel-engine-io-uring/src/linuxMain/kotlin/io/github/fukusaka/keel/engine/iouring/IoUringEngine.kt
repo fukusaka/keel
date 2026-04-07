@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io_uring.io_uring_prep_connect
@@ -25,7 +25,7 @@ import io_uring.keel_htons
 import io_uring.keel_inet_pton
 
 /**
- * Linux io_uring-based [IoEngine] implementation with multi-threaded EventLoop.
+ * Linux io_uring-based [StreamEngine] implementation with multi-threaded EventLoop.
  *
  * Supports two server modes:
  *
@@ -50,10 +50,10 @@ import io_uring.keel_inet_pton
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
+    override val config: IoEngineConfig = IoEngineConfig(),
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
-) : IoEngine {
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
     private val resolvedCapabilities: IoUringCapabilities

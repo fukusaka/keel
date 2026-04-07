@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
@@ -20,7 +20,7 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
 /**
- * Netty-based [IoEngine] implementation for JVM.
+ * Netty-based [StreamEngine] implementation for JVM.
  *
  * Uses Netty's [ServerBootstrap] for server-side and [Bootstrap] for
  * client-side TCP connections. Netty manages its own EventLoop threads
@@ -51,8 +51,8 @@ import io.netty.channel.Channel as NettyNativeChannel
  *               choose automatically (`cpu * 2`).
  */
 class NettyEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
-) : IoEngine {
+    override val config: IoEngineConfig = IoEngineConfig(),
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("NettyEngine")
     private val bossGroup = NioEventLoopGroup(1)

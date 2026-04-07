@@ -1,11 +1,11 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.IoEngine
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -39,7 +39,7 @@ import platform.darwin.dispatch_semaphore_wait
 import platform.darwin.dispatch_time
 
 /**
- * macOS NWConnection-based [IoEngine] implementation.
+ * macOS NWConnection-based [StreamEngine] implementation.
  *
  * Uses Apple's Network.framework ([NWListener]/[NWConnection]) for TCP I/O.
  * All C-level operations (read/write/start) are handled by async wrapper
@@ -63,8 +63,8 @@ import platform.darwin.dispatch_time
  */
 @OptIn(ExperimentalForeignApi::class)
 class NwEngine(
-    private val config: IoEngineConfig = IoEngineConfig(),
-) : IoEngine {
+    override val config: IoEngineConfig = IoEngineConfig(),
+) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("NwEngine")
     private var listener: nw_listener_t = null
