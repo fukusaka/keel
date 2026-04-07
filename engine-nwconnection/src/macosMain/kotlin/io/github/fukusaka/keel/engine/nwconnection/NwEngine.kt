@@ -54,9 +54,9 @@ import platform.darwin.dispatch_time
  *   |
  *   +-- bind() --> NwServer (wraps nw_listener_t)
  *   |                |
- *   |                +-- accept() --> NwChannel (wraps nw_connection_t)
+ *   |                +-- accept() --> NwPipelinedChannel (wraps nw_connection_t)
  *   |
- *   +-- connect() --> NwChannel (wraps nw_connection_t)
+ *   +-- connect() --> NwPipelinedChannel (wraps nw_connection_t)
  * ```
  *
  * @param config Engine-wide configuration (allocator, threads).
@@ -96,7 +96,7 @@ class NwEngine(
         // arrive during startup. localAddress is updated after the
         // assigned port is known.
         val serverChannel = NwServer(
-            lsnr, SocketAddress(host, 0), config.allocator,
+            lsnr, SocketAddress(host, 0), config.allocator, config.loggerFactory,
         )
 
         nw_listener_set_queue(lsnr, listenerQueue)
@@ -194,8 +194,7 @@ class NwEngine(
                 // internally until the connection reaches the ready state.
                 nw_connection_start(conn)
 
-                val transport = NwIoTransport(conn)
-                val channel = NwPipelinedChannel(conn, transport, config.allocator, logger)
+                val channel = NwPipelinedChannel(conn, config.allocator, null, null, logger)
                 pipelineInitializer(channel.pipeline)
                 channel.armRead()
             }
@@ -273,7 +272,8 @@ class NwEngine(
         )
 
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        return NwChannel(conn, config.allocator, remoteAddr, null)
+        val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
+        return NwPipelinedChannel(conn, config.allocator, remoteAddr, null, channelLogger)
     }
 
     override fun close() {

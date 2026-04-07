@@ -735,6 +735,7 @@ class NwEngineTest {
         assertEquals("leak-check", echo)
 
         ch.close()
+        withTimeout(3000) { ch.awaitClosed() }
         close(clientFd)
         server.close()
         engine.close()
@@ -766,7 +767,9 @@ class NwEngineTest {
         readBuf.release()
 
         client.close()
+        withTimeout(3000) { client.awaitClosed() }
         serverCh.close()
+        withTimeout(3000) { serverCh.awaitClosed() }
         server.close()
         engine.close()
 

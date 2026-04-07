@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.logging.LoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -52,18 +53,19 @@ import kotlinx.cinterop.ptr
  *     --> listener callback: onNewConnection(conn) --> resume
  *   keel_nw_start_conn_async(conn, queue, callback, ctx)
  *     --> suspendCancellableCoroutine until ready
- *   --> NwChannel(conn, allocator, remoteAddr, localAddr)
+ *   --> NwPipelinedChannel(conn, allocator, remoteAddr, localAddr)
  * ```
  *
  * @param listener    The NWListener handle.
  * @param localAddress Bind address of this server channel.
- * @param allocator   Passed to accepted [NwChannel]s.
+ * @param allocator   Passed to accepted [NwPipelinedChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwServer(
     private val listener: nw_listener_t,
     localAddress: SocketAddress,
     private val allocator: BufferAllocator,
+    private val loggerFactory: LoggerFactory,
 ) : ServerChannel {
 
     private val arena = Arena()
@@ -108,7 +110,7 @@ internal class NwServer(
 
     /**
      * Suspends until an incoming connection arrives, starts it, and
-     * returns a [NwChannel].
+     * returns a [NwPipelinedChannel].
      *
      * The connection is started via [keel_nw_start_conn_async] on a
      * per-connection serial dispatch queue, suspending until the
@@ -155,7 +157,8 @@ internal class NwServer(
         check(rc == 0) { "keel_nw_start_conn_async failed" }
 
         val remoteAddr = extractAddress(conn)
-        return NwChannel(conn, allocator, remoteAddr, localAddress)
+        val logger = loggerFactory.logger("NwPipelinedChannel")
+        return NwPipelinedChannel(conn, allocator, remoteAddr, localAddress, logger)
     }
 
     /**
