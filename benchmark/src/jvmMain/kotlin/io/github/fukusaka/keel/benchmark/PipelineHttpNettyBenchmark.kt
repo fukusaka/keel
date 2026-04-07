@@ -1,27 +1,32 @@
 package io.github.fukusaka.keel.benchmark
 
-import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
+import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.engine.epoll.EpollEngine
+import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.tls.TlsHandler
 
 /**
- * Pipeline HTTP benchmark using [EpollEngine] with [HttpRequestDecoder],
+ * Pipeline HTTP benchmark using [NettyEngine] with [HttpRequestDecoder],
  * [RoutingHandler], and [HttpResponseEncoder].
  *
- * Same pipeline structure as io_uring and kqueue pipeline benchmarks.
- * Enables direct comparison of epoll vs io_uring pipeline throughput on Linux.
+ * JVM Netty-based pipeline. Uses Netty's EventLoop for transport and
+ * keel's ChannelPipeline for HTTP codec processing.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ encoder ↔ [tls] ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
-object PipelineHttpEpollBenchmark : EngineBenchmark {
+object PipelineHttpNettyBenchmark : EngineBenchmark {
 
     override fun start(config: BenchmarkConfig): () -> Unit {
         val threads = config.socket.threads ?: 0
-        val engine = EpollEngine(
+        val engine = NettyEngine(
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = NoopLoggerFactory,
@@ -57,5 +62,14 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
         }
     }
 
-    override fun socketDefaults(os: OsSocketDefaults) = keelSocketDefaults(os)
+    override fun socketDefaults(os: OsSocketDefaults): SocketConfig.SocketDefaults {
+        return SocketConfig.SocketDefaults(
+            tcpNoDelay = "(not configurable, Netty default)",
+            reuseAddress = "(not configurable, Netty default)",
+            backlog = "(not configurable, Netty default: 128)",
+            sendBuffer = "(not configurable, OS: ${os.sendBuffer} bytes)",
+            receiveBuffer = "(not configurable, OS: ${os.receiveBuffer} bytes)",
+            threads = "${Runtime.getRuntime().availableProcessors() * 2} (Netty default: cpu * 2)",
+        )
+    }
 }

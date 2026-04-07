@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.kqueue.KqueueEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.tls.TlsHandler
 
 /**
  * Pipeline HTTP benchmark using [KqueueEngine] with [HttpRequestDecoder],
@@ -19,7 +20,7 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  *
  * Pipeline structure (addLast order, outbound propagation travels toward HEAD):
  * ```
- * HEAD ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * HEAD ↔ encoder ↔ [tls] ↔ decoder ↔ routing ↔ TAIL
  * ```
  */
 object PipelineHttpKqueueBenchmark : EngineBenchmark {
@@ -41,6 +42,8 @@ object PipelineHttpKqueueBenchmark : EngineBenchmark {
         helloResponse.headers.size // warm flatEntries cache
         largeResponse.headers.size // warm flatEntries cache
 
+        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
@@ -48,12 +51,17 @@ object PipelineHttpKqueueBenchmark : EngineBenchmark {
 
         val server = engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
             pipeline.addLast("encoder", HttpResponseEncoder())
+            if (tlsFactory != null) {
+                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                pipeline.addLast("tls", TlsHandler(codec))
+            }
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(routes))
         }
 
         return {
             server.close()
+            tlsFactory?.close()
             engine.close()
         }
     }

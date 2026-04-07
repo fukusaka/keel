@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nwconnection.NwEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.tls.TlsHandler
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -31,6 +32,8 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
+        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
@@ -40,6 +43,10 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
         val server = runBlocking {
             engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
                 pipeline.addLast("encoder", HttpResponseEncoder())
+                if (tlsFactory != null) {
+                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                    pipeline.addLast("tls", TlsHandler(codec))
+                }
                 pipeline.addLast("decoder", HttpRequestDecoder())
                 pipeline.addLast("routing", RoutingHandler(routes))
             }
@@ -47,6 +54,7 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
 
         return {
             server.close()
+            tlsFactory?.close()
             engine.close()
         }
     }
