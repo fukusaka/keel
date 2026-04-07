@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- benchmark: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` to avoid OpenSSL/AWS-LC symbol conflicts
 - core: rename `ServerChannel` to `Server` — a server is not a channel (`ServerChannel` typealias kept for backward compatibility)
 - all engines: rename `*ServerChannel` to `*Server` (e.g., `KqueueServerChannel` → `KqueueServer`)
 - io-core: rename `PushSuspendSource` to `OwnedSuspendSource`, `PushToSuspendSourceAdapter` to `OwnedToSuspendSourceAdapter`
