@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- benchmark: add TLS (`--tls`) support to all `pipeline-http-*` benchmarks (kqueue, epoll, io_uring, nio, nwconnection)
+- benchmark: add `pipeline-http-netty` benchmark using keel Netty pipeline mode
+- benchmark: add `pipeline-http-*` engines to `bench-keel.sh` and `bench-all.sh`
+- benchmark: validate `--tls` backend at startup to detect mismatch with compiled backend
 - keel-native-posix: add shared POSIX socket utilities module — extracts common SocketUtils (8 functions + cinterop wrappers) from epoll/kqueue/io_uring engines
 - keel-core: add `onUserEvent`/`propagateUserEvent`/`notifyUserEvent` to Pipeline framework for user-defined inbound events (e.g., TLS handshake completion)
 - keel-tls: add `:tls` module with `TlsCodec`/`TlsCodecFactory` buffer-to-buffer protection API (RFC 8446/9001 terminology: `protect`/`unprotect`)
