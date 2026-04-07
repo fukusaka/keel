@@ -88,29 +88,39 @@ tasks.register("writeClasspath") {
 }
 
 // TLS benchmark dependencies — only available with -Ptls.
-// Enables --tls=jsse|openssl|awslc CLI flag for HTTPS benchmarking.
-// TLS support code lives in separate source directories (src/{platform}Tls/)
-// so that -Ptls-less builds still compile without TLS class references.
+// Enables --tls=<backend> CLI flag for HTTPS benchmarking.
+//
+// Native: only ONE TLS backend per binary (OpenSSL and AWS-LC share
+// libssl/libcrypto symbol names — linking both causes symbol conflicts).
+// Use -Ptls-backend=openssl|awslc|mbedtls to select (default: openssl).
+//
+// JVM: always uses JSSE (no conflict).
 if (providers.gradleProperty("tls").isPresent) {
+    val nativeBackend = providers.gradleProperty("tls-backend").getOrElse("openssl")
+
     kotlin.sourceSets.getByName("jvmMain") {
         kotlin.srcDir("src/jvmTls/kotlin")
         dependencies {
             implementation(project(":tls-jsse"))
         }
     }
+
+    val nativeTlsProject = when (nativeBackend) {
+        "openssl" -> ":tls-openssl"
+        "awslc" -> ":tls-awslc"
+        "mbedtls" -> ":tls-mbedtls"
+        else -> error("Unknown TLS backend: $nativeBackend (available: openssl, awslc, mbedtls)")
+    }
+
     val macosMain = kotlin.sourceSets.getByName("macosMain")
-    macosMain.kotlin.srcDir("src/macosTls/kotlin")
+    macosMain.kotlin.srcDir("src/macosTls-$nativeBackend/kotlin")
     macosMain.dependencies {
-        implementation(project(":tls-mbedtls"))
-        implementation(project(":tls-openssl"))
-        implementation(project(":tls-awslc"))
+        implementation(project(nativeTlsProject))
     }
     val linuxMain = kotlin.sourceSets.getByName("linuxMain")
-    linuxMain.kotlin.srcDir("src/linuxTls/kotlin")
+    linuxMain.kotlin.srcDir("src/linuxTls-$nativeBackend/kotlin")
     linuxMain.dependencies {
-        implementation(project(":tls-mbedtls"))
-        implementation(project(":tls-openssl"))
-        implementation(project(":tls-awslc"))
+        implementation(project(nativeTlsProject))
     }
 }
 
