@@ -8,6 +8,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * Engines that provide native TLS support (e.g., Netty's `SslHandler`)
  * implement this interface to install TLS at the transport level instead
  * of using keel's [TlsHandler] in the pipeline.
+ *
+ * Set on [TlsConnectorConfig.installer] to override the default.
  */
 fun interface TlsInstaller {
     /** Installs TLS on [channel] using the given [config]. */

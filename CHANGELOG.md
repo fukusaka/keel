@@ -20,9 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - build: add `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions enforcement
 - ci: add OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows for tls-openssl/tls-awslc/tls-jsse builds
 - ktor-engine: add HTTPS support via connector-based `sslConnector` DSL with `TlsHandler` pipeline injection
-- tls: add `TlsInstaller` interface for engine-specific TLS implementations (moved from ktor-engine)
-- tls: add `TlsConnectorConfig` per-connector TLS configuration (moved from ktor-engine)
-- engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS (moved from ktor-engine)
+- tls: add `TlsInstaller` interface for engine-specific TLS implementations
+- tls: add `TlsConnectorConfig` per-connector TLS configuration
+- engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS
 - benchmark: add `--tls=jsse|openssl|awslc|mbedtls` CLI flag and `BENCH_SCHEME`/`BENCH_TLS` env vars for HTTPS benchmarking across all engines (keel, ktor-netty, netty-raw, spring, vertx, rust, go, swift)
 
 ### Removed
