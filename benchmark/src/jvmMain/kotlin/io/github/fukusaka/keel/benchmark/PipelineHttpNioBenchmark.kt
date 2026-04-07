@@ -18,6 +18,11 @@ import kotlinx.coroutines.runBlocking
  * JVM NIO Selector-based pipeline. Runs on both macOS and Linux.
  * NioEngine.bindPipeline() is suspend (Selector channel registration
  * requires EventLoop thread), so wrapped in runBlocking.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
 object PipelineHttpNioBenchmark : EngineBenchmark {
 
@@ -45,12 +50,12 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
         val server = runBlocking {
             engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
                 pipeline.addLast("encoder", HttpResponseEncoder())
-                if (tlsFactory != null) {
-                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                    pipeline.addLast("tls", TlsHandler(codec))
-                }
                 pipeline.addLast("decoder", HttpRequestDecoder())
                 pipeline.addLast("routing", RoutingHandler(routes))
+                if (tlsFactory != null) {
+                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                    pipeline.addFirst("tls", TlsHandler(codec))
+                }
             }
         }
 

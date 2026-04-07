@@ -16,6 +16,11 @@ import io.github.fukusaka.keel.tls.TlsHandler
  *
  * Same pipeline structure as io_uring and kqueue pipeline benchmarks.
  * Enables direct comparison of epoll vs io_uring pipeline throughput on Linux.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
 object PipelineHttpEpollBenchmark : EngineBenchmark {
 
@@ -42,12 +47,12 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
 
         val server = engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
             pipeline.addLast("encoder", HttpResponseEncoder())
-            if (tlsFactory != null) {
-                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                pipeline.addLast("tls", TlsHandler(codec))
-            }
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(routes))
+            if (tlsFactory != null) {
+                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                pipeline.addFirst("tls", TlsHandler(codec))
+            }
         }
 
         return {

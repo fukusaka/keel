@@ -17,6 +17,11 @@ import kotlinx.coroutines.runBlocking
  *
  * NWConnection's read path copies from `dispatch_data_t` (non-zero-copy),
  * so throughput is expected to be lower than kqueue pipeline.
+ *
+ * Pipeline structure:
+ * ```
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
+ * ```
  */
 object PipelineHttpNwBenchmark : EngineBenchmark {
 
@@ -43,12 +48,12 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
         val server = runBlocking {
             engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
                 pipeline.addLast("encoder", HttpResponseEncoder())
-                if (tlsFactory != null) {
-                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                    pipeline.addLast("tls", TlsHandler(codec))
-                }
                 pipeline.addLast("decoder", HttpRequestDecoder())
                 pipeline.addLast("routing", RoutingHandler(routes))
+                if (tlsFactory != null) {
+                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                    pipeline.addFirst("tls", TlsHandler(codec))
+                }
             }
         }
 

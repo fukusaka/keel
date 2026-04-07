@@ -44,7 +44,7 @@ fun validateTlsBackend(config: BenchmarkConfig) {
         val factory = createTlsCodecFactory(backend)
         factory.close()
     } catch (e: Exception) {
-        println("ERROR: --tls=$backend: ${e.message}")
+        printErr("ERROR: --tls=$backend: ${e.message}")
         throw e
     }
 }

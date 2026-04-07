@@ -21,9 +21,9 @@ import platform.posix.getenv
  * The full pipeline path (decode → route → encode) is exercised on every request,
  * allowing measurement of the complete ChannelPipeline HTTP overhead.
  *
- * Pipeline structure (addLast order, outbound propagation travels toward HEAD):
+ * Pipeline structure:
  * ```
- * HEAD ↔ encoder ↔ [tls] ↔ decoder ↔ routing ↔ TAIL
+ * HEAD ↔ [tls] ↔ encoder ↔ decoder ↔ routing ↔ TAIL
  * ```
  * - Inbound (HEAD→TAIL): decoder converts [IoBuf] → [HttpRequestHead] → routing handles it
  * - Outbound (routing→HEAD): encoder converts [HttpResponse] → [IoBuf] → IoTransport
@@ -64,12 +64,12 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
 
         val server = engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
             pipeline.addLast("encoder", HttpResponseEncoder())
-            if (tlsFactory != null) {
-                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                pipeline.addLast("tls", TlsHandler(codec))
-            }
             pipeline.addLast("decoder", HttpRequestDecoder())
             pipeline.addLast("routing", RoutingHandler(routes))
+            if (tlsFactory != null) {
+                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
+                pipeline.addFirst("tls", TlsHandler(codec))
+            }
         }
 
         return {
