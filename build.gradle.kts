@@ -47,8 +47,8 @@ val isLinux = hostOs.contains("linux")
 val isMacos = hostOs.contains("mac")
 val isX64 = hostArch == "amd64" || hostArch == "x86_64"
 val isArm64 = hostArch == "aarch64" || hostArch == "arm64"
-val linuxOnlyModules = setOf("engine-io-uring", "engine-epoll")
-val macosOnlyModules = setOf("engine-kqueue", "engine-nwconnection")
+val linuxOnlyModules = setOf("keel-engine-io-uring", "keel-engine-epoll")
+val macosOnlyModules = setOf("keel-engine-kqueue", "keel-engine-nwconnection")
 
 // Cross-architecture cinterop targets that lack host headers.
 // e.g., linuxArm64 cinterop on x86_64 host fails (missing gnu/stubs-32.h),
@@ -68,19 +68,18 @@ val suppressedDokkaSourceSets: Set<String> = buildSet {
 }
 
 dependencies {
-    dokka(project(":logging"))
-    dokka(project(":io-core"))
-    dokka(project(":core"))
-    if (isLinux) dokka(project(":engine-epoll"))
-    if (isMacos) dokka(project(":engine-kqueue"))
-    dokka(project(":engine-nio"))
-    dokka(project(":engine-netty"))
-    dokka(project(":engine-nodejs"))
-    if (isMacos) dokka(project(":engine-nwconnection"))
-    if (isLinux) dokka(project(":engine-io-uring"))
-    dokka(project(":codec-http"))
-    dokka(project(":codec-websocket"))
-    dokka(project(":ktor-engine"))
+    dokka(project(":keel-io"))
+    dokka(project(":keel-core"))
+    if (isLinux) dokka(project(":keel-engine-epoll"))
+    if (isMacos) dokka(project(":keel-engine-kqueue"))
+    dokka(project(":keel-engine-nio"))
+    dokka(project(":keel-engine-netty"))
+    dokka(project(":keel-engine-nodejs"))
+    if (isMacos) dokka(project(":keel-engine-nwconnection"))
+    if (isLinux) dokka(project(":keel-engine-io-uring"))
+    dokka(project(":keel-codec-http"))
+    dokka(project(":keel-codec-websocket"))
+    dokka(project(":keel-ktor-engine"))
 }
 
 // Suppress per-module Dokka URL output; show only the aggregated root URL.
@@ -164,7 +163,7 @@ subprojects {
         // produce false positives without type resolution.
         // Type resolution tasks (detektJvmMain etc.) must NOT be run for
         // this module — use `detekt` task only.
-        if (name != "engine-netty") {
+        if (name != "keel-engine-netty") {
             dependencies {
                 "detektPlugins"(project(":detekt-rules"))
                 "detektPlugins"(rootProject.libs.detekt.formatting)

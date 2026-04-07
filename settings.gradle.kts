@@ -14,21 +14,20 @@ dependencyResolutionManagement {
 }
 
 include(
-    ":logging",
-    ":io-core",
-    ":core",
-    ":engine-epoll",
-    ":engine-io-uring",
-    ":engine-kqueue",
-    ":engine-nio",
-    ":engine-netty",
-    ":engine-nodejs",
-    ":engine-nwconnection",
-    ":codec-http",
-    ":codec-websocket",
-    ":tls",
-    ":tls-mbedtls",
-    ":ktor-engine",
+    ":keel-io",
+    ":keel-core",
+    ":keel-engine-epoll",
+    ":keel-engine-io-uring",
+    ":keel-engine-kqueue",
+    ":keel-engine-nio",
+    ":keel-engine-netty",
+    ":keel-engine-nodejs",
+    ":keel-engine-nwconnection",
+    ":keel-codec-http",
+    ":keel-codec-websocket",
+    ":keel-tls",
+    ":keel-tls-mbedtls",
+    ":keel-ktor-engine",
     ":detekt-rules",
 )
 
@@ -41,7 +40,7 @@ if (providers.gradleProperty("benchmark").isPresent) {
 }
 
 // TLS experiment modules — opt-in.
-//   ./gradlew -Ptls :tls-mbedtls:macosArm64Test
+//   ./gradlew -Ptls :keel-tls-mbedtls:macosArm64Test
 if (providers.gradleProperty("tls").isPresent) {
-    include(":tls-openssl", ":tls-awslc", ":tls-jsse", ":tls-nodejs")
+    include(":keel-tls-openssl", ":keel-tls-awslc", ":keel-tls-jsse", ":keel-tls-nodejs")
 }
