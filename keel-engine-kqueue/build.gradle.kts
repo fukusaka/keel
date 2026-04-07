@@ -25,6 +25,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(project(":keel-core"))
+                implementation(project(":keel-native-posix"))
             }
         }
         val macosMain by getting {

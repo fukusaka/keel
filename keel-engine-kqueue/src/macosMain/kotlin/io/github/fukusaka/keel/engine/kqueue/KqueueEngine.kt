@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
@@ -82,7 +83,7 @@ class KqueueEngine(
     override suspend fun bind(host: String, port: Int): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = SocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port)
 
         // Register server fd with the boss EventLoop's kqueue so that
         // accept() readiness is notified on the boss thread.
@@ -101,7 +102,7 @@ class KqueueEngine(
             check(result >= 0) { "kevent(EV_ADD server) failed: ${strerror(errno)?.toKString()}" }
         }
 
-        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return KqueueServer(serverFd, bossLoop, workerGroup, localAddr, logger)
     }
@@ -125,10 +126,10 @@ class KqueueEngine(
     override suspend fun connect(host: String, port: Int): Channel {
         check(!closed) { "Engine is closed" }
 
-        val fd = SocketUtils.createUnconnectedSocket()
+        val fd = PosixSocketUtils.createUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = SocketUtils.connectNonBlocking(fd, host, port)
+        val result = PosixSocketUtils.connectNonBlocking(fd, host, port)
         if (result < 0) {
             val err = errno
             if (err == EINPROGRESS) {
@@ -141,7 +142,7 @@ class KqueueEngine(
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
-                val error = SocketUtils.getSocketError(fd)
+                val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
                     close(fd)
                     error("connect() failed: ${strerror(error)?.toKString()}")
@@ -152,8 +153,8 @@ class KqueueEngine(
             }
         }
 
-        val remoteAddr = SocketUtils.getRemoteAddress(fd)
-        val localAddr = SocketUtils.getLocalAddress(fd)
+        val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
+        val localAddr = PosixSocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         val transport = KqueueIoTransport(fd, workerLoop)
         return KqueuePipelinedChannel(fd, transport, workerLoop, allocator, logger, remoteAddr, localAddr)
@@ -183,9 +184,9 @@ class KqueueEngine(
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = SocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port)
 
-        val localAddr = SocketUtils.getLocalAddress(serverFd)
+        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
 
         val serverChannel = KqueuePipelinedServerChannel(
