@@ -30,19 +30,20 @@ import io.netty.channel.Channel as NettyNativeChannel
  * [suspendCancellableCoroutine] with Netty's [ChannelFuture] listeners
  * for non-blocking operation. No thread blocking occurs.
  *
- * **auto-read=false**: Each accepted/connected channel has `autoRead`
- * disabled. Data is only read when keel's [NettyChannel.read] explicitly
- * calls [NettyNativeChannel.read], enabling pull-model semantics and
- * natural TCP backpressure.
+ * **auto-read=false**: Each accepted/connected channel starts with
+ * `autoRead` disabled. Auto-read is enabled when [NettyPipelinedChannel.ensureBridge]
+ * is called (Channel mode) or [NettyPipelinedChannel.armRead] is called
+ * (Pipeline mode), enabling push-model semantics via Netty's channelRead
+ * callbacks.
  *
  * ```
  * NettyEngine (owns NioEventLoopGroups)
  *   |
  *   +-- bind() --> NettyServer (wraps Netty ServerChannel)
  *   |                |
- *   |                +-- accept() --> NettyChannel (wraps Netty SocketChannel)
+ *   |                +-- accept() --> NettyPipelinedChannel
  *   |
- *   +-- connect() --> NettyChannel (wraps Netty SocketChannel)
+ *   +-- connect() --> NettyPipelinedChannel
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] is passed
@@ -72,12 +73,14 @@ class NettyEngine(
             .channel(NioServerSocketChannel::class.java)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    // Disable auto-read for pull-model semantics.
-                    // Data is only read when keel calls nettyChannel.read().
+                    // Disable auto-read initially. Auto-read is enabled
+                    // when ensureBridge() or armRead() is called.
                     ch.config().isAutoRead = false
-                    val remoteAddr = NettyChannel.toSocketAddress(ch.remoteAddress())
-                    val localAddr = NettyChannel.toSocketAddress(ch.localAddress())
-                    val keelChannel = NettyChannel(ch, config.allocator, remoteAddr, localAddr)
+                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
+                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val keelChannel = NettyPipelinedChannel(
+                        ch, config.allocator, remoteAddr, localAddr, logger,
+                    )
                     ch.pipeline().addLast(keelChannel.handler)
                     serverChannel.onNewChannel(keelChannel)
                 }
@@ -90,13 +93,13 @@ class NettyEngine(
                     cont.resume(cf.channel())
                 } else {
                     cont.resumeWithException(
-                        cf.cause() ?: Exception("bind failed")
+                        cf.cause() ?: Exception("bind failed"),
                     )
                 }
             }
         }
 
-        val localAddr = NettyChannel.toSocketAddress(nettyServerCh.localAddress())
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
             ?: error("Failed to get local address")
 
         serverChannel.init(nettyServerCh, localAddr)
@@ -109,7 +112,7 @@ class NettyEngine(
      *
      * Unlike [bind], the handler is added **after** connect completes
      * because there is no ChannelInitializer race — the channel is not
-     * yet receiving data until [NettyChannel.read] is called
+     * yet receiving data until [NettyPipelinedChannel.armRead] is called
      * (`autoRead = false`).
      */
     override suspend fun connect(host: String, port: Int): KeelChannel {
@@ -120,7 +123,7 @@ class NettyEngine(
             .channel(NioSocketChannel::class.java)
             .handler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    // Disable auto-read for pull-model semantics
+                    // Disable auto-read initially
                     ch.config().isAutoRead = false
                 }
             })
@@ -132,16 +135,18 @@ class NettyEngine(
                     cont.resume(cf.channel())
                 } else {
                     cont.resumeWithException(
-                        cf.cause() ?: Exception("connect failed")
+                        cf.cause() ?: Exception("connect failed"),
                     )
                 }
             }
         }
 
-        val remoteAddr = NettyChannel.toSocketAddress(nettyChannel.remoteAddress())
-        val localAddr = NettyChannel.toSocketAddress(nettyChannel.localAddress())
+        val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress())
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
-        val keelChannel = NettyChannel(nettyChannel, config.allocator, remoteAddr, localAddr)
+        val keelChannel = NettyPipelinedChannel(
+            nettyChannel, config.allocator, remoteAddr, localAddr, logger,
+        )
         nettyChannel.pipeline().addLast(keelChannel.handler)
 
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
