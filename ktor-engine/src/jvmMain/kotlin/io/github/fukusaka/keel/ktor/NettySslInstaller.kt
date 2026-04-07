@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.engine.netty.NettyPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
 import java.io.ByteArrayInputStream
 import java.security.KeyStore
@@ -50,13 +51,13 @@ class NettySslInstaller : TlsInstaller {
         channel.installSslHandler(sslContext)
     }
 
-    private fun buildFromPem(pem: TlsCertificateSource.Pem): io.netty.handler.ssl.SslContext {
+    private fun buildFromPem(pem: TlsCertificateSource.Pem): SslContext {
         val certStream = ByteArrayInputStream(pem.certificatePem.toByteArray())
         val keyStream = ByteArrayInputStream(pem.privateKeyPem.toByteArray())
         return SslContextBuilder.forServer(certStream, keyStream).build()
     }
 
-    private fun buildFromKeyStore(ks: TlsCertificateSource.KeyStoreFile): io.netty.handler.ssl.SslContext {
+    private fun buildFromKeyStore(ks: TlsCertificateSource.KeyStoreFile): SslContext {
         val keyStore = KeyStore.getInstance(ks.type)
         java.io.FileInputStream(ks.path).use { fis ->
             keyStore.load(fis, ks.password.toCharArray())
