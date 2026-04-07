@@ -75,24 +75,30 @@ internal class NettyIoTransport(
         pendingWrites.clear()
 
         val callback = onFlushComplete
-        var lastFuture: ChannelFuture? = null
-        for ((i, pw) in writes.withIndex()) {
-            val bb = pw.buf.unsafeBuffer.duplicate()
-            bb.position(pw.offset)
-            bb.limit(pw.offset + pw.length)
-            val nettyBuf = Unpooled.wrappedBuffer(bb)
-            if (i == size - 1) {
-                lastFuture = nettyChannel.writeAndFlush(nettyBuf)
-            } else {
-                nettyChannel.write(nettyBuf)
+        try {
+            var lastFuture: ChannelFuture? = null
+            for ((i, pw) in writes.withIndex()) {
+                val bb = pw.buf.unsafeBuffer.duplicate()
+                bb.position(pw.offset)
+                bb.limit(pw.offset + pw.length)
+                val nettyBuf = Unpooled.wrappedBuffer(bb)
+                if (i == size - 1) {
+                    lastFuture = nettyChannel.writeAndFlush(nettyBuf)
+                } else {
+                    nettyChannel.write(nettyBuf)
+                }
             }
-        }
 
-        lastFuture?.addListener {
+            lastFuture?.addListener {
+                for (pw in writes) pw.buf.release()
+                callback?.invoke()
+            } ?: run {
+                for (pw in writes) pw.buf.release()
+            }
+        } catch (e: Exception) {
+            // Release all buffers on write failure (e.g. channel already closed).
             for (pw in writes) pw.buf.release()
-            callback?.invoke()
-        } ?: run {
-            for (pw in writes) pw.buf.release()
+            throw e
         }
 
         return false // Always async.
