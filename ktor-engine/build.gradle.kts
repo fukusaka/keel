@@ -24,8 +24,6 @@ kotlin {
         jvmMain {
             dependencies {
                 implementation(project(":engine-nio"))
-                implementation(project(":engine-netty"))
-                implementation(libs.netty.all)
             }
         }
         macosMain {

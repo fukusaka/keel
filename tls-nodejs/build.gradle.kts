@@ -10,7 +10,7 @@ kotlin {
     sourceSets {
         jsMain {
             dependencies {
-                implementation(project(":core"))
+                implementation(project(":tls"))
             }
         }
         jsTest {

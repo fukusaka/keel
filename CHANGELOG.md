@@ -20,7 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - build: add `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions enforcement
 - ci: add OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows for tls-openssl/tls-awslc/tls-jsse builds
 - ktor-engine: add HTTPS support via connector-based `sslConnector` DSL with `TlsHandler` pipeline injection
-- ktor-engine: add `TlsInstaller` interface and `NettySslInstaller` for Netty-native `SslHandler` TLS (optional alternative to keel `TlsHandler`)
+- tls: add `TlsInstaller` interface for engine-specific TLS implementations
+- tls: add `TlsConnectorConfig` per-connector TLS configuration
+- engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS
 - benchmark: add `--tls=jsse|openssl|awslc|mbedtls` CLI flag and `BENCH_SCHEME`/`BENCH_TLS` env vars for HTTPS benchmarking across all engines (keel, ktor-netty, netty-raw, spring, vertx, rust, go, swift)
 
 ### Removed
@@ -41,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - engine-netty: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` — enables TLS/HTTPS via pipeline `TlsHandler` injection (same pattern as NWConnection)
 - benchmark: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` to avoid OpenSSL/AWS-LC symbol conflicts
 - core: rename `ServerChannel` to `Server` — a server is not a channel (`ServerChannel` typealias kept for backward compatibility)
+- ktor-engine: remove `engine-netty` and `netty-all` transitive dependency from jvmMain — users needing `NettySslInstaller` add `:engine-netty` explicitly
+- tls-nodejs: change dependency from `:core` to `:tls` for consistent module hierarchy
 - all engines: rename `*ServerChannel` to `*Server` (e.g., `KqueueServerChannel` → `KqueueServer`)
 - io-core: rename `PushSuspendSource` to `OwnedSuspendSource`, `PushToSuspendSourceAdapter` to `OwnedToSuspendSourceAdapter`
 - core: remove `PushChannel` and `PushServerChannel` — Pipeline-incompatible design replaced by `Channel.asBufferedSuspendSource()` + `SuspendBridgeHandler.readOwned()`
