@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import epoll.keel_eventfd_create
-import epoll.keel_eventfd_read
-import epoll.keel_eventfd_write
+import posix_inet.keel_eventfd_create
+import posix_inet.keel_eventfd_read
+import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc

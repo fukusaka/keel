@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EAGAIN
@@ -61,7 +62,7 @@ internal class EpollPipelinedServerChannel(
                 logger.error { "accept() failed: errno=$err" }
                 break
             }
-            SocketUtils.setNonBlocking(clientFd)
+            PosixSocketUtils.setNonBlocking(clientFd)
             dispatchToWorker(clientFd)
         }
         armAccept()

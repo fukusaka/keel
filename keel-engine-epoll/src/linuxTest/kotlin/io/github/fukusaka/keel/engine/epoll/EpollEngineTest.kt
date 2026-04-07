@@ -4,8 +4,8 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
-import epoll.keel_htons
-import epoll.keel_loopback_addr
+import posix_socket.keel_htons
+import posix_socket.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
