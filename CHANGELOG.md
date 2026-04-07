@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- build: promote `keel-tls-jsse` to always-included (JDK standard, no external deps); move `keel-tls-mbedtls` to `-Ptls` opt-in (requires Mbed TLS cinterop)
+- keel-ktor-engine: HTTPS test no longer requires `-Ptls` flag (uses always-available `keel-tls-jsse`)
 - keel-codec-http: expose `keel-io` and `keel-core` as `api` dependencies — fixes hidden transitive dependency for consumers using `BufferedSuspendSource`/`TypedChannelInboundHandler` in public signatures
 - keel-core: introduce `StreamEngine` sub-interface for byte-stream transports (TCP); `IoEngine` becomes root with `val config` + `close()` only — prepares for future `DatagramEngine` (UDP)
 - build: rename all public modules with `keel-` prefix (e.g., `:core` → `:keel-core`, `:engine-epoll` → `:keel-engine-epoll`, `:io-core` → `:keel-io`)

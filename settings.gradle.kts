@@ -27,7 +27,7 @@ include(
     ":keel-codec-http",
     ":keel-codec-websocket",
     ":keel-tls",
-    ":keel-tls-mbedtls",
+    ":keel-tls-jsse",
     ":keel-ktor-engine",
     ":detekt-rules",
 )
@@ -40,8 +40,9 @@ if (providers.gradleProperty("benchmark").isPresent) {
     include(":benchmark", ":sample")
 }
 
-// TLS experiment modules — opt-in.
+// TLS modules with native library dependencies — opt-in to avoid
+// cinterop link errors on machines without the required libraries.
 //   ./gradlew -Ptls :keel-tls-mbedtls:macosArm64Test
 if (providers.gradleProperty("tls").isPresent) {
-    include(":keel-tls-openssl", ":keel-tls-awslc", ":keel-tls-jsse", ":keel-tls-nodejs")
+    include(":keel-tls-mbedtls", ":keel-tls-openssl", ":keel-tls-awslc", ":keel-tls-nodejs")
 }
