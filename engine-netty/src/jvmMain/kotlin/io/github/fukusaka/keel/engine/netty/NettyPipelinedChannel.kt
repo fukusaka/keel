@@ -14,6 +14,7 @@ import io.netty.buffer.ByteBuf
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.socket.DuplexChannel
+import io.netty.handler.ssl.SslContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import kotlin.coroutines.resume
@@ -58,7 +59,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  * @param nettyChannel The underlying Netty channel.
  * @param allocator    Buffer allocator for read operations.
  */
-internal class NettyPipelinedChannel(
+class NettyPipelinedChannel internal constructor(
     private val nettyChannel: NettyNativeChannel,
     override val allocator: BufferAllocator,
     override val remoteAddress: SocketAddress?,
@@ -171,6 +172,24 @@ internal class NettyPipelinedChannel(
             pipeline.notifyError(cause)
             ctx.close()
         }
+    }
+
+    // --- Netty SslHandler integration ---
+
+    /**
+     * Installs Netty's [SslHandler][io.netty.handler.ssl.SslHandler] in the
+     * Netty pipeline before the keel handler.
+     *
+     * Decryption happens at the Netty transport level — the keel pipeline
+     * receives plaintext. No keel [TlsHandler] is needed.
+     *
+     * Must be called before [armRead] / [ensureBridge] to ensure the
+     * SslHandler processes the TLS handshake before data delivery.
+     */
+    fun installSslHandler(sslContext: SslContext) {
+        check(!closed) { "Channel is closed" }
+        val engine = sslContext.newEngine(nettyChannel.alloc())
+        nettyChannel.pipeline().addFirst("ssl", io.netty.handler.ssl.SslHandler(engine))
     }
 
     /**
