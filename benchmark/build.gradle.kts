@@ -106,9 +106,9 @@ if (providers.gradleProperty("tls").isPresent) {
     }
 
     val nativeTlsProject = when (nativeBackend) {
-        "openssl" -> ":tls-openssl"
-        "awslc" -> ":tls-awslc"
-        "mbedtls" -> ":tls-mbedtls"
+        "openssl" -> ":keel-tls-openssl"
+        "awslc" -> ":keel-tls-awslc"
+        "mbedtls" -> ":keel-tls-mbedtls"
         else -> error("Unknown TLS backend: $nativeBackend (available: openssl, awslc, mbedtls)")
     }
 
