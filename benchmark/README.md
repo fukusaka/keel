@@ -11,7 +11,7 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 | `ktor-keel-nio` | keel + NioEngine | Ktor | Async (EventLoop + Dispatchers.Default) |
 | `pipeline-http-nio` | keel + NioEngine | Pipeline | Async (EventLoop) |
 | `ktor-keel-netty` | keel + NettyEngine | Ktor | Async (Netty EventLoop) |
-| `pipeline-http-netty` | keel + NettyEngine | Pipeline | Async (Netty EventLoop) |
+| ~~`pipeline-http-netty`~~ | keel + NettyEngine | Pipeline | Not yet implemented (NettyEngine.bindPipeline pending) |
 | `ktor-cio` | Ktor CIO | Ktor | Async (coroutines) |
 | `ktor-netty` | Ktor Netty | Ktor | Async (EventLoop) |
 | `netty-raw` | Netty ServerBootstrap | Raw | Async (EventLoop) |
@@ -71,7 +71,7 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 | `ktor-keel-nio` | Ktor | o | o | `--tls=jsse` |
 | `pipeline-http-nio` | Pipeline | o | o | `--tls=jsse` |
 | `ktor-keel-netty` | Ktor | o | o | `--tls=jsse` |
-| `pipeline-http-netty` | Pipeline | o | o | `--tls=jsse` |
+| `pipeline-http-netty` | Pipeline | — \*4 | — \*4 | |
 | `ktor-keel-kqueue` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
 | `pipeline-http-kqueue` | Pipeline | o | o | `--tls=openssl\|mbedtls\|awslc` |
 | `ktor-keel-epoll` | Ktor | o | o | `--tls=openssl\|mbedtls\|awslc` |
@@ -100,6 +100,7 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 | `zig-hello` | o | — \*3 | |
 
 \*3 Zig std.http.Server does not support TLS.
+\*4 NettyEngine.bindPipeline is not yet implemented. Use ktor-keel-netty (Ktor mode) instead.
 
 ### TLS backends (keel engines)
 

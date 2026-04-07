@@ -245,7 +245,7 @@ build_engine_list() {
     # JVM servers
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
-        for engine in ktor-keel-nio pipeline-http-nio ktor-keel-netty pipeline-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
+        for engine in ktor-keel-nio pipeline-http-nio ktor-keel-netty ktor-cio ktor-netty netty-raw spring vertx; do
             engines+=("jvm-engine:jvm:${engine}")
         done
     fi
