@@ -28,3 +28,23 @@ fun createTlsCodecFactory(backend: String): TlsCodecFactory {
         ?: error("TLS benchmarking requires -Ptls build flag. Rebuild with: ./gradlew -Pbenchmark -Ptls ...")
     return provider(backend)
 }
+
+/**
+ * Validates `--tls` argument early at startup before server construction.
+ *
+ * Catches TLS backend mismatches (e.g., binary built with OpenSSL but
+ * `--tls=mbedtls` requested) and reports a clear error message instead
+ * of crashing with an abort trap during server startup.
+ *
+ * Call this immediately after [BenchmarkConfig.parse] in main().
+ */
+fun validateTlsBackend(config: BenchmarkConfig) {
+    val backend = config.tls ?: return
+    try {
+        val factory = createTlsCodecFactory(backend)
+        factory.close()
+    } catch (e: Exception) {
+        println("ERROR: --tls=$backend: ${e.message}")
+        throw e
+    }
+}
