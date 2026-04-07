@@ -49,9 +49,8 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 
 ```
 keel/
-├── core/                  # IoEngine / Channel / ServerChannel (expect/actual)
+├── keel-core/             # IoEngine / Channel / ServerChannel / Logger
 ├── keel-io/               # NativeBuf / SuspendSource / SuspendSink / BufferAllocator
-├── logging/               # Logger / LoggerFactory (zero-dependency)
 ├── keel-engine-epoll/          # linuxX64, linuxArm64
 ├── keel-engine-kqueue/         # macosArm64, macosX64
 ├── keel-engine-nio/            # JVM (java.nio.Selector)
