@@ -1,0 +1,28 @@
+headers = sys/socket.h netinet/in.h sys/uio.h
+---
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <sys/uio.h>
+
+/* htons/ntohs/htonl are macros — cinterop cannot bind them directly. */
+static inline uint16_t keel_htons(uint16_t hostshort) { return htons(hostshort); }
+static inline uint16_t keel_ntohs(uint16_t netshort)  { return ntohs(netshort);  }
+static inline uint32_t keel_htonl(uint32_t hostlong)  { return htonl(hostlong);  }
+
+/* INADDR_LOOPBACK is a macro — expose as a function for cinterop. */
+static inline uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * writev wrapper for gather-write optimization.
+ * Accepts parallel arrays of base pointers and lengths, builds
+ * iovec internally, and calls writev in a single syscall.
+ * Marked static to avoid symbol collisions when linked with other engines.
+ */
+static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+    struct iovec iov[count];
+    for (int i = 0; i < count; i++) {
+        iov[i].iov_base = (void *)bases[i];
+        iov[i].iov_len = lens[i];
+    }
+    return writev(fd, iov, count);
+}
