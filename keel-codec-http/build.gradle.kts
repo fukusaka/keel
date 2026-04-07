@@ -16,8 +16,8 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(libs.kotlinx.io.core)
-                implementation(project(":keel-io"))
-                implementation(project(":keel-core"))
+                api(project(":keel-io"))
+                api(project(":keel-core"))
             }
         }
         commonTest {
