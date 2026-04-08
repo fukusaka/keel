@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.tls
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class Pkcs8KeyUnwrapperTest {
@@ -74,6 +75,7 @@ wIy8X6kST+S43rMGiQ==
         // X.509 certificate has SEQUENCE { SEQUENCE { ... }, ... } but
         // the inner structure differs from PKCS#8 (no version INTEGER first).
         // isPkcs8 checks SEQUENCE → INTEGER → SEQUENCE pattern.
+        assertFalse(Pkcs8KeyUnwrapper.isPkcs8(certDer), "X.509 certificate should not be detected as PKCS#8")
     }
 
     @Test
