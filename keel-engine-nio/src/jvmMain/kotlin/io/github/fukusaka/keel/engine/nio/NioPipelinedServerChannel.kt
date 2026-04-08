@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 
@@ -26,7 +26,7 @@ internal class NioPipelinedServerChannel(
     private val workerGroup: NioEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val pipelineInitializer: (ChannelPipeline) -> Unit,
+    private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -83,7 +83,7 @@ internal class NioPipelinedServerChannel(
         val clientKey = client.register(loop.selector, 0)
         val transport = NioIoTransport(client, clientKey, loop)
         val channel = NioPipelinedChannel(client, clientKey, transport, loop, allocator, logger)
-        pipelineInitializer(channel.pipeline)
+        pipelineInitializer(channel)
         channel.armRead()
     }
 

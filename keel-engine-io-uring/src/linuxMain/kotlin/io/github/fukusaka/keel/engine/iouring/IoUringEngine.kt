@@ -8,7 +8,7 @@ import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.inetPton
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -192,7 +192,7 @@ class IoUringEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (ChannelPipeline) -> Unit,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 

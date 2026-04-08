@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.core
 
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 
 /**
  * Byte-stream I/O engine for connection-oriented transports (TCP, Unix SOCK_STREAM).
@@ -47,9 +47,9 @@ interface StreamEngine : IoEngine {
      * Binds a server socket with Pipeline-mode connection handling.
      *
      * Each accepted connection is configured via [pipelineInitializer],
-     * which installs handlers into the connection's
-     * [ChannelPipeline].
-     * The engine drives I/O via callbacks — no coroutine context required.
+     * which receives the [PipelinedChannel] to install handlers and
+     * optionally configure TLS. The engine drives I/O via callbacks —
+     * no coroutine context required.
      *
      * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
      * Engines that require async listener startup (e.g., NWConnection)
@@ -57,14 +57,15 @@ interface StreamEngine : IoEngine {
      *
      * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
-     * @param pipelineInitializer Callback to configure the pipeline for each accepted connection.
+     * @param pipelineInitializer Callback to configure the channel for each accepted connection.
+     *        Receives the [PipelinedChannel] for pipeline setup and optional TLS installation.
      * @return a [PipelinedServer] for lifecycle management.
      * @throws UnsupportedOperationException if this engine does not support pipeline mode.
      */
     fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (ChannelPipeline) -> Unit,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not support pipeline mode",

@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
@@ -41,7 +41,7 @@ internal class KqueuePipelinedServerChannel(
     private val workerGroup: KqueueEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val pipelineInitializer: (ChannelPipeline) -> Unit,
+    private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -97,7 +97,7 @@ internal class KqueuePipelinedServerChannel(
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
         val transport = KqueueIoTransport(clientFd, loop)
         val channel = KqueuePipelinedChannel(clientFd, transport, loop, allocator, logger)
-        pipelineInitializer(channel.pipeline)
+        pipelineInitializer(channel)
         channel.armRead()
     }
 

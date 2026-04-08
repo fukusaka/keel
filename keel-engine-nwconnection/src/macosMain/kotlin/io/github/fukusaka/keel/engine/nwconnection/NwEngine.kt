@@ -154,7 +154,7 @@ class NwEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (io.github.fukusaka.keel.pipeline.ChannelPipeline) -> Unit,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
@@ -195,7 +195,7 @@ class NwEngine(
                 nw_connection_start(conn)
 
                 val channel = NwPipelinedChannel(conn, config.allocator, null, null, logger)
-                pipelineInitializer(channel.pipeline)
+                pipelineInitializer(channel)
                 channel.armRead()
             }
         }
