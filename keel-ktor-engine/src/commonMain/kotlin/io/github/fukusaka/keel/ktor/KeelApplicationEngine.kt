@@ -302,11 +302,11 @@ public class KeelApplicationEngine(
                     is AcceptBackoff.Exponential -> b.initialMs
                 }
 
-                // Install TLS in the channel's pipeline for HTTPS.
+                // Install per-connection TLS in the channel's pipeline for HTTPS.
                 // All engines return PipelinedChannel from accept().
                 if (tlsConfig != null) {
                     val pipelinedChannel = channel as PipelinedChannel
-                    tlsConfig.installer.install(pipelinedChannel, tlsConfig.config)
+                    tlsConfig.initializeConnection(pipelinedChannel)
                 }
 
                 // Dispatch on EventLoop so read/parse runs on the I/O
