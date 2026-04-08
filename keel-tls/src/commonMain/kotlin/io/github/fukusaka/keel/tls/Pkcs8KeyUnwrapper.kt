@@ -36,6 +36,18 @@ object Pkcs8KeyUnwrapper {
     /** ASN.1 tag for INTEGER (0x02). */
     private const val TAG_INTEGER: Int = 0x02
 
+    /** OID for rsaEncryption (1.2.840.113549.1.1.1): tag + length + value. */
+    private val OID_RSA_ENCRYPTION = byteArrayOf(
+        0x06, 0x09,
+        0x2A, 0x86.toByte(), 0x48, 0x86.toByte(), 0xF7.toByte(), 0x0D, 0x01, 0x01, 0x01,
+    )
+
+    /** OID for ecPublicKey (1.2.840.10045.2.1): tag + length + value. */
+    private val OID_EC_PUBLIC_KEY = byteArrayOf(
+        0x06, 0x07,
+        0x2A, 0x86.toByte(), 0x48, 0xCE.toByte(), 0x3D, 0x02, 0x01,
+    )
+
     /**
      * Detected key algorithm from the PKCS#8 AlgorithmIdentifier.
      */
@@ -174,24 +186,9 @@ object Pkcs8KeyUnwrapper {
     }
 
     private fun detectAlgorithm(data: ByteArray, offset: Int, length: Int): KeyAlgorithm {
-        // AlgorithmIdentifier: SEQUENCE { OID, [params] }
-        // Look for known OIDs within the AlgorithmIdentifier body.
         val algoBytes = data.copyOfRange(offset, offset + length)
-
-        // OID for rsaEncryption: 06 09 2A 86 48 86 F7 0D 01 01 01
-        val rsaOid = byteArrayOf(
-            0x06, 0x09,
-            0x2A, 0x86.toByte(), 0x48, 0x86.toByte(), 0xF7.toByte(), 0x0D, 0x01, 0x01, 0x01,
-        )
-        if (containsSequence(algoBytes, rsaOid)) return KeyAlgorithm.RSA
-
-        // OID for ecPublicKey: 06 07 2A 86 48 CE 3D 02 01
-        val ecOid = byteArrayOf(
-            0x06, 0x07,
-            0x2A, 0x86.toByte(), 0x48, 0xCE.toByte(), 0x3D, 0x02, 0x01,
-        )
-        if (containsSequence(algoBytes, ecOid)) return KeyAlgorithm.EC
-
+        if (containsSequence(algoBytes, OID_RSA_ENCRYPTION)) return KeyAlgorithm.RSA
+        if (containsSequence(algoBytes, OID_EC_PUBLIC_KEY)) return KeyAlgorithm.EC
         return KeyAlgorithm.UNKNOWN
     }
 

@@ -20,6 +20,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 object PemDerConverter {
 
     private const val PEM_LINE_LENGTH = 64
+    private val WHITESPACE_REGEX = "\\s".toRegex()
 
     /**
      * Decodes a PEM-encoded string to DER binary.
@@ -42,7 +43,7 @@ object PemDerConverter {
             .drop(1)
             .dropLast(1)
             .joinToString("")
-            .replace("\\s".toRegex(), "")
+            .replace(WHITESPACE_REGEX, "")
 
         return Base64.decode(base64Body)
     }
