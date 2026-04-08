@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -180,6 +181,7 @@ class KqueueEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig?,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -195,6 +197,7 @@ class KqueueEngine(
             workerGroup = workerGroup,
             localAddr = localAddr,
             logger = logger,
+            config = config,
             pipelineInitializer = pipelineInitializer,
         )
         serverChannel.start()

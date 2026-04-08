@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -161,6 +162,7 @@ class EpollEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig?,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -176,6 +178,7 @@ class EpollEngine(
             workerGroup = workerGroup,
             localAddr = localAddr,
             logger = logger,
+            config = config,
             pipelineInitializer = pipelineInitializer,
         )
         serverChannel.start()

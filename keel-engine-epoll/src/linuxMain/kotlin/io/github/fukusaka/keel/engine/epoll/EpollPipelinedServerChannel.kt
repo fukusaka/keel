@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -30,6 +31,7 @@ internal class EpollPipelinedServerChannel(
     private val workerGroup: EpollEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
+    private val config: BindConfig?,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -79,6 +81,7 @@ internal class EpollPipelinedServerChannel(
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, allocator: BufferAllocator) {
         val transport = EpollIoTransport(clientFd, loop)
         val channel = EpollPipelinedChannel(clientFd, transport, loop, allocator, logger)
+        config?.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }

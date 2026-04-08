@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -192,6 +193,7 @@ class IoUringEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig?,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -202,7 +204,7 @@ class IoUringEngine(
         // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
         val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
         val server = IoUringPipelinedServerChannel(
-            workerGroup, serverFds, localAddr, pipelineInitializer, resolvedCapabilities, logger,
+            workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger,
         )
         server.start()
         logger.debug { "Pipeline server bound to $host:$port (${workerGroup.size} workers)" }

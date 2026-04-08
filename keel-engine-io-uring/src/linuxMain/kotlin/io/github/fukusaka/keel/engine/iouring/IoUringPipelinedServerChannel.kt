@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -41,6 +42,7 @@ internal class IoUringPipelinedServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     private val serverFds: IntArray,
     private val localAddr: SocketAddress,
+    private val config: BindConfig?,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
@@ -92,6 +94,7 @@ internal class IoUringPipelinedServerChannel(
         val channel = IoUringPipelinedChannel(
             clientFd, transport, loop, bufferRing, allocator, logger,
         )
+        config?.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRecv()
     }

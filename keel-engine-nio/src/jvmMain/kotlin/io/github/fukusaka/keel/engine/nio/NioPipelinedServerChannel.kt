@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -26,6 +27,7 @@ internal class NioPipelinedServerChannel(
     private val workerGroup: NioEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
+    private val config: BindConfig?,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -83,6 +85,7 @@ internal class NioPipelinedServerChannel(
         val clientKey = client.register(loop.selector, 0)
         val transport = NioIoTransport(client, clientKey, loop)
         val channel = NioPipelinedChannel(client, clientKey, transport, loop, allocator, logger)
+        config?.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }
