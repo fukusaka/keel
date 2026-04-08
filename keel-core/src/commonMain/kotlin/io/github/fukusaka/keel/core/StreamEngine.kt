@@ -47,9 +47,14 @@ interface StreamEngine : IoEngine {
      * Binds a server socket with Pipeline-mode connection handling.
      *
      * Each accepted connection is configured via [pipelineInitializer],
-     * which receives the [PipelinedChannel] to install handlers and
-     * optionally configure TLS. The engine drives I/O via callbacks —
-     * no coroutine context required.
+     * which receives the [PipelinedChannel] for pipeline handler setup.
+     * The engine drives I/O via callbacks — no coroutine context required.
+     *
+     * When [config] is provided, the engine calls
+     * [BindConfig.initializeConnection] per-connection before
+     * [pipelineInitializer]. Listener-level engines (e.g., Node.js,
+     * NWConnection) may inspect [config] at listener creation time for
+     * transport-level TLS setup.
      *
      * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
      * Engines that require async listener startup (e.g., NWConnection)
@@ -57,14 +62,16 @@ interface StreamEngine : IoEngine {
      *
      * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
+     * @param config Per-server bind configuration (TLS, etc.). null = plain TCP.
      * @param pipelineInitializer Callback to configure the channel for each accepted connection.
-     *        Receives the [PipelinedChannel] for pipeline setup and optional TLS installation.
+     *        Receives the [PipelinedChannel] for pipeline handler setup.
      * @return a [PipelinedServer] for lifecycle management.
      * @throws UnsupportedOperationException if this engine does not support pipeline mode.
      */
     fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig? = null,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         throw UnsupportedOperationException(
