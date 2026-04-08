@@ -36,6 +36,7 @@ kotlin {
         val macosTest by getting {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(project(":keel-tls"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
             }
