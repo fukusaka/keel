@@ -10,7 +10,7 @@ package io.github.fukusaka.keel.benchmark
  * ├── profile: String              "default" | "tuned" | "keel-equiv-0.1"
  * ├── connectionClose: Boolean     force Connection: close on all engines
  * ├── tls: String?                 TLS backend: null (HTTP) | "jsse" | "openssl" | "awslc"
- * ├── tlsInstaller: String         TLS installer: "keel" (default) | "netty"
+ * ├── tlsInstaller: String         TLS installer: "keel" (default) | "netty" | "node"
  * ├── socket: SocketConfig         common socket options (all engines)
  * │   ├── tcpNoDelay               TCP_NODELAY
  * │   ├── reuseAddress             SO_REUSEADDR
