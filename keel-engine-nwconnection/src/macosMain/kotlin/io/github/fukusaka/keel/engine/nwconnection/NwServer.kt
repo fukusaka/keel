@@ -2,9 +2,9 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.LoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
