@@ -81,6 +81,9 @@ class NwEngine(
      * Creates an NWListener, starts it, and suspends until the listener
      * reaches the ready state. The listener's state_changed_handler
      * resumes the coroutine with the assigned port.
+     *
+     * Note: [BindConfig.backlog] is ignored. NWListener does not expose
+     * a configurable listen backlog; the OS manages it internally.
      */
     override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
@@ -152,6 +155,9 @@ class NwEngine(
      * Non-suspend: blocks on dispatch_semaphore until the NWListener reaches
      * the ready state (Pipeline zero-coroutine principle). NWListener startup
      * is inherently async; the semaphore bridges it to synchronous return.
+     *
+     * Note: [BindConfig.backlog] is ignored. NWListener does not expose
+     * a configurable listen backlog; the OS manages it internally.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
      * @return A [PipelinedServer] that cancels the listener when closed.

@@ -80,7 +80,7 @@ class NioEngine(
 
         val serverChannel = ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(InetSocketAddress(host, port))
+        serverChannel.bind(InetSocketAddress(host, port), bindConfig.backlog)
 
         val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
@@ -185,7 +185,7 @@ class NioEngine(
 
         val serverChannel = java.nio.channels.ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(java.net.InetSocketAddress(host, port))
+        serverChannel.bind(java.net.InetSocketAddress(host, port), config.backlog)
 
         val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 

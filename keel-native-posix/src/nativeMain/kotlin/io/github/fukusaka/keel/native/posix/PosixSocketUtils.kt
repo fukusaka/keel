@@ -53,18 +53,19 @@ import posix_socket.keel_ntohs
 @OptIn(ExperimentalForeignApi::class)
 object PosixSocketUtils {
 
-    private const val LISTEN_BACKLOG = 128
+    private const val DEFAULT_BACKLOG = 128
     private const val INET_ADDRSTRLEN = 16
 
     /**
      * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
-     * non-blocking -> bind -> listen(backlog=128).
+     * non-blocking -> bind -> listen.
      *
      * @param host Bind address. "0.0.0.0" binds to all interfaces (INADDR_ANY).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
+     * @param backlog TCP listen backlog. OS may cap this value.
      * @return The server socket file descriptor.
      */
-    fun createServerSocket(host: String, port: Int): Int {
+    fun createServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
 
@@ -92,7 +93,7 @@ object PosixSocketUtils {
                 check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
             }
 
-            val result = listen(fd, LISTEN_BACKLOG)
+            val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
         } catch (e: Throwable) {
             close(fd)
@@ -112,10 +113,11 @@ object PosixSocketUtils {
      *
      * @param host Bind address. "0.0.0.0" binds to all interfaces.
      * @param port Port number.
+     * @param backlog TCP listen backlog. OS may cap this value.
      * @return The server socket file descriptor.
      * @throws IllegalStateException if socket/bind/listen fails.
      */
-    fun createReusePortServerSocket(host: String, port: Int): Int {
+    fun createReusePortServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
 
@@ -141,7 +143,7 @@ object PosixSocketUtils {
                 check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
             }
 
-            val result = listen(fd, LISTEN_BACKLOG)
+            val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
         } catch (e: Throwable) {
             close(fd)

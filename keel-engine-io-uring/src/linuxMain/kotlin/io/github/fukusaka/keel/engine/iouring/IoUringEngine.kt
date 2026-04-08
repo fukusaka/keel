@@ -110,7 +110,7 @@ class IoUringEngine(
     override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return IoUringServer(
@@ -199,7 +199,7 @@ class IoUringEngine(
         check(!closed) { "Engine is closed" }
 
         val serverFds = IntArray(workerGroup.size) {
-            PosixSocketUtils.createReusePortServerSocket(host, port)
+            PosixSocketUtils.createReusePortServerSocket(host, port, config.backlog)
         }
         // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
         val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])

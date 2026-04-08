@@ -56,7 +56,10 @@ class NodeEngine(
                 // No-op: connections handled via "connection" event below
             }
 
-            srv.listen(port) {
+            val listenOpts = js("({})")
+            listenOpts.port = port
+            listenOpts.backlog = bindConfig.backlog
+            srv.listen(listenOpts) {
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = SocketAddress(host, assignedPort)
@@ -138,7 +141,10 @@ class NodeEngine(
             channel.armRead()
         }
 
-        srv.listen(port) {
+        val listenOpts = js("({})")
+        listenOpts.port = port
+        listenOpts.backlog = config.backlog
+        srv.listen(listenOpts) {
             val addr = srv.address()
             val assignedPort = addr.port as Int
             serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))

@@ -83,7 +83,7 @@ class EpollEngine(
     override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
 
         // Register server fd with the boss EventLoop's epoll so that
         // accept() readiness is notified on the boss thread.
@@ -167,7 +167,7 @@ class EpollEngine(
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port, config.backlog)
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
