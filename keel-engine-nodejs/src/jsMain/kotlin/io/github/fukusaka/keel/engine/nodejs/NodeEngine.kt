@@ -221,15 +221,14 @@ class NodeEngine(
         if (isListenerLevelTls(config)) "secureConnection" else "connection"
 
     /**
-     * Checks if the config requires listener-level TLS (`tls.createServer()`).
+     * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * Returns true when the installer is NOT a [TlsCodecFactory] (i.e.,
-     * the user chose engine-native TLS). When the installer IS a
-     * [TlsCodecFactory], per-connection [TlsHandler] is used instead.
+     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * handle TLS at the listener level via `tls.createServer()`. Non-null
+     * installer means per-connection TLS via [initializeConnection].
      */
     private fun isListenerLevelTls(config: BindConfig): Boolean {
-        if (config !is TlsConnectorConfig) return false
-        return config.installer !is TlsCodecFactory
+        return config is TlsConnectorConfig && config.installer == null
     }
 
     /**

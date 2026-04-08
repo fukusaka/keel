@@ -307,15 +307,14 @@ class NwEngine(
     }
 
     /**
-     * Detects if the config requests listener-level TLS (e.g. [NwTlsInstaller]).
+     * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * Listener-level TLS is used when the installer is NOT a [TlsCodecFactory]
-     * (which would install per-connection TLS handlers). Same detection pattern
-     * as NodeEngine.
+     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * handle TLS at the listener level. Non-null installer means per-connection
+     * TLS via [initializeConnection].
      */
     private fun isListenerLevelTls(config: BindConfig): Boolean {
-        if (config !is TlsConnectorConfig) return false
-        return config.installer !is TlsCodecFactory
+        return config is TlsConnectorConfig && config.installer == null
     }
 
     /**
