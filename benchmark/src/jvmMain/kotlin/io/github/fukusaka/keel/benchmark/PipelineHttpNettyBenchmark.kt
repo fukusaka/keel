@@ -36,7 +36,9 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
-        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+        val tlsPair = config.tls?.let { createTlsInstaller(config) }
+        val tlsInstaller = tlsPair?.first
+        val tlsCloseable = tlsPair?.second
 
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
@@ -44,8 +46,8 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         )
 
         val server = engine.bindPipeline("0.0.0.0", config.port) { channel ->
-            if (tlsFactory != null) {
-                tlsFactory.install(channel, BenchmarkCertificates.tlsConfig())
+            if (tlsInstaller != null) {
+                tlsInstaller.install(channel, BenchmarkCertificates.tlsConfig())
             }
             channel.pipeline.addLast("encoder", HttpResponseEncoder())
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
@@ -54,7 +56,7 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
 
         return {
             server.close()
-            tlsFactory?.close()
+            tlsCloseable?.close()
             engine.close()
         }
     }

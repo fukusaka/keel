@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsInstaller
 
 /**
  * Pluggable factory provider for TLS benchmarking.
@@ -38,6 +39,37 @@ fun createTlsCodecFactory(backend: String): TlsCodecFactory {
  *
  * Call this immediately after [BenchmarkConfig.parse] in main().
  */
+private var tlsInstallerProvider: ((String) -> TlsInstaller)? = null
+
+/** Register a platform-specific TLS installer provider for engine-native TLS. */
+fun registerTlsInstallerProvider(provider: (String) -> TlsInstaller) {
+    tlsInstallerProvider = provider
+}
+
+/**
+ * Create a [TlsInstaller] based on the `--tls-installer` option.
+ *
+ * - `"keel"` (default): returns the [TlsCodecFactory] itself (uses keel TlsHandler).
+ * - `"netty"` etc.: returns an engine-specific installer from the registered provider.
+ *
+ * @param config Benchmark configuration with `tls` and `tlsInstaller` fields.
+ * @return A [TlsInstaller] and an optional [AutoCloseable] to release (factory lifecycle).
+ */
+fun createTlsInstaller(config: BenchmarkConfig): Pair<TlsInstaller, AutoCloseable?> {
+    val backend = requireNotNull(config.tls) { "--tls is required for TLS installer" }
+    return when (config.tlsInstaller) {
+        "keel" -> {
+            val factory = createTlsCodecFactory(backend)
+            factory to factory
+        }
+        else -> {
+            val provider = tlsInstallerProvider
+                ?: error("No TLS installer provider registered for '${config.tlsInstaller}'")
+            provider(config.tlsInstaller) to null
+        }
+    }
+}
+
 fun validateTlsBackend(config: BenchmarkConfig) {
     val backend = config.tls ?: return
     try {
