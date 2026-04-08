@@ -23,6 +23,7 @@ import awslc.keel_awslc_ctx_load_pem_key
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_set_sni
 import io.github.fukusaka.keel.tls.TlsCertificateSource
+import io.github.fukusaka.keel.tls.asPem
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -105,8 +106,9 @@ class AwsLcCodecFactory : TlsCodecFactory {
         val certSource = config.certificates ?: return
 
         when (certSource) {
-            is TlsCertificateSource.Pem -> {
-                val certPem = certSource.certificatePem
+            is TlsCertificateSource.Pem, is TlsCertificateSource.Der -> {
+                val pem = certSource.asPem()
+                val certPem = pem.certificatePem
                 val certRet = keel_awslc_ctx_load_pem_cert(ctx, certPem, certPem.length)
                 if (certRet != 1) {
                     SSL_CTX_free(ctx)
@@ -116,7 +118,7 @@ class AwsLcCodecFactory : TlsCodecFactory {
                     )
                 }
 
-                val keyPem = certSource.privateKeyPem
+                val keyPem = pem.privateKeyPem
                 val keyRet = keel_awslc_ctx_load_pem_key(ctx, keyPem, keyPem.length)
                 if (keyRet != 1) {
                     SSL_CTX_free(ctx)
@@ -126,8 +128,6 @@ class AwsLcCodecFactory : TlsCodecFactory {
                     )
                 }
             }
-            is TlsCertificateSource.Der ->
-                error("DER certificate source is not supported by AWS-LC backend")
             is TlsCertificateSource.KeyStoreFile ->
                 error("KeyStoreFile certificate source is not supported by AWS-LC backend")
             is TlsCertificateSource.SystemKeychain ->

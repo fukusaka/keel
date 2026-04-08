@@ -4,6 +4,7 @@ package io.github.fukusaka.keel.tls.openssl
 
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodec
+import io.github.fukusaka.keel.tls.asPem
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
@@ -108,8 +109,9 @@ class OpenSslCodecFactory : TlsCodecFactory {
         val certSource = config.certificates ?: return
 
         when (certSource) {
-            is TlsCertificateSource.Pem -> {
-                val certPem = certSource.certificatePem
+            is TlsCertificateSource.Pem, is TlsCertificateSource.Der -> {
+                val pem = certSource.asPem()
+                val certPem = pem.certificatePem
                 val certRet = keel_openssl_ctx_load_pem_cert(ctx, certPem, certPem.length)
                 if (certRet != 1) {
                     SSL_CTX_free(ctx)
@@ -119,7 +121,7 @@ class OpenSslCodecFactory : TlsCodecFactory {
                     )
                 }
 
-                val keyPem = certSource.privateKeyPem
+                val keyPem = pem.privateKeyPem
                 val keyRet = keel_openssl_ctx_load_pem_key(ctx, keyPem, keyPem.length)
                 if (keyRet != 1) {
                     SSL_CTX_free(ctx)
@@ -129,8 +131,6 @@ class OpenSslCodecFactory : TlsCodecFactory {
                     )
                 }
             }
-            is TlsCertificateSource.Der ->
-                error("DER certificate source is not supported by OpenSSL backend")
             is TlsCertificateSource.KeyStoreFile ->
                 error("KeyStoreFile certificate source is not supported by OpenSSL backend")
             is TlsCertificateSource.SystemKeychain ->

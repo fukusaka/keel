@@ -48,3 +48,45 @@ sealed interface TlsCertificateSource {
         val identityLabel: String,
     ) : TlsCertificateSource
 }
+
+/**
+ * Converts this certificate source to [TlsCertificateSource.Pem].
+ *
+ * - [Pem][TlsCertificateSource.Pem] → returns as-is.
+ * - [Der][TlsCertificateSource.Der] → Base64-encodes to PEM.
+ * - [KeyStoreFile][TlsCertificateSource.KeyStoreFile],
+ *   [SystemKeychain][TlsCertificateSource.SystemKeychain] → throws.
+ *   KeyStoreFile requires platform-specific KeyStore API;
+ *   SystemKeychain private keys cannot be extracted.
+ */
+fun TlsCertificateSource.asPem(): TlsCertificateSource.Pem = when (this) {
+    is TlsCertificateSource.Pem -> this
+    is TlsCertificateSource.Der -> TlsCertificateSource.Pem(
+        certificatePem = PemDerConverter.derToPem(certificate, "CERTIFICATE"),
+        privateKeyPem = PemDerConverter.derToPem(privateKey, "PRIVATE KEY"),
+    )
+    is TlsCertificateSource.KeyStoreFile ->
+        error("KeyStoreFile cannot be converted to PEM without platform-specific KeyStore API")
+    is TlsCertificateSource.SystemKeychain ->
+        error("SystemKeychain private keys cannot be extracted")
+}
+
+/**
+ * Converts this certificate source to [TlsCertificateSource.Der].
+ *
+ * - [Der][TlsCertificateSource.Der] → returns as-is.
+ * - [Pem][TlsCertificateSource.Pem] → Base64-decodes to DER.
+ * - [KeyStoreFile][TlsCertificateSource.KeyStoreFile],
+ *   [SystemKeychain][TlsCertificateSource.SystemKeychain] → throws.
+ */
+fun TlsCertificateSource.asDer(): TlsCertificateSource.Der = when (this) {
+    is TlsCertificateSource.Der -> this
+    is TlsCertificateSource.Pem -> TlsCertificateSource.Der(
+        certificate = PemDerConverter.pemToDer(certificatePem),
+        privateKey = PemDerConverter.pemToDer(privateKeyPem),
+    )
+    is TlsCertificateSource.KeyStoreFile ->
+        error("KeyStoreFile cannot be converted to DER without platform-specific KeyStore API")
+    is TlsCertificateSource.SystemKeychain ->
+        error("SystemKeychain private keys cannot be extracted")
+}
