@@ -1,5 +1,6 @@
 language = Objective-C
-headers = Network/Network.h netinet/in.h dispatch/dispatch.h string.h
+headers = Network/Network.h netinet/in.h dispatch/dispatch.h string.h Security/Security.h
+linkerOpts = -framework Security
 
 ---
 
@@ -7,6 +8,7 @@ headers = Network/Network.h netinet/in.h dispatch/dispatch.h string.h
 #include <netinet/in.h>
 #include <dispatch/dispatch.h>
 #include <string.h>
+#include <Security/Security.h>
 
 /*
  * NW_PARAMETERS_DISABLE_PROTOCOL and NW_PARAMETERS_DEFAULT_CONFIGURATION are
@@ -18,6 +20,57 @@ nw_parameters_t keel_nw_create_tcp_params(void) {
         NW_PARAMETERS_DISABLE_PROTOCOL,
         NW_PARAMETERS_DEFAULT_CONFIGURATION
     );
+}
+
+/*
+ * Creates TLS-enabled TCP parameters with the given identity.
+ *
+ * The TLS configure block sets the local identity via
+ * sec_protocol_options_set_local_identity. The TCP configure block
+ * uses NW_PARAMETERS_DEFAULT_CONFIGURATION (which is a C macro and
+ * cannot be passed from Kotlin/Native).
+ *
+ * @param identity  sec_identity_t created from SecIdentityCreate + sec_identity_create.
+ * @return TLS-enabled nw_parameters_t, or NULL on failure.
+ */
+nw_parameters_t keel_nw_create_tls_tcp_params(sec_identity_t identity) {
+    if (!identity) return NULL;
+    return nw_parameters_create_secure_tcp(
+        ^(nw_protocol_options_t tls_options) {
+            sec_protocol_options_t proto = nw_tls_copy_sec_protocol_options(tls_options);
+            sec_protocol_options_set_local_identity(proto, identity);
+        },
+        NW_PARAMETERS_DEFAULT_CONFIGURATION
+    );
+}
+
+/*
+ * Creates a SecKeyRef from DER-encoded private key data.
+ *
+ * Wraps SecKeyCreateWithData with the necessary CFDictionary attributes
+ * (kSecAttrKeyType, kSecAttrKeyClass) which require CFDictionaryCreateMutable
+ * — awkward to use from Kotlin/Native due to CFDictionaryKeyCallBacks struct
+ * pointer requirements.
+ *
+ * @param key_der   DER-encoded private key (PKCS#1 for RSA, SEC 1 for EC).
+ * @param key_len   Length of key_der in bytes.
+ * @param key_type  0 = RSA (kSecAttrKeyTypeRSA), 1 = EC (kSecAttrKeyTypeECSECPrimeRandom).
+ * @return SecKeyRef on success, NULL on failure.
+ */
+SecKeyRef keel_nw_create_private_key(const void *key_der, uint32_t key_len, int key_type) {
+    CFDataRef data = CFDataCreate(NULL, key_der, key_len);
+    if (!data) return NULL;
+
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(NULL, 2,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(attrs, kSecAttrKeyType,
+        key_type == 1 ? kSecAttrKeyTypeECSECPrimeRandom : kSecAttrKeyTypeRSA);
+    CFDictionarySetValue(attrs, kSecAttrKeyClass, kSecAttrKeyClassPrivate);
+
+    SecKeyRef key = SecKeyCreateWithData(data, attrs, NULL);
+    CFRelease(attrs);
+    CFRelease(data);
+    return key;
 }
 
 /* 127.0.0.1 in network byte order */

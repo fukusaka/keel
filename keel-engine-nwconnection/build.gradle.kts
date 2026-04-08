@@ -29,6 +29,7 @@ kotlin {
         }
         val macosMain by getting {
             dependencies {
+                implementation(project(":keel-tls"))
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
