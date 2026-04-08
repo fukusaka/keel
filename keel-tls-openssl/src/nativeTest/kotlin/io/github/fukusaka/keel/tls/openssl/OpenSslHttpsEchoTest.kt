@@ -64,12 +64,12 @@ class OpenSslHttpsEchoTest {
 
         val response = HttpResponse.ok("Hello, OpenSSL!", contentType = "text/plain")
 
-        val server = engine.bindPipeline("127.0.0.1", 0) { pipeline ->
+        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
             val codec = factory.createServerCodec(tlsConfig)
-            pipeline.addLast("tls", TlsHandler(codec))
-            pipeline.addLast("encoder", HttpResponseEncoder())
-            pipeline.addLast("decoder", HttpRequestDecoder())
-            pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            channel.pipeline.addLast("tls", TlsHandler(codec))
+            channel.pipeline.addLast("encoder", HttpResponseEncoder())
+            channel.pipeline.addLast("decoder", HttpRequestDecoder())
+            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
         }
         val port = server.localAddress.port
 

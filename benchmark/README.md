@@ -95,7 +95,7 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 | `ktor-cio` | Ktor | o | — \*2 | |
 
 \*1 Pre-encoded bytes bypass codec layer; TLS requires pipeline integration.
-\*2 Ktor CIO engine does not expose TLS configuration in keel's benchmark harness.
+\*2 Ktor CIO engine does not support HTTPS (`ConnectorType.HTTPS` is explicitly rejected).
 
 #### External engines
 

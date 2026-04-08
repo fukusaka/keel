@@ -9,7 +9,6 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.iouring.IoModeSelectors
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.tls.TlsHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.posix.getenv
@@ -62,14 +61,13 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             "/large" to { largeResponse },
         )
 
-        val server = engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
-            pipeline.addLast("encoder", HttpResponseEncoder())
-            pipeline.addLast("decoder", HttpRequestDecoder())
-            pipeline.addLast("routing", RoutingHandler(routes))
+        val server = engine.bindPipeline("0.0.0.0", config.port) { channel ->
             if (tlsFactory != null) {
-                val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                pipeline.addFirst("tls", TlsHandler(codec))
+                tlsFactory.install(channel, BenchmarkCertificates.tlsConfig())
             }
+            channel.pipeline.addLast("encoder", HttpResponseEncoder())
+            channel.pipeline.addLast("decoder", HttpRequestDecoder())
+            channel.pipeline.addLast("routing", RoutingHandler(routes))
         }
 
         return {

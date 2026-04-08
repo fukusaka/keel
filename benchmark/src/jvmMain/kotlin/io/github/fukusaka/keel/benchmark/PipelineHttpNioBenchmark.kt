@@ -8,7 +8,6 @@ import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.tls.TlsHandler
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -48,14 +47,13 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
         )
 
         val server = runBlocking {
-            engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
-                pipeline.addLast("encoder", HttpResponseEncoder())
-                pipeline.addLast("decoder", HttpRequestDecoder())
-                pipeline.addLast("routing", RoutingHandler(routes))
+            engine.bindPipeline("0.0.0.0", config.port) { channel ->
                 if (tlsFactory != null) {
-                    val codec = tlsFactory.createServerCodec(BenchmarkCertificates.tlsConfig())
-                    pipeline.addFirst("tls", TlsHandler(codec))
+                    tlsFactory.install(channel, BenchmarkCertificates.tlsConfig())
                 }
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("routing", RoutingHandler(routes))
             }
         }
 

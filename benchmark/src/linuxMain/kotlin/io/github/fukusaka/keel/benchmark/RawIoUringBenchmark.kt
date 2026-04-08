@@ -51,8 +51,8 @@ object RawIoUringBenchmark : EngineBenchmark {
         val helloBytes = buildResponse("Hello, World!")
         val largeBytes = buildResponse("x".repeat(LARGE_PAYLOAD_SIZE))
 
-        val server = engine.bindPipeline("0.0.0.0", config.port) { pipeline ->
-            pipeline.addLast("http-handler", typedHandler<IoBuf> { ctx, buf ->
+        val server = engine.bindPipeline("0.0.0.0", config.port) { channel ->
+            channel.pipeline.addLast("http-handler", typedHandler<IoBuf> { ctx, buf ->
                 val response = selectResponse(buf, helloBytes, largeBytes)
                 if (response != null) {
                     // Allocate IoBuf, copy pre-encoded response, and write through pipeline.
