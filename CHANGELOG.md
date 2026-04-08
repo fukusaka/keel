@@ -8,8 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- keel-engine-nodejs: unify `NodeChannel` into `NodePipelinedChannel` supporting both Pipeline mode and Channel mode
-- keel-engine-nodejs: add `NodeIoTransport` for non-suspend write/flush via Node.js socket
 - keel-engine-nodejs: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
 - keel-engine-netty: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
 - benchmark: add `pipeline-http-netty` benchmark using keel Netty pipeline mode
@@ -48,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- keel-engine-nodejs: unify `NodeChannel` into `NodePipelinedChannel` — supports both Pipeline mode (push I/O) and Channel mode (SuspendBridgeHandler pull)
 - build: promote `keel-tls-jsse` to always-included (JDK standard, no external deps); move `keel-tls-mbedtls` to `-Ptls` opt-in (requires Mbed TLS cinterop)
 - keel-ktor-engine: HTTPS test no longer requires `-Ptls` flag (uses always-available `keel-tls-jsse`)
 - keel-codec-http: expose `keel-io` and `keel-core` as `api` dependencies — fixes hidden transitive dependency for consumers using `BufferedSuspendSource`/`TypedChannelInboundHandler` in public signatures
