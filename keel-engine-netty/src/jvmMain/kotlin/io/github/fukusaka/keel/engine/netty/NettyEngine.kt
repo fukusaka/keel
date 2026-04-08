@@ -1,9 +1,12 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
@@ -39,11 +42,13 @@ import io.netty.channel.Channel as NettyNativeChannel
  * ```
  * NettyEngine (owns NioEventLoopGroups)
  *   |
- *   +-- bind() --> NettyServer (wraps Netty ServerChannel)
- *   |                |
- *   |                +-- accept() --> NettyPipelinedChannel
+ *   +-- bind() ---------> NettyServer (Channel mode: accept → suspend I/O)
+ *   |                       |
+ *   |                       +-- accept() --> NettyPipelinedChannel
  *   |
- *   +-- connect() --> NettyPipelinedChannel
+ *   +-- bindPipeline() --> NettyPipelinedServer (Pipeline mode: push I/O)
+ *   |
+ *   +-- connect() -------> NettyPipelinedChannel
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] is passed
@@ -153,6 +158,49 @@ class NettyEngine(
         return keelChannel
     }
 
+    /**
+     * Binds a server socket with Pipeline-mode connection handling.
+     *
+     * Each accepted connection creates a [NettyPipelinedChannel], invokes
+     * the [pipelineInitializer] callback to install handlers, and immediately
+     * calls [NettyPipelinedChannel.armRead] to enable push-model I/O.
+     *
+     * Non-suspend: uses Netty's `bind().sync()` to block until the server
+     * socket is ready. This is acceptable because `bindPipeline` is called
+     * once at startup, not on the hot path.
+     */
+    override fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (ChannelPipeline) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+
+        val bootstrap = ServerBootstrap()
+            .group(bossGroup, workerGroup)
+            .channel(NioServerSocketChannel::class.java)
+            .childHandler(object : ChannelInitializer<SocketChannel>() {
+                override fun initChannel(ch: SocketChannel) {
+                    ch.config().isAutoRead = false
+                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
+                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val keelChannel = NettyPipelinedChannel(
+                        ch, config.allocator, remoteAddr, localAddr, logger,
+                    )
+                    ch.pipeline().addLast(keelChannel.handler)
+                    pipelineInitializer(keelChannel.pipeline)
+                    keelChannel.armRead()
+                }
+            })
+
+        val nettyServerCh = bootstrap.bind(host, port).sync().channel()
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
+            ?: error("Failed to get local address")
+
+        logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
+        return NettyPipelinedServer(nettyServerCh, localAddr)
+    }
+
     override fun close() {
         if (!closed) {
             closed = true
@@ -162,6 +210,30 @@ class NettyEngine(
             workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
             bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
             logger.debug { "Engine closed" }
+        }
+    }
+
+    /**
+     * [PipelinedServer] backed by a Netty server channel.
+     *
+     * Wraps the underlying Netty channel for lifecycle management.
+     * [close] blocks until the Netty channel is fully closed to ensure
+     * the listen socket is released.
+     */
+    private class NettyPipelinedServer(
+        private val serverChannel: NettyNativeChannel,
+        override val localAddress: SocketAddress,
+    ) : PipelinedServer {
+        @Volatile
+        private var closed = false
+
+        override val isActive: Boolean get() = !closed && serverChannel.isActive
+
+        override fun close() {
+            if (!closed) {
+                closed = true
+                serverChannel.close().sync()
+            }
         }
     }
 }
