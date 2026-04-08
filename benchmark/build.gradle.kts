@@ -6,6 +6,10 @@ kotlin {
     applyDefaultHierarchyTemplate()
 
     jvm()
+    js(IR) {
+        nodejs()
+        binaries.executable()
+    }
     macosArm64 {
         binaries {
             executable {
@@ -26,13 +30,22 @@ kotlin {
             dependencies {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-tls"))
-                implementation(project(":keel-ktor-engine"))
-                implementation(libs.ktor.server.core)
-                implementation(libs.ktor.server.cio)
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
+
+        // Ktor Server dependencies — shared by JVM and Native, but not JS.
+        val commonForKtorServerMain by creating {
+            dependsOn(commonMain.get())
+            dependencies {
+                implementation(project(":keel-ktor-engine"))
+                implementation(libs.ktor.server.core)
+                implementation(libs.ktor.server.cio)
+            }
+        }
+
         jvmMain {
+            dependsOn(commonForKtorServerMain)
             dependencies {
                 implementation(project(":keel-engine-nio"))
                 implementation(project(":keel-engine-netty"))
@@ -43,6 +56,13 @@ kotlin {
             }
         }
         nativeMain {
+            dependsOn(commonForKtorServerMain)
+        }
+        jsMain {
+            dependencies {
+                implementation(project(":keel-engine-nodejs"))
+                implementation(project(":keel-codec-http"))
+            }
         }
 
         // macOS: keel-kqueue + keel-nwconnection engines + HTTP codec for pipeline benchmark
