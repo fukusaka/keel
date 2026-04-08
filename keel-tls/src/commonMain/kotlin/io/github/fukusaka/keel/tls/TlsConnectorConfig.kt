@@ -4,23 +4,20 @@ package io.github.fukusaka.keel.tls
  * Per-connector TLS configuration.
  *
  * Holds a [TlsConfig] (certificates, trust anchors, ALPN, etc.) and a
- * [TlsCodecFactory] for creating per-connection codec instances.
+ * [TlsInstaller] for per-connection TLS setup.
  *
- * The factory is per-connector rather than shared, allowing different
- * TLS backends (e.g., JSSE on one port, OpenSSL on another) on the
- * same server. To share a factory, pass the same instance to multiple
- * connectors.
+ * The installer is per-connector, allowing different TLS backends
+ * (e.g., JSSE on one port, OpenSSL on another) on the same server.
+ * To share an installer, pass the same instance to multiple connectors.
  *
- * When [installer] is set, it overrides the default keel [TlsHandler]
- * installation. The [codecFactory] is ignored in this case — the
- * installer is responsible for all TLS setup.
+ * [TlsCodecFactory] implements [TlsInstaller] and can be passed directly
+ * as the installer. Engine-specific installers (e.g., `NettySslInstaller`)
+ * install TLS at the transport level instead.
  *
  * @param config TLS settings (certificates, trust, verify mode, ALPN, SNI).
- * @param codecFactory Factory for per-connection TlsCodec instances.
- * @param installer Custom TLS installer. null = use keel TlsHandler (default).
+ * @param installer TLS installer for per-connection setup.
  */
 data class TlsConnectorConfig(
     val config: TlsConfig,
-    val codecFactory: TlsCodecFactory,
-    val installer: TlsInstaller? = null,
+    val installer: TlsInstaller,
 )
