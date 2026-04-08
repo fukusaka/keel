@@ -199,6 +199,12 @@ build_engine_list() {
         done
     fi
 
+    # JS (Node.js) server
+    JS_BIN="benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js"
+    if [ -f "$JS_BIN" ]; then
+        engines+=("js-engine:js:pipeline-http-nodejs:${JS_BIN}")
+    fi
+
     if [ "$SHUFFLE" = "true" ]; then
         local shuffled
         shuffled=$(printf '%s\n' "${engines[@]}" | sort -R)
@@ -251,6 +257,13 @@ while IFS= read -r entry; do
             if [ -n "$JVM_CP" ]; then
                 run_bench "${display}:${engine}" java -cp "$JVM_CP" io.github.fukusaka.keel.benchmark.JvmMainKt --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS} ${TLS_ARGS}
             fi
+            ;;
+        js-engine)
+            display="${rest%%:*}"
+            rest2="${rest#*:}"
+            engine="${rest2%%:*}"
+            binary="${rest2#*:}"
+            run_bench "${display}:${engine}" node "$binary" --engine="${engine}" --port="${PORT}" ${PROFILE_ARGS} ${TLS_ARGS}
             ;;
     esac
 done < <(build_engine_list)
