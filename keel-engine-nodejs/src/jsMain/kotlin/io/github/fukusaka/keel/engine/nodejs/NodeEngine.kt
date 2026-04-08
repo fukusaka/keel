@@ -1,10 +1,12 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.Server as KeelServer
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.pipeline.ChannelPipeline
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -18,17 +20,19 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * [suspendCoroutine].
  *
  * **Push-to-pull bridge**: Node.js's event-driven model (socket.on("data"))
- * is bridged to keel's pull model (suspend read) via [ArrayDeque] queues
- * in [NodeChannel]. See [NodeChannel] KDoc for details.
+ * is bridged to keel's pull model (suspend read) via [SuspendBridgeHandler]
+ * in [NodePipelinedChannel]. See [NodePipelinedChannel] KDoc for details.
  *
  * ```
- * NodeEngine
+ * NodeEngine (Node.js net module)
  *   |
- *   +-- bind() --> NodeServer (wraps net.Server)
- *   |                |
- *   |                +-- accept() --> NodeChannel (wraps net.Socket)
+ *   +-- bind() ---------> NodeServer (Channel mode: accept -> suspend I/O)
+ *   |                       |
+ *   |                       +-- accept() --> NodePipelinedChannel
  *   |
- *   +-- connect() --> NodeChannel (wraps net.Socket)
+ *   +-- bindPipeline() --> NodePipelinedServer (Pipeline mode: push I/O)
+ *   |
+ *   +-- connect() -------> NodePipelinedChannel
  * ```
  *
  * @param config Engine-wide configuration (allocator, threads).
@@ -40,7 +44,7 @@ class NodeEngine(
     private val logger = config.loggerFactory.logger("NodeEngine")
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int): KeelServer {
         check(!closed) { "Engine is closed" }
 
         return suspendCoroutine { cont ->
@@ -52,7 +56,9 @@ class NodeEngine(
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = SocketAddress(host, assignedPort)
-                val serverChannel = NodeServer(srv, localAddr, config.allocator)
+                val serverChannel = NodeServer(
+                    srv, localAddr, config.allocator, config.loggerFactory,
+                )
 
                 // Wire connection events to the ServerChannel's accept queue
                 srv.on("connection") { socket: dynamic ->
@@ -69,6 +75,60 @@ class NodeEngine(
         }
     }
 
+    /**
+     * Binds a pipeline-based TCP listener on [host]:[port].
+     *
+     * Creates a Node.js `net.Server` with a connection handler that wraps
+     * each accepted connection in a [NodePipelinedChannel] and feeds data
+     * through the [ChannelPipeline] — no coroutine suspension on the
+     * request hot path.
+     *
+     * Non-suspend: Node.js `server.listen()` is async, but for non-zero
+     * ports the address is available synchronously after `listen()` returns
+     * in the same event loop tick. Ephemeral port (port=0) requires the
+     * listen callback, which is not supported in this non-suspend context.
+     *
+     * @param pipelineInitializer Callback to configure the pipeline for each connection.
+     * @return A [PipelinedServer] that closes the listener when closed.
+     * @throws IllegalArgumentException if port is 0 (ephemeral port not supported).
+     */
+    override fun bindPipeline(
+        host: String,
+        port: Int,
+        pipelineInitializer: (ChannelPipeline) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        require(port > 0) {
+            "Ephemeral port (port=0) is not supported in bindPipeline. " +
+                "Node.js assigns the port asynchronously in the listen callback."
+        }
+
+        val srv = Net.createServer { _ -> }
+        val serverChannel = NodePipelinedServer(srv, SocketAddress(host, port))
+
+        srv.on("connection") { socket: dynamic ->
+            val typedSocket = socket.unsafeCast<Socket>()
+            val remoteAddr = typedSocket.remoteAddress?.let { h ->
+                typedSocket.remotePort?.let { p -> SocketAddress(h, p) }
+            }
+            val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
+            val channel = NodePipelinedChannel(
+                typedSocket, config.allocator, remoteAddr, null, channelLogger,
+            )
+            pipelineInitializer(channel.pipeline)
+            channel.armRead()
+        }
+
+        srv.listen(port) {
+            val addr = srv.address()
+            val assignedPort = addr.port as Int
+            serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
+            logger.debug { "Pipeline bound to $host:$assignedPort" }
+        }
+
+        return serverChannel
+    }
+
     override suspend fun connect(host: String, port: Int): KeelChannel {
         check(!closed) { "Engine is closed" }
 
@@ -80,7 +140,10 @@ class NodeEngine(
                 val localAddr = socket.localAddress?.let { h ->
                     socket.localPort?.let { p -> SocketAddress(h, p) }
                 }
-                val channel = NodeChannel(socket, config.allocator, remoteAddr, localAddr)
+                val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
+                val channel = NodePipelinedChannel(
+                    socket, config.allocator, remoteAddr, localAddr, channelLogger,
+                )
                 logger.debug { "Connected to $host:$port" }
                 cont.resume(channel)
             }
@@ -95,6 +158,34 @@ class NodeEngine(
         if (!closed) {
             closed = true
             logger.debug { "Engine closed" }
+        }
+    }
+
+    /**
+     * [PipelinedServer] backed by a Node.js net.Server.
+     *
+     * Wraps the underlying server for lifecycle management.
+     * [localAddress] is updated when the listen callback fires.
+     */
+    private class NodePipelinedServer(
+        private val server: Server,
+        private var localAddr: SocketAddress,
+    ) : PipelinedServer {
+        private var _active = true
+
+        override val localAddress: SocketAddress get() = localAddr
+        override val isActive: Boolean get() = _active
+
+        /** Updates the local address after listen completes. */
+        internal fun updateLocalAddress(addr: SocketAddress) {
+            localAddr = addr
+        }
+
+        override fun close() {
+            if (_active) {
+                _active = false
+                server.close()
+            }
         }
     }
 }
