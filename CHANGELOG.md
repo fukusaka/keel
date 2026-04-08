@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-tls: add `PemDerConverter` for lossless PEM↔DER conversion (Base64 encode/decode)
+- keel-tls: add `Pkcs8KeyUnwrapper` for extracting inner PKCS#1/SEC1 keys from PKCS#8 envelopes (needed by Apple SecKeyCreateWithData)
+- keel-tls: add `asPem()`/`asDer()` extension functions on `TlsCertificateSource` for transparent format conversion
+- keel-tls-openssl, keel-tls-awslc, keel-tls-mbedtls: accept `TlsCertificateSource.Der` via `asPem()` conversion
+- keel-engine-netty: `NettySslInstaller` accepts `TlsCertificateSource.Der` via `asPem()` conversion
+- keel-engine-nodejs: `NodeEngine` listener-level TLS accepts `TlsCertificateSource.Der` via `asPem()` conversion
 - benchmark: add JS (Node.js) target with `pipeline-http-nodejs` benchmark using keel NodeEngine pipeline mode
 - benchmark: add `pipeline-http-nodejs` to `bench-keel.sh` and `bench-all.sh`
 - keel-engine-nodejs: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
