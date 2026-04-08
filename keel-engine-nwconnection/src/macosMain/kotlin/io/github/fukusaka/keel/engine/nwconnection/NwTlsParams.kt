@@ -54,45 +54,32 @@ internal object NwTlsParams {
     ): nw_parameters_t {
         val cert = createCertificate(certDer)
             ?: error("SecCertificateCreateWithData failed — invalid certificate DER")
-        try {
-            val keyType = when (keyAlgorithm) {
-                Pkcs8KeyUnwrapper.KeyAlgorithm.EC -> 1
-                else -> 0
-            }
-            val key = innerKeyDer.usePinned { pinned ->
-                keel_nw_create_private_key(
-                    pinned.addressOf(0), innerKeyDer.size.toUInt(), keyType,
-                )
-            } ?: run {
-                CFRelease(cert)
-                error("SecKeyCreateWithData failed — invalid private key DER or wrong key type")
-            }
-            try {
-                val identity = SecIdentityCreate(null, cert, key)
-                    ?: run {
-                        CFRelease(key)
-                        CFRelease(cert)
-                        error("SecIdentityCreate failed — cert/key pair mismatch")
-                    }
-                try {
-                    val secIdentity = sec_identity_create(identity)
-                        ?: run {
-                            CFRelease(identity)
-                            CFRelease(key)
-                            CFRelease(cert)
-                            error("sec_identity_create failed")
-                        }
-                    return keel_nw_create_tls_tcp_params(secIdentity)
-                        ?: error("keel_nw_create_tls_tcp_params failed")
-                } finally {
-                    CFRelease(identity)
-                }
-            } finally {
-                CFRelease(key)
-            }
-        } finally {
-            CFRelease(cert)
+
+        val keyType = when (keyAlgorithm) {
+            Pkcs8KeyUnwrapper.KeyAlgorithm.EC -> 1
+            else -> 0
         }
+        val key = innerKeyDer.usePinned { pinned ->
+            keel_nw_create_private_key(
+                pinned.addressOf(0), innerKeyDer.size.toUInt(), keyType,
+            )
+        }
+        if (key == null) {
+            CFRelease(cert)
+            error("SecKeyCreateWithData failed — invalid private key DER or wrong key type")
+        }
+
+        val identity = SecIdentityCreate(null, cert, key)
+        CFRelease(key)
+        CFRelease(cert)
+        checkNotNull(identity) { "SecIdentityCreate failed — cert/key pair mismatch" }
+
+        val secIdentity = sec_identity_create(identity)
+        CFRelease(identity)
+        checkNotNull(secIdentity) { "sec_identity_create failed" }
+
+        return keel_nw_create_tls_tcp_params(secIdentity)
+            ?: error("keel_nw_create_tls_tcp_params failed")
     }
 
     private fun createCertificate(certDer: ByteArray) = certDer.usePinned { pinned ->
