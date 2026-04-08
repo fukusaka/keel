@@ -78,12 +78,15 @@ object Pkcs8KeyUnwrapper {
         // version INTEGER
         offset = expectTag(pkcs8Der, offset, TAG_INTEGER)
         val versionLen = readLength(pkcs8Der, offset)
-        offset = skipLength(pkcs8Der, offset) + versionLen.value
+        val versionStart = skipLength(pkcs8Der, offset)
+        requireBounds(versionStart, versionLen.value, pkcs8Der.size, "Version INTEGER")
+        offset = versionStart + versionLen.value
 
         // AlgorithmIdentifier SEQUENCE
         offset = expectTag(pkcs8Der, offset, TAG_SEQUENCE)
         val algoLen = readLength(pkcs8Der, offset)
         val algoStart = skipLength(pkcs8Der, offset)
+        requireBounds(algoStart, algoLen.value, pkcs8Der.size, "AlgorithmIdentifier")
         val algorithm = detectAlgorithm(pkcs8Der, algoStart, algoLen.value)
         offset = algoStart + algoLen.value
 
@@ -91,7 +94,7 @@ object Pkcs8KeyUnwrapper {
         offset = expectTag(pkcs8Der, offset, TAG_OCTET_STRING)
         val keyLen = readLength(pkcs8Der, offset)
         val keyStart = skipLength(pkcs8Der, offset)
-
+        requireBounds(keyStart, keyLen.value, pkcs8Der.size, "OCTET STRING")
         val innerKey = pkcs8Der.copyOfRange(keyStart, keyStart + keyLen.value)
         return UnwrapResult(innerKey, algorithm)
     }
@@ -100,10 +103,19 @@ object Pkcs8KeyUnwrapper {
      * Checks if DER bytes appear to be a PKCS#8 structure.
      *
      * Performs a lightweight check: outer SEQUENCE → INTEGER version → SEQUENCE.
-     * Does not fully validate the structure.
+     * Does not fully validate the structure. Never throws — returns `false`
+     * for any malformed input.
      */
     fun isPkcs8(der: ByteArray): Boolean {
         if (der.size < 10) return false
+        return try {
+            isPkcs8Internal(der)
+        } catch (_: IllegalArgumentException) {
+            false
+        }
+    }
+
+    private fun isPkcs8Internal(der: ByteArray): Boolean {
         var offset = 0
 
         // Outer SEQUENCE
@@ -113,9 +125,11 @@ object Pkcs8KeyUnwrapper {
         offset = offset + outerLen.headerBytes
 
         // version INTEGER
-        if (der[offset].toInt() and 0xFF != TAG_INTEGER) return false
+        if (offset >= der.size || der[offset].toInt() and 0xFF != TAG_INTEGER) return false
         offset++
         val versionLen = readLength(der, offset)
+        // Use subtraction to avoid integer overflow
+        if (versionLen.value > der.size - (offset + versionLen.headerBytes)) return false
         offset = offset + versionLen.headerBytes + versionLen.value
 
         // AlgorithmIdentifier SEQUENCE
@@ -150,6 +164,7 @@ object Pkcs8KeyUnwrapper {
         for (i in 0 until numBytes) {
             length = (length shl 8) or (data[offset + 1 + i].toInt() and 0xFF)
         }
+        require(length >= 0) { "DER length overflow at offset $offset" }
         return DerLength(length, headerBytes = 1 + numBytes)
     }
 
@@ -193,6 +208,17 @@ object Pkcs8KeyUnwrapper {
             if (match) return true
         }
         return false
+    }
+
+    /**
+     * Checks that [start] + [length] does not exceed [dataSize],
+     * using subtraction to avoid integer overflow.
+     */
+    private fun requireBounds(start: Int, length: Int, dataSize: Int, field: String) {
+        // dataSize - start is safe because start <= dataSize (validated by prior readLength/expectTag)
+        require(length <= dataSize - start) {
+            "$field length $length exceeds remaining data at offset $start"
+        }
     }
 
     /** DER length field value and the number of bytes consumed by the length encoding. */
