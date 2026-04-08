@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-engine-nodejs: unify `NodeChannel` into `NodePipelinedChannel` supporting both Pipeline mode and Channel mode
+- keel-engine-nodejs: add `NodeIoTransport` for non-suspend write/flush via Node.js socket
+- keel-engine-nodejs: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
 - keel-engine-netty: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
 - benchmark: add `pipeline-http-netty` benchmark using keel Netty pipeline mode
 - benchmark: add TLS (`--tls`) support to all `pipeline-http-*` benchmarks (kqueue, epoll, io_uring, nio, nwconnection, netty)
