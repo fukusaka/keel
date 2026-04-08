@@ -7,7 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.core.Channel as KeelChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
 /**
@@ -86,7 +86,7 @@ internal class NettyServer private constructor() : ServerChannel {
      * (added in [NettyEngine.bind]'s ChannelInitializer) to avoid the
      * race condition where channelRead fires before accept() returns.
      */
-    override suspend fun accept(): KeelChannel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         // Fast path: buffered connection available

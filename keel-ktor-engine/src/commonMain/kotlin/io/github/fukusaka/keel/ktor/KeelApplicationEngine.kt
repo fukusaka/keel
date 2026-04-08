@@ -303,10 +303,8 @@ public class KeelApplicationEngine(
                 }
 
                 // Install per-connection TLS in the channel's pipeline for HTTPS.
-                // All engines return PipelinedChannel from accept().
                 if (tlsConfig != null) {
-                    val pipelinedChannel = channel as PipelinedChannel
-                    tlsConfig.initializeConnection(pipelinedChannel)
+                    tlsConfig.initializeConnection(channel)
                 }
 
                 // Dispatch on EventLoop so read/parse runs on the I/O

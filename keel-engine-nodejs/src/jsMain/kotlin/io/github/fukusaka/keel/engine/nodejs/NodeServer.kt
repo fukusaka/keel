@@ -8,7 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.core.Channel as KeelChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.core.Server as KeelServer
 
 /**
@@ -50,7 +50,7 @@ internal class NodeServer(
         }
     }
 
-    override suspend fun accept(): KeelChannel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         val socket: Socket = if (pendingConnections.isNotEmpty()) {

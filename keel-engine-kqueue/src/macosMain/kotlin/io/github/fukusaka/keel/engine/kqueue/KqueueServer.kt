@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
@@ -62,7 +63,7 @@ internal class KqueueServer(
      * @throws IllegalStateException if the server channel is already closed.
      * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.
      */
-    override suspend fun accept(): Channel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         while (true) {

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -56,7 +57,7 @@ internal class EpollServer(
      * pending (EAGAIN), registers the server fd with the [EpollEventLoop]
      * and suspends until readiness is reported.
      */
-    override suspend fun accept(): Channel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         while (true) {
