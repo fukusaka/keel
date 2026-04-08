@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsConnectorConfig
+import io.github.fukusaka.keel.tls.TlsInstaller
 
 /**
  * Pluggable factory provider for TLS benchmarking.
@@ -38,8 +40,43 @@ fun createTlsCodecFactory(backend: String): TlsCodecFactory {
  *
  * Call this immediately after [BenchmarkConfig.parse] in main().
  */
+private var tlsInstallerProvider: ((String) -> TlsInstaller)? = null
+
+/** Register a platform-specific TLS installer provider for engine-native TLS. */
+fun registerTlsInstallerProvider(provider: (String) -> TlsInstaller) {
+    tlsInstallerProvider = provider
+}
+
+/**
+ * Create a [TlsConnectorConfig] based on the `--tls-installer` option.
+ *
+ * - `"keel"` (default): uses the [TlsCodecFactory] as the [TlsInstaller] (keel TlsHandler).
+ * - `"netty"` etc.: uses an engine-specific installer from the registered provider.
+ *
+ * @param config Benchmark configuration with `tls` and `tlsInstaller` fields.
+ * @return A [TlsConnectorConfig] and an optional [AutoCloseable] to release (factory lifecycle).
+ */
+fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsConnectorConfig, AutoCloseable?> {
+    val backend = requireNotNull(config.tls) { "--tls is required for TLS" }
+    return when (config.tlsInstaller) {
+        "keel" -> {
+            val factory = createTlsCodecFactory(backend)
+            TlsConnectorConfig(BenchmarkCertificates.tlsConfig(), factory) to factory
+        }
+        else -> {
+            val provider = tlsInstallerProvider
+                ?: error("No TLS installer provider registered for '${config.tlsInstaller}'")
+            val installer = provider(config.tlsInstaller)
+            TlsConnectorConfig(BenchmarkCertificates.tlsConfig(), installer) to null
+        }
+    }
+}
+
 fun validateTlsBackend(config: BenchmarkConfig) {
     val backend = config.tls ?: return
+    // Non-keel installers (e.g., "node", "netty") handle TLS at the
+    // transport level without a TlsCodecFactory, so skip validation.
+    if (config.tlsInstaller != "keel") return
     try {
         val factory = createTlsCodecFactory(backend)
         factory.close()

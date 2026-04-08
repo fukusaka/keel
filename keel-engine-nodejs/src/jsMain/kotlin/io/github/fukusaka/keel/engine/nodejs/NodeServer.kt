@@ -2,14 +2,14 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.core.Server as KeelServer
 import io.github.fukusaka.keel.logging.LoggerFactory
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
+import io.github.fukusaka.keel.core.Server as KeelServer
 
 /**
  * Node.js `net.Server`-based [ServerChannel] implementation for JS.

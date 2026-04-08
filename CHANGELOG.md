@@ -32,6 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - keel-tls: add `TlsInstaller` interface for engine-specific TLS implementations
 - keel-tls: add `TlsConnectorConfig` per-connector TLS configuration
 - keel-engine-netty: add `NettySslInstaller` for Netty-native `SslHandler` TLS
+- keel-core: add `BindConfig` interface for per-server bind configuration with `initializeConnection` callback
+- keel-core: add `config: BindConfig?` parameter to `StreamEngine.bindPipeline` for declarative TLS setup
+- keel-tls: `TlsConnectorConfig` implements `BindConfig` — delegates `initializeConnection` to `TlsInstaller.install`
+- keel-engine-nodejs: add `tls.createServer()` support for Node.js listener-level TLS via `BindConfig`
+- benchmark: add `--tls-installer=keel|netty|node` CLI option for selecting TLS backend per engine
 - benchmark: add `--tls=jsse|openssl|awslc|mbedtls` CLI flag and `BENCH_SCHEME`/`BENCH_TLS` env vars for HTTPS benchmarking across all engines (keel, ktor-netty, netty-raw, spring, vertx, rust, go, swift)
 
 ### Removed
@@ -52,6 +57,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - keel-tls: simplify `TlsConnectorConfig` from `codecFactory` + `installer?` to single `installer` field
 - keel-ktor-engine: simplify `sslConnector()` API from 3 params (`tlsConfig`, `codecFactory`, `installer?`) to 2 params (`tlsConfig`, `installer`)
 - keel-core: change `StreamEngine.bindPipeline` initializer from `(ChannelPipeline) -> Unit` to `(PipelinedChannel) -> Unit` — enables engine-specific TLS installers in pipeline mode
+- benchmark: migrate all `pipeline-http-*` TLS setup from manual `TlsCodecFactory.install()` in pipelineInitializer to declarative `config = TlsConnectorConfig(...)` parameter
 - benchmark: introduce `commonForKtorServerMain` intermediate source set to isolate Ktor Server dependencies from JS compilation
 - keel-engine-nodejs: unify `NodeChannel` into `NodePipelinedChannel` — supports both Pipeline mode (push I/O) and Channel mode (SuspendBridgeHandler pull)
 - build: promote `keel-tls-jsse` to always-included (JDK standard, no external deps); move `keel-tls-mbedtls` to `-Ptls` opt-in (requires Mbed TLS cinterop)

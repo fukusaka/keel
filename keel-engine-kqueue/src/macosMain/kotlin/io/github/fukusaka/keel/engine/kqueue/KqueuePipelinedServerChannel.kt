@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -41,6 +42,7 @@ internal class KqueuePipelinedServerChannel(
     private val workerGroup: KqueueEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
+    private val config: BindConfig?,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -97,6 +99,7 @@ internal class KqueuePipelinedServerChannel(
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
         val transport = KqueueIoTransport(clientFd, loop)
         val channel = KqueuePipelinedChannel(clientFd, transport, loop, allocator, logger)
+        config?.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }

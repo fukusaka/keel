@@ -11,6 +11,7 @@ kotlin {
         jsMain {
             dependencies {
                 implementation(project(":keel-core"))
+                implementation(project(":keel-tls"))
             }
         }
         jsTest {

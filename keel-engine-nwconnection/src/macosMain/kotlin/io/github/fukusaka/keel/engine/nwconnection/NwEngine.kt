@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -154,6 +155,7 @@ class NwEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig?,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -194,7 +196,8 @@ class NwEngine(
                 // internally until the connection reaches the ready state.
                 nw_connection_start(conn)
 
-                val channel = NwPipelinedChannel(conn, config.allocator, null, null, logger)
+                val channel = NwPipelinedChannel(conn, this@NwEngine.config.allocator, null, null, logger)
+                config?.initializeConnection(channel)
                 pipelineInitializer(channel)
                 channel.armRead()
             }

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -177,6 +178,7 @@ class NioEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
+        config: BindConfig?,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -197,6 +199,7 @@ class NioEngine(
             workerGroup = workerGroup,
             localAddr = localAddr ?: error("Failed to get local address"),
             logger = logger,
+            config = config,
             pipelineInitializer = pipelineInitializer,
         )
         serverPipeline.start()
