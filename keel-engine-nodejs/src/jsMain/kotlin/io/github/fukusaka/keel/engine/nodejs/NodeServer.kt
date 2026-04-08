@@ -1,8 +1,9 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.Server as KeelServer
+import io.github.fukusaka.keel.logging.LoggerFactory
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -17,18 +18,20 @@ import io.github.fukusaka.keel.core.Channel as KeelChannel
  * [ArrayDeque] queue. The server's connection listener pushes each
  * [Socket] into the queue.
  *
- * Phase (a): [accept] suspends via [suspendCoroutine] until a
+ * [accept] suspends via [suspendCancellableCoroutine] until a
  * connection arrives. JS is single-threaded, so no locking is needed.
  *
- * @param server       The Node.js net.Server.
- * @param localAddress Bind address of this server channel.
- * @param allocator    Passed to accepted [NodeChannel]s.
+ * @param server        The Node.js net.Server.
+ * @param localAddress  Bind address of this server channel.
+ * @param allocator     Passed to accepted [NodePipelinedChannel]s.
+ * @param loggerFactory Logger factory for creating per-channel loggers.
  */
 internal class NodeServer(
     private val server: Server,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
-) : ServerChannel {
+    private val loggerFactory: LoggerFactory,
+) : KeelServer {
 
     private var _active = true
     private val pendingConnections = ArrayDeque<Socket>()
@@ -63,7 +66,8 @@ internal class NodeServer(
             socket.remotePort?.let { port -> SocketAddress(host, port) }
         }
 
-        return NodeChannel(socket, allocator, remoteAddr, localAddress)
+        val logger = loggerFactory.logger("NodePipelinedChannel")
+        return NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, logger)
     }
 
     /**
