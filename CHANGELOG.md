@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- benchmark: add `--tls-installer=keel|netty` CLI option — `netty` uses Netty's `SslHandler` at transport level via `NettySslInstaller` for `pipeline-http-netty`
 - benchmark: add JS (Node.js) target with `pipeline-http-nodejs` benchmark using keel NodeEngine pipeline mode
 - benchmark: add `pipeline-http-nodejs` to `bench-keel.sh` and `bench-all.sh`
 - keel-engine-nodejs: implement `bindPipeline` for pipeline mode — enables push-model I/O without Ktor overhead
