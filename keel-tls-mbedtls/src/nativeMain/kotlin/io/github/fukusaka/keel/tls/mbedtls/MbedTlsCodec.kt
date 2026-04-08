@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsCertificateSource
+import io.github.fukusaka.keel.tls.asPem
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
@@ -92,9 +93,10 @@ class MbedTlsCodec internal constructor(
         mbedtls_pk_init(pkey.ptr)
 
         val certSource = config.certificates
-        if (certSource is TlsCertificateSource.Pem) {
-            parsePemCert(certSource.certificatePem)
-            parsePemKey(certSource.privateKeyPem)
+        if (certSource is TlsCertificateSource.Pem || certSource is TlsCertificateSource.Der) {
+            val pem = certSource.asPem()
+            parsePemCert(pem.certificatePem)
+            parsePemKey(pem.privateKeyPem)
         }
 
         // SSL config.

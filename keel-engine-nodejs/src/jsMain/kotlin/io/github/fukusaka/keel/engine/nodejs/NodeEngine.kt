@@ -7,9 +7,9 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
+import io.github.fukusaka.keel.tls.asPem
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -194,8 +194,9 @@ class NodeEngine(
     private fun createServer(config: BindConfig?): Server {
         if (isListenerLevelTls(config)) {
             val tlsConfig = config as TlsConnectorConfig
-            val certs = tlsConfig.config.certificates as? TlsCertificateSource.Pem
-                ?: error("Node.js listener-level TLS requires PEM certificates")
+            val certs = requireNotNull(tlsConfig.config.certificates) {
+                "Node.js listener-level TLS requires certificates"
+            }.asPem()
             val options = js("{}")
             options.key = certs.privateKeyPem
             options.cert = certs.certificatePem

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsInstaller
+import io.github.fukusaka.keel.tls.asPem
 import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
 import java.io.ByteArrayInputStream
@@ -46,8 +47,10 @@ class NettySslInstaller : TlsInstaller {
         }
         val sslContext = when (certs) {
             is TlsCertificateSource.Pem -> buildFromPem(certs)
+            is TlsCertificateSource.Der -> buildFromPem(certs.asPem())
             is TlsCertificateSource.KeyStoreFile -> buildFromKeyStore(certs)
-            else -> error("NettySslInstaller supports Pem and KeyStoreFile, got ${certs::class.simpleName}")
+            is TlsCertificateSource.SystemKeychain ->
+                error("SystemKeychain is not supported by NettySslInstaller")
         }
         channel.installSslHandler(sslContext)
     }
