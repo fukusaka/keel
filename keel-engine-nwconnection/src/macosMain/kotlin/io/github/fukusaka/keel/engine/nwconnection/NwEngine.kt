@@ -8,6 +8,10 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
+import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsConnectorConfig
+import io.github.fukusaka.keel.tls.asDer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -161,7 +165,12 @@ class NwEngine(
         check(!closed) { "Engine is closed" }
 
         val portStr = if (port == 0) "0" else port.toString()
-        val params = keel_nw_create_tcp_params()
+        val listenerLevelTls = isListenerLevelTls(config)
+        val params = if (listenerLevelTls) {
+            createTlsParams(config as TlsConnectorConfig)
+        } else {
+            keel_nw_create_tcp_params()
+        }
 
         val lsnr = nw_listener_create_with_port(portStr, params)
             ?: error("nw_listener_create_with_port returned null")
@@ -197,7 +206,11 @@ class NwEngine(
                 nw_connection_start(conn)
 
                 val channel = NwPipelinedChannel(conn, this@NwEngine.config.allocator, null, null, logger)
-                config?.initializeConnection(channel)
+                // Listener-level TLS: connections arrive already TLS-encrypted,
+                // so skip per-connection TLS initialization.
+                if (!listenerLevelTls) {
+                    config?.initializeConnection(channel)
+                }
                 pipelineInitializer(channel)
                 channel.armRead()
             }
@@ -285,6 +298,38 @@ class NwEngine(
             listener?.let { nw_listener_cancel(it) }
             logger.debug { "Engine closed" }
         }
+    }
+
+    /**
+     * Detects if the config requests listener-level TLS (e.g. [NwTlsInstaller]).
+     *
+     * Listener-level TLS is used when the installer is NOT a [TlsCodecFactory]
+     * (which would install per-connection TLS handlers). Same detection pattern
+     * as NodeEngine.
+     */
+    private fun isListenerLevelTls(config: BindConfig?): Boolean {
+        if (config !is TlsConnectorConfig) return false
+        return config.installer !is TlsCodecFactory
+    }
+
+    /**
+     * Creates TLS-enabled NWConnection parameters from [TlsConnectorConfig].
+     *
+     * Converts certificates to DER, unwraps PKCS#8 if needed, and delegates
+     * to [NwTlsParams.createTlsParameters] for SecIdentity creation.
+     */
+    private fun createTlsParams(tlsConfig: TlsConnectorConfig): platform.Network.nw_parameters_t {
+        val certs = requireNotNull(tlsConfig.config.certificates) {
+            "NWConnection listener-level TLS requires certificates"
+        }.asDer()
+        val keyDer = certs.privateKey
+        val (innerKey, algorithm) = if (Pkcs8KeyUnwrapper.isPkcs8(keyDer)) {
+            Pkcs8KeyUnwrapper.unwrap(keyDer)
+        } else {
+            // Already inner key format (PKCS#1/SEC1)
+            Pkcs8KeyUnwrapper.UnwrapResult(keyDer, Pkcs8KeyUnwrapper.KeyAlgorithm.UNKNOWN)
+        }
+        return NwTlsParams.createTlsParameters(certs.certificate, innerKey, algorithm)
     }
 
     companion object {
