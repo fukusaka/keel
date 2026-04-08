@@ -1,9 +1,12 @@
 package io.github.fukusaka.keel.benchmark
 
-import io.ktor.http.*
-import io.ktor.server.application.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
+import io.ktor.http.ContentType
+import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
+import io.ktor.server.response.respondBytes
+import io.ktor.server.routing.get
+import io.ktor.server.routing.routing
 
 /**
  * Shared Ktor routing module for benchmark servers.
@@ -29,9 +32,6 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
         }
     }
 }
-
-/** Size of the /large endpoint payload (100KB). */
-const val LARGE_PAYLOAD_SIZE = 102_400
 
 /** 100KB text payload, pre-allocated to avoid allocation during benchmarks. */
 private val largePayload = "x".repeat(LARGE_PAYLOAD_SIZE)

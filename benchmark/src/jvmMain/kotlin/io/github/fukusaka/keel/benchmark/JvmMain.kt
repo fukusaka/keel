@@ -40,7 +40,7 @@ fun main(args: Array<String>) {
     if (config.engine !in engines) {
         System.err.println("Unknown engine: ${config.engine}")
         System.err.println("Available: ${engines.keys.joinToString(", ")}")
-        kotlin.system.exitProcess(1)
+        benchmarkExit(1)
     }
 
     if (config.showConfig) {

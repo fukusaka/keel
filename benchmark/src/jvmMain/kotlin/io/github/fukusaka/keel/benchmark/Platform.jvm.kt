@@ -5,6 +5,9 @@ actual fun printErr(message: String) {
     System.err.println(message)
 }
 
+/** Terminate the JVM process via [kotlin.system.exitProcess]. */
+actual fun benchmarkExit(code: Int): Nothing = kotlin.system.exitProcess(code)
+
 /** Number of available CPU cores via [Runtime.availableProcessors]. */
 actual fun availableProcessors(): Int = Runtime.getRuntime().availableProcessors()
 

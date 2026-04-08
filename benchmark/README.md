@@ -33,6 +33,12 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 | `raw-io-uring` | Linux (io_uring) | Raw | Pre-encoded bytes (no codec) |
 | `ktor-cio` | macOS / Linux | Ktor | Async (coroutines) |
 
+### JS / Node.js
+
+| Engine | Framework | Mode | I/O Model |
+|---|---|---|---|
+| `pipeline-http-nodejs` | keel + NodeEngine | Pipeline | Async (Node.js event loop) |
+
 ### Phase 2 Native (standalone binaries)
 
 | Server | Language | Framework | I/O Model |
@@ -45,13 +51,18 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 ## Quick Start
 
 ```bash
-# Build
-./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
+# Build (Native + JVM + JS)
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
 
 # Single engine
 ./benchmark/bench-one.sh ktor-keel-kqueue \
   ./benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe \
   --engine=ktor-keel-kqueue --port=18090
+
+# Single engine (Node.js)
+./benchmark/bench-one.sh pipeline-http-nodejs \
+  node benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js \
+  --engine=pipeline-http-nodejs --port=18090
 
 # All engines (default /hello)
 ./benchmark/bench-all.sh
@@ -256,12 +267,13 @@ o = applied. \* = accepted and displayed in show-config but not applied by frame
 
 ## Build
 
-### Kotlin (JVM + Native)
+### Kotlin (JVM + Native + JS)
 
 ```bash
-./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
-# or for Linux:
-./gradlew -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64 :benchmark:writeClasspath
+# macOS (JVM + Native + JS)
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
+# Linux (JVM + Native + JS)
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
 ```
 
 ### Phase 2 Native
@@ -290,11 +302,14 @@ benchmark/
 ├── results-summary/                 # Summary + snapshots (.gitignore)
 ├── src/commonMain/kotlin/.../
 │   ├── BenchmarkConfig.kt           # Configuration + profiles + CLI parsing
-│   ├── BenchmarkModule.kt           # Shared Ktor routing (/hello, /large)
+│   ├── BenchmarkConstants.kt        # Shared constants (LARGE_PAYLOAD_SIZE)
 │   ├── EngineBenchmark.kt           # Engine abstraction
 │   ├── EngineConfig.kt              # Engine configuration
 │   ├── SocketConfig.kt              # Socket options
 │   └── Platform.kt                  # Platform expect declarations
+├── src/commonForKtorServerMain/kotlin/.../
+│   ├── BenchmarkModule.kt           # Shared Ktor routing (/hello, /large)
+│   └── CioEngine.kt                 # Ktor CIO engine benchmark
 ├── src/jvmMain/kotlin/.../
 │   ├── JvmMain.kt                   # JVM entry point
 │   ├── EngineRegistry.jvm.kt        # JVM engine registry
@@ -321,6 +336,10 @@ benchmark/
 │   ├── PipelineHttpEpollBenchmark.kt # keel epoll pipeline
 │   ├── KeelIoUringEngine.kt        # keel io_uring adapter (Ktor)
 │   └── PipelineHttpIoUringBenchmark.kt # keel io_uring pipeline
+├── src/jsMain/kotlin/.../
+│   ├── JsMain.kt                    # Node.js entry point
+│   ├── Platform.js.kt               # JS platform actual
+│   └── PipelineHttpNodejsBenchmark.kt # Node.js pipeline benchmark
 ├── rust-hello/                      # Rust Axum (Phase 2)
 ├── go-hello/                        # Go Gin (Phase 2)
 ├── swift-hello/                     # Swift Hummingbird (Phase 2, macOS only)
