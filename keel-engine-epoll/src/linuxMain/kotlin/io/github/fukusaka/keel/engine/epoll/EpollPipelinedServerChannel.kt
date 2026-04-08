@@ -31,7 +31,7 @@ internal class EpollPipelinedServerChannel(
     private val workerGroup: EpollEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val config: BindConfig?,
+    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -81,7 +81,7 @@ internal class EpollPipelinedServerChannel(
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, allocator: BufferAllocator) {
         val transport = EpollIoTransport(clientFd, loop)
         val channel = EpollPipelinedChannel(clientFd, transport, loop, allocator, logger)
-        config?.initializeConnection(channel)
+        config.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }

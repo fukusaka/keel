@@ -80,10 +80,10 @@ class EpollEngine(
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
 
         // Register server fd with the boss EventLoop's epoll so that
         // accept() readiness is notified on the boss thread.
@@ -162,12 +162,12 @@ class EpollEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = PosixSocketUtils.createServerSocket(host, port)
+        val serverFd = PosixSocketUtils.createServerSocket(host, port, config.backlog)
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }

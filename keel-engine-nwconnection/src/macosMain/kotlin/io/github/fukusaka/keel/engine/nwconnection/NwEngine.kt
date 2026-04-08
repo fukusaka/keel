@@ -81,8 +81,11 @@ class NwEngine(
      * Creates an NWListener, starts it, and suspends until the listener
      * reaches the ready state. The listener's state_changed_handler
      * resumes the coroutine with the assigned port.
+     *
+     * Note: [BindConfig.backlog] is ignored. NWListener does not expose
+     * a configurable listen backlog; the OS manages it internally.
      */
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
         val portStr = if (port == 0) "0" else port.toString()
@@ -153,13 +156,16 @@ class NwEngine(
      * the ready state (Pipeline zero-coroutine principle). NWListener startup
      * is inherently async; the semaphore bridges it to synchronous return.
      *
+     * Note: [BindConfig.backlog] is ignored. NWListener does not expose
+     * a configurable listen backlog; the OS manages it internally.
+     *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
      * @return A [PipelinedServer] that cancels the listener when closed.
      */
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -209,7 +215,7 @@ class NwEngine(
                 // Listener-level TLS: connections arrive already TLS-encrypted,
                 // so skip per-connection TLS initialization.
                 if (!listenerLevelTls) {
-                    config?.initializeConnection(channel)
+                    config.initializeConnection(channel)
                 }
                 pipelineInitializer(channel)
                 channel.armRead()
@@ -301,15 +307,14 @@ class NwEngine(
     }
 
     /**
-     * Detects if the config requests listener-level TLS (e.g. [NwTlsInstaller]).
+     * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * Listener-level TLS is used when the installer is NOT a [TlsCodecFactory]
-     * (which would install per-connection TLS handlers). Same detection pattern
-     * as NodeEngine.
+     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * handle TLS at the listener level. Non-null installer means per-connection
+     * TLS via [initializeConnection].
      */
-    private fun isListenerLevelTls(config: BindConfig?): Boolean {
-        if (config !is TlsConnectorConfig) return false
-        return config.installer !is TlsCodecFactory
+    private fun isListenerLevelTls(config: BindConfig): Boolean {
+        return config is TlsConnectorConfig && config.installer == null
     }
 
     /**

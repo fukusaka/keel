@@ -58,16 +58,21 @@ fun registerTlsInstallerProvider(provider: (String) -> TlsInstaller) {
  */
 fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsConnectorConfig, AutoCloseable?> {
     val backend = requireNotNull(config.tls) { "--tls is required for TLS" }
-    return when (config.tlsInstaller) {
+    val tlsConfig = BenchmarkCertificates.tlsConfig()
+    return when (val installerName = config.tlsInstaller) {
         "keel" -> {
             val factory = createTlsCodecFactory(backend)
-            TlsConnectorConfig(BenchmarkCertificates.tlsConfig(), factory) to factory
+            TlsConnectorConfig(tlsConfig, factory) to factory
+        }
+        "nwconnection", "node" -> {
+            // Engine-native TLS: installer = null, engine handles TLS at listener level
+            TlsConnectorConfig(tlsConfig) to null
         }
         else -> {
             val provider = tlsInstallerProvider
-                ?: error("No TLS installer provider registered for '${config.tlsInstaller}'")
-            val installer = provider(config.tlsInstaller)
-            TlsConnectorConfig(BenchmarkCertificates.tlsConfig(), installer) to null
+                ?: error("No TLS installer provider registered for '$installerName'")
+            val installer = provider(installerName)
+            TlsConnectorConfig(tlsConfig, installer) to null
         }
     }
 }

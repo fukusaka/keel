@@ -15,6 +15,7 @@ external interface NodeEventEmitter {
 
 external interface Server : NodeEventEmitter {
     fun listen(port: Int, callback: () -> Unit = definedExternally): Server
+    fun listen(options: dynamic, callback: () -> Unit = definedExternally): Server
     fun close(callback: ((dynamic) -> Unit) = definedExternally): Server
     val listening: Boolean
     fun address(): dynamic

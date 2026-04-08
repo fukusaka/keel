@@ -12,6 +12,7 @@ import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelInitializer
+import io.netty.channel.ChannelOption
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
@@ -65,7 +66,7 @@ class NettyEngine(
     private val workerGroup = NioEventLoopGroup(config.threads)
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
         // Two-phase init: create NettyServer before bind so the
@@ -77,6 +78,7 @@ class NettyEngine(
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
+            .option(ChannelOption.SO_BACKLOG, bindConfig.backlog)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     // Disable auto-read initially. Auto-read is enabled
@@ -173,7 +175,7 @@ class NettyEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -181,6 +183,7 @@ class NettyEngine(
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
+            .option(ChannelOption.SO_BACKLOG, config.backlog)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     ch.config().isAutoRead = false
@@ -190,7 +193,7 @@ class NettyEngine(
                         ch, this@NettyEngine.config.allocator, remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
-                    config?.initializeConnection(keelChannel)
+                    config.initializeConnection(keelChannel)
                     pipelineInitializer(keelChannel)
                     keelChannel.armRead()
                 }

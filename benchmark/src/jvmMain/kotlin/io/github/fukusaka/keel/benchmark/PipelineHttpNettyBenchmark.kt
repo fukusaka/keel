@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.RoutingHandler
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
@@ -36,7 +37,7 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
-        val (tlsBindConfig, tlsCloseable) = if (config.tls != null) createTlsBindConfig(config) else (null to null)
+        val (tlsBindConfig, tlsCloseable) = if (config.tls != null) createTlsBindConfig(config) else (BindConfig() to null)
 
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },

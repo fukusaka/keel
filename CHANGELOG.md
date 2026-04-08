@@ -6,9 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- keel-core: `BindConfig` converted from marker interface to open class with `backlog` parameter (default 128)
+- keel-core: `StreamEngine.bind()` and `bindPipeline()` accept `BindConfig` with backlog propagated to all engines
+- keel-tls: `TlsConnectorConfig.installer` is now nullable — `null` means engine-native (listener-level) TLS
+- keel-tls: `TlsConnectorConfig` accepts `backlog` parameter inherited from `BindConfig`
+
+### Removed
+
+- keel-engine-nwconnection: remove `NwTlsInstaller` sentinel (replaced by `installer = null`)
+- benchmark: remove `NodeTlsInstaller` and `MacosTlsInstallerInit` sentinels
+
 ### Added
 
-- keel-engine-nwconnection: add `NwTlsInstaller` for listener-level TLS via Network.framework (`SecIdentityCreate` keychain-free, macOS 10.12+)
+- keel-engine-nwconnection: listener-level TLS via Network.framework (`SecIdentityCreate` keychain-free, macOS 10.12+)
 - keel-engine-nwconnection: add `NwTlsParams` for creating NWConnection TLS parameters from DER cert/key
 - keel-tls: add `PemDerConverter` for lossless PEM↔DER conversion (Base64 encode/decode)
 - keel-tls: add `Pkcs8KeyUnwrapper` for extracting inner PKCS#1/SEC1 keys from PKCS#8 envelopes (needed by Apple SecKeyCreateWithData)

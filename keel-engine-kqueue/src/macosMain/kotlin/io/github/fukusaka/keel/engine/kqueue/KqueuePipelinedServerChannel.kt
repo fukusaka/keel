@@ -42,7 +42,7 @@ internal class KqueuePipelinedServerChannel(
     private val workerGroup: KqueueEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val config: BindConfig?,
+    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -99,7 +99,7 @@ internal class KqueuePipelinedServerChannel(
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
         val transport = KqueueIoTransport(clientFd, loop)
         val channel = KqueuePipelinedChannel(clientFd, transport, loop, allocator, logger)
-        config?.initializeConnection(channel)
+        config.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }

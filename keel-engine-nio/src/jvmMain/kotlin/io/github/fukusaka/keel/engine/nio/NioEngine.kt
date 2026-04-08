@@ -75,12 +75,12 @@ class NioEngine(
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
         val serverChannel = ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(InetSocketAddress(host, port))
+        serverChannel.bind(InetSocketAddress(host, port), bindConfig.backlog)
 
         val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
@@ -178,14 +178,14 @@ class NioEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
         val serverChannel = java.nio.channels.ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(java.net.InetSocketAddress(host, port))
+        serverChannel.bind(java.net.InetSocketAddress(host, port), config.backlog)
 
         val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 

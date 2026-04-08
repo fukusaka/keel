@@ -39,9 +39,10 @@ interface StreamEngine : IoEngine {
      *
      * @param host Bind address (e.g. "0.0.0.0" for all interfaces, "127.0.0.1" for loopback).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
+     * @param config Per-server bind configuration (backlog, etc.).
      * @return a [Server] that accepts incoming connections.
      */
-    suspend fun bind(host: String, port: Int): Server
+    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): Server
 
     /**
      * Binds a server socket with Pipeline-mode connection handling.
@@ -62,7 +63,7 @@ interface StreamEngine : IoEngine {
      *
      * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
      * @param port Port number. 0 lets the OS assign an ephemeral port.
-     * @param config Per-server bind configuration (TLS, etc.). null = plain TCP.
+     * @param config Per-server bind configuration (backlog, TLS via subclass).
      * @param pipelineInitializer Callback to configure the channel for each accepted connection.
      *        Receives the [PipelinedChannel] for pipeline handler setup.
      * @return a [PipelinedServer] for lifecycle management.
@@ -71,7 +72,7 @@ interface StreamEngine : IoEngine {
     fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig? = null,
+        config: BindConfig = BindConfig(),
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         throw UnsupportedOperationException(

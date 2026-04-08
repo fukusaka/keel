@@ -4,14 +4,10 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.tls.PemDerConverter
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
-import io.github.fukusaka.keel.tls.TlsCodecFactory
-import io.github.fukusaka.keel.tls.TlsInstaller
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 class NwTlsParamsTest {
 
@@ -121,15 +117,4 @@ XDEgg9dRd2akza/XK5Hj
         }
     }
 
-    @Test
-    fun `NwTlsInstaller implements TlsInstaller`() {
-        // NwTlsInstaller is a sentinel implementing TlsInstaller
-        assertTrue(NwTlsInstaller is TlsInstaller)
-    }
-
-    @Test
-    fun `NwTlsInstaller is not TlsCodecFactory`() {
-        // isListenerLevelTls checks: installer !is TlsCodecFactory
-        assertFalse(NwTlsInstaller is TlsCodecFactory)
-    }
 }

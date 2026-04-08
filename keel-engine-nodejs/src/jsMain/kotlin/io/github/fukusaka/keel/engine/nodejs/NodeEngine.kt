@@ -48,7 +48,7 @@ class NodeEngine(
     private val logger = config.loggerFactory.logger("NodeEngine")
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int): KeelServer {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): KeelServer {
         check(!closed) { "Engine is closed" }
 
         return suspendCoroutine { cont ->
@@ -56,7 +56,10 @@ class NodeEngine(
                 // No-op: connections handled via "connection" event below
             }
 
-            srv.listen(port) {
+            val listenOpts = js("({})")
+            listenOpts.port = port
+            listenOpts.backlog = bindConfig.backlog
+            srv.listen(listenOpts) {
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = SocketAddress(host, assignedPort)
@@ -102,7 +105,7 @@ class NodeEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -132,13 +135,16 @@ class NodeEngine(
             // (tls.createServer) is already active at the transport level, so
             // initializeConnection is skipped for listener-level configs.
             if (!isListenerLevelTls(config)) {
-                config?.initializeConnection(channel)
+                config.initializeConnection(channel)
             }
             pipelineInitializer(channel)
             channel.armRead()
         }
 
-        srv.listen(port) {
+        val listenOpts = js("({})")
+        listenOpts.port = port
+        listenOpts.backlog = config.backlog
+        srv.listen(listenOpts) {
             val addr = srv.address()
             val assignedPort = addr.port as Int
             serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
@@ -191,7 +197,7 @@ class NodeEngine(
      * installer, creates a `tls.createServer()` for transport-level TLS.
      * Otherwise creates a plain `net.createServer()`.
      */
-    private fun createServer(config: BindConfig?): Server {
+    private fun createServer(config: BindConfig): Server {
         if (isListenerLevelTls(config)) {
             val tlsConfig = config as TlsConnectorConfig
             val certs = requireNotNull(tlsConfig.config.certificates) {
@@ -211,19 +217,18 @@ class NodeEngine(
      * `tls.Server` fires `"secureConnection"` (after TLS handshake)
      * instead of `"connection"` (plain TCP).
      */
-    private fun serverConnectionEvent(config: BindConfig?): String =
+    private fun serverConnectionEvent(config: BindConfig): String =
         if (isListenerLevelTls(config)) "secureConnection" else "connection"
 
     /**
-     * Checks if the config requires listener-level TLS (`tls.createServer()`).
+     * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * Returns true when the installer is NOT a [TlsCodecFactory] (i.e.,
-     * the user chose engine-native TLS). When the installer IS a
-     * [TlsCodecFactory], per-connection [TlsHandler] is used instead.
+     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * handle TLS at the listener level via `tls.createServer()`. Non-null
+     * installer means per-connection TLS via [initializeConnection].
      */
-    private fun isListenerLevelTls(config: BindConfig?): Boolean {
-        if (config !is TlsConnectorConfig) return false
-        return config.installer !is TlsCodecFactory
+    private fun isListenerLevelTls(config: BindConfig): Boolean {
+        return config is TlsConnectorConfig && config.installer == null
     }
 
     /**
