@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.Server as KeelServer
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -80,7 +80,7 @@ class NodeEngine(
      *
      * Creates a Node.js `net.Server` with a connection handler that wraps
      * each accepted connection in a [NodePipelinedChannel] and feeds data
-     * through the [ChannelPipeline] — no coroutine suspension on the
+     * through the [PipelinedChannel] pipeline — no coroutine suspension on the
      * request hot path.
      *
      * Non-suspend: Node.js `server.listen()` is async, but for non-zero
@@ -95,7 +95,7 @@ class NodeEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (ChannelPipeline) -> Unit,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
         require(port > 0) {
@@ -115,7 +115,7 @@ class NodeEngine(
             val channel = NodePipelinedChannel(
                 typedSocket, config.allocator, remoteAddr, null, channelLogger,
             )
-            pipelineInitializer(channel.pipeline)
+            pipelineInitializer(channel)
             channel.armRead()
         }
 

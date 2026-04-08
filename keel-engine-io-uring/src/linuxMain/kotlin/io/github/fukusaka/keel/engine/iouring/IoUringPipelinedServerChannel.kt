@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.close
@@ -41,7 +41,7 @@ internal class IoUringPipelinedServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     private val serverFds: IntArray,
     private val localAddr: SocketAddress,
-    private val pipelineInitializer: (ChannelPipeline) -> Unit,
+    private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
 ) : PipelinedServer {
@@ -92,7 +92,7 @@ internal class IoUringPipelinedServerChannel(
         val channel = IoUringPipelinedChannel(
             clientFd, transport, loop, bufferRing, allocator, logger,
         )
-        pipelineInitializer(channel.pipeline)
+        pipelineInitializer(channel)
         channel.armRecv()
     }
 

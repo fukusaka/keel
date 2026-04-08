@@ -10,9 +10,9 @@ package io.github.fukusaka.keel.core
  * [StreamEngine.bindPipeline].
  *
  * ```
- * val server = engine.bindPipeline("0.0.0.0", 8080) { pipeline ->
- *     pipeline.addLast("tls", TlsHandler(codec))
- *     pipeline.addLast("http", HttpHandler())
+ * val server = engine.bindPipeline("0.0.0.0", 8080) { channel ->
+ *     tlsInstaller.install(channel, tlsConfig) // optional TLS
+ *     channel.pipeline.addLast("http", HttpHandler())
  * }
  * println("Listening on ${server.localAddress}")
  * // ... server runs until close

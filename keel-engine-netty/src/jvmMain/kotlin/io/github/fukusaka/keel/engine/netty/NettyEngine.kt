@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
@@ -172,7 +172,7 @@ class NettyEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        pipelineInitializer: (ChannelPipeline) -> Unit,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
@@ -188,7 +188,7 @@ class NettyEngine(
                         ch, config.allocator, remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
-                    pipelineInitializer(keelChannel.pipeline)
+                    pipelineInitializer(keelChannel)
                     keelChannel.armRead()
                 }
             })
