@@ -48,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- keel-tls: `TlsCodecFactory` now implements `TlsInstaller` with default `install()` that creates server codec and adds `TlsHandler` at pipeline HEAD
+- keel-tls: simplify `TlsConnectorConfig` from `codecFactory` + `installer?` to single `installer` field
+- keel-ktor-engine: simplify `sslConnector()` API from 3 params (`tlsConfig`, `codecFactory`, `installer?`) to 2 params (`tlsConfig`, `installer`)
+- keel-core: change `StreamEngine.bindPipeline` initializer from `(ChannelPipeline) -> Unit` to `(PipelinedChannel) -> Unit` — enables engine-specific TLS installers in pipeline mode
 - benchmark: introduce `commonForKtorServerMain` intermediate source set to isolate Ktor Server dependencies from JS compilation
 - keel-engine-nodejs: unify `NodeChannel` into `NodePipelinedChannel` — supports both Pipeline mode (push I/O) and Channel mode (SuspendBridgeHandler pull)
 - build: promote `keel-tls-jsse` to always-included (JDK standard, no external deps); move `keel-tls-mbedtls` to `-Ptls` opt-in (requires Mbed TLS cinterop)
