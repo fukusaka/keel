@@ -42,7 +42,7 @@ internal class IoUringPipelinedServerChannel(
     private val workerGroup: IoUringEventLoopGroup,
     private val serverFds: IntArray,
     private val localAddr: SocketAddress,
-    private val config: BindConfig?,
+    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
@@ -94,7 +94,7 @@ internal class IoUringPipelinedServerChannel(
         val channel = IoUringPipelinedChannel(
             clientFd, transport, loop, bufferRing, allocator, logger,
         )
-        config?.initializeConnection(channel)
+        config.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRecv()
     }

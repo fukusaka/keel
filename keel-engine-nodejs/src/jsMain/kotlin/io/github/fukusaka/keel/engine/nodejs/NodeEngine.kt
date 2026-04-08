@@ -48,7 +48,7 @@ class NodeEngine(
     private val logger = config.loggerFactory.logger("NodeEngine")
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int): KeelServer {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): KeelServer {
         check(!closed) { "Engine is closed" }
 
         return suspendCoroutine { cont ->
@@ -102,7 +102,7 @@ class NodeEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -132,7 +132,7 @@ class NodeEngine(
             // (tls.createServer) is already active at the transport level, so
             // initializeConnection is skipped for listener-level configs.
             if (!isListenerLevelTls(config)) {
-                config?.initializeConnection(channel)
+                config.initializeConnection(channel)
             }
             pipelineInitializer(channel)
             channel.armRead()
@@ -191,7 +191,7 @@ class NodeEngine(
      * installer, creates a `tls.createServer()` for transport-level TLS.
      * Otherwise creates a plain `net.createServer()`.
      */
-    private fun createServer(config: BindConfig?): Server {
+    private fun createServer(config: BindConfig): Server {
         if (isListenerLevelTls(config)) {
             val tlsConfig = config as TlsConnectorConfig
             val certs = requireNotNull(tlsConfig.config.certificates) {
@@ -211,7 +211,7 @@ class NodeEngine(
      * `tls.Server` fires `"secureConnection"` (after TLS handshake)
      * instead of `"connection"` (plain TCP).
      */
-    private fun serverConnectionEvent(config: BindConfig?): String =
+    private fun serverConnectionEvent(config: BindConfig): String =
         if (isListenerLevelTls(config)) "secureConnection" else "connection"
 
     /**
@@ -221,7 +221,7 @@ class NodeEngine(
      * the user chose engine-native TLS). When the installer IS a
      * [TlsCodecFactory], per-connection [TlsHandler] is used instead.
      */
-    private fun isListenerLevelTls(config: BindConfig?): Boolean {
+    private fun isListenerLevelTls(config: BindConfig): Boolean {
         if (config !is TlsConnectorConfig) return false
         return config.installer !is TlsCodecFactory
     }

@@ -5,22 +5,25 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 /**
  * Per-server bind configuration for [StreamEngine.bindPipeline].
  *
- * Implementations provide per-connection initialization logic (e.g., TLS
- * handler installation) that runs after accept and before the pipeline
- * initializer callback.
+ * Provides bind-time parameters (e.g., listen backlog) and an optional
+ * per-connection initialization hook (e.g., TLS handler installation).
  *
  * ```
  * Config scope:
  *   IoEngineConfig  -- engine-wide (allocator, threads)
- *   BindConfig      -- per-server  (TLS, backlog: deferred)
+ *   BindConfig      -- per-server  (backlog, TLS)
  *   Channel props   -- per-channel (readTimeout, tcpNoDelay: deferred)
  * ```
  *
- * Currently a marker interface with a default per-connection hook.
- * Will evolve into a DSL builder as more per-server options are added
- * (backlog, SO_REUSEPORT, socket options).
+ * Subclass [BindConfig] to add protocol-specific settings.
+ * [TlsConnectorConfig][io.github.fukusaka.keel.tls.TlsConnectorConfig]
+ * extends this class with TLS certificates and installer configuration.
+ *
+ * @param backlog TCP listen backlog. OS may cap or adjust this value.
  */
-interface BindConfig {
+open class BindConfig(
+    val backlog: Int = DEFAULT_BACKLOG,
+) {
 
     /**
      * Per-connection initializer called after accept, before the pipeline
@@ -31,5 +34,10 @@ interface BindConfig {
      * NWConnection) may skip this callback and handle TLS at the listener
      * level directly.
      */
-    fun initializeConnection(channel: PipelinedChannel) {}
+    open fun initializeConnection(channel: PipelinedChannel) {}
+
+    companion object {
+        /** Default TCP listen backlog (128). Common OS default on Linux and macOS. */
+        const val DEFAULT_BACKLOG = 128
+    }
 }

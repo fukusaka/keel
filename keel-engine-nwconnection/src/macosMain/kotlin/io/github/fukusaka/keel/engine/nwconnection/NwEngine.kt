@@ -82,7 +82,7 @@ class NwEngine(
      * reaches the ready state. The listener's state_changed_handler
      * resumes the coroutine with the assigned port.
      */
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
         val portStr = if (port == 0) "0" else port.toString()
@@ -159,7 +159,7 @@ class NwEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -209,7 +209,7 @@ class NwEngine(
                 // Listener-level TLS: connections arrive already TLS-encrypted,
                 // so skip per-connection TLS initialization.
                 if (!listenerLevelTls) {
-                    config?.initializeConnection(channel)
+                    config.initializeConnection(channel)
                 }
                 pipelineInitializer(channel)
                 channel.armRead()
@@ -307,7 +307,7 @@ class NwEngine(
      * (which would install per-connection TLS handlers). Same detection pattern
      * as NodeEngine.
      */
-    private fun isListenerLevelTls(config: BindConfig?): Boolean {
+    private fun isListenerLevelTls(config: BindConfig): Boolean {
         if (config !is TlsConnectorConfig) return false
         return config.installer !is TlsCodecFactory
     }

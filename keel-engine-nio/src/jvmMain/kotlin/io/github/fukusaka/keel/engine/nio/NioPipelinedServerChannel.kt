@@ -27,7 +27,7 @@ internal class NioPipelinedServerChannel(
     private val workerGroup: NioEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val config: BindConfig?,
+    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedServer {
 
@@ -85,7 +85,7 @@ internal class NioPipelinedServerChannel(
         val clientKey = client.register(loop.selector, 0)
         val transport = NioIoTransport(client, clientKey, loop)
         val channel = NioPipelinedChannel(client, clientKey, transport, loop, allocator, logger)
-        config?.initializeConnection(channel)
+        config.initializeConnection(channel)
         pipelineInitializer(channel)
         channel.armRead()
     }

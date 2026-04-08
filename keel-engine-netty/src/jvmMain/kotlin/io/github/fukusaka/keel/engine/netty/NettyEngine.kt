@@ -65,7 +65,7 @@ class NettyEngine(
     private val workerGroup = NioEventLoopGroup(config.threads)
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int): ServerChannel {
+    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
         // Two-phase init: create NettyServer before bind so the
@@ -173,7 +173,7 @@ class NettyEngine(
     override fun bindPipeline(
         host: String,
         port: Int,
-        config: BindConfig?,
+        config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
@@ -190,7 +190,7 @@ class NettyEngine(
                         ch, this@NettyEngine.config.allocator, remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
-                    config?.initializeConnection(keelChannel)
+                    config.initializeConnection(keelChannel)
                     pipelineInitializer(keelChannel)
                     keelChannel.armRead()
                 }

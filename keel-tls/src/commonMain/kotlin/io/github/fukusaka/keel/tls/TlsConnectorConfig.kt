@@ -33,7 +33,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 data class TlsConnectorConfig(
     val config: TlsConfig,
     val installer: TlsInstaller,
-) : BindConfig {
+) : BindConfig() {
 
     /** Installs TLS on the channel via [installer]. */
     override fun initializeConnection(channel: PipelinedChannel) {
