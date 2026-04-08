@@ -30,7 +30,7 @@ fun main(args: Array<String>) {
     if (eb == null) {
         printErr("Unknown engine: ${config.engine}")
         printErr("Available: ${registry.keys.joinToString(", ")}")
-        kotlin.system.exitProcess(1)
+        benchmarkExit(1)
     }
 
     if (config.showConfig) {

@@ -35,6 +35,9 @@ expect fun detectOsSocketDefaults(): OsSocketDefaults
 /** Print to stderr (JVM) or stdout (Native). */
 expect fun printErr(message: String)
 
+/** Terminate the process with the given exit code. */
+expect fun benchmarkExit(code: Int): Nothing
+
 /** Format `"  label                value\n"` with 22-char padded label. */
 fun StringBuilder.fmtLine(label: String, value: String) {
     append("  ")

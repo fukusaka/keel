@@ -9,6 +9,9 @@ actual fun printErr(message: String) {
     println(message)
 }
 
+/** Terminate the native process via [kotlin.system.exitProcess]. */
+actual fun benchmarkExit(code: Int): Nothing = kotlin.system.exitProcess(code)
+
 /** Number of available CPU cores via [Platform.getAvailableProcessors]. */
 @OptIn(ExperimentalNativeApi::class)
 actual fun availableProcessors(): Int = Platform.getAvailableProcessors()

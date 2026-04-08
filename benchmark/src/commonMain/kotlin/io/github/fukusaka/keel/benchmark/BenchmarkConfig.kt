@@ -91,7 +91,7 @@ data class BenchmarkConfig(
             else -> {
                 printErr("Unknown profile: $profile")
                 printErr("Available: ${VALID_PROFILES.joinToString(", ")}, keel-equiv-<version>")
-                kotlin.system.exitProcess(1)
+                benchmarkExit(1)
             }
         }
 
