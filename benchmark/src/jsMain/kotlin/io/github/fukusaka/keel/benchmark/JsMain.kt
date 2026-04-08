@@ -16,6 +16,7 @@ package io.github.fukusaka.keel.benchmark
 fun main(@Suppress("UNUSED_PARAMETER") args: Array<String>) {
     val argv: Array<String> = js("process.argv.slice(2)") as Array<String>
     val config = BenchmarkConfig.parse(argv)
+    registerNodeTlsInstaller()
     validateTlsBackend(config)
 
     val registry = engineRegistry()

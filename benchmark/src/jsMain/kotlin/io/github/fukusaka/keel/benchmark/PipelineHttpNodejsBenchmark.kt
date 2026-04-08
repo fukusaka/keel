@@ -34,17 +34,14 @@ object PipelineHttpNodejsBenchmark : EngineBenchmark {
         helloResponse.headers.size
         largeResponse.headers.size
 
-        val tlsFactory = config.tls?.let { createTlsCodecFactory(it) }
+        val (tlsBindConfig, tlsCloseable) = if (config.tls != null) createTlsBindConfig(config) else (null to null)
 
         val routes: Map<String, (HttpRequestHead) -> HttpResponse> = mapOf(
             "/hello" to { helloResponse },
             "/large" to { largeResponse },
         )
 
-        val server = engine.bindPipeline("0.0.0.0", config.port) { channel ->
-            if (tlsFactory != null) {
-                tlsFactory.install(channel, BenchmarkCertificates.tlsConfig())
-            }
+        val server = engine.bindPipeline("0.0.0.0", config.port, config = tlsBindConfig) { channel ->
             channel.pipeline.addLast("encoder", HttpResponseEncoder())
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
             channel.pipeline.addLast("routing", RoutingHandler(routes))
@@ -52,7 +49,7 @@ object PipelineHttpNodejsBenchmark : EngineBenchmark {
 
         return {
             server.close()
-            tlsFactory?.close()
+            tlsCloseable?.close()
             engine.close()
         }
     }
