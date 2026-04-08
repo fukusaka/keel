@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-engine-nwconnection: add `NwTlsInstaller` for listener-level TLS via Network.framework (`SecIdentityCreate` keychain-free, macOS 10.12+)
+- keel-engine-nwconnection: add `NwTlsParams` for creating NWConnection TLS parameters from DER cert/key
 - keel-tls: add `PemDerConverter` for lossless PEM↔DER conversion (Base64 encode/decode)
 - keel-tls: add `Pkcs8KeyUnwrapper` for extracting inner PKCS#1/SEC1 keys from PKCS#8 envelopes (needed by Apple SecKeyCreateWithData)
 - keel-tls: add `asPem()`/`asDer()` extension functions on `TlsCertificateSource` for transparent format conversion
