@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # WebSocket Codec
 
-The `:codec-websocket` module provides an RFC 6455-compliant WebSocket
+The `keel-codec-websocket` module provides an RFC 6455-compliant WebSocket
 framing codec. It has zero external dependencies (SHA-1 is implemented
 in pure Kotlin per RFC 3174).
 

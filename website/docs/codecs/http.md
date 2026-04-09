@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # HTTP/1.1 Codec
 
-The `:codec-http` module provides an RFC 7230/7231-compliant HTTP/1.1
+The `keel-codec-http` module provides an RFC 7230/7231-compliant HTTP/1.1
 parser and writer. It depends only on `kotlinx.io` and works on all
 supported targets.
 
