@@ -11,6 +11,10 @@ import kotlin.native.ref.createCleaner
  * invoked (i.e., release() was never called to reach refCount=0), the Cleaner
  * fires and invokes [onLeak] with the allocation site stack trace.
  *
+ * **Detection timing**: the Cleaner fires during the next GC cycle after the
+ * buffer becomes unreachable. In tests, [kotlin.native.runtime.GC.collect]
+ * triggers this synchronously.
+ *
  * **Cleaner constraints:**
  * - [LeakState] must NOT reference the buffer (circular reference prevents GC).
  * - [LeakState.released] is `@Volatile` because the Cleaner callback may run

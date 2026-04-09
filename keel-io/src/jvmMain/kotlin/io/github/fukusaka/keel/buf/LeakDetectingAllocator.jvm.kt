@@ -7,13 +7,19 @@ import java.lang.ref.ReferenceQueue
  * JVM leak detection using [PhantomReference] + [ReferenceQueue].
  *
  * When the buffer object is garbage-collected, its PhantomReference is
- * enqueued in the ReferenceQueue. A check drains the queue and reports
- * any buffers that were GC'd without being released.
+ * enqueued in the ReferenceQueue. [drainLeakQueue] polls the queue and
+ * reports any buffers that were GC'd without being released.
  *
- * Unlike Native's Cleaner (which fires automatically), JVM requires
- * explicit polling of the ReferenceQueue. [LeakDetectingAllocator]
- * checks on each allocation, so leaked buffers are reported when the
- * next buffer is allocated.
+ * **Detection timing**: unlike Native's Cleaner (which fires automatically
+ * during GC), JVM requires explicit polling of the ReferenceQueue.
+ * [drainLeakQueue] is called on each [installLeakDetection] invocation
+ * (i.e., each `allocate()` call), so leaked buffers are reported when the
+ * next buffer is allocated after GC. This means the last leaked buffer
+ * is only reported if another allocation follows the GC.
+ *
+ * **Non-determinism**: [System.gc] is a hint; the JVM may defer collection.
+ * In tests, multiple `System.gc()` + `Thread.sleep()` cycles followed by
+ * an allocation improve reliability but do not guarantee detection.
  */
 internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): IoBuf {
     val allocationSite = Exception("Buffer allocated here").stackTraceToString()
