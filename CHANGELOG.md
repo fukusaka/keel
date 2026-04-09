@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- keel-core: write backpressure with high/low water mark on `IoTransport` (`isWritable`, `onWritabilityChanged`)
+- keel-core: `ChannelInboundHandler.onWritabilityChanged()` and `ChannelPipeline.notifyWritabilityChanged()` for pipeline propagation
+- All 7 engines: `pendingBytes` tracking in IoTransport, `PipelinedChannel.isWritable` connected to transport
+
 ### Changed
 
 - keel-core: `BindConfig` converted from marker interface to open class with `backlog` parameter (default 128)
