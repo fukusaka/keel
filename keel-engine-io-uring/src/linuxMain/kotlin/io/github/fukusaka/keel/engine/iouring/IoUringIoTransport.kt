@@ -160,6 +160,9 @@ internal class IoUringIoTransport(
 
     /**
      * Gather write via `keel_writev()` for multiple pending writes.
+     *
+     * On partial write, releases fully-written buffers and submits
+     * the remainder as an async SEND chain via [submitAsyncWritevRemainder].
      */
     private fun flushDirectSendGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
