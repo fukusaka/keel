@@ -60,3 +60,34 @@ object DefaultAllocator : BufferAllocator {
  * - **JS**: [DefaultAllocator] — V8 GC manages Int8Array; pooling is unnecessary
  */
 expect fun defaultAllocator(): BufferAllocator
+
+/**
+ * Wraps this allocator with [TrackingAllocator] for allocate/release counting.
+ *
+ * Returns [TrackingAllocator] so callers can access [TrackingAllocator.assertNoLeaks],
+ * [TrackingAllocator.allocateCount], etc.
+ *
+ * **Recommended chain order**: call `withTracking()` last so the returned
+ * type exposes the tracking API:
+ * ```
+ * val tracker = SlabAllocator()
+ *     .withLeakDetection { msg -> fail(msg) }
+ *     .withTracking()
+ * // ... run test ...
+ * tracker.assertNoLeaks()
+ * ```
+ */
+fun BufferAllocator.withTracking(): TrackingAllocator = TrackingAllocator(this)
+
+/**
+ * Wraps this allocator with [LeakDetectingAllocator] for GC-based leak detection.
+ *
+ * Each allocated buffer is instrumented with platform-specific tracking.
+ * When a buffer is garbage-collected without being released, [onLeak] is
+ * invoked with the allocation site stack trace.
+ *
+ * See [LeakDetectingAllocator] for detection timing and platform differences.
+ */
+fun BufferAllocator.withLeakDetection(
+    onLeak: (String) -> Unit = { msg -> println("BUFFER LEAK: $msg") },
+): LeakDetectingAllocator = LeakDetectingAllocator(this, onLeak)
