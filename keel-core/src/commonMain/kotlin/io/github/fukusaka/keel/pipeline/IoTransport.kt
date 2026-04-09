@@ -87,7 +87,9 @@ interface IoTransport {
      * Called with `false` when pending bytes cross [highWaterMark] (stop writing),
      * and `true` when they drop below [lowWaterMark] (resume writing).
      */
-    var onWritabilityChanged: ((Boolean) -> Unit)? get() = null; set(_) {}
+    var onWritabilityChanged: ((Boolean) -> Unit)?
+        get() = null
+        set(_) {}
 
     /** Closes the transport and releases resources. */
     fun close()
