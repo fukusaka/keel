@@ -68,12 +68,12 @@ internal class NodeIoTransport(
         var totalFlushed = 0
         for (pw in pendingWrites) {
             val src = pw.buf.unsafeArray
-            val jsArray = js("[]")
-            for (i in 0 until pw.length) {
-                jsArray.push(src.asDynamic()[pw.offset + i])
-            }
-            val nodeBuffer = js("require('buffer').Buffer.from(jsArray)")
-            socket.write(nodeBuffer)
+            // Int8Array.subarray shares the same underlying ArrayBuffer (zero-copy view).
+            // Buffer.from(TypedArray) copies the data into a new Node.js Buffer.
+            // This replaces the previous byte-by-byte jsArray.push loop (O(n) per byte).
+            val slice = src.subarray(pw.offset, pw.offset + pw.length)
+            val nodeBuf = nodeBuffer.from(slice)
+            socket.write(nodeBuf)
             pw.buf.release()
             totalFlushed += pw.length
         }
@@ -102,4 +102,9 @@ internal class NodeIoTransport(
      * where readable data starts, and the number of bytes to write.
      */
     internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
+
+    companion object {
+        /** Cached Node.js Buffer constructor to avoid per-flush require() lookup. */
+        private val nodeBuffer = js("require('buffer').Buffer")
+    }
 }
