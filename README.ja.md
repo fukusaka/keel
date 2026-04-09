@@ -161,24 +161,36 @@ Maven Central への公開は将来のリリースで予定しています。
 | macOS | Apple M1 Max (10 cores) | 64 GB | macOS 15.4, Java 21 Temurin |
 | Linux | AMD Ryzen 9 9950X3D (16 cores) | 192 GB | Ubuntu 24.04, Java 21 Azul Zulu |
 
-### ハイライト
+### Linux (Pipeline API, HTTP)
 
-- **864K req/s** — pipeline-http-epoll (Linux Ryzen 9)、ktor-cio の 6 倍
-- **543K req/s** — pipeline-http-io-uring HTTPS (Linux, OpenSSL)
-- **151K req/s** — pipeline-http-kqueue (macOS M1)、Rust actix-web の 94%
-- **138K req/s** — pipeline-http-kqueue HTTPS (macOS, OpenSSL、オーバーヘッドわずか 9%)
+| サーバー | Req/sec | p50 | p99 |
+|---|---:|---:|---:|
+| Rust actix-web | 1,319K | 39us | 110us |
+| **keel epoll** | **864K** | **58us** | **174us** |
+| **keel io_uring** | **855K** | **59us** | **170us** |
+| **keel NIO** (JVM) | **719K** | **73us** | **1.23ms** |
+| ktor-cio (JVM) | 144K | 572us | 4.40ms |
+| **keel Node.js** (JS) | **153K** | **560us** | **1.67ms** |
 
-### Pipeline API (req/s)
+### macOS (Pipeline API, HTTP)
 
-| エンジン | macOS | Linux |
-|---|---:|---:|
-| epoll | — | 864K |
-| io_uring | — | 855K |
-| kqueue | 151K | — |
-| NIO (JVM) | 142K | 719K |
-| Netty (JVM) | 132K | — |
-| Node.js (JS) | 66K | 153K |
-| NWConnection | 47K | — |
+| サーバー | Req/sec | p50 | p99 |
+|---|---:|---:|---:|
+| Rust actix-web | 161K | 583us | 0.88ms |
+| **keel kqueue** | **151K** | **380us** | **4.38ms** |
+| **keel NIO** (JVM) | **142K** | **410us** | **11.80ms** |
+| **keel Netty** (JVM) | **132K** | **499us** | **6.18ms** |
+| **keel Node.js** (JS) | **66K** | **1.43ms** | **2.32ms** |
+| **keel NWConnection** | **47K** | **1.87ms** | **13.82ms** |
+
+### HTTPS (Pipeline API)
+
+| サーバー | TLS | Req/sec | p50 |
+|---|---|---:|---:|
+| **keel io_uring** (Linux) | OpenSSL | **543K** | **94us** |
+| **keel epoll** (Linux) | OpenSSL | **529K** | **99us** |
+| **keel kqueue** (macOS) | OpenSSL | **138K** | **458us** |
+| **keel Netty** (macOS) | Netty SslHandler | **98K** | **431us** |
 
 ---
 
