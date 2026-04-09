@@ -36,6 +36,7 @@ epoll / kqueue / io_uring / NIO / Netty / NWConnection / Node.js
 | `keel-tls-openssl` | Native TLS (OpenSSL cinterop) |
 | `keel-tls-mbedtls` | Native TLS (Mbed TLS cinterop) |
 | `keel-tls-awslc` | Native TLS (AWS-LC cinterop) |
+| `keel-tls-nodejs` | JS TLS (Node.js tls module) |
 | `keel-codec-http` | HTTP/1.1 parser / writer |
 | `keel-codec-websocket` | WebSocket framing |
 | `keel-ktor-engine` | Ktor server engine adapter |

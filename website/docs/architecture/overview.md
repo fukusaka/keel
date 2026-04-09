@@ -42,8 +42,9 @@ See [Pipeline Mode](./pipeline.md) for details.
 - **Native memory control** — `IoBuf` uses `nativeHeap` on Native targets
   and `ByteBuffer.allocateDirect` on JVM for zero-copy I/O.
 - **Pluggable allocator** — `BufferAllocator` allows per-engine
-  memory strategies: `SlabAllocator` (Native), `PooledDirectAllocator` (JVM NIO),
-  `HeapAllocator` (testing).
+  memory strategies: `SlabAllocator` (Native), `PooledDirectAllocator` (JVM),
+  `DefaultAllocator` (testing). `TrackingAllocator` and `LeakDetectingAllocator`
+  provide leak detection.
 
 ## KMP Targets
 
