@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.buf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class BufferAllocatorTest {
 
@@ -47,5 +48,40 @@ class BufferAllocatorTest {
     fun createForEventLoopReturnsSelf() {
         val allocator = DefaultAllocator.createForEventLoop()
         assertEquals(DefaultAllocator, allocator)
+    }
+
+    @Test
+    fun `withTracking returns TrackingAllocator wrapping delegate`() {
+        val tracker = DefaultAllocator.withTracking()
+        assertTrue(tracker is TrackingAllocator)
+
+        val buf = tracker.allocate(64)
+        buf.release()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `withLeakDetection returns LeakDetectingAllocator wrapping delegate`() {
+        val leaks = mutableListOf<String>()
+        val allocator = DefaultAllocator.withLeakDetection { leaks.add(it) }
+        assertTrue(allocator is LeakDetectingAllocator)
+
+        val buf = allocator.allocate(64)
+        buf.release()
+        assertEquals(0, leaks.size)
+    }
+
+    @Test
+    fun `chained withLeakDetection then withTracking`() {
+        val leaks = mutableListOf<String>()
+        val tracker = DefaultAllocator
+            .withLeakDetection { leaks.add(it) }
+            .withTracking()
+
+        val buf = tracker.allocate(64)
+        buf.release()
+
+        assertEquals(0, leaks.size)
+        tracker.assertNoLeaks()
     }
 }

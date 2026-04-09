@@ -10,6 +10,12 @@ package io.github.fukusaka.keel.buf
  * Used for testing (asserting allocate/release symmetry) and profiling
  * (measuring allocation frequency during benchmarks).
  *
+ * Can be combined with [LeakDetectingAllocator] in either order:
+ * - `TrackingAllocator(LeakDetectingAllocator(delegate))` — count + leak detection
+ * - `LeakDetectingAllocator(TrackingAllocator(delegate))` — same, different order
+ *
+ * Both work because each wraps the deallocator chain independently.
+ *
  * **Thread safety**: not thread-safe. Intended for single-threaded test
  * execution where allocate/release are called from the same thread.
  *
@@ -17,7 +23,7 @@ package io.github.fukusaka.keel.buf
  * val tracker = TrackingAllocator(DefaultAllocator)
  * val engine = IoEngine(IoEngineConfig(allocator = tracker))
  * // ... run test or benchmark ...
- * assertEquals(tracker.allocateCount, tracker.releaseCount)  // no leak
+ * tracker.assertNoLeaks()  // throws if outstandingCount != 0
  * ```
  *
  * @param delegate The underlying allocator to delegate to.
@@ -48,9 +54,26 @@ class TrackingAllocator(
         val original = poolable.deallocator
         poolable.deallocator = { b ->
             releaseCount++
+            check(releaseCount <= allocateCount) {
+                "Double release detected: releaseCount ($releaseCount) > allocateCount ($allocateCount)"
+            }
             original?.invoke(b) ?: b.close()
         }
         return buf
+    }
+
+    override fun createForEventLoop(): BufferAllocator =
+        TrackingAllocator(delegate.createForEventLoop())
+
+    /**
+     * Asserts that all allocated buffers have been released.
+     *
+     * @throws IllegalStateException if [outstandingCount] is not zero.
+     */
+    fun assertNoLeaks(message: String = "Buffer leak detected") {
+        check(outstandingCount == 0) {
+            "$message: allocated=$allocateCount, released=$releaseCount, outstanding=$outstandingCount"
+        }
     }
 
     /** Resets counters to zero. */
@@ -59,3 +82,21 @@ class TrackingAllocator(
         releaseCount = 0
     }
 }
+
+/**
+ * Wraps this allocator with [TrackingAllocator] for allocate/release counting.
+ *
+ * Returns [TrackingAllocator] so callers can access [TrackingAllocator.assertNoLeaks],
+ * [TrackingAllocator.allocateCount], etc.
+ *
+ * **Recommended chain order**: call `withTracking()` last so the returned
+ * type exposes the tracking API:
+ * ```
+ * val tracker = SlabAllocator()
+ *     .withLeakDetection { msg -> fail(msg) }
+ *     .withTracking()
+ * // ... run test ...
+ * tracker.assertNoLeaks()
+ * ```
+ */
+fun BufferAllocator.withTracking(): TrackingAllocator = TrackingAllocator(this)
