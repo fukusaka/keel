@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.unsafeArray
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
@@ -123,14 +124,13 @@ internal class NodePipelinedChannel(
             if (dataLength == 0) return@on
 
             val buf = allocator.allocate(dataLength)
-            // Copy Node.js Buffer to IoBuf via bulk copy.
-            // Node.js Buffer is a Uint8Array subclass; extract bytes into
-            // a ByteArray and use writeByteArray() for efficient transfer.
-            val bytes = ByteArray(dataLength)
-            for (i in 0 until dataLength) {
-                bytes[i] = (data[i] as Int).toByte()
-            }
-            buf.writeByteArray(bytes, 0, dataLength)
+            // Copy Node.js Buffer (Uint8Array subclass) to IoBuf's Int8Array.
+            // Int8Array and Uint8Array share the same byte representation,
+            // so we create an Int8Array view over the Buffer's ArrayBuffer
+            // and use IoBuf.unsafeArray.set() for a single native memcpy.
+            val srcView = js("new Int8Array(data.buffer, data.byteOffset, data.length)")
+            buf.unsafeArray.asDynamic().set(srcView, buf.writerIndex)
+            buf.writerIndex += dataLength
 
             pipeline.notifyRead(buf)
         }
