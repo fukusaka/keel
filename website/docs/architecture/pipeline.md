@@ -78,4 +78,4 @@ All 7 engines implement `PipelinedChannel`:
 
 ## Performance
 
-Pipeline mode avoids coroutine context switches on the I/O path. On Linux (Ryzen 9), pipeline-http-epoll reaches **864K req/s** compared to ktor-keel-epoll at 581K (49% improvement). With HTTPS (OpenSSL), pipeline-http-epoll reaches **529K req/s**.
+Pipeline mode avoids coroutine context switches on the I/O path. On Linux (Ryzen 9), pipeline-http-epoll reaches **864K req/s** compared to ktor-keel-epoll at 589K (47% improvement). With HTTPS (OpenSSL), pipeline-http-epoll reaches **529K req/s**.
