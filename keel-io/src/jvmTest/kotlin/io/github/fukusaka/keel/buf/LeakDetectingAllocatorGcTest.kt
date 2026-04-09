@@ -17,6 +17,14 @@ import kotlin.test.assertTrue
  */
 class LeakDetectingAllocatorGcTest {
 
+    /**
+     * Verifies that an unreleased buffer triggers [onLeak] after GC.
+     *
+     * Because [System.gc] is a hint (not guaranteed), this test validates
+     * the leak message format only when GC cooperates. If GC does not
+     * collect the buffer, the test still passes — the mechanism itself
+     * is structurally correct; only the JVM's GC scheduling is uncertain.
+     */
     @Test
     fun `unreleased buffer triggers onLeak after GC and next allocation`() {
         val leaks = mutableListOf<String>()
@@ -35,6 +43,7 @@ class LeakDetectingAllocatorGcTest {
         // Trigger drainLeakQueue via next allocation.
         val probe = allocator.allocate(32)
 
+        // System.gc() is best-effort; validate message format only when GC cooperates.
         if (leaks.isNotEmpty()) {
             assertTrue(
                 leaks[0].contains("Unreleased buffer detected"),
@@ -45,9 +54,6 @@ class LeakDetectingAllocatorGcTest {
                 "Leak message should contain allocation site stack trace",
             )
         }
-        // Note: System.gc() is best-effort; the test passes even if GC
-        // does not collect the buffer. The mechanism is verified by the
-        // assertion above when GC cooperates.
 
         probe.release()
     }

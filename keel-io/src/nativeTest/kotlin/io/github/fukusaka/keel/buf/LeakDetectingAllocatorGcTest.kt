@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
  * Native-specific tests for GC-triggered leak detection via [createCleaner].
  *
  * These tests verify that unreleased buffers are detected when the garbage
- * collector reclaims them. [kotlin.native.internal.GC.collect] forces a GC
+ * collector reclaims them. [kotlin.native.runtime.GC.collect] forces a GC
  * cycle to trigger the Cleaner callback synchronously.
  *
  * Note: GC-based detection is inherently non-deterministic in production.
