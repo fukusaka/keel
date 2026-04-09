@@ -67,9 +67,12 @@ val suppressedDokkaSourceSets: Set<String> = buildSet {
     }
 }
 
+val isTls = providers.gradleProperty("tls").isPresent
+
 dependencies {
     dokka(project(":keel-io"))
     dokka(project(":keel-core"))
+    dokka(project(":keel-native-posix"))
     if (isLinux) dokka(project(":keel-engine-epoll"))
     if (isMacos) dokka(project(":keel-engine-kqueue"))
     dokka(project(":keel-engine-nio"))
@@ -77,6 +80,14 @@ dependencies {
     dokka(project(":keel-engine-nodejs"))
     if (isMacos) dokka(project(":keel-engine-nwconnection"))
     if (isLinux) dokka(project(":keel-engine-io-uring"))
+    dokka(project(":keel-tls"))
+    dokka(project(":keel-tls-jsse"))
+    if (isTls) {
+        if (isLinux || isMacos) dokka(project(":keel-tls-openssl"))
+        if (isLinux || isMacos) dokka(project(":keel-tls-mbedtls"))
+        if (isLinux || isMacos) dokka(project(":keel-tls-awslc"))
+        dokka(project(":keel-tls-nodejs"))
+    }
     dokka(project(":keel-codec-http"))
     dokka(project(":keel-codec-websocket"))
     dokka(project(":keel-ktor-engine"))

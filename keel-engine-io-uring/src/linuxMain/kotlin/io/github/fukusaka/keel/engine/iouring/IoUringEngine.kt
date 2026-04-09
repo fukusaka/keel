@@ -8,7 +8,7 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
-import io.github.fukusaka.keel.native.posix.inetPton
+import posix_socket.keel_inet_pton
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -24,7 +24,7 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.sockaddr_in
 import platform.posix.strerror
-import posix_socket.keel_htons
+import posix_socket.keel_init_sockaddr_in
 
 /**
  * Linux io_uring-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -139,9 +139,8 @@ class IoUringEngine(
         try {
             res = memScoped {
                 val addr = alloc<sockaddr_in>()
-                addr.sin_family = AF_INET.convert()
-                addr.sin_port = keel_htons(port.toUShort())
-                val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
+                keel_init_sockaddr_in(addr.ptr, port.toUShort())
+                val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
                 check(rc == 1) { "Invalid address: $host" }
 
                 workerLoop.submitAndAwait { sqe ->

@@ -37,7 +37,9 @@ import platform.posix.setsockopt
 import platform.posix.sockaddr_in
 import platform.posix.socket
 import platform.posix.strerror
-import posix_socket.keel_htons
+import posix_socket.keel_inet_ntop
+import posix_socket.keel_inet_pton
+import posix_socket.keel_init_sockaddr_in
 import posix_socket.keel_ntohs
 
 /**
@@ -45,10 +47,8 @@ import posix_socket.keel_ntohs
  *
  * All functions use IPv4 (AF_INET) only. IPv6 support is deferred.
  *
- * Platform-specific `inet_pton`/`inet_ntop` are abstracted via
- * [inetPton]/[inetNtop] expect/actual functions:
- * - Linux: C wrapper (`keel_inet_pton`/`keel_inet_ntop`)
- * - macOS: `platform.darwin.inet_pton`/`inet_ntop` directly
+ * `inet_pton`/`inet_ntop` are wrapped via C functions in `posix_socket.def`
+ * (`keel_inet_pton`/`keel_inet_ntop`) for reliable cross-platform binding.
  */
 @OptIn(ExperimentalForeignApi::class)
 object PosixSocketUtils {
@@ -81,12 +81,11 @@ object PosixSocketUtils {
 
             memScoped {
                 val addr = alloc<sockaddr_in>()
-                addr.sin_family = AF_INET.convert()
-                addr.sin_port = keel_htons(port.toUShort())
+                keel_init_sockaddr_in(addr.ptr, port.toUShort())
                 if (host == "0.0.0.0") {
                     addr.sin_addr.s_addr = INADDR_ANY
                 } else {
-                    val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
+                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
                     check(rc == 1) { "Invalid address: $host" }
                 }
                 val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
@@ -131,12 +130,11 @@ object PosixSocketUtils {
 
             memScoped {
                 val addr = alloc<sockaddr_in>()
-                addr.sin_family = AF_INET.convert()
-                addr.sin_port = keel_htons(port.toUShort())
+                keel_init_sockaddr_in(addr.ptr, port.toUShort())
                 if (host == "0.0.0.0") {
                     addr.sin_addr.s_addr = INADDR_ANY
                 } else {
-                    val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
+                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
                     check(rc == 1) { "Invalid address: $host" }
                 }
                 val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
@@ -178,9 +176,8 @@ object PosixSocketUtils {
      */
     fun connectNonBlocking(fd: Int, host: String, port: Int): Int = memScoped {
         val addr = alloc<sockaddr_in>()
-        addr.sin_family = AF_INET.convert()
-        addr.sin_port = keel_htons(port.toUShort())
-        val rc = inetPton(AF_INET, host, addr.sin_addr.ptr)
+        keel_init_sockaddr_in(addr.ptr, port.toUShort())
+        val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
         check(rc == 1) { "Invalid address: $host" }
         connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
     }
@@ -238,7 +235,7 @@ object PosixSocketUtils {
     fun toSocketAddress(addr: sockaddr_in): SocketAddress = memScoped {
         val port = keel_ntohs(addr.sin_port).toInt()
         val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
-        inetNtop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
+        keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
         val host = hostBuf.toKString()
         SocketAddress(host, port)
     }

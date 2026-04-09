@@ -2,12 +2,18 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
+val hostOs: String = System.getProperty("os.name").lowercase()
+
 kotlin {
     jvm()
-    macosArm64()
-    macosX64()
-    linuxX64()
-    linuxArm64()
+    if (hostOs.contains("mac")) {
+        macosArm64()
+        macosX64()
+    }
+    if (hostOs.contains("linux")) {
+        linuxX64()
+        linuxArm64()
+    }
 
     applyDefaultHierarchyTemplate()
 
