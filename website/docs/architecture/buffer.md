@@ -2,41 +2,77 @@
 sidebar_position: 3
 ---
 
-# NativeBuf and BufferAllocator
+# IoBuf and BufferAllocator
 
-## NativeBuf
+## IoBuf
 
-`NativeBuf` is a fixed-capacity byte buffer backed by native memory.
-
-```kotlin
-// commonMain
-expect class NativeBuf(capacity: Int) {
-    val capacity: Int
-    fun writeByte(value: Byte)
-    fun readByte(): Byte
-    fun close()
-}
-```
+`IoBuf` is a reference-counted byte buffer with dual-pointer (readerIndex / writerIndex) semantics. Backed by native memory for zero-copy I/O.
 
 | Target | Backing storage |
 |---|---|
 | JVM | `ByteBuffer.allocateDirect` |
 | Native | `nativeHeap.allocArray<ByteVar>` |
+| JS | `Int8Array` |
 
-Always call `close()` after use to avoid memory leaks.
+Always call `release()` (or `close()`) after use to avoid memory leaks. Use `retain()` when sharing a buffer across multiple owners.
 
-## BufferAllocator (Phase 5)
+## BufferAllocator
 
-Phase 5 will introduce a pluggable `BufferAllocator` interface so each engine
-can use its optimal memory strategy.
+`BufferAllocator` is a pluggable interface for buffer allocation strategy. Each engine can use its optimal memory strategy:
 
-| Allocator | Engine | Notes |
+| Allocator | Target | Notes |
 |---|---|---|
-| `SlabAllocator` | epoll, kqueue | Fixed-size slab, low fragmentation |
-| `PooledDirectAllocator` | NIO | `ByteBuffer.allocateDirect` pool |
-| `NettyBufAllocator` | Netty | Delegates to Netty's `PooledByteBufAllocator` |
-| `JsNativeBufAllocator` | Node.js | V8 GC managed |
-| `HeapAllocator` | All | Heap-backed, for testing only |
+| `SlabAllocator` | Native | Fixed-size slab per EventLoop, low fragmentation |
+| `PooledDirectAllocator` | JVM | `ByteBuffer.allocateDirect` pool |
+| `DefaultAllocator` | All | Simple allocation, no pooling (tests / fallback) |
 
-`IoUringFixedAllocator` (Phase 6) pins buffer addresses for
-`io_uring` fixed-buffer registration (`IORING_REGISTER_BUFFERS`).
+Configure via `IoEngineConfig`:
+
+```kotlin
+val engine = KqueueEngine(
+    config = IoEngineConfig(
+        allocator = SlabAllocator(bufferSize = 8192, maxPoolSize = 256),
+    ),
+)
+```
+
+## Reference Counting
+
+```kotlin
+val buf = allocator.allocate(1024)
+try {
+    // write data...
+    buf.retain()  // share with another owner
+    // ...
+} finally {
+    buf.release() // decrement ref count
+}
+```
+
+When the reference count reaches zero, the buffer is returned to the allocator (pooled) or freed (unpooled).
+
+## Leak Detection
+
+keel provides two complementary tools for detecting buffer leaks:
+
+| Tool | Purpose | Scope |
+|---|---|---|
+| `TrackingAllocator` | Count-based: "is there a leak?" | All platforms |
+| `LeakDetectingAllocator` | Stack trace: "where was it allocated?" | Native (Cleaner), JVM (PhantomReference) |
+
+Use the `withTracking()` and `withLeakDetection()` extension functions for fluent composition. Call `withTracking()` last to retain access to `assertNoLeaks()`:
+
+```kotlin
+val tracker = SlabAllocator()
+    .withLeakDetection { msg -> fail(msg) }
+    .withTracking()
+
+// ... run test ...
+tracker.assertNoLeaks()  // throws if any buffer was not released
+```
+
+`LeakDetectingAllocator` captures the allocation site stack trace. When a buffer is garbage-collected without being released, the `onLeak` callback fires with the stack trace. Detection relies on GC, so trigger it explicitly in tests:
+
+- **Native**: `kotlin.native.runtime.GC.collect()`
+- **JVM**: `System.gc()` (best-effort) + allocate to drain the queue
+- **JS**: no-op (GC-managed, no manual release needed)

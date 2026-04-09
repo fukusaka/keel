@@ -47,9 +47,6 @@
       "last 5 safari version"
     ]
   },
-  "overrides": {
-    "serialize-javascript": ">=7.0.5"
-  },
   "engines": {
     "node": ">=20.0"
   }
