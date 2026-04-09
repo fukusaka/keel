@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.buf
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 class TrackingAllocatorTest {
 
@@ -18,7 +20,6 @@ class TrackingAllocatorTest {
         assertEquals(0, tracker.releaseCount)
         assertEquals(2, tracker.outstandingCount)
 
-        // buf.release() triggers deallocator which increments releaseCount
         buf1.release()
         assertEquals(2, tracker.allocateCount)
         assertEquals(1, tracker.releaseCount)
@@ -35,9 +36,6 @@ class TrackingAllocatorTest {
         val tracker = TrackingAllocator()
         val buf = tracker.allocate(64)
         buf.release()
-        assertEquals(1, tracker.allocateCount)
-        assertEquals(1, tracker.releaseCount)
-
         tracker.reset()
         assertEquals(0, tracker.allocateCount)
         assertEquals(0, tracker.releaseCount)
@@ -50,5 +48,58 @@ class TrackingAllocatorTest {
         val buf = tracker.allocate(256)
         assertEquals(256, buf.capacity)
         buf.release()
+    }
+
+    @Test
+    fun assertNoLeaksSucceedsWhenBalanced() {
+        val tracker = TrackingAllocator()
+        val buf = tracker.allocate(64)
+        buf.release()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun assertNoLeaksThrowsOnLeak() {
+        val tracker = TrackingAllocator()
+        tracker.allocate(64) // intentionally not released
+        val ex = assertFailsWith<IllegalStateException> {
+            tracker.assertNoLeaks()
+        }
+        assertTrue(ex.message!!.contains("outstanding=1"))
+    }
+
+    @Test
+    fun assertNoLeaksCustomMessage() {
+        val tracker = TrackingAllocator()
+        tracker.allocate(64)
+        val ex = assertFailsWith<IllegalStateException> {
+            tracker.assertNoLeaks("custom leak message")
+        }
+        assertTrue(ex.message!!.contains("custom leak message"))
+    }
+
+    @Test
+    fun createForEventLoopWrapsDelegate() {
+        val tracker = TrackingAllocator()
+        val perLoop = tracker.createForEventLoop()
+        assertTrue(perLoop is TrackingAllocator)
+
+        val buf = perLoop.allocate(64)
+        buf.release()
+        (perLoop as TrackingAllocator).assertNoLeaks()
+    }
+
+    @Test
+    fun retainAndReleaseCountsCorrectly() {
+        val tracker = TrackingAllocator()
+        val buf = tracker.allocate(64)
+        buf.retain() // refCount = 2
+        buf.release() // refCount = 1 — deallocator NOT called yet
+        assertEquals(0, tracker.releaseCount, "Release with refCount > 0 should not trigger deallocator")
+        assertEquals(1, tracker.outstandingCount)
+
+        buf.release() // refCount = 0 — deallocator called
+        assertEquals(1, tracker.releaseCount)
+        assertEquals(0, tracker.outstandingCount)
     }
 }
