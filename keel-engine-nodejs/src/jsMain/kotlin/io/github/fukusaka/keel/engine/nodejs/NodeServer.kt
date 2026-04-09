@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -30,7 +30,7 @@ internal class NodeServer(
     private val server: Server,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
-    private val loggerFactory: LoggerFactory,
+    private val channelLogger: Logger,
 ) : KeelServer {
 
     private var _active = true
@@ -66,8 +66,7 @@ internal class NodeServer(
             socket.remotePort?.let { port -> SocketAddress(host, port) }
         }
 
-        val logger = loggerFactory.logger("NodePipelinedChannel")
-        return NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, logger)
+        return NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, channelLogger)
     }
 
     /**

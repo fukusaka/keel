@@ -68,7 +68,7 @@ class NodeEngine(
                     srv,
                     localAddr,
                     config.allocator,
-                    config.loggerFactory,
+                    channelLogger,
                 )
 
                 // Wire connection events to the ServerChannel's accept queue
