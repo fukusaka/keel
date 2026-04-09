@@ -8,7 +8,9 @@ import io_uring.io_uring_prep_send
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointerVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.allocArray
@@ -22,6 +24,7 @@ import platform.posix.EWOULDBLOCK
 import platform.posix.MSG_NOSIGNAL
 import platform.posix.errno
 import platform.posix.send
+import posix_socket.keel_writev
 
 /**
  * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
@@ -138,23 +141,89 @@ internal class IoUringIoTransport(
     // --- FALLBACK_CQE: direct send → EAGAIN → async SEND SQE ---
 
     /**
-     * Attempts direct POSIX `send()` for each pending write.
-     * On EAGAIN, falls back to async SEND SQE for the remainder.
+     * Attempts direct POSIX `writev()` for all pending writes.
+     *
+     * Uses gather write to send all buffers in a single syscall,
+     * avoiding per-buffer send() overhead with many small buffers
+     * (e.g., 100KB response split into 13 × 8KB by BufferedSuspendSink).
+     * On partial write or EAGAIN, releases fully-written buffers and
+     * submits the remainder as async SEND chain.
      *
      * @return true if all data sent synchronously, false if async pending.
      */
     private fun flushDirectSend(): Boolean {
-        var i = 0
-        while (i < pendingWrites.size) {
-            val pw = pendingWrites[i]
-            if (!flushDirectSendSingle(pw)) {
-                asyncFlushPending = true
-                submitAsyncSendChain(i + 1)
-                return false
-            }
-            i++
+        if (pendingWrites.size == 1) {
+            return flushDirectSendSingle(pendingWrites[0])
         }
-        return true
+        return flushDirectSendGather()
+    }
+
+    /**
+     * Gather write via `keel_writev()` for multiple pending writes.
+     */
+    private fun flushDirectSendGather(): Boolean {
+        val totalBytes = pendingWrites.sumOf { it.length }
+        val writtenBytes: Int
+
+        memScoped {
+            val count = pendingWrites.size
+            val bases = allocArray<CPointerVar<ByteVar>>(count)
+            val lens = allocArray<ULongVar>(count)
+            for ((i, pw) in pendingWrites.withIndex()) {
+                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+                lens[i] = pw.length.convert()
+            }
+            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
+            if (n < 0) {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    // Nothing written — submit all as async chain.
+                    flushHadEagain = true
+                    asyncFlushPending = true
+                    asyncPendingFlushBytes += totalBytes
+                    submitAsyncSendChain(0)
+                    return false
+                }
+                // Unrecoverable error — release all and report sync completion.
+                for (pw in pendingWrites) pw.buf.release()
+                updatePendingBytes(-totalBytes)
+                return true
+            }
+            writtenBytes = n.toInt()
+        }
+
+        flushBytesWritten += writtenBytes
+
+        if (writtenBytes >= totalBytes) {
+            for (pw in pendingWrites) pw.buf.release()
+            updatePendingBytes(-totalBytes)
+            return true
+        }
+
+        // Partial write: release fully-written buffers, submit remainder async.
+        flushHadEagain = true
+        var consumed = 0
+        var splitIndex = 0
+        for ((i, pw) in pendingWrites.withIndex()) {
+            if (consumed + pw.length <= writtenBytes) {
+                consumed += pw.length
+                pw.buf.release()
+                updatePendingBytes(-pw.length)
+            } else {
+                splitIndex = i
+                break
+            }
+        }
+        // Submit remaining from splitIndex as async chain.
+        asyncFlushPending = true
+        val alreadySentInSplit = (writtenBytes - consumed).coerceAtLeast(0)
+        val remainingBytes = totalBytes - writtenBytes
+        asyncPendingFlushBytes += remainingBytes
+        if (alreadySentInSplit > 0) {
+            updatePendingBytes(-alreadySentInSplit)
+        }
+        submitAsyncWritevRemainder(ArrayList(pendingWrites), splitIndex, alreadySentInSplit)
+        return false
     }
 
     /**
