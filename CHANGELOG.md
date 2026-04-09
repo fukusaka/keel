@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - keel-tls: `TlsConnectorConfig.installer` is now nullable — `null` means engine-native (listener-level) TLS
 - keel-tls: `TlsConnectorConfig` accepts `backlog` parameter inherited from `BindConfig`
 
+### Fixed
+
+- keel-engine-netty: fix DirectIoBuf double-release on /large responses (`supportsDeferredFlush = true` for async Netty flush)
+
 ### Removed
 
 - keel-engine-nwconnection: remove `NwTlsInstaller` sentinel (replaced by `installer = null`)

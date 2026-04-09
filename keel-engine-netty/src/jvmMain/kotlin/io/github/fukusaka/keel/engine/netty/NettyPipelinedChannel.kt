@@ -79,6 +79,11 @@ class NettyPipelinedChannel internal constructor(
     override val isOpen: Boolean get() = !closed
     override val isWritable: Boolean get() = !closed && nettyChannel.isWritable && transport.isWritable
 
+    // Netty flush is always async (ChannelFuture). BufferedSuspendSink must
+    // NOT reuse the same buffer after flush — the ChannelFuture listener
+    // releases it asynchronously on the Netty EventLoop thread.
+    override val supportsDeferredFlush: Boolean get() = true
+
     init {
         transport.onWritabilityChanged = { writable ->
             pipeline.notifyWritabilityChanged(writable)
