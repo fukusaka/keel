@@ -152,6 +152,11 @@ class DefaultChannelPipeline(
         return this
     }
 
+    override fun notifyWritabilityChanged(isWritable: Boolean): ChannelPipeline {
+        head.invokeOnWritabilityChanged(isWritable)
+        return this
+    }
+
     // --- Outbound entry ---
 
     override fun requestWrite(msg: Any): ChannelPipeline {
@@ -315,6 +320,11 @@ class DefaultChannelPipeline(
             nextCtx.invokeOnUserEvent(event)
         }
 
+        override fun propagateWritabilityChanged(isWritable: Boolean) {
+            val nextCtx = findNextInbound() ?: return
+            nextCtx.invokeOnWritabilityChanged(isWritable)
+        }
+
         // --- Outbound propagation ---
 
         override fun propagateWrite(msg: Any) {
@@ -412,6 +422,19 @@ class DefaultChannelPipeline(
                 }
             } else {
                 propagateUserEvent(event)
+            }
+        }
+
+        internal fun invokeOnWritabilityChanged(isWritable: Boolean) {
+            val h = handler
+            if (h is ChannelInboundHandler) {
+                try {
+                    h.onWritabilityChanged(this, isWritable)
+                } catch (e: Throwable) {
+                    propagateError(e)
+                }
+            } else {
+                propagateWritabilityChanged(isWritable)
             }
         }
 

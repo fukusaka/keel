@@ -86,6 +86,19 @@ interface ChannelInboundHandler : ChannelHandler {
     fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
         ctx.propagateUserEvent(event)
     }
+
+    /**
+     * Called when the channel's write backpressure state changes.
+     *
+     * [isWritable] is false when pending write bytes exceed the high water mark,
+     * and true when they drop below the low water mark. Handlers should pause
+     * writing when false and resume when true.
+     *
+     * Flows inbound (HEAD → TAIL), like other inbound events.
+     */
+    fun onWritabilityChanged(ctx: ChannelHandlerContext, isWritable: Boolean) {
+        ctx.propagateWritabilityChanged(isWritable)
+    }
 }
 
 /**

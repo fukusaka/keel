@@ -17,6 +17,18 @@ import io.github.fukusaka.keel.buf.IoBuf
  * encapsulated within each IoTransport implementation.
  *
  * All methods must be called on the EventLoop thread.
+ *
+ * ## Write Backpressure
+ *
+ * [isWritable] tracks whether the transport can accept more writes without
+ * excessive buffering. Implementations maintain a `pendingBytes` counter
+ * incremented on [write] and decremented on flush completion. When
+ * `pendingBytes >= highWaterMark`, [isWritable] becomes false; when
+ * `pendingBytes < lowWaterMark`, it becomes true again.
+ *
+ * Applications and pipeline handlers should check [isWritable] before
+ * writing large amounts of data, and listen for [onWritabilityChanged]
+ * to resume writing when the transport drains.
  */
 interface IoTransport {
 
@@ -25,6 +37,9 @@ interface IoTransport {
      *
      * The transport retains the buffer (calls [IoBuf.retain]).
      * The buffer is released after the flush completes.
+     *
+     * Implementations must update [pendingBytes] and check [highWaterMark]
+     * to maintain [isWritable] state.
      */
     fun write(buf: IoBuf)
 
@@ -55,6 +70,33 @@ interface IoTransport {
      */
     suspend fun awaitPendingFlush() {}
 
+    /**
+     * Whether the transport can accept more writes without excessive buffering.
+     *
+     * Becomes false when pending bytes exceed [highWaterMark], and true
+     * again when pending bytes drop below [lowWaterMark]. Applications
+     * should check this before writing large responses.
+     *
+     * Default: always true (for simple transports without backpressure).
+     */
+    val isWritable: Boolean get() = true
+
+    /**
+     * Callback invoked when [isWritable] changes state.
+     *
+     * Called with `false` when pending bytes cross [highWaterMark] (stop writing),
+     * and `true` when they drop below [lowWaterMark] (resume writing).
+     */
+    var onWritabilityChanged: ((Boolean) -> Unit)? get() = null; set(_) {}
+
     /** Closes the transport and releases resources. */
     fun close()
+
+    companion object {
+        /** Default high water mark: 64 KB. Stop writing when this much data is buffered. */
+        const val DEFAULT_HIGH_WATER_MARK = 65536
+
+        /** Default low water mark: 32 KB. Resume writing when buffered data drops below this. */
+        const val DEFAULT_LOW_WATER_MARK = 32768
+    }
 }
