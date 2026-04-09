@@ -156,6 +156,11 @@ Maven Central への公開は将来のリリースで予定しています。
 
 `GET /hello` (13 bytes) — [wrk](https://github.com/wg/wrk) 4 スレッド、100 接続、10 秒、ループバック。
 
+| ホスト | CPU | RAM | OS |
+|--------|-----|-----|----|
+| macOS | Apple M1 Max (10 cores) | 64 GB | macOS 15.4, Java 21 Temurin |
+| Linux | AMD Ryzen 9 9950X3D (16 cores) | 192 GB | Ubuntu 24.04, Java 21 Azul Zulu |
+
 ### ハイライト
 
 - **864K req/s** — pipeline-http-epoll (Linux Ryzen 9)、ktor-cio の 6 倍

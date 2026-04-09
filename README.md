@@ -207,6 +207,11 @@ docker run --rm --platform linux/amd64 \
 
 `GET /hello` (13 bytes) — [wrk](https://github.com/wg/wrk) 4 threads, 100 connections, 10s, loopback.
 
+| Host | CPU | RAM | OS |
+|------|-----|-----|----|
+| macOS | Apple M1 Max (10 cores) | 64 GB | macOS 15.4, Java 21 Temurin |
+| Linux | AMD Ryzen 9 9950X3D (16 cores) | 192 GB | Ubuntu 24.04, Java 21 Azul Zulu |
+
 ### Highlights
 
 - **864K req/s** — pipeline-http-epoll on Linux (Ryzen 9), 6x faster than ktor-cio
