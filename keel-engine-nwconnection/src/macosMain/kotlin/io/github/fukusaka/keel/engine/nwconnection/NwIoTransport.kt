@@ -44,6 +44,24 @@ internal class NwIoTransport(
 
     override var onFlushComplete: (() -> Unit)? = null
 
+    // --- Write backpressure ---
+
+    private var pendingBytes: Int = 0
+    private var _writable: Boolean = true
+    override val isWritable: Boolean get() = _writable
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun updatePendingBytes(delta: Int) {
+        pendingBytes += delta
+        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
+            _writable = false
+            onWritabilityChanged?.invoke(false)
+        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
+            _writable = true
+            onWritabilityChanged?.invoke(true)
+        }
+    }
+
     override fun write(buf: IoBuf) {
         val bytes = buf.readableBytes
         if (bytes == 0) return
@@ -51,6 +69,7 @@ internal class NwIoTransport(
         buf.retain()
         buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
+        updatePendingBytes(bytes)
     }
 
     /**
@@ -69,11 +88,15 @@ internal class NwIoTransport(
         // Avoids List copy by swapping the backing list.
         val writes = pendingWrites
         pendingWrites = mutableListOf()
+        val totalBytes = writes.sumOf { it.length }
+        val transport = this
 
         if (writes.size == 1) {
             val pw = writes[0]
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
-            val ref = StableRef.create(FlushContext(writes, onFlushComplete))
+            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete) { delta ->
+                transport.updatePendingBytes(delta)
+            })
             keel_nw_write_async(conn, ptr, pw.length.toUInt(), flushCallback, ref.asCPointer())
         } else {
             memScoped {
@@ -83,7 +106,9 @@ internal class NwIoTransport(
                     bufs[i] = (writes[i].buf.unsafePointer + writes[i].offset)!!.reinterpret()
                     lens[i] = writes[i].length.toUInt()
                 }
-                val ref = StableRef.create(FlushContext(writes, onFlushComplete))
+                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete) { delta ->
+                    transport.updatePendingBytes(delta)
+                })
                 keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
             }
         }
@@ -97,6 +122,8 @@ internal class NwIoTransport(
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
+        pendingBytes = 0
+        _writable = true
         nw_connection_cancel(conn)
     }
 
@@ -104,7 +131,9 @@ internal class NwIoTransport(
 
     private class FlushContext(
         val writes: List<PendingWrite>,
+        val totalBytes: Int,
         val onComplete: (() -> Unit)?,
+        val onPendingBytesUpdate: (Int) -> Unit,
     )
 
     companion object {
@@ -112,6 +141,7 @@ internal class NwIoTransport(
             val ref = checkNotNull(ctx) { "flush callback ctx is null" }.asStableRef<FlushContext>()
             val flushCtx = ref.get()
             for (pw in flushCtx.writes) pw.buf.release()
+            flushCtx.onPendingBytesUpdate(-flushCtx.totalBytes)
             flushCtx.onComplete?.invoke()
             ref.dispose()
         }

@@ -67,9 +67,30 @@ internal class IoUringIoTransport(
     /** Per-connection I/O statistics for adaptive mode selection. */
     internal val stats = ConnectionStats()
 
+    // --- Write backpressure ---
+
+    private var pendingBytes: Int = 0
+    private var _writable: Boolean = true
+    override val isWritable: Boolean get() = _writable
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun updatePendingBytes(delta: Int) {
+        pendingBytes += delta
+        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
+            _writable = false
+            onWritabilityChanged?.invoke(false)
+        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
+            _writable = true
+            onWritabilityChanged?.invoke(true)
+        }
+    }
+
     // Per-flush tracking for stats recording.
     private var flushHadEagain = false
     private var flushBytesWritten = 0L
+
+    /** Bytes still pending in async flush, decremented on async completion. */
+    private var asyncPendingFlushBytes = 0
 
     // --- IoTransport interface ---
 
@@ -80,6 +101,7 @@ internal class IoUringIoTransport(
         buf.retain()
         buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
+        updatePendingBytes(bytes)
     }
 
     /**
@@ -159,9 +181,13 @@ internal class IoUringIoTransport(
                     val err = errno
                     if (err == EAGAIN || err == EWOULDBLOCK) {
                         flushHadEagain = true
+                        // Decrement sync-written portion; async remainder tracked via asyncPendingFlushBytes.
+                        updatePendingBytes(-written)
+                        val asyncBytes = pw.length - written
+                        asyncPendingFlushBytes += asyncBytes
                         // Transfer buffer ownership to submitAsyncSend.
                         // Do NOT release here — submitAsyncSend manages the lifecycle.
-                        submitAsyncSend(pw.buf, pw.offset + written, pw.length - written)
+                        submitAsyncSend(pw.buf, pw.offset + written, asyncBytes)
                         return false
                     }
                     break // unrecoverable error
@@ -169,6 +195,7 @@ internal class IoUringIoTransport(
             }
         }
         pw.buf.release()
+        updatePendingBytes(-pw.length)
         return true
     }
 
@@ -195,6 +222,7 @@ internal class IoUringIoTransport(
             return
         }
         val pw = pendingWrites[startIndex]
+        asyncPendingFlushBytes += pw.length
         submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
             submitAsyncSendChain(startIndex + 1)
         }
@@ -253,6 +281,8 @@ internal class IoUringIoTransport(
      */
     private fun flushCqe() {
         asyncFlushPending = true
+        val totalBytes = pendingWrites.sumOf { it.length }
+        asyncPendingFlushBytes += totalBytes
         if (pendingWrites.size == 1) {
             val pw = pendingWrites[0]
             submitAsyncSend(pw.buf, pw.offset, pw.length)
@@ -363,6 +393,7 @@ internal class IoUringIoTransport(
      */
     private fun flushSendZc() {
         asyncFlushPending = true
+        asyncPendingFlushBytes += pendingWrites.sumOf { it.length }
         submitAsyncSendZcChain(0)
     }
 
@@ -418,6 +449,9 @@ internal class IoUringIoTransport(
      */
     private fun onAsyncFlushDone() {
         asyncFlushPending = false
+        val flushed = asyncPendingFlushBytes
+        asyncPendingFlushBytes = 0
+        updatePendingBytes(-flushed)
         flushContinuation?.let { cont ->
             flushContinuation = null
             cont.resume(Unit)
@@ -444,6 +478,9 @@ internal class IoUringIoTransport(
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
+        pendingBytes = 0
+        asyncPendingFlushBytes = 0
+        _writable = true
     }
 
 }

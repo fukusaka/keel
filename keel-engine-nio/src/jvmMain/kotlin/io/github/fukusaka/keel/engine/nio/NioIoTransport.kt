@@ -29,6 +29,24 @@ internal class NioIoTransport(
 
     override var onFlushComplete: (() -> Unit)? = null
 
+    // --- Write backpressure ---
+
+    private var pendingBytes: Int = 0
+    private var _writable: Boolean = true
+    override val isWritable: Boolean get() = _writable
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun updatePendingBytes(delta: Int) {
+        pendingBytes += delta
+        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
+            _writable = false
+            onWritabilityChanged?.invoke(false)
+        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
+            _writable = true
+            onWritabilityChanged?.invoke(true)
+        }
+    }
+
     /**
      * Buffers [buf] for the next [flush] call.
      *
@@ -42,6 +60,7 @@ internal class NioIoTransport(
         buf.retain()
         buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
+        updatePendingBytes(bytes)
     }
 
     /**
@@ -65,6 +84,8 @@ internal class NioIoTransport(
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
+        pendingBytes = 0
+        _writable = true
         if (socketChannel.isOpen) socketChannel.close()
     }
 
@@ -82,14 +103,17 @@ internal class NioIoTransport(
             val n = socketChannel.write(bb)
             if (n == 0) {
                 // Send buffer full — defer via OP_WRITE callback.
+                val written = bb.position() - pw.offset
                 val remaining = bb.remaining()
                 val newOffset = bb.position()
                 pendingWrites.add(0, PendingWrite(pw.buf, newOffset, remaining))
+                updatePendingBytes(-written)
                 registerWriteCallback()
                 return false
             }
         }
         pw.buf.release()
+        updatePendingBytes(-pw.length)
         return true
     }
 
@@ -113,6 +137,7 @@ internal class NioIoTransport(
         if (written >= totalBytes) {
             for (pw in pendingWrites) pw.buf.release()
             pendingWrites.clear()
+            updatePendingBytes(-totalBytes.toInt())
             return true
         }
 
@@ -130,6 +155,7 @@ internal class NioIoTransport(
         }
         pendingWrites.clear()
         pendingWrites.addAll(remaining)
+        updatePendingBytes(-written.toInt())
         registerWriteCallback()
         return false
     }

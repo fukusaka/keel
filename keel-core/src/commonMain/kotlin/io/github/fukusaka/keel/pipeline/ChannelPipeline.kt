@@ -71,6 +71,9 @@ interface ChannelPipeline {
     /** Fires a user-defined event through the pipeline (inbound, HEAD → TAIL). */
     fun notifyUserEvent(event: Any): ChannelPipeline
 
+    /** Notifies the pipeline that the channel's writability has changed. */
+    fun notifyWritabilityChanged(isWritable: Boolean): ChannelPipeline
+
     // --- Outbound: external code requests operations ---
 
     /** Requests a write through the pipeline. */

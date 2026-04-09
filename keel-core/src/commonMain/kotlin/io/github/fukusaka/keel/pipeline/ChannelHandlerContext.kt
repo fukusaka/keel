@@ -53,6 +53,9 @@ interface ChannelHandlerContext {
     /** Propagates a user event to the next inbound handler. */
     fun propagateUserEvent(event: Any)
 
+    /** Propagates a writability change to the next inbound handler. */
+    fun propagateWritabilityChanged(isWritable: Boolean)
+
     // --- Outbound propagation: next outbound handler ---
 
     /** Propagates a write request to the next outbound handler. */

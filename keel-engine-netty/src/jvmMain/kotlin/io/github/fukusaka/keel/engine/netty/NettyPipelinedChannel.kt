@@ -77,7 +77,13 @@ class NettyPipelinedChannel internal constructor(
 
     override val isActive: Boolean get() = !closed && nettyChannel.isActive
     override val isOpen: Boolean get() = !closed
-    override val isWritable: Boolean get() = !closed && nettyChannel.isWritable
+    override val isWritable: Boolean get() = !closed && nettyChannel.isWritable && transport.isWritable
+
+    init {
+        transport.onWritabilityChanged = { writable ->
+            pipeline.notifyWritabilityChanged(writable)
+        }
+    }
 
     // --- Channel mode: bridge lifecycle ---
 

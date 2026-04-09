@@ -49,9 +49,18 @@ internal class NioPipelinedChannel(
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isActive: Boolean get() = socketChannel.isOpen
     override val isOpen: Boolean get() = socketChannel.isOpen
-    override val isWritable: Boolean get() = true
+    override val isWritable: Boolean get() = !closed && transport.isWritable
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
+
+    @Volatile
+    private var closed = false
+
+    init {
+        transport.onWritabilityChanged = { writable ->
+            pipeline.notifyWritabilityChanged(writable)
+        }
+    }
 
     /** ForkJoinPool work-stealing outperforms EventLoop fixed-partition for pipeline. */
     @Suppress("InjectDispatcher") // Intentional: NIO pipeline runs on Dispatchers.Default (design.md §17)
@@ -148,10 +157,10 @@ internal class NioPipelinedChannel(
      * the SocketChannel. Idempotent.
      */
     override fun close() {
-        if (socketChannel.isOpen) {
-            selectionKey.cancel()
-            transport.close()
-        }
+        if (closed) return
+        closed = true
+        selectionKey.cancel()
+        transport.close()
     }
 
     companion object {
