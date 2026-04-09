@@ -1,30 +1,18 @@
-headers = arpa/inet.h sys/eventfd.h
+headers = sys/eventfd.h
 ---
-#include <arpa/inet.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
 /*
- * inet_pton/inet_ntop wrappers for Linux.
+ * eventfd wrappers for EventLoop wakeup mechanism (Linux only).
  *
- * On Linux, cinterop binds these from <arpa/inet.h> but some
- * cross-compilation configurations fail to resolve them.
- * Explicit wrappers ensure reliable binding.
- *
- * On macOS, these are available directly via platform.darwin
- * and do not need C wrappers.
- */
-static inline int keel_inet_pton(int af, const char *src, void *dst) {
-    return inet_pton(af, src, dst);
-}
-static inline const char *keel_inet_ntop(int af, const void *src, char *dst, unsigned int size) {
-    return inet_ntop(af, src, dst, (socklen_t)size);
-}
-
-/*
- * eventfd wrappers for EventLoop wakeup mechanism.
  * eventfd(2) provides a more efficient wakeup than pipe(2) on Linux:
  * single fd instead of two, and kernel-optimized for signaling.
+ * Used by EpollEventLoop and IoUringEventLoop.
+ *
+ * inet_pton/inet_ntop wrappers were previously here but moved to
+ * posix_socket.def as cross-platform C wrappers (available on both
+ * Linux and macOS via <arpa/inet.h>).
  */
 static int keel_eventfd_create(void) {
     return eventfd(0, EFD_NONBLOCK);

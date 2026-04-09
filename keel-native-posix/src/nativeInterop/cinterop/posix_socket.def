@@ -1,8 +1,10 @@
-headers = sys/socket.h netinet/in.h sys/uio.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h string.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/uio.h>
+#include <string.h>
 
 /* htons/ntohs/htonl are macros — cinterop cannot bind them directly. */
 static inline uint16_t keel_htons(uint16_t hostshort) { return htons(hostshort); }
@@ -11,6 +13,33 @@ static inline uint32_t keel_htonl(uint32_t hostlong)  { return htonl(hostlong); 
 
 /* INADDR_LOOPBACK is a macro — expose as a function for cinterop. */
 static inline uint32_t keel_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * Initialize sockaddr_in for IPv4.
+ *
+ * sin_family type differs across platforms (UShort on Linux, UByte on macOS),
+ * causing Kotlin/Native commonization errors when AF_INET.convert() is used
+ * in nativeMain. This C wrapper avoids the platform-specific type issue.
+ */
+static inline void keel_init_sockaddr_in(struct sockaddr_in *addr, uint16_t port) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons(port);
+}
+
+/*
+ * inet_pton/inet_ntop wrappers.
+ *
+ * Standard POSIX API available on both Linux and macOS via <arpa/inet.h>.
+ * Wrapped because cinterop binding of inet_pton/inet_ntop is unreliable
+ * on some Linux cross-compilation configurations.
+ */
+static inline int keel_inet_pton(int af, const char *src, void *dst) {
+    return inet_pton(af, src, dst);
+}
+static inline const char *keel_inet_ntop(int af, const void *src, char *dst, unsigned int size) {
+    return inet_ntop(af, src, dst, (socklen_t)size);
+}
 
 /*
  * writev wrapper for gather-write optimization.

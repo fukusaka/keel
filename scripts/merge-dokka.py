@@ -42,8 +42,8 @@ var p=location.pathname,i=p.indexOf('/api/');\
 return i>=0?p.substring(0,i)+'/':'/'})();</script>
 </div>'''
 
-LINUX_ONLY_MODULES = {'engine-epoll', 'engine-io-uring'}
-MACOS_ONLY_MODULES = {'engine-kqueue', 'engine-nwconnection'}
+LINUX_ONLY_MODULES = {'keel-engine-epoll', 'keel-engine-io-uring'}
+MACOS_ONLY_MODULES = {'keel-engine-kqueue', 'keel-engine-nwconnection'}
 
 # Custom CSS to align Dokka's appearance with Docusaurus theme.
 # Overrides Dokka CSS variables with Docusaurus-compatible values.
