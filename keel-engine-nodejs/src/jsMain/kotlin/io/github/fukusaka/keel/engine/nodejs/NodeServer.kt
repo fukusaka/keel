@@ -3,12 +3,12 @@ package io.github.fukusaka.keel.engine.nodejs
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.core.Server as KeelServer
 
 /**

@@ -26,11 +26,6 @@ internal class NodeIoTransport(
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
-    companion object {
-        /** Cached Node.js Buffer constructor to avoid per-flush require() lookup. */
-        private val nodeBuffer = js("require('buffer').Buffer")
-    }
-
     // --- Write backpressure ---
 
     private var pendingBytes: Int = 0
@@ -107,4 +102,9 @@ internal class NodeIoTransport(
      * where readable data starts, and the number of bytes to write.
      */
     internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
+
+    companion object {
+        /** Cached Node.js Buffer constructor to avoid per-flush require() lookup. */
+        private val nodeBuffer = js("require('buffer').Buffer")
+    }
 }
