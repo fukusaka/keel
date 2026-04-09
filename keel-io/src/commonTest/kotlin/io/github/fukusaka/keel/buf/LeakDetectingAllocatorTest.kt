@@ -56,11 +56,53 @@ class LeakDetectingAllocatorTest {
         assertEquals(0, leaks.size, "Properly released buffer should not trigger leak")
     }
 
+    @Test
+    fun `composable with TrackingAllocator - LeakDetecting outside`() {
+        val leaks = mutableListOf<String>()
+        val tracking = TrackingAllocator(DefaultAllocator)
+        val allocator = LeakDetectingAllocator(tracking) { leaks.add(it) }
+
+        val buf = allocator.allocate(64)
+        buf.release()
+
+        assertEquals(0, leaks.size)
+        tracking.assertNoLeaks()
+    }
+
+    @Test
+    fun `composable with TrackingAllocator - TrackingAllocator outside`() {
+        val leaks = mutableListOf<String>()
+        val inner = LeakDetectingAllocator(DefaultAllocator) { leaks.add(it) }
+        val tracking = TrackingAllocator(inner)
+
+        val buf = tracking.allocate(64)
+        buf.release()
+
+        assertEquals(0, leaks.size)
+        tracking.assertNoLeaks()
+    }
+
+    @Test
+    fun `multiple buffers with mixed release order`() {
+        val leaks = mutableListOf<String>()
+        val allocator = LeakDetectingAllocator(DefaultAllocator) { leaks.add(it) }
+
+        val buf1 = allocator.allocate(64)
+        val buf2 = allocator.allocate(128)
+        val buf3 = allocator.allocate(256)
+
+        buf2.release()
+        buf1.release()
+        buf3.release()
+
+        assertEquals(0, leaks.size)
+    }
+
     // GC-based leak detection tests are platform-specific:
     // - Native: kotlin.native.internal.GC.collect() triggers Cleaner
     // - JVM: System.gc() + drainLeakQueue on next allocation
     // - JS: no-op (GC-managed, no leak concern)
     //
     // These tests verify the deallocator interception mechanism.
-    // Full GC-based verification is in nativeTest and jvmTest.
+    // Full GC-based verification requires platform-specific test files.
 }

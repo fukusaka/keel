@@ -90,6 +90,21 @@ class TrackingAllocatorTest {
     }
 
     @Test
+    fun multipleBuffersMixedReleaseOrder() {
+        val tracker = TrackingAllocator()
+        val buf1 = tracker.allocate(64)
+        val buf2 = tracker.allocate(128)
+        val buf3 = tracker.allocate(256)
+        assertEquals(3, tracker.outstandingCount)
+
+        buf3.release()
+        buf1.release()
+        buf2.release()
+        assertEquals(0, tracker.outstandingCount)
+        tracker.assertNoLeaks()
+    }
+
+    @Test
     fun retainAndReleaseCountsCorrectly() {
         val tracker = TrackingAllocator()
         val buf = tracker.allocate(64)
