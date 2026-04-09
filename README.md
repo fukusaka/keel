@@ -99,13 +99,14 @@ keel/
 - Pipeline mode: ChannelPipeline with push-mode I/O (all 7 engines)
 - TLS: 4 backends (OpenSSL, Mbed TLS, AWS-LC, JSSE) + listener-level TLS
 - Per-server configuration (backlog, TLS)
-- SlabAllocator (Native) + PooledDirectAllocator (JVM)
+- Write backpressure with high/low water marks
+- SlabAllocator (Native) + PooledDirectAllocator (JVM) + leak detection
 - EventLoop dispatch, deferred flush, writev batching
 
 ### Next
 
 - `:server` module (push-based, Ktor-independent native server)
-- Adaptive buffer + backpressure
+- `:client` module (HTTP client with connection pooling)
 - iOS targets
 
 ### Future
@@ -205,43 +206,101 @@ docker run --rm --platform linux/amd64 \
 
 ## Benchmark
 
-`GET /hello` (13 bytes) — [wrk](https://github.com/wg/wrk) 4 threads, 100 connections, 10s, loopback.
+### Setup
 
-| Host | CPU | RAM | OS |
-|------|-----|-----|----|
-| macOS | Apple M1 Max (10 cores) | 64 GB | macOS 15.4, Java 21 Temurin |
-| Linux | AMD Ryzen 9 9950X3D (16 cores) | 192 GB | Ubuntu 24.04, Java 21 Azul Zulu |
+```
+  ┌─────────────┐         loopback          ┌─────────────┐
+  │  wrk client  │ ──── 127.0.0.1:18090 ──── │  HTTP server │
+  │  4 threads   │    100 connections         │  GET /hello  │
+  │  10s run     │                            │  → 13 bytes  │
+  └─────────────┘                             └─────────────┘
+```
 
-### Linux (Pipeline API, HTTP)
+- **Endpoint**: `GET /hello` → `"Hello, World!"` (13 bytes, text/plain)
+- **Tool**: [wrk](https://github.com/wg/wrk) — 4 threads, 100 concurrent connections, 10s
+- **Topology**: client and server on the same host (loopback)
+- **p50 / p99**: 50th and 99th percentile response latency
+
+### Servers
+
+| Prefix | Category | Description |
+|--------|----------|-------------|
+| `native:pipeline-http-*` | **keel Pipeline (Native)** | Pipeline mode HTTP, compiled to native binary |
+| `native:ktor-keel-*` | **keel Ktor (Native)** | Ktor + keel I/O engine, native binary |
+| `jvm:ktor-keel-*` | **keel (JVM)** | Ktor + keel I/O engine, running on JVM |
+| `jvm:pipeline-http-*` | **keel Pipeline (JVM)** | Pipeline mode HTTP, running on JVM |
+| `native:ktor-cio` | Ktor CIO (Native) | Ktor's built-in CIO engine, native binary |
+| `jvm:ktor-cio` | Ktor CIO (JVM) | Ktor's built-in CIO engine on JVM |
+| `jvm:ktor-netty` | Ktor + Netty | Ktor's Netty engine adapter |
+| `jvm:spring` | Spring WebFlux | Spring Boot + Reactor Netty |
+| `jvm:vertx` | Vert.x | Eclipse Vert.x Web |
+| `jvm:netty-raw` | Netty (raw) | Netty without any framework |
+| `rust/go/zig/swift` | Native baseline | Minimal HTTP servers in each language |
+
+### Linux x86_64
+
+AMD Ryzen 9 9950X3D (16 cores / 32 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (Azul Zulu)
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| Rust actix-web | 1,319K | 39us | 110us |
-| **keel epoll** | **864K** | **58us** | **174us** |
-| **keel io_uring** | **855K** | **59us** | **170us** |
-| **keel NIO** (JVM) | **719K** | **73us** | **1.23ms** |
-| ktor-cio (JVM) | 144K | 572us | 4.40ms |
-| **keel Node.js** (JS) | **153K** | **560us** | **1.67ms** |
+| rust-hello | 1,319K | 39us | 110us |
+| zig-hello | 1,133K | 42us | 108us |
+| jvm:netty-raw | 877K | 59us | 166us |
+| **native:pipeline-http-epoll** | **864K** | **58us** | **174us** |
+| **native:pipeline-http-io-uring** | **855K** | **59us** | **170us** |
+| jvm:ktor-netty | 845K | 85us | 0.97ms |
+| jvm:spring | 821K | 61us | 216us |
+| **jvm:pipeline-http-nio** | **719K** | **73us** | **1.23ms** |
+| **jvm:ktor-keel-netty** | **677K** | **99us** | **2.88ms** |
+| **native:ktor-keel-epoll** | **589K** | **99us** | **1.93ms** |
+| **jvm:ktor-keel-nio** | **540K** | **106us** | **2.24ms** |
+| go-hello | 536K | 102us | 1.02ms |
+| swift-hello | 527K | 146us | 473us |
+| jvm:vertx | 354K | 275us | 301us |
+| **native:pipeline-http-nodejs** | **153K** | **560us** | **1.67ms** |
+| jvm:ktor-cio | 146K | 572us | 4.40ms |
+| native:ktor-cio | 9K | 10.43ms | 19.94ms |
 
-### macOS (Pipeline API, HTTP)
+### macOS Apple Silicon
+
+Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| Rust actix-web | 161K | 583us | 0.88ms |
-| **keel kqueue** | **151K** | **380us** | **4.38ms** |
-| **keel NIO** (JVM) | **142K** | **410us** | **11.80ms** |
-| **keel Netty** (JVM) | **132K** | **499us** | **6.18ms** |
-| **keel Node.js** (JS) | **66K** | **1.43ms** | **2.32ms** |
-| **keel NWConnection** | **47K** | **1.87ms** | **13.82ms** |
+| rust-hello | 161K | 583us | 0.88ms |
+| **native:pipeline-http-kqueue** | **151K** | **380us** | **4.38ms** |
+| jvm:spring | 150K | 598us | 1.91ms |
+| **jvm:pipeline-http-nio** | **142K** | **410us** | **11.80ms** |
+| go-hello | 141K | 521us | 2.14ms |
+| jvm:netty-raw | 139K | 684us | 0.91ms |
+| zig-hello | 136K | 690us | 0.93ms |
+| jvm:ktor-netty | 132K | 499us | 6.18ms |
+| **jvm:ktor-keel-nio** | **128K** | **410us** | **11.80ms** |
+| jvm:vertx | 112K | 0.86ms | 1.75ms |
+| **native:ktor-keel-kqueue** | **108K** | **588us** | **9.47ms** |
+| swift-hello | 98K | 651us | 23.56ms |
+| **jvm:ktor-keel-netty** | **94K** | **487us** | **41.21ms** |
+| **native:pipeline-http-nodejs** | **66K** | **1.43ms** | **2.32ms** |
+| jvm:ktor-cio | 64K | 1.02ms | 18.20ms |
+| **native:pipeline-http-nwconnection** | **47K** | **1.87ms** | **13.82ms** |
+| native:ktor-cio | 7K | 10.40ms | 130.66ms |
 
 ### HTTPS (Pipeline API)
 
-| Server | TLS | Req/sec | p50 |
+| Server | TLS Backend | Req/sec | p50 |
 |---|---|---:|---:|
-| **keel io_uring** (Linux) | OpenSSL | **543K** | **94us** |
-| **keel epoll** (Linux) | OpenSSL | **529K** | **99us** |
-| **keel kqueue** (macOS) | OpenSSL | **138K** | **458us** |
-| **keel Netty** (macOS) | Netty SslHandler | **98K** | **431us** |
+| **native:pipeline-http-io-uring** (Linux) | OpenSSL | **543K** | **94us** |
+| **native:pipeline-http-epoll** (Linux) | OpenSSL | **529K** | **99us** |
+| **native:pipeline-http-kqueue** (macOS) | OpenSSL | **139K** | **458us** |
+| **jvm:pipeline-http-nio** (macOS) | JSSE | **133K** | **481us** |
+
+### Notes
+
+- All keel engines use fully async I/O with HTTP/1.1 keep-alive.
+- **Pipeline mode** (zero-coroutine push I/O) is the fastest mode — **pipeline-http-epoll** (864K) reaches 66% of Rust on Linux.
+- **Ktor Channel mode** (suspend-based) adds coroutine overhead — **ktor-keel-epoll** (589K) is still 65x faster than **ktor-cio**.
+- On /large (100KB), kqueue reaches 95% of Rust (57K vs 60K).
+- **jvm:ktor-keel-nio** (128K on macOS, 540K on Linux) approaches **jvm:ktor-netty** performance.
 
 ---
 

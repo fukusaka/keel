@@ -20,19 +20,18 @@ Always call `release()` (or `close()`) after use to avoid memory leaks. Use `ret
 
 `BufferAllocator` is a pluggable interface for buffer allocation strategy. Each engine can use its optimal memory strategy:
 
-| Allocator | Engine | Notes |
+| Allocator | Target | Notes |
 |---|---|---|
-| `SlabAllocator` | epoll, kqueue, io_uring | Fixed-size slab per EventLoop, low fragmentation |
-| `PooledDirectAllocator` | NIO | `ByteBuffer.allocateDirect` pool |
-| `DefaultAllocator` | All | Simple allocation, no pooling |
-| `HeapAllocator` | All | Heap-backed, for testing only |
+| `SlabAllocator` | Native | Fixed-size slab per EventLoop, low fragmentation |
+| `PooledDirectAllocator` | JVM | `ByteBuffer.allocateDirect` pool |
+| `DefaultAllocator` | All | Simple allocation, no pooling (tests / fallback) |
 
 Configure via `IoEngineConfig`:
 
 ```kotlin
 val engine = KqueueEngine(
     config = IoEngineConfig(
-        allocator = SlabAllocator(slabSize = 4096, slabCount = 64),
+        allocator = SlabAllocator(bufferSize = 8192, maxPoolSize = 256),
     ),
 )
 ```
@@ -52,12 +51,28 @@ try {
 
 When the reference count reaches zero, the buffer is returned to the allocator (pooled) or freed (unpooled).
 
-## TrackingAllocator
+## Leak Detection
 
-`TrackingAllocator` wraps any allocator and tracks all allocations for leak detection in tests:
+keel provides two complementary tools for detecting buffer leaks:
+
+| Tool | Purpose | Scope |
+|---|---|---|
+| `TrackingAllocator` | Count-based: "is there a leak?" | All platforms |
+| `LeakDetectingAllocator` | Stack trace: "where was it allocated?" | Native (Cleaner), JVM (PhantomReference) |
+
+Use the `withTracking()` and `withLeakDetection()` extension functions for fluent composition. Call `withTracking()` last to retain access to `assertNoLeaks()`:
 
 ```kotlin
-val tracking = TrackingAllocator(SlabAllocator())
+val tracker = SlabAllocator()
+    .withLeakDetection { msg -> fail(msg) }
+    .withTracking()
+
 // ... run test ...
-assertEquals(0, tracking.activeAllocations, "Buffer leak detected")
+tracker.assertNoLeaks()  // throws if any buffer was not released
 ```
+
+`LeakDetectingAllocator` captures the allocation site stack trace. When a buffer is garbage-collected without being released, the `onLeak` callback fires with the stack trace. Detection relies on GC, so trigger it explicitly in tests:
+
+- **Native**: `kotlin.native.runtime.GC.collect()`
+- **JVM**: `System.gc()` (best-effort) + allocate to drain the queue
+- **JS**: no-op (GC-managed, no manual release needed)
