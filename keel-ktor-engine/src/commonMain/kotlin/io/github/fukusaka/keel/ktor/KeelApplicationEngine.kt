@@ -13,7 +13,6 @@ import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsInstaller
@@ -303,10 +302,8 @@ public class KeelApplicationEngine(
                 }
 
                 // Install per-connection TLS in the channel's pipeline for HTTPS.
-                // All engines return PipelinedChannel from accept().
                 if (tlsConfig != null) {
-                    val pipelinedChannel = channel as PipelinedChannel
-                    tlsConfig.initializeConnection(pipelinedChannel)
+                    tlsConfig.initializeConnection(channel)
                 }
 
                 // Dispatch on EventLoop so read/parse runs on the I/O

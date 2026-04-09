@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
+
 /**
  * A server that listens for incoming connections.
  *
@@ -30,9 +32,9 @@ interface Server : AutoCloseable {
      * Accepts the next incoming connection.
      * Suspends until a connection is available.
      *
-     * @return a [Channel] for the accepted connection.
+     * @return a [PipelinedChannel] for the accepted connection.
      */
-    suspend fun accept(): Channel
+    suspend fun accept(): PipelinedChannel
 
     /** Stops listening and releases the server socket. */
     override fun close()

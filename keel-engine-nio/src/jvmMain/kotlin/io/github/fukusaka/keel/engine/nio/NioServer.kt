@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -54,7 +54,7 @@ internal class NioServer(
      * Suspends until an incoming connection arrives, then returns a [NioPipelinedChannel]
      * assigned to the next worker EventLoop with a cached [SelectionKey].
      */
-    override suspend fun accept(): Channel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         while (true) {

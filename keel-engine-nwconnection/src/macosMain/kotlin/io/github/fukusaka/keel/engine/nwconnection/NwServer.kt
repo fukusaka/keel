@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.LoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -116,7 +117,7 @@ internal class NwServer(
      * per-connection serial dispatch queue, suspending until the
      * connection reaches the ready state.
      */
-    override suspend fun accept(): Channel {
+    override suspend fun accept(): PipelinedChannel {
         check(_active) { "ServerChannel is closed" }
 
         // Get a connection: fast path (buffered) or slow path (suspend)
