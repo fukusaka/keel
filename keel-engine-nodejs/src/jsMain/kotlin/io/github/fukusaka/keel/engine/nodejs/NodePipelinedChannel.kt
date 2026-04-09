@@ -59,8 +59,14 @@ internal class NodePipelinedChannel(
 
     override val isActive: Boolean get() = !closed
     override val isOpen: Boolean get() = !closed
-    override val isWritable: Boolean get() = !closed
+    override val isWritable: Boolean get() = !closed && transport.isWritable
     override val supportsDeferredFlush: Boolean get() = false
+
+    init {
+        transport.onWritabilityChanged = { writable ->
+            pipeline.notifyWritabilityChanged(writable)
+        }
+    }
 
     // --- Channel mode: bridge lifecycle ---
 

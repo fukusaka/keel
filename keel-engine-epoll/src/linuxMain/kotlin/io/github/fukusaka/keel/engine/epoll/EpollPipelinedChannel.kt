@@ -54,9 +54,15 @@ internal class EpollPipelinedChannel(
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isActive: Boolean get() = !closed
     override val isOpen: Boolean get() = !closed
-    override val isWritable: Boolean get() = true
+    override val isWritable: Boolean get() = !closed && transport.isWritable
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
+
+    init {
+        transport.onWritabilityChanged = { writable ->
+            pipeline.notifyWritabilityChanged(writable)
+        }
+    }
 
     @kotlin.concurrent.Volatile
     private var closed = false

@@ -26,6 +26,24 @@ internal class NodeIoTransport(
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
+    // --- Write backpressure ---
+
+    private var pendingBytes: Int = 0
+    private var _writable: Boolean = true
+    override val isWritable: Boolean get() = _writable
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun updatePendingBytes(delta: Int) {
+        pendingBytes += delta
+        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
+            _writable = false
+            onWritabilityChanged?.invoke(false)
+        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
+            _writable = true
+            onWritabilityChanged?.invoke(true)
+        }
+    }
+
     override fun write(buf: IoBuf) {
         val bytes = buf.readableBytes
         if (bytes == 0) return
@@ -33,6 +51,7 @@ internal class NodeIoTransport(
         buf.retain()
         buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
+        updatePendingBytes(bytes)
     }
 
     /**
@@ -46,6 +65,7 @@ internal class NodeIoTransport(
      *         from the caller's perspective (buffers internally).
      */
     override fun flush(): Boolean {
+        var totalFlushed = 0
         for (pw in pendingWrites) {
             val src = pw.buf.unsafeArray
             val jsArray = js("[]")
@@ -55,8 +75,10 @@ internal class NodeIoTransport(
             val nodeBuffer = js("require('buffer').Buffer.from(jsArray)")
             socket.write(nodeBuffer)
             pw.buf.release()
+            totalFlushed += pw.length
         }
         pendingWrites.clear()
+        updatePendingBytes(-totalFlushed)
         onFlushComplete?.invoke()
         return true
     }
@@ -70,6 +92,8 @@ internal class NodeIoTransport(
             pw.buf.release()
         }
         pendingWrites.clear()
+        pendingBytes = 0
+        _writable = true
         socket.destroy()
     }
 

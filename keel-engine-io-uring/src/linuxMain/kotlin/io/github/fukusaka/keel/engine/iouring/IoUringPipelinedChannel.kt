@@ -70,11 +70,17 @@ internal class IoUringPipelinedChannel(
 ) : PipelinedChannel {
 
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
-    override val isWritable: Boolean get() = true
+    override val isWritable: Boolean get() = !closed && transport.isWritable
     override val isActive: Boolean get() = !closed
     override val isOpen: Boolean get() = !closed
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
     override val supportsDeferredFlush: Boolean get() = true
+
+    init {
+        transport.onWritabilityChanged = { writable ->
+            pipeline.notifyWritabilityChanged(writable)
+        }
+    }
 
     private var closed = false
 

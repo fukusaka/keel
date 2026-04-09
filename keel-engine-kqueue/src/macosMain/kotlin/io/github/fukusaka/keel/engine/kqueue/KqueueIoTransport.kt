@@ -44,6 +44,24 @@ internal class KqueueIoTransport(
 
     override var onFlushComplete: (() -> Unit)? = null
 
+    // --- Write backpressure ---
+
+    private var pendingBytes: Int = 0
+    private var _writable: Boolean = true
+    override val isWritable: Boolean get() = _writable
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
+    private fun updatePendingBytes(delta: Int) {
+        pendingBytes += delta
+        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
+            _writable = false
+            onWritabilityChanged?.invoke(false)
+        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
+            _writable = true
+            onWritabilityChanged?.invoke(true)
+        }
+    }
+
     /**
      * Buffers [buf] for the next [flush] call.
      *
@@ -57,6 +75,7 @@ internal class KqueueIoTransport(
         buf.retain()
         buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
+        updatePendingBytes(bytes)
     }
 
     /**
@@ -85,6 +104,8 @@ internal class KqueueIoTransport(
     override fun close() {
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
+        pendingBytes = 0
+        _writable = true
         close(fd)
     }
 
@@ -108,15 +129,18 @@ internal class KqueueIoTransport(
                     // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
                     pendingWrites.add(0, remainder)
+                    updatePendingBytes(-written)
                     registerWriteCallback()
                     return false
                 }
                 // Other error (EPIPE, ECONNRESET) — release and drop.
                 pw.buf.release()
+                updatePendingBytes(-pw.length)
                 return true
             }
         }
         pw.buf.release()
+        updatePendingBytes(-pw.length)
         return true
     }
 
@@ -149,6 +173,7 @@ internal class KqueueIoTransport(
                 // Other error — release all and return.
                 for (pw in pendingWrites) pw.buf.release()
                 pendingWrites.clear()
+                updatePendingBytes(-totalBytes)
                 return true
             }
             writtenBytes = n.toInt()
@@ -157,6 +182,7 @@ internal class KqueueIoTransport(
         if (writtenBytes >= totalBytes) {
             for (pw in pendingWrites) pw.buf.release()
             pendingWrites.clear()
+            updatePendingBytes(-totalBytes)
             return true
         }
 
@@ -175,6 +201,7 @@ internal class KqueueIoTransport(
         }
         pendingWrites.clear()
         pendingWrites.addAll(remaining)
+        updatePendingBytes(-writtenBytes)
         registerWriteCallback()
         return false
     }
