@@ -1051,4 +1051,13 @@ class IoUringEngineTest {
         server.close()
         engine.close()
     }
+
+    // --- Untested: flushDirectSendGather partial write path ---
+    //
+    // IoUringIoTransport.flushDirectSendGather() handles partial writev
+    // (EAGAIN after some bytes sent) by releasing fully-written buffers
+    // and submitting the remainder as an async SEND chain. This path
+    // requires the TCP send buffer to be partially full, which cannot
+    // be reliably triggered in a unit test. It is exercised implicitly
+    // by high-concurrency benchmarks (wrk -c100 /large).
 }

@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - keel-engine-netty: fix DirectIoBuf double-release on /large responses (`supportsDeferredFlush = true` for async Netty flush)
 - keel-engine-nodejs: replace byte-by-byte copy with `Int8Array.subarray`/`set` in flush and read paths (/large +544%, /hello +10%)
+- keel-engine-io-uring: use `writev` gather write in FALLBACK_CQE direct flush for multi-buffer responses (/large +1,253%)
 
 ### Removed
 
