@@ -98,9 +98,23 @@ class LeakDetectingAllocatorTest {
         assertEquals(0, leaks.size)
     }
 
+    @Test
+    fun `zero capacity buffer lifecycle`() {
+        val leaks = mutableListOf<String>()
+        val allocator = LeakDetectingAllocator(DefaultAllocator) { leaks.add(it) }
+
+        val buf = allocator.allocate(0)
+        assertEquals(0, buf.capacity)
+        buf.release()
+
+        assertEquals(0, leaks.size, "Zero-capacity buffer should not trigger leak")
+    }
+
     // GC-based leak detection tests are platform-specific:
     // - Native: kotlin.native.internal.GC.collect() triggers Cleaner
+    //   → nativeTest/LeakDetectingAllocatorGcTest.kt
     // - JVM: System.gc() + drainLeakQueue on next allocation
+    //   → jvmTest/LeakDetectingAllocatorGcTest.kt
     // - JS: no-op (GC-managed, no leak concern)
     //
     // These tests verify the deallocator interception mechanism.

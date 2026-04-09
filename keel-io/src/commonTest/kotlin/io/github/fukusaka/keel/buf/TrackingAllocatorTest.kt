@@ -86,7 +86,7 @@ class TrackingAllocatorTest {
 
         val buf = perLoop.allocate(64)
         buf.release()
-        (perLoop as TrackingAllocator).assertNoLeaks()
+        perLoop.assertNoLeaks()
     }
 
     @Test
