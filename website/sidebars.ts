@@ -10,6 +10,8 @@ const sidebars: SidebarsConfig = {
         'architecture/overview',
         'architecture/engine-guide',
         'architecture/buffer',
+        'architecture/pipeline',
+        'architecture/tls',
       ],
     },
     {
