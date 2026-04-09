@@ -109,3 +109,16 @@ class LeakDetectingAllocator(
  * satisfy this requirement.
  */
 internal expect fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): IoBuf
+
+/**
+ * Wraps this allocator with [LeakDetectingAllocator] for GC-based leak detection.
+ *
+ * Each allocated buffer is instrumented with platform-specific tracking.
+ * When a buffer is garbage-collected without being released, [onLeak] is
+ * invoked with the allocation site stack trace.
+ *
+ * See [LeakDetectingAllocator] for detection timing and platform differences.
+ */
+fun BufferAllocator.withLeakDetection(
+    onLeak: (String) -> Unit = { msg -> println("BUFFER LEAK: $msg") },
+): LeakDetectingAllocator = LeakDetectingAllocator(this, onLeak)

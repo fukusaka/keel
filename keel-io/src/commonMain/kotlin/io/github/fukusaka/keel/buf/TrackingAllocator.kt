@@ -82,3 +82,21 @@ class TrackingAllocator(
         releaseCount = 0
     }
 }
+
+/**
+ * Wraps this allocator with [TrackingAllocator] for allocate/release counting.
+ *
+ * Returns [TrackingAllocator] so callers can access [TrackingAllocator.assertNoLeaks],
+ * [TrackingAllocator.allocateCount], etc.
+ *
+ * **Recommended chain order**: call `withTracking()` last so the returned
+ * type exposes the tracking API:
+ * ```
+ * val tracker = SlabAllocator()
+ *     .withLeakDetection { msg -> fail(msg) }
+ *     .withTracking()
+ * // ... run test ...
+ * tracker.assertNoLeaks()
+ * ```
+ */
+fun BufferAllocator.withTracking(): TrackingAllocator = TrackingAllocator(this)
