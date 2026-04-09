@@ -46,6 +46,7 @@ class NodeEngine(
 ) : StreamEngine {
 
     private val logger = config.loggerFactory.logger("NodeEngine")
+    private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
     override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): KeelServer {
@@ -123,7 +124,7 @@ class NodeEngine(
             val remoteAddr = typedSocket.remoteAddress?.let { h ->
                 typedSocket.remotePort?.let { p -> SocketAddress(h, p) }
             }
-            val channelLogger = this.config.loggerFactory.logger("NodePipelinedChannel")
+            val channelLogger = this.channelLogger
             val channel = NodePipelinedChannel(
                 typedSocket,
                 this.config.allocator,
@@ -165,7 +166,7 @@ class NodeEngine(
                 val localAddr = socket.localAddress?.let { h ->
                     socket.localPort?.let { p -> SocketAddress(h, p) }
                 }
-                val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
+                val channelLogger = this@NodeEngine.channelLogger
                 val channel = NodePipelinedChannel(
                     socket,
                     config.allocator,
