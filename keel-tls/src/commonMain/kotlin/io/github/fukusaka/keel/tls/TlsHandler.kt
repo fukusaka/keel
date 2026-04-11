@@ -395,9 +395,9 @@ class TlsHandler(
          * matches the RFC 5246 §6.2.3 / RFC 8446 §5.2 mandate that a
          * receiver terminates the connection on `record_overflow`. The
          * downstream pipeline observes the error and tears the channel
-         * down; the codec itself is responsible for any `record_overflow`
-         * alert on the wire (JSSE's SSLEngine emits one when close is
-         * called after BUFFER_OVERFLOW, for example).
+         * down; the codec is responsible for emitting the on-wire
+         * `record_overflow` alert via its own handshake / shutdown
+         * state machine.
          *
          * ### Pool-miss note
          *
