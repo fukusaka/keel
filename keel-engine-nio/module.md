@@ -3,7 +3,20 @@
 JVM NIO Selector-based IoEngine implementation with multi-threaded EventLoop.
 
 Provides both **Pipeline mode** (zero-suspend, callback-driven HTTP server) and
-**Channel mode** (suspend-based interactive I/O for protocols like SMTP, Redis, Ktor).
+**Coroutine mode** (suspend-based interactive I/O for protocols like SMTP, Redis, Ktor).
+
+## Two I/O Modes
+
+**Pipeline mode** (`bindPipeline`): engine drives read via OP_READ callbacks.
+Handlers process data synchronously on the EventLoop thread — zero suspend overhead.
+Used for high-performance HTTP servers.
+
+**Coroutine mode** (`bind`/`connect`): app drives I/O via suspend
+`read()`/`write()`/`flush()`. A `SuspendBridgeHandler` bridges pipeline
+callbacks to suspend. Used for interactive protocols (SMTP, Redis) and Ktor.
+
+**Pipeline direction**: inbound (read) flows HEAD → TAIL; outbound (write/flush)
+flows TAIL → HEAD. `HeadHandler` connects the pipeline to `NioIoTransport`.
 
 ## Architecture
 
@@ -26,64 +39,74 @@ dispatch overhead.
 `registerChannel()`. Subsequent I/O uses `interestOps` toggling instead of
 re-registration — eliminates per-read JNI overhead (same pattern as Netty).
 
-## Two I/O Modes
+## Read Path
 
-**Pipeline mode** (`bindPipeline`): engine drives read via OP_READ callbacks.
-Data flows through the handler chain synchronously on the EventLoop thread.
-Used for high-performance HTTP servers.
+Both modes issue `SocketChannel.read()` with `IoBuf.unsafeBuffer` (DirectByteBuffer) —
+zero-copy, no intermediate `ByteArray`. The read result enters the pipeline via `notifyRead`.
+
+**Pipeline**: OP_READ interest is registered immediately after accept. On each readable event:
 
 ```
-Selector: OP_READ → SocketChannel.read(ByteBuffer)
+Selector: OP_READ → SocketChannel.read(DirectByteBuffer)  [IoBuf.unsafeBuffer]
   → pipeline.notifyRead(buf)
-    → TlsHandler → Decoder → Router → Encoder → IoTransport.write()
+    → handler chain (Decoder → Router → ...)
 ```
 
-**Channel mode** (`bind`/`connect`): app drives I/O via suspend `read()`/`write()`/`flush()`.
-A `SuspendBridgeHandler` is lazily installed to bridge Pipeline callbacks to suspend.
-Used for interactive protocols (SMTP, Redis), proxies, and Ktor integration.
+**Coroutine**: OP_READ interest is registered lazily on the first `channel.read()` via `ensureBridge()`.
 
 ```
-Selector: OP_READ → SocketChannel.read(ByteBuffer)
+Selector: OP_READ → SocketChannel.read(DirectByteBuffer)  [IoBuf.unsafeBuffer]
   → pipeline.notifyRead(buf)
     → SuspendBridgeHandler.onRead() → queue
                                         ↓
 App:                        suspend channel.read(buf) ← dequeue
 ```
 
-## Zero-Copy I/O
+## Write/Flush Path
 
-Read and write pass `IoBuf.unsafeBuffer` (`DirectByteBuffer`) directly to
-`SocketChannel.read()`/`SocketChannel.write()`:
+Both modes share the same outbound path. The pipeline terminates at `HeadHandler`,
+which delegates to `NioIoTransport`.
+
+**Pipeline**: a handler calls `ctx.propagateWrite/Flush` to push data toward HEAD.
 
 ```
-Read:    SocketChannel.read(DirectByteBuffer)  → IoBuf.unsafeBuffer
-Write:   SocketChannel.write(DirectByteBuffer) ← IoBuf.unsafeBuffer
-Gather:  SocketChannel.write(ByteBuffer[])       for multiple pending buffers
+handler (e.g. Encoder)
+  → ctx.propagateWrite(buf) → HeadHandler.onWrite → NioIoTransport.write(buf)
+  → ctx.propagateFlush()   → HeadHandler.onFlush → NioIoTransport.flush()
 ```
 
-No intermediate `ByteArray` copy. The `IoBuf` backing `DirectByteBuffer` is
-accessed directly by the JVM NIO layer.
+**Coroutine**: the app enters the pipeline at TAIL.
+
+```
+App: channel.write(buf)           → pipeline.requestWrite(buf) → ... → NioIoTransport.write(buf)
+App: channel.requestFlush()       → pipeline.requestFlush()    → ... → NioIoTransport.flush()
+App: channel.awaitFlushComplete() → transport.awaitPendingFlush()
+```
+
+Flush strategy: `SocketChannel.write(ByteBuffer)` / `SocketChannel.write(ByteBuffer[])` (gather
+write for multiple pending buffers). When the send buffer is full (`write()` returns 0):
+OP_WRITE is registered; when the channel becomes writable the remainder is retried and
+OP_WRITE is deregistered.
 
 ## Pipeline Dispatcher
 
-Pipeline mode uses `Dispatchers.Default` (ForkJoinPool work-stealing) as the
-application dispatcher instead of the EventLoop fixed-partition. This avoids
-head-of-line blocking when one channel's handler chain is slow, and better
-utilizes CPU cores under mixed workloads.
+NIO uses `Dispatchers.Default` (ForkJoinPool work-stealing) as the application dispatcher
+instead of the EventLoop fixed-thread. This avoids head-of-line blocking when one channel's
+handler chain is slow, and better utilizes CPU cores under mixed workloads.
 
 ## Key Classes
 
 | Class | Role |
 |-------|------|
 | `NioEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
-| `NioPipelinedChannel` | Unified channel supporting Pipeline + Channel modes |
+| `NioPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `NioPipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
-| `NioServerChannel` | Channel-mode server (suspend-based accept) |
-| `NioIoTransport` | `IoTransport` for pipeline write/flush with OP_WRITE |
+| `NioServer` | Coroutine-mode server (suspend-based accept) |
+| `NioIoTransport` | `IoTransport` for write/flush with OP_WRITE backpressure |
 | `NioEventLoop` | Single-threaded Selector loop + `CoroutineDispatcher` |
 | `NioEventLoopGroup` | Round-robin distribution of channels across EventLoops |
 
 # Package io.github.fukusaka.keel.engine.nio
 
-JVM NIO Selector-based IoEngine with multi-threaded EventLoop, unified Pipeline + Channel
+JVM NIO Selector-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
 mode via `NioPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafeBuffer` (DirectByteBuffer).

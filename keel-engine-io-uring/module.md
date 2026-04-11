@@ -3,7 +3,7 @@
 Linux io_uring-based IoEngine implementation with multishot accept/recv and provided buffer ring.
 
 Provides both **Pipeline mode** (zero-suspend, zero-allocation multishot recv) and
-**Channel mode** (suspend-based interactive I/O for protocols like SMTP, Redis, Ktor).
+**Coroutine mode** (suspend-based interactive I/O for protocols like SMTP, Redis, Ktor).
 
 ## Two I/O Modes
 
@@ -11,7 +11,7 @@ Provides both **Pipeline mode** (zero-suspend, zero-allocation multishot recv) a
 process data synchronously on the EventLoop thread — zero suspend overhead.
 Used for high-performance HTTP servers.
 
-**Channel mode** (`bind`/`connect`): app drives I/O via suspend
+**Coroutine mode** (`bind`/`connect`): app drives I/O via suspend
 `read()`/`write()`/`flush()`. A `SuspendBridgeHandler` bridges pipeline
 callbacks to suspend. Used for interactive protocols (SMTP, Redis) and Ktor.
 
@@ -26,11 +26,11 @@ in a single loop: drain tasks → submit SQEs + wait for CQEs → process comple
 
 The two modes use different accept models:
 
-**Channel mode** (`bind`): a boss EventLoop accepts via `IORING_OP_ACCEPT`
+**Coroutine mode** (`bind`): a boss EventLoop accepts via `IORING_OP_ACCEPT`
 (multishot on Linux 5.19+) and distributes connections to workers in round-robin.
 
 ```
-IoUringEngine (Channel mode)
+IoUringEngine (Coroutine mode)
 ├── bossLoop (IoUringEventLoop)
 │     └── IORING_OP_ACCEPT (multishot) → clientFd → assign to worker
 └── workerGroup (N workers, round-robin)
@@ -79,7 +79,7 @@ EventLoop CQE callback (armRecv)
       → handler chain (Decoder → Router → ...)
 ```
 
-**Channel**: `armRecv()` is called lazily on the first `channel.read()` via
+**Coroutine**: `armRecv()` is called lazily on the first `channel.read()` via
 `ensureBridge()`. Data is copied from `RingBufferIoBuf` to the caller's `IoBuf`
 via `IoBuf.copyTo`.
 
@@ -111,7 +111,7 @@ handler (e.g. Encoder)
     → HeadHandler.onFlush → IoTransport.flush()
 ```
 
-**Channel**: the app enters the pipeline at TAIL via `pipeline.requestWrite/requestFlush`.
+**Coroutine**: the app enters the pipeline at TAIL via `pipeline.requestWrite/requestFlush`.
 
 ```
 App: channel.write(buf)
@@ -148,9 +148,9 @@ via `IoModeSelectors.eagainThreshold()`.
 | Class | Role |
 |-------|------|
 | `IoUringEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
-| `IoUringPipelinedChannel` | Unified channel: Pipeline + Channel + PushChannel |
+| `IoUringPipelinedChannel` | Unified channel: Pipeline + Coroutine + PushChannel |
 | `IoUringPipelinedServerChannel` | Pipeline-mode server (SO_REUSEPORT, multishot accept) |
-| `IoUringServerChannel` | Channel-mode server (suspend-based accept) |
+| `IoUringServer` | Coroutine-mode server (suspend-based accept) |
 | `IoUringIoTransport` | `IoTransport` for write/flush with adaptive mode selection |
 | `IoUringEventLoop` | Single-threaded io_uring loop + `CoroutineDispatcher` |
 | `IoUringEventLoopGroup` | Round-robin + per-worker `ProvidedBufferRing` |
@@ -168,7 +168,7 @@ via `IoModeSelectors.eagainThreshold()`.
 | Feature | Kernel | Used by |
 |---------|--------|---------|
 | io_uring basic | 5.1+ | All operations |
-| Multishot accept | 5.19+ | `IoUringServerChannel`, `IoUringPipelinedServerChannel` |
+| Multishot accept | 5.19+ | `IoUringServer`, `IoUringPipelinedServerChannel` |
 | Provided buffer ring | 5.19+ | `ProvidedBufferRing` for multishot recv |
 | Multishot recv | 6.0+ | `armRecv()` in `IoUringPipelinedChannel` |
 | SEND_ZC | 6.0+ | `IoMode.SEND_ZC` (optional, auto-detected) |
@@ -177,6 +177,6 @@ via `IoModeSelectors.eagainThreshold()`.
 
 # Package io.github.fukusaka.keel.engine.iouring
 
-Linux io_uring-based IoEngine with multi-threaded EventLoop, unified Pipeline + Channel
+Linux io_uring-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
 mode via `IoUringPipelinedChannel`, multishot recv with provided buffer ring, and
 adaptive write mode selection (direct send / CQE / SEND_ZC).
