@@ -1,18 +1,18 @@
 # Module benchmark
 
-HTTP/1.1 throughput benchmark server for comparing keel engines against Netty, Ktor, Spring, and Vert.x.
+HTTP/1.1 throughput benchmark suite comparing keel engines against Netty, Ktor, Spring, Vert.x, and Phase 2 Native servers (Rust, Go, Swift, Zig).
 
-Not a production library module — this is a standalone runnable program.
+Not a production library module — this is a standalone benchmark program.
 
 ## Purpose
 
-The benchmark module provides a single HTTP server binary that can be switched between engines
-at startup via `--engine=<name>`. This enables apples-to-apples comparisons under identical
-OS/JVM/hardware conditions.
+The benchmark module produces platform-specific HTTP server binaries (Kotlin/Native `.kexe`,
+JVM classpath runner, Node.js script). Each binary accepts `--engine=<name>` at startup,
+enabling apples-to-apples comparisons under identical OS/JVM/hardware conditions.
 
 Two endpoints:
 - **`/hello`** — `Hello, World!` (13 bytes). Measures raw request/response throughput.
-- **`/large`** — 100 KB (`x` × 102400) response. Measures large-payload write throughput.
+- **`/large`** — the ASCII character `x` repeated 102,400 times (≈100 KiB). Measures large-payload write throughput.
 
 ## Build
 
@@ -79,7 +79,7 @@ java -cp @benchmark/build/benchmark-classpath.txt \
 |--------|---------|
 | `bench-one.sh` | Single engine: `bench-one.sh <name> <command> [args...]` |
 | `bench-keel.sh` | keel engines + `ktor-cio` only |
-| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
+| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM + JS) |
 | `bench-pull.sh` | Pull results from remote host (`luna.local`) |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
 
@@ -91,6 +91,8 @@ Key environment variables:
 | `BENCH_RUNS` | `1` | Runs per engine; median reported |
 | `BENCH_SHUFFLE` | `false` | Randomize engine execution order |
 | `BENCH_SCHEME` | `http` | `http` or `https` |
+| `BENCH_PORT` | `18090` | Starting port (incremented per engine) |
+| `BENCH_COOLDOWN` | `2` | Seconds between engines for OS resource recovery |
 | `BENCH_WRK_THREADS` | `4` | wrk thread count |
 | `BENCH_WRK_CONNS` | `100` | wrk connections |
 | `BENCH_WRK_DURATION` | `10s` | wrk duration |
@@ -174,6 +176,7 @@ Source lives under `benchmark/rust-hello/`, `benchmark/go-hello/`, `benchmark/sw
 | `--threads=<int>` | Worker thread count |
 | `--backlog=<int>` | SO_BACKLOG |
 | `--tcp-nodelay=<bool>` | TCP_NODELAY |
+| `--connection-close=<bool>` | Force `Connection: close` (disables HTTP keep-alive) |
 | `--show-config` | Print resolved config and exit |
 
 ### Profiles
@@ -198,9 +201,13 @@ interface EngineBenchmark {
 ```
 
 Platform-specific engine files register implementations in `engineRegistry()`.
-Native signal handlers (`SIGTERM`/`SIGINT`) call `_exit(0)` for immediate port release — avoids
-atexit handlers that could deadlock. Handlers are installed after server start because Ktor
-overrides them during engine initialization.
+
+**Kotlin/Native only**: `SIGTERM`/`SIGINT` handlers call `_exit(0)` for immediate port release.
+`_exit` bypasses `atexit` handlers that could deadlock on shutdown. Handlers are installed
+*after* server start because Ktor overrides them during engine initialization.
+
+Phase 2 Native servers (Rust, Go, Swift, Zig) are separate programs and do not implement
+`EngineBenchmark`. They are invoked directly by `bench-all.sh` via their own binaries.
 
 ## Key Types
 
