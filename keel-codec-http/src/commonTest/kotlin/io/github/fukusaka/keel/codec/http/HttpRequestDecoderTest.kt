@@ -411,6 +411,38 @@ class HttpRequestDecoderTest {
     }
 
     @Test
+    fun `large URI in single IoBuf exercises scratch buffer growth`() {
+        val decoder = HttpRequestDecoder()
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
+
+        // The scratch buffer starts at 256 bytes. A URI larger than 256
+        // forces `ensureScratchCapacity` to double-grow on the fast path.
+        // Pick 2000 bytes so the buffer has to grow through 512 → 1024 →
+        // 2048, covering multiple rounds of doubling inside a single
+        // request. The whole request still fits in one IoBuf so this is
+        // strictly the fast path — the fallback accumulator is never
+        // touched.
+        val longPath = "/" + "a".repeat(2000)
+        val request = "GET $longPath HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        pipeline.notifyRead(bufOf(request))
+
+        assertEquals(1, collector.heads.size)
+        val head = collector.heads[0]
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals(longPath, head.uri)
+        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+
+        // Send a second request to verify the grown scratch buffer is
+        // reused (not torn down). The second request has a short URI so
+        // it fits in the existing scratch; this run exercises the
+        // "scratch already large enough" branch of ensureScratchCapacity.
+        pipeline.notifyRead(bufOf("GET /short HTTP/1.1\r\nHost: h\r\n\r\n"))
+        assertEquals(2, collector.heads.size)
+        assertEquals("/short", collector.heads[1].uri)
+    }
+
+    @Test
     fun `header line near MAX_LINE_SIZE through fallback accumulator`() {
         val decoder = HttpRequestDecoder()
         val collector = HeadCollector()
