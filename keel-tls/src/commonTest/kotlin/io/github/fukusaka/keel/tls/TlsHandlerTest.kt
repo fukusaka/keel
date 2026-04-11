@@ -535,6 +535,166 @@ class TlsHandlerTest {
         transport.written.forEach { it.release() }
     }
 
+    // --- processOutbound hardening against unexpected codec states ---
+    //
+    // PR #249 rebuilt processOutbound's status dispatch with explicit
+    // BUFFER_OVERFLOW / CLOSED handling but left three latent issues
+    // that a buggy codec could trigger: an OK-with-no-progress stall,
+    // a silent break on NEED_WRAP, and a silent break on
+    // NEED_MORE_INPUT. Each produced a silent write truncation — the
+    // caller saw the write as successful but only a prefix of the
+    // plaintext (or nothing at all) actually reached the wire. These
+    // tests pin down the follow-up fix that turns each state into a
+    // structured PROTOCOL_ERROR propagated through the pipeline.
+
+    @Test
+    fun `protect OK with no progress propagates stall error`() {
+        // Codec completes the handshake on the first unprotect, then
+        // returns OK with bytesConsumed = 0 and bytesProduced = 0 on
+        // every subsequent protect call. Without the stall guard the
+        // processOutbound loop would re-enter with identical state and
+        // spin forever.
+        val stallCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.OK, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(stallCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        // Complete handshake so subsequent requestWrite enters
+        // processOutbound application-data encoding.
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+        recorder.reads.clear()
+
+        pipeline.requestWrite(allocBuf("hello".encodeToByteArray()))
+
+        assertEquals(1, recorder.errors.size, "exactly one error expected on outbound stall")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.PROTOCOL_ERROR,
+            error.category,
+            "outbound stall must surface as PROTOCOL_ERROR",
+        )
+        transport.written.forEach { it.release() }
+        assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on stall")
+    }
+
+    @Test
+    fun `protect NEED_WRAP during application data propagates PROTOCOL_ERROR`() {
+        // Codec completes the handshake on the first unprotect, then
+        // returns NEED_WRAP from protect as if it wanted to interleave
+        // a post-handshake message. keel's TlsCodec contract does not
+        // support that pattern during application-data encoding, so
+        // the handler must surface the unexpected state rather than
+        // silently truncate the caller's write.
+        val needWrapCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(needWrapCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+        recorder.reads.clear()
+
+        pipeline.requestWrite(allocBuf("hello".encodeToByteArray()))
+
+        assertEquals(1, recorder.errors.size, "exactly one error expected on NEED_WRAP during protect")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.PROTOCOL_ERROR,
+            error.category,
+            "unexpected NEED_WRAP during application protect must surface as PROTOCOL_ERROR",
+        )
+        transport.written.forEach { it.release() }
+        assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on unexpected NEED_WRAP")
+    }
+
+    @Test
+    fun `protect NEED_MORE_INPUT during application data propagates PROTOCOL_ERROR`() {
+        // NEED_MORE_INPUT is a signal specific to unprotect (the codec
+        // needs more ciphertext to decode a record) and is meaningless
+        // on the protect path — the caller has already handed over all
+        // the plaintext it intends to encode. A codec returning this
+        // status from protect is in a broken state machine and must
+        // not be allowed to silently truncate the outbound stream.
+        val needMoreInputCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(needMoreInputCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+        recorder.reads.clear()
+
+        pipeline.requestWrite(allocBuf("hello".encodeToByteArray()))
+
+        assertEquals(1, recorder.errors.size, "exactly one error expected on NEED_MORE_INPUT during protect")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.PROTOCOL_ERROR,
+            error.category,
+            "unexpected NEED_MORE_INPUT during application protect must surface as PROTOCOL_ERROR",
+        )
+        transport.written.forEach { it.release() }
+        assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on unexpected NEED_MORE_INPUT")
+    }
+
     @Test
     fun `handlerRemoved releases accumulate buffer and closes codec`() {
         val codec = MockTlsCodec()
