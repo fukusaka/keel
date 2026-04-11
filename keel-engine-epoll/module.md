@@ -102,7 +102,7 @@ the hot path after the initial registration.
 
 | Class | Role |
 |-------|------|
-| `EpollEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
+| `EpollEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `EpollPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `EpollPipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
 | `EpollServer` | Coroutine-mode server (suspend-based accept) |

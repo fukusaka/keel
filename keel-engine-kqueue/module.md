@@ -91,7 +91,7 @@ and EVFILT_WRITE is deleted.
 
 | Class | Role |
 |-------|------|
-| `KqueueEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
+| `KqueueEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `KqueuePipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `KqueuePipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
 | `KqueueServer` | Coroutine-mode server (suspend-based accept) |

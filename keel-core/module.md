@@ -5,13 +5,14 @@ Engine modules implement these interfaces; codec and application code depend on 
 
 ## I/O Engine Interfaces
 
-`StreamEngine` is the root interface for all byte-stream engines (TCP, Unix SOCK_STREAM).
-Engine modules provide implementations for each platform:
+`IoEngine` is the root interface for all keel I/O engines (lifecycle: `close()`).
+`StreamEngine : IoEngine` extends it with TCP byte-stream operations.
+Engine modules implement `StreamEngine` for each platform:
 
 ```
 Application
       |
-  StreamEngine  (bind / connect)
+  StreamEngine : IoEngine  (bind / connect)
       |
   +---+---+---+---+---+---+---+
   |   |   |   |   |   |   |   |
@@ -69,10 +70,10 @@ Configuration shared by all engines:
 
 | Type | Package | Role |
 |------|---------|------|
-| `StreamEngine` | `core` | Root interface for TCP engines |
+| `IoEngine` | `core` | Root interface for all keel I/O engines (lifecycle) |
+| `StreamEngine` | `core` | TCP byte-stream engine: `bind` / `bindPipeline` / `connect` |
 | `Channel` | `core` | Bidirectional TCP channel |
-| `Server` | `core` | Suspend-based accept loop |
-| `ServerChannel` | `core` | Channel-mode server implementation base |
+| `Server` | `core` | Coroutine-mode server: suspend-based accept loop |
 | `PipelinedServer` | `core` | Pipeline-mode server lifecycle |
 | `SocketAddress` | `core` | `(host, port)` tuple |
 | `IoEngineConfig` | `core` | Engine-wide configuration |
@@ -87,7 +88,7 @@ Configuration shared by all engines:
 
 # Package io.github.fukusaka.keel.core
 
-`StreamEngine`, `Channel`, `Server`, `ServerChannel`, `PipelinedServer`,
+`IoEngine`, `StreamEngine`, `Channel`, `Server`, `PipelinedServer`,
 `IoEngineConfig`, `BindConfig`, `SocketAddress` — the public API for
 binding servers and creating connections.
 

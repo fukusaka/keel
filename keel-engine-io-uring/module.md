@@ -147,7 +147,7 @@ via `IoModeSelectors.eagainThreshold()`.
 
 | Class | Role |
 |-------|------|
-| `IoUringEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
+| `IoUringEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `IoUringPipelinedChannel` | Unified channel: Pipeline + Coroutine + PushChannel |
 | `IoUringPipelinedServerChannel` | Pipeline-mode server (SO_REUSEPORT, multishot accept) |
 | `IoUringServer` | Coroutine-mode server (suspend-based accept) |

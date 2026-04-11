@@ -98,7 +98,7 @@ handler chain is slow, and better utilizes CPU cores under mixed workloads.
 
 | Class | Role |
 |-------|------|
-| `NioEngine` | `IoEngine` implementation. Creates boss + worker EventLoops |
+| `NioEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `NioPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `NioPipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
 | `NioServer` | Coroutine-mode server (suspend-based accept) |
