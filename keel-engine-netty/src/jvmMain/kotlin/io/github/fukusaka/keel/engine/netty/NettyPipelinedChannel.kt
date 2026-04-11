@@ -154,6 +154,12 @@ class NettyPipelinedChannel internal constructor(
      * [channelRead] copies [ByteBuf] data into [IoBuf] and feeds it into
      * the pipeline via [notifyRead]. The copy is unavoidable because Netty
      * delivers data before the user provides a destination buffer.
+     *
+     * The allocation size is rounded up to [POOL_FRIENDLY_CAPACITY] when
+     * the inbound packet is smaller, so that [PooledDirectAllocator]'s
+     * per-EventLoop freelist can serve the request instead of allocating a
+     * fresh `DirectByteBuffer` per packet. Only the actual [readable] bytes
+     * are copied; the remaining capacity stays writable but unused.
      */
     internal val handler = object : ChannelInboundHandlerAdapter() {
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
@@ -162,7 +168,8 @@ class NettyPipelinedChannel internal constructor(
                 if (!byteBuf.isReadable) return
 
                 val readable = byteBuf.readableBytes()
-                val buf = allocator.allocate(readable)
+                val cap = maxOf(readable, POOL_FRIENDLY_CAPACITY)
+                val buf = allocator.allocate(cap)
                 val bb = buf.unsafeBuffer
                 bb.position(buf.writerIndex)
                 bb.limit(buf.writerIndex + readable)
@@ -227,6 +234,26 @@ class NettyPipelinedChannel internal constructor(
     }
 
     companion object {
+        /**
+         * Preferred minimum capacity for inbound read buffers, chosen to
+         * match [io.github.fukusaka.keel.buf.PooledDirectAllocator]'s default
+         * freelist slot size (8 KiB).
+         *
+         * Netty delivers inbound data in packets whose size tracks the TCP
+         * segment / TLS record boundary and is typically smaller than the
+         * pool slot. Requesting less than the slot size forces the allocator
+         * to skip the freelist and allocate a fresh `DirectByteBuffer` on
+         * every read, producing a `Cleaner` + `Deallocator` pair per packet.
+         * Rounding the request up to this size lets small packets hit the
+         * freelist; larger packets still bypass the pool as before.
+         *
+         * This is a hint, not a contract: if the allocator later exposes a
+         * different preferred capacity (for example, a size-class pool),
+         * this constant can be adjusted independently of the allocator
+         * implementation.
+         */
+        private const val POOL_FRIENDLY_CAPACITY = 8192
+
         /** Extracts [SocketAddress] from a Java NIO [InetSocketAddress]. */
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             val inet = addr as? InetSocketAddress ?: return null

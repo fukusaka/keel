@@ -35,8 +35,17 @@ class PooledDirectAllocator(
     private val head = AtomicReference<DirectIoBuf?>(null)
     private val poolSize = AtomicInteger(0)
 
+    /**
+     * Returns a fresh allocator instance intended for exclusive use by a
+     * single event loop thread. The returned allocator keeps a smaller pool
+     * ([LOCAL_POOL_SIZE] slots) because a single event loop typically holds
+     * only a handful of buffers in flight concurrently, and each engine
+     * creates one instance per event loop. A smaller local cache bounds the
+     * total direct memory footprint to `numEventLoops × LOCAL_POOL_SIZE ×
+     * bufferSize`, independent of the number of open connections.
+     */
     override fun createForEventLoop(): BufferAllocator =
-        PooledDirectAllocator(bufferSize, maxPoolSize)
+        PooledDirectAllocator(bufferSize, LOCAL_POOL_SIZE)
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
@@ -83,6 +92,23 @@ class PooledDirectAllocator(
 
     companion object {
         private const val DEFAULT_BUFFER_SIZE = 8192
+
+        /**
+         * Default pool capacity for the global (shared) allocator. Sized for
+         * the classic pattern where a single allocator serves all connections
+         * and must absorb bursts from many event loop threads concurrently.
+         */
         private const val DEFAULT_MAX_POOL_SIZE = 256
+
+        /**
+         * Pool capacity for per-event-loop allocators returned by
+         * [createForEventLoop]. Each instance is accessed by a single event
+         * loop thread, so a small cache is enough to cover the typical
+         * number of in-flight buffers (read + write scratch). Keeping this
+         * small bounds the per-engine direct memory footprint: the total
+         * is `numEventLoops × LOCAL_POOL_SIZE × bufferSize`, independent
+         * of the number of open connections.
+         */
+        private const val LOCAL_POOL_SIZE = 16
     }
 }
