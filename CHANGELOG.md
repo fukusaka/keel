@@ -138,6 +138,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- website: rewrite intro.md as a Getting Started guide — adds Quick Start (Ktor + keel), Pipeline vs Channel mode comparison table, and "keel vs Netty vs Ktor" positioning
+- website: add performance-based engine selection tables and macOS→Linux development workflow to engine-guide.md
+- website: document `BufferedSuspendSink` direct-write path and its 100 KB response throughput impact in buffer.md
+- website: update pipeline.md performance numbers (870K epoll, 490K HTTPS epoll) and note direct-write Ktor Channel mode improvement
+- website: add "keel vs Netty vs Ktor" positioning table to architecture overview
+- README, README.ja: update `/hello` Pipeline benchmark values to latest 3-run medians; add `/large` Pipeline and Ktor tables
+- README, README.ja: update HTTPS Pipeline table (508K io_uring, 490K epoll, 133K kqueue, 130K Netty JSSE on macOS)
+- website: add Coroutine Mode section to http.md with suspend overloads (`parseRequestHead`/`writeResponseHead` via `BufferedSuspendSource`/`BufferedSuspendSink`); fix Pipeline handler addLast order (encoder must precede decoder); fix `println(request.version.text)`; expand Key Types with `HttpRequestHead` computed properties and `HttpRequest` factories
+- website: deep-review websocket.md — reorder sections to Handshake→Parsing→Writing; add factory/maskKey table clarifying that `ping()`/`pong()` have no `maskKey` parameter; add `close(code, reason)` example; note sync-only API; expand RFC Compliance with masking direction rule and reserved close code wire constraint
+- website: add Japanese translations for all documentation pages (architecture: overview, engine-guide, buffer, pipeline, tls, coroutine; codecs: http, websocket; intro)
+
 - Dokka: document all visibility levels (public, internal, protected, private) for complete API reference
 - Dokka: add source links to GitHub for each declaration
 - Dokka: add `module.md` for all 13 modules with module and package descriptions
