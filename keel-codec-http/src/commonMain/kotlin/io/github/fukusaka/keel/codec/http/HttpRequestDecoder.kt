@@ -24,9 +24,24 @@ import kotlin.reflect.KClass
  *       └──────────────────────── SKIP_BODY ◄──┘
  * ```
  *
- * **Partial reads**: [lineBuffer] retains incomplete line data across
- * [IoBuf] boundaries. The handler is stateful and must not be shared
- * between connections.
+ * **Byte-offset parsing**: each call to [onReadTyped] scans the current
+ * [IoBuf] for LF via [IoBuf.getByte] and parses the matched line
+ * directly from the buffer's byte range without allocating an
+ * intermediate `StringBuilder` / `String` per character. Only the
+ * stored fields ([uri], header name, header value) allocate a `String`,
+ * and method / version lookups go through [HttpMethod.fromBytesOrNull]
+ * / [HttpVersion.fromBytes] so that standard tokens such as `GET` and
+ * `HTTP/1.1` return a cached constant without any allocation on the
+ * success path.
+ *
+ * **Partial reads**: when a line spans more than one [IoBuf], the
+ * trailing bytes of the current buffer are copied into a lazily
+ * allocated byte accumulator, and the rest of the line from the next
+ * buffer is appended before parsing. The accumulator is sized to
+ * [MAX_LINE_SIZE] at most and is kept across connections for reuse
+ * (its backing `ByteArray` is never released after the first partial
+ * read). The handler is stateful and must not be shared between
+ * connections.
  *
  * **HTTP pipelining**: after a complete head is emitted, remaining bytes
  * in the same [IoBuf] are processed immediately, potentially emitting
@@ -47,7 +62,16 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private enum class State { READ_REQUEST_LINE, READ_HEADERS, SKIP_BODY }
 
     private var state = State.READ_REQUEST_LINE
-    private val lineBuffer = StringBuilder(INITIAL_LINE_BUFFER_CAPACITY)
+
+    // Fallback accumulator — lazily allocated on the first cross-IoBuf line.
+    // `null` in the steady state where every line fits in a single IoBuf.
+    // The `ByteArray` itself is retained across requests (even across
+    // connection errors) so that a connection that once triggered a
+    // partial read does not keep reallocating; only `accumulatorSize` is
+    // reset between lines.
+    private var accumulator: ByteArray? = null
+    private var accumulatorSize: Int = 0
+
     private var method: HttpMethod? = null
     private var uri: String? = null
     private var version: HttpVersion? = null
@@ -68,26 +92,6 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private fun processBuffer(ctx: ChannelHandlerContext, buf: IoBuf) {
         while (buf.readableBytes > 0) {
             when (state) {
-                State.READ_REQUEST_LINE, State.READ_HEADERS -> {
-                    val b = buf.readByte()
-                    if (b == LF) {
-                        // Strip trailing CR for CRLF line endings.
-                        val line = if (lineBuffer.isNotEmpty() && lineBuffer.last() == '\r') {
-                            lineBuffer.substring(0, lineBuffer.length - 1)
-                        } else {
-                            lineBuffer.toString()
-                        }
-                        lineBuffer.clear()
-                        processLine(ctx, line)
-                    } else {
-                        if (lineBuffer.length >= MAX_LINE_SIZE) {
-                            throw HttpParseException(
-                                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
-                            )
-                        }
-                        lineBuffer.append((b.toInt() and 0xFF).toChar())
-                    }
-                }
                 State.SKIP_BODY -> {
                     val toSkip = minOf(bodyBytesToSkip, buf.readableBytes.toLong()).toInt()
                     buf.readerIndex += toSkip
@@ -96,49 +100,333 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                         state = State.READ_REQUEST_LINE
                     }
                 }
+                State.READ_REQUEST_LINE, State.READ_HEADERS -> {
+                    if (!processOneLine(ctx, buf)) return
+                }
             }
         }
     }
 
-    private fun processLine(ctx: ChannelHandlerContext, line: String) {
+    /**
+     * Tries to parse exactly one line from [buf].
+     *
+     * Returns `true` when a line was consumed (fast or fallback path) —
+     * the caller should then re-check [buf] for more bytes in the next
+     * iteration of [processBuffer]. Returns `false` when [buf] did not
+     * contain a line terminator; the remaining bytes (if any) have been
+     * moved into [accumulator] and [buf] has been drained, so
+     * [processBuffer] must return to wait for the next read.
+     */
+    private fun processOneLine(ctx: ChannelHandlerContext, buf: IoBuf): Boolean {
+        val lfIndex = scanLf(buf, buf.readerIndex, buf.writerIndex)
+        if (lfIndex < 0) {
+            // No LF in this IoBuf — copy remainder to accumulator for the
+            // next read. Enforces MAX_LINE_SIZE inside appendToAccumulator.
+            val remaining = buf.writerIndex - buf.readerIndex
+            if (remaining > 0) {
+                appendToAccumulator(buf, buf.readerIndex, remaining)
+                buf.readerIndex = buf.writerIndex
+            }
+            return false
+        }
+
+        if (accumulatorSize == 0) {
+            // Fast path: the whole line is in this buffer.
+            processLineFast(ctx, buf, lfIndex)
+        } else {
+            // Fallback path: earlier calls deposited the start of the line
+            // in the accumulator; this call owns the tail.
+            processLineFallback(ctx, buf, lfIndex)
+        }
+        return true
+    }
+
+    private fun processLineFast(ctx: ChannelHandlerContext, buf: IoBuf, lfIndex: Int) {
+        val lineStart = buf.readerIndex
+        var lineEnd = lfIndex
+        if (lineEnd > lineStart && buf.getByte(lineEnd - 1) == CR) lineEnd--
+        val lineLength = lineEnd - lineStart
+        if (lineLength > MAX_LINE_SIZE) {
+            throw HttpParseException(
+                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
+            )
+        }
+        buf.readerIndex = lfIndex + 1
         when (state) {
             State.READ_REQUEST_LINE -> {
-                // Inline request-line parsing to avoid allocating the intermediate
-                // RequestLine data class on every request (hot path).
-                val sp1 = line.indexOf(' ')
-                if (sp1 < 1) throw HttpParseException("Invalid request line (expected 3 tokens): $line")
-                val sp2 = line.indexOf(' ', sp1 + 1)
-                if (sp2 < 0 || line.indexOf(' ', sp2 + 1) >= 0) {
-                    throw HttpParseException("Invalid request line (expected 3 tokens): $line")
-                }
-                method = HttpMethod.of(line.substring(0, sp1))
-                uri = line.substring(sp1 + 1, sp2)
-                version = HttpVersion.of(line.substring(sp2 + 1))
+                parseRequestLineFast(buf, lineStart, lineLength)
                 state = State.READ_HEADERS
             }
             State.READ_HEADERS -> {
-                if (line.isEmpty()) {
+                if (lineLength == 0) {
                     emitHead(ctx)
                 } else {
-                    parseHeaderLine(line)
+                    parseHeaderLineFast(buf, lineStart, lineLength)
                 }
             }
-            State.SKIP_BODY -> {
-                // SKIP_BODY is handled in processBuffer without calling processLine.
-            }
+            State.SKIP_BODY -> Unit // unreachable — processBuffer routes SKIP_BODY elsewhere.
         }
     }
 
-    private fun parseHeaderLine(line: String) {
-        if (line[0] == ' ' || line[0] == '\t') {
+    private fun processLineFallback(ctx: ChannelHandlerContext, buf: IoBuf, lfIndex: Int) {
+        val tailLength = lfIndex - buf.readerIndex
+        if (tailLength > 0) {
+            appendToAccumulator(buf, buf.readerIndex, tailLength)
+        }
+        buf.readerIndex = lfIndex + 1
+        val arr = accumulator!!
+        var effLength = accumulatorSize
+        if (effLength > 0 && arr[effLength - 1] == CR) effLength--
+        if (effLength > MAX_LINE_SIZE) {
+            throw HttpParseException(
+                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
+            )
+        }
+        try {
+            when (state) {
+                State.READ_REQUEST_LINE -> {
+                    parseRequestLineFallback(arr, 0, effLength)
+                    state = State.READ_HEADERS
+                }
+                State.READ_HEADERS -> {
+                    if (effLength == 0) {
+                        emitHead(ctx)
+                    } else {
+                        parseHeaderLineFallback(arr, 0, effLength)
+                    }
+                }
+                State.SKIP_BODY -> Unit // unreachable.
+            }
+        } finally {
+            // Reset logical size so subsequent lines can reuse the ByteArray.
+            accumulatorSize = 0
+        }
+    }
+
+    // --- Accumulator management ---
+
+    private fun appendToAccumulator(buf: IoBuf, offset: Int, length: Int) {
+        if (length == 0) return
+        val newSize = accumulatorSize + length
+        if (newSize > MAX_LINE_SIZE) {
+            throw HttpParseException(
+                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
+            )
+        }
+        ensureAccumulatorCapacity(newSize)
+        val arr = accumulator!!
+        for (i in 0 until length) {
+            arr[accumulatorSize + i] = buf.getByte(offset + i)
+        }
+        accumulatorSize = newSize
+    }
+
+    private fun ensureAccumulatorCapacity(required: Int) {
+        val cur = accumulator
+        if (cur != null && cur.size >= required) return
+        val newCap = if (cur == null) {
+            maxOf(required, INITIAL_ACCUMULATOR_CAPACITY)
+        } else {
+            // Double, capped at MAX_LINE_SIZE so that the accumulator cannot
+            // grow past the hard line-size limit.
+            minOf(MAX_LINE_SIZE, maxOf(required, cur.size * 2))
+        }
+        val next = ByteArray(newCap)
+        if (cur != null && accumulatorSize > 0) {
+            cur.copyInto(next, 0, 0, accumulatorSize)
+        }
+        accumulator = next
+    }
+
+    // --- Line parsing (fast path, IoBuf-backed) ---
+
+    private fun parseRequestLineFast(buf: IoBuf, start: Int, length: Int) {
+        val end = start + length
+        val sp1 = indexOfByteInBuf(buf, start, end, SP)
+        if (sp1 <= start) throwInvalidRequestLineFromBuf(buf, start, length)
+        val sp2 = indexOfByteInBuf(buf, sp1 + 1, end, SP)
+        if (sp2 < 0) throwInvalidRequestLineFromBuf(buf, start, length)
+        if (indexOfByteInBuf(buf, sp2 + 1, end, SP) >= 0) {
+            throwInvalidRequestLineFromBuf(buf, start, length)
+        }
+
+        val methodLen = sp1 - start
+        method = HttpMethod.fromBytesOrNull(buf, start, methodLen)
+            ?: HttpMethod.of(bufRangeToString(buf, start, methodLen))
+
+        val uriStart = sp1 + 1
+        val uriLen = sp2 - uriStart
+        uri = bufRangeToString(buf, uriStart, uriLen)
+
+        val verStart = sp2 + 1
+        val verLen = end - verStart
+        version = HttpVersion.fromBytes(buf, verStart, verLen)
+    }
+
+    private fun parseHeaderLineFast(buf: IoBuf, start: Int, length: Int) {
+        val first = buf.getByte(start)
+        if (first == SP || first == HT) {
             throw HttpParseException(
                 "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)",
             )
         }
-        val colon = line.indexOf(':')
-        if (colon < 1) throw HttpParseException("Invalid header field (missing ':'): $line")
-        headers.add(line.substring(0, colon).trim(), line.substring(colon + 1).trim())
+        val end = start + length
+        val colon = indexOfByteInBuf(buf, start, end, COLON)
+        // Name: [start, colon), trim OWS from the right (the obs-fold check
+        // already rejected any leading OWS). Consolidating "colon missing"
+        // and "empty name" into a single check keeps the throw count under
+        // detekt's ThrowsCount limit.
+        val nameEnd = if (colon > start) trimRightInBuf(buf, start, colon) else start
+        val nameLen = nameEnd - start
+        if (colon <= start || nameLen == 0) {
+            throw HttpParseException(
+                "Invalid header field (missing ':'): ${bufRangeToString(buf, start, length)}",
+            )
+        }
+        val name = bufRangeToString(buf, start, nameLen)
+
+        // Value: (colon, end), trim OWS from both sides.
+        val valStart = trimLeftInBuf(buf, colon + 1, end)
+        val valEnd = trimRightInBuf(buf, valStart, end)
+        val value = bufRangeToString(buf, valStart, valEnd - valStart)
+
+        headers.add(name, value)
     }
+
+    private fun throwInvalidRequestLineFromBuf(buf: IoBuf, start: Int, length: Int): Nothing {
+        throw HttpParseException(
+            "Invalid request line (expected 3 tokens): ${bufRangeToString(buf, start, length)}",
+        )
+    }
+
+    // --- Line parsing (fallback path, ByteArray-backed) ---
+
+    private fun parseRequestLineFallback(arr: ByteArray, start: Int, length: Int) {
+        val end = start + length
+        val sp1 = indexOfByteInArr(arr, start, end, SP)
+        if (sp1 <= start) throwInvalidRequestLineFromArr(arr, start, length)
+        val sp2 = indexOfByteInArr(arr, sp1 + 1, end, SP)
+        if (sp2 < 0) throwInvalidRequestLineFromArr(arr, start, length)
+        if (indexOfByteInArr(arr, sp2 + 1, end, SP) >= 0) {
+            throwInvalidRequestLineFromArr(arr, start, length)
+        }
+
+        val methodLen = sp1 - start
+        method = HttpMethod.fromBytesOrNull(arr, start, methodLen)
+            ?: HttpMethod.of(arr.decodeToString(start, start + methodLen))
+
+        val uriStart = sp1 + 1
+        val uriLen = sp2 - uriStart
+        uri = arr.decodeToString(uriStart, uriStart + uriLen)
+
+        val verStart = sp2 + 1
+        val verLen = end - verStart
+        version = HttpVersion.fromBytes(arr, verStart, verLen)
+    }
+
+    private fun parseHeaderLineFallback(arr: ByteArray, start: Int, length: Int) {
+        val first = arr[start]
+        if (first == SP || first == HT) {
+            throw HttpParseException(
+                "Obsolete line folding (obs-fold) is not allowed (RFC 7230 §3.2.6)",
+            )
+        }
+        val end = start + length
+        val colon = indexOfByteInArr(arr, start, end, COLON)
+        // Consolidated "colon missing" and "empty name" check — see the
+        // fast-path variant above for the rationale.
+        val nameEnd = if (colon > start) trimRightInArr(arr, start, colon) else start
+        val nameLen = nameEnd - start
+        if (colon <= start || nameLen == 0) {
+            throw HttpParseException(
+                "Invalid header field (missing ':'): ${arr.decodeToString(start, end)}",
+            )
+        }
+        val name = arr.decodeToString(start, nameEnd)
+
+        val valStart = trimLeftInArr(arr, colon + 1, end)
+        val valEnd = trimRightInArr(arr, valStart, end)
+        val value = arr.decodeToString(valStart, valEnd)
+
+        headers.add(name, value)
+    }
+
+    private fun throwInvalidRequestLineFromArr(arr: ByteArray, start: Int, length: Int): Nothing {
+        throw HttpParseException(
+            "Invalid request line (expected 3 tokens): ${arr.decodeToString(start, start + length)}",
+        )
+    }
+
+    // --- Byte-level primitives ---
+
+    private fun scanLf(buf: IoBuf, from: Int, until: Int): Int {
+        for (i in from until until) {
+            if (buf.getByte(i) == LF) return i
+        }
+        return -1
+    }
+
+    private fun indexOfByteInBuf(buf: IoBuf, from: Int, until: Int, b: Byte): Int {
+        for (i in from until until) {
+            if (buf.getByte(i) == b) return i
+        }
+        return -1
+    }
+
+    private fun trimLeftInBuf(buf: IoBuf, from: Int, until: Int): Int {
+        var i = from
+        while (i < until) {
+            val b = buf.getByte(i)
+            if (b != SP && b != HT) break
+            i++
+        }
+        return i
+    }
+
+    private fun trimRightInBuf(buf: IoBuf, from: Int, until: Int): Int {
+        var i = until
+        while (i > from) {
+            val b = buf.getByte(i - 1)
+            if (b != SP && b != HT) break
+            i--
+        }
+        return i
+    }
+
+    private fun bufRangeToString(buf: IoBuf, offset: Int, length: Int): String {
+        val tmp = ByteArray(length)
+        for (i in 0 until length) tmp[i] = buf.getByte(offset + i)
+        return tmp.decodeToString()
+    }
+
+    private fun indexOfByteInArr(arr: ByteArray, from: Int, until: Int, b: Byte): Int {
+        for (i in from until until) {
+            if (arr[i] == b) return i
+        }
+        return -1
+    }
+
+    private fun trimLeftInArr(arr: ByteArray, from: Int, until: Int): Int {
+        var i = from
+        while (i < until) {
+            val b = arr[i]
+            if (b != SP && b != HT) break
+            i++
+        }
+        return i
+    }
+
+    private fun trimRightInArr(arr: ByteArray, from: Int, until: Int): Int {
+        var i = until
+        while (i > from) {
+            val b = arr[i - 1]
+            if (b != SP && b != HT) break
+            i--
+        }
+        return i
+    }
+
+    // --- Emit / reset ---
 
     private fun emitHead(ctx: ChannelHandlerContext) {
         val parsedVersion = checkNotNull(version) { "version not parsed" }
@@ -177,7 +465,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
 
     private fun resetState() {
         state = State.READ_REQUEST_LINE
-        lineBuffer.clear()
+        accumulatorSize = 0
         method = null
         uri = null
         version = null
@@ -188,7 +476,18 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private companion object {
         /** Maximum allowed length for a single header line (request line or header field). */
         private const val MAX_LINE_SIZE = 8192
-        private const val INITIAL_LINE_BUFFER_CAPACITY = 256
+
+        /**
+         * Initial capacity of the fallback byte accumulator, in bytes. Typical
+         * HTTP request heads (request line + a handful of headers) fit within
+         * this size, so the accumulator usually does not need to grow.
+         */
+        private const val INITIAL_ACCUMULATOR_CAPACITY = 256
+
         private val LF = '\n'.code.toByte()
+        private val CR = '\r'.code.toByte()
+        private val SP = ' '.code.toByte()
+        private val HT = '\t'.code.toByte()
+        private val COLON = ':'.code.toByte()
     }
 }
