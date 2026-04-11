@@ -210,6 +210,23 @@ class TlsHandler(
 
             when (result.status) {
                 TlsResult.OK -> {
+                    // Stall guard: a well-behaved codec that returns OK while
+                    // the plaintext still has readable bytes must have made
+                    // forward progress on this call, either by consuming
+                    // plaintext or by producing ciphertext. If both counters
+                    // are zero the next iteration would re-enter this block
+                    // with identical state and spin forever. flushHandshakeResponse
+                    // already has an equivalent stall check for its NEED_WRAP
+                    // branch; processOutbound was previously missing it.
+                    if (result.bytesConsumed == 0 && result.bytesProduced == 0) {
+                        ctx.propagateError(
+                            TlsException(
+                                "processOutbound stalled: codec returned OK with 0 bytes consumed and 0 bytes produced",
+                                TlsErrorCategory.PROTOCOL_ERROR,
+                            ),
+                        )
+                        return
+                    }
                     // Continue encoding remaining plaintext.
                 }
                 TlsResult.BUFFER_OVERFLOW -> {
@@ -230,12 +247,44 @@ class TlsHandler(
                     ctx.propagateInactive()
                     return
                 }
-                TlsResult.NEED_WRAP, TlsResult.NEED_MORE_INPUT -> {
-                    // Codec is asking for a handshake flight or more input
-                    // before it can continue encoding. Stop the encode loop
-                    // for this call; the next handshake flush or inbound
-                    // read will unblock it.
-                    break
+                TlsResult.NEED_WRAP -> {
+                    // NEED_WRAP from protect during application-data encoding
+                    // is unexpected. The TLS codec state machine should not
+                    // ask the caller to wrap another record mid-plaintext: if
+                    // a post-handshake message (e.g. TLS 1.3 KeyUpdate or a
+                    // new session ticket) needs to go out, the codec should
+                    // either interleave it transparently or surface the need
+                    // before plaintext is accepted. Silently breaking the
+                    // loop (the previous behaviour) left the caller believing
+                    // the write had fully succeeded while only a prefix of
+                    // plainBuf had actually been encoded, resulting in wire
+                    // truncation with no error signal. Propagate a structured
+                    // error so the downstream pipeline can close.
+                    ctx.propagateError(
+                        TlsException(
+                            "Unexpected NEED_WRAP from protect during application-data encoding",
+                            TlsErrorCategory.PROTOCOL_ERROR,
+                        ),
+                    )
+                    return
+                }
+                TlsResult.NEED_MORE_INPUT -> {
+                    // NEED_MORE_INPUT is a signal for unprotect (the codec
+                    // needs more ciphertext to decode a record) and is
+                    // meaningless on the protect path — protect consumes
+                    // plaintext the caller has already handed over, so there
+                    // is no additional input the caller can provide. If the
+                    // codec still returns this status on an outbound call,
+                    // its state machine is in a state the handler cannot
+                    // make progress from; fail loudly rather than silently
+                    // truncating the write.
+                    ctx.propagateError(
+                        TlsException(
+                            "Unexpected NEED_MORE_INPUT from protect during application-data encoding",
+                            TlsErrorCategory.PROTOCOL_ERROR,
+                        ),
+                    )
+                    return
                 }
             }
         }
