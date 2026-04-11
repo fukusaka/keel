@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
@@ -13,12 +14,14 @@ import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelInitializer
 import io.netty.channel.ChannelOption
+import io.netty.channel.EventLoop
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
@@ -66,6 +69,25 @@ class NettyEngine(
     private val workerGroup = NioEventLoopGroup(config.threads)
     private var closed = false
 
+    /**
+     * One buffer allocator per worker [EventLoop]. Each allocator is accessed
+     * only by the event loop that owns it, so any pool CAS operations are
+     * uncontended. Compared to sharing a single allocator across all event
+     * loops, this removes the CAS hotspot produced by many workers racing on
+     * a single Treiber stack. Compared to a per-channel allocator, it bounds
+     * the total direct memory footprint to `numEventLoops × localPoolSize ×
+     * bufferSize`, independent of the number of open connections.
+     *
+     * Populated lazily on the first call to [allocatorFor] because the set of
+     * worker [EventLoop] instances is only known after Netty has started up.
+     */
+    private val eventLoopAllocators = ConcurrentHashMap<EventLoop, BufferAllocator>()
+
+    private fun allocatorFor(ch: NettyNativeChannel): BufferAllocator =
+        eventLoopAllocators.computeIfAbsent(ch.eventLoop()) {
+            config.allocator.createForEventLoop()
+        }
+
     override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
@@ -87,7 +109,7 @@ class NettyEngine(
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
                     val keelChannel = NettyPipelinedChannel(
-                        ch, config.allocator, remoteAddr, localAddr, logger,
+                        ch, allocatorFor(ch), remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
                     serverChannel.onNewChannel(keelChannel)
@@ -153,7 +175,7 @@ class NettyEngine(
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
         val keelChannel = NettyPipelinedChannel(
-            nettyChannel, config.allocator, remoteAddr, localAddr, logger,
+            nettyChannel, allocatorFor(nettyChannel), remoteAddr, localAddr, logger,
         )
         nettyChannel.pipeline().addLast(keelChannel.handler)
 
@@ -190,7 +212,7 @@ class NettyEngine(
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
                     val keelChannel = NettyPipelinedChannel(
-                        ch, this@NettyEngine.config.allocator, remoteAddr, localAddr, logger,
+                        ch, allocatorFor(ch), remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
                     config.initializeConnection(keelChannel)
