@@ -29,7 +29,7 @@ All engines implement the same `StreamEngine` interface, so application code is 
 
 ## Engines
 
-For constructor parameters and configuration options, see the [API reference](/api/).
+For constructor parameters and configuration options, see the [API reference](pathname:///api/).
 
 ### NIO (`keel-engine-nio`)
 
