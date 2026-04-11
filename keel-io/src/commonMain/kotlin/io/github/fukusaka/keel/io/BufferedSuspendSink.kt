@@ -98,8 +98,36 @@ class BufferedSuspendSink(
 
     /**
      * Writes [length] bytes from [bytes] starting at [offset].
+     *
+     * For payloads at or above [DIRECT_WRITE_THRESHOLD], bypasses the internal
+     * scratch buffer and forwards a zero-copy [IoBuf] view of the caller's
+     * array to [sink] (on platforms where [wrapBytesAsIoBuf] returns non-null,
+     * i.e. JVM). This avoids the `BUFFER_SIZE`-sized chunking that would
+     * otherwise split a large body into many small writes — the root cause of
+     * the GC/alloc-driven variance described in `design.md` §23.
+     *
+     * The caller must not mutate [bytes] between this call returning and the
+     * next [flush] completing. Any previously buffered scratch data is flushed
+     * first so that on-wire ordering is preserved.
      */
     suspend fun write(bytes: ByteArray, offset: Int, length: Int) {
+        if (length >= DIRECT_WRITE_THRESHOLD) {
+            val wrapped = wrapBytesAsIoBuf(bytes, offset, length)
+            if (wrapped != null) {
+                // Flush any scratch data first to keep ordering (headers before body).
+                flushBuffer()
+                try {
+                    sink.write(wrapped)
+                    if (!deferFlush) sink.flush()
+                } finally {
+                    // sink.write retains its own reference; release our local one.
+                    wrapped.release()
+                }
+                return
+            }
+        }
+        // Fallback: chunked copy through the scratch buffer. Used on Native/JS
+        // and when the payload is smaller than the direct-write threshold.
         var pos = offset
         var remaining = length
         while (remaining > 0) {
@@ -177,5 +205,17 @@ class BufferedSuspendSink(
          * HTTP response sizes.
          */
         private const val BUFFER_SIZE = 8192
+
+        /**
+         * Threshold at or above which `write(ByteArray, offset, length)` tries
+         * the zero-copy direct path instead of chunking through the scratch
+         * buffer. Payloads below this size are small enough that scratch
+         * buffering plus syscall batching outperforms the overhead of wrapping
+         * the array as an [IoBuf] (object allocation + one extra `IoBuf` trip
+         * through the pipeline). Set equal to [BUFFER_SIZE] because anything
+         * that cannot fit in the scratch buffer in a single step is guaranteed
+         * to force at least one `flushBuffer` round-trip anyway.
+         */
+        private const val DIRECT_WRITE_THRESHOLD = BUFFER_SIZE
     }
 }
