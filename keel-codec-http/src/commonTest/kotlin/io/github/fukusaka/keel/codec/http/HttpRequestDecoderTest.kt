@@ -361,4 +361,83 @@ class HttpRequestDecoderTest {
         assertEquals(1, collector.heads.size)
         assertEquals("/ok", collector.heads[0].path)
     }
+
+    // --- Byte-offset parser regression tests ---
+    //
+    // The following tests pin down boundary conditions for the fast-path /
+    // fallback-path dispatch introduced by the byte-offset parser refactor.
+    // They are regression tests and do not assert anything beyond what the
+    // existing test contract already guarantees — their purpose is to make
+    // sure the specific IoBuf-boundary scenarios where the refactor is most
+    // likely to get wrong are exercised explicitly.
+
+    @Test
+    fun `request with LF-only line endings split across IoBufs`() {
+        val decoder = HttpRequestDecoder()
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
+
+        // Exercises the fallback path's trailing-CR stripping when the line
+        // has no CR at all: the accumulator must not falsely treat a Host
+        // header value byte as CR.
+        pipeline.notifyRead(bufOf("GET /lf HTTP/1.1\nHost: ex"))
+        assertEquals(0, collector.heads.size)
+        pipeline.notifyRead(bufOf("ample.com\n\n"))
+        assertEquals(1, collector.heads.size)
+        val head = collector.heads[0]
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals("/lf", head.uri)
+        assertEquals(HttpVersion.HTTP_1_1, head.version)
+        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+    }
+
+    @Test
+    fun `request line ends exactly at IoBuf boundary with LF as last byte`() {
+        val decoder = HttpRequestDecoder()
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
+
+        // Fast path boundary: LF is the last byte of buf1 so lfIndex + 1 ==
+        // writerIndex. buf2 then carries the headers entirely, so each line
+        // in each buf takes the fast path.
+        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\n")) // 16 bytes, LF at byte 15
+        assertEquals(0, collector.heads.size)
+        pipeline.notifyRead(bufOf("Host: example.com\r\n\r\n"))
+        assertEquals(1, collector.heads.size)
+        val head = collector.heads[0]
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals("/", head.uri)
+        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+    }
+
+    @Test
+    fun `header line near MAX_LINE_SIZE through fallback accumulator`() {
+        val decoder = HttpRequestDecoder()
+        val collector = HeadCollector()
+        val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
+
+        // The X-Big header value below is sized so that the full
+        // "X-Big: <value>\r" line (excluding LF) is 8192 bytes long —
+        // exactly MAX_LINE_SIZE. The line is split across two IoBufs so
+        // the fallback accumulator must grow past its initial 256 B
+        // capacity all the way to the 8192 B cap, then parse the line
+        // successfully at the limit boundary.
+        val headerPrefix = "X-Big: "              // 7 bytes
+        val trailer = "\r"                         // CR (LF consumed by terminator)
+        val valueLen = 8192 - headerPrefix.length - trailer.length // 8184
+        val valuePart1 = "a".repeat(4000)
+        val valuePart2 = "a".repeat(valueLen - valuePart1.length)  // 4184
+
+        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\n$headerPrefix$valuePart1"))
+        assertEquals(0, collector.heads.size)
+        pipeline.notifyRead(bufOf("$valuePart2\r\nHost: h\r\n\r\n"))
+
+        assertEquals(1, collector.heads.size)
+        val head = collector.heads[0]
+        assertEquals(HttpMethod.GET, head.method)
+        assertEquals("/", head.uri)
+        assertEquals("h", head.headers[HttpHeaderName.HOST])
+        val big = head.headers["X-Big"]
+        assertEquals(valueLen, big?.length)
+    }
 }
