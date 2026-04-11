@@ -14,20 +14,96 @@ Two endpoints:
 - **`/hello`** — `Hello, World!` (13 bytes). Measures raw request/response throughput.
 - **`/large`** — 100 KB (`x` × 102400) response. Measures large-payload write throughput.
 
+## Build
+
+### Kotlin (JVM + Native + JS)
+
+```bash
+# macOS (JVM + Native + JS)
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
+
+# Linux (JVM + Native + JS)
+./gradlew -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
+
+# With TLS support (default: OpenSSL backend for Native)
+./gradlew -Pbenchmark -Ptls :benchmark:linkReleaseExecutableMacosArm64 :benchmark:writeClasspath
+```
+
+Output artifacts:
+- **Native binary**: `benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe` (or `linuxX64`)
+- **JVM classpath file**: `benchmark/build/benchmark-classpath.txt` (used with `@` classpath expansion)
+- **JS script**: `benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js`
+
+### Phase 2 Native (Rust, Go, Swift, Zig)
+
+| Server | Build command | Binary path |
+|--------|---------------|-------------|
+| `rust-hello` | `cd benchmark/rust-hello && cargo build --release` | `target/release/rust-hello` |
+| `go-hello` | `cd benchmark/go-hello && go build -o go-hello` | `go-hello` |
+| `swift-hello` | `cd benchmark/swift-hello && swift build -c release` | `.build/release/swift-hello` |
+| `zig-hello` | `cd benchmark/zig-hello && zig build -Doptimize=ReleaseFast` | `zig-out/bin/zig-hello` |
+
+`swift-hello` is macOS only (requires SwiftNIO + Network.framework).
+
 ## Usage
 
-```
-# macOS: ktor-keel-kqueue (default)
-./benchmark --engine=ktor-keel-kqueue --port=8080 --profile=tuned
+```bash
+# Native binary: macOS ktor-keel-kqueue (default)
+./benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe \
+  --engine=ktor-keel-kqueue --port=8080 --profile=tuned
 
-# macOS: Pipeline mode (no Ktor overhead)
-./benchmark --engine=pipeline-http-kqueue
+# Native binary: macOS pipeline mode (no Ktor overhead)
+./benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe \
+  --engine=pipeline-http-kqueue
+
+# JVM: ktor-keel-nio
+java -cp @benchmark/build/benchmark-classpath.txt \
+  io.github.fukusaka.keel.benchmark.JvmMainKt --engine=ktor-keel-nio --port=8080
+
+# JS / Node.js
+node benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js \
+  --engine=pipeline-http-nodejs --port=8080
 
 # Linux: ktor-keel-epoll with HTTPS (AWS-LC)
-./benchmark --engine=ktor-keel-epoll --tls=awslc --tls-installer=keel
+./benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe \
+  --engine=ktor-keel-epoll --tls=awslc
 
-# Show resolved config
-./benchmark --engine=ktor-netty --profile=tuned --show-config
+# Show resolved config and exit
+java -cp @benchmark/build/benchmark-classpath.txt \
+  io.github.fukusaka.keel.benchmark.JvmMainKt --engine=ktor-netty --profile=tuned --show-config
+```
+
+## Benchmark Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `bench-one.sh` | Single engine: `bench-one.sh <name> <command> [args...]` |
+| `bench-keel.sh` | keel engines + `ktor-cio` only |
+| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
+| `bench-pull.sh` | Pull results from remote host (`luna.local`) |
+| `bench-snapshot.sh` | Snapshot raw results with summary |
+
+Key environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BENCH_ENDPOINT` | `/hello` | Endpoint to benchmark |
+| `BENCH_RUNS` | `1` | Runs per engine; median reported |
+| `BENCH_SHUFFLE` | `false` | Randomize engine execution order |
+| `BENCH_SCHEME` | `http` | `http` or `https` |
+| `BENCH_WRK_THREADS` | `4` | wrk thread count |
+| `BENCH_WRK_CONNS` | `100` | wrk connections |
+| `BENCH_WRK_DURATION` | `10s` | wrk duration |
+
+```bash
+# Quick single-engine regression check
+./benchmark/bench-one.sh ktor-keel-kqueue \
+  ./benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe \
+  --engine=ktor-keel-kqueue --port=18090
+
+# Full matrix (3 runs, shuffled)
+BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh
+BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 ```
 
 ## Engine Registry
@@ -46,7 +122,9 @@ All registered engines by platform:
 | Platform | Engine name | Backend |
 |----------|-------------|---------|
 | JVM | `ktor-keel-nio` | keel NIO + Ktor |
+| JVM | `pipeline-http-nio` | keel NIO Pipeline mode (no Ktor) |
 | JVM | `ktor-keel-netty` | keel Netty + Ktor |
+| JVM | `pipeline-http-netty` | keel Netty Pipeline mode (no Ktor) |
 | JVM | `ktor-cio` | Ktor CIO |
 | JVM | `ktor-netty` | Ktor Netty |
 | JVM | `netty-raw` | Raw Netty (no Ktor) |
@@ -67,6 +145,20 @@ All registered engines by platform:
 
 `ktor-keel-*` engines run a full Ktor application pipeline on top of keel's `StreamEngine`.
 `pipeline-http-*` engines use keel's `bindPipeline` directly (`HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder`) without Ktor — zero-suspend, maximum throughput.
+
+## Phase 2 Native Servers
+
+Non-Kotlin standalone servers included in `bench-all.sh` for cross-language comparisons:
+
+| Server | Language | Framework | I/O Model | Platforms |
+|--------|----------|-----------|-----------|-----------|
+| `rust-hello` | Rust | Axum 0.8 + Tokio | Async (work-stealing) | macOS, Linux |
+| `go-hello` | Go | Gin | Goroutines | macOS, Linux |
+| `swift-hello` | Swift | Hummingbird 2 + SwiftNIO | Async (EventLoop) | macOS only |
+| `zig-hello` | Zig | std.http.Server | Thread-per-connection | macOS, Linux |
+
+Each accepts the same `--key=value` CLI format for `--port`, `--threads`, `--tcp-nodelay`, etc.
+Source lives under `benchmark/rust-hello/`, `benchmark/go-hello/`, `benchmark/swift-hello/`, `benchmark/zig-hello/`.
 
 ## Configuration
 
