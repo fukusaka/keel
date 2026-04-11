@@ -219,9 +219,11 @@ class TlsHandler(
                     // already has an equivalent stall check for its NEED_WRAP
                     // branch; processOutbound was previously missing it.
                     if (result.bytesConsumed == 0 && result.bytesProduced == 0) {
+                        val remaining = plainBuf.readableBytes
                         ctx.propagateError(
                             TlsException(
-                                "processOutbound stalled: codec returned OK with 0 bytes consumed and 0 bytes produced",
+                                "processOutbound stalled: codec returned OK with 0 bytes consumed and 0 bytes produced, " +
+                                    "$remaining plaintext bytes remaining",
                                 TlsErrorCategory.PROTOCOL_ERROR,
                             ),
                         )
@@ -260,9 +262,11 @@ class TlsHandler(
                     // plainBuf had actually been encoded, resulting in wire
                     // truncation with no error signal. Propagate a structured
                     // error so the downstream pipeline can close.
+                    val remaining = plainBuf.readableBytes
                     ctx.propagateError(
                         TlsException(
-                            "Unexpected NEED_WRAP from protect during application-data encoding",
+                            "Unexpected NEED_WRAP from protect during application-data encoding, " +
+                                "$remaining plaintext bytes remaining",
                             TlsErrorCategory.PROTOCOL_ERROR,
                         ),
                     )
@@ -278,9 +282,11 @@ class TlsHandler(
                     // its state machine is in a state the handler cannot
                     // make progress from; fail loudly rather than silently
                     // truncating the write.
+                    val remaining = plainBuf.readableBytes
                     ctx.propagateError(
                         TlsException(
-                            "Unexpected NEED_MORE_INPUT from protect during application-data encoding",
+                            "Unexpected NEED_MORE_INPUT from protect during application-data encoding, " +
+                                "$remaining plaintext bytes remaining",
                             TlsErrorCategory.PROTOCOL_ERROR,
                         ),
                     )

@@ -593,6 +593,13 @@ class TlsHandlerTest {
             error.category,
             "outbound stall must surface as PROTOCOL_ERROR",
         )
+        // "hello" is 5 bytes; the stall fires on the first protect call
+        // before plainBuf.readerIndex is advanced, so all 5 bytes should
+        // still be remaining and the message must report that count.
+        assertTrue(
+            error.message!!.contains("5 plaintext bytes remaining"),
+            "stall error message should include remaining plaintext byte count for operator visibility, was: ${error.message}",
+        )
         transport.written.forEach { it.release() }
         assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on stall")
     }
@@ -642,6 +649,10 @@ class TlsHandlerTest {
             error.category,
             "unexpected NEED_WRAP during application protect must surface as PROTOCOL_ERROR",
         )
+        assertTrue(
+            error.message!!.contains("5 plaintext bytes remaining"),
+            "NEED_WRAP error message should include remaining plaintext byte count, was: ${error.message}",
+        )
         transport.written.forEach { it.release() }
         assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on unexpected NEED_WRAP")
     }
@@ -690,6 +701,10 @@ class TlsHandlerTest {
             TlsErrorCategory.PROTOCOL_ERROR,
             error.category,
             "unexpected NEED_MORE_INPUT during application protect must surface as PROTOCOL_ERROR",
+        )
+        assertTrue(
+            error.message!!.contains("5 plaintext bytes remaining"),
+            "NEED_MORE_INPUT error message should include remaining plaintext byte count, was: ${error.message}",
         )
         transport.written.forEach { it.release() }
         assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on unexpected NEED_MORE_INPUT")
