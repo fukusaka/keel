@@ -103,8 +103,10 @@ class BufferedSuspendSink(
      * scratch buffer and forwards a zero-copy [IoBuf] view of the caller's
      * array to [sink] (on platforms where [wrapBytesAsIoBuf] returns non-null,
      * i.e. JVM). This avoids the `BUFFER_SIZE`-sized chunking that would
-     * otherwise split a large body into many small writes — the root cause of
-     * the GC/alloc-driven variance described in `design.md` §23.
+     * otherwise split a large body into many small writes, each producing a
+     * short-lived `PendingWrite`, Netty `ByteBuf`, flush promise, and listener
+     * lambda — multiplying per-request allocations by the chunk count and
+     * driving JVM engines into GC-dominated variance on large responses.
      *
      * The caller must not mutate [bytes] between this call returning and the
      * next [flush] completing. Any previously buffered scratch data is flushed
