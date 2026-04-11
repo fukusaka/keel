@@ -193,7 +193,13 @@ class TlsHandler(
     private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
         while (plainBuf.readableBytes > 0) {
             val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
-            val result = codec.protect(plainBuf, cipherBuf)
+            val result = try {
+                codec.protect(plainBuf, cipherBuf)
+            } catch (e: TlsException) {
+                cipherBuf.release()
+                ctx.propagateError(e)
+                return
+            }
             plainBuf.readerIndex += result.bytesConsumed
 
             if (cipherBuf.readableBytes > 0) {
@@ -202,7 +208,36 @@ class TlsHandler(
                 cipherBuf.release()
             }
 
-            if (result.status != TlsResult.OK) break
+            when (result.status) {
+                TlsResult.OK -> {
+                    // Continue encoding remaining plaintext.
+                }
+                TlsResult.BUFFER_OVERFLOW -> {
+                    // RFC 5246 §6.2.3 / RFC 8446 §5.2: a TLSCiphertext record
+                    // the codec cannot fit into the buffer exceeds the
+                    // protocol-mandated ceiling and must tear down the
+                    // connection. Propagate a structured error so the
+                    // downstream pipeline can close.
+                    ctx.propagateError(
+                        TlsException(
+                            "Output buffer overflow during protect",
+                            TlsErrorCategory.BUFFER_ERROR,
+                        ),
+                    )
+                    return
+                }
+                TlsResult.CLOSED -> {
+                    ctx.propagateInactive()
+                    return
+                }
+                TlsResult.NEED_WRAP, TlsResult.NEED_MORE_INPUT -> {
+                    // Codec is asking for a handshake flight or more input
+                    // before it can continue encoding. Stop the encode loop
+                    // for this call; the next handshake flush or inbound
+                    // read will unblock it.
+                    break
+                }
+            }
         }
         checkHandshakeComplete(ctx)
     }
