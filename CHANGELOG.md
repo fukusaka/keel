@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-io: direct-write path in `BufferedSuspendSink.write(ByteArray, Int, Int)` that forwards payloads at or above 8 KiB as a zero-copy `IoBuf` view of the caller's array via the new `wrapBytesAsIoBuf` expect/actual helper (JVM only; Native and JS fall back to the chunked copy path). Eliminates the 8 KiB scratch chunking that split large responses into many small sink writes, driving JVM engine `/large` throughput from 78 K to 207 K req/s on `ktor-keel-netty` and collapsing the 47 % run-to-run variance to 10 %.
 - keel-io: add `LeakDetectingAllocator` with Cleaner-based leak detection (Native: `createCleaner`, JVM: `PhantomReference`)
 - keel-io: add `BufferAllocator.withTracking()` and `BufferAllocator.withLeakDetection()` extension functions for fluent allocator composition
 - keel-core: write backpressure with high/low water mark on `IoTransport` (`isWritable`, `onWritabilityChanged`)
