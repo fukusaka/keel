@@ -73,6 +73,23 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private var accumulator: ByteArray? = null
     private var accumulatorSize: Int = 0
 
+    // Reusable scratch buffer for [bufRangeToString]. The fast path needs
+    // to materialise a `String` for stored fields (URI, header name,
+    // header value) from a byte range inside the current [IoBuf], and
+    // there is no way to avoid copying the bytes into a `ByteArray`
+    // before calling `decodeToString`. Instead of allocating a fresh
+    // `ByteArray` on every call, we retain one `ByteArray` per decoder
+    // instance and grow it on demand. This turns the per-call tmp
+    // `ByteArray` into a single per-connection allocation that is
+    // reused for every subsequent request.
+    //
+    // Size starts at [INITIAL_SCRATCH_CAPACITY]; doubles on demand up
+    // to [MAX_LINE_SIZE] (same cap as the accumulator). The scratch
+    // buffer is only valid for the duration of a single
+    // `bufRangeToString` call — the returned `String` copies its
+    // contents — so no lifecycle handling beyond growth is needed.
+    private var scratchBuffer: ByteArray = ByteArray(INITIAL_SCRATCH_CAPACITY)
+
     private var method: HttpMethod? = null
     private var uri: String? = null
     private var version: HttpVersion? = null
@@ -395,9 +412,21 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     }
 
     private fun bufRangeToString(buf: IoBuf, offset: Int, length: Int): String {
-        val tmp = ByteArray(length)
-        for (i in 0 until length) tmp[i] = buf.getByte(offset + i)
-        return tmp.decodeToString()
+        val scratch = ensureScratchCapacity(length)
+        for (i in 0 until length) scratch[i] = buf.getByte(offset + i)
+        return scratch.decodeToString(0, length)
+    }
+
+    private fun ensureScratchCapacity(required: Int): ByteArray {
+        val cur = scratchBuffer
+        if (cur.size >= required) return cur
+        // Double on demand, capped at MAX_LINE_SIZE (the same bound the
+        // fast path enforces on `lineLength`, so scratch never needs to
+        // hold more than that).
+        val newCap = minOf(MAX_LINE_SIZE, maxOf(required, cur.size * 2))
+        val next = ByteArray(newCap)
+        scratchBuffer = next
+        return next
     }
 
     private fun indexOfByteInArr(arr: ByteArray, from: Int, until: Int, b: Byte): Int {
@@ -484,6 +513,15 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
          * this size, so the accumulator usually does not need to grow.
          */
         private const val INITIAL_ACCUMULATOR_CAPACITY = 256
+
+        /**
+         * Initial capacity of the per-decoder scratch buffer used by
+         * [bufRangeToString] to copy bytes out of an [IoBuf] before calling
+         * [ByteArray.decodeToString]. Chosen to fit a typical HTTP request
+         * URI and header value without growth; grows on demand up to
+         * [MAX_LINE_SIZE].
+         */
+        private const val INITIAL_SCRATCH_CAPACITY = 256
 
         private val LF = '\n'.code.toByte()
         private val CR = '\r'.code.toByte()
