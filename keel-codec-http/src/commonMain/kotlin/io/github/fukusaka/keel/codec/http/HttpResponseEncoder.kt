@@ -141,13 +141,33 @@ class HttpResponseEncoder : ChannelOutboundHandler {
 
         /**
          * Body size at or above which the encoder tries the zero-copy wrap
-         * path instead of copying the body bytes into a fresh exact-sized
-         * buffer. Matches the pool slot size of keel's default allocator
-         * ([io.github.fukusaka.keel.buf.PooledDirectAllocator]) so that
-         * anything below the threshold fits inside a single head+body
-         * buffer that can still hit the allocator's freelist on the head
-         * path, while anything above takes the zero-copy wrap path and
-         * avoids the otherwise unavoidable fresh `allocateDirect`.
+         * path (status line + headers in one small buffer, body as a
+         * `tryWrapBytes` view of the caller's `ByteArray`) instead of
+         * copying the body bytes into a single head+body buffer on the
+         * fallback path.
+         *
+         * Chosen equal to [io.github.fukusaka.keel.buf.PooledDirectAllocator]'s
+         * default pool slot (8 KiB). Rationale:
+         *
+         * - **Above 8 KiB**: the fallback path would call
+         *   `allocator.allocate(headers + body)` with a size that does not
+         *   match the pool slot, producing a fresh `allocateDirect` per
+         *   response. For a 100 KiB `/large` response that cost
+         *   (`DirectByteBuffer` + `Cleaner` + `Deallocator` + the 100 KiB
+         *   `memcpy`) is the dominant contributor to GC pressure; the wrap
+         *   path avoids it entirely.
+         * - **Below 8 KiB**: the fallback path's `allocate(total)` is also
+         *   a pool miss (the small head+body does not exactly match the
+         *   slot size either), but the cost is small in absolute terms
+         *   — a tiny fresh `DirectByteBuffer` plus `Cleaner` — and the
+         *   fallback remains simpler than wrapping the body and emitting
+         *   two outbound writes. Below the threshold the wrap+release
+         *   overhead outweighs the saving from avoiding a small memcpy.
+         *
+         * Picking 8 KiB keeps the threshold aligned with the allocator's
+         * notion of a "small" allocation, so future allocator changes that
+         * introduce pool hits for additional sizes do not require
+         * re-tuning this constant.
          */
         private const val DIRECT_BODY_THRESHOLD = 8192
     }
