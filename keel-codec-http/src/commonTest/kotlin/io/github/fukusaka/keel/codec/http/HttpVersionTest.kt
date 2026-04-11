@@ -39,4 +39,54 @@ class HttpVersionTest {
         assertEquals(1, HttpVersion.HTTP_1_0.major)
         assertEquals(0, HttpVersion.HTTP_1_0.minor)
     }
+
+    // --- fromBytes (ByteArray overload) ---
+    //
+    // Covers both valid versions, offset handling, and the error message
+    // parity with of(String). The IoBuf overload is exercised via the
+    // HttpRequestDecoder integration tests so it is not duplicated here.
+
+    @Test
+    fun fromBytesHttpOneOne() {
+        assertEquals(HttpVersion.HTTP_1_1, HttpVersion.fromBytes("HTTP/1.1".encodeToByteArray(), 0, 8))
+    }
+
+    @Test
+    fun fromBytesHttpOneZero() {
+        assertEquals(HttpVersion.HTTP_1_0, HttpVersion.fromBytes("HTTP/1.0".encodeToByteArray(), 0, 8))
+    }
+
+    @Test
+    fun fromBytesHonorsOffset() {
+        val buf = "##HTTP/1.1##".encodeToByteArray()
+        assertEquals(HttpVersion.HTTP_1_1, HttpVersion.fromBytes(buf, 2, 8))
+    }
+
+    @Test
+    fun fromBytesUnknownVersionThrows() {
+        val ex = assertFailsWith<HttpParseException> {
+            HttpVersion.fromBytes("HTTP/2.0".encodeToByteArray(), 0, 8)
+        }
+        assertEquals("Unsupported HTTP version: HTTP/2.0", ex.message)
+    }
+
+    @Test
+    fun fromBytesLengthMismatchThrows() {
+        // Missing trailing digit — length 7 cannot match the 8-byte prefix check.
+        assertFailsWith<HttpParseException> {
+            HttpVersion.fromBytes("HTTP/1.".encodeToByteArray(), 0, 7)
+        }
+        // Longer than 8 — also rejected.
+        assertFailsWith<HttpParseException> {
+            HttpVersion.fromBytes("HTTP/1.10".encodeToByteArray(), 0, 9)
+        }
+    }
+
+    @Test
+    fun fromBytesLowercaseThrows() {
+        // Consistent with of("http/1.1") rejection.
+        assertFailsWith<HttpParseException> {
+            HttpVersion.fromBytes("http/1.1".encodeToByteArray(), 0, 8)
+        }
+    }
 }
