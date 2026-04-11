@@ -11,17 +11,20 @@ at startup via `--engine=<name>`. This enables apples-to-apples comparisons unde
 OS/JVM/hardware conditions.
 
 Two endpoints:
-- **`/hello`** — `Hello, World!` (11 bytes). Measures raw request/response throughput.
-- **`/large`** — 100 KB response. Measures large-payload write throughput.
+- **`/hello`** — `Hello, World!` (13 bytes). Measures raw request/response throughput.
+- **`/large`** — 100 KB (`x` × 102400) response. Measures large-payload write throughput.
 
 ## Usage
 
 ```
-# macOS: keel-kqueue (default)
-./benchmark --engine=keel-kqueue --port=8080 --profile=tuned
+# macOS: ktor-keel-kqueue (default)
+./benchmark --engine=ktor-keel-kqueue --port=8080 --profile=tuned
 
-# Linux: keel-epoll with HTTPS (AWS-LC)
-./benchmark --engine=keel-epoll --tls=awslc --tls-installer=keel
+# macOS: Pipeline mode (no Ktor overhead)
+./benchmark --engine=pipeline-http-kqueue
+
+# Linux: ktor-keel-epoll with HTTPS (AWS-LC)
+./benchmark --engine=ktor-keel-epoll --tls=awslc --tls-installer=keel
 
 # Show resolved config
 ./benchmark --engine=ktor-netty --profile=tuned --show-config
@@ -29,14 +32,41 @@ Two endpoints:
 
 ## Engine Registry
 
-Engines are registered per-platform via `engineRegistry()`:
+Engines are registered per-platform via `engineRegistry()`. The default engine for each platform:
 
-| Platform | Available engines |
-|----------|-------------------|
-| JVM | `keel-nio`, `keel-netty`, `ktor-netty`, `ktor-cio`, `netty-raw`, `spring`, `vertx` |
-| macOS Native | `keel-kqueue`, `keel-nwconnection`, `ktor-cio` |
-| Linux Native | `keel-epoll`, `keel-io-uring`, `ktor-cio` |
-| JS (Node.js) | `keel-nodejs` |
+| Platform | Default engine |
+|----------|----------------|
+| JVM | `ktor-keel-nio` |
+| macOS Native | `ktor-keel-kqueue` |
+| Linux Native | `ktor-keel-epoll` |
+| JS (Node.js) | `pipeline-http-nodejs` |
+
+All registered engines by platform:
+
+| Platform | Engine name | Backend |
+|----------|-------------|---------|
+| JVM | `ktor-keel-nio` | keel NIO + Ktor |
+| JVM | `ktor-keel-netty` | keel Netty + Ktor |
+| JVM | `ktor-cio` | Ktor CIO |
+| JVM | `ktor-netty` | Ktor Netty |
+| JVM | `netty-raw` | Raw Netty (no Ktor) |
+| JVM | `spring` | Spring Boot |
+| JVM | `vertx` | Vert.x |
+| macOS | `ktor-keel-kqueue` | keel kqueue + Ktor |
+| macOS | `pipeline-http-kqueue` | keel kqueue Pipeline mode (no Ktor) |
+| macOS | `ktor-keel-nwconnection` | keel NWConnection + Ktor |
+| macOS | `pipeline-http-nwconnection` | keel NWConnection Pipeline mode |
+| macOS | `ktor-cio` | Ktor CIO |
+| Linux | `ktor-keel-epoll` | keel epoll + Ktor |
+| Linux | `pipeline-http-epoll` | keel epoll Pipeline mode (no Ktor) |
+| Linux | `ktor-keel-io-uring` | keel io_uring + Ktor |
+| Linux | `pipeline-http-io-uring` | keel io_uring Pipeline mode |
+| Linux | `raw-io-uring` | io_uring raw benchmark (no HTTP codec) |
+| Linux | `ktor-cio` | Ktor CIO |
+| JS | `pipeline-http-nodejs` | keel Node.js Pipeline mode |
+
+`ktor-keel-*` engines run a full Ktor application pipeline on top of keel's `StreamEngine`.
+`pipeline-http-*` engines use keel's `bindPipeline` directly (`HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder`) without Ktor — zero-suspend, maximum throughput.
 
 ## Configuration
 
@@ -71,11 +101,14 @@ interface EngineBenchmark {
     fun start(config: BenchmarkConfig): () -> Unit  // returns stop callback
     fun tunedSocket(s: SocketConfig, cpuCores: Int): SocketConfig
     fun tunedConfig(config: BenchmarkConfig, cpuCores: Int): BenchmarkConfig
+    fun mergeConfig(base: EngineConfig, args: Map<String, String>): EngineConfig
 }
 ```
 
 Platform-specific engine files register implementations in `engineRegistry()`.
-Signal handlers (`SIGTERM`/`SIGINT`) call `_exit(0)` for immediate port release.
+Native signal handlers (`SIGTERM`/`SIGINT`) call `_exit(0)` for immediate port release — avoids
+atexit handlers that could deadlock. Handlers are installed after server start because Ktor
+overrides them during engine initialization.
 
 ## Key Types
 
@@ -84,7 +117,7 @@ Signal handlers (`SIGTERM`/`SIGINT`) call `_exit(0)` for immediate port release.
 | `EngineBenchmark` | Per-engine interface: `start`, `tunedSocket`, `tunedConfig`, `mergeConfig` |
 | `BenchmarkConfig` | Full server config: engine, port, profile, TLS, socket options, engine-specific config |
 | `SocketConfig` | Common socket options: `tcpNoDelay`, `reuseAddress`, `backlog`, `sendBuffer`, `receiveBuffer`, `threads` |
-| `EngineConfig` | Sealed per-engine settings: `None`, `KtorNetty`, `Cio`, `Vertx`, `Spring`, `NettyRaw` |
+| `EngineConfig` | Per-engine settings: `None`, `KtorNetty`, `Cio`, `Vertx`, `Spring`, `NettyRaw` |
 
 # Package io.github.fukusaka.keel.benchmark
 
