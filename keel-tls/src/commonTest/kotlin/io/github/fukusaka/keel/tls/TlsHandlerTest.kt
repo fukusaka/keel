@@ -381,6 +381,160 @@ class TlsHandlerTest {
         assertEquals(TlsErrorCategory.PROTOCOL_ERROR, (recorder.errors[0] as TlsException).category)
     }
 
+    // --- RFC-compliant BUFFER_OVERFLOW handling ---
+    //
+    // RFC 5246 §6.2.3 and RFC 8446 §5.2 cap TLSCiphertext.length at
+    // 2^14 + 2048 and 2^14 + 256 respectively. If the codec cannot fit
+    // a record into the output buffer, it returns
+    // TlsResult.BUFFER_OVERFLOW. Every TlsHandler call site maps that
+    // status to a TlsException with TlsErrorCategory.BUFFER_ERROR and
+    // stops processing, which matches the RFC-mandated receiver
+    // response (terminate with record_overflow) — the pipeline layer
+    // above observes the error and tears the channel down.
+    //
+    // These tests use minimal mock codecs that return BUFFER_OVERFLOW
+    // unconditionally, which is how JSSE, OpenSSL, MbedTLS, and AWS-LC
+    // all signal "the destination buffer you gave me is too small for
+    // the record I need to emit". No real cipher suite reaches the
+    // ceiling with keel's current 17 KiB TLS_RECORD_BUF_SIZE, so the
+    // production overflow path is not exercised end-to-end; the tests
+    // simulate the codec-level signal so that the handler's RFC
+    // alignment is verified directly.
+
+    @Test
+    fun `unprotect BUFFER_OVERFLOW propagates TlsException with BUFFER_ERROR`() {
+        val overflowCodec = object : TlsCodec {
+            override var isHandshakeComplete = true
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.BUFFER_OVERFLOW, 0, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.OK, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(overflowCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3, 4, 5)))
+
+        // Handler must signal the RFC-mandated "terminate on
+        // record_overflow" condition via a structured error on the
+        // pipeline; the downstream layer is responsible for closing.
+        assertEquals(1, recorder.errors.size, "exactly one error expected on overflow")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.BUFFER_ERROR,
+            error.category,
+            "overflow error must use BUFFER_ERROR category so upstream handlers can distinguish it from protocol errors",
+        )
+        assertTrue(recorder.reads.isEmpty(), "no plaintext must reach downstream on overflow")
+    }
+
+    @Test
+    fun `protect BUFFER_OVERFLOW propagates TlsException with BUFFER_ERROR`() {
+        // Codec completes handshake on first unprotect, then returns
+        // BUFFER_OVERFLOW for every subsequent protect call. This models
+        // the "codec cannot fit the ciphertext for this plaintext record
+        // into the destination buffer" case on the application-data
+        // write path.
+        val overflowCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+                private set
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+                val n = ciphertext.readableBytes
+                for (i in 0 until n) plaintext.writeByte(ciphertext.getByte(ciphertext.readerIndex + i))
+                isHandshakeComplete = true
+                return TlsCodecResult(TlsResult.OK, n, n)
+            }
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.BUFFER_OVERFLOW, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(overflowCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        // Complete handshake so subsequent requestWrite enters
+        // processOutbound application-data encoding.
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3)))
+        // Discard handshake plaintext delivered by unprotect.
+        recorder.reads.clear()
+
+        // Trigger processOutbound, which will hit BUFFER_OVERFLOW.
+        pipeline.requestWrite(allocBuf("world".encodeToByteArray()))
+
+        assertEquals(1, recorder.errors.size, "exactly one error expected on outbound overflow")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.BUFFER_ERROR,
+            error.category,
+            "outbound overflow error must use BUFFER_ERROR category",
+        )
+        // No ciphertext should reach the transport.
+        transport.written.forEach { it.release() }
+        assertTrue(transport.written.isEmpty(), "no ciphertext must reach transport on outbound overflow")
+    }
+
+    @Test
+    fun `handshake protect BUFFER_OVERFLOW propagates TlsException with BUFFER_ERROR`() {
+        // Codec drives the handshake by returning NEED_WRAP from
+        // unprotect, which makes TlsHandler enter flushHandshakeResponse.
+        // The subsequent protect call returns BUFFER_OVERFLOW,
+        // simulating a handshake flight whose ciphertext cannot fit in
+        // the buffer (e.g. an oversized server certificate chain).
+        val overflowHandshakeCodec = object : TlsCodec {
+            override var isHandshakeComplete = false
+            override val negotiatedProtocol: String? = null
+            override val peerCertificates: List<ByteArray> = emptyList()
+
+            override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.NEED_WRAP, ciphertext.readableBytes, 0)
+
+            override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+                TlsCodecResult(TlsResult.BUFFER_OVERFLOW, 0, 0)
+
+            override fun close() {}
+        }
+
+        val handler = TlsHandler(overflowHandshakeCodec)
+        val pipeline = createPipeline(handler)
+        val recorder = RecordingHandler()
+        pipeline.addAfter("tls", "recorder", recorder)
+
+        pipeline.notifyRead(allocBuf(byteArrayOf(1, 2, 3, 4)))
+
+        assertEquals(1, recorder.errors.size, "exactly one error expected on handshake overflow")
+        val error = recorder.errors[0]
+        assertIs<TlsException>(error)
+        assertEquals(
+            TlsErrorCategory.BUFFER_ERROR,
+            error.category,
+            "handshake overflow error must use BUFFER_ERROR category",
+        )
+        // Handshake did not complete; no TlsHandshakeComplete event.
+        assertTrue(
+            recorder.userEvents.none { it is TlsHandshakeComplete },
+            "handshake must not complete when flush overflows",
+        )
+        transport.written.forEach { it.release() }
+    }
+
     @Test
     fun `handlerRemoved releases accumulate buffer and closes codec`() {
         val codec = MockTlsCodec()
