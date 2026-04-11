@@ -145,6 +145,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Dokka: add `module.md` for all 13 modules with module and package descriptions
 - Dokka: shorten navigation package names by removing `io.github.fukusaka.keel.` prefix via custom JavaScript
 - Dokka: add `module.md` for all 6 TLS modules (`keel-tls`, `keel-tls-jsse`, `keel-tls-mbedtls`, `keel-tls-awslc`, `keel-tls-openssl`, `keel-tls-nodejs`) with TLS integration model, `TlsCodec`/`TlsHandler` architecture, backend-specific BIO transport details, and platform target tables
+- Dokka: add `module.md` for `keel-native-posix` (POSIX socket utilities, C interop wrappers) and `benchmark` (engine registry, profiles, CLI config)
 
 ### Added
 
