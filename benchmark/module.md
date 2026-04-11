@@ -1,6 +1,6 @@
 # Module benchmark
 
-HTTP/1.1 throughput benchmark suite comparing keel engines against Netty, Ktor, Spring, Vert.x, and Phase 2 Native servers (Rust, Go, Swift, Zig).
+HTTP/1.1 throughput benchmark suite comparing keel engines against Netty, Ktor, Spring, Vert.x, and external reference servers (Rust, Go, Swift, Zig).
 
 Not a production library module — this is a standalone benchmark program.
 
@@ -34,7 +34,7 @@ Output artifacts:
 - **JVM classpath file**: `benchmark/build/benchmark-classpath.txt` (used with `@` classpath expansion)
 - **JS script**: `benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js`
 
-### Phase 2 Native (Rust, Go, Swift, Zig)
+### External Reference Servers (Rust, Go, Swift, Zig)
 
 | Server | Build command | Binary path |
 |--------|---------------|-------------|
@@ -79,7 +79,7 @@ java -cp @benchmark/build/benchmark-classpath.txt \
 |--------|---------|
 | `bench-one.sh` | Single engine: `bench-one.sh <name> <command> [args...]` |
 | `bench-keel.sh` | keel engines + `ktor-cio` only |
-| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM + JS) |
+| `bench-all.sh` | All engines (external servers + Kotlin/Native + JVM + JS) |
 | `bench-pull.sh` | Pull results from remote host (`luna.local`) |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
 
@@ -148,7 +148,7 @@ All registered engines by platform:
 `ktor-keel-*` engines run a full Ktor application pipeline on top of keel's `StreamEngine`.
 `pipeline-http-*` engines use keel's `bindPipeline` directly (`HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder`) without Ktor — zero-suspend, maximum throughput.
 
-## Phase 2 Native Servers
+## External Reference Servers
 
 Non-Kotlin standalone servers included in `bench-all.sh` for cross-language comparisons:
 
@@ -206,7 +206,7 @@ Platform-specific engine files register implementations in `engineRegistry()`.
 `_exit` bypasses `atexit` handlers that could deadlock on shutdown. Handlers are installed
 *after* server start because Ktor overrides them during engine initialization.
 
-Phase 2 Native servers (Rust, Go, Swift, Zig) are separate programs and do not implement
+External reference servers (Rust, Go, Swift, Zig) are separate programs and do not implement
 `EngineBenchmark`. They are invoked directly by `bench-all.sh` via their own binaries.
 
 ## Key Types
