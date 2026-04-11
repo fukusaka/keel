@@ -38,10 +38,11 @@ import kotlin.reflect.KClass
  * trailing bytes of the current buffer are copied into a lazily
  * allocated byte accumulator, and the rest of the line from the next
  * buffer is appended before parsing. The accumulator is sized to
- * [MAX_LINE_SIZE] at most and is kept across connections for reuse
- * (its backing `ByteArray` is never released after the first partial
- * read). The handler is stateful and must not be shared between
- * connections.
+ * [MAX_LINE_SIZE] at most and its backing `ByteArray` is retained
+ * across lines and even across parse errors within the same
+ * connection, so that a decoder which once triggered a partial read
+ * does not reallocate the accumulator on every subsequent line. The
+ * handler is stateful and must not be shared between connections.
  *
  * **HTTP pipelining**: after a complete head is emitted, remaining bytes
  * in the same [IoBuf] are processed immediately, potentially emitting
