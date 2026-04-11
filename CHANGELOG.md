@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- keel-engine-netty: `NettyEngine` now instantiates one buffer allocator per worker `EventLoop` (lazy via `config.allocator.createForEventLoop()`) instead of sharing the engine-wide `config.allocator` across every accepted channel. Each allocator is only ever touched by its owning event loop thread, removing the CAS hotspot on the shared freelist that previously cancelled out the benefit of pool hits on high-throughput JVM workloads.
+- keel-io: `PooledDirectAllocator.createForEventLoop()` now returns an allocator with a smaller local pool (16 slots vs the 256-slot default) so that the total direct memory footprint is bounded by `numEventLoops × 16 × bufferSize`, independent of the number of open connections.
 - keel-core: `BindConfig` converted from marker interface to open class with `backlog` parameter (default 128)
 - keel-core: `StreamEngine.bind()` and `bindPipeline()` accept `BindConfig` with backlog propagated to all engines
 - keel-tls: `TlsConnectorConfig.installer` is now nullable — `null` means engine-native (listener-level) TLS
@@ -24,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- keel-engine-netty: `NettyPipelinedChannel.channelRead` now rounds the inbound IoBuf allocation up to 8 KiB (matching `PooledDirectAllocator`'s freelist slot) so that small TCP reads hit the pool instead of allocating a fresh `DirectByteBuffer`, `Cleaner` and `Deallocator` per packet. Combined with the per-event-loop allocator change above, this reduces `ktor-keel-netty` `/large` GC total pause from around 500 ms per 10 s run to around 55 ms, collapses p99 latency from 34.5 ms to 1.06 ms, and tightens the run-to-run range from 8.1 % to 3.4 %.
 - keel-engine-netty: fix DirectIoBuf double-release on /large responses (`supportsDeferredFlush = true` for async Netty flush)
 - keel-engine-nodejs: replace byte-by-byte copy with `Int8Array.subarray`/`set` in flush and read paths (/large +544%, /hello +10%)
 - keel-engine-io-uring: use `writev` gather write in FALLBACK_CQE direct flush for multi-buffer responses (/large +1,253%)
