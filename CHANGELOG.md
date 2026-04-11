@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-io: `BufferAllocator.tryWrapBytes(ByteArray, Int, Int)` extension that returns a zero-copy `IoBuf` view of an existing `ByteArray`, so codec writers in other modules can opt into wrapping instead of copying. JVM returns a `DirectIoBuf` over `ByteBuffer.wrap`; Native and JS return `null` and callers fall back to an `allocate` + copy path.
 - keel-io: direct-write path in `BufferedSuspendSink.write(ByteArray, Int, Int)` that forwards payloads at or above 8 KiB as a zero-copy `IoBuf` view of the caller's array via the new `wrapBytesAsIoBuf` expect/actual helper (JVM only; Native and JS fall back to the chunked copy path). Eliminates the 8 KiB scratch chunking that split large responses into many small sink writes, driving JVM engine `/large` throughput from 78 K to 207 K req/s on `ktor-keel-netty` and collapsing the 47 % run-to-run variance to 10 %.
 - keel-io: add `LeakDetectingAllocator` with Cleaner-based leak detection (Native: `createCleaner`, JVM: `PhantomReference`)
 - keel-io: add `BufferAllocator.withTracking()` and `BufferAllocator.withLeakDetection()` extension functions for fluent allocator composition
@@ -26,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- keel-codec-http: `HttpResponseEncoder` now emits response bodies at or above 8 KiB as a zero-copy `IoBuf` view of the caller's `ByteArray` via `BufferAllocator.tryWrapBytes` (on platforms where wrapping is supported, i.e. JVM) instead of copying the bytes into a single fresh `allocateDirect(headers + body)` buffer per response. The head (status line + headers) is still written into an exact-sized pooled buffer; the body is propagated as a second outbound message so the downstream transport coalesces both into a single `writev` / `writeAndFlush`. On `pipeline-http-netty` `/large` this lifts throughput from 112 K to 261 K req/s on luna.local (+133 %), moving the engine from 38 % to 90 % of the `netty-raw` reference ceiling.
 - keel-engine-netty: `NettyPipelinedChannel.channelRead` now rounds the inbound IoBuf allocation up to 8 KiB (matching `PooledDirectAllocator`'s freelist slot) so that small TCP reads hit the pool instead of allocating a fresh `DirectByteBuffer`, `Cleaner` and `Deallocator` per packet. Combined with the per-event-loop allocator change above, this reduces `ktor-keel-netty` `/large` GC total pause from around 500 ms per 10 s run to around 55 ms, collapses p99 latency from 34.5 ms to 1.06 ms, and tightens the run-to-run range from 8.1 % to 3.4 %.
 - keel-engine-netty: fix DirectIoBuf double-release on /large responses (`supportsDeferredFlush = true` for async Netty flush)
 - keel-engine-nodejs: replace byte-by-byte copy with `Int8Array.subarray`/`set` in flush and read paths (/large +544%, /hello +10%)

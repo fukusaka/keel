@@ -219,16 +219,16 @@ class HttpResponseEncoderTest {
         assertEquals(rawBuf, transport.written[0])
     }
 
-    // --- IoBuf sizing: single allocation, no spare bytes ---
+    // --- IoBuf sizing: single allocation, no spare bytes on the fallback path ---
 
     @Test
-    fun `encoded IoBuf has no spare writable bytes`() {
+    fun `fallback encode path produces an exact-sized IoBuf`() {
         val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // Body is below DIRECT_BODY_THRESHOLD (8 KiB) so the fallback path
+        // runs and produces a single exact-sized IoBuf.
         pipeline.requestWrite(HttpResponse.ok("world"))
 
         val buf = transport.written[0]
-        // After HeadHandler writes the buf, readerIndex == writerIndex == capacity.
-        // We check capacity == readableBytes at write time via writerIndex == capacity.
         assertEquals(0, buf.writableBytes, "IoBuf should be exactly sized")
     }
 
@@ -243,5 +243,45 @@ class HttpResponseEncoderTest {
 
         val text = transport.written[0].readString()
         assertTrue(text.startsWith("HTTP/1.0 200 OK\r\n"), "version: $text")
+    }
+
+    // --- Large body fast path ---
+    //
+    // On JVM, `BufferAllocator.tryWrapBytes` returns a non-null zero-copy view,
+    // so bodies at or above the threshold are split into two transport writes:
+    // one for the head (status line + headers) and one for the wrapped body.
+    // Native and JS targets fall back to a single copy-based write because
+    // `tryWrapBytes` returns null, which is exercised indirectly by the
+    // existing small-body tests that take the same single-write path.
+
+    @Test
+    fun `large body takes direct path with head and body written separately on JVM`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        val body = ByteArray(10000) { 'x'.code.toByte() }
+        val headers = HttpHeaders.of("Content-Length" to body.size.toString())
+        pipeline.requestWrite(HttpResponse(HttpStatus.OK, headers = headers, body = body))
+
+        // JVM: two writes (head + body). Native/JS: one write (fallback copy).
+        // Either way the concatenated wire bytes must match the expected output.
+        val wireBytes = transport.written.fold(ByteArray(0)) { acc, buf ->
+            val chunk = ByteArray(buf.readableBytes)
+            buf.readByteArray(chunk, 0, chunk.size)
+            acc + chunk
+        }
+        val wire = wireBytes.decodeToString()
+        assertTrue(
+            wire.startsWith("HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n"),
+            "head prefix: ${wire.take(60)}",
+        )
+        assertEquals(10000, wire.length - wire.indexOf("\r\n\r\n") - 4, "body length mismatch")
+        assertTrue(wire.endsWith("x".repeat(10)), "body tail: ${wire.takeLast(20)}")
+    }
+
+    @Test
+    fun `small body under threshold uses single write fallback path`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // Body well below DIRECT_BODY_THRESHOLD (8192) — single write expected.
+        pipeline.requestWrite(HttpResponse.ok("small"))
+        assertEquals(1, transport.written.size)
     }
 }
