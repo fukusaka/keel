@@ -69,7 +69,7 @@ class TlsHandler(
         val input = mergeWithAccumulate(ctx, cipherBuf)
 
         while (input.readableBytes > 0) {
-            val plainBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
+            val plainBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
             val result = try {
                 codec.unprotect(input, plainBuf)
             } catch (e: TlsException) {
@@ -192,8 +192,14 @@ class TlsHandler(
 
     private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
         while (plainBuf.readableBytes > 0) {
-            val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
-            val result = codec.protect(plainBuf, cipherBuf)
+            val cipherBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
+            val result = try {
+                codec.protect(plainBuf, cipherBuf)
+            } catch (e: TlsException) {
+                cipherBuf.release()
+                ctx.propagateError(e)
+                return
+            }
             plainBuf.readerIndex += result.bytesConsumed
 
             if (cipherBuf.readableBytes > 0) {
@@ -202,7 +208,36 @@ class TlsHandler(
                 cipherBuf.release()
             }
 
-            if (result.status != TlsResult.OK) break
+            when (result.status) {
+                TlsResult.OK -> {
+                    // Continue encoding remaining plaintext.
+                }
+                TlsResult.BUFFER_OVERFLOW -> {
+                    // RFC 5246 §6.2.3 / RFC 8446 §5.2: a TLSCiphertext record
+                    // the codec cannot fit into the buffer exceeds the
+                    // protocol-mandated ceiling and must tear down the
+                    // connection. Propagate a structured error so the
+                    // downstream pipeline can close.
+                    ctx.propagateError(
+                        TlsException(
+                            "Output buffer overflow during protect",
+                            TlsErrorCategory.BUFFER_ERROR,
+                        ),
+                    )
+                    return
+                }
+                TlsResult.CLOSED -> {
+                    ctx.propagateInactive()
+                    return
+                }
+                TlsResult.NEED_WRAP, TlsResult.NEED_MORE_INPUT -> {
+                    // Codec is asking for a handshake flight or more input
+                    // before it can continue encoding. Stop the encode loop
+                    // for this call; the next handshake flush or inbound
+                    // read will unblock it.
+                    break
+                }
+            }
         }
         checkHandshakeComplete(ctx)
     }
@@ -235,7 +270,7 @@ class TlsHandler(
         try {
             var iterations = 0
             while (true) {
-                val cipherBuf = ctx.allocator.allocate(OUTPUT_BUF_SIZE)
+                val cipherBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
                 val result = try {
                     codec.protect(emptyBuf, cipherBuf)
                 } catch (e: TlsException) {
@@ -314,9 +349,78 @@ class TlsHandler(
     }
 
     companion object {
-        // TLS record max: 16384 payload + 5 header + 256 expansion (CBC) = ~16645.
-        // 17408 = 17 * 1024, comfortably above TLS record max.
-        private const val OUTPUT_BUF_SIZE = 17 * 1024
+        /**
+         * Buffer capacity for a single TLS record, sized to cover every
+         * reachable TLS 1.2 / TLS 1.3 record produced by a compliant peer
+         * using an IANA-registered cipher suite that keel's TLS backends
+         * (JSSE, OpenSSL, MbedTLS, AWS-LC) can negotiate.
+         *
+         * ### Per-variant wire record maxima
+         *
+         * | Variant                           |  Wire bytes | Source                          |
+         * |-----------------------------------|------------:|---------------------------------|
+         * | TLS 1.3 AEAD (any cipher suite)   |       16645 | [RFC 8446 §5.2][2] protocol cap |
+         * | TLS 1.2 AEAD (AES-GCM/ChaCha20)   |      ~16413 | 16-byte tag + 5-byte header     |
+         * | TLS 1.2 CBC + HMAC-SHA384         |       16709 | IV + MAC + max padding          |
+         *
+         * TLS 1.3 mandates AEAD and removes record-layer compression, so
+         * its protocol ceiling (`TLSCiphertext.length <= 2^14 + 256`) is
+         * exactly the reachable maximum — a sender may pad up to this
+         * limit for length hiding per [RFC 8446 §5.4][4].
+         *
+         * TLS 1.2 has a looser protocol ceiling in [RFC 5246 §6.2.3][1]
+         * (`TLSCiphertext.length <= 2^14 + 2048`), but the 2048-byte
+         * expansion budget is unreachable in practice. [RFC 8449 §1][3]
+         * itself notes that the expansion "is typically only 16 octets",
+         * and the binding constraints are the per-cipher-suite maxima
+         * above. The unused budget was reserved for future cipher suites
+         * and optional TLS 1.2 compression (CRIME-deprecated in 2012, not
+         * enabled by any keel backend); neither has materialised.
+         *
+         * `17 * 1024 = 17408` is the smallest 1 KiB-aligned value that
+         * covers the largest reachable variant (TLS 1.2 CBC + SHA384 at
+         * 16709 wire bytes) with ~700 bytes of margin, and also covers
+         * the TLS 1.3 protocol ceiling (16645) with ~760 bytes of margin.
+         *
+         * ### Overflow behaviour
+         *
+         * If a non-compliant peer sends a record larger than any
+         * negotiable cipher suite allows, or a legitimate peer uses
+         * TLS 1.2 compression (neither keel nor any mainstream TLS
+         * stack currently enables it), the codec returns
+         * [TlsResult.BUFFER_OVERFLOW]. Every call site in this handler
+         * ([processInbound], [processOutbound], [flushHandshakeResponse])
+         * maps that status to [TlsException] with
+         * [TlsErrorCategory.BUFFER_ERROR] and stops processing, which
+         * matches the RFC 5246 §6.2.3 / RFC 8446 §5.2 mandate that a
+         * receiver terminates the connection on `record_overflow`. The
+         * downstream pipeline observes the error and tears the channel
+         * down; the codec itself is responsible for any `record_overflow`
+         * alert on the wire (JSSE's SSLEngine emits one when close is
+         * called after BUFFER_OVERFLOW, for example).
+         *
+         * ### Pool-miss note
+         *
+         * On JVM, 17408 exceeds the default 8 KiB pool slot of
+         * [io.github.fukusaka.keel.buf.PooledDirectAllocator], so every
+         * [TlsHandler] allocation on inbound, outbound, and handshake
+         * paths falls back to a fresh `allocateDirect` + `Cleaner`.
+         * Profiling on a JSSE-backed HTTPS workload showed this accounts
+         * for roughly 1 % of total allocation samples — small enough
+         * that the dominant contributors (JSSE crypto `byte[]` and
+         * application-layer routing) swamp any improvement a pool hit
+         * would provide. A dedicated size class matching this constant
+         * and a reusable per-connection scratch buffer were both
+         * considered and deferred: the expected gain is low single-digit
+         * percent while the implementation would either redesign the
+         * allocator or break the per-call buffer lifecycle contract.
+         *
+         * [1]: https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3
+         * [2]: https://www.rfc-editor.org/rfc/rfc8446#section-5.2
+         * [3]: https://www.rfc-editor.org/rfc/rfc8449#section-1
+         * [4]: https://www.rfc-editor.org/rfc/rfc8446#section-5.4
+         */
+        private const val TLS_RECORD_BUF_SIZE = 17 * 1024
 
         // Defense-in-depth: bounds total flushHandshakeResponse iterations.
         // A TLS 1.2 flight is typically 2-5 KB; 64 × 17 KB = 1 MB far exceeds
