@@ -4,61 +4,103 @@ sidebar_position: 2
 
 # Engine Selection Guide
 
-keel provides multiple engine implementations. The engine is selected by
-the Gradle dependency you include — no runtime switching is needed.
+keel provides multiple engine implementations. **The engine is selected at compile time by which `keel-engine-*` Gradle dependency you include** — there is no runtime switching.
+
+In a KMP project, you typically add a different engine dependency per target source set:
+
+```kotlin
+// build.gradle.kts
+kotlin {
+    sourceSets {
+        linuxX64Main.dependencies {
+            implementation("io.github.fukusaka.keel:keel-engine-epoll:0.3.0")
+        }
+        macosArm64Main.dependencies {
+            implementation("io.github.fukusaka.keel:keel-engine-kqueue:0.3.0")
+        }
+        jvmMain.dependencies {
+            implementation("io.github.fukusaka.keel:keel-engine-nio:0.3.0")
+        }
+    }
+}
+```
+
+All engines implement the same `StreamEngine` interface, so application code is identical across targets.
 
 ## Engines
 
-### epoll (`keel-engine-epoll`)
-
-- **Targets**: `linuxX64`, `linuxArm64`
-- **Mechanism**: `epoll_create1` / `epoll_ctl` / `epoll_wait`, level-triggered
-- **Use when**: building a Linux server binary
-
-### kqueue (`keel-engine-kqueue`)
-
-- **Targets**: `macosArm64`, `macosX64`
-- **Mechanism**: `kqueue` / `kevent`, `EV_SET` wrapper
-- **Use when**: building a macOS server binary or developing on M1/M2 Mac
-
-### io_uring (`keel-engine-io-uring`)
-
-- **Targets**: `linuxX64`, `linuxArm64`
-- **Mechanism**: `io_uring` SQE/CQE ring buffers (Linux 5.1+)
-- **Use when**: targeting modern Linux kernels for maximum throughput. Supports multishot accept, fixed buffers, and `SEND_ZC` zero-copy send
-- **Note**: Requires Linux 5.1+ (basic), 5.19+ (multishot accept), 6.0+ (send zero-copy)
+For constructor parameters and configuration options, see the [API reference](/api/).
 
 ### NIO (`keel-engine-nio`)
 
 - **Targets**: `jvm`
-- **Mechanism**: `java.nio.Selector` + `ServerSocketChannel`
-- **Use when**: JVM deployment without Netty dependency
+- **Use when**: JVM deployment without a Netty dependency. Slightly higher throughput than Netty on large responses
+- **TLS**: via `keel-tls-jsse` (always included)
 
 ### Netty (`keel-engine-netty`)
 
 - **Targets**: `jvm`
-- **Mechanism**: Netty 4.2 `ServerBootstrap` + `NioEventLoopGroup`
-- **Use when**: integrating with an existing Netty ecosystem or needing
-  Netty's battle-tested reliability
+- **Use when**: you already have a Netty dependency in your project, or need Netty's `SslHandler`-based TLS (`NettySslInstaller`)
+- **TLS**: via `NettySslInstaller` (Netty `SslHandler`) or `keel-tls-jsse`
 
-### Node.js net (`keel-engine-nodejs`)
+### epoll (`keel-engine-epoll`)
 
-- **Targets**: `js` (IR, `nodejs()`)
-- **Mechanism**: Node.js `net` / `tls` module via Kotlin/JS external declarations
-- **Use when**: targeting Node.js runtime
+- **Targets**: `linuxX64`, `linuxArm64`
+- **Use when**: building a Linux server binary. Best general choice on Linux
+- **TLS**: via `keel-tls-openssl`, `keel-tls-awslc`, or `keel-tls-mbedtls`
+
+### io_uring (`keel-engine-io-uring`)
+
+- **Targets**: `linuxX64`, `linuxArm64`
+- **Use when**: targeting Linux 5.1+ kernels. Throughput is comparable to epoll on `/hello`; the advantage grows with large payloads because io_uring supports zero-copy send (`SEND_ZC`)
+- **Requires**: Linux 5.1+ (basic), 5.19+ (multishot accept), 6.0+ (zero-copy send)
+- **TLS**: same as epoll
+
+### kqueue (`keel-engine-kqueue`)
+
+- **Targets**: `macosArm64`, `macosX64`
+- **Use when**: building a macOS server binary, or developing on M1/M2 Mac
+- **TLS**: via `keel-tls-openssl` or `keel-tls-mbedtls`
 
 ### NWConnection (`keel-engine-nwconnection`)
 
 - **Targets**: `macosArm64`, `macosX64`
-- **Mechanism**: `Network.framework` `NWListener` + `NWConnection`
-- **Use when**: macOS App Store distribution or requiring system-managed TLS
+- **Use when**: macOS App Store distribution, or when you want TLS handled entirely by the OS with no certificate management in application code
+- **TLS**: built into Network.framework (listener-level, no `keel-tls-*` module needed)
+
+### Node.js (`keel-engine-nodejs`)
+
+- **Targets**: `js` (IR, `nodejs()`)
+- **Use when**: targeting the Node.js runtime
+- **TLS**: via Node.js built-in `tls` module (listener-level)
 
 ## Choosing an Engine
 
-| Platform | Recommended | Alternative |
-|----------|-------------|-------------|
-| Linux server | epoll or io_uring | — |
-| macOS server | kqueue | NWConnection |
-| JVM | NIO | Netty (ecosystem integration) |
-| Node.js | nodejs | — |
-| macOS + native TLS | NWConnection | kqueue + OpenSSL |
+| Platform | Recommended | Alternative | Notes |
+|----------|-------------|-------------|-------|
+| JVM | Netty | NIO | NIO if you want to avoid the Netty dependency |
+| Linux server | epoll | io_uring | io_uring requires Linux 5.1+; choose it if `/large` throughput matters |
+| macOS server | kqueue | NWConnection | NWConnection for App Store or OS-managed TLS |
+| Node.js | nodejs | — | |
+
+## Development Workflow
+
+A common pattern: **develop on macOS** with kqueue (fast compile, local testing), **deploy to Linux** with epoll or io_uring. Because all engines implement the same interface, no application code changes between environments.
+
+```kotlin
+// macosArm64Main — kqueue engine
+fun main() = runBlocking {
+    val engine = KqueueEngine()
+    val server = engine.bind("0.0.0.0", 8080)
+    // ...
+}
+
+// linuxX64Main — epoll engine, same application code
+fun main() = runBlocking {
+    val engine = EpollEngine()
+    val server = engine.bind("0.0.0.0", 8080)
+    // ...
+}
+```
+
+The engine type in each source set is determined by the `keel-engine-*` dependency in that source set's build configuration.

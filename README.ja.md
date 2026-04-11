@@ -195,18 +195,18 @@ AMD Ryzen 9 9950X3D（16 コア / 32 スレッド）、192 GB RAM、Ubuntu 24.04
 | rust-hello | 1,319K | 39us | 110us |
 | zig-hello | 1,133K | 42us | 108us |
 | jvm:netty-raw | 877K | 59us | 166us |
-| **native:pipeline-http-epoll** | **864K** | **58us** | **174us** |
-| **native:pipeline-http-io-uring** | **855K** | **59us** | **170us** |
+| **native:pipeline-http-epoll** | **870K** | **58us** | **174us** |
+| **native:pipeline-http-io-uring** | **860K** | **59us** | **170us** |
 | jvm:ktor-netty | 845K | 85us | 0.97ms |
 | jvm:spring | 821K | 61us | 216us |
-| **jvm:pipeline-http-nio** | **719K** | **73us** | **1.23ms** |
+| **jvm:pipeline-http-nio** | **715K** | **73us** | **1.23ms** |
 | **jvm:ktor-keel-netty** | **677K** | **99us** | **2.88ms** |
 | **native:ktor-keel-epoll** | **589K** | **99us** | **1.93ms** |
 | **jvm:ktor-keel-nio** | **540K** | **106us** | **2.24ms** |
 | go-hello | 536K | 102us | 1.02ms |
 | swift-hello | 527K | 146us | 473us |
 | jvm:vertx | 354K | 275us | 301us |
-| **native:pipeline-http-nodejs** | **153K** | **560us** | **1.67ms** |
+| **native:pipeline-http-nodejs** | **151K** | **560us** | **1.67ms** |
 | jvm:ktor-cio | 146K | 572us | 4.40ms |
 | native:ktor-cio | 9K | 10.43ms | 19.94ms |
 
@@ -217,9 +217,9 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
 | rust-hello | 161K | 583us | 0.88ms |
-| **native:pipeline-http-kqueue** | **151K** | **380us** | **4.38ms** |
+| **native:pipeline-http-kqueue** | **154K** | **380us** | **4.38ms** |
 | jvm:spring | 150K | 598us | 1.91ms |
-| **jvm:pipeline-http-nio** | **142K** | **410us** | **11.80ms** |
+| **jvm:pipeline-http-nio** | **146K** | **410us** | **11.80ms** |
 | go-hello | 141K | 521us | 2.14ms |
 | jvm:netty-raw | 139K | 684us | 0.91ms |
 | zig-hello | 136K | 690us | 0.93ms |
@@ -229,27 +229,49 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 | **native:ktor-keel-kqueue** | **108K** | **588us** | **9.47ms** |
 | swift-hello | 98K | 651us | 23.56ms |
 | **jvm:ktor-keel-netty** | **94K** | **487us** | **41.21ms** |
-| **native:pipeline-http-nodejs** | **66K** | **1.43ms** | **2.32ms** |
+| **native:pipeline-http-nodejs** | **71K** | **1.43ms** | **2.32ms** |
 | jvm:ktor-cio | 64K | 1.02ms | 18.20ms |
 | **native:pipeline-http-nwconnection** | **47K** | **1.87ms** | **13.82ms** |
 | native:ktor-cio | 7K | 10.40ms | 130.66ms |
 
-### HTTPS (Pipeline API)
+### HTTPS（Pipeline API、`/hello`）
 
 | Server | TLS バックエンド | Req/sec | p50 |
 |---|---|---:|---:|
-| **native:pipeline-http-io-uring** (Linux) | OpenSSL | **543K** | **94us** |
-| **native:pipeline-http-epoll** (Linux) | OpenSSL | **529K** | **99us** |
-| **native:pipeline-http-kqueue** (macOS) | OpenSSL | **139K** | **458us** |
-| **jvm:pipeline-http-nio** (macOS) | JSSE | **133K** | **481us** |
+| **native:pipeline-http-io-uring** (Linux) | OpenSSL | **508K** | **94us** |
+| **native:pipeline-http-epoll** (Linux) | OpenSSL | **490K** | **99us** |
+| **native:pipeline-http-kqueue** (macOS) | OpenSSL | **133K** | **458us** |
+| **jvm:pipeline-http-netty** (macOS) | JSSE/SslHandler | **130K** | **481us** |
+
+### `/large` レスポンス（100 KB）
+
+Pipeline API、wrk 4t/100c/10s、3 回計測中央値:
+
+| Server | macOS M1 | Linux Ryzen 9 |
+|---|---:|---:|
+| **native:pipeline-http-epoll** | — | **121K** |
+| **native:pipeline-http-io-uring** | — | **115K** |
+| **jvm:pipeline-http-nio** | **56K** | **117K** |
+| **jvm:pipeline-http-netty** | **54K** | **109K** |
+| **native:pipeline-http-kqueue** | **44K** | — |
+| **native:pipeline-http-nwconnection** | **25K** | — |
+| **native:pipeline-http-nodejs** | **7K** | — |
+
+Ktor Channel モード（`keel-ktor-engine`）、Linux Ryzen 9:
+
+| Server | `/large` Req/sec | 備考 |
+|---|---:|---|
+| **jvm:ktor-keel-nio** | **228K** | |
+| **jvm:ktor-keel-netty** | **207K** | ゼロコピー direct-write パス（PR #246） |
+| jvm:netty-raw（参考） | 287K | フレームワークなし Netty |
 
 ### 備考
 
 - keel エンジンは完全非同期 I/O + HTTP/1.1 keep-alive で動作。
-- **Pipeline モード**（ゼロコルーチン push I/O）が最速 — **pipeline-http-epoll**（864K）は Linux で Rust の 66% に到達。
+- **Pipeline モード**（ゼロコルーチン push I/O）が最速 — **pipeline-http-epoll**（870K）は Linux で Rust の 66% に到達。
 - **Ktor Channel モード**（suspend ベース）はコルーチンオーバーヘッドあり — **ktor-keel-epoll**（589K）でも **ktor-cio** の 65 倍高速。
-- /large（100KB）では kqueue が Rust の 95% に到達（57K vs 60K）。
-- **jvm:ktor-keel-nio**（macOS 128K、Linux 540K）は **jvm:ktor-netty** に近い性能を達成。
+- `/large`（100KB）の Ktor Channel モードでは **jvm:ktor-keel-nio** が **228K req/s** — raw Netty の 80% を達成。
+- **jvm:ktor-keel-nio**（macOS 128K、Linux 540K）は `/hello` でも **jvm:ktor-netty** に近い性能を達成。
 
 ---
 
