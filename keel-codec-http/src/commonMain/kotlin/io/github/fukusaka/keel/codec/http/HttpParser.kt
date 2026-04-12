@@ -6,11 +6,23 @@ import kotlinx.io.readByteArray
 import kotlinx.io.readLine
 
 /**
- * HTTP/1.1 message parser (RFC 7230).
+ * HTTP/1.1 message parser — **kotlinx-io `Source` / `BufferedSuspendSource` API**.
+ *
+ * This file provides eager (blocking) and suspend parsing functions that
+ * read from a [Source] or [BufferedSuspendSource]. They are the low-level
+ * API for callers that work directly with kotlinx-io streams (e.g.
+ * [KeelApplicationEngine][io.github.fukusaka.keel.ktor.KeelApplicationEngine]'s
+ * `respondBadRequest` fallback, unit tests, and CLI tools).
+ *
+ * **Pipeline-based server code should use [HttpRequestDecoder] instead.**
+ * The decoder operates on [IoBuf] chunks pushed through the pipeline,
+ * uses byte-offset scanning (no intermediate `String` per character),
+ * and emits streaming [HttpRequestHead] + [HttpBody] + [HttpBodyEnd]
+ * messages that are aggregated by [HttpBodyAggregator] if needed.
  *
  * Public API:
- *   parseRequest(source)  — consumes exactly one request from [source]
- *   parseResponse(source) — consumes exactly one response from [source]
+ *   [parseRequest] / [parseResponse]         — complete message (head + body)
+ *   [parseRequestHead] / [parseResponseHead] — head only (body deferred)
  *
  * Each call consumes only one message; any remaining bytes stay in [source],
  * which naturally supports pipelining.
