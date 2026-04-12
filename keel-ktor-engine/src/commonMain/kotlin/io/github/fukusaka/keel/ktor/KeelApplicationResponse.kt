@@ -69,26 +69,26 @@ internal class KeelApplicationResponse(
             pipelinedChannel.pipeline.requestFlush()
         }
         val bodyChannel = ByteChannel()
-        responseBodyJob = scope.launch {
+        // Launch on the EventLoop dispatcher so that pipeline.requestWrite
+        // is called on the correct thread without per-chunk withContext
+        // dispatch. bodyChannel.readAvailable() suspends and releases the
+        // EventLoop while waiting for data, so other I/O events are processed.
+        responseBodyJob = scope.launch(pipelinedChannel.coroutineDispatcher) {
             try {
                 val buf = ByteArray(RESPONSE_CHUNK_SIZE)
                 while (!bodyChannel.isClosedForRead) {
                     val n = bodyChannel.readAvailable(buf)
                     if (n == -1) break
                     if (n > 0) {
-                        withContext(pipelinedChannel.coroutineDispatcher) {
-                            val ioBuf = pipelinedChannel.allocator.allocate(n)
-                            ioBuf.writeByteArray(buf, 0, n)
-                            pipelinedChannel.pipeline.requestWrite(HttpBody(ioBuf))
-                            pipelinedChannel.pipeline.requestFlush()
-                        }
+                        val ioBuf = pipelinedChannel.allocator.allocate(n)
+                        ioBuf.writeByteArray(buf, 0, n)
+                        pipelinedChannel.pipeline.requestWrite(HttpBody(ioBuf))
+                        pipelinedChannel.pipeline.requestFlush()
                     }
                 }
             } finally {
-                withContext(pipelinedChannel.coroutineDispatcher) {
-                    pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
-                    pipelinedChannel.pipeline.requestFlush()
-                }
+                pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
+                pipelinedChannel.pipeline.requestFlush()
             }
         }
         return bodyChannel
