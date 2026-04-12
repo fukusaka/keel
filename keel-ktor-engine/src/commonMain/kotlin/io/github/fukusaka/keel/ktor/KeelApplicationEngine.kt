@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.writeResponseHead
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.core.StreamEngine
@@ -250,8 +251,10 @@ public class KeelApplicationEngine(
 
             try {
                 val resolved = connectors.map { connector ->
-                    val server = ioEngine.bind(connector.host, connector.port)
-                    serverEntries.add(server to tlsConnectors[connector])
+                    val tlsConfig = tlsConnectors[connector]
+                    val bindConfig = tlsConfig ?: BindConfig()
+                    val server = ioEngine.bind(connector.host, connector.port, bindConfig)
+                    serverEntries.add(server to tlsConfig)
                     connector.withPort(server.localAddress.port)
                 }
                 resolvedDeferred.complete(resolved)
@@ -302,11 +305,6 @@ public class KeelApplicationEngine(
                 currentDelayMs = when (val b = configuration.acceptBackoff) {
                     is AcceptBackoff.Fixed -> b.delayMs
                     is AcceptBackoff.Exponential -> b.initialMs
-                }
-
-                // Install per-connection TLS in the channel's pipeline for HTTPS.
-                if (tlsConfig != null) {
-                    tlsConfig.initializeConnection(channel)
                 }
 
                 // Dispatch on EventLoop so read/parse runs on the I/O
