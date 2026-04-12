@@ -26,6 +26,9 @@ class LeakDetectingAllocatorTest {
                 (buf as PoolableIoBuf).deallocator = { deallocatorCalled = true }
                 return buf
             }
+            override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
+            override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+                DefaultAllocator.slice(source, offset, length)
         }
         val allocator = LeakDetectingAllocator(delegate) { }
 

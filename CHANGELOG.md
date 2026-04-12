@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-io: `BufferAllocator.wrapBytes(ByteArray, Int, Int)` — wraps a `ByteArray` as a zero-copy read-only `IoBuf` view using platform-native backing (pinned pointer on Native, heap ByteBuffer on JVM). Replaces the standalone `tryWrapBytes` extension. Native support enables zero-copy response body emission that was previously JVM-only.
+- keel-io: `BufferAllocator.slice(IoBuf, Int, Int)` — creates a read-only `IoBuf` view of an existing buffer's byte range using the same platform-native type (NativeIoBuf on Native, DirectIoBuf on JVM), ensuring transport compatibility. The parent buffer is retained and released via the deallocator when the slice is released.
 - keel-core: `SuspendMessageBridge<T>` — generic pipeline handler that bridges typed inbound messages to a suspendable `Channel<T>`, enabling coroutine-based consumers to receive pipeline-decoded messages without writing event-driven handlers. Used by `keel-ktor-engine` to receive `HttpRequest` from `HttpBodyAggregator`.
 - keel-io: `EmptyIoBuf` singleton — zero-capacity `IoBuf` where all read/write methods throw and `retain`/`release` are no-ops. Used as the backing buffer for `HttpBodyEnd.EMPTY`.
 - keel-codec-http: `HttpMessage` sealed interface as the common supertype for all streaming HTTP pipeline messages (`HttpRequestHead`, `HttpResponseHead`, `HttpBody`, `HttpBodyEnd`).

@@ -101,8 +101,8 @@ class BufferedSuspendSink(
      *
      * For payloads at or above [DIRECT_WRITE_THRESHOLD], bypasses the internal
      * scratch buffer and forwards a zero-copy [IoBuf] view of the caller's
-     * array to [sink] (on platforms where [wrapBytesAsIoBuf] returns non-null,
-     * i.e. JVM). This avoids the `BUFFER_SIZE`-sized chunking that would
+     * array to [sink] (on platforms where [BufferAllocator.wrapBytes] returns
+     * non-null, i.e. JVM and Native). This avoids the `BUFFER_SIZE`-sized chunking that would
      * otherwise split a large body into many small writes, each producing a
      * short-lived `PendingWrite`, Netty `ByteBuf`, flush promise, and listener
      * lambda — multiplying per-request allocations by the chunk count and
@@ -114,7 +114,7 @@ class BufferedSuspendSink(
      */
     suspend fun write(bytes: ByteArray, offset: Int, length: Int) {
         if (length >= DIRECT_WRITE_THRESHOLD) {
-            val wrapped = wrapBytesAsIoBuf(bytes, offset, length)
+            val wrapped = allocator.wrapBytes(bytes, offset, length)
             if (wrapped != null) {
                 // Flush any scratch data first to keep ordering (headers before body).
                 flushBuffer()
