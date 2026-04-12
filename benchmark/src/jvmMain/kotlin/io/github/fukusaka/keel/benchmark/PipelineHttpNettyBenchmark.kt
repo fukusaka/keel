@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.codec.http.HttpBodyAggregator
+import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpResponse
@@ -9,6 +11,8 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
+import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
 /**
  * Pipeline HTTP benchmark using [NettyEngine] with [HttpRequestDecoder],
  * [RoutingHandler], and [HttpResponseEncoder].
@@ -47,7 +51,8 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         val server = engine.bindPipeline("0.0.0.0", config.port, config = tlsBindConfig) { channel ->
             channel.pipeline.addLast("encoder", HttpResponseEncoder())
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("routing", RoutingHandler(routes))
+            channel.pipeline.addLast("aggregator", HttpBodyAggregator())
+            channel.pipeline.addLast("routing", EchoAwareRoutingHandler(routes))
         }
 
         return {
@@ -66,5 +71,39 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
             receiveBuffer = "(not configurable, OS: ${os.receiveBuffer} bytes)",
             threads = "${Runtime.getRuntime().availableProcessors() * 2} (Netty default: cpu * 2)",
         )
+    }
+}
+
+/**
+ * Routing handler that accepts aggregated [HttpRequest] (with body) from
+ * [HttpBodyAggregator]. Falls through to the pre-registered head-only
+ * routes for `/hello` and `/large`, and adds `/echo` which echoes the
+ * request body.
+ */
+private class EchoAwareRoutingHandler(
+    private val routes: Map<String, (HttpRequestHead) -> HttpResponse>,
+) : ChannelInboundHandler {
+
+    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        if (msg !is HttpRequest) {
+            ctx.propagateRead(msg)
+            return
+        }
+        // /echo returns the request body as the response body.
+        val response = if (msg.path == "/echo") {
+            val body = msg.body ?: ByteArray(0)
+            HttpResponse.ok(body, contentType = "application/octet-stream")
+        } else {
+            val handler = routes[msg.path]
+            if (handler != null) {
+                handler(
+                    HttpRequestHead(msg.method, msg.uri, msg.version, msg.headers),
+                )
+            } else {
+                HttpResponse.notFound()
+            }
+        }
+        ctx.propagateWrite(response)
+        ctx.propagateFlush()
     }
 }
