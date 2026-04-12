@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- All engines: `Server.accept()` now automatically calls `BindConfig.initializeConnection()` on each accepted channel. Passing `TlsConnectorConfig` to `bind()` enables transparent Channel mode TLS — `channel.read()` returns decrypted plaintext and `channel.write()` encrypts transparently, without manual pipeline setup.
 - keel-io: `BufferAllocator.registerPoolSize(size, maxSlots)` — dynamic multi-size-class pool registration for `PooledDirectAllocator` (JVM) and `SlabAllocator` (Native). Allows engines and pipeline handlers to register custom buffer size classes (e.g., 16 KiB for TLS plaintext) with per-class slot limits and a global `maxTotalBytes` safety valve. `createForEventLoop()` propagates registered classes to per-EventLoop child allocators.
 - keel-io: `BufferAllocator.wrapBytes(ByteArray, Int, Int)` — wraps a `ByteArray` as a zero-copy read-only `IoBuf` view using platform-native backing (pinned pointer on Native, heap ByteBuffer on JVM). Replaces the standalone `tryWrapBytes` extension. Native support enables zero-copy response body emission that was previously JVM-only.
 - keel-io: `BufferAllocator.slice(IoBuf, Int, Int)` — creates a read-only `IoBuf` view of an existing buffer's byte range using the same platform-native type (NativeIoBuf on Native, DirectIoBuf on JVM), ensuring transport compatibility. The parent buffer is retained and released via the deallocator when the slice is released.

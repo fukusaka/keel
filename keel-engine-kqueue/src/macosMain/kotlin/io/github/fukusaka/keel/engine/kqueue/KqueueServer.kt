@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -41,6 +42,7 @@ internal class KqueueServer(
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val bindConfig: BindConfig,
     private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServer"),
 ) : ServerChannel {
 
@@ -74,9 +76,11 @@ internal class KqueueServer(
                 val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = KqueueIoTransport(clientFd, workerLoop)
-                return KqueuePipelinedChannel(
+                val channel = KqueuePipelinedChannel(
                     clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
                 )
+                bindConfig.initializeConnection(channel)
+                return channel
             }
 
             val err = errno

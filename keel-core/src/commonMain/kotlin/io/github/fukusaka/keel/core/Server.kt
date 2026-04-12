@@ -32,6 +32,9 @@ interface Server : AutoCloseable {
      * Accepts the next incoming connection.
      * Suspends until a connection is available.
      *
+     * [BindConfig.initializeConnection] is called automatically on the
+     * accepted channel before it is returned to the caller.
+     *
      * @return a [PipelinedChannel] for the accepted connection.
      */
     suspend fun accept(): PipelinedChannel

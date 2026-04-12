@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -66,6 +67,7 @@ internal class NwServer(
     private val listener: nw_listener_t,
     localAddress: SocketAddress,
     private val allocator: BufferAllocator,
+    private val bindConfig: BindConfig,
     private val loggerFactory: LoggerFactory,
 ) : ServerChannel {
 
@@ -159,7 +161,9 @@ internal class NwServer(
 
         val remoteAddr = extractAddress(conn)
         val logger = loggerFactory.logger("NwPipelinedChannel")
-        return NwPipelinedChannel(conn, allocator, remoteAddr, localAddress, logger)
+        val channel = NwPipelinedChannel(conn, allocator, remoteAddr, localAddress, logger)
+        bindConfig.initializeConnection(channel)
+        return channel
     }
 
     /**

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -42,6 +43,7 @@ internal class EpollServer(
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val bindConfig: BindConfig,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
 ) : ServerChannel {
 
@@ -68,9 +70,11 @@ internal class EpollServer(
                 val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = EpollIoTransport(clientFd, workerLoop)
-                return EpollPipelinedChannel(
+                val channel = EpollPipelinedChannel(
                     clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
                 )
+                bindConfig.initializeConnection(channel)
+                return channel
             }
 
             val err = errno

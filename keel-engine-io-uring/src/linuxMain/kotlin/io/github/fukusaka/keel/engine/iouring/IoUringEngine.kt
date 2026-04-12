@@ -114,7 +114,7 @@ class IoUringEngine(
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return IoUringServer(
-            serverFd, bossLoop, workerGroup, localAddr, writeModeSelector, resolvedCapabilities, logger,
+            serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger,
         )
     }
 

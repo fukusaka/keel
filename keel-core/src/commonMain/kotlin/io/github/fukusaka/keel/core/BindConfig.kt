@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.core
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 
 /**
- * Per-server bind configuration for [StreamEngine.bindPipeline].
+ * Per-server bind configuration for [StreamEngine.bind] and [StreamEngine.bindPipeline].
  *
  * Provides bind-time parameters (e.g., listen backlog) and an optional
  * per-connection initialization hook (e.g., TLS handler installation).

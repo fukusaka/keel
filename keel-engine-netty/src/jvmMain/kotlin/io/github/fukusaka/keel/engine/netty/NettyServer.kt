@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CancellableContinuation
@@ -41,6 +42,7 @@ internal class NettyServer private constructor() : ServerChannel {
 
     private lateinit var serverChannel: NettyNativeChannel
     private lateinit var _localAddress: SocketAddress
+    private lateinit var bindConfig: BindConfig
     private val lock = Any()
     private val pendingConnections = ArrayDeque<NettyPipelinedChannel>()
     private var pendingAcceptCont: CancellableContinuation<NettyPipelinedChannel>? = null
@@ -52,12 +54,13 @@ internal class NettyServer private constructor() : ServerChannel {
     override val isActive: Boolean get() = _active
 
     /**
-     * Sets the underlying Netty server channel and local address.
+     * Sets the underlying Netty server channel, local address, and bind config.
      * Called by [NettyEngine.bind] after the bind future completes.
      */
-    internal fun init(serverChannel: NettyNativeChannel, localAddress: SocketAddress) {
+    internal fun init(serverChannel: NettyNativeChannel, localAddress: SocketAddress, bindConfig: BindConfig) {
         this.serverChannel = serverChannel
         this._localAddress = localAddress
+        this.bindConfig = bindConfig
     }
 
     /**
