@@ -2,10 +2,14 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
+import io.github.fukusaka.keel.codec.http.HttpResponseHead
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
 import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
 import io.github.fukusaka.keel.pipeline.ChannelPipeline
@@ -56,65 +60,66 @@ fun installPipelineHttpHandlers(pipeline: ChannelPipeline) {
 private class BenchmarkRoutingHandler : ChannelInboundHandler {
 
     private var currentPath: String? = null
-    private var echoBody: ByteArray? = null
-    private var echoSize: Int = 0
+    private var echoStreaming: Boolean = false
 
     override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> {
                 currentPath = msg.path
+                echoStreaming = false
                 if (msg.path == "/echo") {
-                    echoBody = null
-                    echoSize = 0
+                    // Start streaming response immediately with chunked encoding.
+                    // Body chunks from the request will be forwarded as-is to the
+                    // response encoder (zero-copy echo).
+                    ctx.propagateWrite(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(
+                                HttpHeaderName.CONTENT_TYPE to "application/octet-stream",
+                                HttpHeaderName.TRANSFER_ENCODING to "chunked",
+                            ),
+                        ),
+                    )
+                    echoStreaming = true
                 }
             }
             is HttpBodyEnd -> {
-                appendEchoBytes(msg)
+                if (echoStreaming) {
+                    if (msg.content.readableBytes > 0) {
+                        msg.content.retain()
+                        ctx.propagateWrite(HttpBody(msg.content))
+                    }
+                    ctx.propagateWrite(HttpBodyEnd.EMPTY)
+                    ctx.propagateFlush()
+                    echoStreaming = false
+                } else {
+                    emitResponse(ctx)
+                }
                 msg.content.release()
-                emitResponse(ctx)
             }
             is HttpBody -> {
-                appendEchoBytes(msg)
+                if (echoStreaming) {
+                    // Zero-copy: pass the body chunk IoBuf directly to the
+                    // response encoder. The IoBuf is a platform-native slice
+                    // (NativeIoBuf/DirectIoBuf) from allocator.slice(), so
+                    // it is transport-compatible.
+                    msg.content.retain()
+                    ctx.propagateWrite(HttpBody(msg.content))
+                }
                 msg.content.release()
             }
             else -> ctx.propagateRead(msg)
         }
     }
 
-    private fun appendEchoBytes(body: HttpBody) {
-        if (currentPath != "/echo") return
-        val len = body.content.readableBytes
-        if (len == 0) return
-        val cur = echoBody
-        val needed = echoSize + len
-        val buf = when {
-            cur == null -> ByteArray(maxOf(len, INITIAL_ECHO_CAPACITY))
-            cur.size < needed -> cur.copyOf(maxOf(needed, cur.size * 2))
-            else -> cur
-        }
-        echoBody = buf
-        body.content.readByteArray(buf, echoSize, len)
-        echoSize += len
-    }
-
     private fun emitResponse(ctx: ChannelHandlerContext) {
         val response = when (currentPath) {
             "/hello" -> PipelineHttpResponses.hello
             "/large" -> PipelineHttpResponses.large
-            "/echo" -> {
-                val body = if (echoSize > 0) echoBody!!.copyOf(echoSize) else ByteArray(0)
-                echoBody = null
-                echoSize = 0
-                HttpResponse.ok(body, contentType = "application/octet-stream")
-            }
             else -> HttpResponse.notFound()
         }
         currentPath = null
         ctx.propagateWrite(response)
         ctx.propagateFlush()
-    }
-
-    private companion object {
-        private const val INITIAL_ECHO_CAPACITY = 256
     }
 }
