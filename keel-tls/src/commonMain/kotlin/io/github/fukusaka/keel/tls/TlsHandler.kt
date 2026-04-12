@@ -40,6 +40,7 @@ class TlsHandler(
 
     override fun handlerAdded(ctx: ChannelHandlerContext) {
         this.ctx = ctx
+        ctx.allocator.registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, PLAINTEXT_POOL_SLOTS)
     }
 
     override fun handlerRemoved(ctx: ChannelHandlerContext) {
@@ -69,7 +70,7 @@ class TlsHandler(
         val input = mergeWithAccumulate(ctx, cipherBuf)
 
         while (input.readableBytes > 0) {
-            val plainBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
+            val plainBuf = ctx.allocator.allocate(TLS_PLAINTEXT_BUF_SIZE)
             val result = try {
                 codec.unprotect(input, plainBuf)
             } catch (e: TlsException) {
@@ -192,7 +193,7 @@ class TlsHandler(
 
     private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
         while (plainBuf.readableBytes > 0) {
-            val cipherBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
+            val cipherBuf = ctx.allocator.allocate(TLS_CIPHERTEXT_BUF_SIZE)
             val result = try {
                 codec.protect(plainBuf, cipherBuf)
             } catch (e: TlsException) {
@@ -325,7 +326,7 @@ class TlsHandler(
         try {
             var iterations = 0
             while (true) {
-                val cipherBuf = ctx.allocator.allocate(TLS_RECORD_BUF_SIZE)
+                val cipherBuf = ctx.allocator.allocate(TLS_CIPHERTEXT_BUF_SIZE)
                 val result = try {
                     codec.protect(emptyBuf, cipherBuf)
                 } catch (e: TlsException) {
@@ -454,28 +455,37 @@ class TlsHandler(
          * `record_overflow` alert via its own handshake / shutdown
          * state machine.
          *
-         * ### Pool-miss note
+         * ### Buffer pooling
          *
-         * On JVM, 17408 exceeds the default 8 KiB pool slot of
-         * [io.github.fukusaka.keel.buf.PooledDirectAllocator], so every
-         * [TlsHandler] allocation on inbound, outbound, and handshake
-         * paths falls back to a fresh `allocateDirect` + `Cleaner`.
-         * Profiling on a JSSE-backed HTTPS workload showed this accounts
-         * for roughly 1 % of total allocation samples — small enough
-         * that the dominant contributors (JSSE crypto `byte[]` and
-         * application-layer routing) swamp any improvement a pool hit
-         * would provide. A dedicated size class matching this constant
-         * and a reusable per-connection scratch buffer were both
-         * considered and deferred: the expected gain is low single-digit
-         * percent while the implementation would either redesign the
-         * allocator or break the per-call buffer lifecycle contract.
+         * Plaintext buffers (16 KiB) are registered as a pool size class
+         * via [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
+         * in [handlerAdded], so inbound plaintext allocations hit the pool
+         * on steady-state connections. Ciphertext buffers (17 KiB) are not
+         * pooled — they fall back to fresh allocation, which is acceptable
+         * since ciphertext allocations are less frequent (one per TLS record
+         * vs one per plaintext chunk) and a 17 KiB pool class would consume
+         * disproportionate memory for marginal gain.
          *
          * [1]: https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3
          * [2]: https://www.rfc-editor.org/rfc/rfc8446#section-5.2
          * [3]: https://www.rfc-editor.org/rfc/rfc8449#section-1
          * [4]: https://www.rfc-editor.org/rfc/rfc8446#section-5.4
          */
-        private const val TLS_RECORD_BUF_SIZE = 17 * 1024
+        /** Maximum plaintext record payload: 2^14 = 16384 (RFC 8446 §5.1). */
+        private const val TLS_PLAINTEXT_BUF_SIZE = 16 * 1024
+
+        /**
+         * Maximum ciphertext record on the wire: plaintext (16 KiB) + AEAD
+         * overhead (up to ~1 KiB for TLS 1.2 CBC + HMAC-SHA384 with random
+         * padding; 256 bytes for TLS 1.3 AEAD). See the original
+         * `TLS_RECORD_BUF_SIZE` KDoc above for the full derivation.
+         */
+        private const val TLS_CIPHERTEXT_BUF_SIZE = 17 * 1024
+
+        // Per-EventLoop pool slots for 16 KiB plaintext buffers.
+        // Typical HTTPS connection uses 1-2 concurrent inbound buffers;
+        // 4 slots accommodate a small burst without over-committing memory.
+        private const val PLAINTEXT_POOL_SLOTS = 4
 
         // Defense-in-depth: bounds total flushHandshakeResponse iterations.
         // A TLS 1.2 flight is typically 2-5 KB; 64 × 17 KB = 1 MB far exceeds
