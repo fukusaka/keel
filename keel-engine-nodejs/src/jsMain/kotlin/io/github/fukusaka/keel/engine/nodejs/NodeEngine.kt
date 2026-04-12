@@ -68,6 +68,7 @@ class NodeEngine(
                     srv,
                     localAddr,
                     config.allocator,
+                    bindConfig,
                     channelLogger,
                 )
 

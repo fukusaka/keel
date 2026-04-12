@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -42,6 +43,7 @@ internal class NioServer(
     private val bossLoop: NioEventLoop,
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val bindConfig: BindConfig,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServer"),
 ) : ServerChannel {
 
@@ -68,7 +70,7 @@ internal class NioServer(
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
                 val transport = NioIoTransport(client, clientKey, workerLoop)
-                return NioPipelinedChannel(
+                val channel = NioPipelinedChannel(
                     client,
                     clientKey,
                     transport,
@@ -78,6 +80,8 @@ internal class NioServer(
                     remoteAddr,
                     localAddr,
                 )
+                bindConfig.initializeConnection(channel)
+                return channel
             }
 
             suspendCancellableCoroutine<Unit> { cont ->

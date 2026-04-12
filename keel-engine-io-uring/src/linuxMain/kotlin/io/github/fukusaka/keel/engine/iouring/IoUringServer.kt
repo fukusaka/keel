@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
@@ -48,6 +49,7 @@ internal class IoUringServer(
     private val bossLoop: IoUringEventLoop,
     private val workerGroup: IoUringEventLoopGroup,
     override val localAddress: SocketAddress,
+    private val bindConfig: BindConfig,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
@@ -92,11 +94,13 @@ internal class IoUringServer(
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector)
-            return IoUringPipelinedChannel(
+            val channel = IoUringPipelinedChannel(
                 clientFd, transport, workerLoop, workerGroup.bufferRingAt(wi),
                 workerGroup.allocatorAt(wi), logger, remoteAddr, localAddr,
                 capabilities,
             )
+            bindConfig.initializeConnection(channel)
+            return channel
         } catch (e: Throwable) {
             close(clientFd)
             throw e

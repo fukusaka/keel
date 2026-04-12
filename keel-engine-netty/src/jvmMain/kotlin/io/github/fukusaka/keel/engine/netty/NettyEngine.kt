@@ -112,6 +112,7 @@ class NettyEngine(
                         ch, allocatorFor(ch), remoteAddr, localAddr, logger,
                     )
                     ch.pipeline().addLast(keelChannel.handler)
+                    bindConfig.initializeConnection(keelChannel)
                     serverChannel.onNewChannel(keelChannel)
                 }
             })
@@ -132,7 +133,7 @@ class NettyEngine(
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
             ?: error("Failed to get local address")
 
-        serverChannel.init(nettyServerCh, localAddr)
+        serverChannel.init(nettyServerCh, localAddr, bindConfig)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
         return serverChannel
     }

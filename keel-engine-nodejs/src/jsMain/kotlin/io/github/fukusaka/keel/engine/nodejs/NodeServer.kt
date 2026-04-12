@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -30,6 +31,7 @@ internal class NodeServer(
     private val server: Server,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
+    private val bindConfig: BindConfig,
     private val channelLogger: Logger,
 ) : KeelServer {
 
@@ -66,7 +68,9 @@ internal class NodeServer(
             socket.remotePort?.let { port -> SocketAddress(host, port) }
         }
 
-        return NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, channelLogger)
+        val channel = NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, channelLogger)
+        bindConfig.initializeConnection(channel)
+        return channel
     }
 
     /**

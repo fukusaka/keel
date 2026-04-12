@@ -89,7 +89,7 @@ class NioEngine(
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, logger)
+        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
     }
 
     /**

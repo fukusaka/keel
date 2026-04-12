@@ -97,7 +97,7 @@ class EpollEngine(
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
-        return EpollServer(serverFd, bossLoop, workerGroup, localAddr, logger)
+        return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger)
     }
 
     /**

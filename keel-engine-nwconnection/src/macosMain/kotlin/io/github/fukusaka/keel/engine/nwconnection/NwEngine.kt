@@ -104,7 +104,7 @@ class NwEngine(
         // arrive during startup. localAddress is updated after the
         // assigned port is known.
         val serverChannel = NwServer(
-            lsnr, SocketAddress(host, 0), config.allocator, config.loggerFactory,
+            lsnr, SocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
         )
 
         nw_listener_set_queue(lsnr, listenerQueue)
