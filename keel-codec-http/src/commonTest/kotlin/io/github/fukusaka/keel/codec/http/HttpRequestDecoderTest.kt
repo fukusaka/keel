@@ -252,11 +252,8 @@ class HttpRequestDecoderTest {
     }
 
     @Test
-    fun `producedType is Any until downstream handlers accept HttpMessage`() {
-        // Temporarily Any::class to opt out of exact-match type chain
-        // validation. Will change to HttpMessage::class when RoutingHandler
-        // is updated to accept HttpMessage.
-        assertEquals(Any::class, HttpRequestDecoder().producedType)
+    fun `producedType is HttpMessage`() {
+        assertEquals(HttpMessage::class, HttpRequestDecoder().producedType)
     }
 
     // --- Error handling ---

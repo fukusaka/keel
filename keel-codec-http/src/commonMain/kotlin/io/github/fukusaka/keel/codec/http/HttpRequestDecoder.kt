@@ -68,11 +68,7 @@ import kotlin.reflect.KClass
  */
 class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
 
-    // Produces both HttpRequestHead and HttpBody/HttpBodyEnd subtypes of
-    // HttpMessage. Set to Any::class to opt out of the exact-match type
-    // chain validation until all downstream handlers (e.g. RoutingHandler)
-    // are updated to declare acceptedType = HttpMessage::class.
-    override val producedType: KClass<*> get() = Any::class
+    override val producedType: KClass<*> get() = HttpMessage::class
 
     private enum class State {
         READ_REQUEST_LINE,
