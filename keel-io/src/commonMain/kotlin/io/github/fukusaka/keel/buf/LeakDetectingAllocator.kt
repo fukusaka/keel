@@ -92,6 +92,12 @@ class LeakDetectingAllocator(
         return installLeakDetection(buf, onLeak)
     }
 
+    override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? =
+        delegate.wrapBytes(bytes, offset, length)
+
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+        delegate.slice(source, offset, length)
+
     override fun createForEventLoop(): BufferAllocator =
         LeakDetectingAllocator(delegate.createForEventLoop(), onLeak)
 }

@@ -1,5 +1,9 @@
 package io.github.fukusaka.keel.buf
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.pin
+import kotlinx.cinterop.plus
 import kotlin.concurrent.AtomicReference
 
 /**
@@ -70,6 +74,28 @@ class SlabAllocator(
             }
         }
         if (closed) buf.close()
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
+        if (length == 0) return null
+        val pinned = bytes.pin()
+        @Suppress("UnsafeCallOnNullableType")
+        val ptr = pinned.addressOf(offset)!!
+        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length) { _ ->
+            pinned.unpin()
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
+        if (length == 0) return EmptyIoBuf
+        source.retain()
+        @Suppress("UnsafeCallOnNullableType")
+        val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
+        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length) { _ ->
+            source.release()
+        }
     }
 
     companion object {

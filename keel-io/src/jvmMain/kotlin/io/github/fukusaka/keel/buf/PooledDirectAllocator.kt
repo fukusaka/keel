@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.buf
 
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -87,6 +88,29 @@ class PooledDirectAllocator(
         } else {
             poolSize.decrementAndGet()
             buf.close()
+        }
+    }
+
+    override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
+        if (length == 0) return null
+        val heapBuffer = if (offset == 0 && length == bytes.size) {
+            ByteBuffer.wrap(bytes)
+        } else {
+            ByteBuffer.wrap(bytes, offset, length).slice()
+        }
+        return DirectIoBuf.wrapExternal(heapBuffer, bytesWritten = length)
+    }
+
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
+        if (length == 0) return EmptyIoBuf
+        source.retain()
+        val srcBuf = (source as DirectIoBuf).unsafeBuffer
+        val view = srcBuf.duplicate().apply {
+            position(offset)
+            limit(offset + length)
+        }.slice()
+        return DirectIoBuf.wrapExternal(view, bytesWritten = length).also {
+            it.deallocator = { _ -> source.release() }
         }
     }
 

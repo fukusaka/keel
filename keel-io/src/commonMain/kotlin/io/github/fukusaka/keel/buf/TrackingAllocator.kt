@@ -62,6 +62,12 @@ class TrackingAllocator(
         return buf
     }
 
+    override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? =
+        delegate.wrapBytes(bytes, offset, length)
+
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+        delegate.slice(source, offset, length)
+
     override fun createForEventLoop(): BufferAllocator =
         TrackingAllocator(delegate.createForEventLoop())
 

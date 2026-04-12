@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.buf
 
-import io.github.fukusaka.keel.io.wrapBytesAsIoBuf
 
 /**
  * Allocates [IoBuf] instances.
@@ -29,6 +28,30 @@ import io.github.fukusaka.keel.io.wrapBytesAsIoBuf
 interface BufferAllocator {
     /** Allocates a buffer with at least [capacity] bytes. */
     fun allocate(capacity: Int): IoBuf
+
+    /**
+     * Wraps a [ByteArray] region as a read-only [IoBuf] view without
+     * copying bytes. The returned buffer uses platform-native backing
+     * (e.g. pinned pointer on Native, heap ByteBuffer on JVM) so it is
+     * compatible with the engine's transport layer.
+     *
+     * Returns `null` on platforms that do not support zero-copy wrapping.
+     * The caller must not mutate [bytes] until the returned buffer is
+     * released.
+     */
+    fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf?
+
+    /**
+     * Creates a read-only [IoBuf] view of [length] bytes starting at
+     * [offset] in [source]. The returned buffer shares the same backing
+     * memory as [source] and uses the same platform-native type, so it
+     * is compatible with the engine's transport layer.
+     *
+     * [source] is [retained][IoBuf.retain] at creation. The returned
+     * buffer's [deallocator][PoolableIoBuf.deallocator] releases [source]
+     * when the slice's reference count reaches zero.
+     */
+    fun slice(source: IoBuf, offset: Int, length: Int): IoBuf
 
     /**
      * Creates an allocator instance for a single EventLoop thread.
@@ -72,9 +95,14 @@ interface BufferAllocator {
  * implementations (for example an allocator that owns a fallback
  * `ByteBuffer` pool for partial wraps).
  */
-@Suppress("UnusedReceiverParameter")
+/**
+ * Convenience alias for [BufferAllocator.wrapBytes].
+ *
+ * Kept for backward compatibility with callers that use the extension
+ * function form. New code should call [BufferAllocator.wrapBytes] directly.
+ */
 fun BufferAllocator.tryWrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? =
-    wrapBytesAsIoBuf(bytes, offset, length)
+    wrapBytes(bytes, offset, length)
 
 /**
  * Allocates a fresh [IoBuf] on every call.
@@ -88,6 +116,17 @@ fun BufferAllocator.tryWrapBytes(bytes: ByteArray, offset: Int, length: Int): Io
 object DefaultAllocator : BufferAllocator {
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf = createDefaultIoBuf(capacity)
+
+    override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
+
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
+        val copy = allocate(length)
+        val saved = source.readerIndex
+        source.readerIndex = offset
+        source.copyTo(copy, length)
+        source.readerIndex = saved
+        return copy
+    }
 }
 
 /**
