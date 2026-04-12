@@ -357,13 +357,10 @@ class HttpResponseEncoder : ChannelOutboundHandler {
 
         /**
          * Per-encoder scratch buffer for chunk framing bytes. Each chunk
-         * consumes up to [CHUNK_FRAMING_MAX_PER_CHUNK] bytes (hex header +
-         * CRLF suffix). 256 bytes covers ~21 chunks before overflow fallback.
+         * consumes up to 12 bytes (8 hex digits + "\r\n" + "\r\n" suffix).
+         * 256 bytes covers ~21 chunks before overflow fallback.
          */
         private const val CHUNK_FRAMING_SCRATCH_SIZE = 256
-
-        /** Max bytes per chunk in the scratch: 8 hex digits + "\r\n" + "\r\n" suffix. */
-        private const val CHUNK_FRAMING_MAX_PER_CHUNK = 12
 
         /** Number of hex digits for Int (32-bit). */
         private const val HEX_DIGITS_INT = 8

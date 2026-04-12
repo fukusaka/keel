@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.buf
 
-
 /**
  * Allocates [IoBuf] instances.
  *
