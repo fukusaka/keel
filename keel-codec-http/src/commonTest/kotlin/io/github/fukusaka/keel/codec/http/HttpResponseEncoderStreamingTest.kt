@@ -153,6 +153,48 @@ class HttpResponseEncoderStreamingTest {
         assertIs<IllegalStateException>(errorCollector.errors[0])
     }
 
+    // --- CHUNKED streaming path ---
+
+    @Test
+    fun `HttpResponseHead chunked emits hex-size framed chunks followed by zero chunk`() {
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBody(bufOf("hello")))
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        // head + chunk-header("5\r\n") + payload("hello") + suffix("\r\n") +
+        // terminator("0\r\n\r\n") = 5 transport writes.
+        assertEquals(5, transport.written.size)
+        val headText = transport.written[0].readString()
+        assertTrue(headText.startsWith("HTTP/1.1 200 OK\r\n"))
+        assertTrue(headText.contains("Transfer-Encoding: chunked\r\n"))
+        assertEquals("5\r\n", transport.written[1].readString())
+        assertEquals("hello", transport.written[2].readString())
+        assertEquals("\r\n", transport.written[3].readString())
+        assertEquals("0\r\n\r\n", transport.written[4].readString())
+    }
+
+    @Test
+    fun `chunked with trailers writes final 0 CRLF trailers CRLF`() {
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.writeFromTail(head)
+        val trailers = HttpHeaders.build { add("Checksum", "abc123") }
+        pipeline.writeFromTail(HttpBodyEnd(bufOf(""), trailers))
+
+        // head + terminator with trailer.
+        assertEquals(2, transport.written.size)
+        val terminator = transport.written[1].readString()
+        assertEquals("0\r\nChecksum: abc123\r\n\r\n", terminator)
+    }
+
     /** Initiates an outbound write from the tail toward HEAD (through HttpResponseEncoder). */
     private fun ChannelPipeline.writeFromTail(msg: Any) {
         requestWrite(msg)
