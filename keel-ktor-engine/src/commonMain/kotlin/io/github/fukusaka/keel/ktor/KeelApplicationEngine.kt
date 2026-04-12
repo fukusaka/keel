@@ -355,18 +355,17 @@ public class KeelApplicationEngine(
      * - Native (kqueue/epoll): EventLoop — zero context switches
      * - JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing
      *
-     * Response output uses [BufferedSuspendSink] directly (Phase 2α).
-     * [HttpResponseEncoder] is installed but acts as pass-through for
-     * raw [IoBuf] writes.
+     * Response output flows through the pipeline: [KeelApplicationResponse]
+     * emits [HttpResponseHead] / [HttpBody] / [HttpBodyEnd] via
+     * [pipeline.requestWrite][io.github.fukusaka.keel.pipeline.ChannelPipeline.requestWrite],
+     * and [HttpResponseEncoder] serialises them into wire-format [IoBuf]s.
      */
     private suspend fun CoroutineScope.handleConnection(channel: Channel, scheme: String = "http") {
         val pipelinedChannel = channel as PipelinedChannel
 
-        // Install pipeline HTTP codec: decoder produces HttpRequestHead + HttpBody +
-        // HttpBodyEnd, aggregator reassembles into HttpRequest, bridge delivers to
-        // this suspend loop. HttpResponseEncoder is installed for forward-compatibility
-        // (Phase 2β); in Phase 2α responses are written via BufferedSuspendSink and
-        // pass through the encoder unchanged (raw IoBuf does not match any HTTP type).
+        // Install pipeline HTTP codec: inbound: decoder → aggregator → bridge delivers
+        // HttpRequest to this suspend loop. Outbound: KeelApplicationResponse emits
+        // HttpResponseHead/HttpBody/HttpBodyEnd → encoder serialises to IoBuf.
         val bridge = SuspendMessageBridge(HttpRequest::class)
         pipelinedChannel.pipeline.addLast("encoder", HttpResponseEncoder())
         pipelinedChannel.pipeline.addLast("decoder", HttpRequestDecoder())
@@ -383,8 +382,6 @@ public class KeelApplicationEngine(
             pipelinedChannel.ensureBridge()
         }
 
-        // Response output still uses BufferedSuspendSink (Phase 2α).
-        val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush)
         try {
             val serverKeepAlive = configuration.keepAlive
 
@@ -394,7 +391,7 @@ public class KeelApplicationEngine(
                     // EOF or parse error from the pipeline.
                     val cause = result.exceptionOrNull()
                     if (cause is HttpParseException) {
-                        respondBadRequest(sink)
+                        respondBadRequest(pipelinedChannel)
                     }
                     break
                 }
@@ -423,7 +420,7 @@ public class KeelApplicationEngine(
                     localAddress = channel.localAddress,
                     remoteAddress = channel.remoteAddress,
                     requestBody = requestBody,
-                    sink = sink,
+                    pipelinedChannel = pipelinedChannel,
                     scope = this,
                     coroutineContext = coroutineContext,
                     keepAlive = keepAlive,
@@ -447,7 +444,6 @@ public class KeelApplicationEngine(
                 logger.error(e) { "Connection handling failed" }
             }
         } finally {
-            runCatching { sink.close() }
             runCatching { channel.close() }
         }
     }
@@ -455,16 +451,24 @@ public class KeelApplicationEngine(
     /**
      * Sends an HTTP 400 Bad Request response before closing the connection.
      *
-     * Uses HTTP/1.0 to avoid implying keep-alive support, following the same
-     * approach as Ktor CIO's error response handling.
+     * Uses a temporary [BufferedSuspendSink] to write directly, bypassing
+     * the pipeline codec which may be in an inconsistent state after a
+     * parse error. Uses HTTP/1.0 to avoid implying keep-alive support,
+     * following the same approach as Ktor CIO's error response handling.
      */
-    private suspend fun respondBadRequest(sink: BufferedSuspendSink) {
+    private suspend fun respondBadRequest(pipelinedChannel: PipelinedChannel) {
         try {
+            val sink = BufferedSuspendSink(
+                pipelinedChannel.asSuspendSink(),
+                pipelinedChannel.allocator,
+                pipelinedChannel.supportsDeferredFlush,
+            )
             val headers = HttpHeaders()
             headers.add(HttpHeaderName.CONNECTION, "close")
             headers.add(HttpHeaderName.CONTENT_LENGTH, "0")
             writeResponseHead(HttpStatus.BAD_REQUEST, HttpVersion.HTTP_1_0, headers, sink)
             sink.flush()
+            sink.close()
         } catch (_: Exception) {
             // Best-effort: client may have already disconnected
         }
