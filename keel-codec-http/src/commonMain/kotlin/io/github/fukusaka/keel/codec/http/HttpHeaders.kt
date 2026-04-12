@@ -192,6 +192,16 @@ class HttpHeaders private constructor(
     companion object {
         private val EMPTY_STRING_ARRAY = emptyArray<String>()
 
+        /**
+         * Shared empty instance with no header fields.
+         *
+         * Used as the default trailer value for [HttpBodyEnd] to avoid
+         * allocating a fresh [HttpHeaders] per request. Callers must not
+         * mutate this instance; a future task will enforce immutability
+         * by throwing from mutator methods.
+         */
+        val EMPTY: HttpHeaders = HttpHeaders()
+
         /** Builds an [HttpHeaders] instance using the given [block]. */
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
 
