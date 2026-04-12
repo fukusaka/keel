@@ -141,8 +141,8 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                     val avail = buf.readableBytes
                     if (avail == 0) return
                     val toEmit = minOf(bodyBytesRemaining, avail.toLong()).toInt()
-                    val chunk = ctx.allocator.allocate(toEmit)
-                    buf.copyTo(chunk, toEmit)
+                    val chunk = ctx.allocator.slice(buf, buf.readerIndex, toEmit)
+                    buf.readerIndex += toEmit
                     bodyBytesRemaining -= toEmit
                     if (bodyBytesRemaining == 0L) {
                         ctx.propagateRead(HttpBodyEnd(chunk, HttpHeaders.EMPTY))
@@ -155,8 +155,8 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                     val avail = buf.readableBytes
                     if (avail == 0) return
                     val toEmit = minOf(bodyBytesRemaining, avail.toLong()).toInt()
-                    val chunk = ctx.allocator.allocate(toEmit)
-                    buf.copyTo(chunk, toEmit)
+                    val chunk = ctx.allocator.slice(buf, buf.readerIndex, toEmit)
+                    buf.readerIndex += toEmit
                     bodyBytesRemaining -= toEmit
                     ctx.propagateRead(HttpBody(chunk))
                     if (bodyBytesRemaining == 0L) {
