@@ -28,7 +28,7 @@ import io.github.fukusaka.keel.codec.http.HttpVersion as KeelHttpVersion
  * Response flow:
  * 1. Ktor pipeline sets status + headers via [setStatus] / [headers]
  * 2. Body is written via [respondFromBytes] (buffered) or [responseChannel] (streaming)
- * 3. [sendResponseHead] emits [HttpResponseHead] through the pipeline
+ * 3. [buildResponseHead] constructs [HttpResponseHead], caller emits it through the pipeline
  * 4. Body bytes are emitted as [HttpBody] + [HttpBodyEnd] through the pipeline
  * 5. [HttpResponseEncoder] serialises the messages into wire-format [IoBuf]s
  *
