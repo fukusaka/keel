@@ -63,38 +63,6 @@ interface BufferAllocator {
 }
 
 /**
- * Tries to wrap an existing [ByteArray] range as a zero-copy [IoBuf] view
- * without invoking [BufferAllocator.allocate] or copying any bytes.
- *
- * Returns non-null only on platforms where the underlying buffer type
- * supports external memory wrapping — currently JVM via
- * [io.github.fukusaka.keel.buf.DirectIoBuf.wrapExternal] over a
- * [java.nio.ByteBuffer.wrap] view. Native and JS targets return `null`
- * because wrapping a heap [ByteArray] without a copy would require
- * pinning or an `Int8Array`-backed IoBuf implementation that does not
- * exist yet.
- *
- * When this function returns non-null, the caller must not mutate
- * [bytes] until the returned buffer has been fully consumed (typically
- * until the next [io.github.fukusaka.keel.io.SuspendSink.flush]
- * completes on whichever sink the buffer was handed to). The returned
- * [IoBuf] is reference-counted — callers follow the same retain/release
- * protocol as with [allocate]-obtained buffers. The underlying array is
- * owned by the caller; [IoBuf.close] is a no-op for wrapped buffers.
- *
- * Intended as an optimisation primitive for codec or encoder paths
- * that already hold a large body as a [ByteArray] and want to avoid
- * copying it into a freshly-allocated direct buffer just for the
- * purpose of handing it to the transport. Callers that encounter
- * `null` should fall back to an [allocate] + copy path.
- *
- * The [allocator] receiver is ignored in the current JVM implementation
- * — wrapping does not consult the allocator's pool. The receiver is
- * kept on the API for discoverability and to leave room for future
- * implementations (for example an allocator that owns a fallback
- * `ByteBuffer` pool for partial wraps).
- */
-/**
  * Convenience alias for [BufferAllocator.wrapBytes].
  *
  * Kept for backward compatibility with callers that use the extension
