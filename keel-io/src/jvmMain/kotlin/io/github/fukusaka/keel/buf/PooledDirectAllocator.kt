@@ -1,94 +1,71 @@
 package io.github.fukusaka.keel.buf
 
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Pool-based [BufferAllocator] for JVM targets.
+ * Pool-based [BufferAllocator] for JVM targets with multi-size-class support.
  *
- * Maintains a lock-free freelist of [IoBuf] instances backed by
- * [java.nio.ByteBuffer.allocateDirect] using an intrusive Treiber stack.
- * Each [IoBuf.nextLink] field links to the next buffer in the freelist,
- * eliminating wrapper node allocations that [java.util.concurrent.ConcurrentLinkedDeque]
- * would require.
+ * Maintains lock-free freelists of [IoBuf] instances backed by
+ * [java.nio.ByteBuffer.allocateDirect], one per registered size class.
+ * Each freelist is an intrusive Treiber stack using [IoBuf.nextLink],
+ * eliminating wrapper node allocations.
  *
- * DirectByteBuffer allocation is expensive (JNI call + OS mmap), so reusing
- * buffers significantly reduces per-connection overhead.
+ * Size classes are registered dynamically via [registerPoolSize].
+ * The default 8 KiB class is registered at construction for backward
+ * compatibility with engine read buffers and [BufferedSuspendSink].
  *
- * **Thread safety**: lock-free via [AtomicReference] CAS on the stack head.
- * Required because NIO's `appDispatcher = Dispatchers.Default` causes
- * `allocate()` and `returnToPool()` to run on different ForkJoinPool
- * worker threads when deferred flush is enabled in [BufferedSuspendSink].
+ * **Thread safety**: lock-free via [AtomicReference] CAS on each stack head.
  *
- * @param bufferSize Size of pooled buffers in bytes. Requests matching
- *                   this size are served from the pool. Other sizes
- *                   fall back to fresh allocation.
- * @param maxPoolSize Maximum number of buffers to retain in the pool.
- *                    Strictly enforced via increment-then-check on [poolSize].
- *                    Excess buffers are GC-collected.
+ * @param maxTotalBytes Maximum total bytes across all pool classes.
+ *   Acts as a safety valve; per-class [maxSlots] in [registerPoolSize]
+ *   is the primary control. Default: 256 KiB.
  */
 class PooledDirectAllocator(
-    private val bufferSize: Int = DEFAULT_BUFFER_SIZE,
-    private val maxPoolSize: Int = DEFAULT_MAX_POOL_SIZE,
+    private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
 ) : BufferAllocator {
 
-    private val head = AtomicReference<DirectIoBuf?>(null)
-    private val poolSize = AtomicInteger(0)
+    private val pools = ConcurrentHashMap<Int, Pool>()
 
-    /**
-     * Returns a fresh allocator instance intended for exclusive use by a
-     * single event loop thread. The returned allocator keeps a smaller pool
-     * ([LOCAL_POOL_SIZE] slots) because a single event loop typically holds
-     * only a handful of buffers in flight concurrently, and each engine
-     * creates one instance per event loop. A smaller local cache bounds the
-     * total direct memory footprint to `numEventLoops × LOCAL_POOL_SIZE ×
-     * bufferSize`, independent of the number of open connections.
-     */
+    init {
+        // Default 8 KiB class for backward compatibility.
+        registerPoolSize(DEFAULT_BUFFER_SIZE, DEFAULT_POOL_SLOTS)
+    }
+
     override fun createForEventLoop(): BufferAllocator =
-        PooledDirectAllocator(bufferSize, LOCAL_POOL_SIZE)
+        PooledDirectAllocator(maxTotalBytes).also { child ->
+            // Propagate registered size classes with local pool sizes.
+            for ((size, pool) in pools) {
+                child.registerPoolSize(size, pool.maxSlots.coerceAtMost(LOCAL_POOL_SLOTS))
+            }
+        }
+
+    // Not synchronized: relies on single-thread ownership per instance.
+    // Parent allocator is only mutated in init (constructor thread).
+    // Child allocators (from createForEventLoop) are owned by one EventLoop thread.
+    override fun registerPoolSize(size: Int, maxSlots: Int) {
+        if (pools.containsKey(size)) return
+        val currentBudget = pools.entries.sumOf { (s, p) -> s.toLong() * p.maxSlots }
+        val effectiveMaxSlots = if (currentBudget + size.toLong() * maxSlots > maxTotalBytes) {
+            ((maxTotalBytes - currentBudget) / size).toInt().coerceAtLeast(1)
+        } else {
+            maxSlots
+        }
+        pools.putIfAbsent(size, Pool(effectiveMaxSlots))
+    }
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
-        val buf: DirectIoBuf = if (capacity == bufferSize) {
-            pop()?.also { it.resetForReuse() }
+        val pool = pools[capacity]
+        val buf: DirectIoBuf = if (pool != null) {
+            pool.pop()?.also { it.resetForReuse() }
         } else {
             null
         } ?: DirectIoBuf(capacity)
         buf.deallocator = ::returnToPool
         return buf
-    }
-
-    private fun pop(): DirectIoBuf? {
-        while (true) {
-            val cur = head.get() ?: return null
-            if (head.compareAndSet(cur, cur.nextLink as DirectIoBuf?)) {
-                cur.nextLink = null // detach from freelist
-                poolSize.decrementAndGet()
-                return cur
-            }
-        }
-    }
-
-    private fun returnToPool(buf: IoBuf) {
-        if (buf.capacity != bufferSize) {
-            buf.close()
-            return
-        }
-        val poolBuf = buf as DirectIoBuf
-        // Increment-then-check: strictly enforces maxPoolSize even under
-        // concurrent access. If the pool is full, undo the increment.
-        val newSize = poolSize.incrementAndGet()
-        if (newSize <= maxPoolSize) {
-            while (true) {
-                val cur = head.get()
-                poolBuf.nextLink = cur
-                if (head.compareAndSet(cur, poolBuf)) return
-            }
-        } else {
-            poolSize.decrementAndGet()
-            buf.close()
-        }
     }
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
@@ -114,25 +91,52 @@ class PooledDirectAllocator(
         }
     }
 
+    private fun returnToPool(buf: IoBuf) {
+        val pool = pools[buf.capacity]
+        if (pool != null) {
+            pool.push(buf as DirectIoBuf)
+        } else {
+            buf.close()
+        }
+    }
+
+    /**
+     * Lock-free Treiber stack for a single size class.
+     */
+    private class Pool(val maxSlots: Int) {
+        val head = AtomicReference<DirectIoBuf?>(null)
+        val size = AtomicInteger(0)
+
+        fun pop(): DirectIoBuf? {
+            while (true) {
+                val cur = head.get() ?: return null
+                if (head.compareAndSet(cur, cur.nextLink as DirectIoBuf?)) {
+                    cur.nextLink = null
+                    size.decrementAndGet()
+                    return cur
+                }
+            }
+        }
+
+        fun push(buf: DirectIoBuf) {
+            val newSize = size.incrementAndGet()
+            if (newSize <= maxSlots) {
+                while (true) {
+                    val cur = head.get()
+                    buf.nextLink = cur
+                    if (head.compareAndSet(cur, buf)) return
+                }
+            } else {
+                size.decrementAndGet()
+                buf.close()
+            }
+        }
+    }
+
     companion object {
         private const val DEFAULT_BUFFER_SIZE = 8192
-
-        /**
-         * Default pool capacity for the global (shared) allocator. Sized for
-         * the classic pattern where a single allocator serves all connections
-         * and must absorb bursts from many event loop threads concurrently.
-         */
-        private const val DEFAULT_MAX_POOL_SIZE = 256
-
-        /**
-         * Pool capacity for per-event-loop allocators returned by
-         * [createForEventLoop]. Each instance is accessed by a single event
-         * loop thread, so a small cache is enough to cover the typical
-         * number of in-flight buffers (read + write scratch). Keeping this
-         * small bounds the per-engine direct memory footprint: the total
-         * is `numEventLoops × LOCAL_POOL_SIZE × bufferSize`, independent
-         * of the number of open connections.
-         */
-        private const val LOCAL_POOL_SIZE = 16
+        private const val DEFAULT_POOL_SLOTS = 16
+        private const val LOCAL_POOL_SLOTS = 8
+        private const val DEFAULT_MAX_TOTAL_BYTES = 256L * 1024 // 256 KiB
     }
 }
