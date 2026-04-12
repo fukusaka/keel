@@ -335,30 +335,29 @@ public class KeelApplicationEngine(
     /**
      * Handle HTTP requests on the accepted [channel].
      *
+     * Installs the pipeline HTTP codec per connection:
+     * ```
+     * HEAD ↔ [tls] ↔ HttpResponseEncoder ↔ HttpRequestDecoder
+     *      ↔ HttpBodyAggregator ↔ SuspendMessageBridge ↔ [SuspendBridgeHandler] ↔ TAIL
+     * ```
+     *
+     * The decoder parses raw [IoBuf] into streaming HTTP messages, the
+     * aggregator reassembles them into [HttpRequest], and the bridge
+     * delivers them to this suspend loop via [SuspendMessageBridge.receiveCatching].
+     *
      * When keep-alive is enabled, processes multiple sequential requests
      * on the same TCP connection until the client sends `Connection: close`,
      * an error occurs, or the connection is closed by the peer.
      *
-     * **Dispatcher model**: I/O runs on [channel.coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
-     * (EventLoop). The Ktor pipeline runs on [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher]:
-     * - Native (kqueue/epoll): EventLoop — zero context switches (Netty model)
+     * **Dispatcher model**: pipeline codec runs on the EventLoop thread
+     * (push-mode). The Ktor application pipeline runs on
+     * [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher]:
+     * - Native (kqueue/epoll): EventLoop — zero context switches
      * - JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing
      *
-     * ```
-     * [EventLoop]     parseRequestHead(source)   read → zero-copy
-     * [EventLoop]     launch { body bridge }      source.read → EventLoop
-     * [appDispatcher] pipeline.execute(call)      routing + response write
-     * [EventLoop]     bodyBridgeJob?.join()        next request
-     * ```
-     *
-     * Uses [BufferedSuspendSource]/[BufferedSuspendSink] for zero-copy I/O:
-     * no kotlinx-io Buffer intermediary, no runBlocking.
-     *
-     * Request body bridging: keel's [BufferedSuspendSource] is piped into Ktor's
-     * push-based [ByteReadChannel] via a dedicated coroutine. This copy is
-     * unavoidable because Ktor expects a channel interface. The bridge job is
-     * joined before parsing the next request to ensure body bytes are fully
-     * consumed from the source.
+     * Response output uses [BufferedSuspendSink] directly (Phase 2α).
+     * [HttpResponseEncoder] is installed but acts as pass-through for
+     * raw [IoBuf] writes.
      */
     private suspend fun CoroutineScope.handleConnection(channel: Channel, scheme: String = "http") {
         val pipelinedChannel = channel as PipelinedChannel
