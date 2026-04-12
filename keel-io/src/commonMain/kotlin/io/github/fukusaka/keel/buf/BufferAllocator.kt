@@ -64,6 +64,11 @@ interface BufferAllocator {
      * Duplicate registrations for the same [size] are no-ops.
      * Pool-less allocators (e.g. [DefaultAllocator]) ignore this call.
      *
+     * **Important**: registrations are not propagated retroactively to
+     * child allocators already created by [createForEventLoop]. Callers
+     * must invoke this on the per-EventLoop allocator instance (typically
+     * via `ctx.allocator`) rather than the parent engine-wide allocator.
+     *
      * Typical callers:
      * - Engine: `registerPoolSize(READ_BUFFER_SIZE, 16)` at bind time
      * - TlsHandler: `registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, 4)` at pipeline setup
