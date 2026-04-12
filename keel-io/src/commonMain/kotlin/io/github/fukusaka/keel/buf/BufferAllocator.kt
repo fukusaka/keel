@@ -53,6 +53,24 @@ interface BufferAllocator {
     fun slice(source: IoBuf, offset: Int, length: Int): IoBuf
 
     /**
+     * Registers a pool slot for buffers of exactly [size] bytes.
+     *
+     * When [allocate] is called with a capacity matching a registered
+     * size, the allocator attempts to reuse a previously released buffer
+     * from the pool instead of allocating fresh memory. [maxSlots]
+     * limits how many buffers of this size are retained in the pool;
+     * excess buffers are freed on release.
+     *
+     * Duplicate registrations for the same [size] are no-ops.
+     * Pool-less allocators (e.g. [DefaultAllocator]) ignore this call.
+     *
+     * Typical callers:
+     * - Engine: `registerPoolSize(READ_BUFFER_SIZE, 16)` at bind time
+     * - TlsHandler: `registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, 4)` at pipeline setup
+     */
+    fun registerPoolSize(size: Int, maxSlots: Int) {}
+
+    /**
      * Creates an allocator instance for a single EventLoop thread.
      *
      * Stateless allocators return `this`. Pool-based allocators
