@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class HttpRequestDecoderTest {
@@ -43,13 +44,18 @@ class HttpRequestDecoderTest {
         return pipeline
     }
 
-    /** Collects [HttpRequestHead] messages delivered via [propagateRead]. */
-    private class HeadCollector : ChannelInboundHandler {
+    /** Collects streaming HTTP messages delivered via [propagateRead]. */
+    private class MessageCollector : ChannelInboundHandler {
         val heads = mutableListOf<HttpRequestHead>()
+        val bodies = mutableListOf<HttpBody>()
         val errors = mutableListOf<Throwable>()
 
         override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
-            heads.add(msg as HttpRequestHead)
+            when (msg) {
+                is HttpRequestHead -> heads.add(msg)
+                is HttpBody -> bodies.add(msg) // HttpBodyEnd extends HttpBody
+                else -> error("Unexpected message: ${msg::class.simpleName}")
+            }
         }
 
         override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
@@ -69,7 +75,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `GET request without body emits HttpRequestHead`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n"))
@@ -87,7 +93,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `GET with query string parses path and queryString`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET /search?q=hello&lang=en HTTP/1.1\r\nHost: example.com\r\n\r\n"))
@@ -100,7 +106,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `POST request with Content-Length body skips body bytes`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(
@@ -122,7 +128,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `HTTP 1_0 request with Connection keep-alive is keep-alive`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(
@@ -135,7 +141,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `LF-only line endings are accepted`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET /lf HTTP/1.1\nHost: example.com\n\n"))
@@ -148,7 +154,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `request split across two IoBufs is decoded correctly`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET /split HTTP/1.1\r\n"))
@@ -161,7 +167,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `header value split mid-line across IoBufs`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nHost: example.com\r\nX-Custom: hel"))
@@ -174,7 +180,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `request line split byte-by-byte`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         val request = "GET / HTTP/1.1\r\nHost: h\r\n\r\n"
@@ -190,7 +196,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `two pipelined requests in single IoBuf emit two heads`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(
@@ -207,7 +213,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `Content-Length body split across IoBufs is skipped correctly`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         // Body arrives in a separate IoBuf from the headers.
@@ -223,7 +229,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `POST followed by GET in same IoBuf skips body correctly`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(
@@ -246,15 +252,18 @@ class HttpRequestDecoderTest {
     }
 
     @Test
-    fun `producedType is HttpRequestHead`() {
-        assertEquals(HttpRequestHead::class, HttpRequestDecoder().producedType)
+    fun `producedType is Any until downstream handlers accept HttpMessage`() {
+        // Temporarily Any::class to opt out of exact-match type chain
+        // validation. Will change to HttpMessage::class when RoutingHandler
+        // is updated to accept HttpMessage.
+        assertEquals(Any::class, HttpRequestDecoder().producedType)
     }
 
     // --- Error handling ---
 
     @Test
     fun `invalid request line propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("BADREQUEST\r\n"))
@@ -266,7 +275,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `invalid header field propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nBadHeader\r\n\r\n"))
@@ -278,7 +287,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `obs-fold in header propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nX-Foo: bar\r\n  folded\r\n\r\n"))
@@ -289,7 +298,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `line exceeding max size propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         // 8193 bytes > MAX_LINE_SIZE (8192)
@@ -303,7 +312,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `missing Host header in HTTP 1_1 request propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nX-Other: value\r\n\r\n"))
@@ -316,7 +325,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `HTTP 1_0 request without Host header is accepted`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(bufOf("GET / HTTP/1.0\r\n\r\n"))
@@ -327,7 +336,7 @@ class HttpRequestDecoderTest {
 
     @Test
     fun `both Content-Length and Transfer-Encoding propagates error`() {
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
 
         pipeline.notifyRead(
@@ -349,7 +358,7 @@ class HttpRequestDecoderTest {
     @Test
     fun `decoder resets after parse error and handles next request`() {
         val decoder = HttpRequestDecoder()
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
 
         // First: send a malformed request
@@ -374,7 +383,7 @@ class HttpRequestDecoderTest {
     @Test
     fun `request with LF-only line endings split across IoBufs`() {
         val decoder = HttpRequestDecoder()
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
 
         // Exercises the fallback path's trailing-CR stripping when the line
@@ -394,7 +403,7 @@ class HttpRequestDecoderTest {
     @Test
     fun `request line ends exactly at IoBuf boundary with LF as last byte`() {
         val decoder = HttpRequestDecoder()
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
 
         // Fast path boundary: LF is the last byte of buf1 so lfIndex + 1 ==
@@ -413,7 +422,7 @@ class HttpRequestDecoderTest {
     @Test
     fun `large URI in single IoBuf exercises scratch buffer growth`() {
         val decoder = HttpRequestDecoder()
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
 
         // The scratch buffer starts at 256 bytes. A URI larger than 256
@@ -445,7 +454,7 @@ class HttpRequestDecoderTest {
     @Test
     fun `header line near MAX_LINE_SIZE through fallback accumulator`() {
         val decoder = HttpRequestDecoder()
-        val collector = HeadCollector()
+        val collector = MessageCollector()
         val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
 
         // The X-Big header value below is sized so that the full
@@ -471,5 +480,105 @@ class HttpRequestDecoderTest {
         assertEquals("h", head.headers[HttpHeaderName.HOST])
         val big = head.headers["X-Big"]
         assertEquals(valueLen, big?.length)
+    }
+
+    // --- Content-Length body streaming tests ---
+
+    @Test
+    fun `Content-Length body is delivered as HttpBody plus HttpBodyEnd`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(
+            bufOf(
+                "POST /submit HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Content-Length: 5\r\n" +
+                "\r\n" +
+                "hello",
+            ),
+        )
+
+        assertEquals(1, collector.heads.size)
+        assertEquals("/submit", collector.heads[0].path)
+        // Body should be emitted as a single HttpBodyEnd (all bytes in one IoBuf).
+        assertEquals(1, collector.bodies.size)
+        assertIs<HttpBodyEnd>(collector.bodies[0])
+        val bodyEnd = collector.bodies[0] as HttpBodyEnd
+        assertEquals(5, bodyEnd.content.readableBytes)
+    }
+
+    @Test
+    fun `Content-Length body split across multiple IoBufs emits multiple HttpBody messages`() {
+        val decoder = HttpRequestDecoder()
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to decoder, "collector" to collector)
+
+        // First IoBuf: head + first 3 bytes of body.
+        pipeline.notifyRead(bufOf("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 6\r\n\r\nabc"))
+        assertEquals(1, collector.heads.size, "head emitted after empty line")
+
+        // Body so far: 3 bytes emitted as HttpBody (not yet HttpBodyEnd).
+        assertEquals(1, collector.bodies.size)
+        assertIs<HttpBody>(collector.bodies[0])
+        assertEquals(3, collector.bodies[0].content.readableBytes)
+
+        // Second IoBuf: remaining 3 body bytes.
+        pipeline.notifyRead(bufOf("def"))
+        assertEquals(2, collector.bodies.size)
+        assertIs<HttpBodyEnd>(collector.bodies[1])
+        assertEquals(3, (collector.bodies[1] as HttpBodyEnd).content.readableBytes)
+    }
+
+    @Test
+    fun `Content-Length body exactly fits one IoBuf emits single HttpBodyEnd with payload`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(
+            bufOf(
+                "POST /data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nBODY",
+            ),
+        )
+
+        assertEquals(1, collector.heads.size)
+        assertEquals(1, collector.bodies.size)
+        assertIs<HttpBodyEnd>(collector.bodies[0])
+        assertEquals(4, (collector.bodies[0] as HttpBodyEnd).content.readableBytes)
+    }
+
+    @Test
+    fun `zero-length Content-Length emits empty HttpBodyEnd immediately`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(
+            bufOf(
+                "POST /empty HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Content-Length: 0\r\n" +
+                "\r\n",
+            ),
+        )
+
+        assertEquals(1, collector.heads.size)
+        assertEquals("/empty", collector.heads[0].path)
+        // CL=0 → emitHead's "else" branch emits HttpBodyEnd.EMPTY.
+        assertEquals(1, collector.bodies.size)
+        assertIs<HttpBodyEnd>(collector.bodies[0])
+        assertEquals(0, collector.bodies[0].content.readableBytes)
+    }
+
+    @Test
+    fun `request with no body and no Content-Length emits HttpBodyEnd EMPTY singleton`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(bufOf("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+
+        assertEquals(1, collector.heads.size)
+        assertEquals(1, collector.bodies.size)
+        assertIs<HttpBodyEnd>(collector.bodies[0])
+        assertSame(HttpBodyEnd.EMPTY, collector.bodies[0])
     }
 }

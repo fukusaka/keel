@@ -19,9 +19,9 @@ import kotlin.reflect.KClass
  * READ_REQUEST_LINE ──► READ_HEADERS ──► emit HttpRequestHead
  *       ▲                                      │
  *       │              (no body)               │ Content-Length > 0
- *       └──────────────────────────────────────┤
+ *       ├──────── emit HttpBodyEnd.EMPTY ◄─────┤
  *       │                                      ▼
- *       └──────────────────────── SKIP_BODY ◄──┘
+ *       └──── emit HttpBodyEnd ◄── READ_FIXED_BODY ──► emit HttpBody
  * ```
  *
  * **Byte-offset parsing**: each call to [onReadTyped] scans the current
@@ -48,9 +48,11 @@ import kotlin.reflect.KClass
  * in the same [IoBuf] are processed immediately, potentially emitting
  * multiple [HttpRequestHead] messages per invocation.
  *
- * **Body handling**: only Content-Length bodies are skipped. Chunked
- * transfer-encoding is not decoded in this phase; chunked bodies remain
- * in the pipeline as further raw bytes.
+ * **Body handling**: Content-Length bodies are decoded into a sequence
+ * of [HttpBody] chunks terminated by [HttpBodyEnd]. Every complete
+ * request produces exactly one [HttpBodyEnd] — even requests with no
+ * body emit [HttpBodyEnd.EMPTY]. Chunked transfer-encoding is not
+ * decoded yet; chunked bodies remain in the pipeline as raw bytes.
  *
  * **Error handling**: on [HttpParseException], the handler resets its
  * state and propagates the error downstream. The caller (typically the
@@ -58,9 +60,13 @@ import kotlin.reflect.KClass
  */
 class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
 
-    override val producedType: KClass<*> get() = HttpRequestHead::class
+    // Produces both HttpRequestHead and HttpBody/HttpBodyEnd subtypes of
+    // HttpMessage. Set to Any::class to opt out of the exact-match type
+    // chain validation until all downstream handlers (e.g. RoutingHandler)
+    // are updated to declare acceptedType = HttpMessage::class.
+    override val producedType: KClass<*> get() = Any::class
 
-    private enum class State { READ_REQUEST_LINE, READ_HEADERS, SKIP_BODY }
+    private enum class State { READ_REQUEST_LINE, READ_HEADERS, READ_FIXED_BODY }
 
     private var state = State.READ_REQUEST_LINE
 
@@ -94,7 +100,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private var uri: String? = null
     private var version: HttpVersion? = null
     private var headers = HttpHeaders()
-    private var bodyBytesToSkip: Long = 0L
+    private var bodyBytesRemaining: Long = 0L
 
     override fun onReadTyped(ctx: ChannelHandlerContext, msg: IoBuf) {
         try {
@@ -110,12 +116,18 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private fun processBuffer(ctx: ChannelHandlerContext, buf: IoBuf) {
         while (buf.readableBytes > 0) {
             when (state) {
-                State.SKIP_BODY -> {
-                    val toSkip = minOf(bodyBytesToSkip, buf.readableBytes.toLong()).toInt()
-                    buf.readerIndex += toSkip
-                    bodyBytesToSkip -= toSkip
-                    if (bodyBytesToSkip == 0L) {
+                State.READ_FIXED_BODY -> {
+                    val avail = buf.readableBytes
+                    if (avail == 0) return
+                    val toEmit = minOf(bodyBytesRemaining, avail.toLong()).toInt()
+                    val chunk = ctx.allocator.allocate(toEmit)
+                    buf.copyTo(chunk, toEmit)
+                    bodyBytesRemaining -= toEmit
+                    if (bodyBytesRemaining == 0L) {
+                        ctx.propagateRead(HttpBodyEnd(chunk, HttpHeaders.EMPTY))
                         state = State.READ_REQUEST_LINE
+                    } else {
+                        ctx.propagateRead(HttpBody(chunk))
                     }
                 }
                 State.READ_REQUEST_LINE, State.READ_HEADERS -> {
@@ -182,7 +194,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                     parseHeaderLineFast(buf, lineStart, lineLength)
                 }
             }
-            State.SKIP_BODY -> Unit // unreachable — processBuffer routes SKIP_BODY elsewhere.
+            State.READ_FIXED_BODY -> Unit // unreachable — processBuffer routes READ_FIXED_BODY elsewhere.
         }
     }
 
@@ -213,7 +225,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                         parseHeaderLineFallback(arr, 0, effLength)
                     }
                 }
-                State.SKIP_BODY -> Unit // unreachable.
+                State.READ_FIXED_BODY -> Unit // unreachable.
             }
         } finally {
             // Reset logical size so subsequent lines can reuse the ByteArray.
@@ -483,13 +495,23 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         version = null
         headers = HttpHeaders()
         ctx.propagateRead(head)
-        // Skip body bytes (Content-Length only; chunked bodies are not decoded here).
+
         val cl = head.headers.contentLength
-        if (!head.headers.isChunked && cl != null && cl > 0L) {
-            bodyBytesToSkip = cl
-            state = State.SKIP_BODY
-        } else {
-            state = State.READ_REQUEST_LINE
+        when {
+            head.headers.isChunked -> {
+                // Chunked decoding added in a following commit.
+                state = State.READ_REQUEST_LINE
+            }
+            cl != null && cl > 0L -> {
+                bodyBytesRemaining = cl
+                state = State.READ_FIXED_BODY
+            }
+            else -> {
+                // No body — emit empty terminator so downstream handlers
+                // can rely on "every request ends with an HttpBodyEnd".
+                ctx.propagateRead(HttpBodyEnd.EMPTY)
+                state = State.READ_REQUEST_LINE
+            }
         }
     }
 
@@ -500,7 +522,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         uri = null
         version = null
         headers = HttpHeaders()
-        bodyBytesToSkip = 0L
+        bodyBytesRemaining = 0L
     }
 
     private companion object {
