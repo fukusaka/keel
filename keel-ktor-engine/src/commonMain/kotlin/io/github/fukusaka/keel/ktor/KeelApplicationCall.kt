@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.io.BufferedSuspendSink
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.server.application.Application
 import io.ktor.server.engine.BaseApplicationCall
 import io.ktor.utils.io.ByteReadChannel
@@ -13,7 +13,7 @@ import kotlin.coroutines.CoroutineContext
  * Ktor [BaseApplicationCall] backed by a single keel [Channel][io.github.fukusaka.keel.core.Channel] connection.
  *
  * Bridges the parsed [HttpRequestHead] and raw I/O streams ([ByteReadChannel] for request body,
- * [BufferedSuspendSink] for response output) into Ktor's request/response hierarchy.
+ * [PipelinedChannel] pipeline for response output) into Ktor's request/response hierarchy.
  *
  * The [scheme] parameter ("http" or "https") is propagated to [KeelConnectionPoint]
  * so that Ktor's [RequestConnectionPoint][io.ktor.http.RequestConnectionPoint] reports
@@ -26,7 +26,7 @@ internal class KeelApplicationCall(
     localAddress: SocketAddress?,
     remoteAddress: SocketAddress?,
     requestBody: ByteReadChannel,
-    sink: BufferedSuspendSink,
+    pipelinedChannel: PipelinedChannel,
     scope: CoroutineScope,
     override val coroutineContext: CoroutineContext,
     keepAlive: Boolean,
@@ -44,7 +44,7 @@ internal class KeelApplicationCall(
 
     override val response = KeelApplicationResponse(
         call = this,
-        sink = sink,
+        pipelinedChannel = pipelinedChannel,
         scope = scope,
         keepAlive = keepAlive,
     )

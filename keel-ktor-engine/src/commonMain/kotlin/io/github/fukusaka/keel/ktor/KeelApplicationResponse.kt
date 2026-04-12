@@ -1,7 +1,10 @@
 package io.github.fukusaka.keel.ktor
 
-import io.github.fukusaka.keel.codec.http.writeResponseHead
-import io.github.fukusaka.keel.io.BufferedSuspendSink
+import io.github.fukusaka.keel.codec.http.HttpBody
+import io.github.fukusaka.keel.codec.http.HttpBodyEnd
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
+import io.github.fukusaka.keel.codec.http.HttpResponseHead
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.http.HeadersBuilder
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
@@ -13,26 +16,28 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import io.github.fukusaka.keel.codec.http.HttpHeaders as KeelHttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpStatus as KeelHttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion as KeelHttpVersion
 
 /**
- * Ktor [BaseApplicationResponse] that writes HTTP responses through a keel
- * [BufferedSuspendSink].
+ * Ktor [BaseApplicationResponse] that writes HTTP responses through the
+ * pipeline [HttpResponseEncoder].
  *
  * Response flow:
  * 1. Ktor pipeline sets status + headers via [setStatus] / [headers]
  * 2. Body is written via [respondFromBytes] (buffered) or [responseChannel] (streaming)
- * 3. [sendResponseHead] serialises the status line + headers using codec-http's
- *    suspend [writeResponseHead]
+ * 3. [buildResponseHead] constructs [HttpResponseHead], caller emits it through the pipeline
+ * 4. Body bytes are emitted as [HttpBody] + [HttpBodyEnd] through the pipeline
+ * 5. [HttpResponseEncoder] serialises the messages into wire-format [IoBuf]s
  *
- * Zero-copy I/O: uses [BufferedSuspendSink] backed by IoBuf. No kotlinx-io
- * Buffer intermediary, no runBlocking.
+ * All pipeline writes are dispatched to the EventLoop thread via
+ * [withContext] to ensure single-threaded access to the pipeline.
  */
 internal class KeelApplicationResponse(
     call: KeelApplicationCall,
-    private val sink: BufferedSuspendSink,
+    private val pipelinedChannel: PipelinedChannel,
     private val scope: CoroutineScope,
     private val keepAlive: Boolean,
 ) : BaseApplicationResponse(call) {
@@ -58,19 +63,32 @@ internal class KeelApplicationResponse(
     }
 
     override suspend fun responseChannel(): ByteWriteChannel {
-        sendResponseHead(contentReady = false)
+        val head = buildResponseHead()
+        withContext(pipelinedChannel.coroutineDispatcher) {
+            pipelinedChannel.pipeline.requestWrite(head)
+            pipelinedChannel.pipeline.requestFlush()
+        }
         val bodyChannel = ByteChannel()
-        responseBodyJob = scope.launch {
+        // Launch on the EventLoop dispatcher so that pipeline.requestWrite
+        // is called on the correct thread without per-chunk withContext
+        // dispatch. bodyChannel.readAvailable() suspends and releases the
+        // EventLoop while waiting for data, so other I/O events are processed.
+        responseBodyJob = scope.launch(pipelinedChannel.coroutineDispatcher) {
             try {
-                val buf = ByteArray(8192)
+                val buf = ByteArray(RESPONSE_CHUNK_SIZE)
                 while (!bodyChannel.isClosedForRead) {
                     val n = bodyChannel.readAvailable(buf)
                     if (n == -1) break
-                    sink.write(buf, 0, n)
-                    sink.flush()
+                    if (n > 0) {
+                        val ioBuf = pipelinedChannel.allocator.allocate(n)
+                        ioBuf.writeByteArray(buf, 0, n)
+                        pipelinedChannel.pipeline.requestWrite(HttpBody(ioBuf))
+                        pipelinedChannel.pipeline.requestFlush()
+                    }
                 }
             } finally {
-                sink.flush()
+                pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
+                pipelinedChannel.pipeline.requestFlush()
             }
         }
         return bodyChannel
@@ -81,16 +99,26 @@ internal class KeelApplicationResponse(
     }
 
     override suspend fun respondFromBytes(bytes: ByteArray) {
-        sendResponseHead(contentReady = true)
-        if (bytes.isNotEmpty()) {
-            sink.write(bytes)
+        val head = buildResponseHead()
+        withContext(pipelinedChannel.coroutineDispatcher) {
+            pipelinedChannel.pipeline.requestWrite(head)
+            if (bytes.isNotEmpty()) {
+                val buf = pipelinedChannel.allocator.allocate(bytes.size)
+                buf.writeByteArray(bytes, 0, bytes.size)
+                pipelinedChannel.pipeline.requestWrite(HttpBody(buf))
+            }
+            pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
+            pipelinedChannel.pipeline.requestFlush()
         }
-        sink.flush()
     }
 
     override suspend fun respondNoContent(content: OutgoingContent.NoContent) {
-        sendResponseHead(contentReady = true)
-        sink.flush()
+        val head = buildResponseHead()
+        withContext(pipelinedChannel.coroutineDispatcher) {
+            pipelinedChannel.pipeline.requestWrite(head)
+            pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
+            pipelinedChannel.pipeline.requestFlush()
+        }
     }
 
     override suspend fun respondOutgoingContent(content: OutgoingContent) {
@@ -98,27 +126,32 @@ internal class KeelApplicationResponse(
         responseBodyJob?.join()
     }
 
-    private suspend fun sendResponseHead(contentReady: Boolean) {
+    /**
+     * Builds an [HttpResponseHead] from the accumulated status and headers.
+     *
+     * Pure function — no suspend, no pipeline dispatch. The caller is
+     * responsible for writing the returned head to the pipeline inside
+     * a single [withContext] block to minimise context-switch overhead.
+     */
+    private fun buildResponseHead(): HttpResponseHead {
         val keelHeaders = KeelHttpHeaders()
         for (name in headersBuilder.names()) {
             for (value in headersBuilder.getAll(name)!!) {
                 keelHeaders.add(name, value)
             }
         }
-        // Set Connection header based on keep-alive decision.
-        // HTTP/1.1 default is keep-alive, so only send "close" when closing.
         if (!keepAlive) {
-            keelHeaders["Connection"] = "close"
+            keelHeaders[HttpHeaderName.CONNECTION] = "close"
         }
-        // Use suspend writeResponseHead (BufferedSuspendSink overload)
-        writeResponseHead(
+        return HttpResponseHead(
             status = KeelHttpStatus(statusCode.value),
             version = KeelHttpVersion.HTTP_1_1,
             headers = keelHeaders,
-            sink = sink,
         )
-        if (!contentReady) {
-            sink.flush()
-        }
+    }
+
+    private companion object {
+        /** Buffer size for streaming response body chunks. */
+        private const val RESPONSE_CHUNK_SIZE = 8192
     }
 }
