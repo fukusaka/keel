@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
 import io.github.fukusaka.keel.pipeline.TypedChannelInboundHandler
@@ -18,10 +19,17 @@ import kotlin.reflect.KClass
  * ```
  * READ_REQUEST_LINE ──► READ_HEADERS ──► emit HttpRequestHead
  *       ▲                                      │
- *       │              (no body)               │ Content-Length > 0
- *       └──────────────────────────────────────┤
- *       │                                      ▼
- *       └──────────────────────── SKIP_BODY ◄──┘
+ *       │        (no body)                     ├─── Content-Length > 0 ──► READ_FIXED_BODY
+ *       ├── emit HttpBodyEnd.EMPTY ◄───────────┤                              │
+ *       │                                      └─── chunked ──► READ_CHUNK_SIZE
+ *       │                                                            │
+ *       ├── emit HttpBodyEnd ◄── READ_FIXED_BODY ──► emit HttpBody   │
+ *       │                                                            │
+ *       │     ┌── READ_CHUNK_DATA ◄── (size > 0) ◄─┤                │
+ *       │     │         │                           │                │
+ *       │     │    READ_CHUNK_DATA_CRLF ──► READ_CHUNK_SIZE ◄───────┘
+ *       │     │
+ *       └── emit HttpBodyEnd ◄── READ_CHUNK_TRAILER ◄── (size == 0)
  * ```
  *
  * **Byte-offset parsing**: each call to [onReadTyped] scans the current
@@ -48,9 +56,11 @@ import kotlin.reflect.KClass
  * in the same [IoBuf] are processed immediately, potentially emitting
  * multiple [HttpRequestHead] messages per invocation.
  *
- * **Body handling**: only Content-Length bodies are skipped. Chunked
- * transfer-encoding is not decoded in this phase; chunked bodies remain
- * in the pipeline as further raw bytes.
+ * **Body handling**: both Content-Length and chunked transfer-encoding
+ * bodies are decoded into a sequence of [HttpBody] chunks terminated
+ * by [HttpBodyEnd]. Every complete request produces exactly one
+ * [HttpBodyEnd] — even requests with no body emit [HttpBodyEnd.EMPTY].
+ * Chunked trailers are delivered via [HttpBodyEnd.trailers].
  *
  * **Error handling**: on [HttpParseException], the handler resets its
  * state and propagates the error downstream. The caller (typically the
@@ -58,9 +68,17 @@ import kotlin.reflect.KClass
  */
 class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
 
-    override val producedType: KClass<*> get() = HttpRequestHead::class
+    override val producedType: KClass<*> get() = HttpMessage::class
 
-    private enum class State { READ_REQUEST_LINE, READ_HEADERS, SKIP_BODY }
+    private enum class State {
+        READ_REQUEST_LINE,
+        READ_HEADERS,
+        READ_FIXED_BODY,
+        READ_CHUNK_SIZE,
+        READ_CHUNK_DATA,
+        READ_CHUNK_DATA_CRLF,
+        READ_CHUNK_TRAILER,
+    }
 
     private var state = State.READ_REQUEST_LINE
 
@@ -94,7 +112,16 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private var uri: String? = null
     private var version: HttpVersion? = null
     private var headers = HttpHeaders()
-    private var bodyBytesToSkip: Long = 0L
+    private var bodyBytesRemaining: Long = 0L
+
+    // Trailer accumulator for READ_CHUNK_TRAILER. Null until the first
+    // trailer line is encountered; reset after emitting HttpBodyEnd.
+    private var chunkTrailers: HttpHeaders? = null
+
+    // CRLF consumption progress for READ_CHUNK_DATA_CRLF. Tracks how
+    // many of the 2 expected bytes (CR, LF) have been consumed across
+    // partial reads.
+    private var chunkCrlfSeen: Int = 0
 
     override fun onReadTyped(ctx: ChannelHandlerContext, msg: IoBuf) {
         try {
@@ -110,15 +137,40 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     private fun processBuffer(ctx: ChannelHandlerContext, buf: IoBuf) {
         while (buf.readableBytes > 0) {
             when (state) {
-                State.SKIP_BODY -> {
-                    val toSkip = minOf(bodyBytesToSkip, buf.readableBytes.toLong()).toInt()
-                    buf.readerIndex += toSkip
-                    bodyBytesToSkip -= toSkip
-                    if (bodyBytesToSkip == 0L) {
+                State.READ_FIXED_BODY -> {
+                    val avail = buf.readableBytes
+                    if (avail == 0) return
+                    val toEmit = minOf(bodyBytesRemaining, avail.toLong()).toInt()
+                    val chunk = ctx.allocator.allocate(toEmit)
+                    buf.copyTo(chunk, toEmit)
+                    bodyBytesRemaining -= toEmit
+                    if (bodyBytesRemaining == 0L) {
+                        ctx.propagateRead(HttpBodyEnd(chunk, HttpHeaders.EMPTY))
                         state = State.READ_REQUEST_LINE
+                    } else {
+                        ctx.propagateRead(HttpBody(chunk))
                     }
                 }
-                State.READ_REQUEST_LINE, State.READ_HEADERS -> {
+                State.READ_CHUNK_DATA -> {
+                    val avail = buf.readableBytes
+                    if (avail == 0) return
+                    val toEmit = minOf(bodyBytesRemaining, avail.toLong()).toInt()
+                    val chunk = ctx.allocator.allocate(toEmit)
+                    buf.copyTo(chunk, toEmit)
+                    bodyBytesRemaining -= toEmit
+                    ctx.propagateRead(HttpBody(chunk))
+                    if (bodyBytesRemaining == 0L) {
+                        state = State.READ_CHUNK_DATA_CRLF
+                        chunkCrlfSeen = 0
+                    }
+                }
+                State.READ_CHUNK_DATA_CRLF -> {
+                    if (!consumeChunkDataCrlf(buf)) return
+                    state = State.READ_CHUNK_SIZE
+                }
+                State.READ_REQUEST_LINE, State.READ_HEADERS,
+                State.READ_CHUNK_SIZE, State.READ_CHUNK_TRAILER,
+                -> {
                     if (!processOneLine(ctx, buf)) return
                 }
             }
@@ -182,7 +234,22 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                     parseHeaderLineFast(buf, lineStart, lineLength)
                 }
             }
-            State.SKIP_BODY -> Unit // unreachable — processBuffer routes SKIP_BODY elsewhere.
+            State.READ_CHUNK_SIZE -> {
+                val size = parseChunkSizeFromBuf(buf, lineStart, lineLength)
+                bodyBytesRemaining = size
+                state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
+            }
+            State.READ_CHUNK_TRAILER -> {
+                if (lineLength == 0) {
+                    emitLastWithTrailers(ctx)
+                } else {
+                    val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
+                    parseTrailerLineFast(buf, lineStart, lineLength, trailers)
+                }
+            }
+            State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
+            State.READ_CHUNK_DATA_CRLF,
+            -> Unit // unreachable — processBuffer routes these states elsewhere.
         }
     }
 
@@ -213,7 +280,22 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
                         parseHeaderLineFallback(arr, 0, effLength)
                     }
                 }
-                State.SKIP_BODY -> Unit // unreachable.
+                State.READ_CHUNK_SIZE -> {
+                    val size = parseChunkSizeFromArr(arr, 0, effLength)
+                    bodyBytesRemaining = size
+                    state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
+                }
+                State.READ_CHUNK_TRAILER -> {
+                    if (effLength == 0) {
+                        emitLastWithTrailers(ctx)
+                    } else {
+                        val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
+                        parseTrailerLineFallback(arr, 0, effLength, trailers)
+                    }
+                }
+                State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
+                State.READ_CHUNK_DATA_CRLF,
+                -> Unit // unreachable.
             }
         } finally {
             // Reset logical size so subsequent lines can reuse the ByteArray.
@@ -456,6 +538,160 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         return i
     }
 
+    // --- Chunked transfer-encoding helpers ---
+
+    /**
+     * Consumes the CRLF terminator after chunk-data. Returns `true` when
+     * both bytes have been consumed, `false` if more data is needed.
+     */
+    private fun consumeChunkDataCrlf(buf: IoBuf): Boolean {
+        while (buf.readableBytes > 0 && chunkCrlfSeen < CRLF_LENGTH) {
+            val b = buf.getByte(buf.readerIndex)
+            buf.readerIndex += 1
+            val expected = if (chunkCrlfSeen == 0) CR else LF
+            if (b != expected) {
+                throw HttpParseException(
+                    "Chunk-data missing terminating CRLF (RFC 7230 §4.1.1)",
+                )
+            }
+            chunkCrlfSeen++
+        }
+        return chunkCrlfSeen == CRLF_LENGTH
+    }
+
+    /**
+     * Parses a chunk-size line from the fast-path IoBuf. The format is:
+     * `HEX *WSP [";" chunk-ext] CRLF` (RFC 7230 §4.1.1). Chunk extensions
+     * are accepted but discarded.
+     */
+    private fun parseChunkSizeFromBuf(buf: IoBuf, start: Int, length: Int): Long {
+        val end = start + length
+        val extStart = indexOfByteInBuf(buf, start, end, SEMICOLON)
+        val sizeEnd = if (extStart >= 0) extStart else end
+        val trimmed = trimRightInBuf(buf, start, sizeEnd)
+        return parseHexFromBuf(buf, start, trimmed - start, length)
+    }
+
+    private fun parseHexFromBuf(buf: IoBuf, start: Int, hexLen: Int, lineLen: Int): Long {
+        if (hexLen == 0 || hexLen > MAX_CHUNK_SIZE_HEX_DIGITS) {
+            throwInvalidChunkSizeFromBuf(buf, start, lineLen)
+        }
+        var value = 0L
+        for (i in 0 until hexLen) {
+            val digit = hexDigit(buf.getByte(start + i).toInt() and 0xFF)
+            if (digit < 0) throwInvalidChunkSizeFromBuf(buf, start, lineLen)
+            value = (value shl 4) or digit.toLong()
+        }
+        if (value < 0L) throwInvalidChunkSizeFromBuf(buf, start, lineLen)
+        return value
+    }
+
+    private fun throwInvalidChunkSizeFromBuf(buf: IoBuf, start: Int, lineLen: Int): Nothing {
+        throw HttpParseException(
+            "Invalid chunk size: ${bufRangeToString(buf, start, lineLen)}",
+        )
+    }
+
+    /** Parses a chunk-size line from the fallback-path ByteArray. */
+    private fun parseChunkSizeFromArr(arr: ByteArray, start: Int, length: Int): Long {
+        val end = start + length
+        val extStart = indexOfByteInArr(arr, start, end, SEMICOLON)
+        val sizeEnd = if (extStart >= 0) extStart else end
+        val trimmed = trimRightInArr(arr, start, sizeEnd)
+        return parseHexFromArr(arr, start, trimmed - start, length)
+    }
+
+    private fun parseHexFromArr(arr: ByteArray, start: Int, hexLen: Int, lineLen: Int): Long {
+        if (hexLen == 0 || hexLen > MAX_CHUNK_SIZE_HEX_DIGITS) {
+            throwInvalidChunkSizeFromArr(arr, start, lineLen)
+        }
+        var value = 0L
+        for (i in 0 until hexLen) {
+            val digit = hexDigit(arr[start + i].toInt() and 0xFF)
+            if (digit < 0) throwInvalidChunkSizeFromArr(arr, start, lineLen)
+            value = (value shl 4) or digit.toLong()
+        }
+        if (value < 0L) throwInvalidChunkSizeFromArr(arr, start, lineLen)
+        return value
+    }
+
+    private fun throwInvalidChunkSizeFromArr(arr: ByteArray, start: Int, lineLen: Int): Nothing {
+        throw HttpParseException(
+            "Invalid chunk size: ${arr.decodeToString(start, start + lineLen)}",
+        )
+    }
+
+    private fun hexDigit(b: Int): Int = when {
+        b in '0'.code..'9'.code -> b - '0'.code
+        b in 'a'.code..'f'.code -> b - 'a'.code + 10
+        b in 'A'.code..'F'.code -> b - 'A'.code + 10
+        else -> -1
+    }
+
+    /**
+     * Parses a trailer header line from the fast-path IoBuf into [trailers].
+     * Same shape as [parseHeaderLineFast] but writes into the provided
+     * [HttpHeaders] instance instead of the head-level [headers] field.
+     */
+    private fun parseTrailerLineFast(buf: IoBuf, start: Int, length: Int, trailers: HttpHeaders) {
+        val first = buf.getByte(start)
+        if (first == SP || first == HT) {
+            throw HttpParseException(
+                "Obsolete line folding (obs-fold) is not allowed in trailers (RFC 7230 §3.2.6)",
+            )
+        }
+        val end = start + length
+        val colon = indexOfByteInBuf(buf, start, end, COLON)
+        val nameEnd = if (colon > start) trimRightInBuf(buf, start, colon) else start
+        val nameLen = nameEnd - start
+        if (colon <= start || nameLen == 0) {
+            throw HttpParseException(
+                "Invalid trailer field (missing ':'): ${bufRangeToString(buf, start, length)}",
+            )
+        }
+        val name = bufRangeToString(buf, start, nameLen)
+        val valStart = trimLeftInBuf(buf, colon + 1, end)
+        val valEnd = trimRightInBuf(buf, valStart, end)
+        val value = bufRangeToString(buf, valStart, valEnd - valStart)
+        trailers.add(name, value)
+    }
+
+    /** Parses a trailer header line from the fallback-path ByteArray. */
+    private fun parseTrailerLineFallback(arr: ByteArray, start: Int, length: Int, trailers: HttpHeaders) {
+        val first = arr[start]
+        if (first == SP || first == HT) {
+            throw HttpParseException(
+                "Obsolete line folding (obs-fold) is not allowed in trailers (RFC 7230 §3.2.6)",
+            )
+        }
+        val end = start + length
+        val colon = indexOfByteInArr(arr, start, end, COLON)
+        val nameEnd = if (colon > start) trimRightInArr(arr, start, colon) else start
+        val nameLen = nameEnd - start
+        if (colon <= start || nameLen == 0) {
+            throw HttpParseException(
+                "Invalid trailer field (missing ':'): ${arr.decodeToString(start, end)}",
+            )
+        }
+        val name = arr.decodeToString(start, nameEnd)
+        val valStart = trimLeftInArr(arr, colon + 1, end)
+        val valEnd = trimRightInArr(arr, valStart, end)
+        val value = arr.decodeToString(valStart, valEnd)
+        trailers.add(name, value)
+    }
+
+    private fun emitLastWithTrailers(ctx: ChannelHandlerContext) {
+        val trailers = chunkTrailers
+        chunkTrailers = null
+        val last = if (trailers == null || trailers.isEmpty) {
+            HttpBodyEnd.EMPTY
+        } else {
+            HttpBodyEnd(EmptyIoBuf, trailers)
+        }
+        ctx.propagateRead(last)
+        state = State.READ_REQUEST_LINE
+    }
+
     // --- Emit / reset ---
 
     private fun emitHead(ctx: ChannelHandlerContext) {
@@ -483,13 +719,23 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         version = null
         headers = HttpHeaders()
         ctx.propagateRead(head)
-        // Skip body bytes (Content-Length only; chunked bodies are not decoded here).
+
         val cl = head.headers.contentLength
-        if (!head.headers.isChunked && cl != null && cl > 0L) {
-            bodyBytesToSkip = cl
-            state = State.SKIP_BODY
-        } else {
-            state = State.READ_REQUEST_LINE
+        when {
+            head.headers.isChunked -> {
+                state = State.READ_CHUNK_SIZE
+                bodyBytesRemaining = 0L
+            }
+            cl != null && cl > 0L -> {
+                bodyBytesRemaining = cl
+                state = State.READ_FIXED_BODY
+            }
+            else -> {
+                // No body — emit empty terminator so downstream handlers
+                // can rely on "every request ends with an HttpBodyEnd".
+                ctx.propagateRead(HttpBodyEnd.EMPTY)
+                state = State.READ_REQUEST_LINE
+            }
         }
     }
 
@@ -500,7 +746,9 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         uri = null
         version = null
         headers = HttpHeaders()
-        bodyBytesToSkip = 0L
+        bodyBytesRemaining = 0L
+        chunkTrailers = null
+        chunkCrlfSeen = 0
     }
 
     private companion object {
@@ -528,5 +776,11 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         private val SP = ' '.code.toByte()
         private val HT = '\t'.code.toByte()
         private val COLON = ':'.code.toByte()
+        private val SEMICOLON = ';'.code.toByte()
+
+        /** Maximum hex digits for a chunk size (16 hex digits = 2^64). */
+        private const val MAX_CHUNK_SIZE_HEX_DIGITS = 16
+
+        private const val CRLF_LENGTH = 2
     }
 }

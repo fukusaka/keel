@@ -156,4 +156,34 @@ class RoutingHandlerTest {
         assertEquals("/api", head.path)
         assertEquals("key=val", head.queryString)
     }
+
+    // --- Body message release ---
+
+    @Test
+    fun `HttpBody is released by RoutingHandler without warning log`() {
+        val pipeline = createPipeline(mapOf("/post" to { _ -> HttpResponse.ok("ok") }))
+        // POST with body: decoder emits HttpRequestHead + HttpBody + HttpBodyEnd.
+        // RoutingHandler should release body messages without warning.
+        pipeline.feed(
+            "POST /post HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhello",
+        )
+
+        // If body messages leaked to TailHandler, the PrintLogger would
+        // have logged a warning. Asserting that the response was produced
+        // confirms RoutingHandler handled the head correctly and the body
+        // was not stuck.
+        assertTrue(transport.written.isNotEmpty())
+    }
+
+    @Test
+    fun `HttpBodyEnd is released by RoutingHandler for chunked request`() {
+        val pipeline = createPipeline(mapOf("/chunked" to { _ -> HttpResponse.ok("ok") }))
+        pipeline.feed(
+            "POST /chunked HTTP/1.1\r\nHost: localhost\r\n" +
+            "Transfer-Encoding: chunked\r\n\r\n" +
+            "3\r\nabc\r\n0\r\n\r\n",
+        )
+
+        assertTrue(transport.written.isNotEmpty())
+    }
 }

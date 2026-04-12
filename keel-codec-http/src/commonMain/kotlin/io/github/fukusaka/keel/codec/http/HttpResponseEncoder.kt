@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
 import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
 
 /**
- * Pipeline handler that encodes [HttpResponse] messages into [IoBuf] for transmission.
+ * Pipeline handler that encodes HTTP response messages into [IoBuf] for transmission.
  *
  * Intercepts outbound [onWrite] calls: [HttpResponse] values are serialised
  * and forwarded to the next outbound handler (ultimately [HeadHandler] →
@@ -33,16 +33,31 @@ import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
  * **Status code encoding**: the 3-digit status code is written byte-by-byte
  * to avoid a [Int.toString] allocation on the hot path.
  *
- * **Pass-through**: messages that are not [HttpResponse] (e.g. a raw [IoBuf]
- * written by the application handler) are forwarded without modification.
+ * **Streaming mode**: in addition to the legacy [HttpResponse] path, the
+ * encoder accepts a streaming sequence of [HttpResponseHead] + N ×
+ * [HttpBody] + [HttpBodyEnd]. The head must declare either
+ * `Content-Length` (FIXED mode) or `Transfer-Encoding: chunked`
+ * (CHUNKED mode). FIXED mode passes body [IoBuf]s through unchanged;
+ * CHUNKED mode wraps each [HttpBody] in hex-size framing.
+ *
+ * **Pass-through**: messages that are not [HttpResponse], [HttpResponseHead],
+ * [HttpBody], or [HttpBodyEnd] (e.g. a raw [IoBuf] written by the
+ * application handler) are forwarded without modification.
  */
 class HttpResponseEncoder : ChannelOutboundHandler {
 
+    private enum class StreamingMode { NONE, FIXED, CHUNKED }
+
+    private var streamingMode: StreamingMode = StreamingMode.NONE
+    private var remainingContentLength: Long = 0L
+
     override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
-        if (msg is HttpResponse) {
-            encodeAndPropagate(ctx, msg)
-        } else {
-            ctx.propagateWrite(msg)
+        when (msg) {
+            is HttpResponse -> encodeAndPropagate(ctx, msg)
+            is HttpResponseHead -> encodeHeadAndStartStreaming(ctx, msg)
+            is HttpBodyEnd -> encodeContentMsg(ctx, msg, last = true)
+            is HttpBody -> encodeContentMsg(ctx, msg, last = false)
+            else -> ctx.propagateWrite(msg)
         }
     }
 
@@ -76,6 +91,140 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         // Fallback: single exact-sized buffer containing head + body copy.
         ctx.propagateWrite(encode(response, allocator, reasonPhrase))
     }
+
+    // --- Streaming path (HttpResponseHead + HttpBody + HttpBodyEnd) ---
+
+    private fun encodeHeadAndStartStreaming(ctx: ChannelHandlerContext, head: HttpResponseHead) {
+        check(streamingMode == StreamingMode.NONE) {
+            "HttpResponseHead received while a previous streaming response is in progress"
+        }
+        val chunked = head.headers.isChunked
+        val cl = head.headers.contentLength
+        check(!(chunked && cl != null)) {
+            "HttpResponseHead has both Transfer-Encoding: chunked and Content-Length"
+        }
+        streamingMode = when {
+            chunked -> StreamingMode.CHUNKED
+            cl != null -> StreamingMode.FIXED
+            else -> error(
+                "HttpResponseHead must declare either Content-Length or Transfer-Encoding: chunked",
+            )
+        }
+        remainingContentLength = cl ?: 0L
+
+        val reasonPhrase = head.status.reasonPhrase()
+        val headBuf = ctx.allocator.allocate(calculateStreamingHeadSize(head, reasonPhrase))
+        writeStatusLine(head.version, head.status.code, reasonPhrase, headBuf)
+        writeHeaders(head.headers, headBuf)
+        ctx.propagateWrite(headBuf)
+    }
+
+    private fun encodeContentMsg(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+        when (streamingMode) {
+            StreamingMode.NONE -> {
+                content.content.release()
+                error("HttpBody received without preceding HttpResponseHead")
+            }
+            StreamingMode.FIXED -> encodeContentFixed(ctx, content, last)
+            StreamingMode.CHUNKED -> encodeContentChunked(ctx, content, last)
+        }
+        if (last) {
+            streamingMode = StreamingMode.NONE
+            remainingContentLength = 0L
+        }
+    }
+
+    private fun encodeContentFixed(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+        val size = content.content.readableBytes
+        if (size.toLong() > remainingContentLength) {
+            content.content.release()
+            error("HttpBody exceeds declared Content-Length ($size > $remainingContentLength)")
+        }
+        remainingContentLength -= size.toLong()
+        if (last && remainingContentLength > 0L) {
+            content.content.release()
+            error(
+                "HttpBodyEnd received but Content-Length not fully written" +
+                    " ($remainingContentLength bytes remaining)",
+            )
+        }
+        if (size > 0) {
+            ctx.propagateWrite(content.content)
+        } else {
+            content.content.release()
+        }
+    }
+
+    private fun encodeContentChunked(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+        val payloadSize = content.content.readableBytes
+        if (payloadSize > 0) {
+            // Emit: "{hex-size}\r\n" + payload + "\r\n"
+            val hexHeader = formatChunkHeader(ctx.allocator, payloadSize)
+            ctx.propagateWrite(hexHeader)
+            ctx.propagateWrite(content.content)
+            val suffix = ctx.allocator.allocate(CRLF_SIZE)
+            suffix.writeByte(CR)
+            suffix.writeByte(LF)
+            ctx.propagateWrite(suffix)
+        } else {
+            content.content.release()
+        }
+        if (last && content is HttpBodyEnd) {
+            val terminator = buildChunkedTerminator(ctx.allocator, content.trailers)
+            ctx.propagateWrite(terminator)
+        }
+    }
+
+    private fun formatChunkHeader(allocator: BufferAllocator, size: Int): IoBuf {
+        // Max hex digits for Int.MAX_VALUE is 8, plus "\r\n" = 10.
+        val buf = allocator.allocate(CHUNK_HEADER_MAX_SIZE)
+        writeHexInt(buf, size)
+        buf.writeByte(CR)
+        buf.writeByte(LF)
+        return buf
+    }
+
+    private fun writeHexInt(buf: IoBuf, value: Int) {
+        if (value == 0) {
+            buf.writeByte('0'.code.toByte())
+            return
+        }
+        // Find highest non-zero nibble.
+        val shift = (HEX_DIGITS_INT - 1 - value.countLeadingZeroBits() / 4) * 4
+        var s = shift
+        while (s >= 0) {
+            val nibble = (value ushr s) and 0xF
+            buf.writeByte(HEX_CHARS[nibble])
+            s -= 4
+        }
+    }
+
+    private fun buildChunkedTerminator(allocator: BufferAllocator, trailers: HttpHeaders): IoBuf {
+        // "0\r\n" + trailer-fields + "\r\n"
+        var size = ZERO_CHUNK_SIZE // "0\r\n"
+        for (i in 0 until trailers.size) {
+            size += trailers.nameAt(i).length + HEADER_SEPARATOR_SIZE + trailers.valueAt(i).length + CRLF_SIZE
+        }
+        size += CRLF_SIZE // final empty line
+        val buf = allocator.allocate(size)
+        buf.writeByte('0'.code.toByte())
+        buf.writeByte(CR)
+        buf.writeByte(LF)
+        writeHeaders(trailers, buf)
+        return buf
+    }
+
+    private fun calculateStreamingHeadSize(head: HttpResponseHead, reasonPhrase: String): Int {
+        // "HTTP/1.1 200 OK\r\n"
+        var size = head.version.text.length + 1 + STATUS_CODE_DIGITS + 1 + reasonPhrase.length + CRLF_SIZE
+        for (i in 0 until head.headers.size) {
+            size += head.headers.nameAt(i).length + HEADER_SEPARATOR_SIZE + head.headers.valueAt(i).length + CRLF_SIZE
+        }
+        size += CRLF_SIZE // empty line terminating headers
+        return size
+    }
+
+    // --- Legacy path (complete HttpResponse with body: ByteArray?) ---
 
     private fun encode(response: HttpResponse, allocator: BufferAllocator, reasonPhrase: String): IoBuf {
         val buf = allocator.allocate(calculateSize(response, reasonPhrase))
@@ -170,5 +319,21 @@ class HttpResponseEncoder : ChannelOutboundHandler {
          * re-tuning this constant.
          */
         private const val DIRECT_BODY_THRESHOLD = 8192
+
+        /** Maximum size of a chunk header: 8 hex digits + "\r\n". */
+        private const val CHUNK_HEADER_MAX_SIZE = 10
+
+        /** Number of hex digits for Int (32-bit). */
+        private const val HEX_DIGITS_INT = 8
+
+        /** Size of the "0\r\n" terminator prefix. */
+        private const val ZERO_CHUNK_SIZE = 3
+
+        private val HEX_CHARS = byteArrayOf(
+            '0'.code.toByte(), '1'.code.toByte(), '2'.code.toByte(), '3'.code.toByte(),
+            '4'.code.toByte(), '5'.code.toByte(), '6'.code.toByte(), '7'.code.toByte(),
+            '8'.code.toByte(), '9'.code.toByte(), 'a'.code.toByte(), 'b'.code.toByte(),
+            'c'.code.toByte(), 'd'.code.toByte(), 'e'.code.toByte(), 'f'.code.toByte(),
+        )
     }
 }

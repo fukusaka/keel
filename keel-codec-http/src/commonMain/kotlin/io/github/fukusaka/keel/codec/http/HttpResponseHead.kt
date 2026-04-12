@@ -10,4 +10,4 @@ data class HttpResponseHead(
     val status: HttpStatus,
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
-)
+) : HttpMessage
