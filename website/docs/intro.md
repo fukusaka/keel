@@ -86,19 +86,13 @@ dependencies {
 ```
 
 ```kotlin
-class HelloHandler : TypedChannelInboundHandler<HttpRequest>() {
-    override fun onMessage(ctx: ChannelHandlerContext, msg: HttpRequest) {
-        ctx.write(HttpResponse(HttpStatus.OK, body = "Hello!".encodeToByteArray()))
-        ctx.flush()
-    }
-}
-
 val engine = EpollEngine()  // or KqueueEngine, NioEngine, etc.
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline
-        .addLast("decoder", HttpRequestDecoder())
-        .addLast("handler", HelloHandler())
-        .addLast("encoder", HttpResponseEncoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
+    channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("routing", RoutingHandler(mapOf(
+        "/hello" to { _ -> HttpResponse.ok("Hello!") },
+    )))
 }
 ```
 

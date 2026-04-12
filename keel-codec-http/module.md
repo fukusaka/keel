@@ -35,40 +35,50 @@ when only the headers are needed.
 For high-performance HTTP servers, use the pipeline handler chain:
 
 ```
-pipeline.addLast("encoder", HttpResponseEncoder())   // outbound: HttpResponse → IoBuf
-pipeline.addLast("decoder", HttpRequestDecoder())    // inbound:  IoBuf → HttpRequestHead
+pipeline.addLast("encoder", HttpResponseEncoder())   // outbound: HttpResponseHead/HttpBody/HttpBodyEnd → IoBuf
+pipeline.addLast("decoder", HttpRequestDecoder())    // inbound:  IoBuf → HttpRequestHead/HttpBody/HttpBodyEnd
 pipeline.addLast("routing", RoutingHandler(mapOf(
     "/hello" to { _ -> HttpResponse.ok("Hello, World!") },
 )))
 ```
 
-Pipeline direction:
+`HttpRequestDecoder` emits a streaming message sequence per request:
+`HttpRequestHead` → `HttpBody` × N → `HttpBodyEnd`. All types implement the
+`HttpMessage` sealed interface.
+
+To receive the full request body as `HttpRequest(body: ByteArray?)`, insert
+`HttpBodyAggregator` between decoder and handler:
+
 ```
-HEAD ↔ encoder ↔ decoder ↔ routing ↔ TAIL
-Inbound:  HEAD → (encoder skipped) → decoder → routing
-Outbound: routing → (decoder skipped) → encoder → HEAD
+pipeline.addLast("encoder", HttpResponseEncoder())
+pipeline.addLast("decoder", HttpRequestDecoder())
+pipeline.addLast("aggregator", HttpBodyAggregator())   // HttpRequestHead+Body+BodyEnd → HttpRequest
+pipeline.addLast("handler", MyHandler())
 ```
 
-`RoutingHandler` is a terminal inbound handler: it matches `HttpRequestHead.path`
-against a route map, invokes the handler, and writes the `HttpResponse` outbound.
-Unmatched paths return 404 Not Found.
+`RoutingHandler` is a terminal inbound handler: it silently releases body
+messages (`HttpBody` / `HttpBodyEnd`) and routes by `HttpRequestHead.path`.
 
 ## Key Types
 
 | Type | Notes |
 |------|-------|
-| `HttpRequest` | `method`, `uri`, `version`, `headers`, `body`. Factory: `get(uri)`, `post(uri, body)` |
-| `HttpRequestHead` | Same as `HttpRequest` minus `body`. Computed: `path`, `queryString`, `isKeepAlive` |
-| `HttpResponse` | `status`, `version`, `headers`, `body`. Factory: `ok(body)`, `notFound()` |
+| `HttpMessage` | Sealed interface — common supertype for all streaming pipeline messages |
+| `HttpRequestHead` | `method`, `uri`, `version`, `headers`. Computed: `path`, `queryString`, `isKeepAlive` |
 | `HttpResponseHead` | `status`, `version`, `headers` (no body) |
-| `HttpHeaders` | Case-insensitive header map. `get(name)`, `set(name, value)`, `remove(name)`, `of(vararg pairs)` |
+| `HttpBody` | Streaming body chunk wrapping an `IoBuf`. Receiver must call `content.release()` |
+| `HttpBodyEnd` | Terminal body marker + optional trailer headers. `HttpBodyEnd.EMPTY` singleton |
+| `HttpRequest` | Aggregated request (produced by `HttpBodyAggregator`): `method`, `uri`, `version`, `headers`, `body?` |
+| `HttpResponse` | Complete response: `status`, `version`, `headers`, `body?`. Factory: `ok(body)`, `notFound()` |
+| `HttpHeaders` | Case-insensitive header map. `HttpHeaders.EMPTY` singleton |
 | `HttpMethod` | `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `OPTIONS`, `PATCH` |
 | `HttpStatus` | Status code + reason phrase. Constants: `OK`, `NOT_FOUND`, `BAD_REQUEST`, etc. |
 | `HttpVersion` | `HTTP_1_0`, `HTTP_1_1`. Use `.text` for wire format (`"HTTP/1.1"`) |
 | `HttpHeaderName` | Typed header name constants (`CONTENT_TYPE`, `CONTENT_LENGTH`, `HOST`, etc.) |
-| `HttpRequestDecoder` | Pipeline handler: `IoBuf` → `HttpRequestHead` |
-| `HttpResponseEncoder` | Pipeline handler: `HttpResponse` → `IoBuf` |
-| `RoutingHandler` | Terminal inbound handler: routes by path, writes `HttpResponse` outbound |
+| `HttpRequestDecoder` | Pipeline handler: `IoBuf` → `HttpRequestHead` / `HttpBody` / `HttpBodyEnd` |
+| `HttpResponseEncoder` | Pipeline handler: `HttpResponseHead` / `HttpBody` / `HttpBodyEnd` → `IoBuf` |
+| `HttpBodyAggregator` | Pipeline handler: `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` → `HttpRequest` |
+| `RoutingHandler` | Terminal inbound handler: routes by path, releases body messages |
 
 ## Error Handling
 

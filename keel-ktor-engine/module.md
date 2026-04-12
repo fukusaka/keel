@@ -42,13 +42,28 @@ the platform default is chosen automatically:
 
 Explicit override: `engine = NettyEngine(IoEngineConfig())`.
 
+## HTTP Pipeline Codec
+
+Each accepted connection installs the full pipeline HTTP codec:
+
+```
+HEAD ↔ [TlsHandler] ↔ HttpResponseEncoder ↔ HttpRequestDecoder
+     ↔ HttpBodyAggregator ↔ SuspendMessageBridge<HttpRequest> ↔ TAIL
+```
+
+- **Inbound**: `HttpRequestDecoder` decodes raw `IoBuf` into streaming messages,
+  `HttpBodyAggregator` reassembles them into `HttpRequest`, and
+  `SuspendMessageBridge` delivers to the suspend connection loop.
+- **Outbound**: `KeelApplicationResponse` emits `HttpResponseHead` / `HttpBody` /
+  `HttpBodyEnd` through `pipeline.requestWrite()`, and `HttpResponseEncoder`
+  serialises them into wire-format `IoBuf`.
+
 ## Dispatcher Model
 
-Connection I/O (read/parse) and Ktor application pipeline processing run on
-the channel's `coroutineDispatcher` (EventLoop thread for kqueue/epoll/NIO),
-keeping all request handling on a single thread — the same model as Netty's
-EventLoop. For engines without a dedicated EventLoop (Netty, NWConnection, Node.js),
-both use `Dispatchers.Default`.
+The pipeline HTTP codec runs on the EventLoop thread (push-mode). The Ktor
+application pipeline runs on the channel's `appDispatcher`:
+- Native (kqueue/epoll): EventLoop — zero context switches
+- JVM NIO: `Dispatchers.Default` — ForkJoinPool work-stealing
 
 User code that performs blocking I/O should use `withContext(Dispatchers.IO)` to
 avoid stalling the EventLoop.

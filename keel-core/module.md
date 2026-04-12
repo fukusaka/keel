@@ -82,7 +82,8 @@ Configuration shared by all engines:
 | `DefaultChannelPipeline` | `pipeline` | Doubly-linked handler chain implementation |
 | `PipelinedChannel` | `pipeline` | Channel with attached `ChannelPipeline` |
 | `IoTransport` | `pipeline` | Engine-to-pipeline write/flush bridge |
-| `SuspendBridgeHandler` | `pipeline` | Pipeline-to-suspend bridge for Coroutine mode |
+| `SuspendBridgeHandler` | `pipeline` | Pipeline-to-suspend bridge for raw `IoBuf` (Coroutine mode) |
+| `SuspendMessageBridge<T>` | `pipeline` | Generic typed-message bridge: pipeline → suspendable `Channel<T>` |
 | `TypedChannelInboundHandler` | `pipeline` | Inbound handler with type-safe message dispatch |
 | `Logger` / `LoggerFactory` | `logging` | Logging facade (no dependency on any logging library) |
 
