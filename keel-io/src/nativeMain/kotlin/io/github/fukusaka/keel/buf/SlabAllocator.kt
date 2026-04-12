@@ -49,6 +49,7 @@ class SlabAllocator(
             }
         }
 
+    // Atomic under spin lock: containsKey + budget + insert is a single critical section.
     override fun registerPoolSize(size: Int, maxSlots: Int) {
         withSpinLock {
             if (pools.containsKey(size)) return

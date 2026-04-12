@@ -42,6 +42,9 @@ class PooledDirectAllocator(
             }
         }
 
+    // Not synchronized: relies on single-thread ownership per instance.
+    // Parent allocator is only mutated in init (constructor thread).
+    // Child allocators (from createForEventLoop) are owned by one EventLoop thread.
     override fun registerPoolSize(size: Int, maxSlots: Int) {
         if (pools.containsKey(size)) return
         val currentBudget = pools.entries.sumOf { (s, p) -> s.toLong() * p.maxSlots }
