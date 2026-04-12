@@ -11,6 +11,7 @@ const sidebars: SidebarsConfig = {
         'architecture/engine-guide',
         'architecture/buffer',
         'architecture/pipeline',
+        'architecture/coroutine',
         'architecture/tls',
       ],
     },

@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - keel-core: write backpressure with high/low water mark on `IoTransport` (`isWritable`, `onWritabilityChanged`)
 - keel-core: `ChannelInboundHandler.onWritabilityChanged()` and `ChannelPipeline.notifyWritabilityChanged()` for pipeline propagation
 - All 7 engines: `pendingBytes` tracking in IoTransport, `PipelinedChannel.isWritable` connected to transport
+- website: add coroutine architecture page to sidebar navigation
 
 ### Changed
 
