@@ -1,18 +1,23 @@
 package io.github.fukusaka.keel.ktor
 
-import io.github.fukusaka.keel.codec.http.HttpEofException
+import io.github.fukusaka.keel.codec.http.HttpBodyAggregator
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpParseException
+import io.github.fukusaka.keel.codec.http.HttpRequest
+import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
+import io.github.fukusaka.keel.codec.http.HttpRequestHead
+import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
-import io.github.fukusaka.keel.codec.http.parseRequestHead
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsInstaller
@@ -28,9 +33,7 @@ import io.ktor.server.engine.EngineConnectorBuilder
 import io.ktor.server.engine.EngineConnectorConfig
 import io.ktor.server.engine.withPort
 import io.ktor.util.pipeline.execute
-import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CompletableJob
@@ -358,52 +361,62 @@ public class KeelApplicationEngine(
      * consumed from the source.
      */
     private suspend fun CoroutineScope.handleConnection(channel: Channel, scheme: String = "http") {
-        // PipelinedChannel uses push-mode BufferedSuspendSource via SuspendBridgeHandler
-        // (zero-copy readOwned). Other channels fall back to pull-mode (1 copy).
-        val source = channel.asBufferedSuspendSource()
+        val pipelinedChannel = channel as PipelinedChannel
+
+        // Install pipeline HTTP codec: decoder produces HttpRequestHead + HttpBody +
+        // HttpBodyEnd, aggregator reassembles into HttpRequest, bridge delivers to
+        // this suspend loop. HttpResponseEncoder is installed for forward-compatibility
+        // (Phase 2β); in Phase 2α responses are written via BufferedSuspendSink and
+        // pass through the encoder unchanged (raw IoBuf does not match any HTTP type).
+        val bridge = SuspendMessageBridge(HttpRequest::class)
+        pipelinedChannel.pipeline.addLast("encoder", HttpResponseEncoder())
+        pipelinedChannel.pipeline.addLast("decoder", HttpRequestDecoder())
+        pipelinedChannel.pipeline.addLast("aggregator", HttpBodyAggregator())
+        pipelinedChannel.pipeline.addLast("bridge", bridge)
+
+        // Arm the read loop. ensureBridge() installs a SuspendBridgeHandler
+        // (for raw IoBuf pull-mode) and registers read interest with the
+        // engine's EventLoop. The SuspendBridgeHandler sits after our
+        // pipeline handlers, but all IoBufs are consumed by
+        // HttpRequestDecoder before reaching it — only non-IoBuf messages
+        // (which the SuspendBridgeHandler ignores) propagate through.
+        withContext(pipelinedChannel.coroutineDispatcher) {
+            pipelinedChannel.ensureBridge()
+        }
+
+        // Response output still uses BufferedSuspendSink (Phase 2α).
         val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush)
         try {
             val serverKeepAlive = configuration.keepAlive
 
-            // Reusable byte array for request body bridging. Allocated once per
-            // connection instead of per request to reduce GC pressure.
-            val bodyBridgeBuf = ByteArray(BODY_BRIDGE_BUFFER_SIZE)
-
             while (channel.isActive) {
-                val head = try {
-                    parseRequestHead(source)
-                } catch (_: HttpEofException) {
-                    break // client closed connection
-                } catch (_: HttpParseException) {
-                    respondBadRequest(sink)
+                val result = bridge.receiveCatching()
+                if (result.isClosed) {
+                    // EOF or parse error from the pipeline.
+                    val cause = result.exceptionOrNull()
+                    if (cause is HttpParseException) {
+                        respondBadRequest(sink)
+                    }
                     break
                 }
+                val request = result.getOrThrow()
 
-                val keepAlive = serverKeepAlive && head.isKeepAlive
+                val keepAlive = serverKeepAlive && request.isKeepAlive
 
-                // Bridge request body: pull from BufferedSuspendSource → push to ByteReadChannel.
-                // The bridge coroutine reads exactly contentLength bytes from source
-                // and pipes them into bodyChannel for Ktor's push-based API.
-                val contentLength = head.headers.contentLength
-                var bodyBridgeJob: Job? = null
-                val requestBody: ByteReadChannel = if (contentLength != null && contentLength > 0) {
-                    val bodyChannel = ByteChannel()
-                    bodyBridgeJob = launch {
-                        var remaining = contentLength
-                        val buf = bodyBridgeBuf
-                        while (remaining > 0) {
-                            val toRead = minOf(remaining, buf.size.toLong()).toInt()
-                            val n = source.readAtMostTo(buf, 0, toRead)
-                            if (n == -1) break
-                            bodyChannel.writeFully(buf, 0, n)
-                            remaining -= n
-                        }
-                        bodyChannel.flushAndClose()
-                    }
-                    bodyChannel
+                // Body is already aggregated by HttpBodyAggregator into ByteArray.
+                val bodyBytes = request.body
+                val requestBody: ByteReadChannel = if (bodyBytes != null) {
+                    ByteReadChannel(bodyBytes)
                 } else {
                     ByteReadChannel.Empty
                 }
+
+                val head = HttpRequestHead(
+                    request.method,
+                    request.uri,
+                    request.version,
+                    request.headers,
+                )
 
                 val call = KeelApplicationCall(
                     application = applicationProvider(),
@@ -429,19 +442,12 @@ public class KeelApplicationEngine(
                 }
 
                 if (!keepAlive) break
-
-                // Ensure the body bridge coroutine has fully consumed the request
-                // body from the source before parsing the next request. Without
-                // this, leftover body bytes would be misinterpreted as the next
-                // request line.
-                bodyBridgeJob?.join()
             }
         } catch (e: Exception) {
             if (e !is CancellationException) {
                 logger.error(e) { "Connection handling failed" }
             }
         } finally {
-            runCatching { source.close() }
             runCatching { sink.close() }
             runCatching { channel.close() }
         }
@@ -463,10 +469,5 @@ public class KeelApplicationEngine(
         } catch (_: Exception) {
             // Best-effort: client may have already disconnected
         }
-    }
-
-    private companion object {
-        /** Buffer size for request body bridging (pull → push). */
-        private const val BODY_BRIDGE_BUFFER_SIZE = 8192
     }
 }
