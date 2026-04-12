@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-core: `SuspendMessageBridge<T>` — generic pipeline handler that bridges typed inbound messages to a suspendable `Channel<T>`, enabling coroutine-based consumers to receive pipeline-decoded messages without writing event-driven handlers. Used by `keel-ktor-engine` to receive `HttpRequest` from `HttpBodyAggregator`.
 - keel-io: `EmptyIoBuf` singleton — zero-capacity `IoBuf` where all read/write methods throw and `retain`/`release` are no-ops. Used as the backing buffer for `HttpBodyEnd.EMPTY`.
 - keel-codec-http: `HttpMessage` sealed interface as the common supertype for all streaming HTTP pipeline messages (`HttpRequestHead`, `HttpResponseHead`, `HttpBody`, `HttpBodyEnd`).
 - keel-codec-http: `HttpBody` and `HttpBodyEnd` streaming body message types for both Content-Length and chunked transfer-encoding bodies. `HttpBodyEnd.EMPTY` is a trailer-less singleton that avoids per-request allocation.
@@ -24,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- keel-ktor-engine: request parsing migrated from manual `parseRequestHead(BufferedSuspendSource)` to pipeline-based `HttpRequestDecoder` + `HttpBodyAggregator` + `SuspendMessageBridge<HttpRequest>`. The body bridge coroutine (source → ByteChannel) is eliminated — `HttpBodyAggregator` handles Content-Length and chunked bodies, and the aggregated `ByteArray` is wrapped directly in `ByteReadChannel`. Response output remains unchanged (`BufferedSuspendSink` + `writeResponseHead`).
 - keel-engine-netty: `NettyEngine` now instantiates one buffer allocator per worker `EventLoop` (lazy via `config.allocator.createForEventLoop()`) instead of sharing the engine-wide `config.allocator` across every accepted channel. Each allocator is only ever touched by its owning event loop thread, removing the CAS hotspot on the shared freelist that previously cancelled out the benefit of pool hits on high-throughput JVM workloads.
 - keel-io: `PooledDirectAllocator.createForEventLoop()` now returns an allocator with a smaller local pool (16 slots vs the 256-slot default) so that the total direct memory footprint is bounded by `numEventLoops × 16 × bufferSize`, independent of the number of open connections.
 - keel-core: `BindConfig` converted from marker interface to open class with `backlog` parameter (default 128)
