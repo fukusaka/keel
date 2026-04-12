@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
 import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
 
 /**
- * Pipeline handler that encodes [HttpResponse] messages into [IoBuf] for transmission.
+ * Pipeline handler that encodes HTTP response messages into [IoBuf] for transmission.
  *
  * Intercepts outbound [onWrite] calls: [HttpResponse] values are serialised
  * and forwarded to the next outbound handler (ultimately [HeadHandler] →
