@@ -11,7 +11,7 @@ data class HttpRequestHead(
     val uri: String,
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
-) {
+) : HttpMessage {
     // Cached to avoid per-access String allocation on the hot path (RoutingHandler).
     // Fields outside the primary constructor do not participate in equals/hashCode/copy.
     // NONE — no synchronization needed; instances are confined to a single EventLoop thread.
