@@ -31,21 +31,40 @@ Inbound:  HEAD → (encoder skipped) → decoder → handler
 Outbound: handler → (decoder skipped) → encoder → HEAD
 ```
 
-`HttpRequestDecoder` decodes inbound `IoBuf` bytes into `HttpRequestHead`
-messages. `HttpResponseEncoder` serialises outbound `HttpResponse` values into
-`IoBuf`. Implement your handler as:
+`HttpRequestDecoder` decodes inbound `IoBuf` bytes into a streaming message
+sequence: `HttpRequestHead` → `HttpBody` × N → `HttpBodyEnd`. Every request
+terminates with exactly one `HttpBodyEnd`, even no-body requests (`HttpBodyEnd.EMPTY`).
+Both Content-Length and chunked transfer-encoding are supported.
+
+`HttpResponseEncoder` serialises outbound response messages into `IoBuf`. It
+accepts both the legacy `HttpResponse` type (complete body) and the streaming
+sequence `HttpResponseHead` → `HttpBody` × N → `HttpBodyEnd`.
+
+For handlers that need the full request body as `HttpRequest(body: ByteArray?)`,
+insert `HttpBodyAggregator` between the decoder and your handler:
 
 ```kotlin
-class MyHandler : TypedChannelInboundHandler<HttpRequestHead>(HttpRequestHead::class) {
-    override fun onReadTyped(ctx: ChannelHandlerContext, msg: HttpRequestHead) {
-        ctx.propagateWriteAndFlush(HttpResponse.ok("Hello!"))
-    }
+engine.bindPipeline("0.0.0.0", 8080) { channel ->
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
+    channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("aggregator", HttpBodyAggregator())
+    channel.pipeline.addLast("handler", MyHandler())
 }
 ```
 
-`HttpRequestDecoder` emits `HttpRequestHead` (request line + headers only).
-The body is not buffered — it is skipped in-place so that pipelined requests
-in the same buffer can be decoded immediately.
+For handlers that consume streaming body messages directly (no aggregation):
+
+```kotlin
+class MyHandler : ChannelInboundHandler {
+    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        when (msg) {
+            is HttpRequestHead -> { /* route by path */ }
+            is HttpBodyEnd -> { msg.content.release(); /* emit response */ }
+            is HttpBody -> { msg.content.release() }
+        }
+    }
+}
+```
 
 ## Coroutine Mode
 
@@ -142,11 +161,16 @@ in the headers or use a factory method (`HttpResponse.ok()`, `HttpResponse.of(st
 
 | Type | Notes |
 |---|---|
-| `HttpRequest` | `method`, `uri`, `version`, `headers`, `body?`. Computed: `path`, `queryString`, `isKeepAlive`. Factories: `get(uri)`, `post(uri, body)` |
-| `HttpRequestHead` | `method`, `uri`, `version`, `headers`. Computed: `path`, `queryString`, `isKeepAlive`. Emitted by `HttpRequestDecoder` (Pipeline) and `parseRequestHead` (Coroutine/Blocking) |
-| `HttpResponse` | `status`, `version`, `headers`, `body?`. Factories: `ok()`, `notFound()`, `of(status)` |
-| `HttpHeaders` | Case-insensitive store. `add()` / `set()` / `get()` / `getAll()` / `remove()`. Build with `HttpHeaders.build {}` or `HttpHeaders.of(pairs)` |
-| `HttpMethod` | Case-sensitive token. Constants: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc. Custom methods allowed |
+| `HttpMessage` | Sealed interface — common supertype for all streaming pipeline messages |
+| `HttpRequestHead` | `method`, `uri`, `version`, `headers`. Computed: `path`, `queryString`, `isKeepAlive`. Emitted by `HttpRequestDecoder` |
+| `HttpResponseHead` | `status`, `version`, `headers`. Emitted to `HttpResponseEncoder` for streaming responses |
+| `HttpBody` | Streaming body chunk wrapping an `IoBuf`. Receiver must call `content.release()` |
+| `HttpBodyEnd` | Terminal body marker with optional trailer headers. `HttpBodyEnd.EMPTY` singleton for no-body/no-trailer |
+| `HttpRequest` | Aggregated request: `method`, `uri`, `version`, `headers`, `body?`. Produced by `HttpBodyAggregator` |
+| `HttpResponse` | Complete response: `status`, `version`, `headers`, `body?`. Factories: `ok()`, `notFound()`, `of(status)` |
+| `HttpHeaders` | Case-insensitive store. `add()` / `set()` / `get()` / `getAll()` / `remove()`. `HttpHeaders.EMPTY` singleton |
+| `HttpBodyAggregator` | Pipeline handler: buffers `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` into `HttpRequest` |
+| `HttpMethod` | Case-sensitive token. Constants: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc. |
 
 ## Error Handling
 

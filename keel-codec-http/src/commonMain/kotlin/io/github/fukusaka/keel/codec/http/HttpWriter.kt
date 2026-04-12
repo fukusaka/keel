@@ -6,14 +6,26 @@ import kotlinx.io.write
 import kotlinx.io.writeString
 
 /**
- * HTTP/1.1 message writer (RFC 7230).
+ * HTTP/1.1 message writer — **kotlinx-io `Sink` / `BufferedSuspendSink` API**.
+ *
+ * This file provides eager (blocking) and suspend serialisation functions
+ * that write to a [Sink] or [BufferedSuspendSink]. They are the low-level
+ * API for callers that work directly with kotlinx-io streams (e.g.
+ * error-response fallback in `respondBadRequest`, unit tests, and CLI tools).
+ *
+ * **Pipeline-based server code should use [HttpResponseEncoder] instead.**
+ * The encoder accepts [HttpResponseHead] / [HttpBody] / [HttpBodyEnd]
+ * messages from the pipeline outbound, serialises them into [IoBuf]
+ * using [IoBuf.writeAscii] (no intermediate `ByteArray`), and supports
+ * both Content-Length (FIXED) and chunked transfer-encoding (CHUNKED)
+ * streaming modes.
  *
  * Public API:
- *   writeRequest(request, sink)  — serialises an HttpRequest
- *   writeResponse(response, sink) — serialises an HttpResponse
+ *   [writeRequest] / [writeResponse]   — complete message (head + body)
+ *   [writeResponseHead]                — head only (body written separately)
  *
  * RFC conformance:
- * - Line endings are always CRLF (\r\n) as required by RFC 7230 §3.5.
+ * - Line endings are always CRLF (`\r\n`) as required by RFC 7230 §3.5.
  * - Header field names are written as-is (case-preserving, RFC 7230 §3.2).
  * - Content-Length is NOT added automatically; callers must set it in headers.
  * - Set-Cookie is written one field per line (no comma joining, RFC 6265).

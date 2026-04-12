@@ -27,17 +27,34 @@ HEAD ↔ encoder ↔ decoder ↔ handler ↔ TAIL
 アウトバウンド: handler → (decoder スキップ) → encoder → HEAD
 ```
 
-`HttpRequestDecoder` は受信した `IoBuf` バイト列を `HttpRequestHead` メッセージにデコードします。`HttpResponseEncoder` は送信する `HttpResponse` を `IoBuf` にシリアライズします。ハンドラは次のように実装します:
+`HttpRequestDecoder` はインバウンド `IoBuf` バイトをストリーミングメ���セージ列にデコードします: `HttpRequestHead` → `HttpBody` × N → `HttpBodyEnd`。ボディなしのリクエストでも `HttpBodyEnd.EMPTY` で終端します。Content-Length / chunked 両方に対応。
+
+`HttpResponseEncoder` はアウトバウンドのレスポンスメッセージを `IoBuf` にシリアライズします。レガシー `HttpResponse` 型（完全なボディ付き）と、ストリ��ミング `HttpResponseHead` → `HttpBody` → `HttpBodyEnd` の両方を受け付けます。
+
+リクエストボディ全体を `HttpRequest(body: ByteArray?)` として受け取るには、decoder と handler の間に `HttpBodyAggregator` を挿入します:
 
 ```kotlin
-class MyHandler : TypedChannelInboundHandler<HttpRequestHead>(HttpRequestHead::class) {
-    override fun onReadTyped(ctx: ChannelHandlerContext, msg: HttpRequestHead) {
-        ctx.propagateWriteAndFlush(HttpResponse.ok("Hello!"))
-    }
+engine.bindPipeline("0.0.0.0", 8080) { channel ->
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
+    channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("aggregator", HttpBodyAggregator())
+    channel.pipeline.addLast("handler", MyHandler())
 }
 ```
 
-`HttpRequestDecoder` が発出するのは `HttpRequestHead`（リクエストライン + ヘッダーのみ）です。ボディはバッファリングせず、同一バッファ内のパイプライン済みリクエストをすぐにデコードできるよう読み飛ばします。
+ストリーミングボディメッセージを直接消費するハンドラ (集約なし):
+
+```kotlin
+class MyHandler : ChannelInboundHandler {
+    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        when (msg) {
+            is HttpRequestHead -> { /* パスでルーティング */ }
+            is HttpBodyEnd -> { msg.content.release(); /* レスポンス発出 */ }
+            is HttpBody -> { msg.content.release() }
+        }
+    }
+}
+```
 
 ## Coroutine モード
 
@@ -126,11 +143,16 @@ writeResponse(response, buf)
 
 | 型 | 備考 |
 |---|---|
-| `HttpRequest` | `method`、`uri`、`version`、`headers`、`body?`。計算プロパティ: `path`、`queryString`、`isKeepAlive`。ファクトリ: `get(uri)`、`post(uri, body)` |
-| `HttpRequestHead` | `method`、`uri`、`version`、`headers`。計算プロパティ: `path`、`queryString`、`isKeepAlive`。Pipeline モードの `HttpRequestDecoder` と Coroutine/ブロッキングの `parseRequestHead` が発出する |
-| `HttpResponse` | `status`、`version`、`headers`、`body?`。ファクトリ: `ok()`、`notFound()`、`of(status)` |
-| `HttpHeaders` | 大文字小文字を区別しないヘッダーストア。`add()` / `set()` / `get()` / `getAll()` / `remove()`。`HttpHeaders.build {}` または `HttpHeaders.of(pairs)` で構築 |
-| `HttpMethod` | 大文字小文字を区別するトークン。定数: `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 等。カスタムメソッドも許可 |
+| `HttpMessage` | sealed interface — 全ストリーミング pipeline メッセージの共通 supertype |
+| `HttpRequestHead` | `method`、`uri`、`version`、`headers`。`HttpRequestDecoder` が発出 |
+| `HttpResponseHead` | `status`、`version`、`headers`。ストリーミングレスポンスで `HttpResponseEncoder` に渡す |
+| `HttpBody` | ストリーミングボディチャンク (`IoBuf` 内包)。受信側が `content.release()` を呼ぶ |
+| `HttpBodyEnd` | ボディ終端マーカー + オプションの trailer ヘッダー。`HttpBodyEnd.EMPTY` singleton |
+| `HttpRequest` | 集約されたリクエスト: `method`、`uri`、`version`、`headers`、`body?`。`HttpBodyAggregator` が生成 |
+| `HttpResponse` | 完全なレスポンス: `status`、`version`、`headers`、`body?`。ファクトリ: `ok()`、`notFound()` |
+| `HttpHeaders` | 大文字小文字非区別ストア。`HttpHeaders.EMPTY` singleton |
+| `HttpBodyAggregator` | Pipeline handler: `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` → `HttpRequest` に集約 |
+| `HttpMethod` | 大文字小文字区別トークン。定数: `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 等 |
 
 ## エラー処理
 

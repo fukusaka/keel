@@ -51,6 +51,12 @@ thread-local allocator instance, eliminating lock contention.
 `LeakDetectingAllocator` wraps any allocator and uses GC-based detection to
 report `IoBuf` instances that are never released.
 
+## EmptyIoBuf
+
+`EmptyIoBuf` is a singleton zero-capacity `IoBuf` where all read/write operations
+throw and `retain()`/`release()` are no-ops. Used as a placeholder where an `IoBuf`
+reference is structurally required but no data is present (e.g. `HttpBodyEnd.EMPTY`).
+
 ## BufSlice
 
 `BufSlice` is a zero-copy read-only view into a region of an `IoBuf`.
