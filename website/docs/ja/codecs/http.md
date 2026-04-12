@@ -27,8 +27,6 @@ HEAD ↔ encoder ↔ decoder ↔ handler ↔ TAIL
 アウトバウンド: handler → (decoder スキップ) → encoder → HEAD
 ```
 
-`HttpRequestDecoder` は受信した `IoBuf` バイト列を `HttpRequestHead` メッセージにデコードします。`HttpResponseEncoder` は送信する `HttpResponse` を `IoBuf` にシリアライズします。ハンドラは次のように実装します:
-
 `HttpRequestDecoder` はインバウンド `IoBuf` バイトをストリーミングメ���セージ列にデコードします: `HttpRequestHead` → `HttpBody` × N → `HttpBodyEnd`。ボディなしのリクエストでも `HttpBodyEnd.EMPTY` で終端します。Content-Length / chunked 両方に対応。
 
 `HttpResponseEncoder` はアウトバウンドのレスポンスメッセージを `IoBuf` にシリアライズします。レガシー `HttpResponse` 型（完全なボディ付き）と、ストリ��ミング `HttpResponseHead` → `HttpBody` → `HttpBodyEnd` の両方を受け付けます。
