@@ -41,6 +41,7 @@ class TlsHandler(
     override fun handlerAdded(ctx: ChannelHandlerContext) {
         this.ctx = ctx
         ctx.allocator.registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, PLAINTEXT_POOL_SLOTS)
+        ctx.allocator.registerPoolSize(TLS_CIPHERTEXT_BUF_SIZE, CIPHERTEXT_POOL_SLOTS)
     }
 
     override fun handlerRemoved(ctx: ChannelHandlerContext) {
@@ -457,14 +458,14 @@ class TlsHandler(
          *
          * ### Buffer pooling
          *
-         * Plaintext buffers (16 KiB) are registered as a pool size class
-         * via [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
-         * in [handlerAdded], so inbound plaintext allocations hit the pool
-         * on steady-state connections. Ciphertext buffers (17 KiB) are not
-         * pooled — they fall back to fresh allocation, which is acceptable
-         * since ciphertext allocations are less frequent (one per TLS record
-         * vs one per plaintext chunk) and a 17 KiB pool class would consume
-         * disproportionate memory for marginal gain.
+         * Both plaintext (16 KiB) and ciphertext (17 KiB) buffers are
+         * registered as pool size classes via
+         * [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
+         * in [handlerAdded]. On steady-state connections, both inbound
+         * (plaintext) and outbound (ciphertext) allocations hit the pool,
+         * eliminating per-request `allocateDirect` + `Cleaner` overhead.
+         * Total pool footprint: (16 KiB + 17 KiB) × 8 slots = 264 KiB
+         * per EventLoop.
          *
          * [1]: https://www.rfc-editor.org/rfc/rfc5246#section-6.2.3
          * [2]: https://www.rfc-editor.org/rfc/rfc8446#section-5.2
@@ -482,10 +483,12 @@ class TlsHandler(
          */
         private const val TLS_CIPHERTEXT_BUF_SIZE = 17 * 1024
 
-        // Per-EventLoop pool slots for 16 KiB plaintext buffers.
-        // Typical HTTPS connection uses 1-2 concurrent inbound buffers;
-        // 4 slots accommodate a small burst without over-committing memory.
-        private const val PLAINTEXT_POOL_SLOTS = 4
+        // Per-EventLoop pool slots for TLS buffers.
+        // With 100 connections spread across N workers, ~10 connections per worker
+        // may allocate concurrently. 8 slots covers the typical in-flight burst
+        // while bounding memory: (16 KiB + 17 KiB) × 8 = 264 KiB per EventLoop.
+        private const val PLAINTEXT_POOL_SLOTS = 8
+        private const val CIPHERTEXT_POOL_SLOTS = 8
 
         // Defense-in-depth: bounds total flushHandshakeResponse iterations.
         // A TLS 1.2 flight is typically 2-5 KB; 64 × 17 KB = 1 MB far exceeds

@@ -120,6 +120,6 @@ class SlabAllocator(
         private const val DEFAULT_BUFFER_SIZE = 8192
         private const val DEFAULT_POOL_SLOTS = 16
         private const val LOCAL_POOL_SLOTS = 8
-        private const val DEFAULT_MAX_TOTAL_BYTES = 256L * 1024
+        private const val DEFAULT_MAX_TOTAL_BYTES = 512L * 1024 // 512 KiB
     }
 }
