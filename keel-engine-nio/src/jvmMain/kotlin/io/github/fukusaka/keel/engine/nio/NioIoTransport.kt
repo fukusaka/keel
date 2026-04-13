@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -26,11 +27,9 @@ internal class NioIoTransport(
     private val socketChannel: SocketChannel,
     private val selectionKey: SelectionKey,
     private val eventLoop: NioEventLoop,
-    override val allocator: BufferAllocator,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     @Suppress("InjectDispatcher")
@@ -38,13 +37,10 @@ internal class NioIoTransport(
 
     // --- Read path ---
 
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRead()
+            if (value && opened) armRead()
         }
 
     private fun armRead() {
@@ -95,14 +91,11 @@ internal class NioIoTransport(
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Write backpressure ---
 
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -150,8 +143,8 @@ internal class NioIoTransport(
      * closes the socket channel. Idempotent.
      */
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

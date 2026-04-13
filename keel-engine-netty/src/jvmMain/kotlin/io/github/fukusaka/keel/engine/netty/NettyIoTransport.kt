@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -57,22 +58,17 @@ import io.netty.channel.Channel as NettyNativeChannel
  */
 internal class NettyIoTransport(
     private val nettyChannel: NettyNativeChannel,
-    override val allocator: BufferAllocator,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     // --- Read path ---
 
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRead()
+            if (value && opened) armRead()
         }
 
     /**
@@ -146,7 +142,7 @@ internal class NettyIoTransport(
      * processes the TLS handshake before data delivery.
      */
     fun installSslHandler(sslContext: SslContext) {
-        check(_open) { "Transport is closed" }
+        check(opened) { "Transport is closed" }
         val engine = sslContext.newEngine(nettyChannel.alloc())
         nettyChannel.pipeline().addFirst("ssl", io.netty.handler.ssl.SslHandler(engine))
     }
@@ -160,7 +156,7 @@ internal class NettyIoTransport(
      * Fire-and-forget: no blocking or suspend needed.
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && _open) {
+        if (!outputShutdown && opened) {
             outputShutdown = true
             if (nettyChannel is DuplexChannel) {
                 nettyChannel.shutdownOutput()
@@ -172,14 +168,11 @@ internal class NettyIoTransport(
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Write backpressure ---
 
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -265,8 +258,8 @@ internal class NettyIoTransport(
      * Unsent data is discarded. Idempotent: subsequent calls are no-ops.
      */
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

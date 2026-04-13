@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nodejs
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeArray
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -31,23 +32,18 @@ import kotlinx.coroutines.Dispatchers
  */
 internal class NodeIoTransport(
     private val socket: Socket,
-    override val allocator: BufferAllocator,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
     override val supportsDeferredFlush: Boolean get() = false
 
     // --- Read path ---
 
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRead()
+            if (value && opened) armRead()
         }
 
     /**
@@ -58,7 +54,7 @@ internal class NodeIoTransport(
      */
     private fun armRead() {
         socket.on("data") { data: dynamic ->
-            if (!_open) return@on
+            if (!opened) return@on
             val dataLength = data.length as Int
             if (dataLength == 0) return@on
 
@@ -75,13 +71,13 @@ internal class NodeIoTransport(
         }
 
         socket.on("end") { _: dynamic ->
-            if (_open) {
+            if (opened) {
                 onReadClosed?.invoke()
             }
         }
 
         socket.on("error") { _: dynamic ->
-            if (_open) {
+            if (opened) {
                 onReadClosed?.invoke()
             }
         }
@@ -96,15 +92,13 @@ internal class NodeIoTransport(
      * Fire-and-forget: no blocking or suspend needed.
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && _open) {
+        if (!outputShutdown && opened) {
             outputShutdown = true
             socket.end()
         }
     }
 
     // --- Write path ---
-
-    override var onFlushComplete: (() -> Unit)? = null
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
@@ -113,7 +107,6 @@ internal class NodeIoTransport(
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -170,8 +163,8 @@ internal class NodeIoTransport(
      * Unsent data is discarded. Idempotent: subsequent calls are no-ops.
      */
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) {
             pw.buf.release()
         }

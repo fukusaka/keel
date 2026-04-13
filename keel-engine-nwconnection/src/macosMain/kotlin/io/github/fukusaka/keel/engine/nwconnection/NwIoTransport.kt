@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -56,22 +57,17 @@ import platform.Network.nw_connection_t
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
     private val conn: nw_connection_t,
-    override val allocator: BufferAllocator,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     // --- Read path ---
 
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRead()
+            if (value && opened) armRead()
         }
 
     // Tracks the pending read buffer so close() can release it if the
@@ -89,7 +85,7 @@ internal class NwIoTransport(
      * on each successful read.
      */
     private fun armRead() {
-        if (!_open) return
+        if (!opened) return
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         pendingReadBuf = buf
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
@@ -99,7 +95,7 @@ internal class NwIoTransport(
 
     internal fun onReadComplete(buf: IoBuf, bytesRead: Int, isComplete: Boolean, failed: Boolean) {
         pendingReadBuf = null
-        if (!_open) {
+        if (!opened) {
             buf.release()
             return
         }
@@ -130,7 +126,7 @@ internal class NwIoTransport(
      * Fire-and-forget: no blocking or suspend needed.
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && _open) {
+        if (!outputShutdown && opened) {
             outputShutdown = true
             keel_nw_shutdown_output(conn)
         }
@@ -140,14 +136,11 @@ internal class NwIoTransport(
 
     private var pendingWrites = mutableListOf<PendingWrite>()
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Write backpressure ---
 
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -217,14 +210,14 @@ internal class NwIoTransport(
      * Cancels the NWConnection and releases pending write buffers.
      *
      * The pending read buffer (if any) is released by the async read
-     * callback via [onReadComplete] when it detects [_open] is false.
+     * callback via [onReadComplete] when it detects [opened] is false.
      * Use [awaitClosed] to wait for the callback to complete.
      *
      * Idempotent: subsequent calls are no-ops.
      */
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

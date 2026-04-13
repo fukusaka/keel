@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
@@ -43,33 +44,28 @@ import posix_socket.keel_writev
 internal class KqueueIoTransport(
     private val fd: Int,
     private val eventLoop: KqueueEventLoop,
-    override val allocator: BufferAllocator,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     // --- Read path ---
 
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRead()
+            if (value && opened) armRead()
         }
 
     private fun armRead() {
-        if (!_open) return
+        if (!opened) return
         eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ) {
             onReadable()
         }
     }
 
     private fun onReadable() {
-        if (!_open) return
+        if (!opened) return
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         val n = read(fd, ptr, buf.writableBytes.convert())
@@ -101,7 +97,7 @@ internal class KqueueIoTransport(
     private var outputShutdown = false
 
     override fun shutdownOutput() {
-        if (!outputShutdown && _open) {
+        if (!outputShutdown && opened) {
             outputShutdown = true
             shutdown(fd, SHUT_WR)
         }
@@ -111,14 +107,11 @@ internal class KqueueIoTransport(
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Write backpressure ---
 
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -170,8 +163,8 @@ internal class KqueueIoTransport(
      * callbacks check [isOpen] and become no-ops). Idempotent.
      */
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

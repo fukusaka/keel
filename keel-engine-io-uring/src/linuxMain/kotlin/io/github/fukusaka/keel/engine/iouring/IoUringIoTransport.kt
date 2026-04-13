@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
@@ -70,18 +71,13 @@ internal class IoUringIoTransport(
     private val eventLoop: IoUringEventLoop,
     private val capabilities: IoUringCapabilities,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
-    override val allocator: BufferAllocator,
+    allocator: BufferAllocator,
     private val bufferRing: ProvidedBufferRing? = null,
-) : IoTransport {
+) : AbstractIoTransport(allocator) {
 
-    private var _open = true
-    override val isOpen: Boolean get() = _open
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     // --- Read path (multishot recv with provided buffer ring) ---
-
-    override var onRead: ((IoBuf) -> Unit)? = null
-    override var onReadClosed: (() -> Unit)? = null
 
     // Pre-allocated IoBuf wrappers: one per buffer slot.
     // Reused on each CQE callback via reset() — zero allocation on hot path.
@@ -96,7 +92,7 @@ internal class IoUringIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && _open) armRecv()
+            if (value && opened) armRecv()
         }
 
     private fun armRecv() {
@@ -105,7 +101,7 @@ internal class IoUringIoTransport(
             fd = fd,
             bgid = ring.bgid,
             onCqe = { res, flags ->
-                if (!_open) return@submitMultishotRecv
+                if (!opened) return@submitMultishotRecv
                 when {
                     res > 0 -> {
                         val bufId = keel_cqe_get_buf_id(flags).toInt()
@@ -126,7 +122,7 @@ internal class IoUringIoTransport(
     private var outputShutdown = false
 
     override fun shutdownOutput() {
-        if (!outputShutdown && _open) {
+        if (!outputShutdown && opened) {
             outputShutdown = true
             shutdown(fd, SHUT_WR)
         }
@@ -144,7 +140,6 @@ internal class IoUringIoTransport(
     private var pendingBytes: Int = 0
     private var _writable: Boolean = true
     override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     private fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
@@ -577,8 +572,6 @@ internal class IoUringIoTransport(
         }
     }
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Await pending async flush (Channel mode) ---
 
     private var asyncFlushPending = false
@@ -627,8 +620,8 @@ internal class IoUringIoTransport(
     }
 
     override fun close() {
-        if (!_open) return
-        _open = false
+        if (!opened) return
+        opened = false
         if (multishotSlot >= 0) {
             eventLoop.cancelMultishot(multishotSlot)
             multishotSlot = -1

@@ -27,6 +27,10 @@ import kotlinx.coroutines.CoroutineDispatcher
  * All methods must be called on the [ioDispatcher] thread unless
  * otherwise noted.
  *
+ * Pure interface — no default implementations. Use [AbstractIoTransport]
+ * for shared defaults (appDispatcher, supportsDeferredFlush, awaitPendingFlush,
+ * awaitClosed).
+ *
  * ## Read Path
  *
  * Set [onRead] and [onReadClosed] callbacks, then set [readEnabled] to
@@ -46,167 +50,66 @@ interface IoTransport {
 
     // === Read path ===
 
-    /**
-     * Callback invoked when inbound data arrives.
-     *
-     * The transport allocates the buffer, fills it with received data,
-     * and invokes this callback. The callback takes ownership of the
-     * buffer (must release it when done). After invoking [onRead], the
-     * transport automatically re-arms for the next read.
-     *
-     * Set before [readEnabled] = true. Not called after [close].
-     */
+    /** Callback invoked when inbound data arrives. */
     var onRead: ((IoBuf) -> Unit)?
 
-    /**
-     * Callback invoked when the read side is closed (EOF, error, or
-     * connection reset).
-     *
-     * After this callback, no further [onRead] calls will occur.
-     * The transport does NOT call [close] — the callback owner decides
-     * whether to close the full connection.
-     */
+    /** Callback invoked when the read side is closed (EOF, error, or connection reset). */
     var onReadClosed: (() -> Unit)?
 
-    /**
-     * Enables or disables the read loop.
-     *
-     * When set to `true`, the transport registers platform-specific read
-     * interest (kqueue EVFILT_READ, epoll EPOLLIN, NIO OP_READ, io_uring
-     * multishot RECV, etc.) and starts delivering data via [onRead].
-     *
-     * When set to `false`, the transport deregisters read interest. Useful
-     * for backpressure: stop reading when the pipeline is overloaded.
-     *
-     * Initial value: `false` (read loop not started until explicitly enabled).
-     */
+    /** Enables or disables the read loop. Initial value: `false`. */
     var readEnabled: Boolean
 
     // === Write path ===
 
-    /**
-     * Buffers [buf] for a subsequent [flush].
-     *
-     * The transport retains the buffer (calls [IoBuf.retain]).
-     * The buffer is released after the flush completes.
-     */
+    /** Buffers [buf] for a subsequent [flush]. Retains the buffer. */
     fun write(buf: IoBuf)
 
-    /**
-     * Sends all buffered writes to the network.
-     *
-     * @return true if the flush completed synchronously (all bytes sent),
-     *         false if an async send is pending (e.g., EAGAIN, io_uring SQE).
-     */
+    /** Sends all buffered writes to the network. Returns true if completed synchronously. */
     fun flush(): Boolean
 
-    /**
-     * Callback invoked when an async flush completes.
-     *
-     * Set by the transport's write-readiness callback to signal
-     * completion. Used internally by [awaitPendingFlush].
-     * Pipeline HeadHandler does not set this (fire-and-forget).
-     */
+    /** Callback invoked when an async flush completes. */
     var onFlushComplete: (() -> Unit)?
 
-    /**
-     * Suspends until all pending async flush operations complete.
-     *
-     * Returns immediately if the last [flush] completed synchronously.
-     * Default: no-op (for transports that always flush synchronously).
-     */
-    suspend fun awaitPendingFlush() {}
+    /** Suspends until all pending async flush operations complete. */
+    suspend fun awaitPendingFlush()
 
-    /**
-     * Whether the transport can accept more writes without excessive buffering.
-     *
-     * Becomes false when pending bytes exceed high water mark, and true
-     * again when pending bytes drop below low water mark.
-     */
+    /** Whether the transport can accept more writes without excessive buffering. */
     val isWritable: Boolean
 
-    /**
-     * Callback invoked when [isWritable] changes state.
-     */
+    /** Callback invoked when [isWritable] changes state. */
     var onWritabilityChanged: ((Boolean) -> Unit)?
 
     // === Lifecycle ===
 
-    /**
-     * Sends TCP FIN to the peer (half-close).
-     *
-     * The read side remains open so the peer's remaining data can be
-     * consumed. Implementations must be idempotent.
-     */
+    /** Sends TCP FIN to the peer (half-close). Idempotent. */
     fun shutdownOutput()
 
-    /**
-     * Closes the transport and releases all resources.
-     *
-     * Releases pending write buffers, deregisters events, and closes
-     * the underlying fd/socket/connection. Implementations must be
-     * idempotent (use [isOpen] flag to guard).
-     */
+    /** Closes the transport and releases all resources. Idempotent. */
     fun close()
 
-    /**
-     * Suspends until the transport is fully closed.
-     *
-     * Most transports close synchronously (no-op). Async transports
-     * (NWConnection, Netty) may need to wait for pending callbacks.
-     * Default: no-op.
-     */
-    suspend fun awaitClosed() {}
+    /** Suspends until the transport is fully closed. */
+    suspend fun awaitClosed()
 
     // === Properties ===
 
     /** Buffer allocator for read operations. */
     val allocator: BufferAllocator
 
-    /**
-     * Whether the transport is open (not yet closed).
-     *
-     * Becomes false after [close] is called. Used as the idempotent
-     * guard for [close] and as the source of truth for
-     * [PipelinedChannel.isActive] / [PipelinedChannel.isOpen].
-     */
+    /** Whether the transport is open (not yet closed). */
     val isOpen: Boolean
 
-    /**
-     * Dispatcher for I/O operations on this transport.
-     *
-     * Typically the EventLoop thread for poll-based engines (kqueue,
-     * epoll, NIO, io_uring) or [kotlinx.coroutines.Dispatchers.Default]
-     * for framework-driven engines (Netty, NWConnection).
-     */
+    /** Dispatcher for I/O operations on this transport. */
     val ioDispatcher: CoroutineDispatcher
 
-    /**
-     * Dispatcher for application-level coroutines.
-     *
-     * Defaults to [ioDispatcher]. NIO overrides this to
-     * [kotlinx.coroutines.Dispatchers.Default] because NIO's Selector
-     * thread should not run application blocking logic.
-     */
-    val appDispatcher: CoroutineDispatcher get() = ioDispatcher
+    /** Dispatcher for application-level coroutines. */
+    val appDispatcher: CoroutineDispatcher
 
-    /**
-     * Whether the transport supports deferred flush (write buffering
-     * followed by explicit flush).
-     *
-     * Most transports return `true`. Node.js returns `false` because
-     * `socket.write()` sends immediately.
-     */
-    val supportsDeferredFlush: Boolean get() = true
+    /** Whether the transport supports deferred flush. */
+    val supportsDeferredFlush: Boolean
 
     companion object {
-        /** Default high water mark: 64 KB. Stop writing when this much data is buffered. */
         const val DEFAULT_HIGH_WATER_MARK = 65536
-
-        /** Default low water mark: 32 KB. Resume writing when buffered data drops below this. */
         const val DEFAULT_LOW_WATER_MARK = 32768
-
-        /** Default read buffer size: 8 KiB. Used by pull-model engines for read allocation. */
         const val DEFAULT_READ_BUFFER_SIZE = 8192
     }
 }
