@@ -29,16 +29,16 @@ import kotlinx.cinterop.ByteVar
 import posix_socket.keel_writev
 
 /**
- * Non-suspend [IoTransport] for kqueue pipeline channels.
+ * kqueue [IoTransport] implementation for macOS.
  *
- * Buffers outbound [IoBuf] writes and flushes them via POSIX `write()` / `writev()`.
- * When the send buffer is full (EAGAIN), registers EVFILT_WRITE with the [eventLoop]
- * and retries via [onFlushComplete] callback — no coroutine suspension involved.
+ * **Read path**: registers EVFILT_READ via [KqueueEventLoop.registerCallback].
+ * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
+ * via [onRead]. EAGAIN triggers automatic re-arm.
+ *
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via POSIX
+ * `write()` / `writev()`. On EAGAIN, registers EVFILT_WRITE and retries.
  *
  * **Thread safety**: all methods must be called on the [eventLoop] thread.
- *
- * **Buffer lifecycle**: `write()` retains the buffer; `flush()` releases it
- * after transmission or on error.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueIoTransport(

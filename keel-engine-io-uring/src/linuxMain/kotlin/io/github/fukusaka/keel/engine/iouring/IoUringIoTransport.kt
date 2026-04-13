@@ -44,26 +44,20 @@ import posix_socket.keel_writev
 internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
- * io_uring transport-layer I/O operations.
+ * io_uring [IoTransport] implementation for Linux.
  *
- * Encapsulates the write buffering, I/O mode selection, and flush logic
- * for both Pipeline mode (fire-and-forget via HeadHandler) and Channel mode
- * (fire-and-forget + [awaitPendingFlush] for completion guarantee).
+ * **Read path**: submits multishot RECV with a provided buffer ring
+ * via [IoUringEventLoop.submitMultishotRecv]. The kernel fills a pre-registered
+ * buffer slot on data arrival; the CQE callback delivers it via [onRead].
+ * ENOBUFS (all slots consumed) triggers automatic re-arm.
  *
- * **I/O modes**: three flush strategies selected by [IoModeSelector]:
- * - [IoMode.CQE]: pure io_uring path (submit SEND SQE, wait for CQE)
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via
+ * [IoModeSelector]-driven strategy:
+ * - [IoMode.CQE]: pure io_uring path (SEND / WRITEV SQE, wait for CQE)
  * - [IoMode.FALLBACK_CQE]: direct `send()` syscall, EAGAIN → fallback to CQE
  * - [IoMode.SEND_ZC]: zero-copy via `IORING_OP_SEND_ZC` (two CQEs)
  *
- * **Gather write**: multiple pending buffers → `IORING_OP_WRITEV` with
- * heap-allocated iovec array. Partial writes fall through to single-buffer retry.
- *
  * **Thread safety**: all methods must be called on the owning [IoUringEventLoop] thread.
- *
- * @param fd           The connected socket file descriptor.
- * @param eventLoop    The [IoUringEventLoop] for SQE submission.
- * @param capabilities Runtime kernel feature flags.
- * @param writeModeSelector Strategy for choosing the flush I/O mode.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringIoTransport(

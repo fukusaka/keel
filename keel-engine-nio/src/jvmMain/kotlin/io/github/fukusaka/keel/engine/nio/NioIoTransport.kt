@@ -12,16 +12,17 @@ import java.nio.channels.SocketChannel
 import kotlin.coroutines.resume
 
 /**
- * Non-suspend [IoTransport] for NIO pipeline channels.
+ * NIO [IoTransport] implementation for JVM.
  *
- * Buffers outbound [IoBuf] writes and flushes them via [SocketChannel.write].
- * When the send buffer is full (write returns 0), registers OP_WRITE with the
- * [eventLoop] and retries via [onFlushComplete] callback.
+ * **Read path**: registers OP_READ via [NioEventLoop.setInterestCallback].
+ * On data arrival, allocates a buffer, calls [SocketChannel.read], and delivers
+ * via [onRead]. EOF (read returns -1) triggers [onReadClosed].
+ *
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via
+ * [SocketChannel.write] / [GatheringByteChannel.write][java.nio.channels.GatheringByteChannel.write].
+ * When the send buffer is full (write returns 0), registers OP_WRITE and retries.
  *
  * **Thread safety**: all methods must be called on the [eventLoop] thread.
- *
- * **Buffer lifecycle**: `write()` retains the buffer; `flush()` releases it
- * after transmission or on error.
  */
 internal class NioIoTransport(
     private val socketChannel: SocketChannel,

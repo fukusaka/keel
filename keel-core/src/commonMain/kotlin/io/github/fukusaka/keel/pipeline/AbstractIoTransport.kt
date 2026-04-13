@@ -11,7 +11,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  * - [supportsDeferredFlush] defaults to `true` (Node.js overrides to `false`)
  * - [awaitPendingFlush] defaults to no-op (sync transports like NWConnection, Node.js)
  * - [awaitClosed] defaults to no-op (sync close transports)
- * - [isOpen] backed by `_open` flag with idempotent close guard
+ * - [isOpen] backed by [opened] flag with idempotent close guard
  * - Callback properties initialized to `null`
  *
  * Engine implementations extend this class and override platform-specific
