@@ -6,7 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class TypedChannelInboundHandlerTest {
+class TypedInboundHandlerTest {
 
     private val logger = PrintLogger("test")
 
@@ -18,15 +18,15 @@ class TypedChannelInboundHandlerTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = error("not needed in tests")
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, logger)
+    private fun createPipeline(): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, logger)
         channel.pipeline = pipeline
         return pipeline
     }
@@ -37,8 +37,8 @@ class TypedChannelInboundHandlerTest {
     fun `typed handler receives matching messages`() {
         val pipeline = createPipeline()
         val received = mutableListOf<String>()
-        val handler = object : TypedChannelInboundHandler<String>(String::class, autoRelease = false) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: String) {
+        val handler = object : TypedInboundHandler<String>(String::class, autoRelease = false) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {
                 received.add(msg)
             }
         }
@@ -53,13 +53,13 @@ class TypedChannelInboundHandlerTest {
         val stringReceived = mutableListOf<String>()
         val intReceived = mutableListOf<Int>()
 
-        val stringHandler = object : TypedChannelInboundHandler<String>(String::class, autoRelease = false) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: String) {
+        val stringHandler = object : TypedInboundHandler<String>(String::class, autoRelease = false) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {
                 stringReceived.add(msg)
             }
         }
-        val intHandler = object : TypedChannelInboundHandler<Int>(Int::class, autoRelease = false) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: Int) {
+        val intHandler = object : TypedInboundHandler<Int>(Int::class, autoRelease = false) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: Int) {
                 intReceived.add(msg)
             }
         }
@@ -77,8 +77,8 @@ class TypedChannelInboundHandlerTest {
 
     @Test
     fun `typed handler sets acceptedType from constructor`() {
-        val handler = object : TypedChannelInboundHandler<String>(String::class) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: String) {}
+        val handler = object : TypedInboundHandler<String>(String::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {}
         }
         assertEquals(String::class, handler.acceptedType)
     }
@@ -113,16 +113,16 @@ class TypedChannelInboundHandlerTest {
         val pipeline = createPipeline()
         var propagated = false
 
-        val handler = object : TypedChannelInboundHandler<String>(String::class, autoRelease = true) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: String) {
+        val handler = object : TypedInboundHandler<String>(String::class, autoRelease = true) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {
                 // Propagate to next handler → autoRelease should skip
                 ctx.propagateRead(msg)
                 propagated = true
             }
         }
-        val receiver = object : ChannelInboundHandler {
+        val receiver = object : InboundHandler {
             var received: Any? = null
-            override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+            override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
                 received = msg
             }
         }
@@ -141,13 +141,13 @@ class TypedChannelInboundHandlerTest {
         val pipeline = createPipeline()
         val errors = mutableListOf<String>()
 
-        val failing = object : TypedChannelInboundHandler<String>(String::class, autoRelease = false) {
-            override fun onReadTyped(ctx: ChannelHandlerContext, msg: String) {
+        val failing = object : TypedInboundHandler<String>(String::class, autoRelease = false) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {
                 throw RuntimeException("handler error")
             }
         }
-        val errorCatcher = object : ChannelInboundHandler {
-            override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        val errorCatcher = object : InboundHandler {
+            override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
                 errors.add(cause.message ?: "")
             }
         }

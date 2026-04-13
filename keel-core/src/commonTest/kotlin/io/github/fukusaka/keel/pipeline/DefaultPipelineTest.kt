@@ -11,7 +11,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class DefaultChannelPipelineTest {
+class DefaultPipelineTest {
 
     // --- Test infrastructure ---
 
@@ -28,15 +28,15 @@ class DefaultChannelPipelineTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = error("not needed in tests")
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, logger)
+    private fun createPipeline(): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, logger)
         channel.pipeline = pipeline
         return pipeline
     }
@@ -46,58 +46,58 @@ class DefaultChannelPipelineTest {
     private class RecordingInboundHandler(
         override val acceptedType: KClass<*> = Any::class,
         override val producedType: KClass<*> = Any::class,
-    ) : ChannelInboundHandler {
+    ) : InboundHandler {
         val events = mutableListOf<String>()
         var lastMsg: Any? = null
 
-        override fun onActive(ctx: ChannelHandlerContext) {
+        override fun onActive(ctx: PipelineHandlerContext) {
             events.add("active")
             ctx.propagateActive()
         }
 
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             events.add("read")
             lastMsg = msg
             ctx.propagateRead(msg)
         }
 
-        override fun onReadComplete(ctx: ChannelHandlerContext) {
+        override fun onReadComplete(ctx: PipelineHandlerContext) {
             events.add("readComplete")
             ctx.propagateReadComplete()
         }
 
-        override fun onInactive(ctx: ChannelHandlerContext) {
+        override fun onInactive(ctx: PipelineHandlerContext) {
             events.add("inactive")
             ctx.propagateInactive()
         }
 
-        override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
             events.add("error:${cause.message}")
             ctx.propagateError(cause)
         }
 
-        override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+        override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
             events.add("userEvent:$event")
             ctx.propagateUserEvent(event)
         }
     }
 
-    private class RecordingOutboundHandler : ChannelOutboundHandler {
+    private class RecordingOutboundHandler : OutboundHandler {
         val events = mutableListOf<String>()
         var lastMsg: Any? = null
 
-        override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
             events.add("write")
             lastMsg = msg
             ctx.propagateWrite(msg)
         }
 
-        override fun onFlush(ctx: ChannelHandlerContext) {
+        override fun onFlush(ctx: PipelineHandlerContext) {
             events.add("flush")
             ctx.propagateFlush()
         }
 
-        override fun onClose(ctx: ChannelHandlerContext) {
+        override fun onClose(ctx: PipelineHandlerContext) {
             events.add("close")
             ctx.propagateClose()
         }
@@ -316,8 +316,8 @@ class DefaultChannelPipelineTest {
     @Test
     fun `handler can transform message`() {
         val pipeline = createPipeline()
-        val transformer = object : ChannelInboundHandler {
-            override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        val transformer = object : InboundHandler {
+            override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
                 ctx.propagateRead("transformed:$msg")
             }
         }
@@ -334,8 +334,8 @@ class DefaultChannelPipelineTest {
     @Test
     fun `exception in onRead propagates as error`() {
         val pipeline = createPipeline()
-        val failing = object : ChannelInboundHandler {
-            override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        val failing = object : InboundHandler {
+            override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
                 throw RuntimeException("parse error")
             }
         }
@@ -350,22 +350,22 @@ class DefaultChannelPipelineTest {
     // --- Type chain validation ---
 
     // Typed test handlers
-    private class StringProducer : ChannelInboundHandler {
+    private class StringProducer : InboundHandler {
         override val producedType: KClass<*> = String::class
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             ctx.propagateRead(msg.toString())
         }
     }
 
-    private class StringConsumer : ChannelInboundHandler {
+    private class StringConsumer : InboundHandler {
         override val acceptedType: KClass<*> = String::class
         val received = mutableListOf<String>()
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             received.add(msg as String)
         }
     }
 
-    private class IntConsumer : ChannelInboundHandler {
+    private class IntConsumer : InboundHandler {
         override val acceptedType: KClass<*> = Int::class
     }
 
@@ -413,8 +413,8 @@ class DefaultChannelPipelineTest {
     fun `handlerAdded called on addLast`() {
         val pipeline = createPipeline()
         var added = false
-        val handler = object : ChannelInboundHandler {
-            override fun handlerAdded(ctx: ChannelHandlerContext) { added = true }
+        val handler = object : InboundHandler {
+            override fun handlerAdded(ctx: PipelineHandlerContext) { added = true }
         }
         pipeline.addLast("h1", handler)
         assertTrue(added)
@@ -424,8 +424,8 @@ class DefaultChannelPipelineTest {
     fun `handlerRemoved called on remove`() {
         val pipeline = createPipeline()
         var removed = false
-        val handler = object : ChannelInboundHandler {
-            override fun handlerRemoved(ctx: ChannelHandlerContext) { removed = true }
+        val handler = object : InboundHandler {
+            override fun handlerRemoved(ctx: PipelineHandlerContext) { removed = true }
         }
         pipeline.addLast("h1", handler)
         pipeline.remove("h1")
@@ -485,9 +485,9 @@ class DefaultChannelPipelineTest {
     @Test
     fun `userEvent handler can consume event without propagating`() {
         val pipeline = createPipeline()
-        val consumer = object : ChannelInboundHandler {
+        val consumer = object : InboundHandler {
             var received: Any? = null
-            override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+            override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
                 received = event
                 // Do not propagate
             }
@@ -505,8 +505,8 @@ class DefaultChannelPipelineTest {
     @Test
     fun `userEvent exception propagates as error`() {
         val pipeline = createPipeline()
-        val failing = object : ChannelInboundHandler {
-            override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+        val failing = object : InboundHandler {
+            override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
                 throw RuntimeException("event error")
             }
         }

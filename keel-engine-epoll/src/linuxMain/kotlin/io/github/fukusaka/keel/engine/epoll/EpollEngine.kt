@@ -154,7 +154,7 @@ class EpollEngine(
      * Binds a pipeline-based server on [host]:[port].
      *
      * Creates a callback-driven server that processes connections entirely
-     * through [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     * through [Pipeline] handlers — no coroutine suspension on the hot path.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
      * @return A [PipelinedServer] for lifecycle management.

@@ -3,9 +3,8 @@ package io.github.fukusaka.keel.codec.http
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.tryWrapBytes
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
-
+import io.github.fukusaka.keel.pipeline.OutboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 /**
  * Pipeline handler that encodes HTTP response messages into [IoBuf] for transmission.
  *
@@ -44,7 +43,7 @@ import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
  * [HttpBody], or [HttpBodyEnd] (e.g. a raw [IoBuf] written by the
  * application handler) are forwarded without modification.
  */
-class HttpResponseEncoder : ChannelOutboundHandler {
+class HttpResponseEncoder : OutboundHandler {
 
     private enum class StreamingMode { NONE, FIXED, CHUNKED }
 
@@ -58,7 +57,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
     private val chunkFramingScratch = ByteArray(CHUNK_FRAMING_SCRATCH_SIZE)
     private var chunkFramingOffset = 0
 
-    override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpResponse -> encodeAndPropagate(ctx, msg)
             is HttpResponseHead -> encodeHeadAndStartStreaming(ctx, msg)
@@ -68,7 +67,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         }
     }
 
-    private fun encodeAndPropagate(ctx: ChannelHandlerContext, response: HttpResponse) {
+    private fun encodeAndPropagate(ctx: PipelineHandlerContext, response: HttpResponse) {
         val allocator = ctx.allocator
         val reasonPhrase = response.status.reasonPhrase()
         val body = response.body
@@ -101,7 +100,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
 
     // --- Streaming path (HttpResponseHead + HttpBody + HttpBodyEnd) ---
 
-    private fun encodeHeadAndStartStreaming(ctx: ChannelHandlerContext, head: HttpResponseHead) {
+    private fun encodeHeadAndStartStreaming(ctx: PipelineHandlerContext, head: HttpResponseHead) {
         check(streamingMode == StreamingMode.NONE) {
             "HttpResponseHead received while a previous streaming response is in progress"
         }
@@ -126,7 +125,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         ctx.propagateWrite(headBuf)
     }
 
-    private fun encodeContentMsg(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+    private fun encodeContentMsg(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         when (streamingMode) {
             StreamingMode.NONE -> {
                 content.content.release()
@@ -141,7 +140,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         }
     }
 
-    private fun encodeContentFixed(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+    private fun encodeContentFixed(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val size = content.content.readableBytes
         if (size.toLong() > remainingContentLength) {
             content.content.release()
@@ -162,7 +161,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         }
     }
 
-    private fun encodeContentChunked(ctx: ChannelHandlerContext, content: HttpBody, last: Boolean) {
+    private fun encodeContentChunked(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val payloadSize = content.content.readableBytes
         if (payloadSize > 0) {
             // Emit: "{hex-size}\r\n" + payload + "\r\n"
@@ -188,7 +187,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
      * view. Each call advances [chunkFramingOffset] so multiple pending
      * views don't overlap.
      */
-    private fun emitChunkFraming(ctx: ChannelHandlerContext, size: Int): IoBuf {
+    private fun emitChunkFraming(ctx: PipelineHandlerContext, size: Int): IoBuf {
         val start = chunkFramingOffset
         var off = start
         // Write hex digits.
@@ -210,7 +209,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
     }
 
     /** Writes "\r\n" (chunk data suffix) into the scratch buffer. */
-    private fun emitCrlfFromScratch(ctx: ChannelHandlerContext): IoBuf {
+    private fun emitCrlfFromScratch(ctx: PipelineHandlerContext): IoBuf {
         val start = chunkFramingOffset
         chunkFramingScratch[start] = CR
         chunkFramingScratch[start + 1] = LF
@@ -218,7 +217,7 @@ class HttpResponseEncoder : ChannelOutboundHandler {
         return wrapScratchOrAllocate(ctx, start, CRLF_SIZE)
     }
 
-    private fun wrapScratchOrAllocate(ctx: ChannelHandlerContext, offset: Int, length: Int): IoBuf {
+    private fun wrapScratchOrAllocate(ctx: PipelineHandlerContext, offset: Int, length: Int): IoBuf {
         // If scratch is exhausted, fall back to allocate + copy.
         if (offset + length > chunkFramingScratch.size) {
             chunkFramingOffset = 0 // reset for next batch

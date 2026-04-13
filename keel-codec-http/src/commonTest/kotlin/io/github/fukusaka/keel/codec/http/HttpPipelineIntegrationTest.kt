@@ -4,13 +4,13 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.InboundHandler
 import kotlin.reflect.KClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -35,7 +35,7 @@ class HttpPipelineIntegrationTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
@@ -43,23 +43,23 @@ class HttpPipelineIntegrationTest {
     }
 
     /** Collects aggregated [HttpRequest] messages. */
-    private class RequestCollector : ChannelInboundHandler {
+    private class RequestCollector : InboundHandler {
         override val acceptedType: KClass<*> get() = HttpRequest::class
         val requests = mutableListOf<HttpRequest>()
         val errors = mutableListOf<Throwable>()
 
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             requests.add(msg as HttpRequest)
         }
 
-        override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
             errors.add(cause)
         }
     }
 
-    private fun createPipeline(): Pair<ChannelPipeline, RequestCollector> {
+    private fun createPipeline(): Pair<Pipeline, RequestCollector> {
         val collector = RequestCollector()
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("test"))
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
         channel.pipeline = pipeline
         pipeline.addLast("decoder", HttpRequestDecoder())
         pipeline.addLast("aggregator", HttpBodyAggregator())

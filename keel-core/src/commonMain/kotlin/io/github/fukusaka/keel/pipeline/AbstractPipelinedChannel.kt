@@ -8,7 +8,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 /**
  * Base class for all engine [PipelinedChannel] implementations.
  *
- * Wires the [IoTransport] callbacks to the [ChannelPipeline] and provides
+ * Wires the [IoTransport] callbacks to the [Pipeline] and provides
  * default implementations for all [PipelinedChannel] methods by delegating
  * to the transport. Engine subclasses only need to override engine-specific
  * members (if any).
@@ -34,7 +34,7 @@ abstract class AbstractPipelinedChannel(
     override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {
 
-    override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
+    override val pipeline: Pipeline = DefaultPipeline(this, transport, logger)
     override val allocator: BufferAllocator get() = transport.allocator
     override val isActive: Boolean get() = transport.isOpen
     override val isOpen: Boolean get() = transport.isOpen

@@ -1,10 +1,9 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.reflect.KClass
-
 /**
  * Buffers a streaming [HttpRequestHead] + [HttpBody] + [HttpBodyEnd]
  * sequence into a single legacy [HttpRequest] with the full body as
@@ -23,7 +22,7 @@ import kotlin.reflect.KClass
  * **Size limit**: if the accumulated body exceeds [maxContentLength],
  * all remaining body messages are drained (releasing their [IoBuf]s)
  * and an [HttpParseException] is propagated via
- * [ChannelHandlerContext.propagateError]. The caller is responsible
+ * [PipelineHandlerContext.propagateError]. The caller is responsible
  * for closing the connection.
  *
  * **Lifecycle**: every inbound [IoBuf] is released after its bytes are
@@ -32,7 +31,7 @@ import kotlin.reflect.KClass
  */
 class HttpBodyAggregator(
     private val maxContentLength: Int = DEFAULT_MAX_CONTENT_LENGTH,
-) : ChannelInboundHandler {
+) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = HttpMessage::class
     override val producedType: KClass<*> get() = HttpRequest::class
@@ -42,7 +41,7 @@ class HttpBodyAggregator(
     private var bodySize: Int = 0
     private var overflowed: Boolean = false
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> startAggregation(msg)
             is HttpBodyEnd -> completeAggregation(ctx, msg)
@@ -51,7 +50,7 @@ class HttpBodyAggregator(
         }
     }
 
-    override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         resetAggregation()
         ctx.propagateError(cause)
     }
@@ -94,7 +93,7 @@ class HttpBodyAggregator(
         bodySize += len
     }
 
-    private fun completeAggregation(ctx: ChannelHandlerContext, last: HttpBodyEnd) {
+    private fun completeAggregation(ctx: PipelineHandlerContext, last: HttpBodyEnd) {
         val lastBuf = last.content
         try {
             if (lastBuf.readableBytes > 0) copyIntoBody(lastBuf)

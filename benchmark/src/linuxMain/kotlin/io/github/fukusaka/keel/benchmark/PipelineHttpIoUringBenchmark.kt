@@ -14,7 +14,7 @@ import platform.posix.getenv
  * [RoutingHandler], and [HttpResponseEncoder].
  *
  * The full pipeline path (decode → route → encode) is exercised on every request,
- * allowing measurement of the complete ChannelPipeline HTTP overhead.
+ * allowing measurement of the complete Pipeline HTTP overhead.
  *
  * Pipeline structure:
  * ```

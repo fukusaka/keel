@@ -2,8 +2,8 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.TypedChannelInboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.TypedInboundHandler
 import kotlin.reflect.KClass
 
 /**
@@ -66,7 +66,7 @@ import kotlin.reflect.KClass
  * state and propagates the error downstream. The caller (typically the
  * application handler) is responsible for closing the connection.
  */
-class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
+class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
 
     override val producedType: KClass<*> get() = HttpMessage::class
 
@@ -123,7 +123,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
     // partial reads.
     private var chunkCrlfSeen: Int = 0
 
-    override fun onReadTyped(ctx: ChannelHandlerContext, msg: IoBuf) {
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
         try {
             processBuffer(ctx, msg)
         } catch (e: HttpParseException) {
@@ -134,7 +134,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         }
     }
 
-    private fun processBuffer(ctx: ChannelHandlerContext, buf: IoBuf) {
+    private fun processBuffer(ctx: PipelineHandlerContext, buf: IoBuf) {
         while (buf.readableBytes > 0) {
             when (state) {
                 State.READ_FIXED_BODY -> {
@@ -187,7 +187,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
      * moved into [accumulator] and [buf] has been drained, so
      * [processBuffer] must return to wait for the next read.
      */
-    private fun processOneLine(ctx: ChannelHandlerContext, buf: IoBuf): Boolean {
+    private fun processOneLine(ctx: PipelineHandlerContext, buf: IoBuf): Boolean {
         val lfIndex = scanLf(buf, buf.readerIndex, buf.writerIndex)
         if (lfIndex < 0) {
             // No LF in this IoBuf — copy remainder to accumulator for the
@@ -211,7 +211,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         return true
     }
 
-    private fun processLineFast(ctx: ChannelHandlerContext, buf: IoBuf, lfIndex: Int) {
+    private fun processLineFast(ctx: PipelineHandlerContext, buf: IoBuf, lfIndex: Int) {
         val lineStart = buf.readerIndex
         var lineEnd = lfIndex
         if (lineEnd > lineStart && buf.getByte(lineEnd - 1) == CR) lineEnd--
@@ -253,7 +253,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         }
     }
 
-    private fun processLineFallback(ctx: ChannelHandlerContext, buf: IoBuf, lfIndex: Int) {
+    private fun processLineFallback(ctx: PipelineHandlerContext, buf: IoBuf, lfIndex: Int) {
         val tailLength = lfIndex - buf.readerIndex
         if (tailLength > 0) {
             appendToAccumulator(buf, buf.readerIndex, tailLength)
@@ -680,7 +680,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
         trailers.add(name, value)
     }
 
-    private fun emitLastWithTrailers(ctx: ChannelHandlerContext) {
+    private fun emitLastWithTrailers(ctx: PipelineHandlerContext) {
         val trailers = chunkTrailers
         chunkTrailers = null
         val last = if (trailers == null || trailers.isEmpty) {
@@ -694,7 +694,7 @@ class HttpRequestDecoder : TypedChannelInboundHandler<IoBuf>(IoBuf::class, autoR
 
     // --- Emit / reset ---
 
-    private fun emitHead(ctx: ChannelHandlerContext) {
+    private fun emitHead(ctx: PipelineHandlerContext) {
         val parsedVersion = checkNotNull(version) { "version not parsed" }
         // RFC 7230 §5.4: Host header is mandatory for HTTP/1.1 requests.
         if (parsedVersion == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers) {

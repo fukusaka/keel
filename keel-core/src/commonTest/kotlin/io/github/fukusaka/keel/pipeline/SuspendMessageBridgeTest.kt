@@ -23,15 +23,15 @@ class SuspendMessageBridgeTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(bridge: SuspendMessageBridge<TestMessage>): DefaultChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("bridge-test"))
+    private fun createPipeline(bridge: SuspendMessageBridge<TestMessage>): DefaultPipeline {
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("bridge-test"))
         channel.pipeline = pipeline
         pipeline.addLast("bridge", bridge)
         return pipeline

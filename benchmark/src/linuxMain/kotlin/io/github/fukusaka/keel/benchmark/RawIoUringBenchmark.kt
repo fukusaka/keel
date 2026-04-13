@@ -13,7 +13,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.get
 
 /**
- * Zero-suspend io_uring benchmark server using the ChannelPipeline API.
+ * Zero-suspend io_uring benchmark server using the Pipeline API.
  *
  * Uses [IoUringEngine.bindPipeline] to create a multi-thread server where
  * each worker EventLoop owns a SO_REUSEPORT server socket. The pipeline
@@ -21,7 +21,7 @@ import kotlinx.cinterop.get
  * responses through the pipeline write path — no coroutine overhead.
  *
  * The response is sent by writing an [IoBuf] containing the pre-encoded
- * HTTP response via [ChannelHandlerContext.propagateWriteAndFlush]. The
+ * HTTP response via [PipelineHandlerContext.propagateWriteAndFlush]. The
  * HeadHandler delegates to [IoUringIoTransport] which does direct `send()`
  * with EAGAIN → SEND SQE fallback.
  *

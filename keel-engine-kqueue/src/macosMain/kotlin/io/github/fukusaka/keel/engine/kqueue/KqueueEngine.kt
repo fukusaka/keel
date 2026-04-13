@@ -166,7 +166,7 @@ class KqueueEngine(
      *
      * Unlike [bind] which returns a suspend-based [ServerChannel], this creates
      * a callback-driven server that processes connections entirely through
-     * [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     * [Pipeline] handlers — no coroutine suspension on the hot path.
      *
      * The boss EventLoop accepts connections and distributes them to worker
      * EventLoops in round-robin order. Each worker creates a

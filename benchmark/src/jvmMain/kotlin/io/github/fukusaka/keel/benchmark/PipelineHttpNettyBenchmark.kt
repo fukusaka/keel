@@ -9,7 +9,7 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  * [RoutingHandler], and [HttpResponseEncoder].
  *
  * JVM Netty-based pipeline. Uses Netty's EventLoop for transport and
- * keel's ChannelPipeline for HTTP codec processing.
+ * keel's Pipeline for HTTP codec processing.
  *
  * Pipeline structure:
  * ```

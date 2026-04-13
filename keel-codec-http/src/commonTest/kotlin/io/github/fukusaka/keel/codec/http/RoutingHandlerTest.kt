@@ -4,8 +4,8 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
@@ -29,7 +29,7 @@ class RoutingHandlerTest {
     private val transport = CapturingTransport()
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
@@ -40,8 +40,8 @@ class RoutingHandlerTest {
      * Builds an [encoder → decoder → routing] pipeline.
      * Outbound from RoutingHandler travels toward HEAD, intercepted by HttpResponseEncoder.
      */
-    private fun createPipeline(routes: Map<String, (HttpRequestHead) -> HttpResponse>): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("test"))
+    private fun createPipeline(routes: Map<String, (HttpRequestHead) -> HttpResponse>): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
         channel.pipeline = pipeline
         pipeline.addLast("encoder", HttpResponseEncoder())
         pipeline.addLast("decoder", HttpRequestDecoder())
@@ -50,7 +50,7 @@ class RoutingHandlerTest {
     }
 
     /** Wraps [text] in an [IoBuf] and delivers it as an inbound read. */
-    private fun ChannelPipeline.feed(text: String) {
+    private fun Pipeline.feed(text: String) {
         val bytes = text.encodeToByteArray()
         val buf = DefaultAllocator.allocate(bytes.size)
         buf.writeByteArray(bytes, 0, bytes.size)

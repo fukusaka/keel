@@ -153,7 +153,7 @@ class NioEngine(
      * Binds a pipeline-based server on [host]:[port].
      *
      * Creates a callback-driven server that processes connections entirely
-     * through [ChannelPipeline] handlers — no coroutine suspension on the hot path.
+     * through [Pipeline] handlers — no coroutine suspension on the hot path.
      *
      * Unlike Native engines, NIO requires `channel.register()` on the
      * EventLoop thread (Selector blocks during select). The boss loop

@@ -4,10 +4,10 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
@@ -30,27 +30,27 @@ class HttpRequestDecoderTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(vararg handlers: Pair<String, ChannelInboundHandler>): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("test"))
+    private fun createPipeline(vararg handlers: Pair<String, InboundHandler>): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
         channel.pipeline = pipeline
         for ((name, handler) in handlers) pipeline.addLast(name, handler)
         return pipeline
     }
 
     /** Collects streaming HTTP messages delivered via [propagateRead]. */
-    private class MessageCollector : ChannelInboundHandler {
+    private class MessageCollector : InboundHandler {
         val heads = mutableListOf<HttpRequestHead>()
         val bodies = mutableListOf<HttpBody>()
         val errors = mutableListOf<Throwable>()
 
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             when (msg) {
                 is HttpRequestHead -> heads.add(msg)
                 is HttpBody -> bodies.add(msg) // HttpBodyEnd extends HttpBody
@@ -58,7 +58,7 @@ class HttpRequestDecoderTest {
             }
         }
 
-        override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
             errors.add(cause)
         }
     }

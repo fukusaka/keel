@@ -10,9 +10,9 @@ import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
 
 /**
  * Pre-built responses shared across all pipeline-http benchmark servers.
@@ -36,7 +36,7 @@ object PipelineHttpResponses {
  * body messages ([HttpBody] / [HttpBodyEnd]) directly. This avoids
  * the aggregator's per-request body copy overhead in benchmarks.
  */
-fun installPipelineHttpHandlers(pipeline: ChannelPipeline) {
+fun installPipelineHttpHandlers(pipeline: Pipeline) {
     pipeline.addLast("encoder", HttpResponseEncoder())
     pipeline.addLast("decoder", HttpRequestDecoder())
     pipeline.addLast("routing", BenchmarkRoutingHandler())
@@ -57,12 +57,12 @@ fun installPipelineHttpHandlers(pipeline: ChannelPipeline) {
  * Instantiated per-connection because [echoBody] / [echoSize] are
  * mutable state scoped to the current request.
  */
-private class BenchmarkRoutingHandler : ChannelInboundHandler {
+private class BenchmarkRoutingHandler : InboundHandler {
 
     private var currentPath: String? = null
     private var echoStreaming: Boolean = false
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> {
                 currentPath = msg.path
@@ -112,7 +112,7 @@ private class BenchmarkRoutingHandler : ChannelInboundHandler {
         }
     }
 
-    private fun emitResponse(ctx: ChannelHandlerContext) {
+    private fun emitResponse(ctx: PipelineHandlerContext) {
         val response = when (currentPath) {
             "/hello" -> PipelineHttpResponses.hello
             "/large" -> PipelineHttpResponses.large

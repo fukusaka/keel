@@ -3,32 +3,32 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.BufferAllocator
 
 /**
- * Context for a [ChannelHandler] within a [ChannelPipeline].
+ * Context for a [PipelineHandler] within a [Pipeline].
  *
  * Provides access to the pipeline, channel, and buffer allocator, as well as
  * methods to propagate events to the next handler in the chain.
  *
  * **Inbound propagation** (`propagateRead`, `propagateActive`, etc.) flows
- * from head to tail — each call invokes the next [ChannelInboundHandler].
+ * from head to tail — each call invokes the next [InboundHandler].
  *
  * **Outbound propagation** (`propagateWrite`, `propagateFlush`, etc.) flows
- * from tail to head — each call invokes the next [ChannelOutboundHandler].
+ * from tail to head — each call invokes the next [OutboundHandler].
  *
  * All methods must be called on the EventLoop thread.
  */
-interface ChannelHandlerContext {
+interface PipelineHandlerContext {
 
     /** The channel this context belongs to. */
     val channel: PipelinedChannel
 
     /** The pipeline this context belongs to. */
-    val pipeline: ChannelPipeline
+    val pipeline: Pipeline
 
     /** The name of the handler in the pipeline. */
     val name: String
 
     /** The handler associated with this context. */
-    val handler: ChannelHandler
+    val handler: PipelineHandler
 
     /** The buffer allocator for this channel. */
     val allocator: BufferAllocator

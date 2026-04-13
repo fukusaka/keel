@@ -4,13 +4,13 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.InboundHandler
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -31,7 +31,7 @@ class HttpResponseEncoderStreamingTest {
     private val transport = CapturingTransport()
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
@@ -39,18 +39,18 @@ class HttpResponseEncoderStreamingTest {
     }
 
     /** Collects errors propagated through the pipeline. */
-    private class ErrorCollector : ChannelInboundHandler {
+    private class ErrorCollector : InboundHandler {
         val errors = mutableListOf<Throwable>()
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {}
-        override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {}
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
             errors.add(cause)
         }
     }
 
     private val errorCollector = ErrorCollector()
 
-    private fun createEncoderPipeline(): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("test"))
+    private fun createEncoderPipeline(): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
         channel.pipeline = pipeline
         pipeline.addLast("encoder", HttpResponseEncoder())
         pipeline.addLast("errors", errorCollector)
@@ -196,7 +196,7 @@ class HttpResponseEncoderStreamingTest {
     }
 
     /** Initiates an outbound write from the tail toward HEAD (through HttpResponseEncoder). */
-    private fun ChannelPipeline.writeFromTail(msg: Any) {
+    private fun Pipeline.writeFromTail(msg: Any) {
         requestWrite(msg)
     }
 }

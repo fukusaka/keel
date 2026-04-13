@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.tls
 
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.pipeline.ChannelDuplexHandler
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
+import io.github.fukusaka.keel.pipeline.DuplexHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 
 /**
  * Pipeline handler that applies TLS record protection.
@@ -32,18 +32,18 @@ import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
  */
 class TlsHandler(
     private val codec: TlsCodec,
-) : ChannelDuplexHandler {
+) : DuplexHandler {
 
-    private var ctx: ChannelHandlerContext? = null
+    private var ctx: PipelineHandlerContext? = null
     private var accumulate: IoBuf? = null
     private var handshakeNotified = false
 
-    override fun handlerAdded(ctx: ChannelHandlerContext) {
+    override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
         ctx.allocator.registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, PLAINTEXT_POOL_SLOTS)
     }
 
-    override fun handlerRemoved(ctx: ChannelHandlerContext) {
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
         accumulate?.release()
         accumulate = null
         codec.close()
@@ -52,7 +52,7 @@ class TlsHandler(
 
     // --- Inbound: ciphertext → plaintext ---
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg !is IoBuf) {
             ctx.propagateRead(msg)
             return
@@ -64,7 +64,7 @@ class TlsHandler(
         }
     }
 
-    private fun processInbound(ctx: ChannelHandlerContext, cipherBuf: IoBuf) {
+    private fun processInbound(ctx: PipelineHandlerContext, cipherBuf: IoBuf) {
         // Fast path: no accumulated partial record — use cipherBuf directly.
         // Slow path: append to accumulate buffer, then unprotect from accumulate.
         val input = mergeWithAccumulate(ctx, cipherBuf)
@@ -128,7 +128,7 @@ class TlsHandler(
      * Fast path (no accumulate): returns cipherBuf directly — no copy.
      * Slow path: appends cipherBuf into accumulate, returns accumulate.
      */
-    private fun mergeWithAccumulate(ctx: ChannelHandlerContext, cipherBuf: IoBuf): IoBuf {
+    private fun mergeWithAccumulate(ctx: PipelineHandlerContext, cipherBuf: IoBuf): IoBuf {
         val acc = accumulate ?: return cipherBuf
         // Append new data to existing accumulate buffer.
         // copyTo advances both source.readerIndex and dest.writerIndex.
@@ -153,7 +153,7 @@ class TlsHandler(
      * into a new accumulate buffer. If [input] is already the accumulate buffer,
      * compacts it in place.
      */
-    private fun saveAccumulate(ctx: ChannelHandlerContext, input: IoBuf) {
+    private fun saveAccumulate(ctx: PipelineHandlerContext, input: IoBuf) {
         val remaining = input.readableBytes
         if (remaining == 0) {
             releaseAccumulate()
@@ -178,7 +178,7 @@ class TlsHandler(
 
     // --- Outbound: plaintext → ciphertext ---
 
-    override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         if (msg !is IoBuf) {
             ctx.propagateWrite(msg)
             return
@@ -191,7 +191,7 @@ class TlsHandler(
         // state (ByteBuffer.limit not restored → IndexOutOfBoundsException).
     }
 
-    private fun processOutbound(ctx: ChannelHandlerContext, plainBuf: IoBuf) {
+    private fun processOutbound(ctx: PipelineHandlerContext, plainBuf: IoBuf) {
         while (plainBuf.readableBytes > 0) {
             val cipherBuf = ctx.allocator.allocate(TLS_CIPHERTEXT_BUF_SIZE)
             val result = try {
@@ -298,11 +298,11 @@ class TlsHandler(
         checkHandshakeComplete(ctx)
     }
 
-    override fun onFlush(ctx: ChannelHandlerContext) {
+    override fun onFlush(ctx: PipelineHandlerContext) {
         ctx.propagateFlush()
     }
 
-    override fun onClose(ctx: ChannelHandlerContext) {
+    override fun onClose(ctx: PipelineHandlerContext) {
         // Send close_notify via protect.
         codec.close()
         ctx.propagateClose()
@@ -321,7 +321,7 @@ class TlsHandler(
      * @return true if handshake flush succeeded, false if an error was
      *         propagated (caller must stop processing).
      */
-    private fun flushHandshakeResponse(ctx: ChannelHandlerContext): Boolean {
+    private fun flushHandshakeResponse(ctx: PipelineHandlerContext): Boolean {
         val emptyBuf = ctx.allocator.allocate(0)
         try {
             var iterations = 0
@@ -392,7 +392,7 @@ class TlsHandler(
         return true
     }
 
-    private fun checkHandshakeComplete(ctx: ChannelHandlerContext) {
+    private fun checkHandshakeComplete(ctx: PipelineHandlerContext) {
         if (!handshakeNotified && codec.isHandshakeComplete) {
             handshakeNotified = true
             ctx.propagateUserEvent(

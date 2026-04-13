@@ -5,18 +5,18 @@ import kotlin.reflect.KClass
 /**
  * Base marker for all pipeline handlers.
  *
- * A handler intercepts I/O events flowing through a [ChannelPipeline].
- * Implement [ChannelInboundHandler] for inbound events (data received,
- * connection lifecycle) or [ChannelOutboundHandler] for outbound operations
+ * A handler intercepts I/O events flowing through a [Pipeline].
+ * Implement [InboundHandler] for inbound events (data received,
+ * connection lifecycle) or [OutboundHandler] for outbound operations
  * (write, flush, close).
  */
-interface ChannelHandler {
+interface PipelineHandler {
 
     /** Called after the handler is added to a pipeline. */
-    fun handlerAdded(ctx: ChannelHandlerContext) {}
+    fun handlerAdded(ctx: PipelineHandlerContext) {}
 
     /** Called after the handler is removed from a pipeline. */
-    fun handlerRemoved(ctx: ChannelHandlerContext) {}
+    fun handlerRemoved(ctx: PipelineHandlerContext) {}
 }
 
 /**
@@ -24,15 +24,15 @@ interface ChannelHandler {
  *
  * All callbacks run on the EventLoop thread and MUST NOT block or suspend.
  * The default implementation of each callback propagates the event to the
- * next inbound handler via [ChannelHandlerContext.propagateRead] etc.
+ * next inbound handler via [PipelineHandlerContext.propagateRead] etc.
  *
  * [acceptedType] and [producedType] declare the message types this handler
  * consumes and produces. The pipeline validates type chain consistency at
- * construction time ([ChannelPipeline.addLast] etc.), catching mismatches
+ * construction time ([Pipeline.addLast] etc.), catching mismatches
  * before any message flows. Handlers that do not declare types default to
  * [Any] and skip validation.
  */
-interface ChannelInboundHandler : ChannelHandler {
+interface InboundHandler : PipelineHandler {
 
     /**
      * The message type this handler accepts in [onRead].
@@ -42,34 +42,34 @@ interface ChannelInboundHandler : ChannelHandler {
     val acceptedType: KClass<*> get() = Any::class
 
     /**
-     * The message type this handler produces via [ChannelHandlerContext.propagateRead].
+     * The message type this handler produces via [PipelineHandlerContext.propagateRead].
      * Used for pipeline type chain validation at construction time.
      * Default [Any] skips validation (opt-in).
      */
     val producedType: KClass<*> get() = Any::class
 
     /** Called when the channel becomes active (connected). */
-    fun onActive(ctx: ChannelHandlerContext) {
+    fun onActive(ctx: PipelineHandlerContext) {
         ctx.propagateActive()
     }
 
     /** Called when data is received. */
-    fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         ctx.propagateRead(msg)
     }
 
     /** Called when a batch of reads is complete. */
-    fun onReadComplete(ctx: ChannelHandlerContext) {
+    fun onReadComplete(ctx: PipelineHandlerContext) {
         ctx.propagateReadComplete()
     }
 
     /** Called when the channel becomes inactive (disconnected). */
-    fun onInactive(ctx: ChannelHandlerContext) {
+    fun onInactive(ctx: PipelineHandlerContext) {
         ctx.propagateInactive()
     }
 
     /** Called when an error occurs in the pipeline. */
-    fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+    fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         ctx.propagateError(cause)
     }
 
@@ -83,7 +83,7 @@ interface ChannelInboundHandler : ChannelHandler {
      * Example: a TLS handler fires a handshake-complete event so
      * downstream handlers can act on it (e.g., start sending data).
      */
-    fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+    fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
         ctx.propagateUserEvent(event)
     }
 
@@ -96,7 +96,7 @@ interface ChannelInboundHandler : ChannelHandler {
      *
      * Flows inbound (HEAD → TAIL), like other inbound events.
      */
-    fun onWritabilityChanged(ctx: ChannelHandlerContext, isWritable: Boolean) {
+    fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
         ctx.propagateWritabilityChanged(isWritable)
     }
 }
@@ -106,22 +106,22 @@ interface ChannelInboundHandler : ChannelHandler {
  *
  * All callbacks run on the EventLoop thread and MUST NOT block or suspend.
  * The default implementation propagates each operation to the next outbound
- * handler via [ChannelHandlerContext.propagateWrite] etc.
+ * handler via [PipelineHandlerContext.propagateWrite] etc.
  */
-interface ChannelOutboundHandler : ChannelHandler {
+interface OutboundHandler : PipelineHandler {
 
     /** Called when a write is requested. */
-    fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+    fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         ctx.propagateWrite(msg)
     }
 
     /** Called when a flush is requested. */
-    fun onFlush(ctx: ChannelHandlerContext) {
+    fun onFlush(ctx: PipelineHandlerContext) {
         ctx.propagateFlush()
     }
 
     /** Called when a close is requested. */
-    fun onClose(ctx: ChannelHandlerContext) {
+    fun onClose(ctx: PipelineHandlerContext) {
         ctx.propagateClose()
     }
 }
@@ -132,4 +132,4 @@ interface ChannelOutboundHandler : ChannelHandler {
  * Useful for codecs that transform messages in both directions
  * (e.g., HTTP request decoder + response encoder).
  */
-interface ChannelDuplexHandler : ChannelInboundHandler, ChannelOutboundHandler
+interface DuplexHandler : InboundHandler, OutboundHandler

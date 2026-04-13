@@ -4,10 +4,10 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelOutboundHandler
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.OutboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
@@ -31,15 +31,15 @@ class HttpResponseEncoderTest {
     private val transport = CapturingTransport()
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = DefaultAllocator
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(vararg extraHandlers: Pair<String, ChannelOutboundHandler>): ChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, PrintLogger("test"))
+    private fun createPipeline(vararg extraHandlers: Pair<String, OutboundHandler>): Pipeline {
+        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
         channel.pipeline = pipeline
         // Outbound handlers are visited in reverse (tail → head), so add last-to-first.
         for ((name, handler) in extraHandlers) pipeline.addLast(name, handler)
