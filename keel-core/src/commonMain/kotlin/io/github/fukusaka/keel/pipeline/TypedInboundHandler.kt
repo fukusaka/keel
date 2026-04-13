@@ -17,21 +17,21 @@ import kotlin.reflect.KClass
  * enabling construction-time type chain validation.
  *
  * ```kotlin
- * class MyHandler : TypedChannelInboundHandler<HttpRequest>(HttpRequest::class) {
- *     override fun onReadTyped(ctx: ChannelHandlerContext, msg: HttpRequest) {
+ * class MyHandler : TypedInboundHandler<HttpRequest>(HttpRequest::class) {
+ *     override fun onReadTyped(ctx: PipelineHandlerContext, msg: HttpRequest) {
  *         ctx.propagateWriteAndFlush(buildResponse(msg))
  *     }
  * }
  * ```
  */
-abstract class TypedChannelInboundHandler<I : Any>(
+abstract class TypedInboundHandler<I : Any>(
     private val type: KClass<I>,
     private val autoRelease: Boolean = true,
-) : ChannelInboundHandler {
+) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = type
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (type.isInstance(msg)) {
             @Suppress("UNCHECKED_CAST")
             val castedMsg = msg as I
@@ -53,13 +53,13 @@ abstract class TypedChannelInboundHandler<I : Any>(
      * Called when a message of type [I] is received.
      *
      * If [autoRelease] is true, the message is released after this method
-     * returns (unless propagated via [ChannelHandlerContext.propagateRead]).
+     * returns (unless propagated via [PipelineHandlerContext.propagateRead]).
      */
-    abstract fun onReadTyped(ctx: ChannelHandlerContext, msg: I)
+    abstract fun onReadTyped(ctx: PipelineHandlerContext, msg: I)
 }
 
 /**
- * Creates a [TypedChannelInboundHandler] from a lambda.
+ * Creates a [TypedInboundHandler] from a lambda.
  *
  * Uses Kotlin's reified type parameters to automatically infer the
  * message type — no explicit [KClass] parameter needed.
@@ -71,7 +71,7 @@ abstract class TypedChannelInboundHandler<I : Any>(
  * ```
  */
 inline fun <reified I : Any> typedHandler(
-    crossinline block: (ChannelHandlerContext, I) -> Unit,
-): TypedChannelInboundHandler<I> = object : TypedChannelInboundHandler<I>(I::class) {
-    override fun onReadTyped(ctx: ChannelHandlerContext, msg: I) = block(ctx, msg)
+    crossinline block: (PipelineHandlerContext, I) -> Unit,
+): TypedInboundHandler<I> = object : TypedInboundHandler<I>(I::class) {
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: I) = block(ctx, msg)
 }

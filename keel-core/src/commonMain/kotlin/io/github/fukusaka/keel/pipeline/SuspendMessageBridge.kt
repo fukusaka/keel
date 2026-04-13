@@ -40,13 +40,13 @@ import kotlin.reflect.KClass
 class SuspendMessageBridge<T : Any>(
     private val type: KClass<T>,
     capacity: Int = Channel.UNLIMITED,
-) : ChannelInboundHandler {
+) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = type
 
     private val messages = Channel<T>(capacity)
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (type.isInstance(msg)) {
             @Suppress("UNCHECKED_CAST")
             val result = messages.trySend(msg as T)
@@ -59,12 +59,12 @@ class SuspendMessageBridge<T : Any>(
         }
     }
 
-    override fun onInactive(ctx: ChannelHandlerContext) {
+    override fun onInactive(ctx: PipelineHandlerContext) {
         messages.close()
         ctx.propagateInactive()
     }
 
-    override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         messages.close(cause)
         ctx.propagateError(cause)
     }

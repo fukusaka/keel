@@ -4,12 +4,12 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.ChannelDuplexHandler
-import io.github.fukusaka.keel.pipeline.ChannelHandler
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
-import io.github.fukusaka.keel.pipeline.ChannelPipeline
-import io.github.fukusaka.keel.pipeline.DefaultChannelPipeline
+import io.github.fukusaka.keel.pipeline.DuplexHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.DefaultPipeline
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
@@ -39,15 +39,15 @@ class TlsHandlerTest {
     }
 
     private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: ChannelPipeline
+        override lateinit var pipeline: Pipeline
         override val isActive: Boolean = true
         override val isWritable: Boolean = true
         override val allocator: BufferAllocator get() = this@TlsHandlerTest.allocator
         override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
     }
 
-    private fun createPipeline(tlsHandler: TlsHandler): DefaultChannelPipeline {
-        val pipeline = DefaultChannelPipeline(channel, transport, logger)
+    private fun createPipeline(tlsHandler: TlsHandler): DefaultPipeline {
+        val pipeline = DefaultPipeline(channel, transport, logger)
         channel.pipeline = pipeline
         pipeline.addLast("tls", tlsHandler)
         return pipeline
@@ -55,12 +55,12 @@ class TlsHandlerTest {
 
     // --- Recording handler (placed after TlsHandler) ---
 
-    private class RecordingHandler : ChannelDuplexHandler {
+    private class RecordingHandler : DuplexHandler {
         val reads = mutableListOf<ByteArray>()
         val errors = mutableListOf<Throwable>()
         val userEvents = mutableListOf<Any>()
 
-        override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             if (msg is IoBuf) {
                 val bytes = ByteArray(msg.readableBytes)
                 for (i in bytes.indices) bytes[i] = msg.readByte()
@@ -69,15 +69,15 @@ class TlsHandlerTest {
             }
         }
 
-        override fun onError(ctx: ChannelHandlerContext, cause: Throwable) {
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
             errors.add(cause)
         }
 
-        override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+        override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
             userEvents.add(event)
         }
 
-        override fun onInactive(ctx: ChannelHandlerContext) {
+        override fun onInactive(ctx: PipelineHandlerContext) {
             // Terminal
         }
     }
@@ -738,8 +738,8 @@ class TlsHandlerTest {
         val pipeline = createPipeline(handler)
 
         var inactive = false
-        val inactiveHandler = object : ChannelInboundHandler {
-            override fun onInactive(ctx: ChannelHandlerContext) { inactive = true }
+        val inactiveHandler = object : InboundHandler {
+            override fun onInactive(ctx: PipelineHandlerContext) { inactive = true }
         }
         pipeline.addAfter("tls", "inactive-check", inactiveHandler)
 

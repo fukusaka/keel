@@ -355,7 +355,7 @@ public class KeelApplicationEngine(
      *
      * Response output flows through the pipeline: [KeelApplicationResponse]
      * emits [HttpResponseHead] / [HttpBody] / [HttpBodyEnd] via
-     * [pipeline.requestWrite][io.github.fukusaka.keel.pipeline.ChannelPipeline.requestWrite],
+     * [pipeline.requestWrite][io.github.fukusaka.keel.pipeline.Pipeline.requestWrite],
      * and [HttpResponseEncoder] serialises them into wire-format [IoBuf]s.
      */
     private suspend fun CoroutineScope.handleConnection(channel: Channel, scheme: String = "http") {

@@ -20,8 +20,8 @@ import kotlin.coroutines.resume
  * - [onInactive]: signals EOF, drains and releases queued buffers, so [read] returns -1
  *
  * **Outbound (direct propagation)**:
- * - [write]: delegates to [ChannelHandlerContext.propagateWrite]
- * - [flush]: delegates to [ChannelHandlerContext.propagateFlush]
+ * - [write]: delegates to [PipelineHandlerContext.propagateWrite]
+ * - [flush]: delegates to [PipelineHandlerContext.propagateFlush]
  *
  * ```
  * Pipeline:  HEAD ↔ [handlers] ↔ SuspendBridgeHandler ↔ TAIL
@@ -42,20 +42,20 @@ import kotlin.coroutines.resume
  * readers will overwrite the pending continuation, causing the earlier reader
  * to hang indefinitely. This matches the Channel contract (single-threaded I/O).
  */
-class SuspendBridgeHandler : ChannelDuplexHandler, OwnedSuspendSource {
+class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 
     private val readQueue = ArrayDeque<IoBuf>()
     private var readCont: CancellableContinuation<Unit>? = null
     private var eof = false
-    private lateinit var ctx: ChannelHandlerContext
+    private lateinit var ctx: PipelineHandlerContext
 
-    override fun handlerAdded(ctx: ChannelHandlerContext) {
+    override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
     }
 
     // --- Inbound: push → pull bridge ---
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is IoBuf) {
             readQueue.addLast(msg)
             // Resume the single waiting reader, if any.
@@ -72,7 +72,7 @@ class SuspendBridgeHandler : ChannelDuplexHandler, OwnedSuspendSource {
         }
     }
 
-    override fun onInactive(ctx: ChannelHandlerContext) {
+    override fun onInactive(ctx: PipelineHandlerContext) {
         eof = true
         // Release all queued buffers that will never be consumed.
         for (buf in readQueue) {

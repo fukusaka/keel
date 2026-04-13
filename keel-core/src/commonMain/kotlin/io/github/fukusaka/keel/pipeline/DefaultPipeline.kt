@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 
 /**
- * Default [ChannelPipeline] implementation using a doubly-linked list of handler contexts.
+ * Default [Pipeline] implementation using a doubly-linked list of handler contexts.
  *
  * ```
  * head ↔ ctx1 ↔ ctx2 ↔ ... ↔ tail
@@ -18,15 +18,15 @@ import io.github.fukusaka.keel.logging.error
  * [TailHandler] releases unreferenced messages and logs warnings.
  *
  * **Type chain validation**: [addLast], [addBefore], [addAfter], and [replace]
- * validate that adjacent [ChannelInboundHandler]s have compatible
+ * validate that adjacent [InboundHandler]s have compatible
  * [acceptedType]/[producedType] declarations. Validation is skipped when
  * either type is [Any] (the default).
  */
-class DefaultChannelPipeline(
+class DefaultPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
     private val logger: Logger,
-) : ChannelPipeline {
+) : Pipeline {
 
     private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport))
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
@@ -38,7 +38,7 @@ class DefaultChannelPipeline(
 
     // --- Composition ---
 
-    override fun addFirst(name: String, handler: ChannelHandler): ChannelPipeline {
+    override fun addFirst(name: String, handler: PipelineHandler): Pipeline {
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val after = head.next!!
@@ -49,7 +49,7 @@ class DefaultChannelPipeline(
         return this
     }
 
-    override fun addLast(name: String, handler: ChannelHandler): ChannelPipeline {
+    override fun addLast(name: String, handler: PipelineHandler): Pipeline {
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val before = tail.prev!!
@@ -60,7 +60,7 @@ class DefaultChannelPipeline(
         return this
     }
 
-    override fun addBefore(baseName: String, name: String, handler: ChannelHandler): ChannelPipeline {
+    override fun addBefore(baseName: String, name: String, handler: PipelineHandler): Pipeline {
         val base = getContext(baseName)
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
@@ -72,7 +72,7 @@ class DefaultChannelPipeline(
         return this
     }
 
-    override fun addAfter(baseName: String, name: String, handler: ChannelHandler): ChannelPipeline {
+    override fun addAfter(baseName: String, name: String, handler: PipelineHandler): Pipeline {
         val base = getContext(baseName)
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
@@ -84,7 +84,7 @@ class DefaultChannelPipeline(
         return this
     }
 
-    override fun remove(name: String): ChannelHandler {
+    override fun remove(name: String): PipelineHandler {
         val ctx = getContext(name)
         val prev = ctx.prev!!
         val next = ctx.next!!
@@ -97,7 +97,7 @@ class DefaultChannelPipeline(
         return ctx.handler
     }
 
-    override fun replace(oldName: String, newName: String, newHandler: ChannelHandler): ChannelHandler {
+    override fun replace(oldName: String, newName: String, newHandler: PipelineHandler): PipelineHandler {
         val oldCtx = getContext(oldName)
         if (oldName != newName) checkDuplicateName(newName)
         val prev = oldCtx.prev!!
@@ -116,60 +116,60 @@ class DefaultChannelPipeline(
         return oldCtx.handler
     }
 
-    override fun get(name: String): ChannelHandler? = findContext(name)?.handler
+    override fun get(name: String): PipelineHandler? = findContext(name)?.handler
 
-    override fun context(name: String): ChannelHandlerContext? = findContext(name)
+    override fun context(name: String): PipelineHandlerContext? = findContext(name)
 
     // --- Inbound entry ---
 
-    override fun notifyActive(): ChannelPipeline {
+    override fun notifyActive(): Pipeline {
         head.invokeOnActive()
         return this
     }
 
-    override fun notifyRead(msg: Any): ChannelPipeline {
+    override fun notifyRead(msg: Any): Pipeline {
         head.invokeOnRead(msg)
         return this
     }
 
-    override fun notifyReadComplete(): ChannelPipeline {
+    override fun notifyReadComplete(): Pipeline {
         head.invokeOnReadComplete()
         return this
     }
 
-    override fun notifyInactive(): ChannelPipeline {
+    override fun notifyInactive(): Pipeline {
         head.invokeOnInactive()
         return this
     }
 
-    override fun notifyError(cause: Throwable): ChannelPipeline {
+    override fun notifyError(cause: Throwable): Pipeline {
         head.invokeOnError(cause)
         return this
     }
 
-    override fun notifyUserEvent(event: Any): ChannelPipeline {
+    override fun notifyUserEvent(event: Any): Pipeline {
         head.invokeOnUserEvent(event)
         return this
     }
 
-    override fun notifyWritabilityChanged(isWritable: Boolean): ChannelPipeline {
+    override fun notifyWritabilityChanged(isWritable: Boolean): Pipeline {
         head.invokeOnWritabilityChanged(isWritable)
         return this
     }
 
     // --- Outbound entry ---
 
-    override fun requestWrite(msg: Any): ChannelPipeline {
+    override fun requestWrite(msg: Any): Pipeline {
         tail.invokeOnWrite(msg)
         return this
     }
 
-    override fun requestFlush(): ChannelPipeline {
+    override fun requestFlush(): Pipeline {
         tail.invokeOnFlush()
         return this
     }
 
-    override fun requestClose(): ChannelPipeline {
+    override fun requestClose(): Pipeline {
         tail.invokeOnClose()
         return this
     }
@@ -218,16 +218,16 @@ class DefaultChannelPipeline(
     /**
      * Validates inbound type chain between adjacent handlers.
      *
-     * Skipped when either handler is not a [ChannelInboundHandler] or when
+     * Skipped when either handler is not a [InboundHandler] or when
      * either type is [Any] (opt-out default).
      */
     private fun validateInboundTypeChain(
-        prevHandler: ChannelHandler,
-        nextHandler: ChannelHandler,
+        prevHandler: PipelineHandler,
+        nextHandler: PipelineHandler,
         nextName: String,
     ) {
-        if (prevHandler !is ChannelInboundHandler) return
-        if (nextHandler !is ChannelInboundHandler) return
+        if (prevHandler !is InboundHandler) return
+        if (nextHandler !is InboundHandler) return
         val produced = prevHandler.producedType
         val accepted = nextHandler.acceptedType
         if (produced == Any::class || accepted == Any::class) return
@@ -243,7 +243,7 @@ class DefaultChannelPipeline(
         }
     }
 
-    private fun nameOf(handler: ChannelHandler): String {
+    private fun nameOf(handler: PipelineHandler): String {
         var ctx: DefaultContext? = head
         while (ctx != null) {
             if (ctx.handler === handler) return ctx.name
@@ -255,17 +255,17 @@ class DefaultChannelPipeline(
     // --- DefaultContext ---
 
     /**
-     * A node in the doubly-linked list that forms the [DefaultChannelPipeline].
+     * A node in the doubly-linked list that forms the [DefaultPipeline].
      *
-     * Each context wraps a single [ChannelHandler] and provides the
-     * [ChannelHandlerContext] interface for that handler to propagate
+     * Each context wraps a single [PipelineHandler] and provides the
+     * [PipelineHandlerContext] interface for that handler to propagate
      * events to the next handler in the chain.
      *
      * **Inbound navigation** ([findNextInbound]): follows [next] pointers
-     * from head toward tail, skipping non-[ChannelInboundHandler] nodes.
+     * from head toward tail, skipping non-[InboundHandler] nodes.
      *
      * **Outbound navigation** ([findPrevOutbound]): follows [prev] pointers
-     * from tail toward head, skipping non-[ChannelOutboundHandler] nodes.
+     * from tail toward head, skipping non-[OutboundHandler] nodes.
      *
      * **Invoke methods** (`invokeOn*`): wrap handler callbacks with try-catch
      * to prevent IoBuf leaks on exceptions. [invokeOnRead] releases the message
@@ -273,10 +273,10 @@ class DefaultChannelPipeline(
      * infinite error propagation loops.
      */
     internal class DefaultContext(
-        private val pipelineRef: DefaultChannelPipeline,
+        private val pipelineRef: DefaultPipeline,
         override val name: String,
-        override val handler: ChannelHandler,
-    ) : ChannelHandlerContext {
+        override val handler: PipelineHandler,
+    ) : PipelineHandlerContext {
 
         /** Previous node toward HEAD (outbound direction). Null when detached. */
         var prev: DefaultContext? = null
@@ -285,7 +285,7 @@ class DefaultChannelPipeline(
         var next: DefaultContext? = null
 
         override val channel: PipelinedChannel get() = pipelineRef.channel
-        override val pipeline: ChannelPipeline get() = pipelineRef
+        override val pipeline: Pipeline get() = pipelineRef
         override val allocator: BufferAllocator get() = channel.allocator
 
         // --- Inbound propagation ---
@@ -346,7 +346,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnActive() {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onActive(this)
                 } catch (e: Throwable) {
@@ -359,7 +359,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnRead(msg: Any) {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onRead(this, msg)
                 } catch (e: Throwable) {
@@ -373,7 +373,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnReadComplete() {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onReadComplete(this)
                 } catch (e: Throwable) {
@@ -386,7 +386,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnInactive() {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onInactive(this)
                 } catch (e: Throwable) {
@@ -399,7 +399,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnError(cause: Throwable) {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onError(this, cause)
                 } catch (e: Throwable) {
@@ -414,7 +414,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnUserEvent(event: Any) {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onUserEvent(this, event)
                 } catch (e: Throwable) {
@@ -427,7 +427,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnWritabilityChanged(isWritable: Boolean) {
             val h = handler
-            if (h is ChannelInboundHandler) {
+            if (h is InboundHandler) {
                 try {
                     h.onWritabilityChanged(this, isWritable)
                 } catch (e: Throwable) {
@@ -440,7 +440,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnWrite(msg: Any) {
             val h = handler
-            if (h is ChannelOutboundHandler) {
+            if (h is OutboundHandler) {
                 try {
                     h.onWrite(this, msg)
                 } catch (e: Throwable) {
@@ -454,7 +454,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnFlush() {
             val h = handler
-            if (h is ChannelOutboundHandler) {
+            if (h is OutboundHandler) {
                 try {
                     h.onFlush(this)
                 } catch (e: Throwable) {
@@ -467,7 +467,7 @@ class DefaultChannelPipeline(
 
         internal fun invokeOnClose() {
             val h = handler
-            if (h is ChannelOutboundHandler) {
+            if (h is OutboundHandler) {
                 try {
                     h.onClose(this)
                 } catch (e: Throwable) {
@@ -483,7 +483,7 @@ class DefaultChannelPipeline(
         private fun findNextInbound(): DefaultContext? {
             var ctx = next
             while (ctx != null) {
-                if (ctx.handler is ChannelInboundHandler) return ctx
+                if (ctx.handler is InboundHandler) return ctx
                 ctx = ctx.next
             }
             return null
@@ -492,7 +492,7 @@ class DefaultChannelPipeline(
         private fun findPrevOutbound(): DefaultContext? {
             var ctx = prev
             while (ctx != null) {
-                if (ctx.handler is ChannelOutboundHandler) return ctx
+                if (ctx.handler is OutboundHandler) return ctx
                 ctx = ctx.prev
             }
             return null

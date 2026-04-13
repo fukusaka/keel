@@ -3,22 +3,22 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.BufferAllocator
 
 /**
- * Wrapper around [ChannelHandlerContext] that detects propagation calls.
+ * Wrapper around [PipelineHandlerContext] that detects propagation calls.
  *
- * Used by [TypedChannelInboundHandler] to determine whether the handler
+ * Used by [TypedInboundHandler] to determine whether the handler
  * forwarded the message to the next handler. If [propagateRead] is called,
  * [onPropagate] fires, signaling that auto-release should be skipped
  * (the next handler now owns the message).
  */
 internal class PropagateTrackingContext(
-    private val delegate: ChannelHandlerContext,
+    private val delegate: PipelineHandlerContext,
     private val onPropagate: () -> Unit,
-) : ChannelHandlerContext {
+) : PipelineHandlerContext {
 
     override val channel: PipelinedChannel get() = delegate.channel
-    override val pipeline: ChannelPipeline get() = delegate.pipeline
+    override val pipeline: Pipeline get() = delegate.pipeline
     override val name: String get() = delegate.name
-    override val handler: ChannelHandler get() = delegate.handler
+    override val handler: PipelineHandler get() = delegate.handler
     override val allocator: BufferAllocator get() = delegate.allocator
 
     override fun propagateActive() = delegate.propagateActive()

@@ -1,15 +1,14 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.pipeline.ChannelHandlerContext
-import io.github.fukusaka.keel.pipeline.ChannelInboundHandler
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.reflect.KClass
-
 /**
  * Pipeline handler that routes [HttpRequestHead] messages to registered path handlers.
  *
  * Looks up the request [HttpRequestHead.path] in [routes]. If a match is found, the
  * handler is invoked and the resulting [HttpResponse] is forwarded outbound via
- * [ChannelHandlerContext.propagateWrite] + [ChannelHandlerContext.propagateFlush].
+ * [PipelineHandlerContext.propagateWrite] + [PipelineHandlerContext.propagateFlush].
  * Unmatched paths receive a 404 Not Found response.
  *
  * This is a terminal inbound handler — it does not forward any inbound message
@@ -29,14 +28,14 @@ import kotlin.reflect.KClass
  */
 class RoutingHandler(
     private val routes: Map<String, (HttpRequestHead) -> HttpResponse>,
-) : ChannelInboundHandler {
+) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = HttpMessage::class
 
     /** Terminal inbound handler — produces no further inbound messages. */
     override val producedType: KClass<*> get() = Any::class
 
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> routeRequest(ctx, msg)
             is HttpBodyEnd -> msg.content.release()
@@ -45,7 +44,7 @@ class RoutingHandler(
         }
     }
 
-    private fun routeRequest(ctx: ChannelHandlerContext, head: HttpRequestHead) {
+    private fun routeRequest(ctx: PipelineHandlerContext, head: HttpRequestHead) {
         val handler = routes[head.path]
         val response = if (handler != null) handler(head) else HttpResponse.notFound()
         ctx.propagateWrite(response)

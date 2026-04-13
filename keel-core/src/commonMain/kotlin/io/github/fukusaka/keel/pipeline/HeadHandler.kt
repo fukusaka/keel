@@ -8,21 +8,21 @@ import io.github.fukusaka.keel.buf.IoBuf
  * **Inbound**: propagates events to the next handler (acts as the entry point).
  * **Outbound**: terminates the chain by delegating to the transport.
  *
- * HeadHandler implements both [ChannelInboundHandler] and [ChannelOutboundHandler]
+ * HeadHandler implements both [InboundHandler] and [OutboundHandler]
  * so it participates in both directions of the pipeline.
  */
 internal class HeadHandler(
     private val transport: IoTransport,
-) : ChannelDuplexHandler {
+) : DuplexHandler {
 
     // --- Inbound: pass through to next handler ---
 
-    // Default implementations from ChannelInboundHandler propagate automatically.
+    // Default implementations from InboundHandler propagate automatically.
     // HeadHandler does not transform inbound messages.
 
     // --- Outbound: terminate at transport ---
 
-    override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+    override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is IoBuf) {
             transport.write(msg)
         } else {
@@ -37,11 +37,11 @@ internal class HeadHandler(
         }
     }
 
-    override fun onFlush(ctx: ChannelHandlerContext) {
+    override fun onFlush(ctx: PipelineHandlerContext) {
         transport.flush()
     }
 
-    override fun onClose(ctx: ChannelHandlerContext) {
+    override fun onClose(ctx: PipelineHandlerContext) {
         transport.close()
     }
 }

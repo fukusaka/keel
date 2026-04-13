@@ -150,7 +150,7 @@ class NwEngine(
      *
      * Creates an NWListener with a new-connection handler that wraps each
      * accepted connection in a [NwPipelinedChannel] and feeds data through
-     * the [ChannelPipeline] — no coroutine suspension on the request hot path.
+     * the [Pipeline] — no coroutine suspension on the request hot path.
      *
      * Non-suspend: blocks on dispatch_semaphore until the NWListener reaches
      * the ready state (Pipeline zero-coroutine principle). NWListener startup

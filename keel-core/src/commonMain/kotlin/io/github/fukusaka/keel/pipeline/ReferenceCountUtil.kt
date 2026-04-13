@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 /**
  * Utility for safe reference count management in the pipeline.
  *
- * Used by [TailHandler] and [TypedChannelInboundHandler] to release
+ * Used by [TailHandler] and [TypedInboundHandler] to release
  * messages that implement [IoBuf] without risking double-release.
  */
 internal object ReferenceCountUtil {

@@ -7,13 +7,13 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import kotlinx.coroutines.withContext
 
 /**
- * A channel with an associated [ChannelPipeline] for protocol processing.
+ * A channel with an associated [Pipeline] for protocol processing.
  *
  * Extends [Channel] to support both push-based Pipeline I/O (via handler
  * callbacks) and pull-based suspend I/O (via [read]/[write]/[flush]).
  *
  * **Pipeline mode** (push, zero-suspend): engine feeds data into the pipeline
- * via [ChannelPipeline.notifyRead]. Handlers process data synchronously.
+ * via [Pipeline.notifyRead]. Handlers process data synchronously.
  * No [SuspendBridgeHandler] needed.
  *
  * **Channel mode** (pull, suspend): a [SuspendBridgeHandler] is installed
@@ -26,7 +26,7 @@ import kotlinx.coroutines.withContext
 interface PipelinedChannel : Channel {
 
     /** The pipeline processing I/O events for this channel. */
-    val pipeline: ChannelPipeline
+    val pipeline: Pipeline
 
     /** True if the outbound buffer has capacity for more writes. */
     val isWritable: Boolean
