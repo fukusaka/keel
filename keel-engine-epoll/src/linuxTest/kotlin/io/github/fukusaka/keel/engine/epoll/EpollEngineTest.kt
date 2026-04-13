@@ -861,7 +861,7 @@ class EpollEngineTest {
     // --- CoroutineDispatcher ---
 
     @Test
-    fun `channel coroutineDispatcher returns EventLoop`() = runBlocking {
+    fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -869,8 +869,8 @@ class EpollEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        // coroutineDispatcher should be the EpollEventLoop, not Dispatchers.Default
-        assertTrue(ch.coroutineDispatcher is EpollEventLoop)
+        // ioDispatcher should be the EpollEventLoop, not Dispatchers.Default
+        assertTrue(ch.ioDispatcher is EpollEventLoop)
 
         ch.close()
         close(clientFd)
@@ -888,7 +888,7 @@ class EpollEngineTest {
         val ch = server.accept()
 
         // Launch a coroutine on the EventLoop dispatcher and verify I/O works
-        val result = withContext(ch.coroutineDispatcher) {
+        val result = withContext(ch.ioDispatcher) {
             rawWrite(clientFd, "x")
             val buf = DefaultAllocator.allocate(64)
             val n = ch.read(buf)
@@ -914,7 +914,7 @@ class EpollEngineTest {
         val ch = server.accept()
 
         // Run entire echo on the EventLoop dispatcher
-        withContext(ch.coroutineDispatcher) {
+        withContext(ch.ioDispatcher) {
             rawWrite(clientFd, "hello")
 
             val buf = DefaultAllocator.allocate(64)
@@ -946,11 +946,11 @@ class EpollEngineTest {
 
         // Dispatch multiple tasks and verify they execute in order
         val results = mutableListOf<Int>()
-        withContext(ch.coroutineDispatcher) {
+        withContext(ch.ioDispatcher) {
             // All dispatches go to the same EventLoop thread's taskQueue
-            launch(ch.coroutineDispatcher) { results.add(1) }
-            launch(ch.coroutineDispatcher) { results.add(2) }
-            launch(ch.coroutineDispatcher) { results.add(3) }
+            launch(ch.ioDispatcher) { results.add(1) }
+            launch(ch.ioDispatcher) { results.add(2) }
+            launch(ch.ioDispatcher) { results.add(3) }
         }
 
         // drainTasks processes the taskQueue in FIFO order
@@ -974,8 +974,8 @@ class EpollEngineTest {
         // Test that dispatching from within a dispatched task works correctly.
         // This exercises the drainTasks() while loop: the inner dispatch
         // enqueues a new task that must be drained in the same iteration.
-        val result = withContext(ch.coroutineDispatcher) {
-            withContext(ch.coroutineDispatcher) {
+        val result = withContext(ch.ioDispatcher) {
+            withContext(ch.ioDispatcher) {
                 "nested"
             }
         }
@@ -1001,7 +1001,7 @@ class EpollEngineTest {
         val counter = kotlin.concurrent.AtomicInt(0)
         val jobs = (1..10).map {
             async {
-                withContext(ch.coroutineDispatcher) {
+                withContext(ch.ioDispatcher) {
                     counter.incrementAndGet()
                 }
             }
@@ -1068,9 +1068,9 @@ class EpollEngineTest {
             ch to clientFd
         }
 
-        // Each channel's coroutineDispatcher should be an EpollEventLoop
+        // Each channel's ioDispatcher should be an EpollEventLoop
         // (different instances for round-robin distribution)
-        val dispatchers = channels.map { (ch, _) -> ch.coroutineDispatcher }
+        val dispatchers = channels.map { (ch, _) -> ch.ioDispatcher }
         for (d in dispatchers) {
             assertTrue(d is EpollEventLoop, "Expected EpollEventLoop dispatcher")
         }

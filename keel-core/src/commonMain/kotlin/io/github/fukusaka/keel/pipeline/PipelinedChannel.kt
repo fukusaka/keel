@@ -45,7 +45,7 @@ interface PipelinedChannel : Channel {
     //
     // SuspendBridgeHandler requires all methods (read, onRead, onInactive,
     // write, flush) to execute on the same EventLoop thread.
-    // withContext(coroutineDispatcher) guarantees this for Channel mode
+    // withContext(ioDispatcher) guarantees this for Channel mode
     // operations called from any thread (runBlocking, Dispatchers.Default, etc.).
     // When already on the EventLoop, withContext is a no-op.
 
@@ -61,14 +61,14 @@ interface PipelinedChannel : Channel {
     /**
      * Reads decoded data via [SuspendBridgeHandler] on the EventLoop thread.
      *
-     * [withContext] dispatches to [coroutineDispatcher] (EventLoop) to
+     * [withContext] dispatches to [ioDispatcher] (EventLoop) to
      * guarantee single-threaded access to [SuspendBridgeHandler] state.
      *
      * @return number of bytes read, or -1 on EOF.
      */
     override suspend fun read(buf: IoBuf): Int {
         check(isOpen) { "Channel is closed" }
-        return withContext(coroutineDispatcher) {
+        return withContext(ioDispatcher) {
             ensureBridge().read(buf)
         }
     }
@@ -85,7 +85,7 @@ interface PipelinedChannel : Channel {
         check(isOpen) { "Channel is closed" }
         val n = buf.readableBytes
         if (n == 0) return 0
-        withContext(coroutineDispatcher) {
+        withContext(ioDispatcher) {
             pipeline.requestWrite(buf)
         }
         return n

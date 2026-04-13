@@ -31,7 +31,7 @@ internal class NioIoTransport(
 
     private var _open = true
     override val isOpen: Boolean get() = _open
-    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+    override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     @Suppress("InjectDispatcher")
     override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default

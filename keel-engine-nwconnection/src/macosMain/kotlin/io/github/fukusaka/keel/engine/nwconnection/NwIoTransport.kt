@@ -61,7 +61,7 @@ internal class NwIoTransport(
 
     private var _open = true
     override val isOpen: Boolean get() = _open
-    override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+    override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     // --- Read path ---
 

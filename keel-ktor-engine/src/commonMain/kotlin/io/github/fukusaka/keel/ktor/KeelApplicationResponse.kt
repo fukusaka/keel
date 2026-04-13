@@ -64,7 +64,7 @@ internal class KeelApplicationResponse(
 
     override suspend fun responseChannel(): ByteWriteChannel {
         val head = buildResponseHead()
-        withContext(pipelinedChannel.coroutineDispatcher) {
+        withContext(pipelinedChannel.ioDispatcher) {
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestFlush()
         }
@@ -73,7 +73,7 @@ internal class KeelApplicationResponse(
         // is called on the correct thread without per-chunk withContext
         // dispatch. bodyChannel.readAvailable() suspends and releases the
         // EventLoop while waiting for data, so other I/O events are processed.
-        responseBodyJob = scope.launch(pipelinedChannel.coroutineDispatcher) {
+        responseBodyJob = scope.launch(pipelinedChannel.ioDispatcher) {
             try {
                 val buf = ByteArray(RESPONSE_CHUNK_SIZE)
                 while (!bodyChannel.isClosedForRead) {
@@ -100,7 +100,7 @@ internal class KeelApplicationResponse(
 
     override suspend fun respondFromBytes(bytes: ByteArray) {
         val head = buildResponseHead()
-        withContext(pipelinedChannel.coroutineDispatcher) {
+        withContext(pipelinedChannel.ioDispatcher) {
             pipelinedChannel.pipeline.requestWrite(head)
             if (bytes.isNotEmpty()) {
                 val buf = pipelinedChannel.allocator.allocate(bytes.size)
@@ -114,7 +114,7 @@ internal class KeelApplicationResponse(
 
     override suspend fun respondNoContent(content: OutgoingContent.NoContent) {
         val head = buildResponseHead()
-        withContext(pipelinedChannel.coroutineDispatcher) {
+        withContext(pipelinedChannel.ioDispatcher) {
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
             pipelinedChannel.pipeline.requestFlush()

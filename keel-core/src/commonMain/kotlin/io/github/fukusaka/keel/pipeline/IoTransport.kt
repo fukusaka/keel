@@ -24,7 +24,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  *   → EAGAIN → async retry → onFlushComplete()
  * ```
  *
- * All methods must be called on the [coroutineDispatcher] thread unless
+ * All methods must be called on the [ioDispatcher] thread unless
  * otherwise noted.
  *
  * ## Read Path
@@ -57,8 +57,6 @@ interface IoTransport {
      * Set before [readEnabled] = true. Not called after [close].
      */
     var onRead: ((IoBuf) -> Unit)?
-        get() = null
-        set(_) {}
 
     /**
      * Callback invoked when the read side is closed (EOF, error, or
@@ -69,8 +67,6 @@ interface IoTransport {
      * whether to close the full connection.
      */
     var onReadClosed: (() -> Unit)?
-        get() = null
-        set(_) {}
 
     /**
      * Enables or disables the read loop.
@@ -82,11 +78,9 @@ interface IoTransport {
      * When set to `false`, the transport deregisters read interest. Useful
      * for backpressure: stop reading when the pipeline is overloaded.
      *
-     * Default: `false` (read loop not started until explicitly enabled).
+     * Initial value: `false` (read loop not started until explicitly enabled).
      */
     var readEnabled: Boolean
-        get() = false
-        set(_) {}
 
     // === Write path ===
 
@@ -128,16 +122,13 @@ interface IoTransport {
      *
      * Becomes false when pending bytes exceed high water mark, and true
      * again when pending bytes drop below low water mark.
-     * Default: always true.
      */
-    val isWritable: Boolean get() = true
+    val isWritable: Boolean
 
     /**
      * Callback invoked when [isWritable] changes state.
      */
     var onWritabilityChanged: ((Boolean) -> Unit)?
-        get() = null
-        set(_) {}
 
     // === Lifecycle ===
 
@@ -146,9 +137,8 @@ interface IoTransport {
      *
      * The read side remains open so the peer's remaining data can be
      * consumed. Implementations must be idempotent.
-     * Default: no-op.
      */
-    fun shutdownOutput() {}
+    fun shutdownOutput()
 
     /**
      * Closes the transport and releases all resources.
@@ -189,16 +179,16 @@ interface IoTransport {
      * epoll, NIO, io_uring) or [kotlinx.coroutines.Dispatchers.Default]
      * for framework-driven engines (Netty, NWConnection).
      */
-    val coroutineDispatcher: CoroutineDispatcher
+    val ioDispatcher: CoroutineDispatcher
 
     /**
      * Dispatcher for application-level coroutines.
      *
-     * Defaults to [coroutineDispatcher]. NIO overrides this to
+     * Defaults to [ioDispatcher]. NIO overrides this to
      * [kotlinx.coroutines.Dispatchers.Default] because NIO's Selector
      * thread should not run application blocking logic.
      */
-    val appDispatcher: CoroutineDispatcher get() = coroutineDispatcher
+    val appDispatcher: CoroutineDispatcher get() = ioDispatcher
 
     /**
      * Whether the transport supports deferred flush (write buffering

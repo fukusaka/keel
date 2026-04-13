@@ -39,7 +39,7 @@ abstract class AbstractPipelinedChannel(
     override val isActive: Boolean get() = transport.isOpen
     override val isOpen: Boolean get() = transport.isOpen
     override val isWritable: Boolean get() = transport.isOpen && transport.isWritable
-    override val coroutineDispatcher: CoroutineDispatcher get() = transport.coroutineDispatcher
+    override val ioDispatcher: CoroutineDispatcher get() = transport.ioDispatcher
     override val appDispatcher: CoroutineDispatcher get() = transport.appDispatcher
     override val supportsDeferredFlush: Boolean get() = transport.supportsDeferredFlush
 

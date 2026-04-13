@@ -36,7 +36,7 @@ internal class NodeIoTransport(
 
     private var _open = true
     override val isOpen: Boolean get() = _open
-    override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
     override val supportsDeferredFlush: Boolean get() = false
 
     // --- Read path ---
