@@ -211,14 +211,15 @@ class NwEngine(
                 // internally until the connection reaches the ready state.
                 nw_connection_start(conn)
 
-                val channel = NwPipelinedChannel(conn, this@NwEngine.config.allocator, null, null, logger)
+                val transport = NwIoTransport(conn, this@NwEngine.config.allocator)
+                val channel = NwPipelinedChannel(transport, logger)
                 // Listener-level TLS: connections arrive already TLS-encrypted,
                 // so skip per-connection TLS initialization.
                 if (!listenerLevelTls) {
                     config.initializeConnection(channel)
                 }
                 pipelineInitializer(channel)
-                channel.armRead()
+                transport.readEnabled = true
             }
         }
 
@@ -295,7 +296,8 @@ class NwEngine(
 
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        return NwPipelinedChannel(conn, config.allocator, remoteAddr, null, channelLogger)
+        val transport = NwIoTransport(conn, config.allocator)
+        return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
     override fun close() {

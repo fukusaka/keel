@@ -5,8 +5,8 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -55,7 +55,7 @@ import kotlinx.cinterop.ptr
  *     --> listener callback: onNewConnection(conn) --> resume
  *   keel_nw_start_conn_async(conn, queue, callback, ctx)
  *     --> suspendCancellableCoroutine until ready
- *   --> NwPipelinedChannel(conn, allocator, remoteAddr, localAddr)
+ *   --> NwPipelinedChannel(transport, logger, remoteAddr, localAddr)
  * ```
  *
  * @param listener    The NWListener handle.
@@ -161,7 +161,8 @@ internal class NwServer(
 
         val remoteAddr = extractAddress(conn)
         val logger = loggerFactory.logger("NwPipelinedChannel")
-        val channel = NwPipelinedChannel(conn, allocator, remoteAddr, localAddress, logger)
+        val transport = NwIoTransport(conn, allocator)
+        val channel = NwPipelinedChannel(transport, logger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel
     }
