@@ -126,12 +126,12 @@ class NodeEngine(
                 typedSocket.remotePort?.let { p -> SocketAddress(h, p) }
             }
             val channelLogger = this.channelLogger
+            val transport = NodeIoTransport(typedSocket, this.config.allocator)
             val channel = NodePipelinedChannel(
-                typedSocket,
-                this.config.allocator,
+                transport,
+                channelLogger,
                 remoteAddr,
                 null,
-                channelLogger,
             )
             // Per-connection BindConfig (keel TlsHandler). Listener-level TLS
             // (tls.createServer) is already active at the transport level, so
@@ -140,7 +140,7 @@ class NodeEngine(
                 config.initializeConnection(channel)
             }
             pipelineInitializer(channel)
-            channel.armRead()
+            transport.readEnabled = true
         }
 
         val listenOpts = js("({})")
@@ -168,12 +168,12 @@ class NodeEngine(
                     socket.localPort?.let { p -> SocketAddress(h, p) }
                 }
                 val channelLogger = this@NodeEngine.channelLogger
+                val transport = NodeIoTransport(socket, config.allocator)
                 val channel = NodePipelinedChannel(
-                    socket,
-                    config.allocator,
+                    transport,
+                    channelLogger,
                     remoteAddr,
                     localAddr,
-                    channelLogger,
                 )
                 logger.debug { "Connected to $host:$port" }
                 cont.resume(channel)

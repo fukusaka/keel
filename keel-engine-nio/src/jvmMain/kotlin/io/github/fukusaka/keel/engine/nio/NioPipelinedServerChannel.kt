@@ -83,11 +83,11 @@ internal class NioPipelinedServerChannel(
     ) {
         // Register client with worker's Selector (must be on worker thread).
         val clientKey = client.register(loop.selector, 0)
-        val transport = NioIoTransport(client, clientKey, loop)
-        val channel = NioPipelinedChannel(client, clientKey, transport, loop, allocator, logger)
+        val transport = NioIoTransport(client, clientKey, loop, allocator)
+        val channel = NioPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)
-        channel.armRead()
+        transport.readEnabled = true
     }
 
     /**

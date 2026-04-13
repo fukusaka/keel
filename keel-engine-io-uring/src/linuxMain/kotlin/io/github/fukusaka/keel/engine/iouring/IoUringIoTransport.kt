@@ -1,10 +1,18 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.io.OwnedSuspendSource
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
+import io_uring.keel_cqe_get_buf_id
+import platform.posix.ENOBUFS
+import platform.posix.SHUT_WR
+import platform.posix.shutdown
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -27,35 +35,20 @@ import platform.posix.send
 import posix_socket.keel_writev
 
 /**
- * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
- * where readable data starts, and the number of bytes to write.
+ * io_uring [IoTransport] implementation for Linux.
  *
- * Offset/length are recorded separately because [IoBuf.readerIndex] is
- * advanced at write() time so the caller can reuse the buffer immediately.
- */
-internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
-
-/**
- * io_uring transport-layer I/O operations.
+ * **Read path**: submits multishot RECV with a provided buffer ring
+ * via [IoUringEventLoop.submitMultishotRecv]. The kernel fills a pre-registered
+ * buffer slot on data arrival; the CQE callback delivers it via [onRead].
+ * ENOBUFS (all slots consumed) triggers automatic re-arm.
  *
- * Encapsulates the write buffering, I/O mode selection, and flush logic
- * for both Pipeline mode (fire-and-forget via HeadHandler) and Channel mode
- * (fire-and-forget + [awaitPendingFlush] for completion guarantee).
- *
- * **I/O modes**: three flush strategies selected by [IoModeSelector]:
- * - [IoMode.CQE]: pure io_uring path (submit SEND SQE, wait for CQE)
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via
+ * [IoModeSelector]-driven strategy:
+ * - [IoMode.CQE]: pure io_uring path (SEND / WRITEV SQE, wait for CQE)
  * - [IoMode.FALLBACK_CQE]: direct `send()` syscall, EAGAIN → fallback to CQE
  * - [IoMode.SEND_ZC]: zero-copy via `IORING_OP_SEND_ZC` (two CQEs)
  *
- * **Gather write**: multiple pending buffers → `IORING_OP_WRITEV` with
- * heap-allocated iovec array. Partial writes fall through to single-buffer retry.
- *
  * **Thread safety**: all methods must be called on the owning [IoUringEventLoop] thread.
- *
- * @param fd           The connected socket file descriptor.
- * @param eventLoop    The [IoUringEventLoop] for SQE submission.
- * @param capabilities Runtime kernel feature flags.
- * @param writeModeSelector Strategy for choosing the flush I/O mode.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringIoTransport(
@@ -63,30 +56,67 @@ internal class IoUringIoTransport(
     private val eventLoop: IoUringEventLoop,
     private val capabilities: IoUringCapabilities,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
-) : IoTransport {
+    allocator: BufferAllocator,
+    private val bufferRing: ProvidedBufferRing? = null,
+) : AbstractIoTransport(allocator) {
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
+    override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    // --- Read path (multishot recv with provided buffer ring) ---
+
+    // Pre-allocated IoBuf wrappers: one per buffer slot.
+    // Reused on each CQE callback via reset() — zero allocation on hot path.
+    private val wrappers = bufferRing?.let { ring ->
+        Array(ring.bufferCount) { bufId ->
+            RingBufferIoBuf(bufId, ring) { ring.returnBuffer(bufId) }
+        }
+    }
+
+    private var multishotSlot = -1
+
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && opened) armRecv()
+        }
+
+    private fun armRecv() {
+        val ring = bufferRing ?: error("armRecv requires provided buffer ring")
+        multishotSlot = eventLoop.submitMultishotRecv(
+            fd = fd,
+            bgid = ring.bgid,
+            onCqe = { res, flags ->
+                if (!opened) return@submitMultishotRecv
+                when {
+                    res > 0 -> {
+                        val bufId = keel_cqe_get_buf_id(flags).toInt()
+                        val buf = wrappers!![bufId]
+                        buf.reset()
+                        buf.writerIndex = res
+                        onRead?.invoke(buf)
+                    }
+                    res == -ENOBUFS -> armRecv()
+                    else -> onReadClosed?.invoke()
+                }
+            },
+        )
+    }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && opened) {
+            outputShutdown = true
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    // --- Write path ---
 
     /** Per-connection I/O statistics for adaptive mode selection. */
     internal val stats = ConnectionStats()
-
-    // --- Write backpressure ---
-
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
-        }
-    }
 
     // Per-flush tracking for stats recording.
     private var flushHadEagain = false
@@ -94,18 +124,6 @@ internal class IoUringIoTransport(
 
     /** Bytes still pending in async flush, decremented on async completion. */
     private var asyncPendingFlushBytes = 0
-
-    // --- IoTransport interface ---
-
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
-    }
 
     /**
      * Fire-and-forget flush with [IoModeSelector]-driven strategy.
@@ -508,8 +526,6 @@ internal class IoUringIoTransport(
         }
     }
 
-    override var onFlushComplete: (() -> Unit)? = null
-
     // --- Await pending async flush (Channel mode) ---
 
     private var asyncFlushPending = false
@@ -547,12 +563,28 @@ internal class IoUringIoTransport(
         }
     }
 
+    /**
+     * Creates a push-model [OwnedSuspendSource] backed by multishot recv.
+     * Bypasses the Pipeline — retained for future evaluation.
+     */
+    internal fun createOwnedSuspendSource(): OwnedSuspendSource {
+        val ring = bufferRing
+            ?: error("Owned source requires provided buffer ring (kernel 5.19+)")
+        return IoUringOwnedSource(fd, eventLoop, ring)
+    }
+
     override fun close() {
+        if (!opened) return
+        opened = false
+        if (multishotSlot >= 0) {
+            eventLoop.cancelMultishot(multishotSlot)
+            multishotSlot = -1
+        }
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
         asyncPendingFlushBytes = 0
-        _writable = true
+        platform.posix.close(fd)
     }
 
 }

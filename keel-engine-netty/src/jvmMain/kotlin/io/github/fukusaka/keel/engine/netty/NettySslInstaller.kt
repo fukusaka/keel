@@ -52,7 +52,7 @@ class NettySslInstaller : TlsInstaller {
             is TlsCertificateSource.SystemKeychain ->
                 error("SystemKeychain is not supported by NettySslInstaller")
         }
-        channel.installSslHandler(sslContext)
+        (channel.transport as NettyIoTransport).installSslHandler(sslContext)
     }
 
     private fun buildFromPem(pem: TlsCertificateSource.Pem): SslContext {

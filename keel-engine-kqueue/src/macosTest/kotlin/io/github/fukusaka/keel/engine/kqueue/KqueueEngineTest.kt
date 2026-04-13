@@ -873,7 +873,7 @@ class KqueueEngineTest {
     // --- CoroutineDispatcher ---
 
     @Test
-    fun `channel coroutineDispatcher returns EventLoop`() = runBlocking {
+    fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = server.localAddress.port
@@ -881,8 +881,8 @@ class KqueueEngineTest {
         val clientFd = connectRawClient(port)
         val ch = server.accept()
 
-        // coroutineDispatcher should be the KqueueEventLoop, not Dispatchers.Default
-        assertTrue(ch.coroutineDispatcher is KqueueEventLoop)
+        // ioDispatcher should be the KqueueEventLoop, not Dispatchers.Default
+        assertTrue(ch.ioDispatcher is KqueueEventLoop)
 
         ch.close()
         close(clientFd)
@@ -900,7 +900,7 @@ class KqueueEngineTest {
         val ch = server.accept()
 
         // Launch a coroutine on the EventLoop dispatcher and capture thread name
-        val threadName = withContext(ch.coroutineDispatcher) {
+        val threadName = withContext(ch.ioDispatcher) {
             // Read/write on EventLoop thread to verify I/O runs there
             rawWrite(clientFd, "x")
             val buf = DefaultAllocator.allocate(64)
@@ -927,7 +927,7 @@ class KqueueEngineTest {
         val ch = server.accept()
 
         // Run entire echo on the EventLoop dispatcher
-        withContext(ch.coroutineDispatcher) {
+        withContext(ch.ioDispatcher) {
             rawWrite(clientFd, "hello")
 
             val buf = DefaultAllocator.allocate(64)
@@ -1019,9 +1019,9 @@ class KqueueEngineTest {
             ch to clientFd
         }
 
-        // Each channel's coroutineDispatcher should be a KqueueEventLoop
+        // Each channel's ioDispatcher should be a KqueueEventLoop
         // (different instances for round-robin distribution)
-        val dispatchers = channels.map { (ch, _) -> ch.coroutineDispatcher }
+        val dispatchers = channels.map { (ch, _) -> ch.ioDispatcher }
         for (d in dispatchers) {
             assertTrue(d is KqueueEventLoop, "Expected KqueueEventLoop dispatcher")
         }

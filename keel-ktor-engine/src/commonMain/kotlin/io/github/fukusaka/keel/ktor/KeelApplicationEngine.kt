@@ -54,7 +54,7 @@ import kotlin.coroutines.ContinuationInterceptor
  * Ktor server engine backed by keel I/O engines.
  *
  * **Dispatcher model**: Connection I/O (read/parse) runs on the channel's
- * [coroutineDispatcher][io.github.fukusaka.keel.core.Channel.coroutineDispatcher]
+ * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
  * (EventLoop thread for kqueue/epoll/NIO), while the Ktor application
  * pipeline is offloaded to [Dispatchers.Default] to avoid blocking the
  * EventLoop with user code. For engines without a dedicated EventLoop
@@ -311,7 +311,7 @@ public class KeelApplicationEngine(
                 // thread without cross-thread dispatch. For engines
                 // without a dedicated EventLoop (Netty, NWConnection,
                 // Node.js), this falls back to Dispatchers.Default.
-                launch(channel.coroutineDispatcher) {
+                launch(channel.ioDispatcher) {
                     handleConnection(channel, scheme)
                 }
             } catch (e: Exception) {
@@ -376,7 +376,7 @@ public class KeelApplicationEngine(
         // pipeline handlers, but all IoBufs are consumed by
         // HttpRequestDecoder before reaching it — only non-IoBuf messages
         // (which the SuspendBridgeHandler ignores) propagate through.
-        withContext(pipelinedChannel.coroutineDispatcher) {
+        withContext(pipelinedChannel.ioDispatcher) {
             pipelinedChannel.ensureBridge()
         }
 

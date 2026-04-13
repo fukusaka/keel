@@ -45,30 +45,30 @@ interface PipelinedChannel : Channel {
     //
     // SuspendBridgeHandler requires all methods (read, onRead, onInactive,
     // write, flush) to execute on the same EventLoop thread.
-    // withContext(coroutineDispatcher) guarantees this for Channel mode
+    // withContext(ioDispatcher) guarantees this for Channel mode
     // operations called from any thread (runBlocking, Dispatchers.Default, etc.).
     // When already on the EventLoop, withContext is a no-op.
 
     /**
      * Lazily installs [SuspendBridgeHandler] and arms the read loop.
      *
-     * Each engine implements this to manage the bridge lifecycle and
-     * call its platform-specific [armRead] to register I/O interest.
-     * Always called on the EventLoop thread (via [withContext]).
+     * [AbstractPipelinedChannel] implements this by installing the bridge
+     * handler and setting [IoTransport.readEnabled] = true to start
+     * data delivery. Always called on the I/O thread (via [withContext]).
      */
     fun ensureBridge(): SuspendBridgeHandler
 
     /**
      * Reads decoded data via [SuspendBridgeHandler] on the EventLoop thread.
      *
-     * [withContext] dispatches to [coroutineDispatcher] (EventLoop) to
+     * [withContext] dispatches to [ioDispatcher] (EventLoop) to
      * guarantee single-threaded access to [SuspendBridgeHandler] state.
      *
      * @return number of bytes read, or -1 on EOF.
      */
     override suspend fun read(buf: IoBuf): Int {
         check(isOpen) { "Channel is closed" }
-        return withContext(coroutineDispatcher) {
+        return withContext(ioDispatcher) {
             ensureBridge().read(buf)
         }
     }
@@ -85,7 +85,7 @@ interface PipelinedChannel : Channel {
         check(isOpen) { "Channel is closed" }
         val n = buf.readableBytes
         if (n == 0) return 0
-        withContext(coroutineDispatcher) {
+        withContext(ioDispatcher) {
             pipeline.requestWrite(buf)
         }
         return n
@@ -103,23 +103,8 @@ interface PipelinedChannel : Channel {
         pipeline.requestFlush()
     }
 
-    override suspend fun awaitFlushComplete() {}
-
-    override suspend fun awaitClosed() {}
-
-    /**
-     * Default no-op. Engine implementations MUST override to send TCP FIN.
-     * Empty default is a transitional measure during engine migration.
-     */
-    override fun shutdownOutput() {}
-
-    /**
-     * Default no-op. Engine implementations MUST override to release
-     * transport resources (fd, buffers). Empty default is a transitional
-     * measure during engine migration — failure to override will cause
-     * resource leaks.
-     */
-    override fun close() {}
+    // awaitFlushComplete, awaitClosed, shutdownOutput, close: no defaults.
+    // AbstractPipelinedChannel provides implementations by delegating to IoTransport.
 
     /**
      * Returns a [BufferedSuspendSource] for codec-layer reading.

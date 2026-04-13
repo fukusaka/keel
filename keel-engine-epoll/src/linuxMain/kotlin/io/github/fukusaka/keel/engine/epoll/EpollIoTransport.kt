@@ -1,8 +1,12 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
@@ -16,67 +20,91 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
+import platform.posix.SHUT_WR
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.read
+import platform.posix.shutdown
 import platform.posix.write
 import kotlinx.cinterop.ByteVar
 import posix_socket.keel_writev
 
 /**
- * Non-suspend [IoTransport] for epoll pipeline channels.
+ * epoll [IoTransport] implementation for Linux.
  *
- * Buffers outbound [IoBuf] writes and flushes them via POSIX `write()` / `writev()`.
- * When the send buffer is full (EAGAIN), registers EPOLLOUT with the [eventLoop]
- * and retries via [onFlushComplete] callback — no coroutine suspension involved.
+ * **Read path**: registers EPOLLIN via [EpollEventLoop.registerCallback].
+ * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
+ * via [onRead]. EAGAIN triggers automatic re-arm.
+ *
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via POSIX
+ * `write()` / `writev()`. On EAGAIN, registers EPOLLOUT and retries.
  *
  * **Thread safety**: all methods must be called on the [eventLoop] thread.
- *
- * **Buffer lifecycle**: `write()` retains the buffer; `flush()` releases it
- * after transmission or on error.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollIoTransport(
     private val fd: Int,
     private val eventLoop: EpollEventLoop,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
+    override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
-    override var onFlushComplete: (() -> Unit)? = null
+    // --- Read path ---
 
-    // --- Write backpressure ---
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && opened) armRead()
+        }
 
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
+    private fun armRead() {
+        if (!opened) return
+        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ) {
+            onReadable()
         }
     }
 
-    /**
-     * Buffers [buf] for the next [flush] call.
-     *
-     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
-     * The caller's readerIndex is advanced immediately so it can reuse the buf.
-     */
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
+    private fun onReadable() {
+        if (!opened) return
+        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val ptr = (buf.unsafePointer + buf.writerIndex)!!
+        val n = read(fd, ptr, buf.writableBytes.convert())
+        when {
+            n > 0 -> {
+                buf.writerIndex += n.toInt()
+                onRead?.invoke(buf)
+                armRead()
+            }
+            n == 0L -> {
+                buf.release()
+                onReadClosed?.invoke()
+            }
+            else -> {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    buf.release()
+                    armRead()
+                } else {
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
+            }
+        }
     }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && opened) {
+            outputShutdown = true
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    // --- Write path ---
 
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
@@ -87,16 +115,16 @@ internal class EpollIoTransport(
     }
 
     /**
-     * Releases all pending write buffers and closes the socket fd.
-     *
-     * Unsent data is discarded. Does NOT unregister any pending EPOLLOUT
-     * callback. Idempotent for buffer release; caller must ensure single close.
+     * Releases all pending write buffers, unregisters from epoll, and
+     * closes the socket fd. Idempotent.
      */
     override fun close() {
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        _writable = true
+        eventLoop.cleanupFd(fd)
         close(fd)
     }
 
@@ -216,12 +244,4 @@ internal class EpollIoTransport(
         }
     }
 
-    /**
-     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
-     * where readable data starts, and the number of bytes to write.
-     *
-     * Offset/length are recorded separately because [IoBuf.readerIndex] is
-     * advanced at write() time so the caller can reuse the buffer immediately.
-     */
-    internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

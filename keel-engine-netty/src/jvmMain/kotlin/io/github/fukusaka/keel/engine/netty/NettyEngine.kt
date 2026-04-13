@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
@@ -39,8 +40,8 @@ import io.netty.channel.Channel as NettyNativeChannel
  * for non-blocking operation. No thread blocking occurs.
  *
  * **auto-read=false**: Each accepted/connected channel starts with
- * `autoRead` disabled. Auto-read is enabled when [NettyPipelinedChannel.ensureBridge]
- * is called (Channel mode) or [NettyPipelinedChannel.armRead] is called
+ * `autoRead` disabled. Auto-read is enabled when [AbstractPipelinedChannel.ensureBridge]
+ * is called (Channel mode) or [NettyIoTransport.readEnabled] is set
  * (Pipeline mode), enabling push-model semantics via Netty's channelRead
  * callbacks.
  *
@@ -104,14 +105,15 @@ class NettyEngine(
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     // Disable auto-read initially. Auto-read is enabled
-                    // when ensureBridge() or armRead() is called.
+                    // when ensureBridge() or readEnabled is set.
                     ch.config().isAutoRead = false
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val transport = NettyIoTransport(ch, allocatorFor(ch))
                     val keelChannel = NettyPipelinedChannel(
-                        ch, allocatorFor(ch), remoteAddr, localAddr, logger,
+                        transport, logger, remoteAddr, localAddr,
                     )
-                    ch.pipeline().addLast(keelChannel.handler)
+                    ch.pipeline().addLast(transport.handler)
                     bindConfig.initializeConnection(keelChannel)
                     serverChannel.onNewChannel(keelChannel)
                 }
@@ -143,7 +145,7 @@ class NettyEngine(
      *
      * Unlike [bind], the handler is added **after** connect completes
      * because there is no ChannelInitializer race — the channel is not
-     * yet receiving data until [NettyPipelinedChannel.armRead] is called
+     * yet receiving data until [NettyIoTransport.readEnabled] is set
      * (`autoRead = false`).
      */
     override suspend fun connect(host: String, port: Int): KeelChannel {
@@ -175,10 +177,11 @@ class NettyEngine(
         val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress())
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
+        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel))
         val keelChannel = NettyPipelinedChannel(
-            nettyChannel, allocatorFor(nettyChannel), remoteAddr, localAddr, logger,
+            transport, logger, remoteAddr, localAddr,
         )
-        nettyChannel.pipeline().addLast(keelChannel.handler)
+        nettyChannel.pipeline().addLast(transport.handler)
 
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
         return keelChannel
@@ -189,7 +192,7 @@ class NettyEngine(
      *
      * Each accepted connection creates a [NettyPipelinedChannel], invokes
      * the [pipelineInitializer] callback to install handlers, and immediately
-     * calls [NettyPipelinedChannel.armRead] to enable push-model I/O.
+     * sets [NettyIoTransport.readEnabled] to enable push-model I/O.
      *
      * Non-suspend: uses Netty's `bind().sync()` to block until the server
      * socket is ready. This is acceptable because `bindPipeline` is called
@@ -212,13 +215,14 @@ class NettyEngine(
                     ch.config().isAutoRead = false
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val transport = NettyIoTransport(ch, allocatorFor(ch))
                     val keelChannel = NettyPipelinedChannel(
-                        ch, allocatorFor(ch), remoteAddr, localAddr, logger,
+                        transport, logger, remoteAddr, localAddr,
                     )
-                    ch.pipeline().addLast(keelChannel.handler)
+                    ch.pipeline().addLast(transport.handler)
                     config.initializeConnection(keelChannel)
                     pipelineInitializer(keelChannel)
-                    keelChannel.armRead()
+                    transport.readEnabled = true
                 }
             })
 

@@ -1,8 +1,12 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
@@ -16,67 +20,91 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
+import platform.posix.SHUT_WR
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.read
+import platform.posix.shutdown
 import platform.posix.write
 import kotlinx.cinterop.ByteVar
 import posix_socket.keel_writev
 
 /**
- * Non-suspend [IoTransport] for kqueue pipeline channels.
+ * kqueue [IoTransport] implementation for macOS.
  *
- * Buffers outbound [IoBuf] writes and flushes them via POSIX `write()` / `writev()`.
- * When the send buffer is full (EAGAIN), registers EVFILT_WRITE with the [eventLoop]
- * and retries via [onFlushComplete] callback — no coroutine suspension involved.
+ * **Read path**: registers EVFILT_READ via [KqueueEventLoop.registerCallback].
+ * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
+ * via [onRead]. EAGAIN triggers automatic re-arm.
+ *
+ * **Write path**: buffers outbound [IoBuf] writes and flushes via POSIX
+ * `write()` / `writev()`. On EAGAIN, registers EVFILT_WRITE and retries.
  *
  * **Thread safety**: all methods must be called on the [eventLoop] thread.
- *
- * **Buffer lifecycle**: `write()` retains the buffer; `flush()` releases it
- * after transmission or on error.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueIoTransport(
     private val fd: Int,
     private val eventLoop: KqueueEventLoop,
-) : IoTransport {
+    allocator: BufferAllocator,
+) : AbstractIoTransport(allocator) {
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
+    override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
-    override var onFlushComplete: (() -> Unit)? = null
+    // --- Read path ---
 
-    // --- Write backpressure ---
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && opened) armRead()
+        }
 
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
+    private fun armRead() {
+        if (!opened) return
+        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ) {
+            onReadable()
         }
     }
 
-    /**
-     * Buffers [buf] for the next [flush] call.
-     *
-     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
-     * The caller's readerIndex is advanced immediately so it can reuse the buf.
-     */
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
+    private fun onReadable() {
+        if (!opened) return
+        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val ptr = (buf.unsafePointer + buf.writerIndex)!!
+        val n = read(fd, ptr, buf.writableBytes.convert())
+        when {
+            n > 0 -> {
+                buf.writerIndex += n.toInt()
+                onRead?.invoke(buf)
+                armRead()
+            }
+            n == 0L -> {
+                buf.release()
+                onReadClosed?.invoke()
+            }
+            else -> {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    buf.release()
+                    armRead()
+                } else {
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
+            }
+        }
     }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && opened) {
+            outputShutdown = true
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    // --- Write path ---
 
     /**
      * Attempts to send all pending writes via POSIX `write()`.
@@ -97,15 +125,15 @@ internal class KqueueIoTransport(
      * Releases all pending write buffers and closes the socket fd.
      *
      * Unsent data is discarded — no flush is attempted. Does NOT unregister
-     * any pending EVFILT_WRITE callback from the EventLoop (the callback will
-     * find the fd closed and become a no-op). Idempotent for buffer release,
-     * but `close(fd)` is called unconditionally — caller must ensure single close.
+     * any pending EVFILT_READ/WRITE callbacks from the EventLoop (the
+     * callbacks check [isOpen] and become no-ops). Idempotent.
      */
     override fun close() {
+        if (!opened) return
+        opened = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        _writable = true
         close(fd)
     }
 
@@ -240,5 +268,4 @@ internal class KqueueIoTransport(
         }
     }
 
-    internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

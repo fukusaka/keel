@@ -93,12 +93,10 @@ internal class IoUringServer(
             val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
-            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector)
-            val channel = IoUringPipelinedChannel(
-                clientFd, transport, workerLoop, workerGroup.bufferRingAt(wi),
-                workerGroup.allocatorAt(wi), logger, remoteAddr, localAddr,
-                capabilities,
-            )
+            val allocator = workerGroup.allocatorAt(wi)
+            val bufferRing = workerGroup.bufferRingAt(wi)
+            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing)
+            val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)
             return channel
         } catch (e: Throwable) {
