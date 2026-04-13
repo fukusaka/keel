@@ -41,14 +41,14 @@ import io.netty.channel.Channel as NettyNativeChannel
  *
  * **auto-read=false**: Each accepted/connected channel starts with
  * `autoRead` disabled. Auto-read is enabled when [AbstractPipelinedChannel.ensureBridge]
- * is called (Channel mode) or [NettyIoTransport.readEnabled] is set
+ * is called (Coroutine mode) or [NettyIoTransport.readEnabled] is set
  * (Pipeline mode), enabling push-model semantics via Netty's channelRead
  * callbacks.
  *
  * ```
  * NettyEngine (owns NioEventLoopGroups)
  *   |
- *   +-- bind() ---------> NettyServer (Channel mode: accept → suspend I/O)
+ *   +-- bind() ---------> NettyServer (Coroutine mode: accept → suspend I/O)
  *   |                       |
  *   |                       +-- accept() --> NettyPipelinedChannel
  *   |

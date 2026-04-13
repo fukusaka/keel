@@ -526,14 +526,14 @@ internal class IoUringIoTransport(
         }
     }
 
-    // --- Await pending async flush (Channel mode) ---
+    // --- Await pending async flush (Coroutine mode) ---
 
     private var asyncFlushPending = false
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     /**
      * Called when all async sends in a flush chain complete.
-     * Resumes the Channel mode continuation and invokes [onFlushComplete].
+     * Resumes the Coroutine mode continuation and invokes [onFlushComplete].
      */
     private fun onAsyncFlushDone() {
         asyncFlushPending = false
@@ -551,7 +551,7 @@ internal class IoUringIoTransport(
      * Suspends until all pending async flush operations complete.
      *
      * Returns immediately if the last [flush] completed synchronously.
-     * Called from Channel mode's [IoUringPipelinedChannel.awaitFlushComplete].
+     * Called from Coroutine mode's [IoUringPipelinedChannel.awaitFlushComplete].
      *
      * Must be called on the EventLoop thread (no synchronisation needed).
      */

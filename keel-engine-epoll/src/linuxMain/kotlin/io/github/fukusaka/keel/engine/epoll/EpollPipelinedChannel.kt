@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 
 /**
- * epoll channel supporting both Pipeline mode and Channel mode.
+ * epoll channel supporting both Pipeline mode and Coroutine mode.
  *
  * All I/O logic (read, write, flush, shutdown, close) is delegated to
  * [EpollIoTransport] via [AbstractPipelinedChannel].

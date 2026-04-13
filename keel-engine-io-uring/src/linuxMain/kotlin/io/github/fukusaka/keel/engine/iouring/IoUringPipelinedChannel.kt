@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 
 /**
- * io_uring channel supporting both Pipeline mode and Channel mode.
+ * io_uring channel supporting both Pipeline mode and Coroutine mode.
  *
  * All I/O logic (multishot recv, write/flush, shutdown, close) is delegated
  * to [IoUringIoTransport] via [AbstractPipelinedChannel].

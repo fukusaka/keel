@@ -31,7 +31,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  * `dispatch_data_t` copy. Zero-copy push model support is future work.
  *
  * **auto-read**: Pipeline mode uses `autoRead = true` (Netty delivers data
- * continuously). Channel mode starts with `autoRead = false` and switches
+ * continuously). Coroutine mode starts with `autoRead = false` and switches
  * to `autoRead = true` when [readEnabled] is set to start the read loop.
  *
  * **Write path**: batches all pending writes into Netty's outbound buffer

@@ -119,7 +119,7 @@ interface IoTransport {
      * Suspends until all pending async flush operations complete.
      *
      * Returns immediately if the last [flush] completed synchronously
-     * (returned true). Called by Channel mode's
+     * (returned true). Called by Coroutine mode's
      * [io.github.fukusaka.keel.core.Channel.awaitFlushComplete].
      */
     suspend fun awaitPendingFlush()
