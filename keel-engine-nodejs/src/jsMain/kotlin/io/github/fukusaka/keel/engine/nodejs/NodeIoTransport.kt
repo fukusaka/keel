@@ -10,7 +10,15 @@ import kotlinx.coroutines.Dispatchers
 /**
  * Node.js socket-based [IoTransport] implementation.
  *
- * Buffers writes and flushes them to the Node.js socket.
+ * Handles both read and write paths for Node.js sockets.
+ *
+ * **Read path (copy from Node.js Buffer)**: Node.js delivers data
+ * asynchronously via `socket.on("data")` before the user provides a buffer.
+ * The Buffer content is copied into [IoBuf] via Int8Array.set(). This is an
+ * accepted limitation — same structural constraint as Netty's ByteBuf
+ * and NWConnection's dispatch_data_t copy.
+ *
+ * **Write path**: Buffers writes and flushes them to the Node.js socket.
  * Node.js `socket.write()` buffers internally, so flush always
  * completes synchronously from keel's perspective.
  *
@@ -26,11 +34,75 @@ internal class NodeIoTransport(
     override val allocator: BufferAllocator,
 ) : IoTransport {
 
-    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
     private var _open = true
     override val isOpen: Boolean get() = _open
     override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
     override val supportsDeferredFlush: Boolean get() = false
+
+    // --- Read path ---
+
+    override var onRead: ((IoBuf) -> Unit)? = null
+    override var onReadClosed: (() -> Unit)? = null
+
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && _open) armRead()
+        }
+
+    /**
+     * Registers `socket.on("data")` and `socket.on("end"/"error")` to
+     * deliver data via [onRead] and [onReadClosed] callbacks.
+     *
+     * Each "data" event copies the Node.js Buffer into [IoBuf] and calls [onRead].
+     */
+    private fun armRead() {
+        socket.on("data") { data: dynamic ->
+            if (!_open) return@on
+            val dataLength = data.length as Int
+            if (dataLength == 0) return@on
+
+            val buf = allocator.allocate(dataLength)
+            // Copy Node.js Buffer (Uint8Array subclass) to IoBuf's Int8Array.
+            // Int8Array and Uint8Array share the same byte representation,
+            // so we create an Int8Array view over the Buffer's ArrayBuffer
+            // and use IoBuf.unsafeArray.set() for a single native memcpy.
+            val srcView = js("new Int8Array(data.buffer, data.byteOffset, data.length)")
+            buf.unsafeArray.asDynamic().set(srcView, buf.writerIndex)
+            buf.writerIndex += dataLength
+
+            onRead?.invoke(buf)
+        }
+
+        socket.on("end") { _: dynamic ->
+            if (_open) {
+                onReadClosed?.invoke()
+            }
+        }
+
+        socket.on("error") { _: dynamic ->
+            if (_open) {
+                onReadClosed?.invoke()
+            }
+        }
+    }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    /**
+     * Sends TCP FIN to the peer via Node.js `socket.end()`.
+     * Fire-and-forget: no blocking or suspend needed.
+     */
+    override fun shutdownOutput() {
+        if (!outputShutdown && _open) {
+            outputShutdown = true
+            socket.end()
+        }
+    }
+
+    // --- Write path ---
 
     override var onFlushComplete: (() -> Unit)? = null
 
@@ -95,9 +167,11 @@ internal class NodeIoTransport(
 
     /**
      * Releases all pending write buffers and destroys the socket.
-     * Unsent data is discarded. Idempotent (Node.js socket.destroy is idempotent).
+     * Unsent data is discarded. Idempotent: subsequent calls are no-ops.
      */
     override fun close() {
+        if (!_open) return
+        _open = false
         for (pw in pendingWrites) {
             pw.buf.release()
         }

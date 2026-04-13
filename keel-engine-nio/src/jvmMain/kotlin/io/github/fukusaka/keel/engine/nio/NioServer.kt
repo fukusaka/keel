@@ -70,9 +70,7 @@ internal class NioServer(
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
                 val transport = NioIoTransport(client, clientKey, workerLoop, allocator)
-                val channel = NioPipelinedChannel(
-                    transport, logger, remoteAddr, localAddr,
-                )
+                val channel = NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
                 bindConfig.initializeConnection(channel)
                 return channel
             }

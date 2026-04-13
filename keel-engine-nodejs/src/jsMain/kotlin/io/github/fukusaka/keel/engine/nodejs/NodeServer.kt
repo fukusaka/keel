@@ -68,7 +68,8 @@ internal class NodeServer(
             socket.remotePort?.let { port -> SocketAddress(host, port) }
         }
 
-        val channel = NodePipelinedChannel(socket, allocator, remoteAddr, localAddress, channelLogger)
+        val transport = NodeIoTransport(socket, allocator)
+        val channel = NodePipelinedChannel(transport, channelLogger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel
     }
