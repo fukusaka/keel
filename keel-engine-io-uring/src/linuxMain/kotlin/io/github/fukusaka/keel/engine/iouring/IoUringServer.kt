@@ -94,12 +94,9 @@ internal class IoUringServer(
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val allocator = workerGroup.allocatorAt(wi)
-            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator)
-            val channel = IoUringPipelinedChannel(
-                clientFd, transport, workerLoop, workerGroup.bufferRingAt(wi),
-                allocator, logger, remoteAddr, localAddr,
-                capabilities,
-            )
+            val bufferRing = workerGroup.bufferRingAt(wi)
+            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing)
+            val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)
             return channel
         } catch (e: Throwable) {

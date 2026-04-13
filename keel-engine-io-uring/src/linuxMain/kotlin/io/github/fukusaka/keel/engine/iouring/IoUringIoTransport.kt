@@ -3,10 +3,15 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
+import io_uring.keel_cqe_get_buf_id
+import platform.posix.ENOBUFS
+import platform.posix.SHUT_WR
+import platform.posix.shutdown
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -66,12 +71,68 @@ internal class IoUringIoTransport(
     private val capabilities: IoUringCapabilities,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     override val allocator: BufferAllocator,
+    private val bufferRing: ProvidedBufferRing? = null,
 ) : IoTransport {
 
-    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
     private var _open = true
     override val isOpen: Boolean get() = _open
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+
+    // --- Read path (multishot recv with provided buffer ring) ---
+
+    override var onRead: ((IoBuf) -> Unit)? = null
+    override var onReadClosed: (() -> Unit)? = null
+
+    // Pre-allocated IoBuf wrappers: one per buffer slot.
+    // Reused on each CQE callback via reset() — zero allocation on hot path.
+    private val wrappers = bufferRing?.let { ring ->
+        Array(ring.bufferCount) { bufId ->
+            RingBufferIoBuf(bufId, ring) { ring.returnBuffer(bufId) }
+        }
+    }
+
+    private var multishotSlot = -1
+
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && _open) armRecv()
+        }
+
+    private fun armRecv() {
+        val ring = bufferRing ?: error("armRecv requires provided buffer ring")
+        multishotSlot = eventLoop.submitMultishotRecv(
+            fd = fd,
+            bgid = ring.bgid,
+            onCqe = { res, flags ->
+                if (!_open) return@submitMultishotRecv
+                when {
+                    res > 0 -> {
+                        val bufId = keel_cqe_get_buf_id(flags).toInt()
+                        val buf = wrappers!![bufId]
+                        buf.reset()
+                        buf.writerIndex = res
+                        onRead?.invoke(buf)
+                    }
+                    res == -ENOBUFS -> armRecv()
+                    else -> onReadClosed?.invoke()
+                }
+            },
+        )
+    }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && _open) {
+            outputShutdown = true
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    // --- Write path ---
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
@@ -555,12 +616,29 @@ internal class IoUringIoTransport(
         }
     }
 
+    /**
+     * Creates a push-model [OwnedSuspendSource] backed by multishot recv.
+     * Bypasses the Pipeline — retained for future evaluation.
+     */
+    internal fun createOwnedSuspendSource(): OwnedSuspendSource {
+        val ring = bufferRing
+            ?: error("Owned source requires provided buffer ring (kernel 5.19+)")
+        return IoUringOwnedSource(fd, eventLoop, ring)
+    }
+
     override fun close() {
+        if (!_open) return
+        _open = false
+        if (multishotSlot >= 0) {
+            eventLoop.cancelMultishot(multishotSlot)
+            multishotSlot = -1
+        }
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
         asyncPendingFlushBytes = 0
         _writable = true
+        platform.posix.close(fd)
     }
 
 }
