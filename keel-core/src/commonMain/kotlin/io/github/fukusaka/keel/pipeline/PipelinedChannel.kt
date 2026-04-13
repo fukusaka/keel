@@ -103,29 +103,8 @@ interface PipelinedChannel : Channel {
         pipeline.requestFlush()
     }
 
-    /**
-     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
-     * to [IoTransport.awaitPendingFlush].
-     */
-    override suspend fun awaitFlushComplete() {}
-
-    /**
-     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
-     * to [IoTransport.awaitClosed].
-     */
-    override suspend fun awaitClosed() {}
-
-    /**
-     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
-     * to [IoTransport.shutdownOutput].
-     */
-    override fun shutdownOutput() {}
-
-    /**
-     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
-     * to [IoTransport.close].
-     */
-    override fun close() {}
+    // awaitFlushComplete, awaitClosed, shutdownOutput, close: no defaults.
+    // AbstractPipelinedChannel provides implementations by delegating to IoTransport.
 
     /**
      * Returns a [BufferedSuspendSource] for codec-layer reading.
