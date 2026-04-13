@@ -60,7 +60,7 @@ internal class KqueueServer(
      *
      * The accepted connection is assigned to the next worker EventLoop
      * in round-robin order and returned as a [KqueuePipelinedChannel]
-     * supporting both Pipeline mode and Channel mode.
+     * supporting both Pipeline mode and Coroutine mode.
      *
      * @throws IllegalStateException if the server channel is already closed.
      * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.

@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import java.net.InetSocketAddress
 
 /**
- * Netty channel supporting both Pipeline mode and Channel mode.
+ * Netty channel supporting both Pipeline mode and Coroutine mode.
  *
  * All I/O logic (read, write, flush, shutdown, close) is delegated to
  * [NettyIoTransport] via [AbstractPipelinedChannel].

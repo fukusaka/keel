@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
  * via [Pipeline.notifyRead]. Handlers process data synchronously.
  * No [SuspendBridgeHandler] needed.
  *
- * **Channel mode** (pull, suspend): a [SuspendBridgeHandler] is installed
+ * **Coroutine mode** (pull, suspend): a [SuspendBridgeHandler] is installed
  * before TAIL to bridge pipeline callbacks to suspend [read]/[write]/[flush].
  * Used for interactive protocols (SMTP, Redis), proxies, and Ktor integration.
  *
@@ -41,11 +41,11 @@ interface PipelinedChannel : Channel {
      */
     override val isOpen: Boolean get() = isActive
 
-    // --- Channel mode: suspend I/O with EventLoop thread guarantee ---
+    // --- Coroutine mode: suspend I/O with EventLoop thread guarantee ---
     //
     // SuspendBridgeHandler requires all methods (read, onRead, onInactive,
     // write, flush) to execute on the same EventLoop thread.
-    // withContext(ioDispatcher) guarantees this for Channel mode
+    // withContext(ioDispatcher) guarantees this for Coroutine mode
     // operations called from any thread (runBlocking, Dispatchers.Default, etc.).
     // When already on the EventLoop, withContext is a no-op.
 

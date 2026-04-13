@@ -31,7 +31,7 @@ import posix_socket.keel_init_sockaddr_in
  *
  * Supports two server modes:
  *
- * **Channel mode** ([bind]/[connect]): boss EventLoop accepts via `IORING_OP_ACCEPT`
+ * **Coroutine mode** ([bind]/[connect]): boss EventLoop accepts via `IORING_OP_ACCEPT`
  * (multishot on Linux 5.19+) and distributes connections to workers in round-robin.
  * App drives I/O via suspend `read()`/`write()`/`flush()`.
  *

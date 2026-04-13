@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 
 /**
- * kqueue channel supporting both Pipeline mode and Channel mode.
+ * kqueue channel supporting both Pipeline mode and Coroutine mode.
  *
  * All I/O logic (read, write, flush, shutdown, close) is delegated to
  * [KqueueIoTransport] via [AbstractPipelinedChannel].

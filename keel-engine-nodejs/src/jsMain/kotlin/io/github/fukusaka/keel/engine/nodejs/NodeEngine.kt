@@ -30,7 +30,7 @@ import io.github.fukusaka.keel.core.Server as KeelServer
  * ```
  * NodeEngine (Node.js net module)
  *   |
- *   +-- bind() ---------> NodeServer (Channel mode: accept -> suspend I/O)
+ *   +-- bind() ---------> NodeServer (Coroutine mode: accept -> suspend I/O)
  *   |                       |
  *   |                       +-- accept() --> NodePipelinedChannel
  *   |

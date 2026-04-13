@@ -256,7 +256,7 @@ internal class KqueueIoTransport(
      * Suspends until all pending async flush operations complete.
      *
      * Returns immediately if no async flush is pending (pendingWrites is empty).
-     * Called from Channel mode's [KqueuePipelinedChannel.awaitFlushComplete].
+     * Called from Coroutine mode's [KqueuePipelinedChannel.awaitFlushComplete].
      *
      * Must be called on the EventLoop thread (no synchronisation needed).
      */
