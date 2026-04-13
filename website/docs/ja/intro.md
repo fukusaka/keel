@@ -102,21 +102,21 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 
 **ノンブロッキング逐次モデル** — I/O が進行可能になると、I/O スレッドが中断中のハンドラを再開します。コードは同期処理のように逐次的に書けますが、スレッドをブロックしません。Kotlin では `suspend fun` として現れ、Python・C#・JavaScript では `async`/`await` として同じパターンが使われます。従来のブロッキング逐次モデル（接続ごとに 1 OS スレッドを `read()` でブロック）とは異なり、1 スレッドで数千の並行接続を扱えます。
 
-**Push モデル** — I/O が進行可能になると、エンジンが I/O スレッド上でハンドラを直接呼び出します。suspend もコンテキストスイッチもなく、関数呼び出しのチェーンだけです。Netty の `ChannelPipeline` が採用しているモデルであり、イベント駆動型 I/O と自然に合致します。
+**Push モデル** — I/O が進行可能になると、エンジンが I/O スレッド上でハンドラを直接呼び出します。suspend もコンテキストスイッチもなく、関数呼び出しのチェーンだけです。Netty の `Pipeline` が採用しているモデルであり、イベント駆動型 I/O と自然に合致します。
 
 keel は両方を提供します:
 
 | | Coroutine モード | Pipeline モード |
 |---|---|---|
 | モデル | ノンブロッキング逐次 | Push / イベント駆動 |
-| API | `suspend fun read() / write()` | `ChannelPipeline` ハンドラチェーン |
+| API | `suspend fun read() / write()` | `Pipeline` ハンドラチェーン |
 | 並行処理単位 | 接続ごとに 1 コルーチン | EventLoop スレッドのコールバック |
 | 使用方法 | `keel-ktor-engine` または `engine.bind()` | `engine.bindPipeline(...)` |
 | 最適な用途 | Ktor を使ったアプリケーションサーバー | 高スループットのカスタムプロトコルサーバー |
 
 **Coroutine モード**は `keel-ktor-engine` を使用した場合に得られるモードです。全 Ktor プラグインと統合できるため、ほとんどのアプリケーションに適しています。
 
-**Pipeline モード**は Push モデルに従います。keel-core が `ChannelPipeline` — Netty にインスパイアされたハンドラチェーン — を提供し、全エンジンがこれを実装しています。`engine.bindPipeline()` でデコーダ・ルータ・エンコーダをハンドラとして設定します。I/O コールバックはコルーチンのコンテキストスイッチなしにエンジンの EventLoop スレッド上で動作します。
+**Pipeline モード**は Push モデルに従います。keel-core が `Pipeline` — Netty にインスパイアされたハンドラチェーン — を提供し、全エンジンがこれを実装しています。`engine.bindPipeline()` でデコーダ・ルータ・エンコーダをハンドラとして設定します。I/O コールバックはコルーチンのコンテキストスイッチなしにエンジンの EventLoop スレッド上で動作します。
 
 詳しくは[Coroutine モード](./architecture/coroutine.md)と[Pipeline モード](./architecture/pipeline.md)を参照してください。
 

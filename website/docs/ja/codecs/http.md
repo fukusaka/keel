@@ -45,8 +45,8 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 ストリーミングボディメッセージを直接消費するハンドラ (集約なし):
 
 ```kotlin
-class MyHandler : ChannelInboundHandler {
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+class MyHandler : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> { /* パスでルーティング */ }
             is HttpBodyEnd -> { msg.content.release(); /* レスポンス発出 */ }

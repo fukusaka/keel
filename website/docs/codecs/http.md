@@ -55,8 +55,8 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 For handlers that consume streaming body messages directly (no aggregation):
 
 ```kotlin
-class MyHandler : ChannelInboundHandler {
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+class MyHandler : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> { /* route by path */ }
             is HttpBodyEnd -> { msg.content.release(); /* emit response */ }
