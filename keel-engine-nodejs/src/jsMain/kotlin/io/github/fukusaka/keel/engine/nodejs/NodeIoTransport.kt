@@ -1,8 +1,11 @@
 package io.github.fukusaka.keel.engine.nodejs
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeArray
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 
 /**
  * Node.js socket-based [IoTransport] implementation.
@@ -20,7 +23,14 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  */
 internal class NodeIoTransport(
     private val socket: Socket,
+    override val allocator: BufferAllocator,
 ) : IoTransport {
+
+    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
+    private var _open = true
+    override val isOpen: Boolean get() = _open
+    override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
+    override val supportsDeferredFlush: Boolean get() = false
 
     override var onFlushComplete: (() -> Unit)? = null
 

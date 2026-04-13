@@ -69,7 +69,7 @@ internal class EpollServer(
                 val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
                 val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
-                val transport = EpollIoTransport(clientFd, workerLoop)
+                val transport = EpollIoTransport(clientFd, workerLoop, allocator)
                 val channel = EpollPipelinedChannel(
                     clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
                 )

@@ -1,8 +1,11 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelFuture
 import io.netty.channel.Channel as NettyNativeChannel
@@ -35,7 +38,13 @@ import io.netty.channel.Channel as NettyNativeChannel
  */
 internal class NettyIoTransport(
     private val nettyChannel: NettyNativeChannel,
+    override val allocator: BufferAllocator,
 ) : IoTransport {
+
+    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
+    private var _open = true
+    override val isOpen: Boolean get() = _open
+    override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 

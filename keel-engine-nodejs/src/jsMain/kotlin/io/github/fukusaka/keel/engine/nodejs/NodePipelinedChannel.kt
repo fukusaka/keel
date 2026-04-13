@@ -53,7 +53,7 @@ internal class NodePipelinedChannel(
     private val logger: Logger,
 ) : PipelinedChannel {
 
-    private val transport = NodeIoTransport(socket)
+    private val transport = NodeIoTransport(socket, allocator)
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
 
     private var closed = false

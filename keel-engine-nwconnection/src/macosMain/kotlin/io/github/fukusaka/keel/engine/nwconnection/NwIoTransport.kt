@@ -1,8 +1,11 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -38,7 +41,13 @@ import platform.Network.nw_connection_t
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
     private val conn: nw_connection_t,
+    override val allocator: BufferAllocator,
 ) : IoTransport {
+
+    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
+    private var _open = true
+    override val isOpen: Boolean get() = _open
+    override val coroutineDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     private var pendingWrites = mutableListOf<PendingWrite>()
 

@@ -67,7 +67,7 @@ class NettyPipelinedChannel internal constructor(
     logger: Logger,
 ) : PipelinedChannel {
 
-    private val transport = NettyIoTransport(nettyChannel)
+    private val transport = NettyIoTransport(nettyChannel, allocator)
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
 
     // Local closed flag for synchronous lifecycle checks. Netty's close()

@@ -146,7 +146,7 @@ class EpollEngine(
         val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
         val localAddr = PosixSocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
-        val transport = EpollIoTransport(fd, workerLoop)
+        val transport = EpollIoTransport(fd, workerLoop, allocator)
         return EpollPipelinedChannel(fd, transport, workerLoop, allocator, logger, remoteAddr, localAddr)
     }
 

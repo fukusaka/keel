@@ -90,7 +90,7 @@ internal class IoUringPipelinedServerChannel(
         val bufferRing = workerGroup.bufferRingAt(workerIndex)
             ?: error("Pipeline requires provided buffer ring (kernel 5.19+)")
         val allocator = workerGroup.allocatorAt(workerIndex)
-        val transport = IoUringIoTransport(clientFd, loop, capabilities)
+        val transport = IoUringIoTransport(clientFd, loop, capabilities, allocator = allocator)
         val channel = IoUringPipelinedChannel(
             clientFd, transport, loop, bufferRing, allocator, logger,
         )

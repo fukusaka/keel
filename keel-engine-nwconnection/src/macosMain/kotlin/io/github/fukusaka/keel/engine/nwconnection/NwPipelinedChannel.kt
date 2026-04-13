@@ -59,7 +59,7 @@ internal class NwPipelinedChannel(
     logger: Logger,
 ) : PipelinedChannel {
 
-    private val transport = NwIoTransport(conn)
+    private val transport = NwIoTransport(conn, allocator)
     override val pipeline: ChannelPipeline = DefaultChannelPipeline(this, transport, logger)
     override val isActive: Boolean get() = !closed
     override val isOpen: Boolean get() = !closed

@@ -1,8 +1,11 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.resume
@@ -23,7 +26,16 @@ internal class NioIoTransport(
     private val socketChannel: SocketChannel,
     private val selectionKey: SelectionKey,
     private val eventLoop: NioEventLoop,
+    override val allocator: BufferAllocator,
 ) : IoTransport {
+
+    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
+    private var _open = true
+    override val isOpen: Boolean get() = _open
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+
+    @Suppress("InjectDispatcher")
+    override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 

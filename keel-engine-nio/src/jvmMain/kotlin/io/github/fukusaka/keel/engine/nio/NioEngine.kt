@@ -145,7 +145,7 @@ class NioEngine(
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
-        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop)
+        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, allocator)
         return NioPipelinedChannel(
             socketChannel,
             selectionKey,

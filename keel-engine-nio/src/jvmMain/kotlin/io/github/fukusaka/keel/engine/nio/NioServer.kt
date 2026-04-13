@@ -69,7 +69,7 @@ internal class NioServer(
                 // One-time registration with the worker's Selector.
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
-                val transport = NioIoTransport(client, clientKey, workerLoop)
+                val transport = NioIoTransport(client, clientKey, workerLoop, allocator)
                 val channel = NioPipelinedChannel(
                     client,
                     clientKey,

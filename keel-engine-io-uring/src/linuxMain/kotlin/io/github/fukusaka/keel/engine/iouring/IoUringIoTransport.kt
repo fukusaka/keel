@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
 import io_uring.iovec
@@ -63,7 +65,13 @@ internal class IoUringIoTransport(
     private val eventLoop: IoUringEventLoop,
     private val capabilities: IoUringCapabilities,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
+    override val allocator: BufferAllocator,
 ) : IoTransport {
+
+    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
+    private var _open = true
+    override val isOpen: Boolean get() = _open
+    override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
