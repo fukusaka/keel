@@ -29,13 +29,69 @@ internal class NioIoTransport(
     override val allocator: BufferAllocator,
 ) : IoTransport {
 
-    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
     private var _open = true
     override val isOpen: Boolean get() = _open
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
 
     @Suppress("InjectDispatcher")
     override val appDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+
+    // --- Read path ---
+
+    override var onRead: ((IoBuf) -> Unit)? = null
+    override var onReadClosed: (() -> Unit)? = null
+
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && _open) armRead()
+        }
+
+    private fun armRead() {
+        if (!socketChannel.isOpen) return
+        eventLoop.setInterestCallback(
+            selectionKey,
+            SelectionKey.OP_READ,
+            Runnable { onReadable() },
+        )
+    }
+
+    private fun onReadable() {
+        if (!socketChannel.isOpen) return
+        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val bb = buf.unsafeBuffer
+        bb.position(buf.writerIndex)
+        bb.limit(buf.capacity)
+        val n = socketChannel.read(bb)
+        when {
+            n > 0 -> {
+                buf.writerIndex += n
+                onRead?.invoke(buf)
+                armRead()
+            }
+            n == -1 -> {
+                buf.release()
+                onReadClosed?.invoke()
+            }
+            else -> {
+                buf.release()
+                armRead()
+            }
+        }
+    }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && socketChannel.isOpen) {
+            outputShutdown = true
+            socketChannel.shutdownOutput()
+        }
+    }
+
+    // --- Write path ---
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
@@ -90,14 +146,17 @@ internal class NioIoTransport(
     }
 
     /**
-     * Releases all pending write buffers and closes the socket channel.
-     * Unsent data is discarded. Idempotent.
+     * Releases all pending write buffers, cancels the SelectionKey, and
+     * closes the socket channel. Idempotent.
      */
     override fun close() {
+        if (!_open) return
+        _open = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
         _writable = true
+        selectionKey.cancel()
         if (socketChannel.isOpen) socketChannel.close()
     }
 

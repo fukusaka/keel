@@ -71,14 +71,7 @@ internal class NioServer(
                 val clientKey = workerLoop.registerChannel(client)
                 val transport = NioIoTransport(client, clientKey, workerLoop, allocator)
                 val channel = NioPipelinedChannel(
-                    client,
-                    clientKey,
-                    transport,
-                    workerLoop,
-                    allocator,
-                    logger,
-                    remoteAddr,
-                    localAddr,
+                    transport, logger, remoteAddr, localAddr,
                 )
                 bindConfig.initializeConnection(channel)
                 return channel
