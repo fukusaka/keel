@@ -158,7 +158,7 @@ class KqueueEngine(
         val localAddr = PosixSocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         val transport = KqueueIoTransport(fd, workerLoop, allocator)
-        return KqueuePipelinedChannel(fd, transport, workerLoop, allocator, logger, remoteAddr, localAddr)
+        return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
     /**

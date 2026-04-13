@@ -77,7 +77,7 @@ internal class KqueueServer(
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = KqueueIoTransport(clientFd, workerLoop, allocator)
                 val channel = KqueuePipelinedChannel(
-                    clientFd, transport, workerLoop, allocator, logger, remoteAddr, localAddr,
+                    transport, logger, remoteAddr, localAddr,
                 )
                 bindConfig.initializeConnection(channel)
                 return channel

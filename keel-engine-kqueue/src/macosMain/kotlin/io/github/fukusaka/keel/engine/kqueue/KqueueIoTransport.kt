@@ -18,8 +18,11 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
+import platform.posix.SHUT_WR
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.read
+import platform.posix.shutdown
 import platform.posix.write
 import kotlinx.cinterop.ByteVar
 import posix_socket.keel_writev
@@ -43,10 +46,68 @@ internal class KqueueIoTransport(
     override val allocator: BufferAllocator,
 ) : IoTransport {
 
-    @Suppress("VarCouldBeVal") // will be mutated in close() after read path migration
     private var _open = true
     override val isOpen: Boolean get() = _open
     override val coroutineDispatcher: CoroutineDispatcher get() = eventLoop
+
+    // --- Read path ---
+
+    override var onRead: ((IoBuf) -> Unit)? = null
+    override var onReadClosed: (() -> Unit)? = null
+
+    override var readEnabled: Boolean = false
+        set(value) {
+            field = value
+            if (value && _open) armRead()
+        }
+
+    private fun armRead() {
+        if (!_open) return
+        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ) {
+            onReadable()
+        }
+    }
+
+    private fun onReadable() {
+        if (!_open) return
+        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val ptr = (buf.unsafePointer + buf.writerIndex)!!
+        val n = read(fd, ptr, buf.writableBytes.convert())
+        when {
+            n > 0 -> {
+                buf.writerIndex += n.toInt()
+                onRead?.invoke(buf)
+                armRead()
+            }
+            n == 0L -> {
+                buf.release()
+                onReadClosed?.invoke()
+            }
+            else -> {
+                val err = errno
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    buf.release()
+                    armRead()
+                } else {
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
+            }
+        }
+    }
+
+    // --- Lifecycle ---
+
+    private var outputShutdown = false
+
+    override fun shutdownOutput() {
+        if (!outputShutdown && _open) {
+            outputShutdown = true
+            shutdown(fd, SHUT_WR)
+        }
+    }
+
+    // --- Write path ---
 
     private val pendingWrites = mutableListOf<PendingWrite>()
 
@@ -105,11 +166,12 @@ internal class KqueueIoTransport(
      * Releases all pending write buffers and closes the socket fd.
      *
      * Unsent data is discarded — no flush is attempted. Does NOT unregister
-     * any pending EVFILT_WRITE callback from the EventLoop (the callback will
-     * find the fd closed and become a no-op). Idempotent for buffer release,
-     * but `close(fd)` is called unconditionally — caller must ensure single close.
+     * any pending EVFILT_READ/WRITE callbacks from the EventLoop (the
+     * callbacks check [isOpen] and become no-ops). Idempotent.
      */
     override fun close() {
+        if (!_open) return
+        _open = false
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
