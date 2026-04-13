@@ -22,7 +22,8 @@ import kotlinx.coroutines.CoroutineDispatcher
  *   transport.onRead        → pipeline.notifyRead(buf)
  *   transport.onReadClosed  → pipeline.notifyInactive() + close()
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
- *   ensureBridge()          → transport.readEnabled = true
+ *   ensureBridge()          → installs SuspendBridgeHandler (no read arming)
+ *   readEnabled             → transport.readEnabled
  *   shutdownOutput()        → transport.shutdownOutput()
  *   close()                 → transport.close()
  * ```
@@ -43,8 +44,11 @@ abstract class AbstractPipelinedChannel(
     override val appDispatcher: CoroutineDispatcher get() = transport.appDispatcher
     override val supportsDeferredFlush: Boolean get() = transport.supportsDeferredFlush
 
+    override var readEnabled: Boolean
+        get() = transport.readEnabled
+        set(value) { transport.readEnabled = value }
+
     private var bridge: SuspendBridgeHandler? = null
-    private var readArmed = false
 
     init {
         transport.onWritabilityChanged = { writable ->
@@ -64,10 +68,6 @@ abstract class AbstractPipelinedChannel(
         val handler = SuspendBridgeHandler()
         pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
-        if (!readArmed) {
-            readArmed = true
-            transport.readEnabled = true
-        }
         return handler
     }
 

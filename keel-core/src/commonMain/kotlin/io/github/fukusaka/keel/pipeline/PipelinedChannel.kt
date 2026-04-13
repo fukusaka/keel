@@ -31,6 +31,16 @@ interface PipelinedChannel : Channel {
     /** True if the outbound buffer has capacity for more writes. */
     val isWritable: Boolean
 
+    /**
+     * Enables or disables the read loop on the underlying transport.
+     *
+     * When `true`, the transport registers for read events and delivers
+     * data via the pipeline. When `false`, read events are deregistered.
+     *
+     * Delegates to [IoTransport.readEnabled].
+     */
+    var readEnabled: Boolean
+
     override val remoteAddress: SocketAddress? get() = null
     override val localAddress: SocketAddress? get() = null
 
@@ -50,18 +60,22 @@ interface PipelinedChannel : Channel {
     // When already on the EventLoop, withContext is a no-op.
 
     /**
-     * Lazily installs [SuspendBridgeHandler] and arms the read loop.
+     * Lazily installs [SuspendBridgeHandler] in the pipeline.
      *
-     * [AbstractPipelinedChannel] implements this by installing the bridge
-     * handler and setting [IoTransport.readEnabled] = true to start
-     * data delivery. Always called on the I/O thread (via [withContext]).
+     * Does NOT start the read loop — call [readEnabled] = true separately
+     * to begin receiving data. This separation allows callers that already
+     * have their own pipeline-level bridge (e.g. [SuspendMessageBridge])
+     * to arm reads without installing an unnecessary [SuspendBridgeHandler].
+     *
+     * Always called on the I/O thread (via [withContext]).
      */
     fun ensureBridge(): SuspendBridgeHandler
 
     /**
      * Reads decoded data via [SuspendBridgeHandler] on the EventLoop thread.
      *
-     * [withContext] dispatches to [ioDispatcher] (EventLoop) to
+     * Installs the bridge (if not yet present) and enables reading on the
+     * first call. [withContext] dispatches to [ioDispatcher] (EventLoop) to
      * guarantee single-threaded access to [SuspendBridgeHandler] state.
      *
      * @return number of bytes read, or -1 on EOF.
@@ -69,7 +83,9 @@ interface PipelinedChannel : Channel {
     override suspend fun read(buf: IoBuf): Int {
         check(isOpen) { "Channel is closed" }
         return withContext(ioDispatcher) {
-            ensureBridge().read(buf)
+            val bridge = ensureBridge()
+            if (!readEnabled) readEnabled = true
+            bridge.read(buf)
         }
     }
 

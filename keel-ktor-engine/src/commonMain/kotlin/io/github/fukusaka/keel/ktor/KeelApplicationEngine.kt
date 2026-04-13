@@ -370,14 +370,11 @@ public class KeelApplicationEngine(
         pipelinedChannel.pipeline.addLast("aggregator", HttpBodyAggregator())
         pipelinedChannel.pipeline.addLast("bridge", bridge)
 
-        // Arm the read loop. ensureBridge() installs a SuspendBridgeHandler
-        // (for raw IoBuf pull-mode) and registers read interest with the
-        // engine's EventLoop. The SuspendBridgeHandler sits after our
-        // pipeline handlers, but all IoBufs are consumed by
-        // HttpRequestDecoder before reaching it — only non-IoBuf messages
-        // (which the SuspendBridgeHandler ignores) propagate through.
+        // Arm the read loop. SuspendMessageBridge serves as the pipeline-
+        // level bridge (no SuspendBridgeHandler needed). Only readEnabled
+        // is required to start delivering data to the pipeline.
         withContext(pipelinedChannel.ioDispatcher) {
-            pipelinedChannel.ensureBridge()
+            pipelinedChannel.readEnabled = true
         }
 
         try {
