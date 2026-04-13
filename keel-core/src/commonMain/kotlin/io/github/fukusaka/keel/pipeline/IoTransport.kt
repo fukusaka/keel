@@ -41,10 +41,11 @@ import kotlinx.coroutines.CoroutineDispatcher
  * ## Write Backpressure
  *
  * [isWritable] tracks whether the transport can accept more writes without
- * excessive buffering. Implementations maintain a `pendingBytes` counter
- * incremented on [write] and decremented on flush completion. When
- * `pendingBytes >= highWaterMark`, [isWritable] becomes false; when
- * `pendingBytes < lowWaterMark`, it becomes true again.
+ * excessive buffering. [AbstractIoTransport] maintains a pending byte
+ * counter incremented on [write] and decremented on flush completion.
+ * When pending bytes reach [DEFAULT_HIGH_WATER_MARK], [isWritable]
+ * becomes false; when they drop below [DEFAULT_LOW_WATER_MARK], it
+ * becomes true again.
  */
 interface IoTransport {
 

@@ -52,9 +52,9 @@ interface PipelinedChannel : Channel {
     /**
      * Lazily installs [SuspendBridgeHandler] and arms the read loop.
      *
-     * Each engine implements this to manage the bridge lifecycle and
-     * call its platform-specific [armRead] to register I/O interest.
-     * Always called on the EventLoop thread (via [withContext]).
+     * [AbstractPipelinedChannel] implements this by installing the bridge
+     * handler and setting [IoTransport.readEnabled] = true to start
+     * data delivery. Always called on the I/O thread (via [withContext]).
      */
     fun ensureBridge(): SuspendBridgeHandler
 
@@ -103,21 +103,27 @@ interface PipelinedChannel : Channel {
         pipeline.requestFlush()
     }
 
+    /**
+     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
+     * to [IoTransport.awaitPendingFlush].
+     */
     override suspend fun awaitFlushComplete() {}
 
+    /**
+     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
+     * to [IoTransport.awaitClosed].
+     */
     override suspend fun awaitClosed() {}
 
     /**
-     * Default no-op. Engine implementations MUST override to send TCP FIN.
-     * Empty default is a transitional measure during engine migration.
+     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
+     * to [IoTransport.shutdownOutput].
      */
     override fun shutdownOutput() {}
 
     /**
-     * Default no-op. Engine implementations MUST override to release
-     * transport resources (fd, buffers). Empty default is a transitional
-     * measure during engine migration — failure to override will cause
-     * resource leaks.
+     * Default no-op. [AbstractPipelinedChannel] overrides to delegate
+     * to [IoTransport.close].
      */
     override fun close() {}
 

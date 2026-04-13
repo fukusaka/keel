@@ -37,6 +37,11 @@ abstract class AbstractIoTransport(
     override var onRead: ((IoBuf) -> Unit)? = null
     override var onReadClosed: (() -> Unit)? = null
 
+    // --- Write path callbacks ---
+
+    override var onFlushComplete: (() -> Unit)? = null
+    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
+
     // --- Write buffering ---
 
     /**
@@ -75,8 +80,6 @@ abstract class AbstractIoTransport(
     protected var pendingBytes: Int = 0
     private var writable: Boolean = true
     override val isWritable: Boolean get() = writable
-    override var onFlushComplete: (() -> Unit)? = null
-    override var onWritabilityChanged: ((Boolean) -> Unit)? = null
 
     /**
      * Adjusts [pendingBytes] by [delta] and checks water mark thresholds.
