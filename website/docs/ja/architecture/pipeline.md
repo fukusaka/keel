@@ -82,28 +82,57 @@ interface InboundHandler : PipelineHandler {
 }
 ```
 
-デフォルト実装は各イベントを次のハンドラに伝播します。ハンドラが必要なコールバックのみオーバーライドしてください。デコード済みまたは変換済みメッセージを次の受信ハンドラに渡すには `ctx.propagateRead(transformed)` を呼びます。
-
-**`OutboundHandler`** — HEAD 方向へ流れる write・flush・close 操作をインターセプトします。エンコーダはこれを実装し、アプリケーションレベルのメッセージをトランスポートが書き込む前に `IoBuf` に変換します:
+**`OutboundHandler`** — HEAD 方向へ流れる write・flush・close 操作をインターセプトします:
 
 ```kotlin
-class MyResponseEncoder : OutboundHandler {
+interface OutboundHandler : PipelineHandler {
+    fun onWrite(ctx: PipelineHandlerContext, msg: Any) { ctx.propagateWrite(msg) }
+    fun onFlush(ctx: PipelineHandlerContext) { ctx.propagateFlush() }
+    fun onClose(ctx: PipelineHandlerContext) { ctx.propagateClose() }
+}
+```
+
+**`DuplexHandler`** — 受信と送信の両方を実装します。双方向でメッセージを変換するハンドラ（TLS 暗号化/復号等）に使用します。
+
+デフォルト実装は各イベントを次のハンドラに伝播します。必要なコールバックのみオーバーライドしてください。
+
+### 例: InboundHandler（デコーダ）
+
+ネットワークから受信した生の `IoBuf` をデコードしてメッセージに変換します:
+
+```kotlin
+class MyDecoder : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        if (msg is IoBuf) {
+            val decoded = parseMyProtocol(msg)
+            msg.release()                    // 生バッファを解放
+            ctx.propagateRead(decoded)       // デコード済みメッセージを転送
+        } else {
+            ctx.propagateRead(msg)           // そのまま通過
+        }
+    }
+}
+```
+
+### 例: OutboundHandler（エンコーダ）
+
+アプリケーションメッセージをトランスポートが書き込む前に `IoBuf` に変換します:
+
+```kotlin
+class MyEncoder : OutboundHandler {
     override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is MyResponse) {
             val buf = ctx.allocator.allocate(/* サイズ */)
-            // msg を buf にエンコード
-            ctx.propagateWrite(buf)   // 伝播後に自分のアロケーションを解放
-            buf.release()
+            encodeMyProtocol(msg, buf)
+            ctx.propagateWrite(buf)
         } else {
-            ctx.propagateWrite(msg)   // 未知の型はそのまま通過させる
+            ctx.propagateWrite(msg)          // そのまま通過
         }
     }
 }
 ```
 
 複数の `propagateWrite` 呼び出しはトランスポートの送信バッファに蓄積されます。1 回の `propagateFlush`（または `propagateWriteAndFlush`）でまとめて OS に送信します。エンジンが対応していれば gather-write（`writev`）による一括送信が行われます。
-
-**`DuplexHandler`** — 受信と送信の両方を実装します。双方向でメッセージを変換するコーデック（リクエストデコーダとレスポンスエンコーダの組み合わせ等）に使用してください。
 
 ### TypedInboundHandler
 

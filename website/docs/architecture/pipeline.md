@@ -82,28 +82,57 @@ interface InboundHandler : PipelineHandler {
 }
 ```
 
-Default implementations propagate each event to the next handler. Override only the callbacks you need. Call `ctx.propagateRead(transformed)` to pass a decoded or transformed message to the next inbound handler.
-
-**`OutboundHandler`** — intercepts write, flush, and close operations flowing toward HEAD. An encoder implements this to convert application-level messages into `IoBuf` before the transport writes them:
+**`OutboundHandler`** — intercepts write, flush, and close operations flowing toward HEAD:
 
 ```kotlin
-class MyResponseEncoder : OutboundHandler {
+interface OutboundHandler : PipelineHandler {
+    fun onWrite(ctx: PipelineHandlerContext, msg: Any) { ctx.propagateWrite(msg) }
+    fun onFlush(ctx: PipelineHandlerContext) { ctx.propagateFlush() }
+    fun onClose(ctx: PipelineHandlerContext) { ctx.propagateClose() }
+}
+```
+
+**`DuplexHandler`** — implements both inbound and outbound. Use this for handlers that transform messages in both directions (e.g., TLS encryption/decryption).
+
+Default implementations propagate each event to the next handler. Override only the callbacks you need.
+
+### Example: InboundHandler (decoder)
+
+A decoder receives raw `IoBuf` from the network and produces a decoded message:
+
+```kotlin
+class MyDecoder : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        if (msg is IoBuf) {
+            val decoded = parseMyProtocol(msg)
+            msg.release()                    // release raw buffer
+            ctx.propagateRead(decoded)       // forward decoded message
+        } else {
+            ctx.propagateRead(msg)           // pass through unchanged
+        }
+    }
+}
+```
+
+### Example: OutboundHandler (encoder)
+
+An encoder converts application messages into `IoBuf` before the transport writes them:
+
+```kotlin
+class MyEncoder : OutboundHandler {
     override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is MyResponse) {
             val buf = ctx.allocator.allocate(/* size */)
-            // encode msg into buf
-            ctx.propagateWrite(buf)   // release our alloc after propagating
-            buf.release()
+            encodeMyProtocol(msg, buf)
+            ctx.propagateWrite(buf)
         } else {
-            ctx.propagateWrite(msg)   // pass through unknown types unchanged
+            ctx.propagateWrite(msg)          // pass through unchanged
         }
     }
 }
 ```
 
 Multiple `propagateWrite` calls accumulate in the transport's outbound buffer. A single `propagateFlush` (or `propagateWriteAndFlush`) flushes them to the OS in one batch, enabling gather-write (`writev`) when the engine supports it.
-
-**`DuplexHandler`** — implements both inbound and outbound. Use this for codecs that transform messages in both directions (e.g., a combined request decoder and response encoder).
 
 ### TypedInboundHandler
 
