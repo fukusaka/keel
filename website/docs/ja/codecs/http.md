@@ -31,7 +31,20 @@ HEAD ↔ encoder ↔ decoder ↔ handler ↔ TAIL
 
 `HttpResponseEncoder` はアウトバウンドのレスポンスメッセージを `IoBuf` にシリアライズします。レガシー `HttpResponse` 型（完全なボディ付き）と、ストリ��ミング `HttpResponseHead` → `HttpBody` → `HttpBodyEnd` の両方を受け付けます。
 
-リクエストボディ全体を `HttpRequest(body: ByteArray?)` として受け取るには、decoder と handler の間に `HttpBodyAggregator` を挿入します:
+デコーダはストリーミングメッセージ列を生成します:
+
+```
+HttpBodyAggregator なし（ストリーミング）:
+  HttpRequestHead → HttpBody → HttpBody → ... → HttpBodyEnd
+  （ハンドラは各パーツを個別の onRead 呼び出しで受信）
+
+HttpBodyAggregator あり:
+  HttpRequest(method, uri, headers, body: ByteArray?)
+  （ハンドラは完全なリクエストを 1 回で受信）
+```
+
+リクエストボディ全体を `HttpRequest(body: ByteArray?)` として受け取るには、decoder と handler の間に `HttpBodyAggregator` を挿入します。
+注意: aggregator はボディ全体をメモリにバッファします。大きなアップロードにはストリーミングを使用してください。
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->

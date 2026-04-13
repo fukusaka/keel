@@ -12,22 +12,58 @@ Pipeline mode is keel's push-based I/O API. When data arrives, the engine calls 
 
 ## How Pipeline mode works
 
-```
-Inbound:
-  engine reads into IoBuf → pipeline.notifyRead(buf)
-      HEAD → [TLS] → Decoder → Handler → TAIL
+Each accepted connection has a `Pipeline` — an ordered chain of handlers between two fixed endpoints: **HEAD** and **TAIL**.
 
-Outbound:
-  Handler calls ctx.propagateWriteAndFlush(response)
-      Handler → Encoder → [TLS] → HEAD
-                                    → IoTransport.write() / flush() → socket
+```
+Network  ↔  [HEAD]  ↔  Handler A  ↔  Handler B  ↔  Handler C  ↔  [TAIL]
+             ↑                                                      ↑
+         wire-facing                                          application-facing
+         (IoTransport)                                        (logging, errors)
 ```
 
-Each accepted connection has a `Pipeline` — an ordered chain of handlers. Inbound events flow from HEAD to TAIL; outbound operations flow from the calling handler toward HEAD. HEAD performs the actual socket I/O via `IoTransport`.
+- **HEAD** is the wire-facing end. It delegates read/write/flush to `IoTransport`, which owns the socket fd. You never add HEAD — it is created automatically.
+- **TAIL** is the application-facing end. It logs unhandled messages and errors. Also created automatically.
+- **Your handlers** go between HEAD and TAIL via `pipeline.addLast(name, handler)`.
 
-`ctx.propagateWrite()` traverses **toward HEAD** from the calling handler's position, triggering each `OutboundHandler` it encounters. Only outbound handlers between the caller and HEAD are invoked — handlers on the TAIL side are not. This determines where encoders must be placed (see [Pipeline](#channelpipeline)).
+### Data flow direction
+
+**Inbound** (network → application): data flows HEAD → TAIL.
+
+```
+  Network → IoTransport.onRead(buf) → pipeline.notifyRead(buf)
+      HEAD → [TlsHandler] → HttpDecoder → YourHandler → TAIL
+```
+
+**Outbound** (application → network): data flows from the calling handler **toward HEAD**.
+
+```
+  YourHandler calls ctx.propagateWriteAndFlush(response)
+      YourHandler → HttpEncoder → [TlsHandler] → HEAD → IoTransport.write() → Network
+```
+
+**Important**: `ctx.propagateWrite()` only reaches handlers between the caller and HEAD. Handlers on the TAIL side of the caller are never invoked for outbound operations. This is why **encoders must be placed between your handler and HEAD** (toward HEAD).
+
+### Thread model
 
 All handler callbacks run on the EventLoop thread and **must not block or suspend**. CPU-intensive work must be offloaded to another dispatcher.
+
+### Engine architecture
+
+Every engine follows the same pattern:
+
+```
+IoTransport (interface)
+  └── AbstractIoTransport (write buffering, backpressure, callbacks)
+       └── KqueueIoTransport / EpollIoTransport / NioIoTransport / ...
+            (platform-specific: read syscall, flush syscall, EventLoop registration)
+
+PipelinedChannel (interface)
+  └── AbstractPipelinedChannel (wires IoTransport ↔ Pipeline, ensureBridge)
+       └── KqueuePipelinedChannel / EpollPipelinedChannel / ...
+            (empty or minimal — all logic is in IoTransport)
+```
+
+Engine-specific PipelinedChannels are typically empty subclasses. All I/O logic lives in `IoTransport`.
 
 ## Writing handlers
 

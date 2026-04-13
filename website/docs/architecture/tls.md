@@ -22,6 +22,16 @@ keel supports two ways of integrating TLS, depending on whether TLS is handled b
 
 Use **per-connection TLS** for all engines except NWConnection and Node.js. Use **listener-level TLS** when targeting NWConnection (macOS App Store) or Node.js, where the runtime manages the TLS session.
 
+```
+Per-connection TLS:
+  Network (encrypted) → [TlsHandler decrypt] → plaintext → Decoder → Handler
+  Handler → Encoder → plaintext → [TlsHandler encrypt] → Network (encrypted)
+
+Listener-level TLS:
+  Network (OS decrypts) → plaintext → Decoder → Handler
+  Handler → Encoder → plaintext → Network (OS encrypts)
+```
+
 ## TlsConfig
 
 `TlsConfig` holds the TLS settings for a connection. A single instance is reusable across multiple connections:
