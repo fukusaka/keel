@@ -80,10 +80,10 @@ internal class EpollPipelinedServerChannel(
 
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, allocator: BufferAllocator) {
         val transport = EpollIoTransport(clientFd, loop, allocator)
-        val channel = EpollPipelinedChannel(clientFd, transport, loop, allocator, logger)
+        val channel = EpollPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)
-        channel.armRead()
+        transport.readEnabled = true
     }
 
     /**
