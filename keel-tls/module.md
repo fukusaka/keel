@@ -63,7 +63,7 @@ All methods are synchronous (non-suspend) and must not block.
 
 ## TlsHandler
 
-`TlsHandler` is a `ChannelDuplexHandler` that sits between `HeadHandler` and application handlers:
+`TlsHandler` is a `DuplexHandler` that sits between `HeadHandler` and application handlers:
 
 ```
 HEAD ↔ TlsHandler ↔ HttpDecoder ↔ HttpEncoder ↔ Router ↔ TAIL
@@ -133,7 +133,7 @@ overrides the default `install()` to put Netty's `SslHandler` at the Netty trans
 | `TlsCodec` | Buffer-to-buffer TLS record protection (`protect` / `unprotect`) |
 | `TlsCodecFactory` | Creates `TlsCodec` instances; implements `TlsInstaller` |
 | `TlsInstaller` | `fun interface` — installs TLS on a `PipelinedChannel` |
-| `TlsHandler` | `ChannelDuplexHandler` — applies `TlsCodec` to the pipeline |
+| `TlsHandler` | `DuplexHandler` — applies `TlsCodec` to the pipeline |
 | `TlsConfig` | TLS connection settings (cert, trust, ALPN, SNI, verify mode) |
 | `TlsConnectorConfig` | Extends `BindConfig`; carries `TlsConfig` + `TlsInstaller?` |
 | `TlsCertificateSource` | Sealed interface: `Pem`, `Der`, `KeyStoreFile`, `SystemKeychain` |

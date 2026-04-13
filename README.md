@@ -14,9 +14,9 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 - **Native-first**: drives epoll, kqueue, and io_uring directly from Kotlin/Native
 - **7 I/O engines**: epoll · kqueue · io_uring · NIO · Netty · NWConnection · Node.js
 - **TLS**: 4 backends (OpenSSL, Mbed TLS, AWS-LC, JSSE) + listener-level TLS for NWConnection/Node.js
-- **Pipeline mode**: zero-coroutine ChannelPipeline with push-mode I/O for maximum throughput
+- **Pipeline mode**: zero-coroutine Pipeline with push-mode I/O for maximum throughput
 - **Codec layer**: HTTP/1.1 and WebSocket built on pure `kotlinx.io` primitives
-- **Suspend API**: all Channel-mode I/O operations are `suspend fun`
+- **Suspend API**: all Coroutine-mode I/O operations are `suspend fun`
 
 ```
   ┌────────────────────────────────────────────┐
@@ -26,7 +26,7 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
        ┌─────────────┴─────────────┐
        │     Codec (HTTP, WS)      │
        ├───────────────────────────┤
-       │  ChannelPipeline (push)   │
+       │  Pipeline (push)   │
        ├───────────────────────────┤
        │  TLS (OpenSSL│JSSE│...)   │
        └─────────────┬─────────────┘
@@ -96,7 +96,7 @@ keel/
 ### Current
 
 - 7 I/O engines: epoll, kqueue, io_uring, NIO, Netty, NWConnection, Node.js
-- Pipeline mode: ChannelPipeline with push-mode I/O (all 7 engines)
+- Pipeline mode: Pipeline with push-mode I/O (all 7 engines)
 - TLS: 4 backends (OpenSSL, Mbed TLS, AWS-LC, JSSE) + listener-level TLS
 - Per-server configuration (backlog, TLS)
 - Write backpressure with high/low water marks
@@ -308,7 +308,7 @@ Pipeline API, wrk 4t/100c/10s, 3-run median:
 | **native:pipeline-http-nwconnection** | **25K** | — |
 | **native:pipeline-http-nodejs** | **7K** | — |
 
-Ktor Channel mode via `keel-ktor-engine`, Linux Ryzen 9:
+Ktor Coroutine mode via `keel-ktor-engine`, Linux Ryzen 9:
 
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
@@ -320,7 +320,7 @@ Ktor Channel mode via `keel-ktor-engine`, Linux Ryzen 9:
 
 - All keel engines use fully async I/O with HTTP/1.1 keep-alive.
 - **Pipeline mode** (zero-coroutine push I/O) is the fastest mode — **pipeline-http-epoll** (870K) reaches 66% of Rust on Linux.
-- **Ktor Channel mode** (suspend-based) adds coroutine overhead — **ktor-keel-epoll** (589K) is still 65x faster than **ktor-cio**.
+- **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **ktor-keel-epoll** (589K) is still 65x faster than **ktor-cio**.
 - On `/large` (100KB) via Ktor, **jvm:ktor-keel-nio** reaches **228K req/s** — within 20% of raw Netty.
 - **jvm:ktor-keel-nio** (128K on macOS, 540K on Linux) approaches **jvm:ktor-netty** performance on `/hello`.
 

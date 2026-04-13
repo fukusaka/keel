@@ -43,7 +43,7 @@ Applications interact with `StreamEngine` in one of two ways:
 `engine.bind()` runs synchronously on the caller thread and returns a `Server`. `server.accept()` is a `suspend fun` that resumes when the EventLoop detects a new connection. Once accepted, `val buf = channel.read()` suspends until data arrives — code reads sequentially without blocking a thread. Integrates naturally with Ktor and all kotlinx coroutines primitives. Tradeoff: a coroutine context switch on each `read()` resume.
 
 **Pipeline mode** (`engine.bindPipeline()`)  
-The engine calls handlers directly on the EventLoop thread — no suspend, no context switch. When a socket becomes readable, the EventLoop reads data into `IoBuf` and fires the inbound event on `ChannelPipeline`: data flows synchronously through handlers (TLS → decoder → user handler → encoder) without leaving the EventLoop thread. Tradeoff: handlers must not block the EventLoop thread.
+The engine calls handlers directly on the EventLoop thread — no suspend, no context switch. When a socket becomes readable, the EventLoop reads data into `IoBuf` and fires the inbound event on `Pipeline`: data flows synchronously through handlers (TLS → decoder → user handler → encoder) without leaving the EventLoop thread. Tradeoff: handlers must not block the EventLoop thread.
 
 Both modes are available on all 7 engines. Pipeline mode achieves roughly 1.5× the throughput of Coroutine mode — a difference that reflects the coroutine context-switch cost.
 
@@ -98,7 +98,7 @@ The behavior above applies to keel's own engine implementations (epoll, kqueue, 
 
 keel's TLS has two integration modes:
 
-**Per-connection TLS** (kqueue, epoll, io_uring, NIO, Netty) — A `TlsHandler` is installed in the `ChannelPipeline`, encrypting and decrypting each `IoBuf` using the chosen TLS backend. For `keel-engine-netty`, TLS can be configured via `keel-tls-jsse` or via the built-in `NettySslInstaller` (Netty's own `SslHandler`) — no `keel-tls-*` module required in the latter case.
+**Per-connection TLS** (kqueue, epoll, io_uring, NIO, Netty) — A `TlsHandler` is installed in the `Pipeline`, encrypting and decrypting each `IoBuf` using the chosen TLS backend. For `keel-engine-netty`, TLS can be configured via `keel-tls-jsse` or via the built-in `NettySslInstaller` (Netty's own `SslHandler`) — no `keel-tls-*` module required in the latter case.
 
 **Listener-level TLS** (NWConnection, Node.js) — TLS is handled by the OS or runtime before data reaches keel. No `keel-tls-*` module is needed.
 

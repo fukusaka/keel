@@ -85,7 +85,7 @@ interface Channel : AutoCloseable {
     fun shutdownOutput()                   // TCP FIN — signals no more output; read side stays open
     override fun close()                   // closes both sides, releases resources
 
-    val coroutineDispatcher: CoroutineDispatcher  // optimal dispatcher for I/O on this channel
+    val ioDispatcher: CoroutineDispatcher  // optimal dispatcher for I/O on this channel
     val appDispatcher: CoroutineDispatcher        // dispatcher for application-level processing
 }
 ```
@@ -122,21 +122,21 @@ channel.flush()  // sends headers + body together when possible
 
 ## EventLoop interaction
 
-When `server.accept()` or `channel.read()` suspends, the calling coroutine releases its thread and the EventLoop is free to handle other connections. When I/O can proceed, the EventLoop resumes the coroutine on `channel.coroutineDispatcher`.
+When `server.accept()` or `channel.read()` suspends, the calling coroutine releases its thread and the EventLoop is free to handle other connections. When I/O can proceed, the EventLoop resumes the coroutine on `channel.ioDispatcher`.
 
-`keel-ktor-engine` uses both dispatchers internally: it launches the connection handler on `coroutineDispatcher` so that I/O reads and request parsing run on the EventLoop thread, then switches to `appDispatcher` via `withContext` to execute the Ktor pipeline (routing, response generation). When using `keel-ktor-engine`, this is managed automatically.
+`keel-ktor-engine` uses both dispatchers internally: it launches the connection handler on `ioDispatcher` so that I/O reads and request parsing run on the EventLoop thread, then switches to `appDispatcher` via `withContext` to execute the Ktor pipeline (routing, response generation). When using `keel-ktor-engine`, this is managed automatically.
 
-When writing custom server code and launching additional coroutines that perform I/O on the same channel, use `coroutineDispatcher` to keep them on the correct thread:
+When writing custom server code and launching additional coroutines that perform I/O on the same channel, use `ioDispatcher` to keep them on the correct thread:
 
 ```kotlin
-launch(channel.coroutineDispatcher) {
+launch(channel.ioDispatcher) {
     // I/O on this channel runs on the optimal thread for the engine
 }
 ```
 
 Where these dispatchers point depends on the engine:
 
-| Engine | `coroutineDispatcher` | `appDispatcher` |
+| Engine | `ioDispatcher` | `appDispatcher` |
 |---|---|---|
 | epoll / kqueue / io_uring | EventLoop thread | EventLoop thread |
 | NIO (JVM) | EventLoop thread | `Dispatchers.Default` |
@@ -144,7 +144,7 @@ Where these dispatchers point depends on the engine:
 
 **Native engines (epoll, kqueue, io_uring)**: both dispatchers return the EventLoop thread. I/O reads, request parsing, and the Ktor pipeline all run on the same thread — no cross-thread handoff, no wakeup syscalls when code is already on the EventLoop thread. The trade-off: coroutine code must not block; CPU-intensive work should be offloaded to `Dispatchers.Default`.
 
-**NIO (JVM)**: `coroutineDispatcher` returns the EventLoop thread; `appDispatcher` returns `Dispatchers.Default`. NIO runs fewer EventLoop threads than there are connections, so each EventLoop handles a fixed subset of connections with no way to rebalance. `Dispatchers.Default` (ForkJoinPool) actively solves this: work-stealing continuously redistributes tasks across all cores regardless of which EventLoop accepted the connection.
+**NIO (JVM)**: `ioDispatcher` returns the EventLoop thread; `appDispatcher` returns `Dispatchers.Default`. NIO runs fewer EventLoop threads than there are connections, so each EventLoop handles a fixed subset of connections with no way to rebalance. `Dispatchers.Default` (ForkJoinPool) actively solves this: work-stealing continuously redistributes tasks across all cores regardless of which EventLoop accepted the connection.
 
 **Netty / NWConnection / Node.js**: keel does not own the EventLoop for these engines. Both dispatchers return `Dispatchers.Default`, deferring to each engine's own threading model.
 

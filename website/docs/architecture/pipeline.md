@@ -12,54 +12,121 @@ Pipeline mode is keel's push-based I/O API. When data arrives, the engine calls 
 
 ## How Pipeline mode works
 
-```
-Inbound:
-  engine reads into IoBuf → pipeline.notifyRead(buf)
-      HEAD → [TLS] → Decoder → Handler → TAIL
+Each accepted connection has a `Pipeline` — an ordered chain of handlers between two fixed endpoints: **HEAD** and **TAIL**.
 
-Outbound:
-  Handler calls ctx.propagateWriteAndFlush(response)
-      Handler → Encoder → [TLS] → HEAD
-                                    → IoTransport.write() / flush() → socket
+```
+Network  ↔  [HEAD]  ↔  Handler A  ↔  Handler B  ↔  Handler C  ↔  [TAIL]
+             ↑                                                      ↑
+         wire-facing                                          application-facing
+         (IoTransport)                                        (logging, errors)
 ```
 
-Each accepted connection has a `ChannelPipeline` — an ordered chain of handlers. Inbound events flow from HEAD to TAIL; outbound operations flow from the calling handler toward HEAD. HEAD performs the actual socket I/O via `IoTransport`.
+- **HEAD** is the wire-facing end. It delegates read/write/flush to `IoTransport`, which owns the socket fd. You never add HEAD — it is created automatically.
+- **TAIL** is the application-facing end. It logs unhandled messages and errors. Also created automatically.
+- **Your handlers** go between HEAD and TAIL via `pipeline.addLast(name, handler)`.
 
-`ctx.propagateWrite()` traverses **toward HEAD** from the calling handler's position, triggering each `ChannelOutboundHandler` it encounters. Only outbound handlers between the caller and HEAD are invoked — handlers on the TAIL side are not. This determines where encoders must be placed (see [ChannelPipeline](#channelpipeline)).
+### Data flow direction
+
+**Inbound** (network → application): data flows HEAD → TAIL.
+
+```
+  Network → IoTransport.onRead(buf) → pipeline.notifyRead(buf)
+      HEAD → [TlsHandler] → HttpDecoder → YourHandler → TAIL
+```
+
+**Outbound** (application → network): data flows from the calling handler **toward HEAD**.
+
+```
+  YourHandler calls ctx.propagateWriteAndFlush(response)
+      YourHandler → HttpEncoder → [TlsHandler] → HEAD → IoTransport.write() → Network
+```
+
+**Important**: `ctx.propagateWrite()` only reaches handlers between the caller and HEAD. Handlers on the TAIL side of the caller are never invoked for outbound operations. This is why **encoders must be placed between your handler and HEAD** (toward HEAD).
+
+### Thread model
 
 All handler callbacks run on the EventLoop thread and **must not block or suspend**. CPU-intensive work must be offloaded to another dispatcher.
+
+### Engine architecture
+
+Every engine follows the same pattern:
+
+```
+IoTransport (interface)
+  └── AbstractIoTransport (write buffering, backpressure, callbacks)
+       └── KqueueIoTransport / EpollIoTransport / NioIoTransport / ...
+            (platform-specific: read syscall, flush syscall, EventLoop registration)
+
+PipelinedChannel (interface)
+  └── AbstractPipelinedChannel (wires IoTransport ↔ Pipeline, ensureBridge)
+       └── KqueuePipelinedChannel / EpollPipelinedChannel / ...
+            (empty or minimal — all logic is in IoTransport)
+```
+
+Engine-specific PipelinedChannels are typically empty subclasses. All I/O logic lives in `IoTransport`.
 
 ## Writing handlers
 
 Three interfaces cover the handler roles:
 
-**`ChannelInboundHandler`** — receives data and connection lifecycle events flowing HEAD → TAIL:
+**`InboundHandler`** — receives data and connection lifecycle events flowing HEAD → TAIL:
 
 ```kotlin
-interface ChannelInboundHandler : ChannelHandler {
-    fun onActive(ctx: ChannelHandlerContext) { ctx.propagateActive() }
-    fun onRead(ctx: ChannelHandlerContext, msg: Any) { ctx.propagateRead(msg) }
-    fun onReadComplete(ctx: ChannelHandlerContext) { ctx.propagateReadComplete() }
-    fun onInactive(ctx: ChannelHandlerContext) { ctx.propagateInactive() }
-    fun onError(ctx: ChannelHandlerContext, cause: Throwable) { ctx.propagateError(cause) }
-    fun onUserEvent(ctx: ChannelHandlerContext, event: Any) { ctx.propagateUserEvent(event) }
+interface InboundHandler : PipelineHandler {
+    fun onActive(ctx: PipelineHandlerContext) { ctx.propagateActive() }
+    fun onRead(ctx: PipelineHandlerContext, msg: Any) { ctx.propagateRead(msg) }
+    fun onReadComplete(ctx: PipelineHandlerContext) { ctx.propagateReadComplete() }
+    fun onInactive(ctx: PipelineHandlerContext) { ctx.propagateInactive() }
+    fun onError(ctx: PipelineHandlerContext, cause: Throwable) { ctx.propagateError(cause) }
+    fun onUserEvent(ctx: PipelineHandlerContext, event: Any) { ctx.propagateUserEvent(event) }
 }
 ```
 
-Default implementations propagate each event to the next handler. Override only the callbacks you need. Call `ctx.propagateRead(transformed)` to pass a decoded or transformed message to the next inbound handler.
-
-**`ChannelOutboundHandler`** — intercepts write, flush, and close operations flowing toward HEAD. An encoder implements this to convert application-level messages into `IoBuf` before the transport writes them:
+**`OutboundHandler`** — intercepts write, flush, and close operations flowing toward HEAD:
 
 ```kotlin
-class MyResponseEncoder : ChannelOutboundHandler {
-    override fun onWrite(ctx: ChannelHandlerContext, msg: Any) {
+interface OutboundHandler : PipelineHandler {
+    fun onWrite(ctx: PipelineHandlerContext, msg: Any) { ctx.propagateWrite(msg) }
+    fun onFlush(ctx: PipelineHandlerContext) { ctx.propagateFlush() }
+    fun onClose(ctx: PipelineHandlerContext) { ctx.propagateClose() }
+}
+```
+
+**`DuplexHandler`** — implements both inbound and outbound. Use this for handlers that transform messages in both directions (e.g., TLS encryption/decryption).
+
+Default implementations propagate each event to the next handler. Override only the callbacks you need.
+
+### Example: InboundHandler (decoder)
+
+A decoder receives raw `IoBuf` from the network and produces a decoded message:
+
+```kotlin
+class MyDecoder : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        if (msg is IoBuf) {
+            val decoded = parseMyProtocol(msg)
+            msg.release()                    // release raw buffer
+            ctx.propagateRead(decoded)       // forward decoded message
+        } else {
+            ctx.propagateRead(msg)           // pass through unchanged
+        }
+    }
+}
+```
+
+### Example: OutboundHandler (encoder)
+
+An encoder converts application messages into `IoBuf` before the transport writes them:
+
+```kotlin
+class MyEncoder : OutboundHandler {
+    override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is MyResponse) {
             val buf = ctx.allocator.allocate(/* size */)
-            // encode msg into buf
-            ctx.propagateWrite(buf)   // release our alloc after propagating
-            buf.release()
+            encodeMyProtocol(msg, buf)
+            ctx.propagateWrite(buf)
         } else {
-            ctx.propagateWrite(msg)   // pass through unknown types unchanged
+            ctx.propagateWrite(msg)          // pass through unchanged
         }
     }
 }
@@ -67,15 +134,13 @@ class MyResponseEncoder : ChannelOutboundHandler {
 
 Multiple `propagateWrite` calls accumulate in the transport's outbound buffer. A single `propagateFlush` (or `propagateWriteAndFlush`) flushes them to the OS in one batch, enabling gather-write (`writev`) when the engine supports it.
 
-**`ChannelDuplexHandler`** — implements both inbound and outbound. Use this for codecs that transform messages in both directions (e.g., a combined request decoder and response encoder).
+### TypedInboundHandler
 
-### TypedChannelInboundHandler
-
-For inbound handlers that consume a specific decoded message type, `TypedChannelInboundHandler<T>` eliminates the type cast and handles auto-release:
+For inbound handlers that consume a specific decoded message type, `TypedInboundHandler<T>` eliminates the type cast and handles auto-release:
 
 ```kotlin
-class MyHandler : TypedChannelInboundHandler<HttpRequest>(HttpRequest::class) {
-    override fun onReadTyped(ctx: ChannelHandlerContext, msg: HttpRequest) {
+class MyHandler : TypedInboundHandler<HttpRequest>(HttpRequest::class) {
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: HttpRequest) {
         val response = HttpResponse(HttpStatus.OK, body = "Hello!".encodeToByteArray())
         ctx.propagateWriteAndFlush(response)
     }
@@ -90,7 +155,7 @@ val handler = typedHandler<HttpRequest> { ctx, msg ->
 }
 ```
 
-## ChannelPipeline
+## Pipeline
 
 ```
 Network ↔ HEAD ↔ [TLS] ↔ Decoder ↔ Encoder ↔ Handler ↔ TAIL
@@ -138,14 +203,14 @@ engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig, NettySslInstaller(
 
 ```kotlin
 interface PipelinedChannel : Channel {
-    val pipeline: ChannelPipeline
+    val pipeline: Pipeline
     val isWritable: Boolean  // false when outbound buffer exceeds high-water mark
 }
 ```
 
 `PipelinedChannel` extends `Channel`, so a pipeline connection can also be used with suspend-based reads and writes when needed.
 
-Handlers that need to throttle output should monitor writability changes via `onWritabilityChanged(ctx, isWritable: Boolean)` in `ChannelInboundHandler` — pause writes when false, resume when true.
+Handlers that need to throttle output should monitor writability changes via `onWritabilityChanged(ctx, isWritable: Boolean)` in `InboundHandler` — pause writes when false, resume when true.
 
 `armRead()` is not part of the interface. Each engine calls it internally after the `bindPipeline` initializer returns, so the initializer does not need to call it.
 

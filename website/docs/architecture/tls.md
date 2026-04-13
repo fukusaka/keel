@@ -17,10 +17,20 @@ keel supports two ways of integrating TLS, depending on whether TLS is handled b
 
 | Mode | Engines | How it works |
 |---|---|---|
-| **Per-connection TLS** | kqueue, epoll, io_uring, NIO, Netty | A `TlsHandler` is installed at the head of the `ChannelPipeline`. keel encrypts/decrypts each buffer using the chosen TLS backend. |
+| **Per-connection TLS** | kqueue, epoll, io_uring, NIO, Netty | A `TlsHandler` is installed at the head of the `Pipeline`. keel encrypts/decrypts each buffer using the chosen TLS backend. |
 | **Listener-level TLS** | NWConnection, Node.js | TLS is negotiated at the OS or runtime level. Connections arrive at the pipeline already decrypted; no `keel-tls-*` module is needed. |
 
 Use **per-connection TLS** for all engines except NWConnection and Node.js. Use **listener-level TLS** when targeting NWConnection (macOS App Store) or Node.js, where the runtime manages the TLS session.
+
+```
+Per-connection TLS:
+  Network (encrypted) → [TlsHandler decrypt] → plaintext → Decoder → Handler
+  Handler → Encoder → plaintext → [TlsHandler encrypt] → Network (encrypted)
+
+Listener-level TLS:
+  Network (OS decrypts) → plaintext → Decoder → Handler
+  Handler → Encoder → plaintext → Network (OS encrypts)
+```
 
 ## TlsConfig
 
@@ -126,7 +136,7 @@ HEAD ↔ [TlsHandler] ↔ HttpDecoder ↔ Router ↔ TAIL
 After the handshake completes, `TlsHandler` fires a `TlsHandshakeComplete` user event. Receive it in a downstream handler via `onUserEvent` to inspect the negotiated ALPN protocol:
 
 ```kotlin
-override fun onUserEvent(ctx: ChannelHandlerContext, event: Any) {
+override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
     if (event is TlsHandshakeComplete) {
         val protocol = event.negotiatedProtocol  // "h2", "http/1.1", or null
     }

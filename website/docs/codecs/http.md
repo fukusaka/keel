@@ -40,8 +40,21 @@ Both Content-Length and chunked transfer-encoding are supported.
 accepts both the legacy `HttpResponse` type (complete body) and the streaming
 sequence `HttpResponseHead` → `HttpBody` × N → `HttpBodyEnd`.
 
+The decoder produces a streaming message sequence:
+
+```
+Without aggregator (streaming):
+  HttpRequestHead → HttpBody → HttpBody → ... → HttpBodyEnd
+  (handler receives each piece as a separate onRead call)
+
+With HttpBodyAggregator:
+  HttpRequest(method, uri, headers, body: ByteArray?)
+  (handler receives a single complete request)
+```
+
 For handlers that need the full request body as `HttpRequest(body: ByteArray?)`,
-insert `HttpBodyAggregator` between the decoder and your handler:
+insert `HttpBodyAggregator` between the decoder and your handler.
+Note: the aggregator buffers the entire body in memory — use streaming for large uploads.
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
@@ -55,8 +68,8 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 For handlers that consume streaming body messages directly (no aggregation):
 
 ```kotlin
-class MyHandler : ChannelInboundHandler {
-    override fun onRead(ctx: ChannelHandlerContext, msg: Any) {
+class MyHandler : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> { /* route by path */ }
             is HttpBodyEnd -> { msg.content.release(); /* emit response */ }

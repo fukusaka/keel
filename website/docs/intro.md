@@ -102,21 +102,21 @@ Event-driven I/O — epoll, kqueue, io_uring on native platforms, and NIO Select
 
 **Non-blocking sequential model** — The I/O thread resumes a suspended handler when I/O can proceed. Your code reads sequentially — like synchronous code — without blocking a thread. In Kotlin this is `suspend fun`; the same pattern appears as `async`/`await` in Python, C#, and JavaScript. Unlike the traditional blocking model (one OS thread per connection blocked on `read()`), this scales to thousands of concurrent connections on a single thread.
 
-**Push model** — When I/O can proceed, the engine calls your handler directly on the I/O thread. No suspend, no context switch — just a chain of function calls. This is the model Netty's `ChannelPipeline` uses, and it fits naturally with event-driven I/O.
+**Push model** — When I/O can proceed, the engine calls your handler directly on the I/O thread. No suspend, no context switch — just a chain of function calls. This is the model Netty's `Pipeline` uses, and it fits naturally with event-driven I/O.
 
 keel provides both:
 
 | | Coroutine Mode | Pipeline Mode |
 |---|---|---|
 | Model | Non-blocking sequential | Push / event-driven |
-| API | `suspend fun read() / write()` | `ChannelPipeline` handler chain |
+| API | `suspend fun read() / write()` | `Pipeline` handler chain |
 | Concurrency unit | One coroutine per connection | Callbacks on EventLoop thread |
 | How to use | `keel-ktor-engine` or `engine.bind()` | `engine.bindPipeline(...)` |
 | Best for | Application servers with Ktor | High-throughput custom protocol servers |
 
 **Coroutine mode** is what you get when using `keel-ktor-engine`. It integrates with all Ktor plugins and is the right choice for most applications.
 
-**Pipeline mode** follows the push model. keel-core provides `ChannelPipeline` — a Netty-inspired handler chain that all engines implement. You configure it via `engine.bindPipeline()`, placing decoders, routers, and encoders as handlers. I/O callbacks run on the engine's EventLoop thread without coroutine context switches.
+**Pipeline mode** follows the push model. keel-core provides `Pipeline` — a Netty-inspired handler chain that all engines implement. You configure it via `engine.bindPipeline()`, placing decoders, routers, and encoders as handlers. I/O callbacks run on the engine's EventLoop thread without coroutine context switches.
 
 See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architecture/pipeline.md) for details.
 

@@ -31,11 +31,11 @@ Application
 - **Zero-copy I/O**: `read(IoBuf)` / `write(IoBuf)` pass `unsafePointer` (Native) or `unsafeBuffer` (JVM) directly to OS syscalls.
 - **Half-close**: `shutdownOutput()` sends TCP FIN; input remains open.
 - **Codec bridge**: `asSuspendSource()` / `asSuspendSink()` expose the channel as kotlinx-io-compatible streams.
-- **`coroutineDispatcher`**: returns the engine's EventLoop dispatcher. I/O + processing run on the same thread — no cross-thread dispatch overhead.
+- **`ioDispatcher`**: returns the engine's EventLoop dispatcher. I/O + processing run on the same thread — no cross-thread dispatch overhead.
 
 ## Pipeline Framework
 
-`ChannelPipeline` is an ordered handler chain for protocol processing.
+`Pipeline` is an ordered handler chain for protocol processing.
 
 **Inbound events** (data received, connection lifecycle) flow HEAD → TAIL.
 **Outbound operations** (write, flush) flow TAIL → HEAD.
@@ -78,13 +78,15 @@ Configuration shared by all engines:
 | `SocketAddress` | `core` | `(host, port)` tuple |
 | `IoEngineConfig` | `core` | Engine-wide configuration |
 | `BindConfig` | `core` | Per-server bind configuration (backlog, TLS initializer) |
-| `ChannelPipeline` | `pipeline` | Handler chain interface |
-| `DefaultChannelPipeline` | `pipeline` | Doubly-linked handler chain implementation |
-| `PipelinedChannel` | `pipeline` | Channel with attached `ChannelPipeline` |
-| `IoTransport` | `pipeline` | Engine-to-pipeline write/flush bridge |
+| `Pipeline` | `pipeline` | Handler chain interface |
+| `DefaultPipeline` | `pipeline` | Doubly-linked handler chain implementation |
+| `PipelinedChannel` | `pipeline` | Channel with attached `Pipeline` |
+| `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`, `appDispatcher`) |
+| `AbstractIoTransport` | `pipeline` | Base `IoTransport` with write buffering, backpressure, and callback initialization |
+| `AbstractPipelinedChannel` | `pipeline` | Base `PipelinedChannel` that wires `IoTransport` callbacks to the pipeline |
 | `SuspendBridgeHandler` | `pipeline` | Pipeline-to-suspend bridge for raw `IoBuf` (Coroutine mode) |
 | `SuspendMessageBridge<T>` | `pipeline` | Generic typed-message bridge: pipeline → suspendable `Channel<T>` |
-| `TypedChannelInboundHandler` | `pipeline` | Inbound handler with type-safe message dispatch |
+| `TypedInboundHandler` | `pipeline` | Inbound handler with type-safe message dispatch |
 | `Logger` / `LoggerFactory` | `logging` | Logging facade (no dependency on any logging library) |
 
 # Package io.github.fukusaka.keel.core
@@ -95,9 +97,9 @@ binding servers and creating connections.
 
 # Package io.github.fukusaka.keel.pipeline
 
-`ChannelPipeline`, `DefaultChannelPipeline`, `PipelinedChannel`, `IoTransport`,
-`SuspendBridgeHandler`, and handler interfaces (`ChannelInboundHandler`,
-`ChannelOutboundHandler`, `TypedChannelInboundHandler`).
+`Pipeline`, `DefaultPipeline`, `PipelinedChannel`, `IoTransport`,
+`AbstractIoTransport`, `AbstractPipelinedChannel`, `SuspendBridgeHandler`,
+and handler interfaces (`InboundHandler`, `OutboundHandler`, `TypedInboundHandler`).
 
 # Package io.github.fukusaka.keel.logging
 

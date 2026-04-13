@@ -3,7 +3,7 @@
 HTTP/1.1 codec — parser, writer, and pipeline handlers (RFC 7230/7231).
 
 Depends on `keel-io` (for `BufferedSuspendSource` / `BufferedSuspendSink`) and `keel-core`
-(for `ChannelPipeline` and `PipelinedChannel`).
+(for `Pipeline` and `PipelinedChannel`).
 
 ## Two API Styles
 
