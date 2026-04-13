@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -90,41 +91,6 @@ internal class NioIoTransport(
 
     // --- Write path ---
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
-
-    // --- Write backpressure ---
-
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
-        }
-    }
-
-    /**
-     * Buffers [buf] for the next [flush] call.
-     *
-     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
-     * The caller's readerIndex is advanced immediately so it can reuse the buf.
-     */
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
-    }
-
     /**
      * Attempts to send all pending writes via [SocketChannel.write].
      *
@@ -149,7 +115,6 @@ internal class NioIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        _writable = true
         selectionKey.cancel()
         if (socketChannel.isOpen) socketChannel.close()
     }
@@ -252,13 +217,4 @@ internal class NioIoTransport(
             cont.invokeOnCancellation { flushContinuation = null }
         }
     }
-
-    /**
-     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
-     * where readable data starts, and the number of bytes to write.
-     *
-     * Offset/length are recorded separately because [IoBuf.readerIndex] is
-     * advanced at write() time so the caller can reuse the buffer immediately.
-     */
-    internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

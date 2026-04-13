@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
-import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
@@ -33,15 +33,6 @@ import platform.posix.MSG_NOSIGNAL
 import platform.posix.errno
 import platform.posix.send
 import posix_socket.keel_writev
-
-/**
- * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
- * where readable data starts, and the number of bytes to write.
- *
- * Offset/length are recorded separately because [IoBuf.readerIndex] is
- * advanced at write() time so the caller can reuse the buffer immediately.
- */
-internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
 /**
  * io_uring [IoTransport] implementation for Linux.
@@ -124,27 +115,8 @@ internal class IoUringIoTransport(
 
     // --- Write path ---
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
-
     /** Per-connection I/O statistics for adaptive mode selection. */
     internal val stats = ConnectionStats()
-
-    // --- Write backpressure ---
-
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
-        }
-    }
 
     // Per-flush tracking for stats recording.
     private var flushHadEagain = false
@@ -152,18 +124,6 @@ internal class IoUringIoTransport(
 
     /** Bytes still pending in async flush, decremented on async completion. */
     private var asyncPendingFlushBytes = 0
-
-    // --- IoTransport interface ---
-
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
-    }
 
     /**
      * Fire-and-forget flush with [IoModeSelector]-driven strategy.
@@ -624,7 +584,6 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
         pendingBytes = 0
         asyncPendingFlushBytes = 0
-        _writable = true
         platform.posix.close(fd)
     }
 

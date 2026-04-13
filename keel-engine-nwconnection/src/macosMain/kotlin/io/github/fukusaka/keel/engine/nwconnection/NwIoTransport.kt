@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -134,35 +135,6 @@ internal class NwIoTransport(
 
     // --- Write path ---
 
-    private var pendingWrites = mutableListOf<PendingWrite>()
-
-    // --- Write backpressure ---
-
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
-        }
-    }
-
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
-    }
-
     /**
      * Sends all pending writes via NWConnection.
      *
@@ -176,9 +148,8 @@ internal class NwIoTransport(
         if (pendingWrites.isEmpty()) return true
 
         // Transfer ownership to FlushContext for release in callback.
-        // Avoids List copy by swapping the backing list.
-        val writes = pendingWrites
-        pendingWrites = mutableListOf()
+        val writes = ArrayList(pendingWrites)
+        pendingWrites.clear()
         val totalBytes = writes.sumOf { it.length }
         val transport = this
 
@@ -221,7 +192,6 @@ internal class NwIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        _writable = true
         nw_connection_cancel(conn)
     }
 
@@ -246,8 +216,6 @@ internal class NwIoTransport(
     }
 
     private class ReadContext(val transport: NwIoTransport, val buf: IoBuf)
-
-    internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 
     private class FlushContext(
         val writes: List<PendingWrite>,

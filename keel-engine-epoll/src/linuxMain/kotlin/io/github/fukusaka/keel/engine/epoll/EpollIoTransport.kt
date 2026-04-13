@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.resume
@@ -105,41 +106,6 @@ internal class EpollIoTransport(
 
     // --- Write path ---
 
-    private val pendingWrites = mutableListOf<PendingWrite>()
-
-    // --- Write backpressure ---
-
-    private var pendingBytes: Int = 0
-    private var _writable: Boolean = true
-    override val isWritable: Boolean get() = _writable
-
-    private fun updatePendingBytes(delta: Int) {
-        pendingBytes += delta
-        if (_writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
-            _writable = false
-            onWritabilityChanged?.invoke(false)
-        } else if (!_writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
-            _writable = true
-            onWritabilityChanged?.invoke(true)
-        }
-    }
-
-    /**
-     * Buffers [buf] for the next [flush] call.
-     *
-     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
-     * The caller's readerIndex is advanced immediately so it can reuse the buf.
-     */
-    override fun write(buf: IoBuf) {
-        val bytes = buf.readableBytes
-        if (bytes == 0) return
-        val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
-        pendingWrites.add(PendingWrite(buf, offset, bytes))
-        updatePendingBytes(bytes)
-    }
-
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         if (pendingWrites.size == 1) {
@@ -158,7 +124,6 @@ internal class EpollIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        _writable = true
         eventLoop.cleanupFd(fd)
         close(fd)
     }
@@ -279,12 +244,4 @@ internal class EpollIoTransport(
         }
     }
 
-    /**
-     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
-     * where readable data starts, and the number of bytes to write.
-     *
-     * Offset/length are recorded separately because [IoBuf.readerIndex] is
-     * advanced at write() time so the caller can reuse the buffer immediately.
-     */
-    internal class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }
