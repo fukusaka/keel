@@ -2,7 +2,20 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import kotlinx.coroutines.Runnable
+import platform.posix.pthread_cond_destroy
+import platform.posix.pthread_cond_init
+import platform.posix.pthread_cond_signal
+import platform.posix.pthread_cond_t
+import platform.posix.pthread_cond_wait
+import platform.posix.pthread_mutex_destroy
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -114,23 +127,41 @@ internal class IoUringEventLoopGroup(
         }
         for (loop in loops) loop.start()
 
-        // Dispatch register-class initialisation onto each EventLoop's pthread.
-        // The first task drained from taskQueue inside loop() runs after
-        // initRing() + submitWakeupSqe(), so the ring is ready.
-        val pending = AtomicInt(size)
-        for (i in 0 until size) {
-            loops[i].dispatch(EmptyCoroutineContext, Runnable {
-                bufferRings[i]?.initOnEventLoop()
-                fileRegistries[i]?.initOnEventLoop()
-                bufferTables[i]?.initOnEventLoop()
-                pending.decrementAndGet()
-            })
-        }
-        // Wait for register-class init on every loop to complete before returning.
-        // sched_yield gives the EventLoop pthreads CPU time; each init takes
-        // microseconds so the spin is bounded.
-        while (pending.value > 0) {
-            platform.posix.sched_yield()
+        // Dispatch register-class initialisation onto each EventLoop's pthread
+        // and block via pthread_cond_t until every loop has finished. The first
+        // task drained from taskQueue inside loop() runs after initRing() +
+        // submitWakeupSqe(), so the ring is ready when the Runnable fires.
+        //
+        // pthread_cond_t (rather than a sched_yield spin) so the caller thread
+        // blocks without burning CPU on systems where #cores == #EventLoops and
+        // the yielding thread would otherwise delay the loop pthreads.
+        memScoped {
+            val mutex = alloc<pthread_mutex_t>()
+            val cond = alloc<pthread_cond_t>()
+            pthread_mutex_init(mutex.ptr, null)
+            pthread_cond_init(cond.ptr, null)
+
+            val pending = AtomicInt(size)
+            for (i in 0 until size) {
+                loops[i].dispatch(EmptyCoroutineContext, Runnable {
+                    bufferRings[i]?.initOnEventLoop()
+                    fileRegistries[i]?.initOnEventLoop()
+                    bufferTables[i]?.initOnEventLoop()
+                    pthread_mutex_lock(mutex.ptr)
+                    val remaining = pending.decrementAndGet()
+                    if (remaining == 0) pthread_cond_signal(cond.ptr)
+                    pthread_mutex_unlock(mutex.ptr)
+                })
+            }
+
+            pthread_mutex_lock(mutex.ptr)
+            while (pending.value > 0) {
+                pthread_cond_wait(cond.ptr, mutex.ptr)
+            }
+            pthread_mutex_unlock(mutex.ptr)
+
+            pthread_cond_destroy(cond.ptr)
+            pthread_mutex_destroy(mutex.ptr)
         }
     }
 
