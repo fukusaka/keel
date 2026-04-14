@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io_uring.io_uring
 import io_uring.keel_register_buffers
 import io_uring.keel_unregister_buffers
@@ -38,6 +41,7 @@ import kotlinx.cinterop.toLong
 internal class RegisteredBufferTable(
     private val ring: CPointer<io_uring>,
     buffers: List<Pair<CPointer<ByteVar>, Int>>,
+    private val logger: Logger,
 ) {
     // Native pointer rawValue (Long) → registered buffer index.
     private val ptrToIndex = HashMap<Long, Int>(buffers.size * 2)
@@ -81,7 +85,10 @@ internal class RegisteredBufferTable(
      */
     fun close() {
         if (isActive) {
-            keel_unregister_buffers(ring)
+            val ret = keel_unregister_buffers(ring)
+            if (ret < 0) {
+                logger.warn { "io_uring_unregister_buffers() failed: ${errnoMessage(-ret)}" }
+            }
         }
     }
 }

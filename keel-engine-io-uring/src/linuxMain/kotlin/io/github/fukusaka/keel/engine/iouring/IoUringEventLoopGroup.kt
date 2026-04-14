@@ -41,12 +41,12 @@ internal class IoUringEventLoopGroup(
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
-        Array(size) { i -> ProvidedBufferRing(loops[i].ringPtr, bgid = i) }
+        Array(size) { i -> ProvidedBufferRing(loops[i].ringPtr, logger, bgid = i) }
     } else {
         arrayOfNulls(size)
     }
     private val fileRegistries: Array<FixedFileRegistry?> = if (capabilities.fixedFiles) {
-        Array(size) { i -> FixedFileRegistry(loops[i].ringPtr) }
+        Array(size) { i -> FixedFileRegistry(loops[i].ringPtr, logger) }
     } else {
         arrayOfNulls(size)
     }
@@ -59,7 +59,7 @@ internal class IoUringEventLoopGroup(
             warmupPool(alloc)
             val pooled = (alloc as? io.github.fukusaka.keel.buf.SlabAllocator)?.nativePooledBuffers()
             if (pooled != null && pooled.isNotEmpty()) {
-                RegisteredBufferTable(loops[i].ringPtr, pooled)
+                RegisteredBufferTable(loops[i].ringPtr, pooled, logger)
             } else {
                 null
             }
