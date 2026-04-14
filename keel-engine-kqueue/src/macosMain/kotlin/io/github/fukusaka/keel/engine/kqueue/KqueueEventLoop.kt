@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -45,10 +46,8 @@ import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
 import platform.posix.read
-import platform.posix.strerror
 import platform.posix.timespec
 import platform.posix.write
-import kotlinx.cinterop.toKString
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -363,8 +362,7 @@ internal class KqueueEventLoop(
                     if (err == EINTR || err == EAGAIN) continue
                     // Fatal error — log and terminate the EventLoop thread.
                     // Cannot throw from a pthread; logger is the only output path.
-                    val msg = strerror(err)?.toKString() ?: "unknown"
-                    logger.error { "kevent() fatal error: $msg (errno=$err)" }
+                    logger.error { "kevent() fatal error: ${errnoMessage(err)}" }
                     break
                 }
                 for (i in 0 until n) {

@@ -5,6 +5,8 @@ import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
@@ -125,7 +127,10 @@ internal class IoUringIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            shutdown(fd, SHUT_WR)
+            val ret = shutdown(fd, SHUT_WR)
+            if (ret != 0) {
+                eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+            }
         }
     }
 

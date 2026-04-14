@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io_uring.io_uring
 import io_uring.io_uring_buf_ring
 import io_uring.io_uring_buf_ring_add
@@ -51,6 +54,7 @@ import kotlinx.cinterop.value
 @OptIn(ExperimentalForeignApi::class)
 internal class ProvidedBufferRing(
     private val uring: CPointer<io_uring>,
+    private val logger: Logger,
     val bufferCount: Int = DEFAULT_BUFFER_COUNT,
     val bufferSize: Int = DEFAULT_BUFFER_SIZE,
     val bgid: Int = 0,
@@ -127,7 +131,10 @@ internal class ProvidedBufferRing(
      * Unregisters the buffer ring from the kernel and frees all memory.
      */
     fun close() {
-        io_uring_free_buf_ring(uring, bufRing, bufferCount.toUInt(), bgid)
+        val ret = io_uring_free_buf_ring(uring, bufRing, bufferCount.toUInt(), bgid)
+        if (ret < 0) {
+            logger.warn { "io_uring_free_buf_ring() failed: bgid=$bgid ${errnoMessage(-ret)}" }
+        }
         nativeHeap.free(basePtr.rawValue)
     }
 

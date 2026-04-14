@@ -46,5 +46,10 @@ kotlin {
                 implementation(project(":keel-core"))
             }
         }
+        commonTest {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }

@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io_uring.io_uring
 import io_uring.keel_register_files
 import io_uring.keel_register_files_update
@@ -31,6 +34,7 @@ import kotlinx.cinterop.set
 @OptIn(ExperimentalForeignApi::class)
 internal class FixedFileRegistry(
     private val ring: CPointer<io_uring>,
+    private val logger: Logger,
     private val maxFiles: Int = DEFAULT_MAX_FILES,
 ) {
     // Slot pool: tracks available indices in the registered file table.
@@ -84,7 +88,12 @@ internal class FixedFileRegistry(
         memScoped {
             val fds = allocArray<IntVar>(1)
             fds[0] = -1
-            keel_register_files_update(ring, index.toUInt(), fds, 1u)
+            val ret = keel_register_files_update(ring, index.toUInt(), fds, 1u)
+            if (ret < 0) {
+                logger.warn {
+                    "io_uring_register_files_update(unregister) failed: index=$index ${errnoMessage(-ret)}"
+                }
+            }
         }
         freeSlots[freeSlotsTop++] = index
     }
@@ -99,7 +108,10 @@ internal class FixedFileRegistry(
      */
     fun close() {
         if (registered) {
-            keel_unregister_files(ring)
+            val ret = keel_unregister_files(ring)
+            if (ret < 0) {
+                logger.warn { "io_uring_unregister_files() failed: ${errnoMessage(-ret)}" }
+            }
             registered = false
         }
     }

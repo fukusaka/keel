@@ -16,6 +16,7 @@ import kotlinx.cinterop.asStableRef
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -32,7 +33,6 @@ import platform.posix.EEXIST
 import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.errno
-import platform.posix.strerror
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
@@ -44,7 +44,6 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
-import kotlinx.cinterop.toKString
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -343,7 +342,7 @@ internal class EpollEventLoop(
                     if (err == EINTR || err == EAGAIN) continue
                     // Fatal error — log and terminate the EventLoop thread.
                     // Cannot throw from a pthread; logger is the only output path.
-                    logger.error { "epoll_wait() fatal error: ${strerror(err)?.toKString()} (errno=$err)" }
+                    logger.error { "epoll_wait() fatal error: ${errnoMessage(err)}" }
                     break
                 }
                 for (i in 0 until n) {

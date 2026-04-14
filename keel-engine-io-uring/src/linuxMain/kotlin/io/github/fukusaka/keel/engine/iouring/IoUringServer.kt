@@ -7,13 +7,13 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.posix.close
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -102,7 +102,7 @@ internal class IoUringServer(
             bindConfig.initializeConnection(channel)
             return channel
         } catch (e: Throwable) {
-            close(clientFd)
+            closeFdSafely(clientFd, logger, "accept cleanup")
             throw e
         }
     }
@@ -143,7 +143,7 @@ internal class IoUringServer(
             onCqe = { res, flags ->
                 if (!_active) {
                     // Close fds accepted between close() and the final CQE drain.
-                    if (res >= 0) close(res)
+                    if (res >= 0) closeFdSafely(res, logger, "post-close accept drain")
                     return@submitMultishot
                 }
                 if (res >= 0) {
@@ -170,7 +170,7 @@ internal class IoUringServer(
     override fun close() {
         if (_active) {
             _active = false
-            close(serverFd)
+            closeFdSafely(serverFd, logger, "server close")
             if (multishotSlot != -1) {
                 bossLoop.cancelMultishot(multishotSlot)
                 multishotSlot = -1
@@ -181,8 +181,9 @@ internal class IoUringServer(
             }
             // Close any queued fds that haven't been accepted yet.
             while (pendingFds.isNotEmpty()) {
-                close(pendingFds.removeFirst())
+                closeFdSafely(pendingFds.removeFirst(), logger, "server close (pending fd)")
             }
         }
     }
+
 }

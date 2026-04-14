@@ -36,7 +36,6 @@ import platform.posix.listen
 import platform.posix.setsockopt
 import platform.posix.sockaddr_in
 import platform.posix.socket
-import platform.posix.strerror
 import posix_socket.keel_inet_ntop
 import posix_socket.keel_inet_pton
 import posix_socket.keel_init_sockaddr_in
@@ -67,7 +66,7 @@ object PosixSocketUtils {
      */
     fun createServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
+        check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
 
         try {
             // SO_REUSEADDR to avoid TIME_WAIT bind failures during tests.
@@ -89,11 +88,11 @@ object PosixSocketUtils {
                     check(rc == 1) { "Invalid address: $host" }
                 }
                 val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-                check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
+                check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
             }
 
             val result = listen(fd, backlog)
-            check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
+            check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
             close(fd)
             throw e
@@ -118,7 +117,7 @@ object PosixSocketUtils {
      */
     fun createReusePortServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
+        check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
 
         try {
             intArrayOf(1).usePinned { pinned ->
@@ -138,11 +137,11 @@ object PosixSocketUtils {
                     check(rc == 1) { "Invalid address: $host" }
                 }
                 val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-                check(result == 0) { "bind() failed: ${strerror(errno)?.toKString()}" }
+                check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
             }
 
             val result = listen(fd, backlog)
-            check(result == 0) { "listen() failed: ${strerror(errno)?.toKString()}" }
+            check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
             close(fd)
             throw e
@@ -163,7 +162,7 @@ object PosixSocketUtils {
      */
     fun createUnconnectedSocket(): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0) { "socket() failed: ${strerror(errno)?.toKString()}" }
+        check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
         return fd
     }

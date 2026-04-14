@@ -8,20 +8,19 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
-import kotlinx.cinterop.toKString
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
-import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.EINPROGRESS
 import platform.posix.close
 import platform.posix.errno
-import platform.posix.strerror
 
 /**
  * Linux epoll-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -92,7 +91,7 @@ class EpollEngine(
             ev.events = EPOLLIN.toUInt()
             ev.data.fd = serverFd
             val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
-            check(result >= 0) { "epoll_ctl(ADD server) failed: ${strerror(errno)?.toKString()}" }
+            check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
         }
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
@@ -135,11 +134,11 @@ class EpollEngine(
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
                     close(fd)
-                    error("connect() failed: ${strerror(error)?.toKString()}")
+                    error("connect() failed: ${errnoMessage(error)}")
                 }
             } else {
                 close(fd)
-                error("connect() failed: ${strerror(err)?.toKString()}")
+                error("connect() failed: ${errnoMessage(err)}")
             }
         }
 
