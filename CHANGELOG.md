@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- keel-engine-io-uring: restructure ring and register-class lifecycle so `io_uring_queue_init` and all `io_uring_register_*` calls run on the owning EventLoop pthread. The three per-EventLoop register classes (`FixedFileRegistry`, `ProvidedBufferRing`, `RegisteredBufferTable`) now follow a 2-phase lifecycle (user-space alloc in constructor, kernel registration in `initOnEventLoop()`). `IoUringEventLoopGroup` orchestrates the per-loop init via dispatch, and `IoUringEventLoop.onExitHook` runs the register-class teardown on the pthread before the ring is destroyed. `IoUringEngine.connect` / `IoUringServer.accept` construct the transport via `withContext(workerLoop)`; `IoUringIoTransport.close()` dispatches its teardown to the EventLoop. No observable API change; prerequisite for `IORING_SETUP_SINGLE_ISSUER`.
 - All Native engines (epoll, kqueue, io_uring) and TLS code: switched syscall-error message construction from `strerror` to the new `errnoMessage` helper. No behavioural change in error messages.
 
 ### Fixed

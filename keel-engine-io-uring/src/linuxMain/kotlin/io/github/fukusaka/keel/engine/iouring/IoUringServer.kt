@@ -14,6 +14,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -97,7 +98,10 @@ internal class IoUringServer(
             val bufferRing = workerGroup.bufferRingAt(wi)
             val fileRegistry = workerGroup.fileRegistryAt(wi)
             val bufferTable = workerGroup.bufferTableAt(wi)
-            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+            // Construct on the worker EventLoop pthread — same reason as IoUringEngine.connect.
+            val transport = withContext(workerLoop) {
+                IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+            }
             val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)
             return channel

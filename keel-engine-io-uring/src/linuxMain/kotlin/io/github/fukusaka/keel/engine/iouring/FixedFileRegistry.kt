@@ -3,11 +3,9 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io_uring.io_uring
 import io_uring.keel_register_files
 import io_uring.keel_register_files_update
 import io_uring.keel_unregister_files
-import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.allocArray
@@ -25,25 +23,41 @@ import kotlinx.cinterop.set
  * accept and [unregister]ed on close. SQEs use the registered index
  * (with `IOSQE_FIXED_FILE` flag) instead of the raw fd.
  *
- * **Thread safety**: all methods must be called on the owning EventLoop
- * thread (same as IoTransport).
+ * **Two-phase lifecycle**: the constructor only allocates user-space state;
+ * the kernel `io_uring_register_files` call is deferred to [initOnEventLoop]
+ * which must run on the owning EventLoop's pthread. This is a precondition
+ * for `IORING_SETUP_SINGLE_ISSUER`, which records the first
+ * `io_uring_register_*` caller as the ring's submitter task.
  *
- * @param ring The io_uring ring to register files with.
+ * **Thread safety**: all methods except the constructor must run on the
+ * owning EventLoop pthread.
+ *
+ * @param eventLoop The owning EventLoop. Provides the ring pointer and the
+ *                  thread-affinity assertion target.
+ * @param logger Logger for warn-level diagnostics.
  * @param maxFiles Maximum number of concurrent registered fds.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class FixedFileRegistry(
-    private val ring: CPointer<io_uring>,
+    private val eventLoop: IoUringEventLoop,
     private val logger: Logger,
     private val maxFiles: Int = DEFAULT_MAX_FILES,
 ) {
+    private val ring get() = eventLoop.ringPtr
+
     // Slot pool: tracks available indices in the registered file table.
     private val freeSlots = IntArray(maxFiles) { it }
     private var freeSlotsTop = maxFiles
     private var registered = false
 
-    init {
-        // Register all slots as empty (-1).
+    /**
+     * Registers an empty slot table with the kernel on the owning EventLoop
+     * pthread. Idempotent for repeated calls but not thread-safe; [start]-time
+     * orchestration in [IoUringEventLoopGroup] calls this exactly once.
+     */
+    fun initOnEventLoop() {
+        eventLoop.assertInEventLoop("FixedFileRegistry.initOnEventLoop")
+        if (registered) return
         memScoped {
             val fds = allocArray<IntVar>(maxFiles)
             for (i in 0 until maxFiles) fds[i] = -1
@@ -63,6 +77,7 @@ internal class FixedFileRegistry(
      *         or -1 if registration failed (pool full or kernel unsupported).
      */
     fun register(fd: Int): Int {
+        eventLoop.assertInEventLoop("FixedFileRegistry.register")
         if (!registered || freeSlotsTop <= 0) return -1
         val index = freeSlots[--freeSlotsTop]
         memScoped {
@@ -84,6 +99,7 @@ internal class FixedFileRegistry(
      * Sets the slot to -1 (empty) in the kernel's registered file table.
      */
     fun unregister(index: Int) {
+        eventLoop.assertInEventLoop("FixedFileRegistry.unregister")
         if (!registered || index < 0) return
         memScoped {
             val fds = allocArray<IntVar>(1)
@@ -104,9 +120,11 @@ internal class FixedFileRegistry(
     val isActive: Boolean get() = registered
 
     /**
-     * Unregisters all files from the kernel. Called on EventLoop shutdown.
+     * Unregisters all files from the kernel. Called on EventLoop shutdown
+     * via [IoUringEventLoop.onExitHook] so the call runs on the submitter task.
      */
     fun close() {
+        eventLoop.assertInEventLoop("FixedFileRegistry.close")
         if (registered) {
             val ret = keel_unregister_files(ring)
             if (ret < 0) {

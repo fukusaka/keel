@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.withContext
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
@@ -164,7 +165,12 @@ class IoUringEngine(
         val bufferRing = workerGroup.bufferRingAt(wi)
         val fileRegistry = workerGroup.fileRegistryAt(wi)
         val bufferTable = workerGroup.bufferTableAt(wi)
-        val transport = IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+        // Construct the transport on the worker EventLoop pthread so
+        // `FixedFileRegistry.register(fd)` (invoked from the transport
+        // constructor's property initialiser) runs on the submitter task.
+        val transport = withContext(workerLoop) {
+            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+        }
         logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
         return IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }

@@ -2,7 +2,24 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.coroutines.Runnable
+import platform.posix.pthread_cond_destroy
+import platform.posix.pthread_cond_init
+import platform.posix.pthread_cond_signal
+import platform.posix.pthread_cond_t
+import platform.posix.pthread_cond_wait
+import platform.posix.pthread_mutex_destroy
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * A group of [IoUringEventLoop] instances for distributing I/O across
@@ -29,7 +46,7 @@ import kotlin.concurrent.AtomicInt
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 internal class IoUringEventLoopGroup(
     size: Int,
-    logger: Logger,
+    private val logger: Logger,
     allocator: BufferAllocator,
     capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
@@ -41,17 +58,17 @@ internal class IoUringEventLoopGroup(
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
-        Array(size) { i -> ProvidedBufferRing(loops[i].ringPtr, logger, bgid = i) }
+        Array(size) { i -> ProvidedBufferRing(loops[i], logger, bgid = i) }
     } else {
         arrayOfNulls(size)
     }
     private val fileRegistries: Array<FixedFileRegistry?> = if (capabilities.fixedFiles) {
-        Array(size) { i -> FixedFileRegistry(loops[i].ringPtr, logger) }
+        Array(size) { i -> FixedFileRegistry(loops[i], logger) }
     } else {
         arrayOfNulls(size)
     }
     private val bufferTables: Array<RegisteredBufferTable?> = if (capabilities.registeredBuffers) {
-        // Warmup pool, then register pooled buffer addresses with the kernel.
+        // Warmup pool, then prepare pooled buffer addresses for kernel registration.
         // Requires SlabAllocator (Native pool). Custom allocators silently skip
         // registration — SEND_ZC falls back to per-send page pinning.
         Array(size) { i ->
@@ -59,7 +76,7 @@ internal class IoUringEventLoopGroup(
             warmupPool(alloc)
             val pooled = (alloc as? io.github.fukusaka.keel.buf.SlabAllocator)?.nativePooledBuffers()
             if (pooled != null && pooled.isNotEmpty()) {
-                RegisteredBufferTable(loops[i].ringPtr, pooled, logger)
+                RegisteredBufferTable(loops[i], pooled, logger)
             } else {
                 null
             }
@@ -86,9 +103,94 @@ internal class IoUringEventLoopGroup(
         bufs.forEach { it.release() }
     }
 
-    /** Starts all EventLoop threads. */
+    /**
+     * Starts all EventLoop threads and orchestrates 2-phase register-class init.
+     *
+     * Each EventLoop is started (spawning its pthread), and each register-class
+     * `initOnEventLoop` is dispatched to the corresponding EventLoop thread so
+     * that `io_uring_register_*` calls run from the submitter task — required
+     * for `IORING_SETUP_SINGLE_ISSUER` and by the register classes' own
+     * thread-affinity invariants.
+     *
+     * Also wires [IoUringEventLoop.onExitHook] for each loop so register-class
+     * teardown runs on the EventLoop pthread before the ring is destroyed.
+     *
+     * Blocks until every loop has finished its register-class initialisation.
+     */
     fun start() {
+        // Wire onExitHook before start(): the hook captures index i by value and
+        // fires on the EventLoop pthread as the last action of its loop().
+        for (i in 0 until size) {
+            loops[i].onExitHook = {
+                bufferTables[i]?.close()
+                fileRegistries[i]?.close()
+                bufferRings[i]?.close()
+            }
+        }
         for (loop in loops) loop.start()
+
+        // Dispatch register-class initialisation onto each EventLoop's pthread
+        // and block via pthread_cond_t until every loop has finished. The first
+        // task drained from taskQueue inside loop() runs after initRing() +
+        // submitWakeupSqe(), so the ring is ready when the Runnable fires.
+        //
+        // pthread_cond_t (rather than a sched_yield spin) so the caller thread
+        // blocks without burning CPU on systems where #cores == #EventLoops and
+        // the yielding thread would otherwise delay the loop pthreads.
+        memScoped {
+            val mutex = alloc<pthread_mutex_t>()
+            val cond = alloc<pthread_cond_t>()
+            val initRet = pthread_mutex_init(mutex.ptr, null)
+            check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
+            val condInitRet = pthread_cond_init(cond.ptr, null)
+            check(condInitRet == 0) { "pthread_cond_init() failed: ${errnoMessage(condInitRet)}" }
+
+            val pending = AtomicInt(size)
+            for (i in 0 until size) {
+                loops[i].dispatch(EmptyCoroutineContext, Runnable {
+                    bufferRings[i]?.initOnEventLoop()
+                    fileRegistries[i]?.initOnEventLoop()
+                    bufferTables[i]?.initOnEventLoop()
+                    val lockRet = pthread_mutex_lock(mutex.ptr)
+                    if (lockRet != 0) {
+                        logger.warn { "pthread_mutex_lock() failed: ${errnoMessage(lockRet)}" }
+                    }
+                    val remaining = pending.decrementAndGet()
+                    if (remaining == 0) {
+                        val signalRet = pthread_cond_signal(cond.ptr)
+                        if (signalRet != 0) {
+                            logger.warn { "pthread_cond_signal() failed: ${errnoMessage(signalRet)}" }
+                        }
+                    }
+                    val unlockRet = pthread_mutex_unlock(mutex.ptr)
+                    if (unlockRet != 0) {
+                        logger.warn { "pthread_mutex_unlock() failed: ${errnoMessage(unlockRet)}" }
+                    }
+                })
+            }
+
+            val lockRet = pthread_mutex_lock(mutex.ptr)
+            check(lockRet == 0) { "pthread_mutex_lock() failed: ${errnoMessage(lockRet)}" }
+            while (pending.value > 0) {
+                val waitRet = pthread_cond_wait(cond.ptr, mutex.ptr)
+                // POSIX does not define any error return from pthread_cond_wait;
+                // any non-zero is a programming error (invalid cond or mutex).
+                check(waitRet == 0) { "pthread_cond_wait() failed: ${errnoMessage(waitRet)}" }
+            }
+            val unlockRet = pthread_mutex_unlock(mutex.ptr)
+            if (unlockRet != 0) {
+                logger.warn { "pthread_mutex_unlock() failed: ${errnoMessage(unlockRet)}" }
+            }
+
+            val destroyCondRet = pthread_cond_destroy(cond.ptr)
+            if (destroyCondRet != 0) {
+                logger.warn { "pthread_cond_destroy() failed: ${errnoMessage(destroyCondRet)}" }
+            }
+            val destroyMutexRet = pthread_mutex_destroy(mutex.ptr)
+            if (destroyMutexRet != 0) {
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyMutexRet)}" }
+            }
+        }
     }
 
     /**
@@ -113,11 +215,15 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop [RegisteredBufferTable] at [i], or null if not enabled. */
     fun bufferTableAt(i: Int): RegisteredBufferTable? = bufferTables[i]
 
-    /** Stops all EventLoop threads and releases resources. */
+    /**
+     * Stops all EventLoop threads and releases resources.
+     *
+     * The per-EventLoop register-class teardown (tables / registries / rings)
+     * runs on each EventLoop's pthread via [IoUringEventLoop.onExitHook]
+     * (wired up in [start]). Here we just signal each loop to stop and
+     * wait for its pthread to exit.
+     */
     fun close() {
-        for (table in bufferTables) table?.close()
-        for (reg in fileRegistries) reg?.close()
-        for (ring in bufferRings) ring?.close()
         for (loop in loops) loop.close()
     }
 

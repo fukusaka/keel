@@ -10,6 +10,8 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
@@ -677,7 +679,26 @@ internal class IoUringIoTransport(
 
     override fun close() {
         if (!opened) return
+        // Flip the open flag synchronously so [isOpen] reports closed even before
+        // the teardown task runs on the EventLoop. The flag lives in
+        // [AbstractIoTransport] and is plain `var`; memory visibility across
+        // threads is provided by the subsequent `dispatch` (MpscQueue release).
         opened = false
+        if (eventLoop.inEventLoop()) {
+            teardownOnEventLoop()
+        } else {
+            // Channel.close() is non-suspend and may be invoked from any thread.
+            // Dispatch the EventLoop-bound teardown (cancelMultishot, fixed-file
+            // unregister, fd close) onto the owning EventLoop. Fire-and-forget:
+            // pending close tasks are drained at the top of each loop iteration,
+            // so the ring is never torn down before its channel teardown runs.
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable {
+                teardownOnEventLoop()
+            })
+        }
+    }
+
+    private fun teardownOnEventLoop() {
         if (multishotSlot >= 0) {
             eventLoop.cancelMultishot(multishotSlot)
             multishotSlot = -1

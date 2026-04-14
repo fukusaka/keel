@@ -230,13 +230,24 @@ internal class IoUringEventLoop(
     private var eventLoopThread: pthread_t? = null
 
     init {
+        // Only allocate user-space state here. `io_uring_queue_init` is deferred
+        // to [initRing] which runs on the EventLoop pthread in [loop] — this is
+        // a precondition for `IORING_SETUP_SINGLE_ISSUER`, which records the
+        // first `io_uring_register_*` or `io_uring_enter` caller as the
+        // submitter task and rejects submissions from any other pthread.
+        wakeupFd = keel_eventfd_create()
+        check(wakeupFd >= 0) { "eventfd() failed" }
+    }
+
+    /**
+     * Initialises the io_uring ring. Must be called on the EventLoop pthread —
+     * invoked as the first action of [loop].
+     */
+    private fun initRing() {
         var flags = 0u
         if (capabilities.coopTaskrun) flags = flags or keel_setup_coop_taskrun()
         val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, flags)
         check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
-
-        wakeupFd = keel_eventfd_create()
-        check(wakeupFd >= 0) { "eventfd() failed" }
     }
 
     // --- CoroutineDispatcher ---
@@ -256,10 +267,41 @@ internal class IoUringEventLoop(
         }
     }
 
-    private fun inEventLoop(): Boolean {
+    /**
+     * Returns `true` if the current pthread is this EventLoop's thread.
+     * Returns `false` before [start] has been called (ring init phase).
+     */
+    internal fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
         return pthread_equal(pthread_self(), t) != 0
     }
+
+    /**
+     * Throws [IllegalStateException] if called from a thread other than this
+     * EventLoop's pthread. Used by per-EventLoop resources ([FixedFileRegistry],
+     * [ProvidedBufferRing], [RegisteredBufferTable]) to assert thread-affinity
+     * preconditions: their internal state is not synchronised and
+     * `IORING_SETUP_SINGLE_ISSUER` additionally requires `io_uring_register_*`
+     * to run on the submitter task.
+     *
+     * Returns without checking if the EventLoop has not yet started — the
+     * register-class `initOnEventLoop` path runs during startup orchestration.
+     */
+    internal fun assertInEventLoop(operation: String) {
+        val t = eventLoopThread ?: return
+        check(pthread_equal(pthread_self(), t) != 0) {
+            "$operation must run on the EventLoop thread"
+        }
+    }
+
+    /**
+     * Hook invoked on the EventLoop pthread as the last action of [loop],
+     * after the main drain loop exits but before the ring is destroyed.
+     * Used by [IoUringEventLoopGroup] to wire per-EventLoop register-class
+     * teardown (unregister files / buffers / free buf ring) on the submitter
+     * task while the kernel ring is still alive.
+     */
+    internal var onExitHook: (() -> Unit)? = null
 
     // --- Lifecycle ---
 
@@ -712,6 +754,10 @@ internal class IoUringEventLoop(
     private fun loop() {
         eventLoopThread = pthread_self()
 
+        // Initialise the kernel ring on this pthread so SINGLE_ISSUER claims
+        // this thread as the submitter task.
+        initRing()
+
         // Prepare the initial wakeup READ SQE.
         // It is submitted on the first io_uring_submit_and_wait() call below,
         // keeping the ring always occupied so the wait never blocks with no
@@ -811,6 +857,11 @@ internal class IoUringEventLoop(
                 }
             }
         }
+
+        // Run the exit hook (register-class teardown) on this pthread while
+        // the kernel ring is still alive. [close] will tear down the ring
+        // after this function returns.
+        onExitHook?.invoke()
     }
 
     private fun drainTasks() {
