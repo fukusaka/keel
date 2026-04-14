@@ -21,6 +21,7 @@ import posix_inet.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
+import io_uring.keel_sqe_set_fixed_file
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
@@ -392,11 +393,13 @@ internal class IoUringEventLoop(
      */
     internal fun submitSendZcCallback(
         fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
+        fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
@@ -417,11 +420,13 @@ internal class IoUringEventLoop(
         fd: Int,
         msghdr: kotlinx.cinterop.COpaquePointer,
         flags: UInt,
+        fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_sendmsg_zc(sqe, fd, msghdr, flags)
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
@@ -439,10 +444,14 @@ internal class IoUringEventLoop(
      */
     internal fun submitWritevCallback(
         fd: Int, iovecs: CPointer<iovec>, count: UInt,
+        fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
         submitCallback(
-            prepare = { sqe -> io_uring_prep_writev(sqe, fd, iovecs, count, 0u) },
+            prepare = { sqe ->
+                io_uring_prep_writev(sqe, fd, iovecs, count, 0u)
+                if (fixedFile) keel_sqe_set_fixed_file(sqe)
+            },
             onCqe = { res, _ -> onComplete(res) },
         )
     }
@@ -590,11 +599,13 @@ internal class IoUringEventLoop(
     internal fun submitMultishotRecv(
         fd: Int,
         bgid: Int,
+        fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE

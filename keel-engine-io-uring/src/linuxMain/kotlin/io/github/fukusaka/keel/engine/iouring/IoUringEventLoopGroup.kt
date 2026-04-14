@@ -45,6 +45,11 @@ internal class IoUringEventLoopGroup(
     } else {
         arrayOfNulls(size)
     }
+    private val fileRegistries: Array<FixedFileRegistry?> = if (capabilities.fixedFiles) {
+        Array(size) { i -> FixedFileRegistry(loops[i].ringPtr) }
+    } else {
+        arrayOfNulls(size)
+    }
     private val index = AtomicInt(0)
 
     /** Starts all EventLoop threads. */
@@ -68,8 +73,12 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop [ProvidedBufferRing] at [i], or null if not supported. */
     fun bufferRingAt(i: Int): ProvidedBufferRing? = bufferRings[i]
 
+    /** Returns the per-EventLoop [FixedFileRegistry] at [i], or null if not supported. */
+    fun fileRegistryAt(i: Int): FixedFileRegistry? = fileRegistries[i]
+
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
+        for (reg in fileRegistries) reg?.close()
         for (ring in bufferRings) ring?.close()
         for (loop in loops) loop.close()
     }
