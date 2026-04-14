@@ -6,7 +6,9 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -14,6 +16,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.close
+import platform.posix.errno
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -102,7 +105,7 @@ internal class IoUringServer(
             bindConfig.initializeConnection(channel)
             return channel
         } catch (e: Throwable) {
-            close(clientFd)
+            closeFdLogged(clientFd, "accept cleanup")
             throw e
         }
     }
@@ -170,7 +173,7 @@ internal class IoUringServer(
     override fun close() {
         if (_active) {
             _active = false
-            close(serverFd)
+            closeFdLogged(serverFd, "server close")
             if (multishotSlot != -1) {
                 bossLoop.cancelMultishot(multishotSlot)
                 multishotSlot = -1
@@ -181,8 +184,19 @@ internal class IoUringServer(
             }
             // Close any queued fds that haven't been accepted yet.
             while (pendingFds.isNotEmpty()) {
-                close(pendingFds.removeFirst())
+                closeFdLogged(pendingFds.removeFirst(), "server close (pending fd)")
             }
+        }
+    }
+
+    /**
+     * Closes [fd] and emits a warn-level log if `close(2)` returned non-zero.
+     * Used in error/cleanup paths so a close failure is observable without
+     * masking the original exception that triggered cleanup.
+     */
+    private fun closeFdLogged(fd: Int, context: String) {
+        if (close(fd) != 0) {
+            logger.warn { "close($fd) failed during $context: ${errnoMessage(errno)}" }
         }
     }
 }

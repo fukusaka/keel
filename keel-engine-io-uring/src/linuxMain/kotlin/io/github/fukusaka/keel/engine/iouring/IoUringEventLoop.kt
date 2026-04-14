@@ -134,7 +134,7 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
-    private val logger: Logger,
+    internal val logger: Logger,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
 ) : CoroutineDispatcher() {

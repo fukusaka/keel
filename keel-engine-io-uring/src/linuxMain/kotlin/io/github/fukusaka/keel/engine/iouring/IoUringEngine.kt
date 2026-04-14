@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -151,12 +152,12 @@ class IoUringEngine(
                 }
             }
         } catch (e: Throwable) {
-            close(fd)
+            closeFdLogged(fd, "connect cleanup")
             throw e
         }
 
         if (res < 0) {
-            close(fd)
+            closeFdLogged(fd, "connect cleanup")
             error("connect() failed: ${errnoMessage(-res)}")
         }
 
@@ -220,6 +221,17 @@ class IoUringEngine(
             bossLoop.close()
             workerGroup.close()
             logger.debug { "Engine closed" }
+        }
+    }
+
+    /**
+     * Closes [fd] and emits a warn-level log if `close(2)` returned non-zero.
+     * Used in error-cleanup paths so a close failure is observable without
+     * masking the original exception that triggered cleanup.
+     */
+    private fun closeFdLogged(fd: Int, context: String) {
+        if (close(fd) != 0) {
+            logger.warn { "close($fd) failed during $context: ${errnoMessage(errno)}" }
         }
     }
 
