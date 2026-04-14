@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- keel-native-posix: `errnoMessage(errno: Int): String` helper that wraps a thread-safe `strerror_r(3)` call (`keel_errno_message` C wrapper). Returns `"<message> (errno=N)"` so logs include both symbolic and numeric forms. Replaces direct uses of `platform.posix.strerror`, which is not required to be thread-safe per POSIX and may race on older glibc or non-glibc libc implementations.
+
+### Changed
+
+- All Native engines (epoll, kqueue, io_uring) and TLS code: switched syscall-error message construction from `strerror` to the new `errnoMessage` helper. No behavioural change in error messages.
+
+### Fixed
+
+- keel-engine-io-uring: check return values for previously-ignored teardown syscalls. `RegisteredBufferTable.close` (`io_uring_unregister_buffers`), `FixedFileRegistry.unregister`/`close` (`io_uring_register_files_update`/`io_uring_unregister_files`), `ProvidedBufferRing.close` (`io_uring_free_buf_ring`), `IoUringEventLoop.start` (`pthread_create` — now fail-fast), `IoUringEventLoop.close` (`pthread_join`, `close(wakeupFd)`), `IoUringEventLoop.wakeup` (`keel_eventfd_write`, EAGAIN treated as benign), `IoUringIoTransport.shutdownOutput` (`shutdown(fd, SHUT_WR)`), and `close(fd)` calls in `IoUringEngine.connect` / `IoUringServer.accept`/`close` / `IoUringPipelinedServerChannel.close` cleanup paths. Failures emit a warn-level log so silent kernel-side errors are observable without masking the original exception.
+
+### Added
+
 - keel-engine-io-uring: `IORING_SETUP_COOP_TASKRUN` ring setup flag (Linux 6.0+). Adds `IoUringCapabilities.coopTaskrun` (auto-enabled when kernel >= 6.0). The flag defers task_work execution to `io_uring_enter` calls, eliminating IPI overhead from task_work processing on every syscall return. Safe for keel's EventLoop model because the loop always blocks in `io_uring_submit_and_wait`. Loopback benchmark on luna.local showed no measurable effect (<1% within run-to-run variance), but the kernel-side IPI reduction applies when deployed on real NICs with multi-core contention.
 - keel-core: `AbstractPipelinedChannel` base class in commonMain. Wires `IoTransport` callbacks (`onRead` → `pipeline.notifyRead`, `onReadClosed` → `pipeline.notifyInactive`, `onWritabilityChanged` → `pipeline.notifyWritabilityChanged`) and provides default implementations for `ensureBridge`, `shutdownOutput`, `close`, `awaitFlushComplete`, `awaitClosed`, and all channel properties by delegating to the transport. Engine subclasses require no additional overrides for the common case.
 - All engines: `Server.accept()` now automatically calls `BindConfig.initializeConnection()` on each accepted channel. Passing `TlsConnectorConfig` to `bind()` enables transparent Channel mode TLS — `channel.read()` returns decrypted plaintext and `channel.write()` encrypts transparently, without manual pipeline setup.
