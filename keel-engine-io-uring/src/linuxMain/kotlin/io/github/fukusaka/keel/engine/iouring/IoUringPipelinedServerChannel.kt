@@ -4,14 +4,11 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
-import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
 import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.close
-import platform.posix.errno
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -112,9 +109,7 @@ internal class IoUringPipelinedServerChannel(
         if (!closed) {
             closed = true
             for (fd in serverFds) {
-                if (close(fd) != 0) {
-                    logger.warn { "close($fd) failed during pipelined server close: ${errnoMessage(errno)}" }
-                }
+                closeFdSafely(fd, logger, "pipelined server close")
             }
         }
     }
