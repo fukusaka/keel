@@ -43,6 +43,8 @@ class IoModeTest {
 
     @Test
     fun `coopTaskrun enabled works`() = runBlocking {
+        // threads=2: echoSmall opens client and server on the same engine, so
+        // the client's suspended read must not block the server's EventLoop.
         val defaultCaps = IoUringCapabilities()
         val engine = IoUringEngine(
             config = IoEngineConfig(threads = 2),
@@ -57,6 +59,7 @@ class IoModeTest {
 
     @Test
     fun `coopTaskrun disabled works`() = runBlocking {
+        // threads=2: see note on `coopTaskrun enabled works`.
         val defaultCaps = IoUringCapabilities()
         val engine = IoUringEngine(
             config = IoEngineConfig(threads = 2),
