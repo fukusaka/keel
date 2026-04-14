@@ -65,6 +65,25 @@ data class IoUringCapabilities(
      */
     val coopTaskrun: Boolean = true,
     /**
+     * Single-issuer ring (Linux 6.0+). Hints — and, on Linux 6.2+, enforces —
+     * that all `io_uring_register_*` calls and `io_uring_enter` submissions
+     * come from a single pthread (the owning EventLoop). Eliminates
+     * kernel-side locking on the submission path.
+     *
+     * Safe for keel post-PR #276: `io_uring_queue_init` runs in
+     * `IoUringEventLoop.loop()` on the EL pthread; every `io_uring_register_*`
+     * call is routed via `initOnEventLoop()` / `onExitHook` /
+     * `withContext(workerLoop)` / fire-and-forget dispatch onto the same
+     * pthread. Thread affinity is asserted by
+     * [IoUringEventLoop.assertInEventLoop].
+     *
+     * A/B benchmark on loopback (luna.local, 4t/100c /hello) showed no
+     * measurable effect (<1% within run-to-run variance). The kernel-side
+     * lock-elimination benefit is theoretically larger on high-contention
+     * workloads with multi-core submit/complete interleaving. Default-on.
+     */
+    val singleIssuer: Boolean = true,
+    /**
      * Registered buffers for SEND_ZC_FIXED (Linux 5.1+).
      *
      * Pre-pins pooled buffer pages via `io_uring_register_buffers`,
@@ -117,6 +136,7 @@ data class IoUringCapabilities(
                 providedBufferRing = kv >= KernelVersion(5, 19),
                 fixedFiles = kv >= KernelVersion(5, 1),
                 coopTaskrun = kv >= KernelVersion(6, 0),
+                singleIssuer = kv >= KernelVersion(6, 0),
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -133,6 +153,7 @@ data class IoUringCapabilities(
             providedBufferRing = false,
             fixedFiles = false,
             coopTaskrun = false,
+            singleIssuer = false,
             sendZc = false,
             sendmsgZc = false,
         )

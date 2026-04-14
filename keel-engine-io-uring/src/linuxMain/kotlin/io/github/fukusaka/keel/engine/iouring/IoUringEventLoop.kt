@@ -23,6 +23,7 @@ import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
 import io_uring.keel_prep_send_zc_fixed
 import io_uring.keel_setup_coop_taskrun
+import io_uring.keel_setup_single_issuer
 import io_uring.keel_sqe_set_fixed_file
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
@@ -246,6 +247,7 @@ internal class IoUringEventLoop(
     private fun initRing() {
         var flags = 0u
         if (capabilities.coopTaskrun) flags = flags or keel_setup_coop_taskrun()
+        if (capabilities.singleIssuer) flags = flags or keel_setup_single_issuer()
         val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, flags)
         check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
     }
