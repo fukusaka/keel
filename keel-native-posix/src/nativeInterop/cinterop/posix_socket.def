@@ -55,3 +55,24 @@ static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int c
     }
     return writev(fd, iov, count);
 }
+
+/*
+ * Thread-safe errno message lookup.
+ *
+ * strerror(3) is not required to be thread-safe by POSIX and may race on
+ * older glibc or non-glibc libc implementations. strerror_r(3) writes to a
+ * caller-supplied buffer and is thread-safe, but has two incompatible
+ * signatures:
+ *   XSI (POSIX): int strerror_r(int, char*, size_t)
+ *   GNU:         char *strerror_r(int, char*, size_t)
+ *
+ * The declaration is selected by feature test macros. Kotlin/Native cinterop
+ * for Linux compiles with glibc's XSI variant (no _GNU_SOURCE), so this
+ * wrapper targets that. macOS (Darwin) always exposes the XSI form.
+ *
+ * Returns 0 on success, non-zero on failure.
+ */
+static int keel_errno_message(int errnum, char *buf, size_t buflen) {
+    if (buflen == 0) return -1;
+    return strerror_r(errnum, buf, buflen);
+}
