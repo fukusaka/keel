@@ -22,6 +22,7 @@ import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
 import io_uring.keel_prep_send_zc_fixed
+import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_sqe_set_fixed_file
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
@@ -225,8 +226,10 @@ internal class IoUringEventLoop(
     private var eventLoopThread: pthread_t? = null
 
     init {
-        val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, 0u)
-        check(ret == 0) { "io_uring_queue_init() failed: $ret" }
+        var flags = 0u
+        if (capabilities.coopTaskrun) flags = flags or keel_setup_coop_taskrun()
+        val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, flags)
+        check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
 
         wakeupFd = keel_eventfd_create()
         check(wakeupFd >= 0) { "eventfd() failed" }

@@ -268,12 +268,8 @@ static int keel_kernel_version_minor(void) {
 #endif
 
 /* Ring setup flags (may not be in older liburing headers). */
-#ifndef IORING_SETUP_SINGLE_ISSUER
-#define IORING_SETUP_SINGLE_ISSUER (1U << 12)
-#endif
 #ifndef IORING_SETUP_COOP_TASKRUN
 #define IORING_SETUP_COOP_TASKRUN (1U << 8)
 #endif
 
-static unsigned int keel_setup_single_issuer(void) { return IORING_SETUP_SINGLE_ISSUER; }
 static unsigned int keel_setup_coop_taskrun(void) { return IORING_SETUP_COOP_TASKRUN; }
