@@ -20,6 +20,7 @@ import io_uring.keel_cqe_has_more
 import posix_inet.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
+import io_uring.keel_prep_sendmsg_zc
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
@@ -396,6 +397,31 @@ internal class IoUringEventLoop(
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
+        val slot = acquireSlot()
+        sendZcCallbacks[slot] = onComplete
+        sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+    }
+
+    /**
+     * Fire-and-forget `IORING_OP_SENDMSG_ZC` with two-CQE callback.
+     *
+     * Submits a SENDMSG_ZC SQE (gather write + zero-copy) and invokes
+     * [onComplete] with the total bytes sent after both CQEs arrive.
+     * The msghdr and its iovec array must remain valid until completion.
+     *
+     * Must be called on the EventLoop thread only.
+     */
+    internal fun submitSendmsgZcCallback(
+        fd: Int,
+        msghdr: kotlinx.cinterop.COpaquePointer,
+        flags: UInt,
+        onComplete: (bytesOrError: Int) -> Unit,
+    ) {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_sendmsg_zc(sqe, fd, msghdr, flags)
         val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1

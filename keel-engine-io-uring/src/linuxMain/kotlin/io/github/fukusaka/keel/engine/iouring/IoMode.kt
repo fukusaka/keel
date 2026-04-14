@@ -62,4 +62,23 @@ enum class IoMode {
      * strategies (no automatic switching based on [ConnectionStats]).
      */
     SEND_ZC,
+
+    /**
+     * Zero-copy gather send via `IORING_OP_SENDMSG_ZC` (Linux 6.1+).
+     *
+     * Combines gather write (multiple buffers in one SQE via msghdr/iovec)
+     * with zero-copy send. Eliminates both the per-buffer sequential chain
+     * overhead of [SEND_ZC] and the kernel memcpy of [CQE] WRITEV.
+     *
+     * Like [SEND_ZC], produces TWO CQEs per operation (send result +
+     * buffer release notification). The msghdr and iovec array must remain
+     * valid until the second CQE.
+     *
+     * Falls back to [SEND_ZC] for single buffers (no gather overhead).
+     * Falls back to [CQE] if the kernel does not support SENDMSG_ZC.
+     *
+     * Requires both [IoUringCapabilities.sendmsgZc] and
+     * [IoUringCapabilities.sendZc] (single-buffer path uses SEND_ZC).
+     */
+    SENDMSG_ZC,
 }

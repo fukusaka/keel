@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.IORING_OP_SEND_ZC
+import io_uring.IORING_OP_SENDMSG_ZC
 import io_uring.io_uring
 import io_uring.keel_get_probe_ring
 import io_uring.keel_opcode_supported
@@ -50,6 +51,15 @@ data class IoUringCapabilities(
     val providedBufferRing: Boolean = true,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
+    /**
+     * Zero-copy sendmsg (Linux 6.1+). Gather write + zero-copy. Two CQEs per operation.
+     *
+     * Implies [sendZc]: if sendmsgZc is true, sendZc must also be true because
+     * [IoMode.SENDMSG_ZC] falls back to SEND_ZC for single-buffer flushes.
+     * [detect] enforces this invariant. Manual [copy] callers must not set
+     * `sendmsgZc = true, sendZc = false`.
+     */
+    val sendmsgZc: Boolean = true,
 ) {
     companion object {
         /**
@@ -65,11 +75,15 @@ data class IoUringCapabilities(
             val kv = KernelVersion.current()
             val probe = keel_get_probe_ring(ring)
 
+            val sendZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SEND_ZC) != 0
+            val sendmsgZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SENDMSG_ZC) != 0
             val caps = IoUringCapabilities(
                 multishotAccept = kv >= KernelVersion(5, 19),
                 multishotRecv = kv >= KernelVersion(6, 0),
                 providedBufferRing = kv >= KernelVersion(5, 19),
-                sendZc = probe != null && keel_opcode_supported(probe, IORING_OP_SEND_ZC) != 0,
+                // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
+                sendZc = sendZcSupported || sendmsgZcSupported,
+                sendmsgZc = sendmsgZcSupported,
             )
 
             if (probe != null) keel_probe_free(probe)
@@ -82,6 +96,7 @@ data class IoUringCapabilities(
             multishotRecv = false,
             providedBufferRing = false,
             sendZc = false,
+            sendmsgZc = false,
         )
     }
 }

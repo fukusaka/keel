@@ -97,6 +97,41 @@ static void keel_prep_send_zc(struct io_uring_sqe *sqe, int sockfd,
     io_uring_prep_send_zc(sqe, sockfd, buf, len, flags, zc_flags);
 }
 
+/*
+ * Prepare a zero-copy sendmsg SQE (IORING_OP_SENDMSG_ZC, Linux 6.1+).
+ *
+ * Combines gather write (iovec) with zero-copy send. The kernel sends
+ * data directly from user-space buffers described by the msghdr's iovec
+ * without copying to the socket buffer.
+ *
+ * Like SEND_ZC, this produces TWO CQEs:
+ *   1. Send result (res = bytes sent, flags may include IORING_CQE_F_MORE)
+ *   2. Buffer release notification (kernel done with user buffers)
+ *
+ * The caller MUST NOT free/reuse the buffers until the second CQE.
+ * The msghdr and its iovec array must remain valid until the second CQE.
+ */
+#ifndef IORING_OP_SENDMSG_ZC
+#define IORING_OP_SENDMSG_ZC 57
+#endif
+
+static struct msghdr *keel_alloc_msghdr(struct iovec *iov, int iovlen) {
+    struct msghdr *msg = (struct msghdr *)calloc(1, sizeof(struct msghdr));
+    if (!msg) return NULL;
+    msg->msg_iov = iov;
+    msg->msg_iovlen = iovlen;
+    return msg;
+}
+
+static void keel_free_msghdr(struct msghdr *msg) {
+    free(msg);
+}
+
+static void keel_prep_sendmsg_zc(struct io_uring_sqe *sqe, int sockfd,
+                                 void *msg, unsigned int flags) {
+    io_uring_prep_sendmsg_zc(sqe, sockfd, (struct msghdr *)msg, flags);
+}
+
 /* ====================================================================
  * Capability probing
  * ==================================================================== */
@@ -143,6 +178,9 @@ static int keel_kernel_version_minor(void) {
 /* IORING_OP constants for probe (may not be in older liburing headers). */
 #ifndef IORING_OP_SEND_ZC
 #define IORING_OP_SEND_ZC 53
+#endif
+#ifndef IORING_OP_SENDMSG_ZC
+#define IORING_OP_SENDMSG_ZC 57
 #endif
 
 /* Ring setup flags (may not be in older liburing headers). */
