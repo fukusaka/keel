@@ -8,21 +8,20 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
-import kotlinx.cinterop.toKString
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
-import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.EINPROGRESS
 import platform.posix.close
 import platform.posix.errno
-import platform.posix.strerror
 
 /**
  * macOS kqueue-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -100,7 +99,7 @@ class KqueueEngine(
                 null,
             )
             val result = kevent(bossLoop.kqFd, kev.ptr, 1, null, 0, null)
-            check(result >= 0) { "kevent(EV_ADD server) failed: ${strerror(errno)?.toKString()}" }
+            check(result >= 0) { "kevent(EV_ADD server) failed: ${errnoMessage(errno)}" }
         }
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
@@ -146,11 +145,11 @@ class KqueueEngine(
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
                     close(fd)
-                    error("connect() failed: ${strerror(error)?.toKString()}")
+                    error("connect() failed: ${errnoMessage(error)}")
                 }
             } else {
                 close(fd)
-                error("connect() failed: ${strerror(err)?.toKString()}")
+                error("connect() failed: ${errnoMessage(err)}")
             }
         }
 

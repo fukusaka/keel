@@ -8,7 +8,7 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
-import posix_socket.keel_inet_pton
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -18,12 +18,11 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
-import kotlinx.cinterop.toKString
 import platform.posix.AF_INET
 import platform.posix.close
 import platform.posix.errno
 import platform.posix.sockaddr_in
-import platform.posix.strerror
+import posix_socket.keel_inet_pton
 import posix_socket.keel_init_sockaddr_in
 
 /**
@@ -158,7 +157,7 @@ class IoUringEngine(
 
         if (res < 0) {
             close(fd)
-            error("connect() failed: ${strerror(-res)?.toKString()} (errno=${-res})")
+            error("connect() failed: ${errnoMessage(-res)}")
         }
 
         val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
