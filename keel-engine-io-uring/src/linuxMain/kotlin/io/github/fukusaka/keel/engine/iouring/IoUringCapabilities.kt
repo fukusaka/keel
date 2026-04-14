@@ -49,6 +49,8 @@ data class IoUringCapabilities(
     val multishotRecv: Boolean = true,
     /** Provided buffer ring (Linux 5.19+). Kernel-managed buffer selection. */
     val providedBufferRing: Boolean = true,
+    /** Fixed file descriptors (Linux 5.1+). Per-SQE fd lookup elimination. */
+    val fixedFiles: Boolean = true,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -81,6 +83,7 @@ data class IoUringCapabilities(
                 multishotAccept = kv >= KernelVersion(5, 19),
                 multishotRecv = kv >= KernelVersion(6, 0),
                 providedBufferRing = kv >= KernelVersion(5, 19),
+                fixedFiles = kv >= KernelVersion(5, 1),
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -95,6 +98,7 @@ data class IoUringCapabilities(
             multishotAccept = false,
             multishotRecv = false,
             providedBufferRing = false,
+            fixedFiles = false,
             sendZc = false,
             sendmsgZc = false,
         )

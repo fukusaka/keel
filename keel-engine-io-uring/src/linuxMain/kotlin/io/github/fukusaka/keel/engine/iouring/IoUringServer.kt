@@ -95,7 +95,8 @@ internal class IoUringServer(
             val workerLoop = workerGroup.loopAt(wi)
             val allocator = workerGroup.allocatorAt(wi)
             val bufferRing = workerGroup.bufferRingAt(wi)
-            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing)
+            val fileRegistry = workerGroup.fileRegistryAt(wi)
+            val transport = IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry)
             val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)
             return channel

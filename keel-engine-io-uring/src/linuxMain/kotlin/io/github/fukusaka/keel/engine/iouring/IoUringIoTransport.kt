@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
@@ -58,9 +59,22 @@ internal class IoUringIoTransport(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     allocator: BufferAllocator,
     private val bufferRing: ProvidedBufferRing? = null,
+    private val fixedFileRegistry: FixedFileRegistry? = null,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    // Fixed file index for IOSQE_FIXED_FILE. -1 if not registered.
+    private val fixedFileIndex: Int = fixedFileRegistry?.register(fd) ?: -1
+
+    /**
+     * The fd value to use in SQE preparation. When fixed files are active,
+     * this is the registered index; otherwise the raw fd.
+     */
+    internal val sqeFd: Int get() = if (fixedFileIndex >= 0) fixedFileIndex else fd
+
+    /** Whether this transport uses fixed file descriptors. */
+    internal val useFixedFile: Boolean get() = fixedFileIndex >= 0
 
     // --- Read path (multishot recv with provided buffer ring) ---
 
@@ -83,7 +97,8 @@ internal class IoUringIoTransport(
     private fun armRecv() {
         val ring = bufferRing ?: error("armRecv requires provided buffer ring")
         multishotSlot = eventLoop.submitMultishotRecv(
-            fd = fd,
+            fd = sqeFd,
+            fixedFile = useFixedFile,
             bgid = ring.bgid,
             onCqe = { res, flags ->
                 if (!opened) return@submitMultishotRecv
@@ -341,7 +356,8 @@ internal class IoUringIoTransport(
         val ptr = (buf.unsafePointer + offset)!!
         eventLoop.submitCallback(
             prepare = { sqe ->
-                io_uring_prep_send(sqe, fd, ptr, length.convert(), MSG_NOSIGNAL)
+                io_uring_prep_send(sqe, sqeFd, ptr, length.convert(), MSG_NOSIGNAL)
+                if (useFixedFile) keel_sqe_set_fixed_file(sqe)
             },
             onCqe = { res, _ ->
                 val sent = if (res > 0) res else 0
@@ -411,7 +427,7 @@ internal class IoUringIoTransport(
                 ?: error("keel_alloc_iovec failed (OOM)")
         }
 
-        eventLoop.submitWritevCallback(fd, iovecs, count.toUInt()) { res ->
+        eventLoop.submitWritevCallback(sqeFd, iovecs, count.toUInt(), fixedFile = useFixedFile) { res ->
             io_uring.keel_free_iovec(iovecs)
             val writtenBytes = if (res > 0) res else 0
             if (writtenBytes >= totalBytes) {
@@ -521,7 +537,7 @@ internal class IoUringIoTransport(
         buf: IoBuf, offset: Int, length: Int, onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
-        eventLoop.submitSendZcCallback(fd, ptr, length.convert(), MSG_NOSIGNAL) { res ->
+        eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
             val sent = if (res > 0) res else 0
             val remaining = length - sent
             if (remaining > 0 && res > 0) {
@@ -574,7 +590,7 @@ internal class IoUringIoTransport(
             val msghdr = io_uring.keel_alloc_msghdr(iovecs, count)
                 ?: run { io_uring.keel_free_iovec(iovecs); error("keel_alloc_msghdr failed (OOM)") }
 
-            eventLoop.submitSendmsgZcCallback(fd, msghdr, MSG_NOSIGNAL.convert()) { res ->
+            eventLoop.submitSendmsgZcCallback(sqeFd, msghdr, MSG_NOSIGNAL.convert(), fixedFile = useFixedFile) { res ->
                 io_uring.keel_free_msghdr(msghdr)
                 io_uring.keel_free_iovec(iovecs)
                 for (pw in writes) pw.buf.release()
@@ -645,6 +661,7 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
         pendingBytes = 0
         asyncPendingFlushBytes = 0
+        if (fixedFileIndex >= 0) fixedFileRegistry?.unregister(fixedFileIndex)
         platform.posix.close(fd)
     }
 
