@@ -51,6 +51,25 @@ data class IoUringCapabilities(
     val providedBufferRing: Boolean = true,
     /** Fixed file descriptors (Linux 5.1+). Per-SQE fd lookup elimination. */
     val fixedFiles: Boolean = true,
+    /**
+     * Registered buffers for SEND_ZC_FIXED (Linux 5.1+).
+     *
+     * Pre-pins pooled buffer pages via `io_uring_register_buffers`,
+     * eliminating per-send page pinning in SEND_ZC. Only effective
+     * when [sendZc] is also enabled.
+     *
+     * **Default: false** (opt-in). Benefit is primarily on real NICs
+     * with DMA; loopback shows +7.9% on /large (100KB).
+     *
+     * **Memory overhead** when enabled:
+     * - Userspace: pool warmup fills all slots (8 KiB × 8 = 64 KiB / EventLoop).
+     *   Buffers are pooled, not additional memory.
+     * - Kernel: page table entries for pinned pages (~16 pages × 4 KiB
+     *   = 64 KiB pinned / EventLoop for default 8 KiB × 8 slot pool).
+     * - HashMap: address→index mapping (~512 bytes / EventLoop).
+     * - Total for 4 EventLoops: ~256 KiB kernel pinned + ~2 KiB HashMap.
+     */
+    val registeredBuffers: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**

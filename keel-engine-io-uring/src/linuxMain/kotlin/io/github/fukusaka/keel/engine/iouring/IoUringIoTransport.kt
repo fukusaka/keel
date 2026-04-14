@@ -60,6 +60,7 @@ internal class IoUringIoTransport(
     allocator: BufferAllocator,
     private val bufferRing: ProvidedBufferRing? = null,
     private val fixedFileRegistry: FixedFileRegistry? = null,
+    private val registeredBufferTable: RegisteredBufferTable? = null,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -537,14 +538,33 @@ internal class IoUringIoTransport(
         buf: IoBuf, offset: Int, length: Int, onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
-        eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
-            val sent = if (res > 0) res else 0
-            val remaining = length - sent
-            if (remaining > 0 && res > 0) {
-                submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
-            } else {
-                buf.release()
-                onComplete()
+        val bufIndex = registeredBufferTable?.indexOf(buf.unsafePointer)
+        if (bufIndex != null && bufIndex >= 0) {
+            // Registered buffer: use SEND_ZC_FIXED (no per-send page pinning).
+            eventLoop.submitSendZcFixedCallback(
+                sqeFd, ptr, length.convert(), MSG_NOSIGNAL,
+                bufIndex = bufIndex, fixedFile = useFixedFile,
+            ) { res ->
+                val sent = if (res > 0) res else 0
+                val remaining = length - sent
+                if (remaining > 0 && res > 0) {
+                    submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
+                } else {
+                    buf.release()
+                    onComplete()
+                }
+            }
+        } else {
+            // Unregistered buffer: use regular SEND_ZC (per-send page pinning).
+            eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
+                val sent = if (res > 0) res else 0
+                val remaining = length - sent
+                if (remaining > 0 && res > 0) {
+                    submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
+                } else {
+                    buf.release()
+                    onComplete()
+                }
             }
         }
     }
