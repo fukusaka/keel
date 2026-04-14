@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io_uring.io_uring
 import io_uring.io_uring_buf_ring
 import io_uring.io_uring_buf_ring_add
 import io_uring.io_uring_buf_ring_advance
@@ -31,34 +30,37 @@ import kotlinx.cinterop.value
  * recv SQE with `IOSQE_BUFFER_SELECT` completes, the kernel selects a buffer from
  * this ring and reports the buffer ID in the CQE flags.
  *
- * **Lifecycle**:
- * 1. Construction: allocate buffer memory + register ring with kernel
- * 2. Kernel consumes buffers: CQE reports `buf_id` → [getPointer] returns data pointer
- * 3. Application recycles: [returnBuffer] adds the buffer back to the ring
- * 4. Close: unregister ring + free memory
+ * **Two-phase lifecycle**: the constructor only allocates user-space state;
+ * the kernel `io_uring_setup_buf_ring` call is deferred to [initOnEventLoop]
+ * which must run on the owning EventLoop's pthread. Required by
+ * `IORING_SETUP_SINGLE_ISSUER`.
  *
- * **Thread safety**: all operations must occur on a single EventLoop thread.
- * No synchronisation is required.
+ * 1. Construction: allocate buffer memory (user-space only, any thread)
+ * 2. [initOnEventLoop]: setup buf ring with kernel (EventLoop pthread)
+ * 3. Runtime: [getPointer] / [returnBuffer] (EventLoop pthread)
+ * 4. [close]: unregister ring + free memory (EventLoop pthread, via onExitHook)
  *
  * **Buffer exhaustion**: if all buffers are consumed and the ring is empty,
  * the kernel returns `-ENOBUFS` in the CQE and terminates the multi-shot SQE.
  * The caller must re-arm the multi-shot recv after recycling buffers.
  *
- * @param uring Pointer to the io_uring instance (must remain valid for the lifetime of this ring).
+ * @param eventLoop Owning EventLoop. Provides ring pointer and thread-affinity assertion target.
+ * @param logger Logger for warn-level diagnostics.
  * @param bufferCount Number of buffers in the ring. Must be a power of 2.
  * @param bufferSize Size of each buffer in bytes.
  * @param bgid Buffer group ID. Each EventLoop should use a unique group ID if
  *             multiple rings are needed (currently one per EventLoop).
- * @throws IllegalStateException if bufferCount is not a power of 2 or kernel registration fails.
+ * @throws IllegalStateException if bufferCount is not a power of 2.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class ProvidedBufferRing(
-    private val uring: CPointer<io_uring>,
+    private val eventLoop: IoUringEventLoop,
     private val logger: Logger,
     val bufferCount: Int = DEFAULT_BUFFER_COUNT,
     val bufferSize: Int = DEFAULT_BUFFER_SIZE,
     val bgid: Int = 0,
 ) {
+    private val uring get() = eventLoop.ringPtr
 
     // Contiguous buffer memory: bufferCount × bufferSize bytes.
     // Buffer i starts at basePtr + (i * bufferSize).
@@ -66,32 +68,41 @@ internal class ProvidedBufferRing(
         nativeHeap.allocArray<ByteVar>(bufferCount * bufferSize)
 
     // Kernel-managed buffer ring structure (page-aligned, shared memory with kernel).
-    private val bufRing: CPointer<io_uring_buf_ring>
+    // Null until [initOnEventLoop] has been called.
+    private var bufRing: CPointer<io_uring_buf_ring>? = null
 
-    private val mask: Int
+    private val mask: Int = io_uring_buf_ring_mask(bufferCount.toUInt()).toInt()
 
     init {
         check(bufferCount > 0 && (bufferCount and (bufferCount - 1)) == 0) {
             "bufferCount must be a power of 2, got $bufferCount"
         }
+    }
+
+    /**
+     * Sets up the buf ring with the kernel and populates it with all buffers.
+     * Must run on the owning EventLoop pthread.
+     */
+    fun initOnEventLoop() {
+        eventLoop.assertInEventLoop("ProvidedBufferRing.initOnEventLoop")
+        if (bufRing != null) return
 
         // io_uring_setup_buf_ring allocates page-aligned memory, registers the ring
         // with the kernel, and returns a pointer to the shared io_uring_buf_ring.
-        bufRing = memScoped {
+        val ring = memScoped {
             val ret = alloc<IntVar>()
             io_uring_setup_buf_ring(
                 uring, bufferCount.toUInt(), bgid, 0u, ret.ptr,
             ) ?: error("io_uring_setup_buf_ring failed: ret=${ret.value}")
         }
-
-        mask = io_uring_buf_ring_mask(bufferCount.toUInt()).toInt()
+        bufRing = ring
         // io_uring_buf_ring_init is already called by io_uring_setup_buf_ring
         // (see liburing src/setup.c), so we skip it here.
 
         // Add all buffers to the ring so the kernel can start selecting them.
         for (i in 0 until bufferCount) {
             io_uring_buf_ring_add(
-                bufRing,
+                ring,
                 (basePtr + i * bufferSize)!!,
                 bufferSize.toUInt(),
                 i.toUShort(),
@@ -99,7 +110,7 @@ internal class ProvidedBufferRing(
                 i,
             )
         }
-        io_uring_buf_ring_advance(bufRing, bufferCount)
+        io_uring_buf_ring_advance(ring, bufferCount)
     }
 
     /**
@@ -116,24 +127,30 @@ internal class ProvidedBufferRing(
      * Must be called after the application has finished reading the data.
      */
     fun returnBuffer(bufId: Int) {
+        val ring = bufRing ?: error("ProvidedBufferRing not yet initialised")
         io_uring_buf_ring_add(
-            bufRing,
+            ring,
             (basePtr + bufId * bufferSize)!!,
             bufferSize.toUInt(),
             bufId.toUShort(),
             mask,
             0,
         )
-        io_uring_buf_ring_advance(bufRing, 1)
+        io_uring_buf_ring_advance(ring, 1)
     }
 
     /**
      * Unregisters the buffer ring from the kernel and frees all memory.
+     * Called on EventLoop shutdown via [IoUringEventLoop.onExitHook].
      */
     fun close() {
-        val ret = io_uring_free_buf_ring(uring, bufRing, bufferCount.toUInt(), bgid)
-        if (ret < 0) {
-            logger.warn { "io_uring_free_buf_ring() failed: bgid=$bgid ${errnoMessage(-ret)}" }
+        eventLoop.assertInEventLoop("ProvidedBufferRing.close")
+        bufRing?.let { ring ->
+            val ret = io_uring_free_buf_ring(uring, ring, bufferCount.toUInt(), bgid)
+            if (ret < 0) {
+                logger.warn { "io_uring_free_buf_ring() failed: bgid=$bgid ${errnoMessage(-ret)}" }
+            }
+            bufRing = null
         }
         nativeHeap.free(basePtr.rawValue)
     }
