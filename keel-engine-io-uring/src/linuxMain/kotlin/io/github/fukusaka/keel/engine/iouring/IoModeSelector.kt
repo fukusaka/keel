@@ -45,6 +45,12 @@ object IoModeSelectors {
     val SEND_ZC = IoModeSelector { IoMode.SEND_ZC }
 
     /**
+     * Always use zero-copy sendmsg for gather writes (Linux 6.1+).
+     * Single buffers use SEND_ZC; multiple buffers use SENDMSG_ZC.
+     */
+    val SENDMSG_ZC = IoModeSelector { IoMode.SENDMSG_ZC }
+
+    /**
      * Adaptive strategy: starts with [IoMode.FALLBACK_CQE] (direct syscall).
      * Switches to [IoMode.CQE] when the recent EAGAIN rate (EMA) exceeds
      * [ratio] after [minSamples] flush operations.

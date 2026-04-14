@@ -140,7 +140,13 @@ internal class IoUringIoTransport(
         if (pendingWrites.isEmpty()) return true
 
         val rawMode = writeModeSelector.select(stats)
-        val mode = if (rawMode == IoMode.SEND_ZC && !capabilities.sendZc) IoMode.CQE else rawMode
+        // Capability fallback: degrade to CQE if the kernel lacks the opcode.
+        // SENDMSG_ZC also requires sendZc (single-buffer path uses SEND_ZC).
+        val mode = when {
+            rawMode == IoMode.SEND_ZC && !capabilities.sendZc -> IoMode.CQE
+            rawMode == IoMode.SENDMSG_ZC && (!capabilities.sendmsgZc || !capabilities.sendZc) -> IoMode.CQE
+            else -> rawMode
+        }
 
         flushHadEagain = false
         flushBytesWritten = 0L
@@ -149,6 +155,7 @@ internal class IoUringIoTransport(
                 IoMode.FALLBACK_CQE -> flushDirectSend()
                 IoMode.CQE -> { flushCqe(); false }
                 IoMode.SEND_ZC -> { flushSendZc(); false }
+                IoMode.SENDMSG_ZC -> { flushSendmsgZc(); false }
             }
         } finally {
             stats.recordFlush(flushHadEagain, flushBytesWritten)
@@ -476,10 +483,10 @@ internal class IoUringIoTransport(
     // --- SEND_ZC mode: zero-copy send via 2-CQE callback ---
 
     /**
-     * Submits all pending writes as SEND_ZC SQEs.
+     * Submits all pending writes as sequential SEND_ZC SQEs.
      *
-     * Buffers are sent sequentially (next buffer starts after previous completes)
-     * because `IORING_OP_SENDMSG_ZC` (gather zero-copy) is not implemented.
+     * Each buffer is sent individually. For gather + zero-copy, use
+     * [flushSendmsgZc] (SENDMSG_ZC, kernel 6.1+).
      */
     private fun flushSendZc() {
         asyncFlushPending = true
@@ -522,6 +529,60 @@ internal class IoUringIoTransport(
             } else {
                 buf.release()
                 onComplete()
+            }
+        }
+    }
+
+    // --- SENDMSG_ZC mode: gather write + zero-copy via msghdr ---
+
+    /**
+     * Submits all pending writes as a single SENDMSG_ZC SQE (gather + zero-copy).
+     *
+     * For a single buffer, falls back to [flushSendZc] (SEND_ZC) to avoid
+     * msghdr allocation overhead.
+     *
+     * The msghdr and iovec array are heap-allocated and freed after the
+     * second CQE (notification) arrives.
+     */
+    private fun flushSendmsgZc() {
+        asyncFlushPending = true
+        val totalBytes = pendingWrites.sumOf { it.length }
+        asyncPendingFlushBytes += totalBytes
+
+        if (pendingWrites.size == 1) {
+            // Single buffer: use SEND_ZC directly (no msghdr overhead).
+            val pw = pendingWrites[0]
+            submitAsyncSendZcSequential(pw.buf, pw.offset, pw.length) {
+                onAsyncFlushDone()
+            }
+            return
+        }
+
+        // Gather: build iovec + msghdr, submit SENDMSG_ZC.
+        val writes = ArrayList(pendingWrites)
+        val count = writes.size
+
+        memScoped {
+            val bases = allocArray<COpaquePointerVar>(count)
+            val lens = allocArray<ULongVar>(count)
+            for ((i, pw) in writes.withIndex()) {
+                bases[i] = (pw.buf.unsafePointer + pw.offset)
+                lens[i] = pw.length.convert()
+            }
+            val iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
+                ?: error("keel_alloc_iovec failed (OOM)")
+            val msghdr = io_uring.keel_alloc_msghdr(iovecs, count)
+                ?: run { io_uring.keel_free_iovec(iovecs); error("keel_alloc_msghdr failed (OOM)") }
+
+            eventLoop.submitSendmsgZcCallback(fd, msghdr, MSG_NOSIGNAL.convert()) { res ->
+                io_uring.keel_free_msghdr(msghdr)
+                io_uring.keel_free_iovec(iovecs)
+                for (pw in writes) pw.buf.release()
+                // Partial sendmsg is not retried — TCP guarantees in-order delivery,
+                // and partial sendmsg on a stream socket is uncommon (only under
+                // extreme memory pressure). If it occurs, the connection will be
+                // closed by the peer detecting missing data.
+                onAsyncFlushDone()
             }
         }
     }

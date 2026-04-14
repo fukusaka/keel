@@ -108,6 +108,23 @@ interface PipelinedChannel : Channel {
     }
 
     /**
+     * Flushes all buffered data on the EventLoop thread and suspends
+     * until the flush completes.
+     *
+     * Dispatches both [requestFlush] and [awaitFlushComplete] to the
+     * [ioDispatcher] to guarantee thread safety for engines that
+     * require EventLoop-thread-only access (io_uring SQE submission,
+     * kqueue/epoll POSIX write).
+     */
+    override suspend fun flush() {
+        check(isOpen) { "Channel is closed" }
+        withContext(ioDispatcher) {
+            pipeline.requestFlush()
+            awaitFlushComplete()
+        }
+    }
+
+    /**
      * Initiates a flush through the pipeline (fire-and-forget).
      *
      * Non-suspend: callers must ensure this is called from the EventLoop

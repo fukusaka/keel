@@ -37,6 +37,7 @@ object RawIoUringBenchmark : EngineBenchmark {
             "cqe" -> IoModeSelectors.CQE
             "fallback" -> IoModeSelectors.FALLBACK_CQE
             "sendzc" -> IoModeSelectors.SEND_ZC
+            "sendmsg-zc" -> IoModeSelectors.SENDMSG_ZC
             else -> IoModeSelectors.eagainThreshold()
         }
         val engine = IoUringEngine(
