@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
@@ -44,7 +46,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 internal class IoUringEventLoopGroup(
     size: Int,
-    logger: Logger,
+    private val logger: Logger,
     allocator: BufferAllocator,
     capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
@@ -138,8 +140,10 @@ internal class IoUringEventLoopGroup(
         memScoped {
             val mutex = alloc<pthread_mutex_t>()
             val cond = alloc<pthread_cond_t>()
-            pthread_mutex_init(mutex.ptr, null)
-            pthread_cond_init(cond.ptr, null)
+            val initRet = pthread_mutex_init(mutex.ptr, null)
+            check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
+            val condInitRet = pthread_cond_init(cond.ptr, null)
+            check(condInitRet == 0) { "pthread_cond_init() failed: ${errnoMessage(condInitRet)}" }
 
             val pending = AtomicInt(size)
             for (i in 0 until size) {
@@ -147,21 +151,45 @@ internal class IoUringEventLoopGroup(
                     bufferRings[i]?.initOnEventLoop()
                     fileRegistries[i]?.initOnEventLoop()
                     bufferTables[i]?.initOnEventLoop()
-                    pthread_mutex_lock(mutex.ptr)
+                    val lockRet = pthread_mutex_lock(mutex.ptr)
+                    if (lockRet != 0) {
+                        logger.warn { "pthread_mutex_lock() failed: ${errnoMessage(lockRet)}" }
+                    }
                     val remaining = pending.decrementAndGet()
-                    if (remaining == 0) pthread_cond_signal(cond.ptr)
-                    pthread_mutex_unlock(mutex.ptr)
+                    if (remaining == 0) {
+                        val signalRet = pthread_cond_signal(cond.ptr)
+                        if (signalRet != 0) {
+                            logger.warn { "pthread_cond_signal() failed: ${errnoMessage(signalRet)}" }
+                        }
+                    }
+                    val unlockRet = pthread_mutex_unlock(mutex.ptr)
+                    if (unlockRet != 0) {
+                        logger.warn { "pthread_mutex_unlock() failed: ${errnoMessage(unlockRet)}" }
+                    }
                 })
             }
 
-            pthread_mutex_lock(mutex.ptr)
+            val lockRet = pthread_mutex_lock(mutex.ptr)
+            check(lockRet == 0) { "pthread_mutex_lock() failed: ${errnoMessage(lockRet)}" }
             while (pending.value > 0) {
-                pthread_cond_wait(cond.ptr, mutex.ptr)
+                val waitRet = pthread_cond_wait(cond.ptr, mutex.ptr)
+                // POSIX does not define any error return from pthread_cond_wait;
+                // any non-zero is a programming error (invalid cond or mutex).
+                check(waitRet == 0) { "pthread_cond_wait() failed: ${errnoMessage(waitRet)}" }
             }
-            pthread_mutex_unlock(mutex.ptr)
+            val unlockRet = pthread_mutex_unlock(mutex.ptr)
+            if (unlockRet != 0) {
+                logger.warn { "pthread_mutex_unlock() failed: ${errnoMessage(unlockRet)}" }
+            }
 
-            pthread_cond_destroy(cond.ptr)
-            pthread_mutex_destroy(mutex.ptr)
+            val destroyCondRet = pthread_cond_destroy(cond.ptr)
+            if (destroyCondRet != 0) {
+                logger.warn { "pthread_cond_destroy() failed: ${errnoMessage(destroyCondRet)}" }
+            }
+            val destroyMutexRet = pthread_mutex_destroy(mutex.ptr)
+            if (destroyMutexRet != 0) {
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyMutexRet)}" }
+            }
         }
     }
 
