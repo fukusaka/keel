@@ -50,6 +50,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.errno
@@ -668,7 +669,7 @@ internal class IoUringEventLoop(
             // Other failures (EBADF, EINVAL) indicate a programming error and
             // are surfaced at warn level.
             val err = errno
-            if (err == platform.posix.EAGAIN) {
+            if (err == EAGAIN) {
                 logger.debug { "eventfd_write skipped: counter at maximum (already woken)" }
             } else {
                 logger.warn { "eventfd_write() failed: ${errnoMessage(err)}" }
