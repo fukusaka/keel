@@ -58,11 +58,10 @@ data class IoUringCapabilities(
      * Safe for keel: [IoUringEventLoop.loop] blocks in io_uring_submit_and_wait
      * every iteration, so task_work is always drained promptly.
      *
-     * A/B benchmark on loopback (luna.local, 4t/100c /hello) showed no
-     * measurable effect (<1% difference, within run-to-run variance). The
-     * IPI-reduction benefit is theoretically visible only on real NICs with
-     * multi-core contention — default-on captures that benefit without harm
-     * on loopback. See benchmark/results-summary/2026-04-14-coop-taskrun-ab.md.
+     * Loopback A/B benchmarks showed no measurable effect (<1% within
+     * run-to-run variance). The IPI-reduction benefit is theoretically visible
+     * only on real NICs with multi-core contention — default-on captures that
+     * benefit without harm on loopback.
      */
     val coopTaskrun: Boolean = true,
     /**

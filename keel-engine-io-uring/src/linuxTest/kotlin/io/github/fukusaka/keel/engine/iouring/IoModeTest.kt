@@ -38,6 +38,35 @@ class IoModeTest {
         assertEquals(false, caps.multishotAccept)
         assertEquals(false, caps.multishotRecv)
         assertEquals(false, caps.providedBufferRing)
+        assertEquals(false, caps.coopTaskrun)
+    }
+
+    @Test
+    fun `coopTaskrun enabled works`() = runBlocking {
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(coopTaskrun = true),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `coopTaskrun disabled works`() = runBlocking {
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(coopTaskrun = false),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
     }
 
     @Test
