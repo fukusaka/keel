@@ -52,6 +52,19 @@ data class IoUringCapabilities(
     /** Fixed file descriptors (Linux 5.1+). Per-SQE fd lookup elimination. */
     val fixedFiles: Boolean = true,
     /**
+     * Cooperative task run (Linux 6.0+). Run task_work only on io_uring_enter
+     * calls (not on every syscall return). Eliminates IPIs for task_work.
+     *
+     * Safe for keel: [IoUringEventLoop.loop] blocks in io_uring_submit_and_wait
+     * every iteration, so task_work is always drained promptly.
+     *
+     * Loopback A/B benchmarks showed no measurable effect (<1% within
+     * run-to-run variance). The IPI-reduction benefit is theoretically visible
+     * only on real NICs with multi-core contention — default-on captures that
+     * benefit without harm on loopback.
+     */
+    val coopTaskrun: Boolean = true,
+    /**
      * Registered buffers for SEND_ZC_FIXED (Linux 5.1+).
      *
      * Pre-pins pooled buffer pages via `io_uring_register_buffers`,
@@ -103,6 +116,7 @@ data class IoUringCapabilities(
                 multishotRecv = kv >= KernelVersion(6, 0),
                 providedBufferRing = kv >= KernelVersion(5, 19),
                 fixedFiles = kv >= KernelVersion(5, 1),
+                coopTaskrun = kv >= KernelVersion(6, 0),
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -118,6 +132,7 @@ data class IoUringCapabilities(
             multishotRecv = false,
             providedBufferRing = false,
             fixedFiles = false,
+            coopTaskrun = false,
             sendZc = false,
             sendmsgZc = false,
         )
