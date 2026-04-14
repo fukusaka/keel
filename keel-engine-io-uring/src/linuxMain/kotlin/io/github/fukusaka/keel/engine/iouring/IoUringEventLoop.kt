@@ -42,7 +42,10 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.value
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -262,7 +265,7 @@ internal class IoUringEventLoop(
     /** Starts the EventLoop thread. Must be called once after construction. */
     fun start() {
         val ref = StableRef.create(this)
-        pthread_create(
+        val ret = pthread_create(
             threadPtr.ptr, null,
             staticCFunction { arg ->
                 val el = arg!!.asStableRef<IoUringEventLoop>().get()
@@ -272,6 +275,13 @@ internal class IoUringEventLoop(
             },
             ref.asCPointer(),
         )
+        if (ret != 0) {
+            // pthread_create returned an error — the EventLoop thread was never
+            // started. Dispose the StableRef now since the thread won't run the
+            // dispose call. Fail-fast because the engine is unusable.
+            ref.dispose()
+            error("pthread_create() failed: ${errnoMessage(ret)}")
+        }
     }
 
     /**
@@ -285,10 +295,16 @@ internal class IoUringEventLoop(
             wakeup()
             val t = threadPtr.ptr[0]
             if (t != null) {
-                pthread_join(t, null)
+                val joinRet = pthread_join(t, null)
+                if (joinRet != 0) {
+                    logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
+                }
             }
             io_uring_queue_exit(ring.ptr)
-            close(wakeupFd)
+            val closeRet = close(wakeupFd)
+            if (closeRet != 0) {
+                logger.warn { "close(wakeupFd) failed: ${errnoMessage(errno)}" }
+            }
             arena.clear()
         }
     }
@@ -644,7 +660,20 @@ internal class IoUringEventLoop(
     // --- Wakeup ---
 
     private fun wakeup() {
-        keel_eventfd_write(wakeupFd)
+        val ret = keel_eventfd_write(wakeupFd)
+        if (ret < 0) {
+            // EAGAIN means the eventfd counter would overflow (it has reached
+            // UINT64_MAX - 1). The pending writes are sufficient to wake the
+            // EventLoop; logging at debug level keeps the path quiet.
+            // Other failures (EBADF, EINVAL) indicate a programming error and
+            // are surfaced at warn level.
+            val err = errno
+            if (err == platform.posix.EAGAIN) {
+                logger.debug { "eventfd_write skipped: counter at maximum (already woken)" }
+            } else {
+                logger.warn { "eventfd_write() failed: ${errnoMessage(err)}" }
+            }
+        }
     }
 
     /**
