@@ -10,6 +10,8 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
@@ -690,7 +692,7 @@ internal class IoUringIoTransport(
             // unregister, fd close) onto the owning EventLoop. Fire-and-forget:
             // pending close tasks are drained at the top of each loop iteration,
             // so the ring is never torn down before its channel teardown runs.
-            eventLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable {
                 teardownOnEventLoop()
             })
         }

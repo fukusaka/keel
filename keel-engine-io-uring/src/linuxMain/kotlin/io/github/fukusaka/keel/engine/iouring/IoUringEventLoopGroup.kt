@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import kotlinx.coroutines.Runnable
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * A group of [IoUringEventLoop] instances for distributing I/O across
@@ -117,7 +119,7 @@ internal class IoUringEventLoopGroup(
         // initRing() + submitWakeupSqe(), so the ring is ready.
         val pending = AtomicInt(size)
         for (i in 0 until size) {
-            loops[i].dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
+            loops[i].dispatch(EmptyCoroutineContext, Runnable {
                 bufferRings[i]?.initOnEventLoop()
                 fileRegistries[i]?.initOnEventLoop()
                 bufferTables[i]?.initOnEventLoop()
