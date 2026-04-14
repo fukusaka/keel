@@ -21,6 +21,7 @@ import posix_inet.keel_eventfd_create
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
+import io_uring.keel_prep_send_zc_fixed
 import io_uring.keel_sqe_set_fixed_file
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
@@ -399,6 +400,30 @@ internal class IoUringEventLoop(
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
+        val slot = acquireSlot()
+        sendZcCallbacks[slot] = onComplete
+        sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+    }
+
+    /**
+     * Fire-and-forget `IORING_OP_SEND_ZC` with registered (fixed) buffer.
+     *
+     * Like [submitSendZcCallback] but uses a pre-registered buffer index
+     * to avoid per-send page pinning. The buffer must have been registered
+     * via [RegisteredBufferTable].
+     */
+    internal fun submitSendZcFixedCallback(
+        fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
+        bufIndex: Int,
+        fixedFile: Boolean = false,
+        onComplete: (bytesOrError: Int) -> Unit,
+    ) {
+        val sqe = io_uring_get_sqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_send_zc_fixed(sqe, fd, buf, len, flags, 0u, bufIndex.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete

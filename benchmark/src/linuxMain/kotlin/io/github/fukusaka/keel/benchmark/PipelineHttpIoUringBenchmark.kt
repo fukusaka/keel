@@ -35,12 +35,19 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             "sendmsg-zc" -> IoModeSelectors.SENDMSG_ZC
             else -> IoModeSelectors.eagainThreshold() // default: adaptive
         }
+        val registeredBuffers = getenv("BENCH_REGISTERED_BUFFERS")?.toKString() == "true"
+        val caps = if (registeredBuffers) {
+            io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(registeredBuffers = true)
+        } else {
+            null
+        }
         val engine = IoUringEngine(
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = NoopLoggerFactory,
             ),
             writeModeSelector = modeSelector,
+            capabilities = caps,
         )
 
         // Pre-built responses: headers and body are computed once at startup.

@@ -112,6 +112,26 @@ class SlabAllocator(
         if (closed) buf.close()
     }
 
+    /**
+     * Returns the native pointers and capacities of all pooled buffers.
+     *
+     * Used by io_uring to register buffers with the kernel for SEND_ZC_FIXED.
+     * Each pair is (CPointer<ByteVar>, capacity). Returns empty list if no
+     * buffers are currently pooled.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    fun nativePooledBuffers(): List<Pair<kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>, Int>> {
+        return withSpinLock {
+            val result = mutableListOf<Pair<kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>, Int>>()
+            for ((_, pool) in pools) {
+                for (buf in pool.list) {
+                    result.add(buf.unsafePointer to buf.capacity)
+                }
+            }
+            result
+        }
+    }
+
     private class Pool(val maxSlots: Int) {
         val list = ArrayDeque<NativeIoBuf>(maxSlots)
     }

@@ -50,7 +50,41 @@ internal class IoUringEventLoopGroup(
     } else {
         arrayOfNulls(size)
     }
+    private val bufferTables: Array<RegisteredBufferTable?> = if (capabilities.registeredBuffers) {
+        // Warmup pool, then register pooled buffer addresses with the kernel.
+        // Requires SlabAllocator (Native pool). Custom allocators silently skip
+        // registration — SEND_ZC falls back to per-send page pinning.
+        Array(size) { i ->
+            val alloc = allocators[i]
+            warmupPool(alloc)
+            val pooled = (alloc as? io.github.fukusaka.keel.buf.SlabAllocator)?.nativePooledBuffers()
+            if (pooled != null && pooled.isNotEmpty()) {
+                RegisteredBufferTable(loops[i].ringPtr, pooled)
+            } else {
+                null
+            }
+        }
+    } else {
+        arrayOfNulls(size)
+    }
     private val index = AtomicInt(0)
+
+    /**
+     * Warms up the allocator pool by allocating and releasing buffers
+     * for each registered size class. After warmup, all pool slots are
+     * filled and [io.github.fukusaka.keel.buf.SlabAllocator.nativePooledBuffers]
+     * returns the complete set of pooled addresses.
+     */
+    private fun warmupPool(alloc: io.github.fukusaka.keel.buf.BufferAllocator) {
+        // Allocate enough buffers to fill the pool, then release them back.
+        // This ensures all pool slots have been touched and addresses are stable.
+        val bufs = mutableListOf<io.github.fukusaka.keel.buf.IoBuf>()
+        // Allocate default size class (8 KiB) up to local pool slots.
+        repeat(LOCAL_WARMUP_COUNT) {
+            bufs.add(alloc.allocate(io.github.fukusaka.keel.pipeline.IoTransport.DEFAULT_READ_BUFFER_SIZE))
+        }
+        bufs.forEach { it.release() }
+    }
 
     /** Starts all EventLoop threads. */
     fun start() {
@@ -76,10 +110,20 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop [FixedFileRegistry] at [i], or null if not supported. */
     fun fileRegistryAt(i: Int): FixedFileRegistry? = fileRegistries[i]
 
+    /** Returns the per-EventLoop [RegisteredBufferTable] at [i], or null if not enabled. */
+    fun bufferTableAt(i: Int): RegisteredBufferTable? = bufferTables[i]
+
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
+        for (table in bufferTables) table?.close()
         for (reg in fileRegistries) reg?.close()
         for (ring in bufferRings) ring?.close()
         for (loop in loops) loop.close()
+    }
+
+    companion object {
+        // Number of buffers to allocate during warmup per size class.
+        // Matches the per-EventLoop pool slot count (LOCAL_POOL_SLOTS in SlabAllocator).
+        private const val LOCAL_WARMUP_COUNT = 8
     }
 }
