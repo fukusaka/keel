@@ -137,22 +137,6 @@ import kotlin.coroutines.resume
  * @param logger Logger for error reporting.
  * @param ringSize Number of SQE entries in the submission ring. Must be a power of 2.
  */
-/**
- * pthread-local pointer to the [IoUringEventLoop] currently running on this
- * pthread, or `null` if the current thread is not an io_uring EventLoop
- * pthread (external callers, `Dispatchers.Default`, etc.).
- *
- * Set on entry to [IoUringEventLoop.loop] and cleared on exit. Read by
- * [IoUringEventLoop.dispatch] to decide whether a cross-EL wakeup can use
- * `IORING_OP_MSG_RING` (source needs to own a ring) or must fall back to
- * the eventfd path (external thread, no ring available).
- *
- * Kotlin/Native `@ThreadLocal` marks this top-level `var` as having a
- * per-pthread storage slot; writes on one pthread are invisible to others.
- */
-@kotlin.native.concurrent.ThreadLocal
-internal var currentEventLoop: IoUringEventLoop? = null
-
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
     internal val logger: Logger,
@@ -1057,3 +1041,19 @@ internal class IoUringEventLoop(
         private const val SEND_ZC_UNUSED = Int.MIN_VALUE
     }
 }
+
+/**
+ * pthread-local pointer to the [IoUringEventLoop] currently running on this
+ * pthread, or `null` if the current thread is not an io_uring EventLoop
+ * pthread (external callers, `Dispatchers.Default`, etc.).
+ *
+ * Set on entry to [IoUringEventLoop.loop] and cleared on exit. Read by
+ * [IoUringEventLoop.dispatch] to decide whether a cross-EL wakeup can use
+ * `IORING_OP_MSG_RING` (source needs to own a ring) or must fall back to
+ * the eventfd path (external thread, no ring available).
+ *
+ * Kotlin/Native `@ThreadLocal` marks this top-level `var` as having a
+ * per-pthread storage slot; writes on one pthread are invisible to others.
+ */
+@kotlin.native.concurrent.ThreadLocal
+internal var currentEventLoop: IoUringEventLoop? = null

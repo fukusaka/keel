@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io_uring.IORING_OP_MSG_RING
 import io_uring.IORING_OP_SEND_ZC
 import io_uring.IORING_OP_SENDMSG_ZC
 import io_uring.io_uring
@@ -197,8 +196,6 @@ data class IoUringCapabilities(
 
             val sendZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SEND_ZC) != 0
             val sendmsgZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SENDMSG_ZC) != 0
-            @Suppress("UnusedPrivateMember") // probed to keep detect() honest even though opt-in below.
-            val msgRingSupported = probe != null && keel_opcode_supported(probe, IORING_OP_MSG_RING) != 0
             val caps = IoUringCapabilities(
                 multishotAccept = kv >= KernelVersion(5, 19),
                 multishotRecv = kv >= KernelVersion(6, 0),
@@ -213,9 +210,10 @@ data class IoUringCapabilities(
                 // msgRingWakeup is opt-in even on supported kernels. Benefit
                 // depends on cross-EL dispatch volume; users enable via
                 // `detect(ring).copy(msgRingWakeup = true)` after measuring
-                // their workload. Kernel-supported status is ignored here by
-                // design; the opcode is still probed above so future reviewers
-                // see the check is wired up.
+                // their workload. Kernel support is not probed here because
+                // the flag is never auto-enabled — a manual override on a
+                // kernel lacking IORING_OP_MSG_RING will surface as -EINVAL
+                // from the kernel on the first MSG_RING SQE submission.
                 msgRingWakeup = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
