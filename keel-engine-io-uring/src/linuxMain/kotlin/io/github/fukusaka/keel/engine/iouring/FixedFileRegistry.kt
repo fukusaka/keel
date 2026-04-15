@@ -94,6 +94,44 @@ internal class FixedFileRegistry(
     }
 
     /**
+     * Marks a kernel-allocated [index] as used in the free-slot pool.
+     *
+     * Used when the kernel allocates a slot itself (e.g., direct-allocated
+     * multishot accept with `IORING_FILE_INDEX_ALLOC`) and reports the
+     * chosen index in the CQE. Unlike [register], this does not issue a
+     * `register_files_update` syscall — the kernel has already placed
+     * the fd into the table. The userspace free-slot bookkeeping is
+     * updated so the same index is not handed out again by [register].
+     *
+     * @return true if the slot was successfully claimed; false if the
+     *         registry is inactive, the index is out of range, or the
+     *         slot is already marked as used (indicates a bookkeeping
+     *         bug — the kernel should never allocate an already-used
+     *         slot).
+     */
+    fun claim(index: Int): Boolean {
+        eventLoop.assertInEventLoop("FixedFileRegistry.claim")
+        if (!registered || index < 0 || index >= maxFiles) return false
+        // Remove `index` from the free-slot stack. The stack stores indices
+        // in allocation order; we scan once and shift remaining entries
+        // down. O(N) but N is bounded by maxFiles (default 1024) and claim
+        // runs at accept rate, not per I/O.
+        for (i in 0 until freeSlotsTop) {
+            if (freeSlots[i] == index) {
+                for (j in i until freeSlotsTop - 1) {
+                    freeSlots[j] = freeSlots[j + 1]
+                }
+                freeSlotsTop--
+                return true
+            }
+        }
+        // Index not found in free list — already claimed. This indicates a
+        // kernel/userspace bookkeeping divergence and should never happen.
+        logger.warn { "FixedFileRegistry.claim: index=$index not in free list (already claimed)" }
+        return false
+    }
+
+    /**
      * Unregisters the fd at [index], freeing the slot for reuse.
      *
      * Sets the slot to -1 (empty) in the kernel's registered file table.
