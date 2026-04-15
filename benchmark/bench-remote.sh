@@ -110,13 +110,19 @@ if [ "$WRK_MODE" = auto ]; then
 fi
 
 run_wrk() {
-    # Args: wrk CLI tokens (no URL — the caller adds it)
+    # Args: wrk CLI tokens — `printf %q` escapes each one so URL shell
+    # metacharacters (e.g. `&` in a query string) survive the remote
+    # shell re-parse. Without this, `http://host/path?a=1&b=2` is
+    # truncated to `http://host/path?a=1` on the remote side (the `&`
+    # backgrounds the rest).
+    local quoted
+    printf -v quoted '%q ' "$@"
     case "$WRK_MODE" in
         native)
-            ssh -n "$CLIENT_HOST" "wrk $*"
+            ssh -n "$CLIENT_HOST" "wrk ${quoted}"
             ;;
         docker)
-            ssh -n "$CLIENT_HOST" "sudo -n docker run --rm --network=host ${WRK_DOCKER_IMAGE} $*"
+            ssh -n "$CLIENT_HOST" "sudo -n docker run --rm --network=host ${WRK_DOCKER_IMAGE} ${quoted}"
             ;;
         *)
             echo "ERROR: unknown BENCH_WRK_MODE=${WRK_MODE} (expected native|docker|auto)" >&2
