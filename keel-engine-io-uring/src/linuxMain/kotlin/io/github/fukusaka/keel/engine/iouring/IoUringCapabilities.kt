@@ -209,6 +209,43 @@ data class IoUringCapabilities(
      * and surfaces any kernel-side breakage as a warn-level log.
      */
     val registerRingFd: Boolean = true,
+    /**
+     * Direct-allocated multishot accept (Linux 5.19+).
+     *
+     * When enabled, the pipelined server path uses
+     * `IORING_OP_MULTISHOT_ACCEPT_DIRECT` with `IORING_FILE_INDEX_ALLOC`:
+     * the kernel picks a free slot in the registered file table,
+     * places the accepted fd there, and reports the allocated index
+     * in `cqe->res` instead of the raw fd. This saves the
+     * `io_uring_register_files_update` syscall that keel otherwise
+     * issues per accept to register the client fd, and eliminates
+     * the register window where the raw fd is exposed to userspace.
+     *
+     * Direct-allocated slots do NOT expose the raw fd to userspace,
+     * so per-connection teardown branches:
+     * - `shutdown(SHUT_WR)` → `IORING_OP_SHUTDOWN` + `IOSQE_FIXED_FILE`
+     * - `close(fd)` → skipped; `register_files_update(slot, -1)` closes
+     *   the kernel-held fd as part of slot release.
+     *
+     * **Requires [fixedFiles]**: direct allocation needs a registered
+     * file table. [detect] enforces the pairing; manual [copy] callers
+     * must keep `fixedFiles = true` when setting `acceptDirectAlloc = true`.
+     *
+     * **Scope**: applies to the pipelined server path only
+     * ([IoUringPipelinedServerChannel]). The traditional Channel-mode
+     * path ([IoUringServer] / [IoUringEngine]'s connect) keeps the
+     * register-from-raw-fd flow unchanged, because those paths already
+     * carry suspend overhead that dominates the 1-syscall saving.
+     *
+     * **Default: false** (opt-in). Expected to help short-lived
+     * connection workloads (HTTP/1.0, `Connection: close`) where accept
+     * rate is high; keep-alive workloads on loopback are unlikely to
+     * show measurable change. Users opt in via
+     * `detect(ring).copy(acceptDirectAlloc = true)` after measuring.
+     * Default may be promoted to true in a follow-up once A/B data
+     * justifies it.
+     */
+    val acceptDirectAlloc: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -265,6 +302,16 @@ data class IoUringCapabilities(
                 // and loopback benchmarks should opt out explicitly if they
                 // require the loopback-optimal path.
                 registerRingFd = kv >= KernelVersion(5, 18),
+                // acceptDirectAlloc is opt-in even on supported kernels
+                // (5.19+). Requires fixedFiles (kernel 5.1+, default on).
+                // Users enable via `detect(ring).copy(acceptDirectAlloc = true)`
+                // after measuring. The benefit is one saved syscall per
+                // accept (register_files_update), visible mainly on
+                // short-lived connection workloads; keep-alive on loopback
+                // is unlikely to show A/B difference. Default may flip to
+                // true in a follow-up once real-network measurements
+                // justify the default-on cost.
+                acceptDirectAlloc = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -285,6 +332,7 @@ data class IoUringCapabilities(
             deferTaskrun = false,
             msgRingWakeup = false,
             registerRingFd = false,
+            acceptDirectAlloc = false,
             sendZc = false,
             sendmsgZc = false,
         )
