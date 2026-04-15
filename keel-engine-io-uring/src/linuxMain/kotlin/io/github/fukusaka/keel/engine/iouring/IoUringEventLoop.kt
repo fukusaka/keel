@@ -18,10 +18,12 @@ import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
 import posix_inet.keel_eventfd_create
+import io_uring.keel_prep_msg_ring
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
 import io_uring.keel_prep_send_zc_fixed
+import io_uring.keel_ring_fd
 import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_setup_defer_taskrun
 import io_uring.keel_setup_single_issuer
@@ -135,6 +137,22 @@ import kotlin.coroutines.resume
  * @param logger Logger for error reporting.
  * @param ringSize Number of SQE entries in the submission ring. Must be a power of 2.
  */
+/**
+ * pthread-local pointer to the [IoUringEventLoop] currently running on this
+ * pthread, or `null` if the current thread is not an io_uring EventLoop
+ * pthread (external callers, `Dispatchers.Default`, etc.).
+ *
+ * Set on entry to [IoUringEventLoop.loop] and cleared on exit. Read by
+ * [IoUringEventLoop.dispatch] to decide whether a cross-EL wakeup can use
+ * `IORING_OP_MSG_RING` (source needs to own a ring) or must fall back to
+ * the eventfd path (external thread, no ring available).
+ *
+ * Kotlin/Native `@ThreadLocal` marks this top-level `var` as having a
+ * per-pthread storage slot; writes on one pthread are invisible to others.
+ */
+@kotlin.native.concurrent.ThreadLocal
+internal var currentEventLoop: IoUringEventLoop? = null
+
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
     internal val logger: Logger,
@@ -150,6 +168,17 @@ internal class IoUringEventLoop(
 
     /** Exposes the io_uring ring pointer for [ProvidedBufferRing] registration. */
     internal val ringPtr get() = ring.ptr
+
+    /**
+     * Exposes the kernel ring file descriptor so peer EventLoops can target
+     * this ring via `IORING_OP_MSG_RING` when [IoUringCapabilities.msgRingWakeup]
+     * is enabled. Populated on the EventLoop pthread inside [loop] after the
+     * ring is created; reads before that return -1 (unused because MSG_RING
+     * submissions only happen after [start] and group init barrier complete).
+     */
+    @kotlin.concurrent.Volatile
+    internal var ringFd: Int = -1
+        private set
 
     // 8-byte buffer for eventfd reads (uint64_t). Arena-allocated so it
     // remains valid for the lifetime of the permanent wakeup READ SQE.
@@ -262,16 +291,65 @@ internal class IoUringEventLoop(
     /**
      * Dispatches a coroutine block to run on this EventLoop thread.
      *
-     * The block is queued and, if called from an external thread, the
-     * EventLoop is woken up via eventfd to process the new task.
+     * The block is queued and, if the caller is on a different thread, the
+     * target EventLoop is woken up. Two wakeup paths exist:
+     *
+     *  1. **MSG_RING** — when [IoUringCapabilities.msgRingWakeup] is enabled and
+     *     the caller is running on some (other) keel EventLoop pthread, the
+     *     source EL submits an `IORING_OP_MSG_RING` SQE on its own ring
+     *     targeting this EL's ring fd. No syscall is issued by the source
+     *     (the SQE is flushed in the source EL's next `io_uring_submit_and_wait`).
+     *     The kernel synthesises a CQE with [MSG_RING_WAKEUP_TOKEN] on the
+     *     target ring, which returns the target EL from its own
+     *     `io_uring_submit_and_wait` and triggers [drainTasks] on the next
+     *     iteration.
+     *
+     *  2. **eventfd_write** (fallback) — used when the caller is an external
+     *     thread (no source ring available), when MSG_RING support is off,
+     *     or when the source SQ ring is full. A 1-syscall write to this EL's
+     *     wakeup eventfd; the permanent READ SQE delivers a CQE with
+     *     [WAKEUP_TOKEN] and the loop re-arms it.
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)
         // Skip wakeup when already on the EventLoop thread — the loop
         // will drain tasks before the next io_uring_submit_and_wait().
-        if (!inEventLoop()) {
-            wakeup()
+        if (inEventLoop()) return
+
+        if (capabilities.msgRingWakeup) {
+            val source = currentEventLoop
+            // MSG_RING is only valid from another EL pthread (source owns a
+            // ring). Same-EL dispatch already returned above; external threads
+            // leave `currentEventLoop` null and fall through to eventfd.
+            if (source != null && source !== this && source.submitMsgRingTo(this)) {
+                return
+            }
         }
+        wakeup()
+    }
+
+    /**
+     * Submits an `IORING_OP_MSG_RING` SQE on this EventLoop's ring targeting
+     * [target]. Called by [dispatch] from the source EL pthread when MSG_RING
+     * wakeup is enabled and the peer EL is different from the source.
+     *
+     * Returns `true` if the SQE was enqueued on the source ring; `false` if
+     * the source SQ is full and the caller should fall back to eventfd.
+     * The source-side completion CQE carries [MSG_RING_SEND_TOKEN] and is
+     * discarded by the CQE drain loop. The target-side CQE carries
+     * [MSG_RING_WAKEUP_TOKEN] and is also discarded — the task itself was
+     * already pushed to the target's [taskQueue] by [dispatch].
+     *
+     * @return true if MSG_RING was successfully queued on the source ring.
+     */
+    private fun submitMsgRingTo(target: IoUringEventLoop): Boolean {
+        assertInEventLoop("submitMsgRingTo")
+        val sqe = io_uring_get_sqe(ring.ptr) ?: return false
+        val targetFd = target.ringFd
+        if (targetFd < 0) return false // target ring not yet initialised
+        keel_prep_msg_ring(sqe, targetFd, 0u, MSG_RING_WAKEUP_TOKEN, 0u)
+        io_uring_sqe_set_data64(sqe, MSG_RING_SEND_TOKEN)
+        return true
     }
 
     /**
@@ -760,10 +838,20 @@ internal class IoUringEventLoop(
 
     private fun loop() {
         eventLoopThread = pthread_self()
+        // Publish this EL as the current one on this pthread so peer
+        // EventLoops can route MSG_RING wakeups via [dispatch] → [submitMsgRingTo].
+        // External threads never run loop(), so [currentEventLoop] remains null
+        // for them and dispatch() falls back to eventfd.
+        currentEventLoop = this
 
         // Initialise the kernel ring on this pthread so SINGLE_ISSUER claims
         // this thread as the submitter task.
         initRing()
+        // Expose the ring fd now that the kernel ring is created. Peer
+        // EventLoops read this via MSG_RING dispatch; the group init barrier
+        // in IoUringEventLoopGroup.start() ensures every loop has published
+        // its fd before any dispatch can be observed.
+        ringFd = keel_ring_fd(ring.ptr)
 
         // Prepare the initial wakeup READ SQE.
         // It is submitted on the first io_uring_submit_and_wait() call below,
@@ -809,6 +897,24 @@ internal class IoUringEventLoop(
                         // Wakeup fired — re-submit for the next round.
                         // The new SQE is submitted at the next io_uring_submit_and_wait().
                         submitWakeupSqe()
+                        continue
+                    }
+
+                    // MSG_RING wakeup (target side): a peer EL woke us.
+                    // The task itself was enqueued on taskQueue by the peer's
+                    // dispatch() call before the MSG_RING SQE was submitted,
+                    // so drainTasks() at the top of the next loop iteration
+                    // will pick it up. Nothing else to do for this CQE.
+                    if (userData == MSG_RING_WAKEUP_TOKEN) continue
+
+                    // MSG_RING completion (source side): discard. Source CQEs
+                    // arrive on the EL that submitted the MSG_RING SQE and
+                    // report the send result; res < 0 means the target ring
+                    // was closed or unreachable, which is benign at shutdown.
+                    if (userData == MSG_RING_SEND_TOKEN) {
+                        if (res < 0) {
+                            logger.debug { "MSG_RING send failed: ${errnoMessage(-res)}" }
+                        }
                         continue
                     }
 
@@ -869,6 +975,13 @@ internal class IoUringEventLoop(
         // the kernel ring is still alive. [close] will tear down the ring
         // after this function returns.
         onExitHook?.invoke()
+        // Invalidate the ring fd before the ring is destroyed. Peer
+        // EventLoops dispatching to this EL after shutdown fall back to the
+        // eventfd path (which will no-op on the closed fd at worst).
+        ringFd = -1
+        // Clear the pthread's current-EL pointer so subsequent code running
+        // on this pthread (if any) does not misattribute itself to this EL.
+        currentEventLoop = null
     }
 
     private fun drainTasks() {
@@ -908,6 +1021,27 @@ internal class IoUringEventLoop(
          * (with -ECANCELED) arrives separately via the normal slot path.
          */
         internal const val CANCEL_TOKEN = ULong.MAX_VALUE
+
+        /**
+         * Source-side user_data for `IORING_OP_MSG_RING` SQEs. The CQE on the
+         * source ring reports the send result; keel discards the CQE unless
+         * `res < 0` (debug-logged as a benign shutdown race).
+         *
+         * Value: `ULong.MAX_VALUE - 1` (must not collide with [CANCEL_TOKEN]
+         * = `ULong.MAX_VALUE`, [WAKEUP_TOKEN] = 1, or slot-encoded values).
+         */
+        internal const val MSG_RING_SEND_TOKEN = 0xFFFFFFFFFFFFFFFEUL
+
+        /**
+         * Target-side user_data for `IORING_OP_MSG_RING` SQEs (delivered via
+         * the `data` parameter in [keel_prep_msg_ring]). The CQE appears on
+         * the target ring; keel uses it purely to return the target loop
+         * from `io_uring_submit_and_wait` — the actual task was already
+         * enqueued on the target's [taskQueue] before the SQE was submitted.
+         *
+         * Value: `ULong.MAX_VALUE - 2`.
+         */
+        internal const val MSG_RING_WAKEUP_TOKEN = 0xFFFFFFFFFFFFFFFDUL
 
         /**
          * Offset added to slot indices when encoding into user_data.
