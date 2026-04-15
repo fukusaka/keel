@@ -157,7 +157,8 @@ BENCH_SCHEME=https ./benchmark/bench-all.sh
 
 | Script | Purpose |
 |---|---|
-| `bench-one.sh` | Single engine benchmark |
+| `bench-one.sh` | Single engine benchmark (loopback, wrk on the same host) |
+| `bench-remote.sh` | Single engine benchmark with server on one ssh host and wrk on another — measures over a real NIC link |
 | `bench-keel.sh` | keel engines only (keel-* + ktor-cio) |
 | `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
 | `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
@@ -194,7 +195,46 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 # Remote (run on a Linux benchmark host reachable via ssh):
 ssh <linux-bench-host> "cd <path-to-keel-checkout> && BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh"
 ./benchmark/bench-pull.sh <linux-bench-host>
+
+# Real-NIC A/B (server on one host, wrk on another host over LAN):
+BENCH_REMOTE_HOST=<linux-bench-host> \
+  BENCH_CLIENT_HOST=<wrk-client-host> \
+  BENCH_SERVER_IP=<routable-ip-of-bench-host> \
+  BENCH_RUNS=3 \
+  ./benchmark/bench-remote.sh pipeline-http-io-uring \
+    benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe \
+    --engine=pipeline-http-io-uring --port=18090
 ```
+
+### Remote benchmarking (real-NIC)
+
+`bench-remote.sh` measures the server over a real network link instead
+of the loopback interface. The server runs on `BENCH_REMOTE_HOST` via
+ssh, and wrk is driven from `BENCH_CLIENT_HOST` (a separate ssh host)
+against `BENCH_SERVER_IP`. wrk is invoked natively when available,
+otherwise via Docker (`williamyeh/wrk:latest` with `--network=host`);
+override with `BENCH_WRK_MODE=native` or `BENCH_WRK_MODE=docker`.
+
+Required environment variables:
+
+| Variable | Description |
+|---|---|
+| `BENCH_REMOTE_HOST` | Server host (ssh target that starts the binary) |
+| `BENCH_CLIENT_HOST` | Client host (ssh target that runs wrk) |
+
+Optional:
+
+| Variable | Default | Description |
+|---|---|---|
+| `BENCH_REMOTE_WORKDIR` | `~/prj/keel-work/keel` | Path to the keel checkout on the server host |
+| `BENCH_SERVER_IP` | `$BENCH_REMOTE_HOST` | IP or hostname the client uses in the wrk URL (set this when the client cannot resolve the server's hostname) |
+| `BENCH_WRK_MODE` | `auto` | `native`, `docker`, or `auto` (probe native first, fall back to docker) |
+| `BENCH_WRK_DOCKER_IMAGE` | `williamyeh/wrk:latest` | Image used in docker mode |
+
+Typical workload is **realistic** for keel: NIC latency unblocks the
+server CPU, so io_uring optimisations that depend on enter-syscall
+frequency (e.g. `registerRingFd`) can show their real effect here
+where they are masked on loopback.
 
 ## Profiles
 
