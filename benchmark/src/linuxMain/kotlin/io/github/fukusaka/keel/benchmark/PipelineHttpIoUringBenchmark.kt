@@ -39,12 +39,17 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         val deferTaskrun = getenv("BENCH_DEFER_TASKRUN")?.toKString() == "true"
         val msgRingWakeup = getenv("BENCH_MSG_RING_WAKEUP")?.toKString() == "true"
         val registerRingFd = getenv("BENCH_REGISTER_RING_FD")?.toKString() == "true"
-        val caps = if (registeredBuffers || deferTaskrun || msgRingWakeup || registerRingFd) {
+        // BENCH_SINGLE_ISSUER=false explicitly disables the capability (default true).
+        // Any other value or unset keeps the default (true).
+        val singleIssuerOverride = getenv("BENCH_SINGLE_ISSUER")?.toKString()
+        val forceSingleIssuerOff = singleIssuerOverride == "false"
+        val caps = if (registeredBuffers || deferTaskrun || msgRingWakeup || registerRingFd || forceSingleIssuerOff) {
             io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(
                 registeredBuffers = registeredBuffers,
                 deferTaskrun = deferTaskrun,
                 msgRingWakeup = msgRingWakeup,
                 registerRingFd = registerRingFd,
+                singleIssuer = !forceSingleIssuerOff,
             )
         } else {
             null
