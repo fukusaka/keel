@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install AWS-LC from source.
-# Used by CI (GitHub Actions) and luna.local where no apt package is available.
+# Used by CI (GitHub Actions) and developer benchmark hosts where no apt package is available.
 #
 # Cache support: set AWSLC_CACHE_DIR to a directory path.
 # On cache hit, copies pre-built files to /usr/local (fast).
