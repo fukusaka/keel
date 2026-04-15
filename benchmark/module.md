@@ -77,7 +77,8 @@ java -cp @benchmark/build/benchmark-classpath.txt \
 
 | Script | Purpose |
 |--------|---------|
-| `bench-one.sh` | Single engine: `bench-one.sh <name> <command> [args...]` |
+| `bench-one.sh` | Single engine on loopback: `bench-one.sh <name> <command> [args...]` |
+| `bench-remote.sh` | Single engine with server / wrk on different ssh hosts (real NIC) |
 | `bench-keel.sh` | keel engines + `ktor-cio` only |
 | `bench-all.sh` | All engines (external servers + Kotlin/Native + JVM + JS) |
 | `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
