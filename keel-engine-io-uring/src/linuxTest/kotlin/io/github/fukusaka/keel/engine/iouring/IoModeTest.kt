@@ -40,6 +40,7 @@ class IoModeTest {
         assertEquals(false, caps.providedBufferRing)
         assertEquals(false, caps.coopTaskrun)
         assertEquals(false, caps.singleIssuer)
+        assertEquals(false, caps.deferTaskrun)
     }
 
     @Test
@@ -101,6 +102,33 @@ class IoModeTest {
         } finally {
             engine.close()
         }
+    }
+
+    @Test
+    fun `deferTaskrun enabled works`() = runBlocking {
+        // threads=2: see note on `coopTaskrun enabled works`.
+        // DEFER_TASKRUN is opt-in; enable alongside the default singleIssuer=true.
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(deferTaskrun = true),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `deferTaskrun is off by default`() {
+        // DEFER_TASKRUN is opt-in per the A/B trade-off documented on the
+        // capability. Pin the constructor default so the opt-in contract
+        // cannot drift without this test failing. The matching `detect()`
+        // policy is asserted by the comment + assignment in
+        // `IoUringCapabilities.detect` and is not re-verified here because
+        // constructing a probe requires an initialised io_uring ring.
+        assertEquals(false, IoUringCapabilities().deferTaskrun)
     }
 
     @Test
