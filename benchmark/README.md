@@ -160,7 +160,7 @@ BENCH_SCHEME=https ./benchmark/bench-all.sh
 | `bench-one.sh` | Single engine benchmark |
 | `bench-keel.sh` | keel engines only (keel-* + ktor-cio) |
 | `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
-| `bench-pull.sh` | Pull results from remote host (luna.local) |
+| `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
 
 ### Environment Variables
@@ -191,9 +191,9 @@ BENCH_SCHEME=https ./benchmark/bench-all.sh
 BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh
 BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 
-# Remote (luna.local):
-ssh luna.local "cd /home/fukusaka/prj/keel-work/keel && BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh"
-./benchmark/bench-pull.sh
+# Remote (run on a Linux benchmark host reachable via ssh):
+ssh <linux-bench-host> "cd <path-to-keel-checkout> && BENCH_RUNS=3 BENCH_SHUFFLE=true ./benchmark/bench-all.sh"
+./benchmark/bench-pull.sh <linux-bench-host>
 ```
 
 ## Profiles

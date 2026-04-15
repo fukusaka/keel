@@ -77,8 +77,8 @@ data class IoUringCapabilities(
      * pthread. Thread affinity is asserted by
      * [IoUringEventLoop.assertInEventLoop].
      *
-     * A/B benchmark on loopback (luna.local, 4t/100c /hello) showed no
-     * measurable effect (<1% within run-to-run variance). The kernel-side
+     * A/B benchmark on loopback (4t/100c /hello) showed no measurable
+     * effect (<1% within run-to-run variance). The kernel-side
      * lock-elimination benefit is theoretically larger on high-contention
      * workloads with multi-core submit/complete interleaving. Default-on.
      */
@@ -100,7 +100,7 @@ data class IoUringCapabilities(
      * which the EL pthread processes inside its already-blocked
      * `io_uring_submit_and_wait` call.
      *
-     * **Default: false** (opt-in). Loopback A/B benchmark on luna.local
+     * **Default: false** (opt-in). Loopback A/B benchmark
      * (4t/100c /hello) showed mixed results:
      * - Throughput: -0.9% (870K → 862K req/s)
      * - p99 latency: -3.2% (373us → 361us, **improvement**)

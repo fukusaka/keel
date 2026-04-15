@@ -80,7 +80,7 @@ java -cp @benchmark/build/benchmark-classpath.txt \
 | `bench-one.sh` | Single engine: `bench-one.sh <name> <command> [args...]` |
 | `bench-keel.sh` | keel engines + `ktor-cio` only |
 | `bench-all.sh` | All engines (external servers + Kotlin/Native + JVM + JS) |
-| `bench-pull.sh` | Pull results from remote host (`luna.local`) |
+| `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
 
 Key environment variables:
