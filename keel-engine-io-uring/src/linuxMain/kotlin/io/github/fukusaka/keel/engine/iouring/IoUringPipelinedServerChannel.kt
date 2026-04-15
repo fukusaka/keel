@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
+import io_uring.keel_prep_multishot_accept_direct
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -60,17 +61,28 @@ internal class IoUringPipelinedServerChannel(
      * connections on its own SO_REUSEPORT server socket.
      */
     fun start() {
+        // Direct-allocated multishot accept requires a registered file table.
+        // If fixedFiles is off (user override) or the per-worker file
+        // registry is absent, fall back to the traditional accept path even
+        // if acceptDirectAlloc is requested.
+        val useDirectAlloc = capabilities.acceptDirectAlloc && capabilities.fixedFiles
         for (i in 0 until workerGroup.size) {
             val loop = workerGroup.loopAt(i)
             val serverFd = serverFds[i]
+            val hasRegistry = workerGroup.fileRegistryAt(i) != null
+            val directAllocActive = useDirectAlloc && hasRegistry
             loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
                 loop.submitMultishot(
                     prepare = { sqe ->
-                        io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
+                        if (directAllocActive) {
+                            keel_prep_multishot_accept_direct(sqe, serverFd, null, null, 0)
+                        } else {
+                            io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
+                        }
                     },
                     onCqe = { res, _ ->
                         if (res >= 0 && !closed) {
-                            onAccept(res, i)
+                            onAccept(res, i, directAllocActive)
                         }
                     },
                 )
@@ -83,16 +95,47 @@ internal class IoUringPipelinedServerChannel(
      *
      * Creates [IoUringPipelinedChannel], applies the pipeline initializer
      * to set up handlers, and arms multishot recv.
+     *
+     * @param acceptRes CQE `res` from the multishot accept SQE. In the
+     *                  traditional path this is the raw client fd; in the
+     *                  direct-allocated path this is the fixed-file index
+     *                  chosen by the kernel.
+     * @param directAlloc Whether this worker used direct-allocated accept.
      */
-    private fun onAccept(clientFd: Int, workerIndex: Int) {
-        PosixSocketUtils.setNonBlocking(clientFd)
+    private fun onAccept(acceptRes: Int, workerIndex: Int, directAlloc: Boolean) {
         val loop = workerGroup.loopAt(workerIndex)
         val bufferRing = workerGroup.bufferRingAt(workerIndex)
             ?: error("Pipeline requires provided buffer ring (kernel 5.19+)")
         val allocator = workerGroup.allocatorAt(workerIndex)
         val fileRegistry = workerGroup.fileRegistryAt(workerIndex)
         val bufferTable = workerGroup.bufferTableAt(workerIndex)
-        val transport = IoUringIoTransport(clientFd, loop, capabilities, allocator = allocator, bufferRing = bufferRing, fixedFileRegistry = fileRegistry, registeredBufferTable = bufferTable)
+        val transport = if (directAlloc) {
+            // Kernel has placed the fd into fileRegistry's table at index
+            // `acceptRes`. The raw fd is not available to userspace; pass
+            // -1 as the sentinel rawFd. Non-blocking mode is already set
+            // by the kernel on direct-allocated slots.
+            IoUringIoTransport(
+                fd = -1,
+                eventLoop = loop,
+                capabilities = capabilities,
+                allocator = allocator,
+                bufferRing = bufferRing,
+                fixedFileRegistry = fileRegistry,
+                registeredBufferTable = bufferTable,
+                preAllocatedIndex = acceptRes,
+            )
+        } else {
+            PosixSocketUtils.setNonBlocking(acceptRes)
+            IoUringIoTransport(
+                fd = acceptRes,
+                eventLoop = loop,
+                capabilities = capabilities,
+                allocator = allocator,
+                bufferRing = bufferRing,
+                fixedFileRegistry = fileRegistry,
+                registeredBufferTable = bufferTable,
+            )
+        }
         val channel = IoUringPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

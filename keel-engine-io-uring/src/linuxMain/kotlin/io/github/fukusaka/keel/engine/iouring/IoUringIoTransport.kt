@@ -214,9 +214,13 @@ internal class IoUringIoTransport(
         val rawMode = writeModeSelector.select(stats)
         // Capability fallback: degrade to CQE if the kernel lacks the opcode.
         // SENDMSG_ZC also requires sendZc (single-buffer path uses SEND_ZC).
+        // FALLBACK_CQE issues direct send()/writev() syscalls with the raw fd;
+        // direct-allocated slots don't expose a raw fd, so those modes must
+        // stay on the pure io_uring CQE path.
         val mode = when {
             rawMode == IoMode.SEND_ZC && !capabilities.sendZc -> IoMode.CQE
             rawMode == IoMode.SENDMSG_ZC && (!capabilities.sendmsgZc || !capabilities.sendZc) -> IoMode.CQE
+            rawMode == IoMode.FALLBACK_CQE && useDirectAlloc -> IoMode.CQE
             else -> rawMode
         }
 
