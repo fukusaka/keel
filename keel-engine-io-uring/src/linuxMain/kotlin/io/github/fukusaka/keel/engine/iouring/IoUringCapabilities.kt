@@ -178,18 +178,28 @@ data class IoUringCapabilities(
      * `IORING_ENTER_REGISTERED_RING` fast path, and the kernel skips
      * the per-syscall file-descriptor table lookup on the ring fd.
      *
-     * **Default: false** (opt-in). No API change, no observable
-     * behaviour change, no memory overhead, and independent of
-     * `singleIssuer` / `deferTaskrun`. The register call runs on the
-     * EL pthread via the existing 2-phase init pattern, so SINGLE_ISSUER
-     * remains compatible.
+     * **Default: true** (auto-enabled on kernel 5.18+). No API change,
+     * no memory overhead, independent of `singleIssuer` /
+     * `deferTaskrun`. The register call runs on the EL pthread via the
+     * existing 2-phase init pattern, so SINGLE_ISSUER remains
+     * compatible.
      *
-     * Enabled via `detect(ring).copy(registerRingFd = true)`. Users
-     * should A/B their workload because the benefit is per-enter
-     * savings (~30-50 ns fd-lookup elimination) and scales with enter
-     * frequency. Workloads that dominate on `io_uring_submit_and_wait`
-     * benefit most; workloads bottlenecked elsewhere may see no
-     * measurable change.
+     * Remote A/B on luna.local (pipeline-http-io-uring, 4t/100c /hello,
+     * wrk from truenas.local over LAN) shows **+5.3 % throughput** with
+     * the keel default (`singleIssuer = true`) and **+9.0 %** with
+     * `singleIssuer = false`. The optimisation helps across SI settings
+     * on realistic network workloads.
+     *
+     * Loopback A/B on the same host showed **-2.6 %** — the CPU-bound
+     * hot path pays the `register_ring_fd` / `unregister_ring_fd`
+     * bookkeeping cost without amortising the fd-lookup savings,
+     * because per-enter work is already sub-microsecond on loopback.
+     * Keel targets real-network workloads so the default stays on,
+     * but benchmark loops that pin themselves to loopback may want to
+     * override via `detect(ring).copy(registerRingFd = false)`.
+     *
+     * Register failures are warn-logged and the EventLoop continues on
+     * the slow path — the optimisation is best-effort.
      *
      * Teardown: paired `io_uring_unregister_ring_fd` runs in
      * [IoUringEventLoop.loop]'s epilogue, after the register-class
@@ -198,7 +208,7 @@ data class IoUringCapabilities(
      * ring's internal state) but keeps register/unregister symmetric
      * and surfaces any kernel-side breakage as a warn-level log.
      */
-    val registerRingFd: Boolean = false,
+    val registerRingFd: Boolean = true,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -246,14 +256,15 @@ data class IoUringCapabilities(
                 // kernel lacking IORING_OP_MSG_RING will surface as -EINVAL
                 // from the kernel on the first MSG_RING SQE submission.
                 msgRingWakeup = false,
-                // registerRingFd is opt-in even on supported kernels. Pure
-                // enter-syscall optimisation; workloads dominated by other
-                // costs see no measurable benefit. Users enable via
-                // `detect(ring).copy(registerRingFd = true)` after their own
-                // A/B. A manual override on a pre-5.18 kernel surfaces as a
-                // warn-level log from io_uring_register_ring_fd and the
-                // EventLoop continues without the optimisation.
-                registerRingFd = false,
+                // registerRingFd auto-enables on kernel 5.18+. Real-network
+                // A/B (wrk from a separate host over LAN) showed +5.3 %
+                // throughput with SINGLE_ISSUER on and +9.0 % with it off;
+                // loopback A/B showed -2.6 % because per-enter work on
+                // loopback is too cheap to amortise the register bookkeeping.
+                // keel targets real-network workloads, so the default is on
+                // and loopback benchmarks should opt out explicitly if they
+                // require the loopback-optimal path.
+                registerRingFd = kv >= KernelVersion(5, 18),
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,

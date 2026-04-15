@@ -139,15 +139,15 @@ class IoModeTest {
     }
 
     @Test
-    fun `registerRingFd enabled works`() = runBlocking {
+    fun `registerRingFd disabled works`() = runBlocking {
         // threads=2: see note on `coopTaskrun enabled works`.
-        // Self-registering the ring fd should not affect functional behaviour —
-        // only per-enter syscall cost. Run the standard echo to verify the
-        // register/unregister pair does not break the EL lifecycle.
+        // The default is on; explicitly disable to exercise the slow path
+        // (no `io_uring_register_ring_fd` call) and verify the EL lifecycle
+        // still works without the optimisation.
         val defaultCaps = IoUringCapabilities()
         val engine = IoUringEngine(
             config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(registerRingFd = true),
+            capabilities = defaultCaps.copy(registerRingFd = false),
         )
         try {
             echoSmall(engine)
@@ -157,12 +157,14 @@ class IoModeTest {
     }
 
     @Test
-    fun `registerRingFd is off by default`() {
-        // Self-registered ring fd is opt-in because the benefit is per-enter
-        // and workload-dependent. Pin the constructor default so the opt-in
-        // contract cannot drift. The matching `detect()` policy is asserted
-        // by the explicit `false` assignment in `IoUringCapabilities.detect`.
-        assertEquals(false, IoUringCapabilities().registerRingFd)
+    fun `registerRingFd is on by default`() {
+        // Self-registered ring fd is default-on per the real-network A/B
+        // evidence (remote +5-9 %, loopback -2.6 %). Pin the constructor
+        // default so the opt-out contract (copy(registerRingFd = false))
+        // stays the mechanism for loopback-optimal benchmarks. The matching
+        // `detect()` policy is asserted by the `kv >= 5.18` expression in
+        // `IoUringCapabilities.detect`.
+        assertEquals(true, IoUringCapabilities().registerRingFd)
     }
 
     @Test
