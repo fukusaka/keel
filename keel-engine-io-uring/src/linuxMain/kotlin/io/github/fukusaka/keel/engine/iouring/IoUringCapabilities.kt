@@ -84,6 +84,37 @@ data class IoUringCapabilities(
      */
     val singleIssuer: Boolean = true,
     /**
+     * Deferred task run (Linux 6.1+). Defers task_work execution to
+     * `io_uring_enter(GETEVENTS)` calls. Requires [singleIssuer].
+     *
+     * The classic task_work path runs deferred completion work at the end
+     * of any syscall returning to user space. DEFER_TASKRUN instead only
+     * runs task_work when the issuer thread actively calls `io_uring_enter`
+     * with `GETEVENTS` — which is exactly what [IoUringEventLoop.loop] does
+     * every iteration via `io_uring_submit_and_wait`. The benefit is
+     * reduced latency variability (no task_work interruptions during EL
+     * `drainTasks` or SQE preparation) and better batching of completions.
+     *
+     * Compatible with keel's eventfd-based wakeup: when an external thread
+     * writes to the eventfd, the READ op's completion is queued as task_work,
+     * which the EL pthread processes inside its already-blocked
+     * `io_uring_submit_and_wait` call.
+     *
+     * **Default: false** (opt-in). Loopback A/B benchmark on luna.local
+     * (4t/100c /hello) showed mixed results:
+     * - Throughput: -0.9% (870K → 862K req/s)
+     * - p99 latency: -3.2% (373us → 361us, **improvement**)
+     *
+     * The throughput regression is at the variance boundary. Enable for
+     * latency-sensitive deployments where tail latency stability matters
+     * more than raw RPS. Tracking the trade-off by workload is recommended.
+     *
+     * Requires SINGLE_ISSUER: enabling DEFER without SI is a kernel
+     * configuration error (`-EINVAL`). Rely on [detect] to keep the pair
+     * consistent.
+     */
+    val deferTaskrun: Boolean = false,
+    /**
      * Registered buffers for SEND_ZC_FIXED (Linux 5.1+).
      *
      * Pre-pins pooled buffer pages via `io_uring_register_buffers`,
@@ -137,6 +168,10 @@ data class IoUringCapabilities(
                 fixedFiles = kv >= KernelVersion(5, 1),
                 coopTaskrun = kv >= KernelVersion(6, 0),
                 singleIssuer = kv >= KernelVersion(6, 0),
+                // deferTaskrun is opt-in even on supported kernels. Loopback
+                // A/B showed a slight throughput regression with a p99 latency
+                // improvement. Users enable via `detect(ring).copy(deferTaskrun = true)`.
+                deferTaskrun = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -154,6 +189,7 @@ data class IoUringCapabilities(
             fixedFiles = false,
             coopTaskrun = false,
             singleIssuer = false,
+            deferTaskrun = false,
             sendZc = false,
             sendmsgZc = false,
         )
