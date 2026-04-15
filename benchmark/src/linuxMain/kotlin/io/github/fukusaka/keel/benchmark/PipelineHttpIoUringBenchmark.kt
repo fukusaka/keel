@@ -36,8 +36,14 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             else -> IoModeSelectors.eagainThreshold() // default: adaptive
         }
         val registeredBuffers = getenv("BENCH_REGISTERED_BUFFERS")?.toKString() == "true"
-        val caps = if (registeredBuffers) {
-            io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(registeredBuffers = true)
+        val deferTaskrun = getenv("BENCH_DEFER_TASKRUN")?.toKString() == "true"
+        val msgRingWakeup = getenv("BENCH_MSG_RING_WAKEUP")?.toKString() == "true"
+        val caps = if (registeredBuffers || deferTaskrun || msgRingWakeup) {
+            io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(
+                registeredBuffers = registeredBuffers,
+                deferTaskrun = deferTaskrun,
+                msgRingWakeup = msgRingWakeup,
+            )
         } else {
             null
         }

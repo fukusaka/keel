@@ -266,6 +266,9 @@ static int keel_kernel_version_minor(void) {
 #ifndef IORING_OP_SENDMSG_ZC
 #define IORING_OP_SENDMSG_ZC 57
 #endif
+#ifndef IORING_OP_MSG_RING
+#define IORING_OP_MSG_RING 40
+#endif
 
 /* Ring setup flags (may not be in older liburing headers). */
 #ifndef IORING_SETUP_COOP_TASKRUN
@@ -281,3 +284,40 @@ static int keel_kernel_version_minor(void) {
 static unsigned int keel_setup_coop_taskrun(void) { return IORING_SETUP_COOP_TASKRUN; }
 static unsigned int keel_setup_single_issuer(void) { return IORING_SETUP_SINGLE_ISSUER; }
 static unsigned int keel_setup_defer_taskrun(void) { return IORING_SETUP_DEFER_TASKRUN; }
+
+/* ====================================================================
+ * MSG_RING opcode (Linux 5.18+)
+ *
+ * Delivers a CQE on a target ring from the source ring's SQE. Used by
+ * keel to wake up a peer EventLoop without an eventfd_write syscall
+ * when the source thread is itself on an io_uring EventLoop pthread.
+ *
+ * `io_uring_prep_msg_ring(sqe, fd, len, data, flags)`
+ *   - `fd`   = target ring's file descriptor (raw or registered)
+ *   - `len`  = delivered as `res` in the target CQE
+ *   - `data` = delivered as `user_data` in the target CQE
+ *   - `flags` = MSG_RING flags (0 for basic mode)
+ *
+ * TWO CQEs are produced:
+ *   1. Source ring — completion of the MSG_RING op (res = 0 or -errno)
+ *   2. Target ring — synthesised from the SQE fields above
+ *
+ * The source CQE arrives on the source ring in the normal order of ops
+ * and is consumed by the source EventLoop's CQE drain loop via a
+ * user_data token.
+ * ==================================================================== */
+
+/* Read the ring's file descriptor. Used when preparing MSG_RING SQEs
+ * so peer EventLoops can target each other's rings by raw fd. */
+static int keel_ring_fd(struct io_uring *ring) {
+    return ring->ring_fd;
+}
+
+/* Prepare an IORING_OP_MSG_RING SQE targeting `target_ring_fd`. On
+ * completion the target ring will receive a CQE with res=`len` and
+ * user_data=`data`. */
+static void keel_prep_msg_ring(struct io_uring_sqe *sqe, int target_ring_fd,
+                               unsigned int len, unsigned long long data,
+                               unsigned int flags) {
+    io_uring_prep_msg_ring(sqe, target_ring_fd, len, data, flags);
+}

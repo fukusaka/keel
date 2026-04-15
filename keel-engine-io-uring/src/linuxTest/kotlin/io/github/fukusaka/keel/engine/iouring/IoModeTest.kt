@@ -41,6 +41,7 @@ class IoModeTest {
         assertEquals(false, caps.coopTaskrun)
         assertEquals(false, caps.singleIssuer)
         assertEquals(false, caps.deferTaskrun)
+        assertEquals(false, caps.msgRingWakeup)
     }
 
     @Test
@@ -118,6 +119,33 @@ class IoModeTest {
         } finally {
             engine.close()
         }
+    }
+
+    @Test
+    fun `msgRingWakeup enabled works`() = runBlocking {
+        // threads=2: client/server on separate ELs exercises the cross-EL
+        // dispatch path. MSG_RING is opt-in; enable alongside defaults.
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(msgRingWakeup = true),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `msgRingWakeup is off by default`() {
+        // MSG_RING wakeup is opt-in: kernel support does not imply benefit,
+        // which depends on cross-EL dispatch volume in the workload. Pin the
+        // constructor default so the opt-in contract cannot drift. The
+        // matching `detect()` policy is asserted by the explicit `false`
+        // assignment in `IoUringCapabilities.detect` (probing the policy at
+        // runtime requires an initialised io_uring ring).
+        assertEquals(false, IoUringCapabilities().msgRingWakeup)
     }
 
     @Test

@@ -133,6 +133,41 @@ data class IoUringCapabilities(
      * - Total for 4 EventLoops: ~256 KiB kernel pinned + ~2 KiB HashMap.
      */
     val registeredBuffers: Boolean = false,
+    /**
+     * Cross-EventLoop wakeup via `IORING_OP_MSG_RING` (Linux 5.18+).
+     *
+     * When a coroutine dispatched from **another keel EventLoop pthread**
+     * needs to wake a peer EventLoop, the source EL submits a MSG_RING SQE
+     * on its own ring targeting the peer's ring fd, instead of writing to
+     * the peer's eventfd. The kernel synthesises a CQE on the target ring
+     * with a keel-assigned `user_data` token, and the peer's
+     * `io_uring_submit_and_wait` returns without an `eventfd_write` syscall
+     * on the source side.
+     *
+     * **Hybrid policy**: wakeups from threads that are *not* running on a
+     * keel EventLoop pthread (external callers such as `engine.close()`,
+     * `Dispatchers.Default`, or application threads) continue to use
+     * `eventfd_write`. MSG_RING only optimises EL-to-EL dispatch because
+     * external threads do not own an io_uring ring to submit SQEs on.
+     *
+     * Integrates with [deferTaskrun]: the target CQE is queued as task_work
+     * and processed inside the peer's next `io_uring_submit_and_wait`,
+     * aligning the wakeup path with DEFER_TASKRUN's batching semantics.
+     *
+     * **Default: false** (opt-in). Benefit depends on how often coroutine
+     * dispatches cross EventLoops in the workload. Loopback `/hello` with
+     * one connection per EventLoop shows near-zero cross-EL traffic and no
+     * measurable change. Workloads that fan out work across EventLoops
+     * (coroutine channels, codec handoff) are expected to benefit.
+     *
+     * **Fallbacks** when this capability is true but a wakeup cannot use
+     * MSG_RING:
+     * - Source SQ ring full — falls back to `eventfd_write` for this wakeup.
+     * - Caller is not on any EL pthread — eventfd path as before.
+     * - Target ring is closed — the source CQE reports `-EBADF`; the wakeup
+     *   is redundant because the target is already shutting down.
+     */
+    val msgRingWakeup: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -172,6 +207,14 @@ data class IoUringCapabilities(
                 // A/B showed a slight throughput regression with a p99 latency
                 // improvement. Users enable via `detect(ring).copy(deferTaskrun = true)`.
                 deferTaskrun = false,
+                // msgRingWakeup is opt-in even on supported kernels. Benefit
+                // depends on cross-EL dispatch volume; users enable via
+                // `detect(ring).copy(msgRingWakeup = true)` after measuring
+                // their workload. Kernel support is not probed here because
+                // the flag is never auto-enabled — a manual override on a
+                // kernel lacking IORING_OP_MSG_RING will surface as -EINVAL
+                // from the kernel on the first MSG_RING SQE submission.
+                msgRingWakeup = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -190,6 +233,7 @@ data class IoUringCapabilities(
             coopTaskrun = false,
             singleIssuer = false,
             deferTaskrun = false,
+            msgRingWakeup = false,
             sendZc = false,
             sendmsgZc = false,
         )
