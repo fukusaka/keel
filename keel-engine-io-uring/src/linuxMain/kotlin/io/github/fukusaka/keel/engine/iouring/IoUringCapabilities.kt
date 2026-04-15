@@ -168,6 +168,47 @@ data class IoUringCapabilities(
      *   is redundant because the target is already shutting down.
      */
     val msgRingWakeup: Boolean = false,
+    /**
+     * Self-register the ring's own file descriptor (Linux 5.18+).
+     *
+     * Calls `io_uring_register_ring_fd` on the EventLoop pthread after
+     * [IoUringEventLoop] initialises the kernel ring. Subsequent
+     * `io_uring_enter` syscalls — issued implicitly by
+     * `io_uring_submit_and_wait` on every loop iteration — take the
+     * `IORING_ENTER_REGISTERED_RING` fast path, and the kernel skips
+     * the per-syscall file-descriptor table lookup on the ring fd.
+     *
+     * **Default: true** (auto-enabled on kernel 5.18+). No API change,
+     * no memory overhead, independent of `singleIssuer` /
+     * `deferTaskrun`. The register call runs on the EL pthread via the
+     * existing 2-phase init pattern, so SINGLE_ISSUER remains
+     * compatible.
+     *
+     * Remote A/B on a LAN pair (pipeline-http-io-uring, 4t/100c /hello,
+     * wrk on a separate client host) showed **+5.3 % throughput** with
+     * the keel default (`singleIssuer = true`) and **+9.0 %** with
+     * `singleIssuer = false`. The optimisation helps across SI settings
+     * on realistic network workloads.
+     *
+     * Loopback A/B on the same server showed **-2.6 %** — the CPU-bound
+     * hot path pays the `register_ring_fd` / `unregister_ring_fd`
+     * bookkeeping cost without amortising the fd-lookup savings,
+     * because per-enter work is already sub-microsecond on loopback.
+     * Keel targets real-network workloads so the default stays on,
+     * but benchmark loops that pin themselves to loopback may want to
+     * override via `detect(ring).copy(registerRingFd = false)`.
+     *
+     * Register failures are warn-logged and the EventLoop continues on
+     * the slow path — the optimisation is best-effort.
+     *
+     * Teardown: paired `io_uring_unregister_ring_fd` runs in
+     * [IoUringEventLoop.loop]'s epilogue, after the register-class
+     * `onExitHook` and before `io_uring_queue_exit`. The explicit
+     * unregister is strictly not required (`queue_exit` cleans up the
+     * ring's internal state) but keeps register/unregister symmetric
+     * and surfaces any kernel-side breakage as a warn-level log.
+     */
+    val registerRingFd: Boolean = true,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -215,6 +256,15 @@ data class IoUringCapabilities(
                 // kernel lacking IORING_OP_MSG_RING will surface as -EINVAL
                 // from the kernel on the first MSG_RING SQE submission.
                 msgRingWakeup = false,
+                // registerRingFd auto-enables on kernel 5.18+. Real-network
+                // A/B (wrk from a separate host over LAN) showed +5.3 %
+                // throughput with SINGLE_ISSUER on and +9.0 % with it off;
+                // loopback A/B showed -2.6 % because per-enter work on
+                // loopback is too cheap to amortise the register bookkeeping.
+                // keel targets real-network workloads, so the default is on
+                // and loopback benchmarks should opt out explicitly if they
+                // require the loopback-optimal path.
+                registerRingFd = kv >= KernelVersion(5, 18),
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -234,6 +284,7 @@ data class IoUringCapabilities(
             singleIssuer = false,
             deferTaskrun = false,
             msgRingWakeup = false,
+            registerRingFd = false,
             sendZc = false,
             sendmsgZc = false,
         )

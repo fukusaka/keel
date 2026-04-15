@@ -321,3 +321,32 @@ static void keel_prep_msg_ring(struct io_uring_sqe *sqe, int target_ring_fd,
                                unsigned int flags) {
     io_uring_prep_msg_ring(sqe, target_ring_fd, len, data, flags);
 }
+
+/* ====================================================================
+ * Self-registered ring fd (IORING_REGISTER_RING_FDS, Linux 5.18+)
+ *
+ * Registers the ring's own file descriptor so subsequent
+ * `io_uring_enter` syscalls (issued implicitly by
+ * `io_uring_submit_and_wait` on every EventLoop iteration) use the
+ * registered index and take the `IORING_ENTER_REGISTERED_RING` fast
+ * path, skipping the kernel's per-syscall fd-table lookup.
+ *
+ * Pure enter-syscall optimisation with no observable behaviour change
+ * and no kernel state outside the ring itself. Teardown is handled by
+ * `io_uring_queue_exit`, but keel calls `io_uring_unregister_ring_fd`
+ * explicitly in the EL `onExitHook` for symmetry and to fail fast if
+ * the pairing ever breaks.
+ * ==================================================================== */
+
+/* Register the ring's own fd. Returns 1 on success (number of fds
+ * registered), negative errno on failure. Must be called on the
+ * submitter task (EL pthread under SINGLE_ISSUER). */
+static int keel_register_ring_fd(struct io_uring *ring) {
+    return io_uring_register_ring_fd(ring);
+}
+
+/* Unregister the ring's own fd. Returns 1 on success, negative errno
+ * on failure. Must be called on the submitter task. */
+static int keel_unregister_ring_fd(struct io_uring *ring) {
+    return io_uring_unregister_ring_fd(ring);
+}

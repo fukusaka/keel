@@ -42,6 +42,7 @@ class IoModeTest {
         assertEquals(false, caps.singleIssuer)
         assertEquals(false, caps.deferTaskrun)
         assertEquals(false, caps.msgRingWakeup)
+        assertEquals(false, caps.registerRingFd)
     }
 
     @Test
@@ -135,6 +136,35 @@ class IoModeTest {
         } finally {
             engine.close()
         }
+    }
+
+    @Test
+    fun `registerRingFd disabled works`() = runBlocking {
+        // threads=2: see note on `coopTaskrun enabled works`.
+        // The default is on; explicitly disable to exercise the slow path
+        // (no `io_uring_register_ring_fd` call) and verify the EL lifecycle
+        // still works without the optimisation.
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(registerRingFd = false),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `registerRingFd is on by default`() {
+        // Self-registered ring fd is default-on per the real-network A/B
+        // evidence (remote +5-9 %, loopback -2.6 %). Pin the constructor
+        // default so the opt-out contract (copy(registerRingFd = false))
+        // stays the mechanism for loopback-optimal benchmarks. The matching
+        // `detect()` policy is asserted by the `kv >= 5.18` expression in
+        // `IoUringCapabilities.detect`.
+        assertEquals(true, IoUringCapabilities().registerRingFd)
     }
 
     @Test

@@ -35,14 +35,26 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             "sendmsg-zc" -> IoModeSelectors.SENDMSG_ZC
             else -> IoModeSelectors.eagainThreshold() // default: adaptive
         }
+        // Default-false capabilities: env var "true" enables, anything else leaves off.
         val registeredBuffers = getenv("BENCH_REGISTERED_BUFFERS")?.toKString() == "true"
         val deferTaskrun = getenv("BENCH_DEFER_TASKRUN")?.toKString() == "true"
         val msgRingWakeup = getenv("BENCH_MSG_RING_WAKEUP")?.toKString() == "true"
-        val caps = if (registeredBuffers || deferTaskrun || msgRingWakeup) {
+        // Default-true capabilities: env var "false" disables, anything else keeps on.
+        val forceSingleIssuerOff = getenv("BENCH_SINGLE_ISSUER")?.toKString() == "false"
+        val forceRegisterRingFdOff = getenv("BENCH_REGISTER_RING_FD")?.toKString() == "false"
+        // Build an explicit capability set only when at least one env var
+        // diverges from the default; otherwise leave caps null so the engine
+        // picks up `IoUringCapabilities.detect(ring)` (auto-enabled
+        // registerRingFd on kernel 5.18+, etc).
+        val anyOverride = registeredBuffers || deferTaskrun || msgRingWakeup ||
+            forceSingleIssuerOff || forceRegisterRingFdOff
+        val caps = if (anyOverride) {
             io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(
                 registeredBuffers = registeredBuffers,
                 deferTaskrun = deferTaskrun,
                 msgRingWakeup = msgRingWakeup,
+                registerRingFd = !forceRegisterRingFdOff,
+                singleIssuer = !forceSingleIssuerOff,
             )
         } else {
             null

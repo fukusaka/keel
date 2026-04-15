@@ -23,11 +23,13 @@ import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
 import io_uring.keel_prep_send_zc_fixed
+import io_uring.keel_register_ring_fd
 import io_uring.keel_ring_fd
 import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_setup_defer_taskrun
 import io_uring.keel_setup_single_issuer
 import io_uring.keel_sqe_set_fixed_file
+import io_uring.keel_unregister_ring_fd
 import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
@@ -836,6 +838,17 @@ internal class IoUringEventLoop(
         // in IoUringEventLoopGroup.start() ensures every loop has published
         // its fd before any dispatch can be observed.
         ringFd = keel_ring_fd(ring.ptr)
+        // Self-register the ring fd (opt-in, Linux 5.18+). Subsequent
+        // io_uring_submit_and_wait calls use the registered index via
+        // IORING_ENTER_REGISTERED_RING, skipping the kernel fd-table lookup.
+        // Register failures are warn-logged and the EventLoop continues with
+        // the slow path — the optimisation is best-effort.
+        if (capabilities.registerRingFd) {
+            val ret = keel_register_ring_fd(ring.ptr)
+            if (ret < 0) {
+                logger.warn { "io_uring_register_ring_fd() failed: ${errnoMessage(-ret)}" }
+            }
+        }
 
         // Prepare the initial wakeup READ SQE.
         // It is submitted on the first io_uring_submit_and_wait() call below,
@@ -959,6 +972,16 @@ internal class IoUringEventLoop(
         // the kernel ring is still alive. [close] will tear down the ring
         // after this function returns.
         onExitHook?.invoke()
+        // Paired unregister for registerRingFd. io_uring_queue_exit would
+        // clean this up internally, but the explicit call keeps register /
+        // unregister symmetric and surfaces any kernel-side breakage as a
+        // warn-level log.
+        if (capabilities.registerRingFd) {
+            val ret = keel_unregister_ring_fd(ring.ptr)
+            if (ret < 0) {
+                logger.warn { "io_uring_unregister_ring_fd() failed: ${errnoMessage(-ret)}" }
+            }
+        }
         // Invalidate the ring fd before the ring is destroyed. Peer
         // EventLoops dispatching to this EL after shutdown fall back to the
         // eventfd path (which will no-op on the closed fd at worst).
