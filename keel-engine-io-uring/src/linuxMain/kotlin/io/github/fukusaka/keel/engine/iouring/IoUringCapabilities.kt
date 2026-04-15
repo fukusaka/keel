@@ -184,13 +184,13 @@ data class IoUringCapabilities(
      * existing 2-phase init pattern, so SINGLE_ISSUER remains
      * compatible.
      *
-     * Remote A/B on luna.local (pipeline-http-io-uring, 4t/100c /hello,
-     * wrk from truenas.local over LAN) shows **+5.3 % throughput** with
+     * Remote A/B on a LAN pair (pipeline-http-io-uring, 4t/100c /hello,
+     * wrk on a separate client host) showed **+5.3 % throughput** with
      * the keel default (`singleIssuer = true`) and **+9.0 %** with
      * `singleIssuer = false`. The optimisation helps across SI settings
      * on realistic network workloads.
      *
-     * Loopback A/B on the same host showed **-2.6 %** — the CPU-bound
+     * Loopback A/B on the same server showed **-2.6 %** — the CPU-bound
      * hot path pays the `register_ring_fd` / `unregister_ring_fd`
      * bookkeeping cost without amortising the fd-lookup savings,
      * because per-enter work is already sub-microsecond on loopback.
