@@ -123,8 +123,11 @@ class IoModeTest {
     @Test
     fun `deferTaskrun is off by default`() {
         // DEFER_TASKRUN is opt-in per the A/B trade-off documented on the
-        // capability. Verify both the constructor default and the detect()
-        // policy stay off so users must explicitly opt in.
+        // capability. Pin the constructor default so the opt-in contract
+        // cannot drift without this test failing. The matching `detect()`
+        // policy is asserted by the comment + assignment in
+        // `IoUringCapabilities.detect` and is not re-verified here because
+        // constructing a probe requires an initialised io_uring ring.
         assertEquals(false, IoUringCapabilities().deferTaskrun)
     }
 
