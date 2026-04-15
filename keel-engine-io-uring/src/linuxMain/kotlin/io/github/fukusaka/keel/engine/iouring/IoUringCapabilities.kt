@@ -191,8 +191,9 @@ data class IoUringCapabilities(
      * benefit most; workloads bottlenecked elsewhere may see no
      * measurable change.
      *
-     * Teardown: paired `io_uring_unregister_ring_fd` via
-     * [IoUringEventLoop.onExitHook] before `io_uring_queue_exit` — the
+     * Teardown: paired `io_uring_unregister_ring_fd` runs in
+     * [IoUringEventLoop.loop]'s epilogue, after the register-class
+     * `onExitHook` and before `io_uring_queue_exit`. The explicit
      * unregister is strictly not required (`queue_exit` cleans up the
      * ring's internal state) but keeps register/unregister symmetric
      * and surfaces any kernel-side breakage as a warn-level log.
