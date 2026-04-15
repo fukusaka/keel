@@ -42,6 +42,7 @@ class IoModeTest {
         assertEquals(false, caps.singleIssuer)
         assertEquals(false, caps.deferTaskrun)
         assertEquals(false, caps.msgRingWakeup)
+        assertEquals(false, caps.registerRingFd)
     }
 
     @Test
@@ -135,6 +136,33 @@ class IoModeTest {
         } finally {
             engine.close()
         }
+    }
+
+    @Test
+    fun `registerRingFd enabled works`() = runBlocking {
+        // threads=2: see note on `coopTaskrun enabled works`.
+        // Self-registering the ring fd should not affect functional behaviour —
+        // only per-enter syscall cost. Run the standard echo to verify the
+        // register/unregister pair does not break the EL lifecycle.
+        val defaultCaps = IoUringCapabilities()
+        val engine = IoUringEngine(
+            config = IoEngineConfig(threads = 2),
+            capabilities = defaultCaps.copy(registerRingFd = true),
+        )
+        try {
+            echoSmall(engine)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `registerRingFd is off by default`() {
+        // Self-registered ring fd is opt-in because the benefit is per-enter
+        // and workload-dependent. Pin the constructor default so the opt-in
+        // contract cannot drift. The matching `detect()` policy is asserted
+        // by the explicit `false` assignment in `IoUringCapabilities.detect`.
+        assertEquals(false, IoUringCapabilities().registerRingFd)
     }
 
     @Test

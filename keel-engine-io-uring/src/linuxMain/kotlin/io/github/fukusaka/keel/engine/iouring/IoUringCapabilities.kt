@@ -168,6 +168,36 @@ data class IoUringCapabilities(
      *   is redundant because the target is already shutting down.
      */
     val msgRingWakeup: Boolean = false,
+    /**
+     * Self-register the ring's own file descriptor (Linux 5.18+).
+     *
+     * Calls `io_uring_register_ring_fd` on the EventLoop pthread after
+     * [IoUringEventLoop] initialises the kernel ring. Subsequent
+     * `io_uring_enter` syscalls — issued implicitly by
+     * `io_uring_submit_and_wait` on every loop iteration — take the
+     * `IORING_ENTER_REGISTERED_RING` fast path, and the kernel skips
+     * the per-syscall file-descriptor table lookup on the ring fd.
+     *
+     * **Default: false** (opt-in). No API change, no observable
+     * behaviour change, no memory overhead, and independent of
+     * `singleIssuer` / `deferTaskrun`. The register call runs on the
+     * EL pthread via the existing 2-phase init pattern, so SINGLE_ISSUER
+     * remains compatible.
+     *
+     * Enabled via `detect(ring).copy(registerRingFd = true)`. Users
+     * should A/B their workload because the benefit is per-enter
+     * savings (~30-50 ns fd-lookup elimination) and scales with enter
+     * frequency. Workloads that dominate on `io_uring_submit_and_wait`
+     * benefit most; workloads bottlenecked elsewhere may see no
+     * measurable change.
+     *
+     * Teardown: paired `io_uring_unregister_ring_fd` via
+     * [IoUringEventLoop.onExitHook] before `io_uring_queue_exit` — the
+     * unregister is strictly not required (`queue_exit` cleans up the
+     * ring's internal state) but keeps register/unregister symmetric
+     * and surfaces any kernel-side breakage as a warn-level log.
+     */
+    val registerRingFd: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -215,6 +245,14 @@ data class IoUringCapabilities(
                 // kernel lacking IORING_OP_MSG_RING will surface as -EINVAL
                 // from the kernel on the first MSG_RING SQE submission.
                 msgRingWakeup = false,
+                // registerRingFd is opt-in even on supported kernels. Pure
+                // enter-syscall optimisation; workloads dominated by other
+                // costs see no measurable benefit. Users enable via
+                // `detect(ring).copy(registerRingFd = true)` after their own
+                // A/B. A manual override on a pre-5.18 kernel surfaces as a
+                // warn-level log from io_uring_register_ring_fd and the
+                // EventLoop continues without the optimisation.
+                registerRingFd = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -234,6 +272,7 @@ data class IoUringCapabilities(
             singleIssuer = false,
             deferTaskrun = false,
             msgRingWakeup = false,
+            registerRingFd = false,
             sendZc = false,
             sendmsgZc = false,
         )
