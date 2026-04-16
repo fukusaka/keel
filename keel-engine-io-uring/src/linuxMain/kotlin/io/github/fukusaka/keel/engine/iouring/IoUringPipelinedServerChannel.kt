@@ -4,12 +4,14 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_prep_multishot_accept_direct
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.ENFILE
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -83,6 +85,17 @@ internal class IoUringPipelinedServerChannel(
                     onCqe = { res, _ ->
                         if (res >= 0 && !closed) {
                             onAccept(res, i, directAllocActive)
+                        } else if (directAllocActive && res == -ENFILE) {
+                            // Fixed file table full — kernel could not
+                            // allocate a slot for the accepted fd. The
+                            // multishot SQE stays armed (F_MORE); the next
+                            // accept will succeed if a slot is freed by a
+                            // closing connection. Persistent ENFILE means
+                            // maxFiles is too small for the workload.
+                            logger.warn {
+                                "direct-alloc accept: fixed file table full " +
+                                    "(worker=$i, increase maxFiles if persistent)"
+                            }
                         }
                     },
                 )
