@@ -112,8 +112,10 @@ internal class IoUringPipelinedServerChannel(
         val transport = if (directAlloc) {
             // Kernel has placed the fd into fileRegistry's table at index
             // `acceptRes`. The raw fd is not available to userspace; pass
-            // -1 as the sentinel rawFd. Non-blocking mode is already set
-            // by the kernel on direct-allocated slots.
+            // -1 as the sentinel rawFd. O_NONBLOCK is not set (no
+            // SOCK_NONBLOCK in accept flags), but io_uring SQE-based
+            // I/O is independent of O_NONBLOCK. FALLBACK_CQE (direct
+            // syscall path) is coerced to CQE in IoUringIoTransport.
             IoUringIoTransport(
                 fd = -1,
                 eventLoop = loop,

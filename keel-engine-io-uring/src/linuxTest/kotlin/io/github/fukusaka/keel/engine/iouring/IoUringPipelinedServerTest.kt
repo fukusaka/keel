@@ -4,21 +4,18 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io_uring.io_uring
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
-import io_uring.io_uring
-import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
-import posix_socket.keel_htons
-import posix_socket.keel_loopback_addr
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
@@ -31,7 +28,8 @@ import platform.posix.socket
 import platform.posix.sockaddr_in
 import platform.posix.timeval
 import platform.posix.write
-import kotlin.test.AfterTest
+import posix_socket.keel_htons
+import posix_socket.keel_loopback_addr
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -50,14 +48,6 @@ import kotlin.test.assertTrue
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringPipelinedServerTest {
-
-    private val arenas = mutableListOf<Arena>()
-
-    @AfterTest
-    fun cleanup() {
-        arenas.forEach { it.clear() }
-        arenas.clear()
-    }
 
     // Runs an echo pipeline server with the given capabilities override,
     // connects a raw client, and asserts byte-for-byte echo.
