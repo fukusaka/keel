@@ -357,6 +357,16 @@ data class IoUringCapabilities(
      */
     val sendmsgZc: Boolean = true,
 ) {
+    init {
+        // `busy_poll_to` is passed to the kernel as an unsigned int (µs).
+        // Negative values would wrap to ~4 billion µs through `toUInt()`,
+        // which the kernel rejects with EINVAL, but rejecting up-front
+        // is clearer for callers.
+        require(napiBusyPollTimeoutUs >= 0) {
+            "napiBusyPollTimeoutUs must be >= 0 (got $napiBusyPollTimeoutUs)"
+        }
+    }
+
     companion object {
         /**
          * Auto-detect capabilities from the running kernel.

@@ -421,6 +421,7 @@ static void keel_prep_shutdown(struct io_uring_sqe *sqe, int fd, int how) {
 
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <errno.h>
 
 #ifndef IORING_REGISTER_NAPI
 #define IORING_REGISTER_NAPI    27
