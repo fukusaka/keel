@@ -237,13 +237,38 @@ data class IoUringCapabilities(
      * register-from-raw-fd flow unchanged, because those paths already
      * carry suspend overhead that dominates the 1-syscall saving.
      *
-     * **Default: false** (opt-in). Expected to help short-lived
-     * connection workloads (HTTP/1.0, `Connection: close`) where accept
-     * rate is high; keep-alive workloads on loopback are unlikely to
-     * show measurable change. Users opt in via
-     * `detect(ring).copy(acceptDirectAlloc = true)` after measuring.
-     * Default may be promoted to true in a follow-up once A/B data
-     * justifies it.
+     * **Interaction with write-path IoMode**: direct-allocated slots do
+     * not expose a raw fd, so the `FALLBACK_CQE` mode (direct
+     * `send()`/`writev()` syscalls with EAGAIN → CQE fallback) is
+     * automatically coerced to `CQE` (pure io_uring SEND SQE path) in
+     * [IoUringIoTransport.flush]. This is a **write-path regression** on
+     * workloads where the direct syscall path is faster than the io_uring
+     * SQE path — typically loopback keep-alive where the socket buffer
+     * almost never blocks. The regression is absent on `SEND_ZC` /
+     * `SENDMSG_ZC` modes, which already use SQEs.
+     *
+     * **Measured effect** (pipeline-http-io-uring, 4t/100c /hello):
+     *
+     * | Scenario | IoMode | Δ req/s |
+     * |----------|--------|---------|
+     * | loopback keep-alive | `FALLBACK_CQE` (adaptive default) | **-3.6 %** |
+     * | loopback Connection: close | `FALLBACK_CQE` | -2.1 % |
+     * | remote LAN keep-alive | `FALLBACK_CQE` | -2.6 % |
+     * | loopback keep-alive | `SEND_ZC` | -1.1 % |
+     * | remote LAN keep-alive | `SEND_ZC` | **+5.5 %** |
+     * | remote LAN Connection: close | `SEND_ZC` | +1.7 % |
+     *
+     * The remote+SEND_ZC combination also tightens the run-to-run
+     * variance noticeably (baseline ±5 % bimodal → direct-alloc ±2 %).
+     * The variance improvement is consistent with eliminating the
+     * `register_files_update` syscall under the SINGLE_ISSUER lock.
+     *
+     * **Default: false** (opt-in). Enabled via
+     * `detect(ring).copy(acceptDirectAlloc = true)`. Recommended only
+     * when the write path uses `SEND_ZC` / `SENDMSG_ZC` (i.e.
+     * `IoMode.SEND_ZC` or adaptive with zero-copy threshold met) and
+     * the workload runs on a real NIC. On loopback or with the default
+     * adaptive `FALLBACK_CQE` selector, leave disabled.
      */
     val acceptDirectAlloc: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
