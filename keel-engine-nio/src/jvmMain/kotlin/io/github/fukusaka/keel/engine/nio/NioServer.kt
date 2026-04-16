@@ -7,9 +7,12 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
+import java.util.concurrent.CountDownLatch
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resumeWithException
 
 /**
@@ -90,19 +93,59 @@ internal class NioServer(
      * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
      * is suspended, it is cancelled with [CancellationException].
      *
-     * **Thread safety**: must be called from the boss EventLoop thread
-     * or after the EventLoop has been stopped. [_active] and
-     * [pendingAcceptCont] are not thread-safe.
+     * **Thread safety**: safe to call from any thread. When invoked from
+     * outside the boss EventLoop thread (e.g. a JVM shutdown hook), the
+     * teardown is re-dispatched onto the boss EL so the pending accept
+     * continuation's `resumeWithException` runs on the same dispatcher
+     * the continuation was intercepted by — matching the invariants of
+     * kotlinx.coroutines' DispatchedContinuation lifecycle and avoiding
+     * a `ClassCastException: CompletedContinuation cannot be cast to
+     * DispatchedContinuation` observed under wrk shutdown load.
+     *
+     * Blocks up to [CLOSE_TIMEOUT_MS] for the re-dispatched teardown to
+     * finish so callers (e.g. a test or a graceful-shutdown thread) can
+     * observe `isActive == false` on return.
      */
     override fun close() {
-        if (_active) {
-            _active = false
-            pendingAcceptCont?.resumeWithException(
-                CancellationException("ServerChannel closed"),
-            )
-            pendingAcceptCont = null
-            selectionKey.cancel()
-            serverChannel.close()
+        if (!_active) return
+        if (bossLoop.inEventLoop()) {
+            closeOnEventLoop()
+            return
         }
+        val done = CountDownLatch(1)
+        bossLoop.dispatch(EmptyCoroutineContext, Runnable {
+            try {
+                closeOnEventLoop()
+            } finally {
+                done.countDown()
+            }
+        })
+        // Wait synchronously so ServerChannel.close returns with the
+        // side effects visible — isActive == false and pending accepts
+        // cancelled. If the EL has already stopped, the dispatched task
+        // will never run; fall through after the timeout and let the
+        // caller move on.
+        done.await(CLOSE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * Performs the actual close teardown. Must run on the boss EL thread.
+     *
+     * Idempotent: second invocations hit the `_active` guard and return.
+     */
+    private fun closeOnEventLoop() {
+        if (!_active) return
+        _active = false
+        pendingAcceptCont?.resumeWithException(
+            CancellationException("ServerChannel closed"),
+        )
+        pendingAcceptCont = null
+        selectionKey.cancel()
+        serverChannel.close()
+    }
+
+    private companion object {
+        /** Max wait for the EL-dispatched close to finish (non-EL callers). */
+        private const val CLOSE_TIMEOUT_MS = 2_000L
     }
 }
