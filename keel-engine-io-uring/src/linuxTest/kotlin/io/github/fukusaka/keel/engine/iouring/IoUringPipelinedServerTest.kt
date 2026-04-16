@@ -83,6 +83,33 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `pipelined echo works with napiBusyPoll enabled`() {
+        // Smoke test: verify the engine registers NAPI and runs the happy
+        // path without crashing. Skip on kernels that don't support
+        // IORING_REGISTER_NAPI (< 6.9) — the register call fails but the
+        // engine should keep running on the slow path, so this test remains
+        // a useful sanity check even there. We skip to avoid a log-noise
+        // false positive.
+        if (!kernelSupportsNapiBusyPoll()) return
+        val caps = detectCaps().copy(napiBusyPoll = true, napiBusyPollTimeoutUs = 50)
+        val engine = IoUringEngine(capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = server.localAddress.port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "napi")
+            assertEquals("napi", rawRead(clientFd, 4))
+        } finally {
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
+    @Test
     fun `multiple connections work with acceptDirectAlloc enabled`() {
         if (!kernelSupportsAcceptDirectAlloc()) return
         val caps = detectCaps().copy(acceptDirectAlloc = true)
@@ -134,6 +161,12 @@ class IoUringPipelinedServerTest {
     private fun kernelSupportsAcceptDirectAlloc(): Boolean {
         val kv = KernelVersion.current()
         return kv >= KernelVersion(5, 19)
+    }
+
+    /** True if the kernel supports NAPI busy-poll registration (Linux 6.9+). */
+    private fun kernelSupportsNapiBusyPoll(): Boolean {
+        val kv = KernelVersion.current()
+        return kv >= KernelVersion(6, 9)
     }
 
     private fun rawConnect(port: Int): Int {
