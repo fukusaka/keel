@@ -192,9 +192,33 @@ internal class KqueueEventLoop(
         }
     }
 
-    private fun inEventLoop(): Boolean {
+    /**
+     * Returns `true` if the current pthread is this EventLoop's thread.
+     * Returns `false` before [loop] has started (engine init phase) or
+     * from any other thread.
+     */
+    internal fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
         return pthread_equal(pthread_self(), t) != 0
+    }
+
+    /**
+     * Throws [IllegalStateException] if called from a thread other than
+     * this EventLoop's pthread. Used to assert EL-thread affinity on
+     * internal state transitions that are not guarded by [regMutex]
+     * (task queue drain, kevent event processing, etc).
+     *
+     * Returns without checking if the EventLoop has not yet started —
+     * engine construction runs before [loop] sets the thread handle,
+     * and constructor-time initialisation is inherently single-threaded.
+     *
+     * Matches the pattern established in `IoUringEventLoop.assertInEventLoop`.
+     */
+    internal fun assertInEventLoop(operation: String) {
+        val t = eventLoopThread ?: return
+        check(pthread_equal(pthread_self(), t) != 0) {
+            "$operation must run on the EventLoop thread"
+        }
     }
 
     // --- Channel registration ---
@@ -404,6 +428,7 @@ internal class KqueueEventLoop(
      * accumulate faster than kevent() cycles can process them.
      */
     private fun drainTasks() {
+        assertInEventLoop("KqueueEventLoop.drainTasks")
         val batch = mutableListOf<Runnable>()
         while (true) {
             batch.clear()
