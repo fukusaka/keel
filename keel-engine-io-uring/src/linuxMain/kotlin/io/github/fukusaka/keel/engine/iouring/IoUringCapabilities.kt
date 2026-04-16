@@ -303,6 +303,21 @@ data class IoUringCapabilities(
      * after confirming the workload matches the beneficial profile.
      * Not auto-enabled even on kernel 6.9+ because the CPU cost
      * regression on unsuitable workloads is significant.
+     *
+     * **Measured effect** (pipeline-http-io-uring, `SEND_ZC`, 4t/100c
+     * /hello, remote LAN with real NIC):
+     *
+     * | Config | Δ median req/s | Δ p50 | Δ p99 |
+     * |--------|---------------|-------|-------|
+     * | `napiBusyPoll = true`, 50 µs | **+13.4 %** | -4 % | +21 % |
+     * | same + `napiPreferBusyPoll = true` | -1 % | +13 % | +22 % |
+     *
+     * Throughput and p50 improve but p99 tail latency degrades — NAPI
+     * busy-poll trades occasional long-tail scheduling interference
+     * for average-case latency reduction. The `prefer_busy_poll = true`
+     * variant (aggressive polling even with pending IRQ) produces no
+     * throughput benefit and hurts p50 on keel's workload — leave the
+     * default off.
      */
     val napiBusyPoll: Boolean = false,
     /**
