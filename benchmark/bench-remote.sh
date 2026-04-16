@@ -154,7 +154,12 @@ start_server() {
     # resistant to a future edit that "fixes" the `;` to `&&`.
     local quoted_cmd
     printf -v quoted_cmd '%q ' "$@"
-    ssh -n "$REMOTE_HOST" "cd ${WORKDIR} && { nohup ${quoted_cmd}>${LOG_PATH} 2>&1 </dev/null & disown; }"
+    # BENCH_SERVER_ENV: space-separated `KEY=VALUE` pairs to prefix on the
+    # remote command, e.g. `BENCH_SERVER_ENV="BENCH_ACCEPT_DIRECT_ALLOC=true"`.
+    # Used to flip opt-in io_uring capabilities for A/B runs without editing
+    # the benchmark binary. Empty when unset.
+    local server_env="${BENCH_SERVER_ENV:-}"
+    ssh -n "$REMOTE_HOST" "cd ${WORKDIR} && { nohup env ${server_env} ${quoted_cmd}>${LOG_PATH} 2>&1 </dev/null & disown; }"
 }
 
 wait_for_ready() {
@@ -195,11 +200,22 @@ for run in $(seq 1 "$RUNS"); do
         exit 1
     fi
 
+    # BENCH_WRK_EXTRA: extra wrk CLI tokens, word-split with no escaping
+    # (caller is trusted). Example: `BENCH_WRK_EXTRA='-H Connection:close'`.
+    # Use word-splitting on an unquoted expansion rather than the
+    # `printf %q` path because wrk flags like `-H <header>` span two
+    # tokens that must split apart.
+    WRK_EXTRA_ARR=()
+    if [ -n "${BENCH_WRK_EXTRA:-}" ]; then
+        # shellcheck disable=SC2206 # intentional word-split of caller-provided string
+        WRK_EXTRA_ARR=(${BENCH_WRK_EXTRA})
+    fi
+
     # Warmup
-    run_wrk -t2 -c10 "-d${WARMUP_DURATION}" "${URL}" >/dev/null 2>&1 || true
+    run_wrk -t2 -c10 "-d${WARMUP_DURATION}" "${WRK_EXTRA_ARR[@]}" "${URL}" >/dev/null 2>&1 || true
 
     # Benchmark
-    RESULT=$(run_wrk "-t${WRK_THREADS}" "-c${WRK_CONNS}" "-d${WRK_DURATION}" --latency "${URL}" 2>&1)
+    RESULT=$(run_wrk "-t${WRK_THREADS}" "-c${WRK_CONNS}" "-d${WRK_DURATION}" --latency "${WRK_EXTRA_ARR[@]}" "${URL}" 2>&1)
 
     RPS=$(echo "$RESULT" | awk '/Requests\/sec/ {print $2}')
     P50=$(echo "$RESULT" | awk '/^[[:space:]]*50%/ {print $2}')

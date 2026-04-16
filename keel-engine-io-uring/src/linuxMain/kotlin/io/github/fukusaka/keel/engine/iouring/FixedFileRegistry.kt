@@ -45,9 +45,25 @@ internal class FixedFileRegistry(
 ) {
     private val ring get() = eventLoop.ringPtr
 
-    // Slot pool: tracks available indices in the registered file table.
-    private val freeSlots = IntArray(maxFiles) { it }
-    private var freeSlotsTop = maxFiles
+    // Bitmap-based free-slot tracker. Each bit represents one slot in the
+    // kernel's registered file table: 1 = free, 0 = in use. Operations:
+    //   register()   — find first set bit, clear it: O(maxFiles / 32)
+    //   claim()      — clear a specific bit: O(1)
+    //   unregister() — set a specific bit: O(1)
+    // Replaces the previous IntArray stack which had O(1) register but
+    // O(maxFiles) claim (linear scan to remove a specific index).
+    // Memory: 128 bytes for 1024 slots vs 4 KiB for the stack.
+    //
+    // When maxFiles is not a multiple of BITS_PER_WORD, the last word has
+    // trailing bits that map to indices >= maxFiles. Those bits are
+    // initialised to 0 (not free) so acquireFreeSlot never returns an
+    // out-of-range index.
+    private val freeBitmap = IntArray((maxFiles + 31) / BITS_PER_WORD) { -1 }.also { bitmap ->
+        val leftover = maxFiles % BITS_PER_WORD
+        if (leftover != 0 && bitmap.isNotEmpty()) {
+            bitmap[bitmap.size - 1] = (1 shl leftover) - 1
+        }
+    }
     private var registered = false
 
     /**
@@ -78,19 +94,50 @@ internal class FixedFileRegistry(
      */
     fun register(fd: Int): Int {
         eventLoop.assertInEventLoop("FixedFileRegistry.register")
-        if (!registered || freeSlotsTop <= 0) return -1
-        val index = freeSlots[--freeSlotsTop]
+        if (!registered) return -1
+        val index = acquireFreeSlot() ?: return -1
         memScoped {
             val fds = allocArray<IntVar>(1)
             fds[0] = fd
             val ret = keel_register_files_update(ring, index.toUInt(), fds, 1u)
             if (ret < 0) {
-                // Update failed — return slot and report failure.
-                freeSlots[freeSlotsTop++] = index
+                // Update failed — return slot to the bitmap.
+                releaseSlot(index)
                 return -1
             }
         }
         return index
+    }
+
+    /**
+     * Marks a kernel-allocated [index] as used in the free-slot pool.
+     *
+     * Used when the kernel allocates a slot itself (e.g., direct-allocated
+     * multishot accept with `IORING_FILE_INDEX_ALLOC`) and reports the
+     * chosen index in the CQE. Unlike [register], this does not issue a
+     * `register_files_update` syscall — the kernel has already placed
+     * the fd into the table. The userspace free-slot bookkeeping is
+     * updated so the same index is not handed out again by [register].
+     *
+     * @return true if the slot was successfully claimed; false if the
+     *         registry is inactive, the index is out of range, or the
+     *         slot is already marked as used (indicates a bookkeeping
+     *         bug — the kernel should never allocate an already-used
+     *         slot).
+     */
+    fun claim(index: Int): Boolean {
+        eventLoop.assertInEventLoop("FixedFileRegistry.claim")
+        if (!registered || index < 0 || index >= maxFiles) return false
+        val word = index / BITS_PER_WORD
+        val bit = 1 shl (index % BITS_PER_WORD)
+        if (freeBitmap[word] and bit == 0) {
+            // Bit already clear — slot is in use. This indicates a
+            // kernel/userspace bookkeeping divergence and should never happen.
+            logger.warn { "FixedFileRegistry.claim: index=$index already in use" }
+            return false
+        }
+        freeBitmap[word] = freeBitmap[word] and bit.inv()
+        return true
     }
 
     /**
@@ -111,7 +158,7 @@ internal class FixedFileRegistry(
                 }
             }
         }
-        freeSlots[freeSlotsTop++] = index
+        releaseSlot(index)
     }
 
     /**
@@ -134,8 +181,32 @@ internal class FixedFileRegistry(
         }
     }
 
+    // --- Bitmap helpers ---
+
+    /** Finds the first free slot (set bit) and clears it. O(maxFiles / 32). */
+    private fun acquireFreeSlot(): Int? {
+        for (i in freeBitmap.indices) {
+            if (freeBitmap[i] != 0) {
+                val bit = freeBitmap[i].countTrailingZeroBits()
+                freeBitmap[i] = freeBitmap[i] and (1 shl bit).inv()
+                return i * BITS_PER_WORD + bit
+            }
+        }
+        return null // pool full
+    }
+
+    /** Marks [index] as free (sets the bit). O(1). */
+    private fun releaseSlot(index: Int) {
+        val word = index / BITS_PER_WORD
+        val bit = 1 shl (index % BITS_PER_WORD)
+        freeBitmap[word] = freeBitmap[word] or bit
+    }
+
     companion object {
         /** Default maximum concurrent registered fds per EventLoop. */
         private const val DEFAULT_MAX_FILES = 1024
+
+        /** Bits per Int word in the free-slot bitmap. */
+        private const val BITS_PER_WORD = 32
     }
 }

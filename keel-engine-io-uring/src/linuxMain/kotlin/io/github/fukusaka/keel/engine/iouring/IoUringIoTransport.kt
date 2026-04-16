@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io_uring.keel_prep_shutdown
 import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
@@ -65,12 +66,41 @@ internal class IoUringIoTransport(
     private val bufferRing: ProvidedBufferRing? = null,
     private val fixedFileRegistry: FixedFileRegistry? = null,
     private val registeredBufferTable: RegisteredBufferTable? = null,
+    /**
+     * Kernel-allocated fixed-file index for direct-allocated multishot accept.
+     * When >= 0, the kernel has already placed the fd into the registered
+     * file table at this index (see [IoUringCapabilities.acceptDirectAlloc]);
+     * the raw [fd] is not exposed to userspace and should be passed as -1.
+     * When -1 (default), [fd] is the raw POSIX fd and is registered via
+     * [FixedFileRegistry.register].
+     */
+    preAllocatedIndex: Int = -1,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
+    /**
+     * True when the kernel allocated the fixed-file slot itself
+     * (direct-allocated accept). In this mode the raw fd is not available
+     * to userspace, so [shutdownOutput] uses `IORING_OP_SHUTDOWN` and
+     * [teardownOnEventLoop] skips `close(fd)` — slot unregister closes
+     * the kernel-held fd.
+     */
+    private val useDirectAlloc: Boolean = preAllocatedIndex >= 0
+
     // Fixed file index for IOSQE_FIXED_FILE. -1 if not registered.
-    private val fixedFileIndex: Int = fixedFileRegistry?.register(fd) ?: -1
+    // Direct-alloc path: the kernel has placed the fd into `preAllocatedIndex`
+    //   and we only update userspace free-slot bookkeeping via claim().
+    // Traditional path: we register the raw fd, which issues a
+    //   register_files_update syscall.
+    private val fixedFileIndex: Int = when {
+        useDirectAlloc -> {
+            val registry = fixedFileRegistry
+                ?: error("preAllocatedIndex requires fixedFileRegistry")
+            if (registry.claim(preAllocatedIndex)) preAllocatedIndex else -1
+        }
+        else -> fixedFileRegistry?.register(fd) ?: -1
+    }
 
     /**
      * The fd value to use in SQE preparation. When fixed files are active,
@@ -129,9 +159,28 @@ internal class IoUringIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            val ret = shutdown(fd, SHUT_WR)
-            if (ret != 0) {
-                eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+            if (useDirectAlloc) {
+                // Direct-allocated slots do not expose the raw fd; route
+                // through IORING_OP_SHUTDOWN + IOSQE_FIXED_FILE. Fire and
+                // forget — the CQE result is logged on failure only.
+                eventLoop.submitCallback(
+                    prepare = { sqe ->
+                        keel_prep_shutdown(sqe, sqeFd, SHUT_WR)
+                        keel_sqe_set_fixed_file(sqe)
+                    },
+                    onCqe = { res, _ ->
+                        if (res < 0) {
+                            eventLoop.logger.warn {
+                                "io_uring shutdown(SHUT_WR) failed: index=$sqeFd ${errnoMessage(-res)}"
+                            }
+                        }
+                    },
+                )
+            } else {
+                val ret = shutdown(fd, SHUT_WR)
+                if (ret != 0) {
+                    eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+                }
             }
         }
     }
@@ -165,9 +214,13 @@ internal class IoUringIoTransport(
         val rawMode = writeModeSelector.select(stats)
         // Capability fallback: degrade to CQE if the kernel lacks the opcode.
         // SENDMSG_ZC also requires sendZc (single-buffer path uses SEND_ZC).
+        // FALLBACK_CQE issues direct send()/writev() syscalls with the raw fd;
+        // direct-allocated slots don't expose a raw fd, so those modes must
+        // stay on the pure io_uring CQE path.
         val mode = when {
             rawMode == IoMode.SEND_ZC && !capabilities.sendZc -> IoMode.CQE
             rawMode == IoMode.SENDMSG_ZC && (!capabilities.sendmsgZc || !capabilities.sendZc) -> IoMode.CQE
+            rawMode == IoMode.FALLBACK_CQE && useDirectAlloc -> IoMode.CQE
             else -> rawMode
         }
 
@@ -674,6 +727,14 @@ internal class IoUringIoTransport(
     internal fun createOwnedSuspendSource(): OwnedSuspendSource {
         val ring = bufferRing
             ?: error("Owned source requires provided buffer ring (kernel 5.19+)")
+        // OwnedSuspendSource is reached via asSource() on the Channel-mode
+        // API. The direct-alloc path is pipeline-only and does not call
+        // asSource() — document the incompatibility instead of silently
+        // passing a -1 fd down.
+        check(!useDirectAlloc) {
+            "createOwnedSuspendSource is not supported with direct-allocated accept " +
+                "(no raw fd available; pipeline path should not call asSource())"
+        }
         return IoUringOwnedSource(fd, eventLoop, ring)
     }
 
@@ -708,7 +769,12 @@ internal class IoUringIoTransport(
         pendingBytes = 0
         asyncPendingFlushBytes = 0
         if (fixedFileIndex >= 0) fixedFileRegistry?.unregister(fixedFileIndex)
-        platform.posix.close(fd)
+        // Direct-allocated slots: unregister() above issues
+        // register_files_update(slot, -1) which closes the kernel-held fd.
+        // There is no userspace fd to close via POSIX close().
+        if (!useDirectAlloc) {
+            platform.posix.close(fd)
+        }
     }
 
 }

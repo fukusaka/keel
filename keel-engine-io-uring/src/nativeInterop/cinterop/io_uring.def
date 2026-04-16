@@ -350,3 +350,50 @@ static int keel_register_ring_fd(struct io_uring *ring) {
 static int keel_unregister_ring_fd(struct io_uring *ring) {
     return io_uring_unregister_ring_fd(ring);
 }
+
+/* ====================================================================
+ * Direct-allocated multishot accept (Linux 5.19+)
+ *
+ * `io_uring_prep_multishot_accept_direct` combines two optimisations:
+ *   - multishot: one SQE produces multiple accept CQEs (keeps the SQE
+ *     armed until cancel or error).
+ *   - direct + IORING_FILE_INDEX_ALLOC: the kernel picks a free slot
+ *     in the registered file table and places the accepted fd there,
+ *     reporting the allocated index in `cqe->res` instead of the raw fd.
+ *     This saves the userspace `io_uring_register_files_update` syscall
+ *     that keel currently issues per accept to register the client fd.
+ *
+ * Requires `IORING_REGISTER_FILES` to have been set up on the ring
+ * (i.e. `fixedFiles` capability). The raw fd is never exposed to
+ * userspace for direct-allocated slots — subsequent ops must use
+ * `IOSQE_FIXED_FILE` and the index, and cleanup is via
+ * `register_files_update(slot, -1)` which closes the kernel-held fd.
+ *
+ * Wrapper needed because `io_uring_prep_multishot_accept_direct` is
+ * an inline function in liburing.h.
+ * ==================================================================== */
+static void keel_prep_multishot_accept_direct(struct io_uring_sqe *sqe, int fd,
+                                              struct sockaddr *addr,
+                                              socklen_t *addrlen, int flags) {
+    io_uring_prep_multishot_accept_direct(sqe, fd, addr, addrlen, flags);
+}
+
+/* ====================================================================
+ * IORING_OP_SHUTDOWN (Linux 5.11+)
+ *
+ * Offloads `shutdown(2)` to io_uring. Needed when the fd is only
+ * known by its fixed-file index (direct-allocated accept): the POSIX
+ * `shutdown(fd, how)` path requires a raw fd which direct-allocated
+ * slots do not expose to userspace. With `IOSQE_FIXED_FILE` set, the
+ * SQE's `fd` field is interpreted as the registered index.
+ *
+ * For traditional register-from-raw-fd slots, `shutdown(2)` is still
+ * usable and cheaper (one syscall vs SQE + CQE roundtrip); the
+ * io_uring path is opt-in for the direct-alloc case.
+ *
+ * Wrapper needed because `io_uring_prep_shutdown` is an inline
+ * function in liburing.h.
+ * ==================================================================== */
+static void keel_prep_shutdown(struct io_uring_sqe *sqe, int fd, int how) {
+    io_uring_prep_shutdown(sqe, fd, how);
+}
