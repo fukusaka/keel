@@ -271,6 +271,65 @@ data class IoUringCapabilities(
      * adaptive `FALLBACK_CQE` selector, leave disabled.
      */
     val acceptDirectAlloc: Boolean = false,
+    /**
+     * NAPI busy-poll registration (Linux 6.9+).
+     *
+     * When enabled, each EventLoop registers a NAPI busy-poll
+     * configuration on its ring after `io_uring_queue_init`. The kernel
+     * then busy-polls NIC drivers associated with sockets registered on
+     * the ring while waiting for CQEs (instead of sleeping on IRQ-driven
+     * wake-ups), eliminating the packet-to-wakeup IRQ latency (~1-3 µs
+     * per packet on typical NICs).
+     *
+     * The io_uring ring automatically tracks NAPI IDs of the sockets
+     * used with it; no per-socket `SO_BUSY_POLL` setup is required.
+     *
+     * **Tradeoff — CPU cost**: busy-polling runs the EL pthread hot
+     * during the [napiBusyPollTimeoutUs] window even when no packets
+     * arrive, raising CPU utilisation. Beneficial primarily for:
+     * - High packet-rate / low-latency workloads (RPC, high-frequency
+     *   trading, real-time messaging).
+     * - Systems where the EL pthread is pinned to a dedicated core.
+     *
+     * Not beneficial for:
+     * - Loopback (no NIC IRQs to eliminate).
+     * - Low traffic workloads (busy-polling wastes CPU without
+     *   reducing user-visible latency).
+     * - Shared-core deployments (CPU contention outweighs latency
+     *   savings).
+     *
+     * **Default: false** (opt-in). Enable via
+     * `detect(ring).copy(napiBusyPoll = true, napiBusyPollTimeoutUs = 50)`
+     * after confirming the workload matches the beneficial profile.
+     * Not auto-enabled even on kernel 6.9+ because the CPU cost
+     * regression on unsuitable workloads is significant.
+     */
+    val napiBusyPoll: Boolean = false,
+    /**
+     * NAPI busy-poll timeout in microseconds (Linux 6.9+).
+     *
+     * Maximum time the kernel spends busy-polling the NIC before
+     * falling back to IRQ-driven sleep. Higher values reduce IRQ
+     * wake-up latency more aggressively but raise CPU utilisation.
+     *
+     * Typical ranges:
+     * - 0: busy-poll disabled at runtime even if [napiBusyPoll] = true.
+     * - 50 (default): moderate latency vs CPU tradeoff.
+     * - 100-200: aggressive, for ultra-low-latency workloads with
+     *   pinned cores.
+     *
+     * Only used when [napiBusyPoll] = true. Ignored otherwise.
+     */
+    val napiBusyPollTimeoutUs: Int = DEFAULT_NAPI_BUSY_POLL_TIMEOUT_US,
+    /**
+     * Prefer NAPI busy-poll over IRQ wake-up (Linux 6.9+).
+     *
+     * When true, the kernel prefers continuing to busy-poll even when
+     * an IRQ would otherwise wake the ring. When false (default), an
+     * IRQ wake-up takes precedence and busy-polling is used as a
+     * supplement. Only meaningful when [napiBusyPoll] = true.
+     */
+    val napiPreferBusyPoll: Boolean = false,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -337,6 +396,13 @@ data class IoUringCapabilities(
                 // true in a follow-up once real-network measurements
                 // justify the default-on cost.
                 acceptDirectAlloc = false,
+                // napiBusyPoll is opt-in even on kernel 6.9+. The CPU cost
+                // on unsuitable workloads (loopback, low traffic, shared
+                // cores) is significant, so do not auto-enable. Users opt
+                // in via `detect(ring).copy(napiBusyPoll = true)` after
+                // confirming the workload profile matches
+                // (high-packet-rate, low-latency, pinned cores).
+                napiBusyPoll = false,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -358,8 +424,12 @@ data class IoUringCapabilities(
             msgRingWakeup = false,
             registerRingFd = false,
             acceptDirectAlloc = false,
+            napiBusyPoll = false,
             sendZc = false,
             sendmsgZc = false,
         )
+
+        /** Default NAPI busy-poll timeout in microseconds. */
+        private const val DEFAULT_NAPI_BUSY_POLL_TIMEOUT_US = 50
     }
 }
