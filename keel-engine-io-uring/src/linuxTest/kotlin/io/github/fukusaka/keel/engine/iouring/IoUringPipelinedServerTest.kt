@@ -83,6 +83,36 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `pipelined echo works with iowqMaxWorkers set`() {
+        // Smoke test: set small IO_WQ limits and verify the engine still
+        // runs the happy path. The limits don't affect keel's hot path
+        // (multishot + SEND_ZC path does not use IO_WQ), so this just
+        // exercises the register_iowq_max_workers syscall on EL init and
+        // confirms no regression. Requires kernel 5.15+ for
+        // IORING_REGISTER_IOWQ_MAX_WORKERS.
+        if (!kernelSupportsIowqMaxWorkers()) return
+        val caps = detectCaps().copy(
+            iowqMaxBoundedWorkers = 4,
+            iowqMaxUnboundedWorkers = 8,
+        )
+        val engine = IoUringEngine(capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = server.localAddress.port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "iowq")
+            assertEquals("iowq", rawRead(clientFd, 4))
+        } finally {
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
+    @Test
     fun `pipelined echo works with napiBusyPoll enabled`() {
         // Smoke test: verify the engine registers NAPI and runs the happy
         // path without crashing. Skip on kernels that don't support
@@ -167,6 +197,12 @@ class IoUringPipelinedServerTest {
     private fun kernelSupportsNapiBusyPoll(): Boolean {
         val kv = KernelVersion.current()
         return kv >= KernelVersion(6, 9)
+    }
+
+    /** True if the kernel supports IORING_REGISTER_IOWQ_MAX_WORKERS (Linux 5.15+). */
+    private fun kernelSupportsIowqMaxWorkers(): Boolean {
+        val kv = KernelVersion.current()
+        return kv >= KernelVersion(5, 15)
     }
 
     private fun rawConnect(port: Int): Int {
