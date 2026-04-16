@@ -40,6 +40,9 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         val deferTaskrun = getenv("BENCH_DEFER_TASKRUN")?.toKString() == "true"
         val msgRingWakeup = getenv("BENCH_MSG_RING_WAKEUP")?.toKString() == "true"
         val acceptDirectAlloc = getenv("BENCH_ACCEPT_DIRECT_ALLOC")?.toKString() == "true"
+        val napiBusyPoll = getenv("BENCH_NAPI_BUSY_POLL")?.toKString() == "true"
+        val napiBusyPollTimeoutUs = getenv("BENCH_NAPI_BUSY_POLL_TIMEOUT_US")?.toKString()?.toIntOrNull() ?: 50
+        val napiPreferBusyPoll = getenv("BENCH_NAPI_PREFER_BUSY_POLL")?.toKString() == "true"
         // Default-true capabilities: env var "false" disables, anything else keeps on.
         val forceSingleIssuerOff = getenv("BENCH_SINGLE_ISSUER")?.toKString() == "false"
         val forceRegisterRingFdOff = getenv("BENCH_REGISTER_RING_FD")?.toKString() == "false"
@@ -48,13 +51,16 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         // picks up `IoUringCapabilities.detect(ring)` (auto-enabled
         // registerRingFd on kernel 5.18+, etc).
         val anyOverride = registeredBuffers || deferTaskrun || msgRingWakeup ||
-            acceptDirectAlloc || forceSingleIssuerOff || forceRegisterRingFdOff
+            acceptDirectAlloc || napiBusyPoll || forceSingleIssuerOff || forceRegisterRingFdOff
         val caps = if (anyOverride) {
             io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(
                 registeredBuffers = registeredBuffers,
                 deferTaskrun = deferTaskrun,
                 msgRingWakeup = msgRingWakeup,
                 acceptDirectAlloc = acceptDirectAlloc,
+                napiBusyPoll = napiBusyPoll,
+                napiBusyPollTimeoutUs = napiBusyPollTimeoutUs,
+                napiPreferBusyPoll = napiPreferBusyPoll,
                 registerRingFd = !forceRegisterRingFdOff,
                 singleIssuer = !forceSingleIssuerOff,
             )
