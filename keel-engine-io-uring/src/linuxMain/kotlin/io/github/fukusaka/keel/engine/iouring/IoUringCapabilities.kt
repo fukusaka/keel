@@ -392,6 +392,17 @@ data class IoUringCapabilities(
      * Value 0 (default) uses the kernel default. Positive values set
      * the explicit limit.
      *
+     * **Measured effect**: keel's hot path (multishot accept + multishot
+     * recv + SEND_ZC) does not spawn IO_WQ workers — verified on luna
+     * (32-core) with pipeline-http-io-uring /hello at 4t/100c load,
+     * `/proc/<pid>/task` count stays at 36 (32 EL pthreads + GC + Main)
+     * with or without cap. Setting aggressive caps (bounded=2,
+     * unbounded=4) produces no measurable throughput change on remote
+     * LAN SEND_ZC (-4 % at 3 runs, within the variance band of the
+     * baseline). Treat this limit as headroom for future opcodes
+     * that do dispatch via IO_WQ (e.g. SPLICE, OPENAT) rather than a
+     * throughput knob.
+     *
      * @see iowqMaxBoundedWorkers
      */
     val iowqMaxUnboundedWorkers: Int = 0,
