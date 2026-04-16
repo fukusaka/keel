@@ -87,6 +87,66 @@ class NioEngineTest {
     }
 
     @Test
+    fun `server close from non-event-loop thread cancels pending accept`() = runTest {
+        // Covers the shutdown path that triggered the known
+        // ClassCastException (PR #215 review, 2026-04-07): a pending
+        // accept() coroutine suspended on the boss EventLoop while
+        // server.close() is called from a non-EL thread (e.g. the JVM
+        // shutdown hook).
+        //
+        // Before the fix, resume-with-exception ran on the caller thread
+        // and (under wrk-scale state) could leak ClassCastException from
+        // kotlinx.coroutines DispatchedContinuation release. The fix
+        // re-dispatches close() onto the boss EL so the resume happens
+        // on the EL thread, matching the invariants of the dispatcher
+        // the continuation was intercepted by.
+        //
+        // This test checks the positive observable behaviour:
+        //  - close() returns cleanly from a non-EL thread
+        //  - the pending accept resumes with CancellationException
+        //  - server becomes inactive
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+
+        val acceptOutcome = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val acceptJob = launch(kotlinx.coroutines.Dispatchers.Default) {
+            try {
+                server.accept()
+                acceptOutcome.set(null)
+            } catch (e: Throwable) {
+                acceptOutcome.set(e)
+            }
+        }
+
+        // Give accept() time to reach suspendCancellableCoroutine.
+        delay(100)
+
+        // Close from a plain Java thread, mirroring the JVM shutdown hook.
+        val closerErrors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val closer = Thread {
+            try {
+                server.close()
+            } catch (e: Throwable) {
+                closerErrors.add(e)
+            }
+        }
+        closer.isDaemon = true
+        closer.start()
+        closer.join(2000)
+        assertFalse(closer.isAlive, "server.close() from non-EL thread must not block forever")
+        assertTrue(closerErrors.isEmpty(), "close() must not throw; got ${closerErrors.toList()}")
+
+        acceptJob.join()
+        val out = acceptOutcome.get()
+        assertTrue(
+            out is kotlinx.coroutines.CancellationException,
+            "pending accept must be cancelled, got: $out",
+        )
+        assertFalse(server.isActive)
+        engine.close()
+    }
+
+    @Test
     fun channelLifecycleAfterClose() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
