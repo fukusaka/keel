@@ -467,3 +467,43 @@ static int keel_unregister_napi(struct io_uring *ring) {
     if (ret < 0) return -errno;
     return (int)ret;
 }
+
+/* ====================================================================
+ * IO_WQ max workers (Linux 5.15+)
+ *
+ * Limits the number of kernel worker threads that the ring's IO_WQ
+ * pool can spawn. IO_WQ handles operations that cannot complete
+ * inline in the submission path: fallbacks for opcodes the kernel
+ * routes to the worker pool, and async dispatches that block in the
+ * kernel.
+ *
+ * Two categories with separate limits:
+ *   - bounded:   operations with bounded execution time (file I/O)
+ *   - unbounded: operations with unbounded execution time
+ *                (socket I/O, polling)
+ *
+ * keel's hot path (multishot accept / recv + SEND_ZC) does NOT use
+ * IO_WQ; these limits primarily affect fallback paths and reduce the
+ * kernel thread count in high-density deployments. Not a throughput
+ * optimisation.
+ *
+ * Kernel defaults (per ring):
+ *   - bounded:   min(sq_entries, 4 × num_cpus), clamped
+ *   - unbounded: num_cpus × 2
+ *
+ * Value 0 on a slot means "no change" — keep the existing limit.
+ * To keep both slots as default, do not call this function at all.
+ *
+ * Wrapper simplifies the in/out `unsigned int[2]` parameter into
+ * pass-by-value inputs, discarding the previous values (keel sets
+ * limits once at ring init and does not need to restore them).
+ * ==================================================================== */
+
+static int keel_register_iowq_max_workers(struct io_uring *ring,
+                                          unsigned int bounded,
+                                          unsigned int unbounded) {
+    unsigned int vals[2];
+    vals[0] = bounded;
+    vals[1] = unbounded;
+    return io_uring_register_iowq_max_workers(ring, vals);
+}
