@@ -12,6 +12,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resumeWithException
 
@@ -50,6 +51,11 @@ internal class NioServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServer"),
 ) : ServerChannel {
 
+    // @Volatile: `close()` may be called from a non-EL thread (shutdown
+    // hook). The quick-exit read of _active on that thread must observe
+    // the write performed by `closeOnEventLoop` on the EL thread — plain
+    // `var` without happens-before could silently skip the re-dispatch.
+    @Volatile
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
@@ -113,19 +119,22 @@ internal class NioServer(
             return
         }
         val done = CountDownLatch(1)
-        bossLoop.dispatch(EmptyCoroutineContext, Runnable {
-            try {
-                closeOnEventLoop()
-            } finally {
-                done.countDown()
-            }
-        })
+        bossLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                try {
+                    closeOnEventLoop()
+                } finally {
+                    done.countDown()
+                }
+            },
+        )
         // Wait synchronously so ServerChannel.close returns with the
         // side effects visible — isActive == false and pending accepts
         // cancelled. If the EL has already stopped, the dispatched task
         // will never run; fall through after the timeout and let the
         // caller move on.
-        done.await(CLOSE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        done.await(CLOSE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
     /**
