@@ -345,6 +345,67 @@ data class IoUringCapabilities(
      * supplement. Only meaningful when [napiBusyPoll] = true.
      */
     val napiPreferBusyPoll: Boolean = false,
+    /**
+     * Maximum IO_WQ bounded workers per EventLoop (Linux 5.15+).
+     *
+     * IO_WQ is the kernel worker pool that backs io_uring operations
+     * which cannot complete inline in the submission path (fallbacks
+     * for opcodes the kernel routes to workers, and async dispatches
+     * that block in the kernel). Bounded workers handle operations
+     * with a bounded execution time (primarily buffered file I/O).
+     *
+     * keel's hot path (multishot accept / recv + SEND_ZC) does not
+     * use IO_WQ. Setting this limit primarily affects fallback paths
+     * and is intended as an **operational control** — reducing the
+     * kernel thread count per ring in high-density deployments rather
+     * than a throughput optimisation.
+     *
+     * Value 0 (default) uses the kernel default (approximately
+     * `min(sq_entries, 4 × num_cpus)`). Positive values set the
+     * explicit limit.
+     *
+     * @see iowqMaxUnboundedWorkers
+     */
+    val iowqMaxBoundedWorkers: Int = 0,
+    /**
+     * Maximum IO_WQ unbounded workers per EventLoop (Linux 5.15+).
+     *
+     * Unbounded workers handle operations with unbounded execution
+     * time (socket I/O, polling). This is the category most relevant
+     * for network workloads, though keel's multishot + SEND_ZC hot
+     * path does not spawn unbounded workers — they back fallback ops
+     * only.
+     *
+     * Kernel default is approximately `num_cpus × 2` per ring. With
+     * multiple EventLoops (one ring each), the aggregate thread count
+     * can be significant on high-core systems:
+     *
+     * - 32-core host, 4 EventLoops: 32 × 2 × 4 = 256 threads ceiling
+     * - 64-core host, 8 EventLoops: 64 × 2 × 8 = 1024 threads ceiling
+     *
+     * These threads are created on demand and idle when not dispatched,
+     * but they consume `nr_threads` slots and kernel stack memory.
+     * Operators constrained on thread count / per-container kernel
+     * memory budgets can lower this limit without affecting the hot
+     * path performance.
+     *
+     * Value 0 (default) uses the kernel default. Positive values set
+     * the explicit limit.
+     *
+     * **Measured effect**: keel's hot path (multishot accept + multishot
+     * recv + SEND_ZC) does not spawn IO_WQ workers — verified on luna
+     * (32-core) with pipeline-http-io-uring /hello at 4t/100c load,
+     * `/proc/<pid>/task` count stays at 36 (32 EL pthreads + GC + Main)
+     * with or without cap. Setting aggressive caps (bounded=2,
+     * unbounded=4) produces no measurable throughput change on remote
+     * LAN SEND_ZC (-4 % at 3 runs, within the variance band of the
+     * baseline). Treat this limit as headroom for future opcodes
+     * that do dispatch via IO_WQ (e.g. SPLICE, OPENAT) rather than a
+     * throughput knob.
+     *
+     * @see iowqMaxBoundedWorkers
+     */
+    val iowqMaxUnboundedWorkers: Int = 0,
     /** Zero-copy send (Linux 6.0+). Two CQEs per operation. */
     val sendZc: Boolean = true,
     /**
@@ -364,6 +425,15 @@ data class IoUringCapabilities(
         // is clearer for callers.
         require(napiBusyPollTimeoutUs >= 0) {
             "napiBusyPollTimeoutUs must be >= 0 (got $napiBusyPollTimeoutUs)"
+        }
+        // IO_WQ worker counts are passed as `unsigned int[2]`. Negative
+        // values would wrap on `toUInt()` to a huge count; the kernel
+        // would clamp but the resulting limit would be unexpected.
+        require(iowqMaxBoundedWorkers >= 0) {
+            "iowqMaxBoundedWorkers must be >= 0 (got $iowqMaxBoundedWorkers)"
+        }
+        require(iowqMaxUnboundedWorkers >= 0) {
+            "iowqMaxUnboundedWorkers must be >= 0 (got $iowqMaxUnboundedWorkers)"
         }
     }
 
@@ -428,6 +498,12 @@ data class IoUringCapabilities(
                 // confirming the workload profile matches
                 // (high-packet-rate, low-latency, pinned cores).
                 napiBusyPoll = false,
+                // IO_WQ max workers: 0 = keep kernel default. The feature
+                // is an operational control rather than a performance
+                // optimisation; callers opt in with explicit positive
+                // values via `detect(ring).copy(iowqMax... = N)`.
+                iowqMaxBoundedWorkers = 0,
+                iowqMaxUnboundedWorkers = 0,
                 // sendmsgZc implies sendZc (6.1+ kernel has both opcodes).
                 sendZc = sendZcSupported || sendmsgZcSupported,
                 sendmsgZc = sendmsgZcSupported,
@@ -450,6 +526,8 @@ data class IoUringCapabilities(
             registerRingFd = false,
             acceptDirectAlloc = false,
             napiBusyPoll = false,
+            iowqMaxBoundedWorkers = 0,
+            iowqMaxUnboundedWorkers = 0,
             sendZc = false,
             sendmsgZc = false,
         )

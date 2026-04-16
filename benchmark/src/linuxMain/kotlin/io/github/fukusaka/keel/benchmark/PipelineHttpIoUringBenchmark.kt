@@ -43,6 +43,8 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         val napiBusyPoll = getenv("BENCH_NAPI_BUSY_POLL")?.toKString() == "true"
         val napiBusyPollTimeoutUs = getenv("BENCH_NAPI_BUSY_POLL_TIMEOUT_US")?.toKString()?.toIntOrNull() ?: 50
         val napiPreferBusyPoll = getenv("BENCH_NAPI_PREFER_BUSY_POLL")?.toKString() == "true"
+        val iowqMaxBoundedWorkers = getenv("BENCH_IOWQ_MAX_BOUNDED")?.toKString()?.toIntOrNull() ?: 0
+        val iowqMaxUnboundedWorkers = getenv("BENCH_IOWQ_MAX_UNBOUNDED")?.toKString()?.toIntOrNull() ?: 0
         // Default-true capabilities: env var "false" disables, anything else keeps on.
         val forceSingleIssuerOff = getenv("BENCH_SINGLE_ISSUER")?.toKString() == "false"
         val forceRegisterRingFdOff = getenv("BENCH_REGISTER_RING_FD")?.toKString() == "false"
@@ -51,7 +53,8 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         // picks up `IoUringCapabilities.detect(ring)` (auto-enabled
         // registerRingFd on kernel 5.18+, etc).
         val anyOverride = registeredBuffers || deferTaskrun || msgRingWakeup ||
-            acceptDirectAlloc || napiBusyPoll || forceSingleIssuerOff || forceRegisterRingFdOff
+            acceptDirectAlloc || napiBusyPoll || forceSingleIssuerOff || forceRegisterRingFdOff ||
+            iowqMaxBoundedWorkers > 0 || iowqMaxUnboundedWorkers > 0
         val caps = if (anyOverride) {
             io.github.fukusaka.keel.engine.iouring.IoUringCapabilities(
                 registeredBuffers = registeredBuffers,
@@ -61,6 +64,8 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
                 napiBusyPoll = napiBusyPoll,
                 napiBusyPollTimeoutUs = napiBusyPollTimeoutUs,
                 napiPreferBusyPoll = napiPreferBusyPoll,
+                iowqMaxBoundedWorkers = iowqMaxBoundedWorkers,
+                iowqMaxUnboundedWorkers = iowqMaxUnboundedWorkers,
                 registerRingFd = !forceRegisterRingFdOff,
                 singleIssuer = !forceSingleIssuerOff,
             )

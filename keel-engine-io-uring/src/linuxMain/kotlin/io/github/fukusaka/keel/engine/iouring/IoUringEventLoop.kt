@@ -23,6 +23,7 @@ import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
 import io_uring.keel_prep_send_zc_fixed
+import io_uring.keel_register_iowq_max_workers
 import io_uring.keel_register_napi
 import io_uring.keel_register_ring_fd
 import io_uring.keel_ring_fd
@@ -849,6 +850,27 @@ internal class IoUringEventLoop(
             val ret = keel_register_ring_fd(ring.ptr)
             if (ret < 0) {
                 logger.warn { "io_uring_register_ring_fd() failed: ${errnoMessage(-ret)}" }
+            }
+        }
+
+        // IO_WQ max workers (opt-in, Linux 5.15+). Limits the per-ring kernel
+        // worker thread count for fallback / async-dispatched ops. keel's hot
+        // path (multishot + SEND_ZC) does not use IO_WQ, so this is primarily
+        // an operational control for high-density deployments. Skip the
+        // syscall entirely when both values are 0 (kernel defaults).
+        if (capabilities.iowqMaxBoundedWorkers > 0 || capabilities.iowqMaxUnboundedWorkers > 0) {
+            val ret = keel_register_iowq_max_workers(
+                ring.ptr,
+                capabilities.iowqMaxBoundedWorkers.toUInt(),
+                capabilities.iowqMaxUnboundedWorkers.toUInt(),
+            )
+            if (ret < 0) {
+                logger.warn {
+                    "io_uring_register_iowq_max_workers() failed: " +
+                        "bounded=${capabilities.iowqMaxBoundedWorkers} " +
+                        "unbounded=${capabilities.iowqMaxUnboundedWorkers} " +
+                        errnoMessage(-ret)
+                }
             }
         }
 
