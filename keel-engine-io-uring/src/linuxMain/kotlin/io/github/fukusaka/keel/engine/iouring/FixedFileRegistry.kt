@@ -53,7 +53,17 @@ internal class FixedFileRegistry(
     // Replaces the previous IntArray stack which had O(1) register but
     // O(maxFiles) claim (linear scan to remove a specific index).
     // Memory: 128 bytes for 1024 slots vs 4 KiB for the stack.
-    private val freeBitmap = IntArray((maxFiles + 31) / BITS_PER_WORD) { -1 } // all free
+    //
+    // When maxFiles is not a multiple of BITS_PER_WORD, the last word has
+    // trailing bits that map to indices >= maxFiles. Those bits are
+    // initialised to 0 (not free) so acquireFreeSlot never returns an
+    // out-of-range index.
+    private val freeBitmap = IntArray((maxFiles + 31) / BITS_PER_WORD) { -1 }.also { bitmap ->
+        val leftover = maxFiles % BITS_PER_WORD
+        if (leftover != 0 && bitmap.isNotEmpty()) {
+            bitmap[bitmap.size - 1] = (1 shl leftover) - 1
+        }
+    }
     private var registered = false
 
     /**
