@@ -85,7 +85,7 @@ class KqueueEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runBlocking {
         val engine = KqueueEngine()
         engine.close()
     }
@@ -695,13 +695,14 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() {
+    fun bindOnClosedEngineThrows() = runBlocking {
         val engine = KqueueEngine()
         engine.close()
 
         assertFailsWith<IllegalStateException> {
-            runBlocking { engine.bind("0.0.0.0", 0) }
+            engine.bind("0.0.0.0", 0)
         }
+        Unit
     }
 
     @Test
@@ -1209,7 +1210,7 @@ class KqueueEngineTest {
     // --- Pipeline ---
 
     @Test
-    fun `bindPipeline responds to HTTP request`() {
+    fun `bindPipeline responds to HTTP request`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 1))
         val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
             "Hello!", contentType = "text/plain",
@@ -1233,7 +1234,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun `bindPipeline echo via raw HTTP client`() {
+    fun `bindPipeline echo via raw HTTP client`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 1))
         val port = 19876 // Fixed port for test
 
@@ -1266,7 +1267,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun `bindPipeline returns 404 for unknown path`() {
+    fun `bindPipeline returns 404 for unknown path`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 1))
         val port = 19877
 
@@ -1295,7 +1296,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun `bindPipeline handles multiple requests on same connection`() {
+    fun `bindPipeline handles multiple requests on same connection`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 1))
         val port = 19878
 
