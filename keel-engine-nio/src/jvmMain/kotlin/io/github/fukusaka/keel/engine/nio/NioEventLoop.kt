@@ -134,28 +134,30 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
     // --- Interest ops (fast path, no JNI re-register) ---
 
     /**
-     * Sets interest ops and attaches the continuation for readiness notification.
+     * Sets interest ops with a callback for readiness notification.
      *
-     * This is the fast path called on every `read()` / `accept()`. It only
-     * mutates the [SelectionKey]'s interest ops (memory operation) and does
-     * NOT call `channel.register()` (JNI). The Selector is woken up to
+     * This is the fast path called on every `read()` / `accept()` / `connect()`.
+     * It only mutates the [SelectionKey]'s interest ops (memory operation) and
+     * does NOT call `channel.register()` (JNI). The Selector is woken up to
      * re-evaluate the updated interest set.
      *
-     * @param key  The cached SelectionKey from [registerChannel].
-     * @param ops  Interest ops to add (e.g., [SelectionKey.OP_READ]).
-     * @param cont The continuation to resume when the channel is ready.
-     */
-    fun setInterest(key: SelectionKey, ops: Int, cont: CancellableContinuation<Unit>) {
-        key.attach(cont)
-        key.interestOps(key.interestOps() or ops)
-        selector.wakeup()
-    }
-
-    /**
-     * Sets interest ops with a callback for readiness notification (pipeline path).
+     * [callback] is invoked directly on the EventLoop thread when the channel
+     * is ready. One-shot: the attachment is cleared after fire via
+     * [clearInterest].
      *
-     * Unlike the continuation overload, [callback] is invoked directly on the
-     * EventLoop thread when the channel is ready. One-shot: cleared after fire.
+     * **Design invariant**: attachments MUST be plain [Runnable] instances,
+     * never a [CancellableContinuation]. `CancellableContinuationImpl`
+     * transitively implements `Runnable` (via `DispatchedTask → scheduling.Task`),
+     * so attaching a continuation directly would make [processSelectedKeys]
+     * invoke `DispatchedTask.run()` on the selector thread — this bypasses the
+     * continuation's own state machine and leaves it installed as a stale child
+     * handler of the parent Job, producing a `ClassCastException` on later
+     * cancel. Always wrap the resume logic in an explicit `Runnable { ... }`
+     * lambda. See [NioServer] class KDoc for the full history.
+     *
+     * @param key      The cached SelectionKey from [registerChannel].
+     * @param ops      Interest ops to add (e.g., [SelectionKey.OP_READ]).
+     * @param callback Runnable to execute when the channel becomes ready.
      */
     fun setInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
         key.attach(callback)
@@ -254,15 +256,14 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
             val key = iter.next()
             iter.remove()
             try {
-                val attachment = key.attachment() ?: continue
+                // Attachments are always plain Runnable instances via
+                // setInterestCallback. See the invariant note on
+                // setInterestCallback — do NOT attach CancellableContinuation
+                // or any other Runnable-implementing type with state-machine
+                // semantics.
+                val attachment = key.attachment() as Runnable? ?: continue
                 clearInterest(key)
-                when (attachment) {
-                    is Runnable -> attachment.run()
-                    is CancellableContinuation<*> -> {
-                        @Suppress("UNCHECKED_CAST")
-                        (attachment as CancellableContinuation<Unit>).resume(Unit)
-                    }
-                }
+                attachment.run()
             } catch (e: Exception) {
                 // Individual key failure must not stop processing other keys.
                 // The channel's coroutine will observe the error on next I/O.
