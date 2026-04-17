@@ -12,6 +12,7 @@ import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
+import kotlin.coroutines.resume
 
 /**
  * JVM NIO-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -27,8 +28,9 @@ import java.nio.channels.SocketChannel
  * cross-thread dispatch.
  *
  * **SelectionKey caching**: Channels are registered with the Selector once
- * via [NioEventLoop.registerChannel]. Subsequent I/O uses [NioEventLoop.setInterest]
- * to toggle interest ops without JNI re-registration.
+ * via [NioEventLoop.registerChannel]. Subsequent I/O uses
+ * [NioEventLoop.setInterestCallback] to toggle interest ops without JNI
+ * re-registration.
  *
  * ```
  * NioEngine
@@ -124,11 +126,18 @@ class NioEngine(
         val selectionKey = workerLoop.registerChannel(socketChannel)
 
         if (!connected) {
-            // Connection in progress — suspend until OP_CONNECT fires
+            // Connection in progress — suspend until OP_CONNECT fires.
+            // Attach a plain Runnable (not the continuation) to avoid the
+            // CancellableContinuationImpl-as-Runnable trap in
+            // NioEventLoop.processSelectedKeys — see NioServer KDoc for the
+            // full rationale.
             try {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    workerLoop.setInterest(selectionKey, SelectionKey.OP_CONNECT, cont)
+                    workerLoop.setInterestCallback(selectionKey, SelectionKey.OP_CONNECT) {
+                        cont.resume(Unit)
+                    }
                     cont.invokeOnCancellation {
+                        workerLoop.removeInterest(selectionKey, SelectionKey.OP_CONNECT)
                         selectionKey.cancel()
                         runCatching { socketChannel.close() }
                     }
