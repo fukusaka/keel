@@ -13,7 +13,11 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
@@ -55,6 +59,8 @@ class IoUringEngine(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
     private val resolvedCapabilities: IoUringCapabilities
@@ -219,9 +225,10 @@ class IoUringEngine(
      * Does NOT close existing channels — caller is responsible for closing
      * active connections before shutting down the engine. Idempotent.
      */
-    override fun close() {
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             bossLoop.close()
             workerGroup.close()
             logger.debug { "Engine closed" }

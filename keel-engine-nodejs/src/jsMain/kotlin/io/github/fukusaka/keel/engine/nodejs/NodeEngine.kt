@@ -10,6 +10,10 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.asPem
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -44,6 +48,8 @@ import io.github.fukusaka.keel.core.Server as KeelServer
 class NodeEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("NodeEngine")
     private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
@@ -185,9 +191,18 @@ class NodeEngine(
         }
     }
 
-    override fun close() {
+    /**
+     * Closes the engine: cancels every child coroutine launched on this
+     * engine's scope and joins their completion. Node.js is single-threaded
+     * and cooperative, so no dispatcher thread shutdown is required beyond
+     * cancelling in-flight work.
+     *
+     * Idempotent.
+     */
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             logger.debug { "Engine closed" }
         }
     }
