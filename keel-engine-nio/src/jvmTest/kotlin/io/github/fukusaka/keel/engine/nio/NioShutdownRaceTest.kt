@@ -108,14 +108,18 @@ class NioShutdownRaceTest {
     }
 
     /**
-     * Symmetric coverage for `NioEngine.connect`: if a connect to a
-     * non-accepting local port is suspended on OP_CONNECT and the surrounding
-     * scope is cancelled, the cleanup must not leak a fatal coroutine
-     * exception.
+     * Symmetric coverage for `NioEngine.connect`: on scope cancellation the
+     * connect cleanup must not leak a fatal coroutine exception regardless of
+     * whether OP_CONNECT actually suspended.
      *
-     * Uses a bound-but-not-accepting ServerSocket so the connect attempt
-     * reliably enters OP_CONNECT wait (unlike a non-routable address which
-     * might cause immediate connect failure on some platforms).
+     * Caveat: a single loopback connect against a bound `ServerSocket` usually
+     * slots into the kernel's SYN backlog before the user-space `accept()` is
+     * called, so the non-blocking `socketChannel.connect()` can return `true`
+     * immediately — the race path this PR fixed (continuation stored as
+     * SelectionKey attachment during OP_CONNECT wait) may not be hit on every
+     * run. The assertion is therefore "no fatal exception emerges regardless
+     * of which path runs", not "OP_CONNECT wait always happens". A
+     * deterministic SYN-backlog-saturation fixture is out of scope.
      */
     @Test
     fun `connect cancel during OP_CONNECT wait does not throw fatal exception`() {
@@ -126,13 +130,10 @@ class NioShutdownRaceTest {
             runBlocking {
                 withTimeout(testTimeout) {
                     val engine = NioEngine(IoEngineConfig())
-                    // Bound but never accept — full SYN backlog eventually, but
-                    // for a single connect attempt on loopback this may or may
-                    // not enter OP_CONNECT wait depending on the platform.
-                    // We combine this with a non-routable address fallback:
-                    // use a local bind that is NOT listening so connect returns
-                    // refused immediately; even that path must not emit a
-                    // fatal coroutine exception on cancel.
+                    // Bound but never accept. One pending connection slots into
+                    // the kernel SYN backlog and the non-blocking connect can
+                    // complete immediately, so OP_CONNECT wait is not
+                    // guaranteed — see the KDoc for the test-scope caveat.
                     val ss = java.net.ServerSocket(0, 1)
                     val port = ss.localPort
                     // Dispatchers.Default is intentional: the original race
