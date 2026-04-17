@@ -11,6 +11,7 @@ import platform.posix.getenv
 import io.github.fukusaka.keel.pipeline.typedHandler
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.get
+import kotlinx.coroutines.runBlocking
 
 /**
  * Zero-suspend io_uring benchmark server using the Pipeline API.
@@ -68,7 +69,7 @@ object RawIoUringBenchmark : EngineBenchmark {
 
         return {
             server.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 

@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.engine.iouring.IoUringEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.runBlocking
 import platform.posix.getenv
 
 /**
@@ -93,7 +94,7 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         return {
             server.close()
             tlsCloseable?.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 

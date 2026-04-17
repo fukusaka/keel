@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.coroutines.runBlocking
 /**
  * Pipeline HTTP benchmark using [NettyEngine] with [HttpRequestDecoder],
  * [RoutingHandler], and [HttpResponseEncoder].
@@ -36,7 +37,7 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         return {
             server.close()
             tlsCloseable?.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 
