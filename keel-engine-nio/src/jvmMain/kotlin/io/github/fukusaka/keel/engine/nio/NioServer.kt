@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
+import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
@@ -17,7 +18,7 @@ import kotlin.coroutines.resumeWithException
  *
  * Uses a cached [selectionKey] registered once with `interestOps=0`.
  * Each `accept()` call toggles [SelectionKey.OP_ACCEPT] via
- * [NioEventLoop.setInterest] instead of re-registering.
+ * [NioEventLoop.setInterestCallback] instead of re-registering.
  *
  * Accepted channels are registered with the next worker EventLoop
  * via [NioEventLoop.registerChannel] (one-time Selector registration),
@@ -25,11 +26,24 @@ import kotlin.coroutines.resumeWithException
  *
  * ```
  * accept() flow:
- *   bossLoop: setInterest(key, OP_ACCEPT) → select() → resume
+ *   bossLoop.setInterestCallback(key, OP_ACCEPT, Runnable) → select() → resume
  *   ServerSocketChannel.accept() → client SocketChannel
  *   workerLoop.registerChannel(client) → cached SelectionKey
  *   → NioPipelinedChannel(client, key, transport, workerLoop, ...)
  * ```
+ *
+ * **Why callback-based**: an earlier design attached the continuation directly
+ * via `setInterest(key, ops, cont)`, but `CancellableContinuationImpl`
+ * transitively implements [Runnable] (via `DispatchedTask → scheduling.Task`),
+ * so [NioEventLoop.processSelectedKeys]' `when (attachment) { is Runnable -> ...;
+ * is CancellableContinuation<*> -> ... }` dispatch always took the Runnable
+ * branch. The continuation's state never transitioned to `CompletedContinuation`,
+ * leaving it installed as a stale child handler on the parent Job. Shutdown
+ * then fired `cont.cancel()` which resumed the user state machine a second time
+ * and hit a `ClassCastException` in `releaseIntercepted`. Attaching a plain
+ * `Runnable { cont.resume(Unit) }` keeps the continuation off the SelectionKey
+ * and routes through `CancellableContinuationImpl.resume`'s CAS state machine
+ * instead.
  *
  * @param serverChannel The listening ServerSocketChannel (non-blocking).
  * @param selectionKey  Cached SelectionKey registered with the boss Selector.
@@ -77,8 +91,16 @@ internal class NioServer(
 
             suspendCancellableCoroutine<Unit> { cont ->
                 pendingAcceptCont = cont
-                bossLoop.setInterest(selectionKey, SelectionKey.OP_ACCEPT, cont)
-                cont.invokeOnCancellation { pendingAcceptCont = null }
+                // Attach a plain Runnable (not the continuation itself) so the
+                // selector never sees a CancellableContinuationImpl — see the
+                // class-level KDoc for the rationale.
+                bossLoop.setInterestCallback(selectionKey, SelectionKey.OP_ACCEPT) {
+                    cont.resume(Unit)
+                }
+                cont.invokeOnCancellation {
+                    pendingAcceptCont = null
+                    bossLoop.removeInterest(selectionKey, SelectionKey.OP_ACCEPT)
+                }
             }
             pendingAcceptCont = null
         }
