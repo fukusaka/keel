@@ -84,7 +84,7 @@ class NwEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runBlocking {
         val engine = NwEngine()
         engine.close()
     }
@@ -507,13 +507,14 @@ class NwEngineTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() {
+    fun bindOnClosedEngineThrows() = runBlocking {
         val engine = NwEngine()
         engine.close()
 
         assertFailsWith<IllegalStateException> {
-            runBlocking { engine.bind("127.0.0.1", 0) }
+            engine.bind("127.0.0.1", 0)
         }
+        Unit
     }
 
     @Test
