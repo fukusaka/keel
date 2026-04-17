@@ -42,8 +42,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -273,8 +276,41 @@ public class KeelApplicationEngine(
 
             stopRequest.join()
 
+            // Close listening sockets so acceptLoop exits its while-loop.
             serverEntries.forEach { (server, _) -> runCatching { server.close() } }
-            ioEngine.close()
+
+            // Lifecycle invariant: `ioEngine.close()` shuts down the per-
+            // connection EventLoop dispatcher, so any child coroutine still
+            // suspended at that moment will never receive its cancellation
+            // resume (the dispatcher is dead). We must therefore wait for
+            // every child coroutine to complete *before* closing the engine.
+            //
+            // Two phases:
+            //   1. Graceful: let children finish naturally. If stopSuspend's
+            //      grace period expires, it calls `serverJob.cancel()`, which
+            //      propagates to our children, and our own `join()` loop
+            //      throws CancellationException — we fall into the finally.
+            //   2. Forced: in the finally, run under NonCancellable so the
+            //      engine close is still executed, issue explicit cancel +
+            //      join for every remaining child, and close the engine only
+            //      after every child has actually completed.
+            //
+            // This ordering is the structural fix for the "engine.stop() hangs
+            // because handleConnection children are stranded on a dead
+            // dispatcher" class of issues: cancellation always reaches its
+            // target because the dispatcher is still alive at cancel time, and
+            // the engine is only closed once there are no coroutines left to
+            // dispatch to.
+            try {
+                coroutineContext.job.children.toList().forEach { it.join() }
+            } finally {
+                withContext(NonCancellable) {
+                    coroutineContext.job.children.toList().forEach {
+                        runCatching { it.cancelAndJoin() }
+                    }
+                    ioEngine.close()
+                }
+            }
         }
     }
 
