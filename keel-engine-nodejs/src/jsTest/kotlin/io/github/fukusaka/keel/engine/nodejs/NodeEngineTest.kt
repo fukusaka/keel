@@ -17,7 +17,7 @@ class NodeEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runTest {
         val engine = NodeEngine()
         engine.close()
     }

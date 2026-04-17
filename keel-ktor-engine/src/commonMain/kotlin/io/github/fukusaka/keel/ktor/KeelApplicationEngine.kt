@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -197,6 +198,11 @@ public class KeelApplicationEngine(
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
 
+    // The active I/O engine, resolved lazily when the server job starts.
+    // [stopSuspend] reads this field to drive `engine.close()` in its
+    // `finally`, so it must outlive the server job.
+    private var ioEngine: StreamEngine? = null
+
     init {
         serverJob = initServerJob()
         serverJob.invokeOnCompletion { cause ->
@@ -218,16 +224,30 @@ public class KeelApplicationEngine(
     override fun start(wait: Boolean): ApplicationEngine = runBlocking { startSuspend(wait) }
 
     override suspend fun stopSuspend(gracePeriodMillis: Long, timeoutMillis: Long) {
-        stopRequest.complete()
-        val result = withTimeoutOrNull(gracePeriodMillis) {
-            serverJob.join()
-            true
-        }
-        if (result == null) {
-            serverJob.cancel()
-            withTimeoutOrNull(timeoutMillis - gracePeriodMillis) {
+        try {
+            stopRequest.complete()
+            // Grace phase: wait for the server job (bind/accept coordinator)
+            // to finish, then let in-flight connection handlers drain. The
+            // handlers are children of [ioEngine] (not of [serverJob]), so
+            // [serverJob.join] alone would return before they complete.
+            val result = withTimeoutOrNull(gracePeriodMillis) {
                 serverJob.join()
+                ioEngine?.coroutineContext?.job?.children?.toList()?.forEach { it.join() }
+                true
             }
+            if (result == null) {
+                serverJob.cancel()
+                withTimeoutOrNull(timeoutMillis - gracePeriodMillis) {
+                    serverJob.join()
+                }
+            }
+        } finally {
+            // [IoEngine.close] cancels every child coroutine launched on
+            // the engine scope and joins their completion before tearing
+            // the dispatcher threads down. This closes the structured-
+            // concurrency contract at the engine boundary even if the
+            // grace timeout was hit above.
+            ioEngine?.close()
         }
     }
 
@@ -245,7 +265,8 @@ public class KeelApplicationEngine(
         return CoroutineScope(
             applicationProvider().parentCoroutineContext + Dispatchers.Default,
         ).launch(start = CoroutineStart.LAZY) {
-            val ioEngine = configuration.engine ?: defaultEngine()
+            val engine = configuration.engine ?: defaultEngine()
+            ioEngine = engine
             // Pair each server with its connector's TLS config (if any).
             val serverEntries = mutableListOf<Pair<Server, TlsConnectorConfig?>>()
 
@@ -253,14 +274,14 @@ public class KeelApplicationEngine(
                 val resolved = connectors.map { connector ->
                     val tlsConfig = tlsConnectors[connector]
                     val bindConfig = tlsConfig ?: BindConfig()
-                    val server = ioEngine.bind(connector.host, connector.port, bindConfig)
+                    val server = engine.bind(connector.host, connector.port, bindConfig)
                     serverEntries.add(server to tlsConfig)
                     connector.withPort(server.localAddress.port)
                 }
                 resolvedDeferred.complete(resolved)
             } catch (cause: Throwable) {
                 serverEntries.forEach { (server, _) -> runCatching { server.close() } }
-                ioEngine.close()
+                engine.close()
                 startupJob.completeExceptionally(cause)
                 throw cause
             }
@@ -268,13 +289,15 @@ public class KeelApplicationEngine(
             startupJob.complete(Unit)
 
             serverEntries.forEach { (server, tlsConfig) ->
-                launch { acceptLoop(server, tlsConfig) }
+                launch { acceptLoop(engine, server, tlsConfig) }
             }
 
             stopRequest.join()
 
             serverEntries.forEach { (server, _) -> runCatching { server.close() } }
-            ioEngine.close()
+            // Engine shutdown moved to [stopSuspend]'s finally, so the
+            // engine outlives this job and in-flight handlers launched
+            // on its scope can be joined during the grace period.
         }
     }
 
@@ -289,6 +312,7 @@ public class KeelApplicationEngine(
      * @param tlsConfig TLS configuration for this connector, or null for plain HTTP.
      */
     private suspend fun CoroutineScope.acceptLoop(
+        engine: StreamEngine,
         server: Server,
         tlsConfig: TlsConnectorConfig?,
     ) {
@@ -307,11 +331,18 @@ public class KeelApplicationEngine(
                     is AcceptBackoff.Exponential -> b.initialMs
                 }
 
-                // Dispatch on EventLoop so read/parse runs on the I/O
-                // thread without cross-thread dispatch. For engines
-                // without a dedicated EventLoop (Netty, NWConnection,
-                // Node.js), this falls back to Dispatchers.Default.
-                launch(channel.ioDispatcher) {
+                // Launch on the engine scope (not on this accept loop)
+                // so handlers are children of the engine's SupervisorJob.
+                // [IoEngine.close] cancels and joins them on shutdown,
+                // and [stopSuspend]'s grace phase can wait for them
+                // explicitly via `engine.coroutineContext.job.children`.
+                //
+                // Dispatcher is the channel's EventLoop so read/parse
+                // runs on the I/O thread without cross-thread dispatch.
+                // For engines without a dedicated EventLoop (Netty,
+                // NWConnection, Node.js) this falls back to
+                // [Dispatchers.Default].
+                engine.launch(channel.ioDispatcher) {
                     handleConnection(channel, scheme)
                 }
             } catch (e: Exception) {

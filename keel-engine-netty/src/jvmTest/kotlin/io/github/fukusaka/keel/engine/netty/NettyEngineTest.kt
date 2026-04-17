@@ -54,7 +54,7 @@ class NettyEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runTest {
         val engine = NettyEngine()
         engine.close()
     }
@@ -485,12 +485,12 @@ class NettyEngineTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() {
+    fun bindOnClosedEngineThrows() = runTest {
         val engine = NettyEngine()
         engine.close()
 
         assertFailsWith<IllegalStateException> {
-            runBlocking { engine.bind("127.0.0.1", 0) }
+            engine.bind("127.0.0.1", 0)
         }
     }
 

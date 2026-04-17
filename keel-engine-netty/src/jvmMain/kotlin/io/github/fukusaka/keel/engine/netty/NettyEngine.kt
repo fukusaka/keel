@@ -20,9 +20,13 @@ import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
@@ -64,6 +68,8 @@ import io.netty.channel.Channel as NettyNativeChannel
 class NettyEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("NettyEngine")
     private val bossGroup = NioEventLoopGroup(1)
@@ -234,9 +240,22 @@ class NettyEngine(
         return NettyPipelinedServer(nettyServerCh, localAddr)
     }
 
-    override fun close() {
+    /**
+     * Closes the engine: cancels every child coroutine launched on this
+     * engine's scope, joins their completion, then gracefully shuts down
+     * Netty's boss and worker EventLoopGroups.
+     *
+     * The `job.cancelAndJoin()` step runs first so that keel children
+     * suspended via keel-supplied dispatchers observe cancellation and
+     * complete before Netty's internal EventLoop tasks are drained.
+     * Netty's own EventLoops are never exposed as a CoroutineDispatcher
+     * to keel code, so the "keel coroutines first, then Netty internals"
+     * order is correct here. Idempotent.
+     */
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             // Short quiet period (0) and timeout (2s) to avoid hanging on shutdown.
             // Default shutdownGracefully() uses 2s quiet + 15s timeout which
             // causes CI timeouts when channels are not fully drained.

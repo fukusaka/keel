@@ -85,7 +85,7 @@ class EpollEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runBlocking {
         val engine = EpollEngine()
         engine.close()
     }
@@ -688,13 +688,14 @@ class EpollEngineTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() {
+    fun bindOnClosedEngineThrows() = runBlocking {
         val engine = EpollEngine()
         engine.close()
 
         assertFailsWith<IllegalStateException> {
-            runBlocking { engine.bind("0.0.0.0", 0) }
+            engine.bind("0.0.0.0", 0)
         }
+        Unit
     }
 
     @Test

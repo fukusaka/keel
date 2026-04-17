@@ -39,7 +39,7 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
         return {
             server.close()
             tlsCloseable?.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 

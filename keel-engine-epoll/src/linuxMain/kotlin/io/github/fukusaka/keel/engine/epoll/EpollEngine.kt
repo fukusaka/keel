@@ -13,7 +13,11 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.CoroutineContext
 import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
@@ -59,6 +63,8 @@ import platform.posix.errno
 class EpollEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("EpollEngine")
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
@@ -190,9 +196,10 @@ class EpollEngine(
      * Does NOT close existing channels — caller is responsible for closing
      * active connections before shutting down the engine. Idempotent.
      */
-    override fun close() {
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             bossLoop.close()
             workerGroup.close()
             logger.debug { "Engine closed" }

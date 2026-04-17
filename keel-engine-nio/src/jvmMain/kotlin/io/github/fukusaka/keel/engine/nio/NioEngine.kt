@@ -7,11 +7,15 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 
 /**
@@ -55,6 +59,8 @@ import kotlin.coroutines.resume
 class NioEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("NioEngine")
     private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")
@@ -207,14 +213,21 @@ class NioEngine(
     }
 
     /**
-     * Closes the engine, stopping both boss and worker EventLoops.
+     * Closes the engine: cancels every child coroutine launched on this
+     * engine's scope, joins their completion, then stops the boss and
+     * worker EventLoops.
      *
-     * Does NOT close existing channels — caller is responsible for closing
-     * active connections before shutting down the engine. Idempotent.
+     * The `job.cancelAndJoin()` step runs first so that children
+     * suspended on engine dispatchers observe cancellation while their
+     * dispatcher is still alive (otherwise the cancellation resume
+     * would be dispatched to a dead dispatcher and never fire). Only
+     * after every child has unwound are the dispatcher threads torn
+     * down. Idempotent.
      */
-    override fun close() {
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             bossLoop.close()
             workerGroup.close()
             logger.debug { "Engine closed" }

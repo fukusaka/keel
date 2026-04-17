@@ -14,7 +14,11 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.CoroutineContext
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
@@ -60,6 +64,8 @@ import platform.posix.errno
 class KqueueEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("KqueueEngine")
     private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
@@ -209,9 +215,10 @@ class KqueueEngine(
      * Pending registrations on the boss/worker loops are abandoned (continuations
      * are not resumed). Idempotent — safe to call multiple times.
      */
-    override fun close() {
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             bossLoop.close()
             workerGroup.close()
             logger.debug { "Engine closed" }

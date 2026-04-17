@@ -53,7 +53,7 @@ class NioEngineTest {
     // --- Lifecycle ---
 
     @Test
-    fun engineCreateAndClose() {
+    fun engineCreateAndClose() = runTest {
         val engine = NioEngine()
         engine.close()
     }
@@ -544,12 +544,12 @@ class NioEngineTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() {
+    fun bindOnClosedEngineThrows() = runTest {
         val engine = NioEngine()
         engine.close()
 
         assertFailsWith<IllegalStateException> {
-            runBlocking { engine.bind("0.0.0.0", 0) }
+            engine.bind("0.0.0.0", 0)
         }
     }
 

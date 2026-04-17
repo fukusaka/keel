@@ -4,6 +4,9 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nodejs.NodeEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 /**
  * Pipeline HTTP benchmark using [NodeEngine] with [HttpRequestDecoder],
  * [RoutingHandler], and [HttpResponseEncoder].
@@ -33,7 +36,10 @@ object PipelineHttpNodejsBenchmark : EngineBenchmark {
         return {
             server.close()
             tlsCloseable?.close()
-            engine.close()
+            // Node.js has no runBlocking; fire the suspend close and let
+            // Node finish on event-loop exit. The benchmark process is
+            // about to terminate, so fire-and-forget is acceptable here.
+            CoroutineScope(Dispatchers.Default).launch { engine.close() }
         }
     }
 

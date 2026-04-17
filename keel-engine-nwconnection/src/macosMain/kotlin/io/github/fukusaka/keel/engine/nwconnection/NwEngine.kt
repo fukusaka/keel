@@ -17,6 +17,9 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_start_conn_async
@@ -42,6 +45,7 @@ import platform.darwin.dispatch_semaphore_create
 import platform.darwin.dispatch_semaphore_signal
 import platform.darwin.dispatch_semaphore_wait
 import platform.darwin.dispatch_time
+import kotlin.coroutines.CoroutineContext
 
 /**
  * macOS NWConnection-based [StreamEngine] implementation.
@@ -70,6 +74,8 @@ import platform.darwin.dispatch_time
 class NwEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
 ) : StreamEngine {
+
+    override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("NwEngine")
     private var listener: nw_listener_t = null
@@ -300,9 +306,18 @@ class NwEngine(
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
-    override fun close() {
+    /**
+     * Closes the engine: cancels every child coroutine launched on this
+     * engine's scope, joins their completion, then cancels the NWListener.
+     *
+     * The `job.cancelAndJoin()` step runs first so children suspended on
+     * GCD-backed dispatchers observe cancellation and unwind before the
+     * listener is torn down. Idempotent.
+     */
+    override suspend fun close() {
         if (!closed) {
             closed = true
+            coroutineContext.job.cancelAndJoin()
             listener?.let { nw_listener_cancel(it) }
             logger.debug { "Engine closed" }
         }
