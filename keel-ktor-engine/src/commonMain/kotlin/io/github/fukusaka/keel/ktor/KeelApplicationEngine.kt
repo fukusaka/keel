@@ -273,9 +273,52 @@ public class KeelApplicationEngine(
 
             stopRequest.join()
 
+            // Close listening sockets first so acceptLoop exits.
             serverEntries.forEach { (server, _) -> runCatching { server.close() } }
+            // Close all accepted channels so in-flight handleConnection children
+            // observe EOF and exit their read loops. Without this, the children
+            // remain suspended on their per-connection dispatcher, and when the
+            // next step closes ioEngine below, cancellation cannot be delivered
+            // (the EventLoop thread is already gone) — leaving the children
+            // orphaned and the outer serverJob unable to join.
+            closeActiveChannels()
             ioEngine.close()
         }
+    }
+
+    /**
+     * Accepted channels currently being processed by [handleConnection].
+     *
+     * Added when accept returns a channel, removed when the per-connection
+     * coroutine completes. On `stop`, we close every still-active channel
+     * before `ioEngine.close()` so the read loops observe EOF and unwind
+     * their coroutines. Without this, suspended children cannot be
+     * cancelled after the EventLoop has been shut down.
+     *
+     * Guarded by [activeChannelsMutex] for thread-safety across the accept
+     * loop, per-connection completion callbacks, and stop path.
+     */
+    private val activeChannels = mutableSetOf<io.github.fukusaka.keel.core.Channel>()
+    private val activeChannelsMutex = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun trackChannel(channel: io.github.fukusaka.keel.core.Channel) {
+        activeChannelsMutex.lock()
+        try { activeChannels.add(channel) } finally { activeChannelsMutex.unlock() }
+    }
+
+    private suspend fun untrackChannel(channel: io.github.fukusaka.keel.core.Channel) {
+        activeChannelsMutex.lock()
+        try { activeChannels.remove(channel) } finally { activeChannelsMutex.unlock() }
+    }
+
+    private suspend fun closeActiveChannels() {
+        activeChannelsMutex.lock()
+        val snapshot = try {
+            activeChannels.toList().also { activeChannels.clear() }
+        } finally {
+            activeChannelsMutex.unlock()
+        }
+        snapshot.forEach { runCatching { it.close() } }
     }
 
     /**
@@ -311,8 +354,13 @@ public class KeelApplicationEngine(
                 // thread without cross-thread dispatch. For engines
                 // without a dedicated EventLoop (Netty, NWConnection,
                 // Node.js), this falls back to Dispatchers.Default.
+                trackChannel(channel)
                 launch(channel.ioDispatcher) {
-                    handleConnection(channel, scheme)
+                    try {
+                        handleConnection(channel, scheme)
+                    } finally {
+                        untrackChannel(channel)
+                    }
                 }
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
