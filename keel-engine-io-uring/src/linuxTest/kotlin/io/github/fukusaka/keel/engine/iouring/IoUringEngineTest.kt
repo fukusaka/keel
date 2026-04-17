@@ -93,7 +93,7 @@ class IoUringEngineTest {
     // --- lifecycle ---
 
     @Test
-    fun `engine create and close`() {
+    fun `engine create and close`() = runBlocking {
         val engine = IoUringEngine()
         engine.close()
     }

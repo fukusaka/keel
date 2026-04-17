@@ -8,6 +8,7 @@ import io_uring.io_uring
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.runBlocking
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
@@ -67,7 +68,7 @@ class IoUringPipelinedServerTest {
         } finally {
             close(clientFd)
             server.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 
@@ -108,7 +109,7 @@ class IoUringPipelinedServerTest {
         } finally {
             close(clientFd)
             server.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 
@@ -135,7 +136,7 @@ class IoUringPipelinedServerTest {
         } finally {
             close(clientFd)
             server.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 
@@ -165,7 +166,7 @@ class IoUringPipelinedServerTest {
             }
         } finally {
             server.close()
-            engine.close()
+            runBlocking { engine.close() }
         }
     }
 
