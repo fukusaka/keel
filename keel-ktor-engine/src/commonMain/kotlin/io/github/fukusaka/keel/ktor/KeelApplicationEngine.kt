@@ -46,6 +46,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.ContinuationInterceptor
@@ -197,6 +199,21 @@ public class KeelApplicationEngine(
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
 
+    /**
+     * Accepted channels currently being processed by [handleConnection].
+     *
+     * Added when accept returns a channel, removed when the per-connection
+     * coroutine completes. On `stop`, we close every still-active channel
+     * before `ioEngine.close()` so the read loops observe EOF and unwind
+     * their coroutines. Without this, suspended children cannot be
+     * cancelled after the EventLoop has been shut down.
+     *
+     * Guarded by [activeChannelsMutex] for thread-safety across the accept
+     * loop, per-connection completion callbacks, and stop path.
+     */
+    private val activeChannels = mutableSetOf<Channel>()
+    private val activeChannelsMutex = Mutex()
+
     init {
         serverJob = initServerJob()
         serverJob.invokeOnCompletion { cause ->
@@ -286,37 +303,17 @@ public class KeelApplicationEngine(
         }
     }
 
-    /**
-     * Accepted channels currently being processed by [handleConnection].
-     *
-     * Added when accept returns a channel, removed when the per-connection
-     * coroutine completes. On `stop`, we close every still-active channel
-     * before `ioEngine.close()` so the read loops observe EOF and unwind
-     * their coroutines. Without this, suspended children cannot be
-     * cancelled after the EventLoop has been shut down.
-     *
-     * Guarded by [activeChannelsMutex] for thread-safety across the accept
-     * loop, per-connection completion callbacks, and stop path.
-     */
-    private val activeChannels = mutableSetOf<io.github.fukusaka.keel.core.Channel>()
-    private val activeChannelsMutex = kotlinx.coroutines.sync.Mutex()
-
-    private suspend fun trackChannel(channel: io.github.fukusaka.keel.core.Channel) {
-        activeChannelsMutex.lock()
-        try { activeChannels.add(channel) } finally { activeChannelsMutex.unlock() }
+    private suspend fun trackChannel(channel: Channel) {
+        activeChannelsMutex.withLock { activeChannels.add(channel) }
     }
 
-    private suspend fun untrackChannel(channel: io.github.fukusaka.keel.core.Channel) {
-        activeChannelsMutex.lock()
-        try { activeChannels.remove(channel) } finally { activeChannelsMutex.unlock() }
+    private suspend fun untrackChannel(channel: Channel) {
+        activeChannelsMutex.withLock { activeChannels.remove(channel) }
     }
 
     private suspend fun closeActiveChannels() {
-        activeChannelsMutex.lock()
-        val snapshot = try {
+        val snapshot = activeChannelsMutex.withLock {
             activeChannels.toList().also { activeChannels.clear() }
-        } finally {
-            activeChannelsMutex.unlock()
         }
         snapshot.forEach { runCatching { it.close() } }
     }
