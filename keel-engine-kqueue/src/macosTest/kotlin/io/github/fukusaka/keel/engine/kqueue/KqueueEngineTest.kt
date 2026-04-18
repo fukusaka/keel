@@ -531,6 +531,32 @@ class KqueueEngineTest {
     }
 
     @Test
+    fun `connect via hostname resolves through SystemDnsResolver`() = runBlocking {
+        val engine = KqueueEngine()
+        // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
+        // the machine — this exercises the resolve + connect path without
+        // depending on network DNS.
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val channel = engine.connect("localhost", port)
+        server.accept().close()
+        channel.close()
+
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `connect to unresolvable hostname throws`() = runBlocking {
+        val engine = KqueueEngine()
+        assertFailsWith<RuntimeException> {
+            engine.connect("keel-test-host.invalid", 80)
+        }
+        engine.close()
+    }
+
+    @Test
     fun `connect and echo round trip`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)

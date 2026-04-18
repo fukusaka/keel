@@ -634,13 +634,29 @@ class IoUringEngineTest {
     fun `connect to invalid host address throws`() = runBlocking {
         val engine = IoUringEngine()
 
-        // Native SystemDnsResolver (Phase 11 A-2 stub) throws
-        // UnsupportedOperationException for hostnames until
-        // Phase 11 PR B wires getaddrinfo.
-        assertFailsWith<UnsupportedOperationException> {
-            engine.connect("not.a.valid.ip", 80)
+        // Native SystemDnsResolver (Phase 11 PR B) wraps getaddrinfo;
+        // an unresolvable hostname surfaces as a RuntimeException
+        // carrying the gai_strerror message.
+        assertFailsWith<RuntimeException> {
+            engine.connect("not.a.valid.invalid", 80)
         }
 
+        engine.close()
+    }
+
+    @Test
+    fun `connect via hostname resolves through SystemDnsResolver`() = runBlocking {
+        val engine = IoUringEngine()
+        // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
+        // the machine — this exercises the whole resolve + connect path
+        // without depending on network DNS.
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val channel = engine.connect("localhost", port)
+        channel.close()
+
+        server.close()
         engine.close()
     }
 
