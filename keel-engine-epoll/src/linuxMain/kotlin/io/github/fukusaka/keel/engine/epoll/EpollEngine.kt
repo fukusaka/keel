@@ -94,9 +94,24 @@ class EpollEngine(
      */
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "EpollEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
+
+        memScoped {
+            val ev = alloc<epoll_event>()
+            ev.events = EPOLLIN.toUInt()
+            ev.data.fd = serverFd
+            val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
+            check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
+        }
+
+        logger.debug { "Bound to $address" }
+        return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -136,9 +151,40 @@ class EpollEngine(
      */
     override suspend fun connect(address: SocketAddress): Channel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "EpollEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+        check(!closed) { "Engine is closed" }
+
+        val fd = PosixSocketUtils.createUnixUnconnectedSocket()
+        val (workerLoop, allocator) = workerGroup.next()
+
+        val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)
+        if (result < 0) {
+            val err = errno
+            if (err == EINPROGRESS) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
+                    cont.invokeOnCancellation {
+                        workerLoop.unregister(fd, EpollEventLoop.Interest.WRITE)
+                        close(fd)
+                    }
+                }
+                val error = PosixSocketUtils.getSocketError(fd)
+                if (error != 0) {
+                    close(fd)
+                    error("connect($address) failed: ${errnoMessage(error)}")
+                }
+            } else {
+                close(fd)
+                error("connect($address) failed: ${errnoMessage(err)}")
+            }
+        }
+
+        logger.debug { "Connected to $address" }
+        val transport = EpollIoTransport(fd, workerLoop, allocator)
+        return EpollPipelinedChannel(transport, logger, address, null)
     }
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
@@ -198,9 +244,31 @@ class EpollEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "EpollEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog)
+
+        logger.debug { "Pipeline bound to $address" }
+
+        val serverChannel = EpollPipelinedServerChannel(
+            serverFd = serverFd,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            localAddr = address,
+            logger = logger,
+            config = config,
+            pipelineInitializer = pipelineInitializer,
         )
+        serverChannel.start()
+        return serverChannel
     }
 
     private fun bindPipelineInet(

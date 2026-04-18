@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.native.posix.POSIX_IPV4_RESOLVE_HINTS
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.posix.fillSockaddrUn
 import io.github.fukusaka.keel.native.posix.resolveForPosixSocket
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
@@ -31,10 +32,13 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.allocArray
 import platform.posix.AF_INET
 import platform.posix.sockaddr_in
 import posix_socket.keel_inet_pton
 import posix_socket.keel_init_sockaddr_in
+import posix_socket.keel_sockaddr_un_sizeof
 
 /**
  * Linux io_uring-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -121,8 +125,15 @@ class IoUringEngine(
      */
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
+        logger.debug { "Bound to $address" }
+        return IoUringServer(
+            serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger,
         )
     }
 
@@ -150,9 +161,52 @@ class IoUringEngine(
      */
     override suspend fun connect(address: SocketAddress): Channel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+        check(!closed) { "Engine is closed" }
+
+        val fd = PosixSocketUtils.createUnixUnconnectedSocket()
+        val wi = workerGroup.nextIndex()
+        val workerLoop = workerGroup.loopAt(wi)
+        val allocator = workerGroup.allocatorAt(wi)
+
+        val res: Int
+        try {
+            res = memScoped {
+                // Raw byte buffer sized by the platform's sockaddr_un (110 on Linux
+                // glibc). cinterop does not always surface platform.posix.sockaddr_un,
+                // so we allocate by byte count via keel_sockaddr_un_sizeof and fill
+                // via the C helper that already knows the struct layout.
+                val addrBuf = allocArray<ByteVar>(keel_sockaddr_un_sizeof().toLong())
+                val addrLen = address.fillSockaddrUn(addrBuf)
+                workerLoop.submitAndAwait { sqe ->
+                    io_uring_prep_connect(
+                        sqe, fd,
+                        addrBuf.reinterpret(),
+                        addrLen.convert(),
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            closeFdSafely(fd, logger, "connect cleanup")
+            throw e
+        }
+
+        if (res < 0) {
+            closeFdSafely(fd, logger, "connect cleanup")
+            error("connect($address) failed: ${errnoMessage(-res)}")
+        }
+
+        val bufferRing = workerGroup.bufferRingAt(wi)
+        val fileRegistry = workerGroup.fileRegistryAt(wi)
+        val bufferTable = workerGroup.bufferTableAt(wi)
+        val transport = withContext(workerLoop) {
+            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+        }
+        logger.debug { "Connected to $address" }
+        return IoUringPipelinedChannel(transport, logger, address, null)
     }
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
@@ -232,9 +286,27 @@ class IoUringEngine(
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+
+        // SO_REUSEPORT is not supported on AF_UNIX, so the pipeline path uses a
+        // single server fd. Only one worker receives accept readiness — UDS
+        // workloads are typically low-fanout (IPC / sidecars) so the loss of
+        // kernel-side connection hashing is acceptable.
+        val serverFds = intArrayOf(PosixSocketUtils.createUnixServerSocket(address, config.backlog))
+        val server = IoUringPipelinedServerChannel(
+            workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger,
         )
+        server.start()
+        logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
+        return server
     }
 
     private fun bindPipelineInet(

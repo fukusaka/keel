@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
@@ -34,6 +35,7 @@ import platform.posix.setsockopt
 import platform.posix.socket
 import platform.posix.sockaddr_in
 import platform.posix.timeval
+import platform.posix.unlink
 import platform.posix.write
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,6 +46,16 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineTest {
+
+    companion object {
+        private var udsPathSeq = 0
+    }
+
+    private fun uniqueUdsPath(): String {
+        val pid = platform.posix.getpid()
+        val seq = udsPathSeq++
+        return "/tmp/keel-uds-epoll-$pid-$seq.sock"
+    }
 
     // --- Helper ---
 
@@ -1252,5 +1264,64 @@ class EpollEngineTest {
         close(clientFd)
         server.close()
         engine.close()
+    }
+
+    // --- UnixSocketAddress ---
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip`() = runBlocking {
+        val engine = EpollEngine()
+        val addr = UnixSocketAddress(uniqueUdsPath())
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = withTimeout(5000) { server.accept() }
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "uds-epoll".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("uds-epoll".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            unlink(addr.path)
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace bind connect echo round trip`() = runBlocking {
+        val engine = EpollEngine()
+        val addr = UnixSocketAddress.abstract("keel-epoll-abs-${platform.posix.getpid()}-${udsPathSeq++}")
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = withTimeout(5000) { server.accept() }
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("abstract".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            engine.close()
+        }
     }
 }
