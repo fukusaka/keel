@@ -29,6 +29,9 @@ internal class NioPipelinedChannel(
                     addr.address?.hostAddress ?: addr.hostString,
                     addr.port,
                 )
+                is java.net.UnixDomainSocketAddress -> io.github.fukusaka.keel.core.UnixSocketAddress(
+                    addr.path.toString(),
+                )
                 else -> null
             }
         }

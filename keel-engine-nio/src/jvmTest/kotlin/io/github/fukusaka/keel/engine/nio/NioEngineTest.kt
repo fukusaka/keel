@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
@@ -965,5 +966,59 @@ class NioEngineTest {
             0, tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
+    }
+
+    // --- UnixSocketAddress ---
+
+    private fun uniqueUdsPath(): String {
+        val pid = ProcessHandle.current().pid()
+        val seq = udsSeq.getAndIncrement()
+        return "/tmp/keel-nio-uds-$pid-$seq.sock"
+    }
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip`() = runTest {
+        val engine = NioEngine()
+        val path = uniqueUdsPath()
+        val addr = UnixSocketAddress(path)
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = withTimeout(5000) { server.accept() }
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "uds-nio".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("uds-nio".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            java.io.File(path).delete()
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace is rejected on JVM NIO`() = runTest {
+        val engine = NioEngine()
+        try {
+            val addr = UnixSocketAddress.abstract("keel-nio-abstract-should-fail")
+            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+        } finally {
+            engine.close()
+        }
+    }
+
+    companion object {
+        private val udsSeq = java.util.concurrent.atomic.AtomicInteger(0)
     }
 }

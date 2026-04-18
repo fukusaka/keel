@@ -23,19 +23,23 @@ import io.netty.channel.ChannelOption
 import io.netty.channel.EventLoop
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
+import io.netty.channel.socket.nio.NioDomainSocketChannel
+import io.netty.channel.socket.nio.NioServerDomainSocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.net.InetSocketAddress as JavaInetSocketAddress
+import java.net.UnixDomainSocketAddress
+import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.Channel as KeelChannel
 import io.netty.channel.Channel as NettyNativeChannel
+import java.net.InetSocketAddress as JavaInetSocketAddress
 
 /**
  * Netty-based [StreamEngine] implementation for JVM.
@@ -102,9 +106,50 @@ class NettyEngine(
 
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+        rejectAbstract(address)
+
+        val serverChannel = NettyServer.create()
+        val bootstrap = ServerBootstrap()
+            .group(bossGroup, workerGroup)
+            .channel(NioServerDomainSocketChannel::class.java)
+            .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
+                override fun initChannel(ch: NettyNativeChannel) {
+                    ch.config().isAutoRead = false
+                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
+                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val keelChannel = NettyPipelinedChannel(
+                        transport, logger, remoteAddr, localAddr,
+                    )
+                    ch.pipeline().addLast(transport.handler)
+                    bindConfig.initializeConnection(keelChannel)
+                    serverChannel.onNewChannel(keelChannel)
+                }
+            })
+
+        val nettyServerCh = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
+            bootstrap.bind(UnixDomainSocketAddress.of(Path.of(address.path))).addListener { f ->
+                val cf = f as ChannelFuture
+                if (cf.isSuccess) {
+                    cont.resume(cf.channel())
+                } else {
+                    cont.resumeWithException(
+                        cf.cause() ?: Exception("bind failed"),
+                    )
+                }
+            }
+        }
+
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
+
+        serverChannel.init(nettyServerCh, localAddr, bindConfig)
+        logger.debug { "Bound to $localAddr" }
+        return serverChannel
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -170,9 +215,46 @@ class NettyEngine(
      */
     override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
+        check(!closed) { "Engine is closed" }
+        rejectAbstract(address)
+
+        val bootstrap = Bootstrap()
+            .group(workerGroup)
+            .channel(NioDomainSocketChannel::class.java)
+            .handler(object : ChannelInitializer<NettyNativeChannel>() {
+                override fun initChannel(ch: NettyNativeChannel) {
+                    ch.config().isAutoRead = false
+                }
+            })
+
+        val nettyChannel = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
+            bootstrap.connect(UnixDomainSocketAddress.of(Path.of(address.path))).addListener { f ->
+                val cf = f as ChannelFuture
+                if (cf.isSuccess) {
+                    cont.resume(cf.channel())
+                } else {
+                    cont.resumeWithException(
+                        cf.cause() ?: Exception("connect failed"),
+                    )
+                }
+            }
+        }
+
+        val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress()) ?: address
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
+
+        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel))
+        val keelChannel = NettyPipelinedChannel(
+            transport, logger, remoteAddr, localAddr,
         )
+        nettyChannel.pipeline().addLast(transport.handler)
+
+        logger.debug { "Connected to $remoteAddr" }
+        return keelChannel
     }
 
     private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
@@ -236,9 +318,53 @@ class NettyEngine(
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        rejectAbstract(address)
+
+        val bootstrap = ServerBootstrap()
+            .group(bossGroup, workerGroup)
+            .channel(NioServerDomainSocketChannel::class.java)
+            .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
+                override fun initChannel(ch: NettyNativeChannel) {
+                    ch.config().isAutoRead = false
+                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
+                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val keelChannel = NettyPipelinedChannel(
+                        transport, logger, remoteAddr, localAddr,
+                    )
+                    ch.pipeline().addLast(transport.handler)
+                    config.initializeConnection(keelChannel)
+                    pipelineInitializer(keelChannel)
+                    transport.readEnabled = true
+                }
+            })
+
+        val nettyServerCh = bootstrap.bind(UnixDomainSocketAddress.of(Path.of(address.path))).sync().channel()
+        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
+        logger.debug { "Pipeline bound to $localAddr" }
+        return NettyPipelinedServer(nettyServerCh, localAddr)
+    }
+
+    /**
+     * Netty's `NioDomainSocketChannel` is backed by the JDK's
+     * `UnixDomainSocketAddress`, which supports only filesystem paths
+     * (Java 16+). Abstract-namespace addresses are rejected early.
+     */
+    private fun rejectAbstract(address: UnixSocketAddress) {
+        if (address.isAbstract) {
+            throw UnsupportedOperationException(
+                "Netty/NIO domain socket does not support abstract-namespace sockets: $address",
+            )
+        }
     }
 
     private fun bindPipelineInet(
