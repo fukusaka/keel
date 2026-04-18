@@ -1,9 +1,12 @@
 package io.github.fukusaka.keel.core
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -193,6 +196,62 @@ class CachingDnsResolverTest {
         val next = cache.resolve("example.com")
         assertEquals(listOf(IpAddress.V4.LOOPBACK), next.addresses)
         assertEquals(2, delegate.calls)
+    }
+
+    @Test
+    fun `single-flight survives lead caller cancellation without cancelling joiners`() = runTest {
+        val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
+        val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
+
+        coroutineScope {
+            // Lead caller: launched with its own Job so that cancelling
+            // it leaves this coroutineScope (and the joiners) alive.
+            val leadStarted = CompletableDeferred<Unit>()
+            val leadJob: Job = launch {
+                try {
+                    leadStarted.complete(Unit)
+                    cache.resolve("example.com")
+                } catch (_: Throwable) {
+                    // Cancellation lands here; we don't care what the
+                    // lead observes, only that joiners keep their
+                    // independent lifecycle.
+                }
+            }
+
+            // Joiners: start after the lead so they hit the in-flight
+            // deferred instead of racing to become the lead.
+            leadStarted.await()
+            delegate.waitForFirstCall()
+            val joiner1 = async { cache.resolve("example.com") }
+            val joiner2 = async { cache.resolve("example.com") }
+
+            // Cancel the lead caller. With decoupled single-flight the
+            // upstream fetch keeps running in the resolver's internal
+            // scope and the joiners still receive the result.
+            leadJob.cancelAndJoin()
+
+            delegate.release(ResolverResult(listOf(IpAddress.V4.LOOPBACK)))
+            assertEquals(listOf(IpAddress.V4.LOOPBACK), joiner1.await().addresses)
+            assertEquals(listOf(IpAddress.V4.LOOPBACK), joiner2.await().addresses)
+            assertEquals(1, delegate.calls, "single upstream fetch survived lead cancellation")
+        }
+    }
+
+    @Test
+    fun `close cancels in-flight fetches so pending joiners fail`() = runTest {
+        val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
+        val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
+
+        coroutineScope {
+            val joiners = (1..3).map {
+                async {
+                    assertFailsWith<Throwable> { cache.resolve("example.com") }
+                }
+            }
+            delegate.waitForFirstCall()
+            cache.close()
+            joiners.awaitAll()
+        }
     }
 
     @Test

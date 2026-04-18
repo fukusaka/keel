@@ -1,6 +1,11 @@
 package io.github.fukusaka.keel.core
 
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Duration
@@ -32,14 +37,20 @@ import kotlin.time.TimeSource
  * operational cost (DNS recovery lag, locked-in misconfiguration) of
  * carrying a second TTL.
  *
- * **Thread safety.** Concurrent calls are serialised through an internal
- * [Mutex]. Concurrent misses for the same hostname are single-flighted:
- * the first caller invokes [delegate] and the rest wait on a shared
- * [CompletableDeferred] so one upstream lookup serves every concurrent
- * miss. When the lead resolve fails (including cancellation) the
- * in-flight entry is dropped so a subsequent caller starts a fresh
- * attempt; every joiner receives the same failure so callers do not
- * silently fork retries they did not ask for.
+ * **Thread safety + single-flight.** Concurrent calls are serialised
+ * through an internal [Mutex] for cache / in-flight bookkeeping, then
+ * every concurrent miss for the same hostname awaits a single
+ * [Deferred] produced by [scope]. The upstream fetch runs inside
+ * [scope] — a [SupervisorJob]-backed scope owned by this resolver —
+ * so cancellation of any individual caller does not cancel the shared
+ * work and does not propagate cancellation to unrelated joiners. If
+ * every caller cancels before the fetch completes the async keeps
+ * running (its result will still populate the cache); call [close] to
+ * tear it down at shutdown.
+ *
+ * When the upstream fetch fails the in-flight entry is dropped so a
+ * subsequent caller starts a fresh attempt (positive-only policy) and
+ * the same failure is broadcast to any joiners still awaiting.
  *
  * @property delegate Underlying resolver invoked on cache miss.
  * @property ttl How long a successful resolution stays cached.
@@ -61,14 +72,23 @@ class CachingDnsResolver(
         require(maxSize > 0) { "maxSize must be positive: $maxSize" }
     }
 
+    // Internal scope for the single-flight upstream fetches. The
+    // SupervisorJob lets one fetch failure / cancellation stay local
+    // without tearing down the resolver, and Dispatchers.Unconfined
+    // avoids dispatching the coroutine body — delegate.resolve() will
+    // switch to its own dispatcher (e.g. Dispatchers.IO on JVM) for
+    // the blocking getaddrinfo call. Caller lifecycles never enter
+    // this scope.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
     // LinkedHashMap with accessOrder-style LRU via explicit reordering.
     // MPP has no thread-safe LRU primitive; a plain mutable map + mutex
     // is the simplest portable option.
     private val entries = LinkedHashMap<String, Entry>(maxSize)
 
-    // Single-flight registry: one deferred per in-flight upstream lookup,
-    // shared by every concurrent miss for that hostname.
-    private val inFlight = mutableMapOf<String, CompletableDeferred<ResolverResult>>()
+    // Single-flight registry: one shared deferred per in-flight upstream
+    // lookup, reused by every concurrent miss for that hostname.
+    private val inFlight = mutableMapOf<String, Deferred<ResolverResult>>()
 
     private val mutex = Mutex()
 
@@ -86,29 +106,29 @@ class CachingDnsResolver(
     }
 
     private suspend fun loadBase(hostname: String, hints: ResolveHints): ResolverResult {
-        // Decide the caller's role under the mutex: hit the cache, join
-        // an existing in-flight fetch, or become the lead that invokes
-        // the delegate. Only one coroutine per hostname is ever the
-        // lead.
-        val role = mutex.withLock {
-            lookup(hostname)?.let { return@withLock Role.Hit(it) }
-            inFlight[hostname]?.let { return@withLock Role.Join(it) }
-            val fresh = CompletableDeferred<ResolverResult>()
-            inFlight[hostname] = fresh
-            Role.Lead(fresh)
+        // Decide cached-hit vs await under the lock. If nothing is in
+        // flight we start a new async inside `scope` so cancellation of
+        // the current caller will not cancel the fetch (or other
+        // joiners). The async body itself reacquires the mutex to
+        // populate the cache and clear the in-flight slot.
+        val action = mutex.withLock {
+            lookup(hostname)?.let { return@withLock Action.Cached(it) }
+            val existing = inFlight[hostname]
+            if (existing != null) {
+                Action.Await(existing)
+            } else {
+                val started = scope.async { runFetch(hostname, hints) }
+                inFlight[hostname] = started
+                Action.Await(started)
+            }
         }
-        return when (role) {
-            is Role.Hit -> role.result
-            is Role.Join -> role.deferred.await()
-            is Role.Lead -> runLead(hostname, hints, role.deferred)
+        return when (action) {
+            is Action.Cached -> action.result
+            is Action.Await -> action.deferred.await()
         }
     }
 
-    private suspend fun runLead(
-        hostname: String,
-        hints: ResolveHints,
-        deferred: CompletableDeferred<ResolverResult>,
-    ): ResolverResult {
+    private suspend fun runFetch(hostname: String, hints: ResolveHints): ResolverResult {
         // Use Any family for the upstream fetch so the cache entry
         // satisfies future V4Only / V6Only / Any queries from one
         // lookup. Forward the canonicalName / timeout flags as the
@@ -120,25 +140,21 @@ class CachingDnsResolver(
                 put(hostname, fresh)
                 inFlight.remove(hostname)
             }
-            deferred.complete(fresh)
             return fresh
         } catch (e: Throwable) {
-            // Propagate lead failure to joiners and drop the in-flight
-            // entry so the next caller starts a fresh attempt
-            // (positive-only policy: failures are not cached).
-            // CancellationException flows through here too — joiners
-            // see the same cancellation, which matches the intent that
-            // the first caller's lifecycle scopes the lookup.
+            // Drop the in-flight entry so the next caller starts a
+            // fresh attempt (positive-only policy: failures are not
+            // cached). The deferred's completeExceptionally is driven
+            // by rethrowing here — awaiting joiners then see the same
+            // failure through their own await().
             mutex.withLock { inFlight.remove(hostname) }
-            deferred.completeExceptionally(e)
             throw e
         }
     }
 
-    private sealed class Role {
-        class Hit(val result: ResolverResult) : Role()
-        class Join(val deferred: CompletableDeferred<ResolverResult>) : Role()
-        class Lead(val deferred: CompletableDeferred<ResolverResult>) : Role()
+    private sealed class Action {
+        class Cached(val result: ResolverResult) : Action()
+        class Await(val deferred: Deferred<ResolverResult>) : Action()
     }
 
     private fun lookup(hostname: String): ResolverResult? {
@@ -171,6 +187,16 @@ class CachingDnsResolver(
     /** Removes every cached entry. */
     suspend fun invalidateAll() {
         mutex.withLock { entries.clear() }
+    }
+
+    /**
+     * Cancels the internal scope, tearing down any still-running
+     * upstream fetches. Safe to call more than once; subsequent
+     * [resolve] calls will fail because the async cannot be started
+     * on a cancelled scope. Intended for process shutdown.
+     */
+    fun close() {
+        scope.cancel()
     }
 
     private class Entry(val result: ResolverResult, val expiresAt: TimeMark) {
