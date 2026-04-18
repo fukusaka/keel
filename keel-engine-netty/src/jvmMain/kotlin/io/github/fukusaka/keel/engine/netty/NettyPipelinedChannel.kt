@@ -20,10 +20,11 @@ class NettyPipelinedChannel internal constructor(
 ) : AbstractPipelinedChannel(transport, logger, remoteAddress, localAddress) {
 
     companion object {
-        /** Extracts keel [SocketAddress] from a [JavaInetSocketAddress]. */
-        internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
-            val inet = addr as? JavaInetSocketAddress ?: return null
-            return InetSocketAddress(inet.address.hostAddress, inet.port)
+        /** Extracts keel [SocketAddress] from a [java.net.SocketAddress]. */
+        internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? = when (addr) {
+            is JavaInetSocketAddress -> InetSocketAddress(addr.address.hostAddress, addr.port)
+            is java.net.UnixDomainSocketAddress -> io.github.fukusaka.keel.core.UnixSocketAddress(addr.path.toString())
+            else -> null
         }
     }
 }

@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
+import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -17,9 +18,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.net.StandardProtocolFamily
+import java.net.UnixDomainSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
+import java.nio.file.Path
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import java.net.InetSocketAddress as JavaInetSocketAddress
@@ -91,9 +95,22 @@ class NioEngine(
      */
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+
+        val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        serverChannel.configureBlocking(false)
+        serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), bindConfig.backlog)
+
+        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
+        val selectionKey = bossLoop.registerChannel(serverChannel)
+
+        logger.debug { "Bound to $localAddr" }
+        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -129,9 +146,52 @@ class NioEngine(
      */
     override suspend fun connect(address: SocketAddress): Channel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+
+        val socketChannel = SocketChannel.open(StandardProtocolFamily.UNIX)
+        socketChannel.configureBlocking(false)
+        val (workerLoop, allocator) = workerGroup.next()
+
+        val connected = try {
+            socketChannel.connect(UnixDomainSocketAddress.of(Path.of(address.path)))
+        } catch (e: Exception) {
+            socketChannel.close()
+            throw e
+        }
+
+        val selectionKey = workerLoop.registerChannel(socketChannel)
+
+        if (!connected) {
+            try {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    workerLoop.setInterestCallback(selectionKey, SelectionKey.OP_CONNECT) {
+                        cont.resume(Unit)
+                    }
+                    cont.invokeOnCancellation {
+                        workerLoop.removeInterest(selectionKey, SelectionKey.OP_CONNECT)
+                        selectionKey.cancel()
+                        runCatching { socketChannel.close() }
+                    }
+                }
+                socketChannel.finishConnect()
+            } catch (e: Exception) {
+                selectionKey.cancel()
+                runCatching { socketChannel.close() }
+                throw e
+            }
+        }
+
+        val remoteAddr = NioPipelinedChannel.toSocketAddress(socketChannel.remoteAddress) ?: address
+        val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
+
+        logger.debug { "Connected to $remoteAddr" }
+        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, allocator)
+        return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
@@ -214,9 +274,7 @@ class NioEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
 
     private fun bindPipelineInet(
@@ -243,6 +301,37 @@ class NioEngine(
             bossLoop = bossLoop,
             workerGroup = workerGroup,
             localAddr = localAddr ?: error("Failed to get local address"),
+            logger = logger,
+            config = config,
+            pipelineInitializer = pipelineInitializer,
+        )
+        serverPipeline.start()
+        return serverPipeline
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+
+        val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+        serverChannel.configureBlocking(false)
+        serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), config.backlog)
+
+        val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
+
+        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
+        logger.debug { "Pipeline bound to $localAddr" }
+
+        val serverPipeline = NioPipelinedServerChannel(
+            serverChannel = serverChannel,
+            selectionKey = selectionKey,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            localAddr = localAddr,
             logger = logger,
             config = config,
             pipelineInitializer = pipelineInitializer,

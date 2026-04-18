@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
+import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.POSIX_IPV4_RESOLVE_HINTS
@@ -100,7 +101,7 @@ class KqueueEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        rejectAbstractOnNonLinux(address)
+        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
         val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
 
@@ -175,7 +176,7 @@ class KqueueEngine(
 
     private suspend fun connectUnix(address: UnixSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
-        rejectAbstractOnNonLinux(address)
+        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
         val fd = PosixSocketUtils.createUnixUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
@@ -281,7 +282,7 @@ class KqueueEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
-        rejectAbstractOnNonLinux(address)
+        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
         val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog)
 
@@ -298,14 +299,6 @@ class KqueueEngine(
         )
         serverChannel.start()
         return serverChannel
-    }
-
-    private fun rejectAbstractOnNonLinux(address: UnixSocketAddress) {
-        if (address.isAbstract) {
-            throw UnsupportedOperationException(
-                "Linux abstract-namespace Unix sockets are not supported on macOS: $address",
-            )
-        }
     }
 
     private fun bindPipelineInet(
