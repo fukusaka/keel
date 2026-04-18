@@ -86,6 +86,11 @@ class NioServerCloseThreadSafetyTest {
 
         try {
             withTimeout(testTimeout) {
+                // Dispatchers.Default is intentional: the race we want
+                // to exercise is close() on a thread that is *not* the
+                // boss EventLoop. Using a different dispatcher would
+                // defeat the regression test.
+                @Suppress("InjectDispatcher")
                 val acceptJob = async(Dispatchers.Default) {
                     runCatching { server.accept() }
                 }
@@ -94,9 +99,11 @@ class NioServerCloseThreadSafetyTest {
 
                 // Close from a non-EventLoop thread with a handful of
                 // concurrent callers to exercise the race.
-                (1..8).map {
+                @Suppress("InjectDispatcher")
+                val closers = (1..8).map {
                     async(Dispatchers.Default) { server.close() }
-                }.awaitAll()
+                }
+                closers.awaitAll()
 
                 val result = acceptJob.await()
                 assertTrue(result.isFailure, "accept should have surfaced a cancellation")
