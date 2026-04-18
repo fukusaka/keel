@@ -8,8 +8,10 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 
 /**
@@ -23,7 +25,11 @@ import kotlin.coroutines.resume
  * [SocketChannel.write] / [GatheringByteChannel.write][java.nio.channels.GatheringByteChannel.write].
  * When the send buffer is full (write returns 0), registers OP_WRITE and retries.
  *
- * **Thread safety**: all methods must be called on the [eventLoop] thread.
+ * **Thread safety**: read / write / flush must be called on the [eventLoop]
+ * thread. [close] is safe to call from any thread — a non-EventLoop caller
+ * dispatches the teardown onto [eventLoop] and returns immediately. The
+ * `opened` flag ([AbstractIoTransport]) is `@Volatile`, and the teardown
+ * block re-checks it on the EventLoop thread to remain idempotent.
  */
 internal class NioIoTransport(
     private val socketChannel: SocketChannel,
@@ -107,9 +113,23 @@ internal class NioIoTransport(
 
     /**
      * Releases all pending write buffers, cancels the SelectionKey, and
-     * closes the socket channel. Idempotent.
+     * closes the socket channel. Idempotent and thread-safe.
+     *
+     * If the caller is already on the [eventLoop] thread the teardown
+     * runs synchronously; otherwise it is dispatched to the EventLoop
+     * so the `pendingWrites` / `pendingBytes` / `selectionKey` mutations
+     * stay serialised with [write] / [flush] on the EventLoop side.
      */
     override fun close() {
+        if (!opened) return
+        if (eventLoop.inEventLoop()) {
+            teardownOnEventLoop()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { teardownOnEventLoop() })
+        }
+    }
+
+    private fun teardownOnEventLoop() {
         if (!opened) return
         opened = false
         for (pw in pendingWrites) pw.buf.release()
