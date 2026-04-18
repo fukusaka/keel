@@ -9,18 +9,26 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
+import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.staticCFunction
+import platform.posix.pthread_mutex_destroy
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
@@ -62,6 +70,18 @@ internal class NwIoTransport(
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+
+    // Mutex guarding [close] idempotence. NWConnection callbacks run on
+    // a per-connection serial dispatch queue while `close()` may be
+    // invoked from the application coroutine dispatcher; the mutex
+    // serialises the `opened` flip + pending-write release so the
+    // transport is torn down exactly once even under concurrent
+    // close() callers or a close() interleaving with an in-flight
+    // write callback.
+    private val closeArena = Arena()
+    private val closeMutex = closeArena.alloc<pthread_mutex_t>().apply {
+        pthread_mutex_init(ptr, null)
+    }
 
     // --- Read path ---
 
@@ -184,15 +204,40 @@ internal class NwIoTransport(
      * callback via [onReadComplete] when it detects [opened] is false.
      * Use [awaitClosed] to wait for the callback to complete.
      *
-     * Idempotent: subsequent calls are no-ops.
+     * Idempotent and thread-safe: the `opened` flip and pending-write
+     * release run under [closeMutex], so concurrent `close()` callers
+     * observe a single tear-down. [nw_connection_cancel] itself is
+     * documented thread-safe by `Network.framework`. The write / flush
+     * paths still execute on the per-connection dispatch queue; a
+     * rigorous serialisation with those paths will require moving
+     * cleanup onto the connection queue (tracked separately).
      */
     override fun close() {
-        if (!opened) return
-        opened = false
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
-        pendingBytes = 0
-        nw_connection_cancel(conn)
+        val shouldTeardown = withCloseLock {
+            if (!opened) {
+                false
+            } else {
+                opened = false
+                for (pw in pendingWrites) pw.buf.release()
+                pendingWrites.clear()
+                pendingBytes = 0
+                true
+            }
+        }
+        if (shouldTeardown) {
+            nw_connection_cancel(conn)
+            pthread_mutex_destroy(closeMutex.ptr)
+            closeArena.clear()
+        }
+    }
+
+    private inline fun <T> withCloseLock(block: () -> T): T {
+        pthread_mutex_lock(closeMutex.ptr)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(closeMutex.ptr)
+        }
     }
 
     /**
