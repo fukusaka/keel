@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -72,8 +74,8 @@ class NettyEngineTest {
     fun serverChannelLocalAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        assertEquals("127.0.0.1", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -91,7 +93,7 @@ class NettyEngineTest {
     fun channelLifecycleAfterClose() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -113,7 +115,7 @@ class NettyEngineTest {
     fun echoRoundTrip() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val serverCh = server.accept()
@@ -141,7 +143,7 @@ class NettyEngineTest {
     fun readReturnsMinusOneOnEof() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -162,7 +164,7 @@ class NettyEngineTest {
     fun writeAndFlush() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -190,7 +192,7 @@ class NettyEngineTest {
     fun multipleWritesSingleFlush() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -222,7 +224,7 @@ class NettyEngineTest {
     fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -246,7 +248,7 @@ class NettyEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -274,7 +276,7 @@ class NettyEngineTest {
     fun shutdownOutputSendsFin() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -294,7 +296,7 @@ class NettyEngineTest {
     fun readAfterShutdownOutputStillWorks() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -322,7 +324,7 @@ class NettyEngineTest {
     fun connectToListeningServer() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -340,14 +342,14 @@ class NettyEngineTest {
     fun connectRemoteAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -358,14 +360,14 @@ class NettyEngineTest {
     fun connectLocalAddress() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.localAddress)
-        assertEquals("127.0.0.1", ch.localAddress!!.host)
-        assertTrue(ch.localAddress!!.port > 0)
+        assertEquals("127.0.0.1", (ch.localAddress as InetSocketAddress).hostString)
+        assertTrue((ch.localAddress as InetSocketAddress).port > 0)
 
         ch.close()
         server.close()
@@ -378,7 +380,7 @@ class NettyEngineTest {
     fun asSuspendSourceReadsData() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -402,7 +404,7 @@ class NettyEngineTest {
     fun asSuspendSinkWritesData() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -427,7 +429,7 @@ class NettyEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -450,7 +452,7 @@ class NettyEngineTest {
     fun readOnClosedChannelThrows() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -469,7 +471,7 @@ class NettyEngineTest {
     fun writeOnClosedChannelThrows() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -498,7 +500,7 @@ class NettyEngineTest {
     fun `double close is idempotent`() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -515,7 +517,7 @@ class NettyEngineTest {
     fun `write zero bytes returns zero`() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -537,7 +539,7 @@ class NettyEngineTest {
     fun concurrentReadOnMultipleChannels() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
         val clients = (1..clientCount).map { connectRawClient(port) }
@@ -571,7 +573,7 @@ class NettyEngineTest {
     fun concurrentAcceptMultipleClients() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
         // Accept all concurrently
@@ -598,7 +600,7 @@ class NettyEngineTest {
     fun closeChannelWhileReadIsSuspended() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -660,7 +662,7 @@ class NettyEngineTest {
     fun clientDisconnectDuringRead() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -696,7 +698,7 @@ class NettyEngineTest {
     fun cancelReadCoroutine() = runTest {
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -736,7 +738,7 @@ class NettyEngineTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
         val ch = server.accept()
@@ -771,7 +773,7 @@ class NettyEngineTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
         val ch = server.accept()
@@ -812,7 +814,7 @@ class NettyEngineTest {
         val tracker = TrackingAllocator()
         val engine = NettyEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()

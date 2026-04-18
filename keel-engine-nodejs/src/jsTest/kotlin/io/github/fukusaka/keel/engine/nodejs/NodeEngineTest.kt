@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.nodejs
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -35,8 +37,8 @@ class NodeEngineTest {
     fun serverChannelLocalAddress() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        assertEquals("127.0.0.1", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -54,7 +56,7 @@ class NodeEngineTest {
     fun channelLifecycleAfterClose() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -76,7 +78,7 @@ class NodeEngineTest {
     fun echoRoundTrip() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -117,7 +119,7 @@ class NodeEngineTest {
     fun readReturnsMinusOneOnEof() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -138,7 +140,7 @@ class NodeEngineTest {
     fun writeAndFlush() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -170,7 +172,7 @@ class NodeEngineTest {
     fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -198,7 +200,7 @@ class NodeEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -226,7 +228,7 @@ class NodeEngineTest {
     fun shutdownOutputSendsFin() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -249,7 +251,7 @@ class NodeEngineTest {
     fun readAfterShutdownOutputStillWorks() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -281,7 +283,7 @@ class NodeEngineTest {
     fun connectToListeningServer() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -299,14 +301,14 @@ class NodeEngineTest {
     fun connectRemoteAddress() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -319,7 +321,7 @@ class NodeEngineTest {
     fun readOnClosedChannelThrows() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
@@ -337,7 +339,7 @@ class NodeEngineTest {
     fun writeOnClosedChannelThrows() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
@@ -365,7 +367,7 @@ class NodeEngineTest {
     fun `double close is idempotent`() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
@@ -381,7 +383,7 @@ class NodeEngineTest {
     fun `write zero bytes returns zero`() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -403,7 +405,7 @@ class NodeEngineTest {
     fun asSuspendSourceReadsData() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -434,7 +436,7 @@ class NodeEngineTest {
     fun asSuspendSinkWritesData() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -464,7 +466,7 @@ class NodeEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()

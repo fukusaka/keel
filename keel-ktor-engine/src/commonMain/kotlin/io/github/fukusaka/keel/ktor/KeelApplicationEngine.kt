@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.io.BufferedSuspendSink
@@ -276,7 +277,7 @@ public class KeelApplicationEngine(
                     val bindConfig = tlsConfig ?: BindConfig()
                     val server = engine.bind(connector.host, connector.port, bindConfig)
                     serverEntries.add(server to tlsConfig)
-                    connector.withPort(server.localAddress.port)
+                    connector.withPort((server.localAddress as InetSocketAddress).port)
                 }
                 resolvedDeferred.complete(resolved)
             } catch (cause: Throwable) {

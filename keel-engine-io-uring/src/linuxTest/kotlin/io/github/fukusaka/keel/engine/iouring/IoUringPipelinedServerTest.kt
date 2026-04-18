@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.pipeline.InboundHandler
@@ -58,7 +60,7 @@ class IoUringPipelinedServerTest {
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = rawConnect(port)
         try {
@@ -100,7 +102,7 @@ class IoUringPipelinedServerTest {
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = rawConnect(port)
         try {
@@ -127,7 +129,7 @@ class IoUringPipelinedServerTest {
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = rawConnect(port)
         try {
@@ -148,7 +150,7 @@ class IoUringPipelinedServerTest {
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         try {
             // Serial connections exercise the FixedFileRegistry.claim

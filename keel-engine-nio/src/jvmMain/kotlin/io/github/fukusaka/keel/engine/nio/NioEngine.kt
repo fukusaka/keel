@@ -96,7 +96,7 @@ class NioEngine(
         // One-time registration with the boss Selector
         val selectionKey = bossLoop.registerChannel(serverChannel)
 
-        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Bound to $localAddr" }
         return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
     }
 
@@ -159,7 +159,7 @@ class NioEngine(
         val remoteAddr = NioPipelinedChannel.toSocketAddress(socketChannel.remoteAddress)
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
-        logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
+        logger.debug { "Connected to $remoteAddr" }
         val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, allocator)
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
@@ -196,7 +196,7 @@ class NioEngine(
         val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 
         val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
-        logger.debug { "Pipeline bound to ${localAddr?.host}:${localAddr?.port}" }
+        logger.debug { "Pipeline bound to $localAddr" }
 
         val serverPipeline = NioPipelinedServerChannel(
             serverChannel = serverChannel,

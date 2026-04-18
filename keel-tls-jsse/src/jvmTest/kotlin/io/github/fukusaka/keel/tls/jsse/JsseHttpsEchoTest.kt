@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.tls.jsse
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
@@ -46,7 +48,7 @@ class JsseHttpsEchoTest {
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
             channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Allow server thread to start accepting connections.
         Thread.sleep(SERVER_START_DELAY_MS)

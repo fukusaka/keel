@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -24,7 +25,7 @@ internal class NioPipelinedChannel(
          */
         fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
             return when (addr) {
-                is java.net.InetSocketAddress -> SocketAddress(
+                is java.net.InetSocketAddress -> InetSocketAddress(
                     addr.address?.hostAddress ?: addr.hostString,
                     addr.port,
                 )

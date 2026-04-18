@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
@@ -110,7 +111,7 @@ class NwEngine(
         // arrive during startup. localAddress is updated after the
         // assigned port is known.
         val serverChannel = NwServer(
-            lsnr, SocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
+            lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
         )
 
         nw_listener_set_queue(lsnr, listenerQueue)
@@ -146,7 +147,7 @@ class NwEngine(
         }
 
         // Update the local address with the assigned port
-        serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
+        serverChannel.updateLocalAddress(InetSocketAddress(host, assignedPort))
         logger.debug { "Bound to $host:$assignedPort" }
         return serverChannel
     }
@@ -240,7 +241,7 @@ class NwEngine(
             "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
         }
         check(assignedPort > 0) { "NWListener failed to start" }
-        val localAddr = SocketAddress(host, assignedPort)
+        val localAddr = InetSocketAddress(host, assignedPort)
         logger.debug { "Pipeline bound to $host:$assignedPort" }
 
         return NwPipelinedServer(lsnr, localAddr)
@@ -295,12 +296,12 @@ class NwEngine(
         }
         check(rc == 0) { "connect to $host:$port failed" }
 
-        val remoteAddr = SocketAddress(
+        val remoteAddr = InetSocketAddress(
             nw_endpoint_get_hostname(endpoint)?.toKString() ?: host,
             nw_endpoint_get_port(endpoint).toInt(),
         )
 
-        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
+        logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(conn, config.allocator)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)

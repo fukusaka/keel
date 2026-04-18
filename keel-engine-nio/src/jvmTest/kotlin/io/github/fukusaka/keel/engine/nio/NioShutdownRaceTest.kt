@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +64,7 @@ class NioShutdownRaceTest {
                 withTimeout(testTimeout) {
                     val engine = NioEngine(IoEngineConfig())
                     val server = engine.bind("127.0.0.1", 0)
-                    val port = server.localAddress.port
+                    val port = (server.localAddress as InetSocketAddress).port
                     // Dispatchers.Default is intentional: the original race
                     // surfaced as a CoroutinesInternalError on a
                     // DefaultDispatcher-worker thread; reproducing it requires

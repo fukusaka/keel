@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -71,8 +73,8 @@ class NioEngineTest {
     fun serverChannelLocalAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        assertEquals("127.0.0.1", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -90,7 +92,7 @@ class NioEngineTest {
     fun channelLifecycleAfterClose() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -112,7 +114,7 @@ class NioEngineTest {
     fun echoRoundTrip() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val serverCh = server.accept()
@@ -140,7 +142,7 @@ class NioEngineTest {
     fun readReturnsMinusOneOnEof() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -161,7 +163,7 @@ class NioEngineTest {
     fun writeAndFlush() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -189,7 +191,7 @@ class NioEngineTest {
     fun multipleWritesSingleFlush() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -221,7 +223,7 @@ class NioEngineTest {
     fun readAdvancesIoBufWriterIndex() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -245,7 +247,7 @@ class NioEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -273,7 +275,7 @@ class NioEngineTest {
     fun shutdownOutputSendsFin() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -294,7 +296,7 @@ class NioEngineTest {
     fun readAfterShutdownOutputStillWorks() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -322,7 +324,7 @@ class NioEngineTest {
     fun connectToListeningServer() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -340,14 +342,14 @@ class NioEngineTest {
     fun connectRemoteAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -358,14 +360,14 @@ class NioEngineTest {
     fun connectLocalAddress() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.localAddress)
-        assertEquals("127.0.0.1", ch.localAddress!!.host)
-        assertTrue(ch.localAddress!!.port > 0)
+        assertEquals("127.0.0.1", (ch.localAddress as InetSocketAddress).hostString)
+        assertTrue((ch.localAddress as InetSocketAddress).port > 0)
 
         ch.close()
         server.close()
@@ -376,7 +378,7 @@ class NioEngineTest {
     fun `connect and echo round trip`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Non-blocking connect (OP_CONNECT on non-loopback, immediate on loopback)
         val client = engine.connect("127.0.0.1", port)
@@ -415,7 +417,7 @@ class NioEngineTest {
         // On JVM, loopback connect may succeed if the OS hasn't fully
         // released the port (TIME_WAIT). Both outcomes are valid.
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         server.close()
 
         try {
@@ -437,7 +439,7 @@ class NioEngineTest {
     fun asSuspendSourceReadsData() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -461,7 +463,7 @@ class NioEngineTest {
     fun asSuspendSinkWritesData() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -486,7 +488,7 @@ class NioEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -509,7 +511,7 @@ class NioEngineTest {
     fun readOnClosedChannelThrows() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -528,7 +530,7 @@ class NioEngineTest {
     fun writeOnClosedChannelThrows() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -557,7 +559,7 @@ class NioEngineTest {
     fun `double close is idempotent`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -574,7 +576,7 @@ class NioEngineTest {
     fun `write zero bytes returns zero`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -596,7 +598,7 @@ class NioEngineTest {
     fun concurrentReadOnMultipleChannels() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
         val clients = (1..clientCount).map { connectRawClient(port) }
@@ -628,7 +630,7 @@ class NioEngineTest {
     fun concurrentAcceptMultipleClients() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
         val acceptJob = async {
@@ -653,7 +655,7 @@ class NioEngineTest {
     fun clientDisconnectDuringRead() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -684,7 +686,7 @@ class NioEngineTest {
     fun cancelReadCoroutine() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -734,7 +736,7 @@ class NioEngineTest {
     fun `multiple read-write cycles reuse SelectionKey`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -770,7 +772,7 @@ class NioEngineTest {
     fun `flush large payload completes without data loss`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -816,7 +818,7 @@ class NioEngineTest {
     fun `flush multiple large buffers with gather write`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
         val ch = server.accept()
@@ -866,7 +868,7 @@ class NioEngineTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
         val ch = server.accept()
@@ -901,7 +903,7 @@ class NioEngineTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
         val ch = server.accept()
@@ -939,7 +941,7 @@ class NioEngineTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()

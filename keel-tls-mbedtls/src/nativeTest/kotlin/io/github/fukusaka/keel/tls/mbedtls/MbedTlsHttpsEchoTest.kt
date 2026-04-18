@@ -2,6 +2,8 @@
 
 package io.github.fukusaka.keel.tls.mbedtls
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
@@ -70,7 +72,7 @@ class MbedTlsHttpsEchoTest {
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
             channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         usleep(200_000u) // 200ms — allow server to start
 

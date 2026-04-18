@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nodejs
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
@@ -69,7 +70,7 @@ class NodeEngine(
             srv.listen(listenOpts) {
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
-                val localAddr = SocketAddress(host, assignedPort)
+                val localAddr = InetSocketAddress(host, assignedPort)
                 val serverChannel = NodeServer(
                     srv,
                     localAddr,
@@ -123,13 +124,13 @@ class NodeEngine(
         }
 
         val srv = createServer(config)
-        val serverChannel = NodePipelinedServer(srv, SocketAddress(host, port))
+        val serverChannel = NodePipelinedServer(srv, InetSocketAddress(host, port))
         val connectionEvent = serverConnectionEvent(config)
 
         srv.on(connectionEvent) { socket: dynamic ->
             val typedSocket = socket.unsafeCast<Socket>()
             val remoteAddr = typedSocket.remoteAddress?.let { h ->
-                typedSocket.remotePort?.let { p -> SocketAddress(h, p) }
+                typedSocket.remotePort?.let { p -> InetSocketAddress(h, p) }
             }
             val channelLogger = this.channelLogger
             val transport = NodeIoTransport(typedSocket, this.config.allocator)
@@ -155,7 +156,7 @@ class NodeEngine(
         srv.listen(listenOpts) {
             val addr = srv.address()
             val assignedPort = addr.port as Int
-            serverChannel.updateLocalAddress(SocketAddress(host, assignedPort))
+            serverChannel.updateLocalAddress(InetSocketAddress(host, assignedPort))
             logger.debug { "Pipeline bound to $host:$assignedPort" }
         }
 
@@ -169,9 +170,9 @@ class NodeEngine(
             val socket = Net.createConnection(port, host)
 
             socket.once("connect") { _: dynamic ->
-                val remoteAddr = SocketAddress(host, port)
+                val remoteAddr = InetSocketAddress(host, port)
                 val localAddr = socket.localAddress?.let { h ->
-                    socket.localPort?.let { p -> SocketAddress(h, p) }
+                    socket.localPort?.let { p -> InetSocketAddress(h, p) }
                 }
                 val channelLogger = this@NodeEngine.channelLogger
                 val transport = NodeIoTransport(socket, config.allocator)

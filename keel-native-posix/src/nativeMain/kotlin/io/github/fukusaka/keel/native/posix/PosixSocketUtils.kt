@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -236,6 +237,6 @@ object PosixSocketUtils {
         val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
         keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
         val host = hostBuf.toKString()
-        SocketAddress(host, port)
+        InetSocketAddress(host, port)
     }
 }

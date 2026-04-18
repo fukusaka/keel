@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -65,7 +66,7 @@ internal class NodeServer(
         }
 
         val remoteAddr = socket.remoteAddress?.let { host ->
-            socket.remotePort?.let { port -> SocketAddress(host, port) }
+            socket.remotePort?.let { port -> InetSocketAddress(host, port) }
         }
 
         val transport = NodeIoTransport(socket, allocator)

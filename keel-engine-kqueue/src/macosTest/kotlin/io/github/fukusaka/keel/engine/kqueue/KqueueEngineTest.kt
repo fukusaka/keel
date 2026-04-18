@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -103,8 +105,8 @@ class KqueueEngineTest {
     fun serverChannelLocalAddress() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -122,7 +124,7 @@ class KqueueEngineTest {
     fun channelLifecycleAfterClose() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -144,7 +146,7 @@ class KqueueEngineTest {
     fun echoRoundTrip() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val serverCh = server.accept()
@@ -176,7 +178,7 @@ class KqueueEngineTest {
     fun readReturnsMinusOneOnEof() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -197,7 +199,7 @@ class KqueueEngineTest {
     fun writeAndFlush() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -225,7 +227,7 @@ class KqueueEngineTest {
     fun multipleWritesSingleFlush() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -257,7 +259,7 @@ class KqueueEngineTest {
     fun readAdvancesIoBufWriterIndex() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -281,7 +283,7 @@ class KqueueEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -307,7 +309,7 @@ class KqueueEngineTest {
     fun `large payload flush writes all bytes`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -347,7 +349,7 @@ class KqueueEngineTest {
     fun `multiple write then single flush`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -392,7 +394,7 @@ class KqueueEngineTest {
     fun `sequential flush reuses channel correctly`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -424,7 +426,7 @@ class KqueueEngineTest {
     fun shutdownOutputSendsFin() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -448,7 +450,7 @@ class KqueueEngineTest {
     fun readAfterShutdownOutputStillWorks() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -477,7 +479,7 @@ class KqueueEngineTest {
     fun connectToListeningServer() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -496,14 +498,14 @@ class KqueueEngineTest {
     fun connectRemoteAddress() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close() // drain accept queue
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -514,14 +516,14 @@ class KqueueEngineTest {
     fun connectLocalAddress() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.localAddress)
-        assertEquals("127.0.0.1", ch.localAddress!!.host)
-        assertTrue(ch.localAddress!!.port > 0)
+        assertEquals("127.0.0.1", (ch.localAddress as InetSocketAddress).hostString)
+        assertTrue((ch.localAddress as InetSocketAddress).port > 0)
 
         ch.close()
         server.close()
@@ -532,7 +534,7 @@ class KqueueEngineTest {
     fun `connect and echo round trip`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)
         val client = engine.connect("127.0.0.1", port)
@@ -569,7 +571,7 @@ class KqueueEngineTest {
         val engine = KqueueEngine()
         // Bind to get a port, then close the server so the port is refused
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
@@ -588,7 +590,7 @@ class KqueueEngineTest {
     fun asSuspendSourceReadsData() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -612,7 +614,7 @@ class KqueueEngineTest {
     fun asSuspendSinkWritesData() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -637,7 +639,7 @@ class KqueueEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -660,7 +662,7 @@ class KqueueEngineTest {
     fun readOnClosedChannelThrows() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -679,7 +681,7 @@ class KqueueEngineTest {
     fun writeOnClosedChannelThrows() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -709,7 +711,7 @@ class KqueueEngineTest {
     fun `double close is idempotent`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -726,7 +728,7 @@ class KqueueEngineTest {
     fun `write zero bytes returns zero`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -748,7 +750,7 @@ class KqueueEngineTest {
     fun concurrentReadOnMultipleChannels() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
         val clients = (1..clientCount).map { connectRawClient(port) }
@@ -782,7 +784,7 @@ class KqueueEngineTest {
     fun concurrentAcceptMultipleClients() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
         val acceptJob = async {
@@ -813,7 +815,7 @@ class KqueueEngineTest {
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -845,7 +847,7 @@ class KqueueEngineTest {
     fun cancelReadCoroutine() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -877,7 +879,7 @@ class KqueueEngineTest {
     fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -895,7 +897,7 @@ class KqueueEngineTest {
     fun `dispatch executes task on EventLoop thread`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -922,7 +924,7 @@ class KqueueEngineTest {
     fun `echo round trip on EventLoop dispatcher`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -973,7 +975,7 @@ class KqueueEngineTest {
     fun `echo with multi-thread EventLoop`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 4))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Multiple clients to exercise round-robin distribution
         val results = (1..8).map { i ->
@@ -1011,7 +1013,7 @@ class KqueueEngineTest {
     fun `channels are distributed across worker EventLoops`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 4))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Accept 4 channels — should be assigned to 4 different workers
         val channels = (1..4).map {
@@ -1044,7 +1046,7 @@ class KqueueEngineTest {
         val tracker = TrackingAllocator()
         val engine = KqueueEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -1078,7 +1080,7 @@ class KqueueEngineTest {
         val tracker = TrackingAllocator()
         val engine = KqueueEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -1116,7 +1118,7 @@ class KqueueEngineTest {
         val tracker = TrackingAllocator()
         val engine = KqueueEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -1150,7 +1152,7 @@ class KqueueEngineTest {
     fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Warm up: establish connection + first echo
         val clientFd = connectRawClient(port)

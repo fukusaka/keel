@@ -117,7 +117,7 @@ class IoUringEngine(
 
         val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Bound to $localAddr" }
         return IoUringServer(
             serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger,
         )
@@ -177,7 +177,7 @@ class IoUringEngine(
         val transport = withContext(workerLoop) {
             IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
         }
-        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
+        logger.debug { "Connected to $remoteAddr" }
         return IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

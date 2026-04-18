@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.LoggerFactory
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -201,7 +202,7 @@ internal class NwServer(
         val endpoint = nw_connection_copy_endpoint(conn) ?: return null
         val host = nw_endpoint_get_hostname(endpoint)?.toKString() ?: return null
         val port = nw_endpoint_get_port(endpoint).toInt()
-        return SocketAddress(host, port)
+        return InetSocketAddress(host, port)
     }
 
     /** Runs [block] under the pthread mutex. */
