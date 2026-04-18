@@ -2,10 +2,15 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -112,9 +117,18 @@ class IoUringEngine(
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to $localAddr" }
@@ -132,9 +146,18 @@ class IoUringEngine(
      *
      * @throws IllegalStateException if the engine is closed or the address is invalid.
      */
-    override suspend fun connect(host: String, port: Int): Channel {
+    override suspend fun connect(address: SocketAddress): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val fd = PosixSocketUtils.createUnconnectedSocket()
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
@@ -199,13 +222,25 @@ class IoUringEngine(
      * @throws IllegalStateException if the engine is closed.
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "IoUringEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.requireIpLiteral()
+        val port = address.port
         val serverFds = IntArray(workerGroup.size) {
             PosixSocketUtils.createReusePortServerSocket(host, port, config.backlog)
         }

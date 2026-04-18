@@ -2,21 +2,26 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.net.InetSocketAddress
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
+import java.net.InetSocketAddress as JavaInetSocketAddress
 
 /**
  * JVM NIO-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -83,12 +88,21 @@ class NioEngine(
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val serverChannel = ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(InetSocketAddress(host, port), bindConfig.backlog)
+        serverChannel.bind(JavaInetSocketAddress(host, port), bindConfig.backlog)
 
         val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
             ?: error("Failed to get local address")
@@ -112,9 +126,18 @@ class NioEngine(
      * The connected channel is assigned to the next worker EventLoop
      * in round-robin order with a cached [SelectionKey].
      */
-    override suspend fun connect(host: String, port: Int): Channel {
+    override suspend fun connect(address: SocketAddress): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
         val (workerLoop, allocator) = workerGroup.next()
@@ -122,7 +145,7 @@ class NioEngine(
         // Try connect first — loopback may succeed or fail immediately
         // without needing Selector registration.
         val connected = try {
-            socketChannel.connect(InetSocketAddress(host, port))
+            socketChannel.connect(JavaInetSocketAddress(host, port))
         } catch (e: Exception) {
             socketChannel.close()
             throw e
@@ -182,16 +205,28 @@ class NioEngine(
      * @return A [PipelinedServer] for lifecycle management.
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NioEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.requireIpLiteral()
+        val port = address.port
         val serverChannel = java.nio.channels.ServerSocketChannel.open()
         serverChannel.configureBlocking(false)
-        serverChannel.bind(java.net.InetSocketAddress(host, port), config.backlog)
+        serverChannel.bind(JavaInetSocketAddress(host, port), config.backlog)
 
         val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 

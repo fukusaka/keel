@@ -2,10 +2,15 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -86,9 +91,18 @@ class KqueueEngine(
      *
      * @throws IllegalStateException if the engine is already closed.
      */
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
 
         // Register server fd with the boss EventLoop's kqueue so that
@@ -129,9 +143,18 @@ class KqueueEngine(
      * @throws IllegalStateException if the engine is already closed.
      * @throws IllegalStateException if connect fails (SO_ERROR non-zero).
      */
-    override suspend fun connect(host: String, port: Int): Channel {
+    override suspend fun connect(address: SocketAddress): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val fd = PosixSocketUtils.createUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
@@ -184,13 +207,25 @@ class KqueueEngine(
      * @return A [PipelinedServer] for lifecycle management.
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.requireIpLiteral()
+        val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(host, port, config.backlog)
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)

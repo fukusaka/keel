@@ -275,7 +275,7 @@ public class KeelApplicationEngine(
                 val resolved = connectors.map { connector ->
                     val tlsConfig = tlsConnectors[connector]
                     val bindConfig = tlsConfig ?: BindConfig()
-                    val server = engine.bind(connector.host, connector.port, bindConfig)
+                    val server = engine.bind(InetSocketAddress(connector.host, connector.port), bindConfig)
                     serverEntries.add(server to tlsConfig)
                     connector.withPort((server.localAddress as InetSocketAddress).port)
                 }
