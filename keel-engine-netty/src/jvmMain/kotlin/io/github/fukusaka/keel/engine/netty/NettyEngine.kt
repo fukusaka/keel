@@ -8,6 +8,9 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -96,9 +99,18 @@ class NettyEngine(
             config.allocator.createForEventLoop()
         }
 
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         // Two-phase init: create NettyServer before bind so the
         // ChannelInitializer closure can call onNewChannel(). The underlying
         // Netty server channel and local address are set via init() after
@@ -155,9 +167,18 @@ class NettyEngine(
      * yet receiving data until [NettyIoTransport.readEnabled] is set
      * (`autoRead = false`).
      */
-    override suspend fun connect(host: String, port: Int): KeelChannel {
+    override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val bootstrap = Bootstrap()
             .group(workerGroup)
             .channel(NioSocketChannel::class.java)
@@ -206,13 +227,25 @@ class NettyEngine(
      * once at startup, not on the hot path.
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NettyEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.requireIpLiteral()
+        val port = address.port
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)

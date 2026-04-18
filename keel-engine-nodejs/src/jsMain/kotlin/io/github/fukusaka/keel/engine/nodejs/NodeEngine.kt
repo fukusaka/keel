@@ -1,11 +1,14 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCodecFactory
@@ -56,9 +59,18 @@ class NodeEngine(
     private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): KeelServer {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelServer = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         return suspendCoroutine { cont ->
             val srv = Net.createServer { _ ->
                 // No-op: connections handled via "connection" event below
@@ -112,12 +124,25 @@ class NodeEngine(
      * @throws IllegalArgumentException if port is 0 (ephemeral port not supported).
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
+
+        val host = address.requireIpLiteral()
+        val port = address.port
         require(port > 0) {
             "Ephemeral port (port=0) is not supported in bindPipeline. " +
                 "Node.js assigns the port asynchronously in the listen callback."
@@ -163,9 +188,18 @@ class NodeEngine(
         return serverChannel
     }
 
-    override suspend fun connect(host: String, port: Int): KeelChannel {
+    override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         return suspendCoroutine { cont ->
             val socket = Net.createConnection(port, host)
 

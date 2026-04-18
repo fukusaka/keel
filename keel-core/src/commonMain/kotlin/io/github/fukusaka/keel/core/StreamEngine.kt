@@ -28,6 +28,17 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * ServerBootstrap.bind, and Ktor CIO. There is no use case for binding
  * without listening in keel's scope.
  *
+ * Addresses are passed as [SocketAddress]. IP literal hosts are
+ * consumed directly; hostnames (`Host.Name`) are resolved at call time
+ * via [IoEngineConfig.resolver]. Native engines currently support only
+ * IP literals and reject hostnames (Phase 11 PR B will add
+ * `getaddrinfo`). [UnixSocketAddress] is not yet supported by any
+ * engine and throws [UnsupportedOperationException] until Phase 11 PR C.
+ *
+ * Convenience overloads accepting `host: String, port: Int` are
+ * provided as default interface members so existing call sites
+ * compile without explicit construction of an [InetSocketAddress].
+ *
  * @see IoEngine
  */
 interface StreamEngine : IoEngine {
@@ -37,12 +48,21 @@ interface StreamEngine : IoEngine {
      *
      * Internally performs: socket -> bind -> listen.
      *
-     * @param host Bind address (e.g. "0.0.0.0" for all interfaces, "127.0.0.1" for loopback).
-     * @param port Port number. 0 lets the OS assign an ephemeral port.
-     * @param config Per-server bind configuration (backlog, etc.).
+     * @param address Bind endpoint. For [InetSocketAddress], hostnames
+     *   are resolved via [IoEngineConfig.resolver]. [UnixSocketAddress]
+     *   throws [UnsupportedOperationException] until Phase 11 PR C.
+     * @param bindConfig Per-server bind configuration (backlog, etc.).
      * @return a [Server] that accepts incoming connections.
      */
-    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): Server
+    suspend fun bind(address: SocketAddress, bindConfig: BindConfig = BindConfig()): Server
+
+    /**
+     * Convenience overload: builds an [InetSocketAddress] from [host]
+     * and [port]. IP literals in [host] are parsed eagerly; hostnames
+     * are resolved lazily when the engine consumes the address.
+     */
+    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): Server =
+        bind(InetSocketAddress(host, port), bindConfig)
 
     /**
      * Binds a server socket with Pipeline-mode connection handling.
@@ -59,10 +79,12 @@ interface StreamEngine : IoEngine {
      *
      * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
      * Engines that require async listener startup (e.g., NWConnection)
-     * block internally until the listener is ready.
+     * block internally until the listener is ready. Because this path
+     * cannot invoke a suspending resolver, [InetSocketAddress] hosts
+     * must be IP literals ([Host.Ip]); hostnames throw
+     * [UnsupportedOperationException].
      *
-     * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
-     * @param port Port number. 0 lets the OS assign an ephemeral port.
+     * @param address Bind endpoint. Hostnames are rejected (see above).
      * @param config Per-server bind configuration (backlog, TLS via subclass).
      * @param pipelineInitializer Callback to configure the channel for each accepted connection.
      *        Receives the [PipelinedChannel] for pipeline handler setup.
@@ -70,8 +92,7 @@ interface StreamEngine : IoEngine {
      * @throws UnsupportedOperationException if this engine does not support pipeline mode.
      */
     fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
         config: BindConfig = BindConfig(),
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
@@ -81,11 +102,27 @@ interface StreamEngine : IoEngine {
     }
 
     /**
+     * Convenience overload: pipeline-mode bind to `host:port`.
+     */
+    fun bindPipeline(
+        host: String,
+        port: Int,
+        config: BindConfig = BindConfig(),
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer = bindPipeline(InetSocketAddress(host, port), config, pipelineInitializer)
+
+    /**
      * Opens an outbound connection to a remote peer.
      *
-     * @param host Remote host (IPv4 literal in Phase (a); DNS resolution deferred).
-     * @param port Remote port.
+     * @param address Remote endpoint. Hostnames are resolved via
+     *   [IoEngineConfig.resolver]; IP literals are used directly.
      * @return a [Channel] ready for read/write.
      */
-    suspend fun connect(host: String, port: Int): Channel
+    suspend fun connect(address: SocketAddress): Channel
+
+    /**
+     * Convenience overload: connect to `host:port`.
+     */
+    suspend fun connect(host: String, port: Int): Channel =
+        connect(InetSocketAddress(host, port))
 }

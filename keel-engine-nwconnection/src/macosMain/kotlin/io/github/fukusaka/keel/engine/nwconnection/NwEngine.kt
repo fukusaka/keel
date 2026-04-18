@@ -8,6 +8,9 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
 import io.github.fukusaka.keel.tls.TlsCodecFactory
@@ -92,9 +95,18 @@ class NwEngine(
      * Note: [BindConfig.backlog] is ignored. NWListener does not expose
      * a configurable listen backlog; the OS manages it internally.
      */
-    override suspend fun bind(host: String, port: Int, bindConfig: BindConfig): ServerChannel {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+        is InetSocketAddress -> bindInet(address, bindConfig)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val portStr = if (port == 0) "0" else port.toString()
         val params = keel_nw_create_tcp_params()
 
@@ -170,13 +182,25 @@ class NwEngine(
      * @return A [PipelinedServer] that cancels the listener when closed.
      */
     override fun bindPipeline(
-        host: String,
-        port: Int,
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer = when (address) {
+        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private fun bindPipelineInet(
+        address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
+        val host = address.requireIpLiteral()
+        val port = address.port
         val portStr = if (port == 0) "0" else port.toString()
         val listenerLevelTls = isListenerLevelTls(config)
         val params = if (listenerLevelTls) {
@@ -272,9 +296,18 @@ class NwEngine(
      * Starts the NWConnection asynchronously via [keel_nw_start_conn_async]
      * and suspends until it reaches the ready state.
      */
-    override suspend fun connect(host: String, port: Int): Channel {
+    override suspend fun connect(address: SocketAddress): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address)
+        is UnixSocketAddress -> throw UnsupportedOperationException(
+            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        )
+    }
+
+    private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
+        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val port = address.port
         val endpoint = nw_endpoint_create_host(host, port.toString())
         val params = keel_nw_create_tcp_params()
         val conn = nw_connection_create(endpoint, params)
