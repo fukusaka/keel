@@ -132,6 +132,12 @@ internal class NodeIoTransport(
     /**
      * Releases all pending write buffers and destroys the socket.
      * Unsent data is discarded. Idempotent: subsequent calls are no-ops.
+     *
+     * **Thread safety**: JS is single-threaded, so every caller runs on
+     * the Node.js event-loop thread and the `opened` read / write and
+     * the `pendingWrites` mutations are atomic by construction. No
+     * locking is needed, but the idempotent first-call contract matches
+     * the multi-threaded transports.
      */
     override fun close() {
         if (!opened) return
