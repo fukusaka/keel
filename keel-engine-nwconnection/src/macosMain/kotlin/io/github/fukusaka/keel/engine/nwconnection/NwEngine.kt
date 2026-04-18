@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -26,7 +27,10 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
+import nwconnection.keel_nw_create_tcp_params_unix_listener
+import nwconnection.keel_nw_endpoint_create_unix
 import nwconnection.keel_nw_start_conn_async
+import nwconnection.keel_nw_unix_path_max
 import platform.Network.nw_connection_create
 import platform.Network.nw_connection_set_queue
 import platform.Network.nw_connection_start
@@ -34,6 +38,7 @@ import platform.Network.nw_endpoint_create_host
 import platform.Network.nw_endpoint_get_hostname
 import platform.Network.nw_endpoint_get_port
 import platform.Network.nw_listener_cancel
+import platform.Network.nw_listener_create
 import platform.Network.nw_listener_create_with_port
 import platform.Network.nw_listener_get_port
 import platform.Network.nw_listener_set_new_connection_handler
@@ -97,9 +102,7 @@ class NwEngine(
      */
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -187,9 +190,7 @@ class NwEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
 
     private fun bindPipelineInet(
@@ -298,9 +299,7 @@ class NwEngine(
      */
     override suspend fun connect(address: SocketAddress): Channel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NwEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
     }
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
@@ -338,6 +337,170 @@ class NwEngine(
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(conn, connQueue, config.allocator)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
+    }
+
+    /**
+     * Binds a filesystem Unix-domain listener.
+     *
+     * Uses the exported-but-undeclared `nw_endpoint_create_unix` symbol in
+     * combination with `nw_parameters_set_local_endpoint` to produce an
+     * NWListener bound to a UDS path. This is the underlying pattern
+     * documented by Apple DTS (developer.apple.com/forums/thread/756756)
+     * and matches Swift's `NWEndpoint.unix(path:)`.
+     *
+     * macOS / iOS do not support Linux abstract-namespace sockets; such
+     * addresses are rejected up front. [BindConfig.backlog] is ignored
+     * (NWListener does not expose a configurable backlog).
+     */
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
+        validateUnixPath(address.path)
+
+        val params = keel_nw_create_tcp_params_unix_listener(address.path)
+            ?: error("nw_endpoint_create_unix / set_local_endpoint failed for ${address.path}")
+        val lsnr = nw_listener_create(params)
+            ?: error("nw_listener_create returned null for ${address.path}")
+        listener = lsnr
+
+        val listenerQueue = dispatch_queue_create(
+            "io.github.fukusaka.keel.nwconnection.listener.unix", null,
+        )
+        val serverChannel = NwServer(
+            lsnr, address, config.allocator, bindConfig, config.loggerFactory,
+        )
+        nw_listener_set_queue(lsnr, listenerQueue)
+
+        val rc = suspendCancellableCoroutine<Int> { cont ->
+            val cbCtx = CallbackContext(cont)
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                if (state == nw_listener_state_ready) {
+                    cbCtx.tryResume(0)
+                } else if (state == nw_listener_state_failed) {
+                    cbCtx.tryResume(-1)
+                }
+            }
+            nw_listener_set_new_connection_handler(lsnr) { conn ->
+                if (conn != null) {
+                    serverChannel.onNewConnection(conn)
+                }
+            }
+            nw_listener_start(lsnr)
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
+        }
+        check(rc == 0) { "NWListener failed to start on ${address.path}" }
+
+        logger.debug { "Bound UDS ${address.path}" }
+        return serverChannel
+    }
+
+    /**
+     * Creates a client connection to a filesystem Unix-domain socket path.
+     */
+    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
+        validateUnixPath(address.path)
+
+        val endpoint = keel_nw_endpoint_create_unix(address.path)
+            ?: error("nw_endpoint_create_unix failed for ${address.path}")
+        val params = keel_nw_create_tcp_params()
+        val conn = nw_connection_create(endpoint, params)
+            ?: error("nw_connection_create returned null")
+
+        val connQueue = dispatch_queue_create(
+            "io.github.fukusaka.keel.nwconnection.conn.unix", null,
+        )
+
+        val rc = suspendCancellableCoroutine<Int> { cont ->
+            val cbCtx = CallbackContext(cont)
+            val ref = StableRef.create(cbCtx)
+            keel_nw_start_conn_async(conn, connQueue, startCallback, ref.asCPointer())
+            cont.invokeOnCancellation { cbCtx.markCancelled() }
+        }
+        check(rc == 0) { "connect to UDS ${address.path} failed" }
+
+        logger.debug { "Connected to UDS ${address.path}" }
+        val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
+        val transport = NwIoTransport(conn, connQueue, config.allocator)
+        return NwPipelinedChannel(transport, channelLogger, address, address)
+    }
+
+    /**
+     * Pipeline-mode UDS listener. Mirrors [bindPipelineInet] but binds via
+     * `requiredLocalEndpoint = NWEndpoint.unix(path:)` instead of a TCP port.
+     * Listener-level TLS is rejected for UDS (does not fit the UDS threat model).
+     */
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
+        validateUnixPath(address.path)
+        require(!isListenerLevelTls(config)) {
+            "NwEngine does not support listener-level TLS over UDS"
+        }
+
+        val params = keel_nw_create_tcp_params_unix_listener(address.path)
+            ?: error("nw_endpoint_create_unix / set_local_endpoint failed for ${address.path}")
+        val lsnr = nw_listener_create(params)
+            ?: error("nw_listener_create returned null for ${address.path}")
+
+        val listenerQueue = dispatch_queue_create(
+            "io.github.fukusaka.keel.nwconnection.pipeline.listener.unix", null,
+        )
+        nw_listener_set_queue(lsnr, listenerQueue)
+
+        val sem = dispatch_semaphore_create(0)
+        var ready = false
+        nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+            if (state == nw_listener_state_ready) {
+                ready = true
+                dispatch_semaphore_signal(sem)
+            } else if (state == nw_listener_state_failed) {
+                dispatch_semaphore_signal(sem)
+            }
+        }
+        nw_listener_set_new_connection_handler(lsnr) { conn ->
+            if (conn != null) {
+                val connQueue = dispatch_queue_create(
+                    "io.github.fukusaka.keel.nwconnection.pipeline.conn.unix", null,
+                )
+                nw_connection_set_queue(conn, connQueue)
+                nw_connection_start(conn)
+
+                val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
+                val channel = NwPipelinedChannel(transport, logger)
+                config.initializeConnection(channel)
+                pipelineInitializer(channel)
+                transport.readEnabled = true
+            }
+        }
+
+        nw_listener_start(lsnr)
+        val deadline = dispatch_time(DISPATCH_TIME_NOW, BIND_TIMEOUT_NS)
+        val waitResult = dispatch_semaphore_wait(sem, deadline)
+        check(waitResult == 0L) {
+            "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+        }
+        check(ready) { "NWListener failed to start on ${address.path}" }
+        logger.debug { "Pipeline bound UDS ${address.path}" }
+        return NwPipelinedServer(lsnr, address)
+    }
+
+    /**
+     * Validates filesystem UDS path fits Darwin's `sun_path[104]` limit
+     * (including NUL terminator). Fails fast rather than letting the
+     * kernel return EINVAL / ENAMETOOLONG deep in Network.framework.
+     */
+    private fun validateUnixPath(path: String) {
+        val maxLen = keel_nw_unix_path_max().toInt()
+        val byteLen = path.encodeToByteArray().size + 1 // +1 for NUL
+        require(byteLen <= maxLen) {
+            "UDS path exceeds Darwin sun_path limit ($byteLen > $maxLen bytes incl. NUL): $path"
+        }
     }
 
     /**
