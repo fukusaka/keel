@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineDispatcher
 
 /**
@@ -29,6 +30,19 @@ abstract class AbstractIoTransport(
 
     // --- Open state ---
 
+    /**
+     * Transport open state.
+     *
+     * Written by [close] once (idempotent transition true → false) and
+     * read by [isOpen], [write], and subclass flush paths. `@Volatile`
+     * guarantees that a `false` written on the EventLoop thread is
+     * visible to a caller that reads [isOpen] on another dispatcher.
+     *
+     * Subclasses MUST flip this flag only from the EventLoop thread
+     * (or the engine-local equivalent) to keep the `pendingWrites` /
+     * `pendingBytes` mutations below serialised.
+     */
+    @Volatile
     protected var opened = true
     override val isOpen: Boolean get() = opened
 
