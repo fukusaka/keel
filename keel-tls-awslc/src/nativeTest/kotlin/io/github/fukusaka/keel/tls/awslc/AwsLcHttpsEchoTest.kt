@@ -2,6 +2,8 @@
 
 package io.github.fukusaka.keel.tls.awslc
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
@@ -64,7 +66,7 @@ class AwsLcHttpsEchoTest {
             channel.pipeline.addLast("decoder", HttpRequestDecoder())
             channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
         }
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         usleep(SERVER_START_DELAY_US)
 

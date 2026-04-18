@@ -101,7 +101,7 @@ class EpollEngine(
         }
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Bound to $localAddr" }
         return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger)
     }
 
@@ -150,7 +150,7 @@ class EpollEngine(
 
         val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
         val localAddr = PosixSocketUtils.getLocalAddress(fd)
-        logger.debug { "Connected to ${remoteAddr.host}:${remoteAddr.port}" }
+        logger.debug { "Connected to $remoteAddr" }
         val transport = EpollIoTransport(fd, workerLoop, allocator)
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
@@ -175,7 +175,7 @@ class EpollEngine(
         val serverFd = PosixSocketUtils.createServerSocket(host, port, config.backlog)
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Pipeline bound to $localAddr" }
 
         val serverChannel = EpollPipelinedServerChannel(
             serverFd = serverFd,

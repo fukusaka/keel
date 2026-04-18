@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -111,8 +113,8 @@ class IoUringEngineTest {
     fun `server channel local address`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -130,7 +132,7 @@ class IoUringEngineTest {
     fun `channel lifecycle after close`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -152,7 +154,7 @@ class IoUringEngineTest {
     fun `echo round trip`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val serverCh = withTimeout(5000) { server.accept() }
@@ -180,7 +182,7 @@ class IoUringEngineTest {
     fun `read returns minus one on EOF`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -201,7 +203,7 @@ class IoUringEngineTest {
     fun `write and flush`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -229,7 +231,7 @@ class IoUringEngineTest {
     fun `multiple writes single flush`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -261,7 +263,7 @@ class IoUringEngineTest {
     fun `read advances IoBuf writerIndex`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -285,7 +287,7 @@ class IoUringEngineTest {
     fun `read write exact buffer size 8192 bytes`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -327,7 +329,7 @@ class IoUringEngineTest {
     fun `read write buffer size plus one 8193 bytes`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -367,7 +369,7 @@ class IoUringEngineTest {
     fun `large payload flush writes all bytes`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -407,7 +409,7 @@ class IoUringEngineTest {
     fun `shutdownOutput sends FIN to peer`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -431,7 +433,7 @@ class IoUringEngineTest {
     fun `read after shutdownOutput still works`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -459,7 +461,7 @@ class IoUringEngineTest {
     fun `connect creates active channel`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val accepted = CompletableDeferred<io.github.fukusaka.keel.core.Channel>()
         launch { accepted.complete(server.accept()) }
@@ -615,7 +617,7 @@ class IoUringEngineTest {
     fun `double close is idempotent`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -645,7 +647,7 @@ class IoUringEngineTest {
     fun `connect to refused port throws`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
@@ -662,7 +664,7 @@ class IoUringEngineTest {
     fun `write zero bytes returns zero`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -686,7 +688,7 @@ class IoUringEngineTest {
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -717,7 +719,7 @@ class IoUringEngineTest {
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -745,7 +747,7 @@ class IoUringEngineTest {
     fun `multishot accept delivers multiple connections`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFds = IntArray(5) { connectRawClient(port) }
 
@@ -768,7 +770,7 @@ class IoUringEngineTest {
     fun `multishot accept echo works for each connection`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         repeat(3) { i ->
             val clientFd = connectRawClient(port)
@@ -800,7 +802,7 @@ class IoUringEngineTest {
     fun `close server channel while multishot armed`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Accept one connection to arm the multishot SQE.
         val clientFd = connectRawClient(port)
@@ -821,7 +823,7 @@ class IoUringEngineTest {
     fun `asSuspendSink writes data via BufferedSuspendSink`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -844,7 +846,7 @@ class IoUringEngineTest {
     fun `asSuspendSink multiple writes in one flush`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -870,7 +872,7 @@ class IoUringEngineTest {
     fun `accepted channels are assigned to worker EventLoops in round-robin order`() = runBlocking {
         val engine = IoUringEngine(IoEngineConfig(threads = 2))
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Accept 4 connections: should cycle through 2 workers
         val clientFds = IntArray(4) { connectRawClient(port) }
@@ -894,7 +896,7 @@ class IoUringEngineTest {
     fun `asSuspendSource reads data via multishot recv`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -923,7 +925,7 @@ class IoUringEngineTest {
     fun `asSuspendSource returns minus one on EOF`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -946,7 +948,7 @@ class IoUringEngineTest {
     fun `asSuspendSource echo round trip`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -976,7 +978,7 @@ class IoUringEngineTest {
     fun `asSuspendSource multiple reads from same connection`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -1006,7 +1008,7 @@ class IoUringEngineTest {
     fun `asSuspendSource with BufferedSuspendSource readLine`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }
@@ -1032,7 +1034,7 @@ class IoUringEngineTest {
     fun `close channel while multishot recv armed`() = runBlocking {
         val engine = IoUringEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = withTimeout(5000) { server.accept() }

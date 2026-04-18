@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -102,8 +104,8 @@ class NwEngineTest {
     fun serverChannelLocalAddress() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        assertEquals("127.0.0.1", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -121,7 +123,7 @@ class NwEngineTest {
     fun channelLifecycleAfterClose() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -143,7 +145,7 @@ class NwEngineTest {
     fun echoRoundTrip() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val serverCh = server.accept()
@@ -175,7 +177,7 @@ class NwEngineTest {
     fun readReturnsMinusOneOnEof() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -196,7 +198,7 @@ class NwEngineTest {
     fun writeAndFlush() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -224,7 +226,7 @@ class NwEngineTest {
     fun multipleWritesSingleFlush() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -256,7 +258,7 @@ class NwEngineTest {
     fun readAdvancesIoBufWriterIndex() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -280,7 +282,7 @@ class NwEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -308,7 +310,7 @@ class NwEngineTest {
     fun shutdownOutputSendsFin() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -332,7 +334,7 @@ class NwEngineTest {
     fun readAfterShutdownOutputStillWorks() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -361,7 +363,7 @@ class NwEngineTest {
     fun connectToListeningServer() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -380,14 +382,14 @@ class NwEngineTest {
     fun connectRemoteAddress() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -400,7 +402,7 @@ class NwEngineTest {
     fun asSuspendSourceReadsData() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -424,7 +426,7 @@ class NwEngineTest {
     fun asSuspendSinkWritesData() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -449,7 +451,7 @@ class NwEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -472,7 +474,7 @@ class NwEngineTest {
     fun readOnClosedChannelThrows() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -491,7 +493,7 @@ class NwEngineTest {
     fun writeOnClosedChannelThrows() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -521,7 +523,7 @@ class NwEngineTest {
     fun `double close is idempotent`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -538,7 +540,7 @@ class NwEngineTest {
     fun `write zero bytes returns zero`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -560,7 +562,7 @@ class NwEngineTest {
     fun concurrentReadOnMultipleChannels() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
         val clients = (1..clientCount).map { connectRawClient(port) }
@@ -592,7 +594,7 @@ class NwEngineTest {
     fun concurrentAcceptMultipleClients() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
         val acceptJob = async {
@@ -622,7 +624,7 @@ class NwEngineTest {
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -653,7 +655,7 @@ class NwEngineTest {
     fun `cancel read coroutine does not crash`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -683,7 +685,7 @@ class NwEngineTest {
     fun `cancel write coroutine does not crash`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -719,7 +721,7 @@ class NwEngineTest {
         val tracker = TrackingAllocator()
         val engine = NwEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -752,7 +754,7 @@ class NwEngineTest {
         val tracker = TrackingAllocator()
         val engine = NwEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -787,7 +789,7 @@ class NwEngineTest {
     fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Warm up
         val clientFd = connectRawClient(port)

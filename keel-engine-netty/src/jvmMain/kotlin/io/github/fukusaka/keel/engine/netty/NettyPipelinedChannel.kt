@@ -1,9 +1,10 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
-import java.net.InetSocketAddress
+import java.net.InetSocketAddress as JavaInetSocketAddress
 
 /**
  * Netty channel supporting both Pipeline mode and Coroutine mode.
@@ -19,10 +20,10 @@ class NettyPipelinedChannel internal constructor(
 ) : AbstractPipelinedChannel(transport, logger, remoteAddress, localAddress) {
 
     companion object {
-        /** Extracts [SocketAddress] from a Java NIO [InetSocketAddress]. */
+        /** Extracts keel [SocketAddress] from a [JavaInetSocketAddress]. */
         internal fun toSocketAddress(addr: java.net.SocketAddress?): SocketAddress? {
-            val inet = addr as? InetSocketAddress ?: return null
-            return SocketAddress(inet.address.hostAddress, inet.port)
+            val inet = addr as? JavaInetSocketAddress ?: return null
+            return InetSocketAddress(inet.address.hostAddress, inet.port)
         }
     }
 }

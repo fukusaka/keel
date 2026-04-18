@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.runBlocking
@@ -225,7 +227,7 @@ class IoModeTest {
 
     private suspend fun echoSmall(engine: IoUringEngine) = withTimeout(10_000) {
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val client = engine.connect("127.0.0.1", port)
         val conn = server.accept()
 
@@ -293,7 +295,7 @@ class IoModeTest {
         )
         try {
             val server = engine.bind("127.0.0.1", 0)
-            val port = server.localAddress.port
+            val port = (server.localAddress as InetSocketAddress).port
 
             val client = engine.connect("127.0.0.1", port)
             val conn = server.accept()

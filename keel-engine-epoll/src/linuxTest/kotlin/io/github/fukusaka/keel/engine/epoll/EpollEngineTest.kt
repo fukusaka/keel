@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -103,8 +105,8 @@ class EpollEngineTest {
     fun serverChannelLocalAddress() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", server.localAddress.host)
-        assertTrue(server.localAddress.port > 0)
+        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+        assertTrue((server.localAddress as InetSocketAddress).port > 0)
         server.close()
         engine.close()
     }
@@ -122,7 +124,7 @@ class EpollEngineTest {
     fun channelLifecycleAfterClose() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -144,7 +146,7 @@ class EpollEngineTest {
     fun echoRoundTrip() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val serverCh = server.accept()
@@ -172,7 +174,7 @@ class EpollEngineTest {
     fun readReturnsMinusOneOnEof() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -193,7 +195,7 @@ class EpollEngineTest {
     fun writeAndFlush() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -221,7 +223,7 @@ class EpollEngineTest {
     fun multipleWritesSingleFlush() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -253,7 +255,7 @@ class EpollEngineTest {
     fun readAdvancesIoBufWriterIndex() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -277,7 +279,7 @@ class EpollEngineTest {
     fun writeAdvancesIoBufReaderIndex() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -303,7 +305,7 @@ class EpollEngineTest {
     fun `large payload flush writes all bytes`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -343,7 +345,7 @@ class EpollEngineTest {
     fun `multiple write then single flush`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -388,7 +390,7 @@ class EpollEngineTest {
     fun `sequential flush reuses channel correctly`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -420,7 +422,7 @@ class EpollEngineTest {
     fun shutdownOutputSendsFin() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -443,7 +445,7 @@ class EpollEngineTest {
     fun readAfterShutdownOutputStillWorks() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -471,7 +473,7 @@ class EpollEngineTest {
     fun connectToListeningServer() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         assertTrue(ch.isOpen)
@@ -489,14 +491,14 @@ class EpollEngineTest {
     fun connectRemoteAddress() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.remoteAddress)
-        assertEquals("127.0.0.1", ch.remoteAddress!!.host)
-        assertEquals(port, ch.remoteAddress!!.port)
+        assertEquals("127.0.0.1", (ch.remoteAddress as InetSocketAddress).hostString)
+        assertEquals(port, (ch.remoteAddress as InetSocketAddress).port)
 
         ch.close()
         server.close()
@@ -507,14 +509,14 @@ class EpollEngineTest {
     fun connectLocalAddress() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
         server.accept().close()
 
         assertNotNull(ch.localAddress)
-        assertEquals("127.0.0.1", ch.localAddress!!.host)
-        assertTrue(ch.localAddress!!.port > 0)
+        assertEquals("127.0.0.1", (ch.localAddress as InetSocketAddress).hostString)
+        assertTrue((ch.localAddress as InetSocketAddress).port > 0)
 
         ch.close()
         server.close()
@@ -525,7 +527,7 @@ class EpollEngineTest {
     fun `connect and echo round trip`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)
         val client = engine.connect("127.0.0.1", port)
@@ -562,7 +564,7 @@ class EpollEngineTest {
         val engine = EpollEngine()
         // Bind to get a port, then close the server so the port is refused
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
@@ -581,7 +583,7 @@ class EpollEngineTest {
     fun asSuspendSourceReadsData() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -605,7 +607,7 @@ class EpollEngineTest {
     fun asSuspendSinkWritesData() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -630,7 +632,7 @@ class EpollEngineTest {
     fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -653,7 +655,7 @@ class EpollEngineTest {
     fun readOnClosedChannelThrows() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -672,7 +674,7 @@ class EpollEngineTest {
     fun writeOnClosedChannelThrows() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -702,7 +704,7 @@ class EpollEngineTest {
     fun `double close is idempotent`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -719,7 +721,7 @@ class EpollEngineTest {
     fun `write zero bytes returns zero`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -741,7 +743,7 @@ class EpollEngineTest {
     fun concurrentReadOnMultipleChannels() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
         val clients = (1..clientCount).map { connectRawClient(port) }
@@ -773,7 +775,7 @@ class EpollEngineTest {
     fun concurrentAcceptMultipleClients() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
         val acceptJob = async {
@@ -802,7 +804,7 @@ class EpollEngineTest {
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -833,7 +835,7 @@ class EpollEngineTest {
     fun cancelReadCoroutine() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -865,7 +867,7 @@ class EpollEngineTest {
     fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -883,7 +885,7 @@ class EpollEngineTest {
     fun `dispatch executes task on EventLoop thread`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -909,7 +911,7 @@ class EpollEngineTest {
     fun `echo round trip on EventLoop dispatcher`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -940,7 +942,7 @@ class EpollEngineTest {
     fun `multiple dispatches are executed in FIFO order`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -967,7 +969,7 @@ class EpollEngineTest {
     fun `dispatch from within EventLoop thread`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -992,7 +994,7 @@ class EpollEngineTest {
     fun `concurrent dispatch from multiple coroutines`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -1022,7 +1024,7 @@ class EpollEngineTest {
     fun `echo with multi-thread EventLoop`() = runBlocking {
         val engine = EpollEngine(IoEngineConfig(threads = 4))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Multiple clients to exercise round-robin distribution
         val results = (1..8).map { i ->
@@ -1060,7 +1062,7 @@ class EpollEngineTest {
     fun `channels are distributed across worker EventLoops`() = runBlocking {
         val engine = EpollEngine(IoEngineConfig(threads = 4))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Accept 4 channels — should be assigned to 4 different workers
         val channels = (1..4).map {
@@ -1093,7 +1095,7 @@ class EpollEngineTest {
         val tracker = TrackingAllocator()
         val engine = EpollEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -1125,7 +1127,7 @@ class EpollEngineTest {
         val tracker = TrackingAllocator()
         val engine = EpollEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
         val ch = server.accept()
@@ -1162,7 +1164,7 @@ class EpollEngineTest {
         val tracker = TrackingAllocator()
         val engine = EpollEngine(IoEngineConfig(allocator = tracker))
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)
         val serverCh = server.accept()
@@ -1195,7 +1197,7 @@ class EpollEngineTest {
     fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
         val engine = EpollEngine()
         val server = engine.bind("127.0.0.1", 0)
-        val port = server.localAddress.port
+        val port = (server.localAddress as InetSocketAddress).port
 
         // Warm up
         val clientFd = connectRawClient(port)

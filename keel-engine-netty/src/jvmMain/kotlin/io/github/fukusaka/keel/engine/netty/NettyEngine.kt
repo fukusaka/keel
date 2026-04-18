@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.logging.debug
@@ -24,7 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.net.InetSocketAddress
+import java.net.InetSocketAddress as JavaInetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -126,7 +127,7 @@ class NettyEngine(
             })
 
         val nettyServerCh = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
-            bootstrap.bind(InetSocketAddress(host, port)).addListener { f ->
+            bootstrap.bind(JavaInetSocketAddress(host, port)).addListener { f ->
                 val cf = f as ChannelFuture
                 if (cf.isSuccess) {
                     cont.resume(cf.channel())
@@ -142,7 +143,7 @@ class NettyEngine(
             ?: error("Failed to get local address")
 
         serverChannel.init(nettyServerCh, localAddr, bindConfig)
-        logger.debug { "Bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Bound to $localAddr" }
         return serverChannel
     }
 
@@ -168,7 +169,7 @@ class NettyEngine(
             })
 
         val nettyChannel = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
-            bootstrap.connect(InetSocketAddress(host, port)).addListener { f ->
+            bootstrap.connect(JavaInetSocketAddress(host, port)).addListener { f ->
                 val cf = f as ChannelFuture
                 if (cf.isSuccess) {
                     cont.resume(cf.channel())
@@ -189,7 +190,7 @@ class NettyEngine(
         )
         nettyChannel.pipeline().addLast(transport.handler)
 
-        logger.debug { "Connected to ${remoteAddr?.host}:${remoteAddr?.port}" }
+        logger.debug { "Connected to $remoteAddr" }
         return keelChannel
     }
 
@@ -236,7 +237,7 @@ class NettyEngine(
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
             ?: error("Failed to get local address")
 
-        logger.debug { "Pipeline bound to ${localAddr.host}:${localAddr.port}" }
+        logger.debug { "Pipeline bound to $localAddr" }
         return NettyPipelinedServer(nettyServerCh, localAddr)
     }
 
