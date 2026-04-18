@@ -61,6 +61,14 @@ internal class NioServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServer"),
 ) : ServerChannel {
 
+    // State transitions (_active, pendingAcceptCont) may be observed
+    // from the boss EventLoop thread (accept readiness callback) and
+    // from arbitrary coroutine dispatcher threads (accept() / close()
+    // callers), so all reads/writes go through synchronized(lock).
+    // @Volatile on _active lets isActive read without entering the lock.
+    private val lock = Any()
+
+    @Volatile
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
@@ -90,7 +98,18 @@ internal class NioServer(
             }
 
             suspendCancellableCoroutine<Unit> { cont ->
-                pendingAcceptCont = cont
+                val closedAlready = synchronized(lock) {
+                    if (!_active) {
+                        true
+                    } else {
+                        pendingAcceptCont = cont
+                        false
+                    }
+                }
+                if (closedAlready) {
+                    cont.resumeWithException(CancellationException("ServerChannel closed"))
+                    return@suspendCancellableCoroutine
+                }
                 // Attach a plain Runnable (not the continuation itself) so the
                 // selector never sees a CancellableContinuationImpl — see the
                 // class-level KDoc for the rationale.
@@ -98,11 +117,15 @@ internal class NioServer(
                     cont.resume(Unit)
                 }
                 cont.invokeOnCancellation {
-                    pendingAcceptCont = null
+                    synchronized(lock) {
+                        if (pendingAcceptCont === cont) pendingAcceptCont = null
+                    }
                     bossLoop.removeInterest(selectionKey, SelectionKey.OP_ACCEPT)
                 }
             }
-            pendingAcceptCont = null
+            synchronized(lock) {
+                pendingAcceptCont = null
+            }
         }
     }
 
@@ -112,19 +135,21 @@ internal class NioServer(
      * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
      * is suspended, it is cancelled with [CancellationException].
      *
-     * **Thread safety**: must be called from the boss EventLoop thread
-     * or after the EventLoop has been stopped. [_active] and
-     * [pendingAcceptCont] are not thread-safe.
+     * **Thread safety**: safe to call from any thread. [_active] /
+     * [pendingAcceptCont] transitions are serialised under [lock];
+     * [SelectionKey.cancel] and [ServerSocketChannel.close] are
+     * thread-safe per JDK `java.nio.channels` contract.
      */
     override fun close() {
-        if (_active) {
+        val cont = synchronized(lock) {
+            if (!_active) return
             _active = false
-            pendingAcceptCont?.resumeWithException(
-                CancellationException("ServerChannel closed"),
-            )
+            val c = pendingAcceptCont
             pendingAcceptCont = null
-            selectionKey.cancel()
-            serverChannel.close()
+            c
         }
+        cont?.resumeWithException(CancellationException("ServerChannel closed"))
+        selectionKey.cancel()
+        serverChannel.close()
     }
 }

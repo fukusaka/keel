@@ -7,7 +7,10 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -15,6 +18,12 @@ import platform.posix.EAGAIN
 import platform.posix.accept
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.pthread_mutex_destroy
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
 
 /**
@@ -47,6 +56,16 @@ internal class EpollServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
 ) : ServerChannel {
 
+    // State transitions may be observed from the boss EventLoop thread
+    // (epoll readiness callback) and from external dispatcher threads
+    // (close() callers). Access is serialised under [mutex].
+    // @Volatile on _active lets isActive read without taking the mutex.
+    private val arena = Arena()
+    private val mutex = arena.alloc<pthread_mutex_t>().apply {
+        pthread_mutex_init(ptr, null)
+    }
+
+    @Volatile
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
@@ -81,14 +100,27 @@ internal class EpollServer(
             if (err == EAGAIN) {
                 // Suspend until boss EventLoop reports serverFd is readable
                 suspendCancellableCoroutine<Unit> { cont ->
-                    pendingAcceptCont = cont
+                    val closedAlready = withLock {
+                        if (!_active) {
+                            true
+                        } else {
+                            pendingAcceptCont = cont
+                            false
+                        }
+                    }
+                    if (closedAlready) {
+                        cont.resumeWithException(CancellationException("ServerChannel closed"))
+                        return@suspendCancellableCoroutine
+                    }
                     bossLoop.register(serverFd, EpollEventLoop.Interest.READ, cont)
                     cont.invokeOnCancellation {
-                        pendingAcceptCont = null
+                        withLock {
+                            if (pendingAcceptCont === cont) pendingAcceptCont = null
+                        }
                         bossLoop.unregister(serverFd, EpollEventLoop.Interest.READ)
                     }
                 }
-                pendingAcceptCont = null
+                withLock { pendingAcceptCont = null }
                 continue
             }
             error("accept() failed: errno=$err")
@@ -101,18 +133,30 @@ internal class EpollServer(
      * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
      * is suspended, it is cancelled with [CancellationException].
      *
-     * **Thread safety**: must be called from the boss EventLoop thread
-     * or after the EventLoop has been stopped. [_active] and
-     * [pendingAcceptCont] are not thread-safe.
+     * **Thread safety**: safe to call from any thread. [_active] and
+     * [pendingAcceptCont] transitions are serialised under [mutex];
+     * POSIX `close(fd)` is thread-safe per the POSIX contract.
      */
     override fun close() {
-        if (_active) {
+        val cont = withLock {
+            if (!_active) return
             _active = false
-            pendingAcceptCont?.resumeWithException(
-                CancellationException("ServerChannel closed"),
-            )
+            val c = pendingAcceptCont
             pendingAcceptCont = null
-            close(serverFd)
+            c
+        }
+        cont?.resumeWithException(CancellationException("ServerChannel closed"))
+        close(serverFd)
+        pthread_mutex_destroy(mutex.ptr)
+        arena.clear()
+    }
+
+    private inline fun <T> withLock(block: () -> T): T {
+        pthread_mutex_lock(mutex.ptr)
+        try {
+            return block()
+        } finally {
+            pthread_mutex_unlock(mutex.ptr)
         }
     }
 }

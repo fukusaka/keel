@@ -79,7 +79,12 @@ internal class NodeServer(
      *
      * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
      * is suspended, it is cancelled with [CancellationException].
-     * No locking needed — JS is single-threaded.
+     *
+     * **Thread safety**: JS is single-threaded, so every caller runs on
+     * the same Node.js event-loop thread and the `_active` /
+     * `pendingAcceptCont` reads-then-writes are atomic by construction.
+     * No locking is needed, but the idempotent-first-call contract
+     * matches the multi-threaded engines.
      */
     override fun close() {
         if (_active) {

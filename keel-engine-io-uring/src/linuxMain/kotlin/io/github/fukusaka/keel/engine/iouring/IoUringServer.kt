@@ -13,8 +13,12 @@ import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.Volatile
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -56,7 +60,15 @@ internal class IoUringServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
 ) : ServerChannel {
 
+    // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
+    // observes the false set by a close() caller on another thread
+    // before the cleanup dispatch has drained on the bossLoop.
+    @Volatile
     private var _active = true
+
+    // Idempotent close latch. close() may be invoked concurrently from
+    // multiple threads; only the first caller schedules cleanup.
+    private val closeLatch = AtomicInt(0)
 
     override val isActive: Boolean get() = _active
 
@@ -169,11 +181,22 @@ internal class IoUringServer(
 
     /**
      * Closes the server channel and cancels the multishot accept SQE.
-     * Idempotent; subsequent calls are no-ops.
+     *
+     * **Thread safety**: safe to call from any thread. The [_active]
+     * transition is atomic via [closeLatch] so only the first caller
+     * schedules cleanup; the cleanup block itself is dispatched onto
+     * the [bossLoop] thread because every resource it touches
+     * (`multishotSlot`, `pendingAcceptCont`, `pendingFds`, and the
+     * ring-scoped `cancelMultishot` / `closeFdSafely` calls) is
+     * documented as bossLoop-thread-only. Subsequent calls after the
+     * first are no-ops.
      */
     override fun close() {
-        if (_active) {
-            _active = false
+        if (!closeLatch.compareAndSet(0, 1)) return
+        _active = false
+        // Drain cleanup on the bossLoop so every multishot-state
+        // mutation and ring-scoped call runs on the owning pthread.
+        bossLoop.dispatch(EmptyCoroutineContext, Runnable {
             closeFdSafely(serverFd, logger, "server close")
             if (multishotSlot != -1) {
                 bossLoop.cancelMultishot(multishotSlot)
@@ -187,7 +210,7 @@ internal class IoUringServer(
             while (pendingFds.isNotEmpty()) {
                 closeFdSafely(pendingFds.removeFirst(), logger, "server close (pending fd)")
             }
-        }
+        })
     }
 
 }
