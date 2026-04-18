@@ -83,11 +83,66 @@ data class InetSocketAddress(
 /**
  * A Unix domain socket endpoint.
  *
- * @property path Absolute filesystem path (`/tmp/foo.sock`) or abstract-
- *   namespace name (starts with `\u0000` on Linux).
+ * The [path] string accepts three forms:
+ *
+ * - **Filesystem path** (`"/tmp/foo.sock"`) — a real filesystem entry.
+ *   Portable across Linux / macOS / BSD.
+ * - **Abstract namespace (`@prefix`)** — `"@myapp.sock"` is equivalent to a
+ *   Linux abstract socket with a leading null byte. This is the display
+ *   convention used by `ss` / `netstat` / `systemd` (`ListenStream=@name`)
+ *   and is accepted here as input for convenience, especially for config
+ *   files where embedding a literal `\u0000` is awkward.
+ * - **Abstract namespace (`\u0000` prefix)** — the kernel-level form
+ *   (`"\u0000myapp.sock"`) with the null byte literally encoded.
+ *   Accepted to match Go / Netty / Python conventions so code ported
+ *   from those libraries works without rewriting.
+ *
+ * Abstract sockets are **Linux-only**. Engines reject abstract addresses
+ * on macOS / BSD with an early [UnsupportedOperationException] rather
+ * than surfacing a kernel-level errno. Filesystem sockets work on all
+ * POSIX platforms.
+ *
+ * Equality is field-wise on [path], so `UnixSocketAddress("@a")` and
+ * `UnixSocketAddress("\u0000a")` are **not** considered equal even
+ * though they refer to the same kernel endpoint. Prefer the factory
+ * methods [filesystem] / [abstract] for explicitness.
+ *
+ * @property path The address as written by the caller. Use [kernelPath]
+ *   to obtain the form that `bind(2)` / `connect(2)` expect (with
+ *   `@prefix` translated to a leading null byte).
  */
 data class UnixSocketAddress(val path: String) : SocketAddress() {
-    override fun toString(): String = "unix:$path"
+
+    /** `true` if this address targets the Linux abstract namespace. */
+    val isAbstract: Boolean get() = path.startsWith('\u0000') || path.startsWith('@')
+
+    /**
+     * Kernel-level form of [path]. Abstract names are normalised so the
+     * first byte is `\u0000` (what the kernel reads from `sun_path[0]`);
+     * filesystem paths are returned unchanged.
+     */
+    val kernelPath: String get() = when {
+        path.startsWith('@') -> "\u0000" + path.substring(1)
+        else -> path
+    }
+
+    override fun toString(): String = when {
+        path.startsWith('\u0000') -> "unix:@" + path.substring(1)
+        else -> "unix:$path"
+    }
+
+    companion object {
+        /** Factory for a filesystem-backed Unix socket. */
+        fun filesystem(path: String): UnixSocketAddress = UnixSocketAddress(path)
+
+        /**
+         * Factory for a Linux abstract-namespace Unix socket. The
+         * stored [path] keeps the human-readable `@prefix` form so
+         * [toString] round-trips cleanly; [kernelPath] renders the
+         * `\u0000` form the kernel expects.
+         */
+        fun abstract(name: String): UnixSocketAddress = UnixSocketAddress("@$name")
+    }
 }
 
 /**

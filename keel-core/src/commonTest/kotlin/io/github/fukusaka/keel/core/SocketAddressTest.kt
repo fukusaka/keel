@@ -128,6 +128,53 @@ class SocketAddressTest {
     }
 
     @Test
+    fun `UnixSocketAddress filesystem factory`() {
+        val addr = UnixSocketAddress.filesystem("/tmp/foo.sock")
+        assertFalse(addr.isAbstract)
+        assertEquals("/tmp/foo.sock", addr.path)
+        assertEquals("/tmp/foo.sock", addr.kernelPath)
+        assertEquals("unix:/tmp/foo.sock", addr.toString())
+    }
+
+    @Test
+    fun `UnixSocketAddress abstract factory with at-prefix`() {
+        val addr = UnixSocketAddress.abstract("myapp")
+        assertTrue(addr.isAbstract)
+        assertEquals("@myapp", addr.path)
+        assertEquals("\u0000myapp", addr.kernelPath)
+        assertEquals("unix:@myapp", addr.toString())
+    }
+
+    @Test
+    fun `UnixSocketAddress constructor accepts at-prefix as abstract`() {
+        val addr = UnixSocketAddress("@direct")
+        assertTrue(addr.isAbstract)
+        assertEquals("\u0000direct", addr.kernelPath)
+        assertEquals("unix:@direct", addr.toString())
+    }
+
+    @Test
+    fun `UnixSocketAddress constructor accepts literal null byte as abstract`() {
+        // Go / Netty / Python conventions pass leading \u0000 directly.
+        val addr = UnixSocketAddress("\u0000fromNul")
+        assertTrue(addr.isAbstract)
+        assertEquals("\u0000fromNul", addr.kernelPath)
+        // Display form uses the readable @prefix even when stored as \u0000.
+        assertEquals("unix:@fromNul", addr.toString())
+    }
+
+    @Test
+    fun `UnixSocketAddress at and null-byte forms are not equal as data classes`() {
+        // Documented contract: field-wise equality; factory is the
+        // recommended way to avoid surprises.
+        val a = UnixSocketAddress("@foo")
+        val b = UnixSocketAddress("\u0000foo")
+        assertNotEquals(a, b)
+        // But both map to the same kernel representation.
+        assertEquals(a.kernelPath, b.kernelPath)
+    }
+
+    @Test
     fun `sealed hierarchy covers both subtypes`() {
         val inet: SocketAddress = InetSocketAddress("127.0.0.1", 80)
         val unix: SocketAddress = UnixSocketAddress("/tmp/x")
