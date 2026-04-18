@@ -10,10 +10,10 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.requireIpLiteral
-import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.posix.resolveForPosixSocket
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -100,7 +100,7 @@ class EpollEngine(
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val host = address.resolveForPosixSocket(config.resolver)
         val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
 
@@ -142,7 +142,7 @@ class EpollEngine(
     private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
-        val host = address.resolveFirst(config.resolver).toCanonicalString()
+        val host = address.resolveForPosixSocket(config.resolver)
         val port = address.port
         val fd = PosixSocketUtils.createUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
