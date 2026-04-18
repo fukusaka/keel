@@ -190,9 +190,16 @@ private fun parseIpv6OrNull(s: String, scopeId: Int): IpAddress.V6? {
     // Split around `::` (at most once).
     val doubleColon = hexPart.indexOf("::")
     val (left, right) = if (doubleColon >= 0) {
-        val l = if (doubleColon == 0) emptyList() else hexPart.substring(0, doubleColon).split(':')
-        val r = if (doubleColon + 2 >= hexPart.length) emptyList()
-            else hexPart.substring(doubleColon + 2).split(':')
+        val l = if (doubleColon == 0) {
+            emptyList()
+        } else {
+            hexPart.substring(0, doubleColon).split(':')
+        }
+        val r = if (doubleColon + 2 >= hexPart.length) {
+            emptyList()
+        } else {
+            hexPart.substring(doubleColon + 2).split(':')
+        }
         l to r
     } else {
         val parts = hexPart.split(':')
@@ -247,7 +254,10 @@ private fun compressIpv6(groups: IntArray): String {
             var j = i
             while (j < 8 && groups[j] == 0) j++
             val len = j - i
-            if (len > bestLen) { bestStart = i; bestLen = len }
+            if (len > bestLen) {
+                bestStart = i
+                bestLen = len
+            }
             i = j
         } else {
             i++
