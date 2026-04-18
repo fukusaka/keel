@@ -9,8 +9,10 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.POSIX_IPV4_RESOLVE_HINTS
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.resolveForPosixSocket
@@ -141,9 +143,12 @@ class EpollEngine(
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
+        return address.connectWithFallback(config.resolver, POSIX_IPV4_RESOLVE_HINTS) { ip ->
+            connectToIp(ip.toCanonicalString(), address.port)
+        }
+    }
 
-        val host = address.resolveForPosixSocket(config.resolver)
-        val port = address.port
+    private suspend fun connectToIp(host: String, port: Int): Channel {
         val fd = PosixSocketUtils.createUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
