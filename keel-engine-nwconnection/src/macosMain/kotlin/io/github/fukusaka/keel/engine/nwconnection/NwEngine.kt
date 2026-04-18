@@ -342,11 +342,14 @@ class NwEngine(
     /**
      * Binds a filesystem Unix-domain listener.
      *
-     * Uses the exported-but-undeclared `nw_endpoint_create_unix` symbol in
-     * combination with `nw_parameters_set_local_endpoint` to produce an
-     * NWListener bound to a UDS path. This is the underlying pattern
-     * documented by Apple DTS (developer.apple.com/forums/thread/756756)
-     * and matches Swift's `NWEndpoint.unix(path:)`.
+     * Builds an NWEndpoint from a `sockaddr_un` via the public
+     * `nw_endpoint_create_address(const struct sockaddr *)` API, attaches it
+     * as `requiredLocalEndpoint` on plain TCP parameters, and creates the
+     * listener with the no-port `nw_listener_create(parameters)` variant.
+     * This is the pattern documented by Apple DTS
+     * (developer.apple.com/forums/thread/756756); the SPI
+     * `nw_endpoint_create_unix` symbol is intentionally avoided to keep the
+     * engine App Store reviewable.
      *
      * macOS / iOS do not support Linux abstract-namespace sockets; such
      * addresses are rejected up front. [BindConfig.backlog] is ignored
@@ -358,7 +361,7 @@ class NwEngine(
         validateUnixPath(address.path)
 
         val params = keel_nw_create_tcp_params_unix_listener(address.path)
-            ?: error("nw_endpoint_create_unix / set_local_endpoint failed for ${address.path}")
+            ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
         listener = lsnr
@@ -403,7 +406,7 @@ class NwEngine(
         validateUnixPath(address.path)
 
         val endpoint = keel_nw_endpoint_create_unix(address.path)
-            ?: error("nw_endpoint_create_unix failed for ${address.path}")
+            ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val params = keel_nw_create_tcp_params()
         val conn = nw_connection_create(endpoint, params)
             ?: error("nw_connection_create returned null")
@@ -428,7 +431,8 @@ class NwEngine(
 
     /**
      * Pipeline-mode UDS listener. Mirrors [bindPipelineInet] but binds via
-     * `requiredLocalEndpoint = NWEndpoint.unix(path:)` instead of a TCP port.
+     * `nw_parameters_set_local_endpoint` with a `sockaddr_un`-backed endpoint
+     * (public API — see [bindUnix]) instead of a TCP port.
      * Listener-level TLS is rejected for UDS (does not fit the UDS threat model).
      */
     private fun bindPipelineUnix(
@@ -444,7 +448,7 @@ class NwEngine(
         }
 
         val params = keel_nw_create_tcp_params_unix_listener(address.path)
-            ?: error("nw_endpoint_create_unix / set_local_endpoint failed for ${address.path}")
+            ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
 
