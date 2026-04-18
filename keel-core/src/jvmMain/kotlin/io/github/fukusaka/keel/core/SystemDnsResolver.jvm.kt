@@ -23,6 +23,10 @@ actual object SystemDnsResolver : DnsResolver {
         return if (timeout != null) withTimeout(timeout) { lookup() } else lookup()
     }
 
+    // InjectDispatcher suppressed: this is the platform's built-in resolver — the blocking
+    // InetAddress.getAllByName must run on Dispatchers.IO and there is no dispatcher
+    // injection seam. Tests and custom resolvers substitute at the DnsResolver interface
+    // level (via IoEngineConfig.resolver) rather than swapping the dispatcher here.
     @Suppress("InjectDispatcher")
     private suspend fun doLookup(hostname: String, hints: ResolveHints): ResolverResult = withContext(Dispatchers.IO) {
         val all = InetAddress.getAllByName(hostname)
