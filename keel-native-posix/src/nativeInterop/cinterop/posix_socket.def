@@ -45,6 +45,58 @@ static inline const char *keel_inet_ntop(int af, const void *src, char *dst, uns
 }
 
 /*
+ * IPv6 sockaddr helpers.
+ *
+ * sockaddr_in6.sin6_addr is a union whose field name differs across platforms
+ * (Linux glibc: __in6_u.__u6_addr8 / macOS: __u6_addr.__u6_addr8), so accessing
+ * it directly from Kotlin/Native cinterop is not portable. These wrappers use
+ * memcpy on the union's first 16 bytes, which is a POSIX-guaranteed layout.
+ *
+ * `keel_init_sockaddr_in6` zeros the struct, sets AF_INET6, port (network
+ * order) and scope id. Call `keel_fill_sockaddr_in6_addr` afterwards to load
+ * the 16-byte address.
+ */
+static inline void keel_init_sockaddr_in6(struct sockaddr_in6 *addr, uint16_t port, uint32_t scope) {
+    memset(addr, 0, sizeof(*addr));
+    addr->sin6_family = AF_INET6;
+    addr->sin6_port = htons(port);
+    addr->sin6_scope_id = scope;
+}
+
+static inline void keel_fill_sockaddr_in6_addr(struct sockaddr_in6 *addr, const unsigned char src[16]) {
+    memcpy(&addr->sin6_addr, src, 16);
+}
+
+static inline void keel_extract_sockaddr_in6_addr(const struct sockaddr_in6 *addr, unsigned char out[16]) {
+    memcpy(out, &addr->sin6_addr, 16);
+}
+
+static inline uint16_t keel_sockaddr_in6_port(const struct sockaddr_in6 *addr) {
+    return ntohs(addr->sin6_port);
+}
+
+static inline uint32_t keel_sockaddr_in6_scope(const struct sockaddr_in6 *addr) {
+    return addr->sin6_scope_id;
+}
+
+static inline size_t keel_sockaddr_in6_sizeof(void) {
+    return sizeof(struct sockaddr_in6);
+}
+
+/*
+ * sockaddr_storage helpers for getsockname / getpeername where the address
+ * family is not known at call time.
+ */
+static inline size_t keel_sockaddr_storage_sizeof(void) {
+    return sizeof(struct sockaddr_storage);
+}
+
+/* Returns the sa_family field portably (type differs across platforms). */
+static inline int keel_sockaddr_family(const struct sockaddr_storage *sa) {
+    return (int)sa->ss_family;
+}
+
+/*
  * writev wrapper for gather-write optimization.
  * Accepts parallel arrays of base pointers and lengths, builds
  * iovec internally, and calls writev in a single syscall.
