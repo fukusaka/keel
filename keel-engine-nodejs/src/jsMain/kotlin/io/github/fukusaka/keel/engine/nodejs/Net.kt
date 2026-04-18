@@ -6,6 +6,13 @@ external object Net {
     fun createServer(connectionListener: (socket: Socket) -> Unit): Server
     fun createConnection(port: Int, host: String): Socket
     fun createConnection(port: Int): Socket
+
+    /**
+     * Path-based connect for Unix-domain sockets:
+     * `{ path: "/tmp/foo.sock" }` or `{ path: "\u0000abstract-name" }`
+     * on Linux for abstract-namespace sockets.
+     */
+    fun createConnection(options: dynamic): Socket
 }
 
 external interface NodeEventEmitter {

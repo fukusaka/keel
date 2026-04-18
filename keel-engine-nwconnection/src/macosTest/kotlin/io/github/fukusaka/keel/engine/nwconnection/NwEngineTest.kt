@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
@@ -838,5 +839,72 @@ class NwEngineTest {
         close(clientFd)
         server.close()
         engine.close()
+    }
+
+    // --- UnixSocketAddress ---
+
+    private fun uniqueUdsPath(): String {
+        val pid = platform.posix.getpid()
+        val seq = udsPathSeq++
+        return "/tmp/keel-nw-uds-$pid-$seq.sock"
+    }
+
+    companion object {
+        private var udsPathSeq = 0
+    }
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip via NWConnection`() = runBlocking {
+        val engine = NwEngine()
+        val addr = UnixSocketAddress(uniqueUdsPath())
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = server.accept()
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "nw-uds".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("nw-uds".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            platform.posix.unlink(addr.path)
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace is rejected on Darwin`() = runBlocking<Unit> {
+        val engine = NwEngine()
+        try {
+            val addr = UnixSocketAddress.abstract("nw-abstract-should-fail")
+            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS path exceeding Darwin sun_path limit is rejected`() = runBlocking<Unit> {
+        val engine = NwEngine()
+        try {
+            // Darwin sun_path[104] incl. NUL. 104-byte path = 103 chars + NUL triggers reject.
+            val overly = "/tmp/" + "x".repeat(110)
+            val addr = UnixSocketAddress(overly)
+            assertFailsWith<IllegalArgumentException> { engine.bind(addr) }
+            assertFailsWith<IllegalArgumentException> { engine.connect(addr) }
+        } finally {
+            engine.close()
+        }
     }
 }

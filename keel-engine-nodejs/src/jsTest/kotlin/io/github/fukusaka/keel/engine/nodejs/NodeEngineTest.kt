@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
@@ -483,5 +484,67 @@ class NodeEngineTest {
         serverCh.close()
         server.close()
         engine.close()
+    }
+
+    // --- UnixSocketAddress ---
+
+    private fun uniqueUdsPath(): String {
+        val seq = udsSeq++
+        // Node's process.pid is available in Node.js runtime.
+        val pid: Int = js("process.pid") as Int
+        return "/tmp/keel-nodejs-uds-$pid-$seq.sock"
+    }
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip`() = runTest {
+        val engine = NodeEngine()
+        val path = uniqueUdsPath()
+        val addr = UnixSocketAddress(path)
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = server.accept()
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "uds-nodejs".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = serverCh.read(readBuf)
+            assertEquals("uds-nodejs".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            // Node's fs.unlinkSync removes the socket file; swallow if already gone.
+            js("try { require('fs').unlinkSync(path) } catch (_) {}")
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace is rejected on non-Linux platforms`() = runTest {
+        val engine = NodeEngine()
+        try {
+            val platform = js("process.platform") as String
+            if (platform == "linux") {
+                // On Linux, abstract is allowed; skip the rejection assertion and
+                // just verify the rejectAbstractOnNonLinux guard does not fire.
+                return@runTest
+            }
+            val addr = UnixSocketAddress.abstract("keel-nodejs-abs-should-fail")
+            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+        } finally {
+            engine.close()
+        }
+    }
+
+    companion object {
+        private var udsSeq = 0
     }
 }

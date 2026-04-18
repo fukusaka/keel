@@ -6,6 +6,7 @@ linkerOpts = -framework Security
 
 #include <Network/Network.h>
 #include <netinet/in.h>
+#include <sys/un.h>
 #include <dispatch/dispatch.h>
 #include <string.h>
 #include <Security/Security.h>
@@ -75,6 +76,76 @@ SecKeyRef keel_nw_create_private_key(const void *key_der, uint32_t key_len, int 
 
 /* 127.0.0.1 in network byte order */
 uint32_t keel_nw_loopback_addr(void) { return htonl(INADDR_LOOPBACK); }
+
+/*
+ * Darwin sockaddr_un.sun_path limit including NUL terminator.
+ * See <sys/un.h>: char sun_path[104].
+ */
+uint32_t keel_nw_unix_path_max(void) { return (uint32_t)sizeof(((struct sockaddr_un *)0)->sun_path); }
+
+/*
+ * Fills a sockaddr_un with AF_UNIX + NUL-terminated filesystem path.
+ *
+ * Returns 0 on success, -1 if path exceeds sun_path capacity (104 bytes
+ * incl. NUL on Darwin).
+ */
+static int keel_nw_fill_sockaddr_un(struct sockaddr_un *out, const char *path) {
+    size_t len = strlen(path);
+    if (len + 1 > sizeof(out->sun_path)) return -1;
+    memset(out, 0, sizeof(*out));
+    out->sun_family = AF_UNIX;
+    out->sun_len = (unsigned char)sizeof(*out);
+    memcpy(out->sun_path, path, len);
+    out->sun_path[len] = '\0';
+    return 0;
+}
+
+/*
+ * Creates an NWEndpoint bound to a filesystem Unix-domain socket path.
+ *
+ * Uses the documented public API nw_endpoint_create_address() with a
+ * sockaddr_un — avoiding the SPI nw_endpoint_create_unix() symbol that
+ * is exported since macOS 10.15 but not declared in public headers
+ * (an App Store reviewer could flag SPI usage). sockaddr-based
+ * endpoint construction has been public since macOS 10.14 / iOS 12.
+ *
+ * @param path  NUL-terminated filesystem path (<= 103 bytes + NUL on Darwin).
+ * @return endpoint on success, NULL if path is too long or the framework
+ *         rejects the input.
+ */
+nw_endpoint_t keel_nw_endpoint_create_unix(const char *path) {
+    struct sockaddr_un sun;
+    if (keel_nw_fill_sockaddr_un(&sun, path) != 0) return NULL;
+    return nw_endpoint_create_address((const struct sockaddr *)&sun);
+}
+
+/*
+ * Creates listener-bound TCP-over-UDS parameters.
+ *
+ * Sets requiredLocalEndpoint on plain TCP parameters so that nw_listener_create
+ * (no-port variant) binds to the given UDS path rather than an IP port. This
+ * matches the pattern documented by Apple DTS:
+ *
+ *   params.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
+ *   params.requiredLocalEndpoint = NWEndpoint.unix(path: ...)
+ *
+ * The endpoint is built from a sockaddr_un via the public
+ * nw_endpoint_create_address() — see keel_nw_endpoint_create_unix above.
+ *
+ * @param path  Filesystem UDS path.
+ * @return parameters on success, NULL if endpoint creation fails.
+ */
+nw_parameters_t keel_nw_create_tcp_params_unix_listener(const char *path) {
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
+        NW_PARAMETERS_DISABLE_PROTOCOL,
+        NW_PARAMETERS_DEFAULT_CONFIGURATION
+    );
+    if (!params) return NULL;
+    nw_endpoint_t ep = keel_nw_endpoint_create_unix(path);
+    if (!ep) return NULL;
+    nw_parameters_set_local_endpoint(params, ep);
+    return params;
+}
 
 /*
  * Callback types for async C wrappers.
