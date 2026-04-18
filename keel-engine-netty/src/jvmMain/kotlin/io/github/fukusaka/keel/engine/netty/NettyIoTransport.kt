@@ -220,9 +220,25 @@ internal class NettyIoTransport(
 
     /**
      * Releases all pending write buffers and closes the Netty channel.
-     * Unsent data is discarded. Idempotent: subsequent calls are no-ops.
+     * Unsent data is discarded. Idempotent and thread-safe.
+     *
+     * A non-EventLoop caller dispatches the teardown onto the Netty
+     * channel's EventLoop so the `pendingWrites` / `pendingBytes`
+     * mutations stay serialised with the read / write / flush paths.
+     * Concurrent callers may both enqueue a teardown; the re-check
+     * inside [teardownOnEventLoop] keeps the cleanup idempotent.
      */
     override fun close() {
+        if (!opened) return
+        val loop = nettyChannel.eventLoop()
+        if (loop.inEventLoop()) {
+            teardownOnEventLoop()
+        } else {
+            loop.execute { teardownOnEventLoop() }
+        }
+    }
+
+    private fun teardownOnEventLoop() {
         if (!opened) return
         opened = false
         for (pw in pendingWrites) pw.buf.release()

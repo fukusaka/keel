@@ -27,6 +27,8 @@ import nwconnection.keel_nw_write_async
 import nwconnection.keel_nw_writev_async
 import platform.Network.nw_connection_cancel
 import platform.Network.nw_connection_t
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_queue_t
 
 /**
  * Non-suspend [IoTransport] for NWConnection pipeline channels.
@@ -52,12 +54,19 @@ import platform.Network.nw_connection_t
  * [ReadContext]. The read callback disposes and re-arms on each invocation.
  * On close, the closed flag prevents re-arming.
  *
- * **Thread model**: all callbacks run on the per-connection serial dispatch
- * queue. Pipeline handlers execute synchronously on the dispatch queue thread.
+ * **Thread model**: all callbacks (read completion, write completion, and
+ * the teardown block dispatched from [close]) run on [connQueue], the
+ * per-connection serial dispatch queue. Pipeline handlers execute
+ * synchronously on that thread. [close] itself is safe to invoke from
+ * any thread — it fires a `dispatch_async` onto [connQueue] and returns
+ * immediately; the actual teardown runs serialised with in-flight
+ * read / write callbacks, so `pendingWrites` / `pendingBytes` mutations
+ * never race.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
     private val conn: nw_connection_t,
+    private val connQueue: dispatch_queue_t,
     allocator: BufferAllocator,
 ) : AbstractIoTransport(allocator) {
 
@@ -184,9 +193,24 @@ internal class NwIoTransport(
      * callback via [onReadComplete] when it detects [opened] is false.
      * Use [awaitClosed] to wait for the callback to complete.
      *
-     * Idempotent: subsequent calls are no-ops.
+     * Idempotent and thread-safe. The teardown is dispatched onto
+     * [connQueue], the same per-connection serial queue that every
+     * NWConnection callback (read / write completion) runs on, so the
+     * `opened` flip, pending-write release, and
+     * [nw_connection_cancel] observe a total order with any in-flight
+     * read / write callback's `pendingWrites` mutations. Concurrent
+     * `close()` callers collapse to a single tear-down because the
+     * re-check of `opened` inside the dispatched block turns every
+     * non-first invocation into a no-op.
      */
     override fun close() {
+        if (!opened) return
+        dispatch_async(connQueue) {
+            teardownOnConnQueue()
+        }
+    }
+
+    private fun teardownOnConnQueue() {
         if (!opened) return
         opened = false
         for (pw in pendingWrites) pw.buf.release()

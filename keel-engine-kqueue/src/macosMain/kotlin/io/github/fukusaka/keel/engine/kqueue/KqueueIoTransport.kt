@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
@@ -126,9 +128,21 @@ internal class KqueueIoTransport(
      *
      * Unsent data is discarded — no flush is attempted. Does NOT unregister
      * any pending EVFILT_READ/WRITE callbacks from the EventLoop (the
-     * callbacks check [isOpen] and become no-ops). Idempotent.
+     * callbacks check [isOpen] and become no-ops). Idempotent and
+     * thread-safe: a non-EventLoop caller dispatches the teardown onto
+     * the owning [eventLoop] so the `pendingWrites` / `pendingBytes`
+     * mutations stay serialised with the read / write / flush paths.
      */
     override fun close() {
+        if (!opened) return
+        if (eventLoop.inEventLoop()) {
+            teardownOnEventLoop()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { teardownOnEventLoop() })
+        }
+    }
+
+    private fun teardownOnEventLoop() {
         if (!opened) return
         opened = false
         for (pw in pendingWrites) pw.buf.release()
