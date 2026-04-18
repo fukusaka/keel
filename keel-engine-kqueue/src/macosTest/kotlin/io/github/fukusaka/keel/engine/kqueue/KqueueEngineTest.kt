@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.IoBuf
@@ -32,6 +33,7 @@ import platform.posix.read
 import platform.posix.setsockopt
 import platform.posix.socket
 import platform.posix.sockaddr_in
+import platform.posix.unlink
 import platform.posix.timeval
 import platform.posix.usleep
 import platform.posix.write
@@ -545,6 +547,63 @@ class KqueueEngineTest {
 
         server.close()
         engine.close()
+    }
+
+    // --- UnixSocketAddress ---
+
+    /**
+     * Unique temp path so parallel test runs don't collide on the
+     * filesystem. Caller must call [unlink] after close.
+     */
+    private fun uniqueUdsPath(): String {
+        val pid = platform.posix.getpid()
+        val seq = udsPathSeq++
+        return "/tmp/keel-uds-$pid-$seq.sock"
+    }
+
+    companion object {
+        private var udsPathSeq = 0
+    }
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip`() = runBlocking {
+        val engine = KqueueEngine()
+        val addr = UnixSocketAddress(uniqueUdsPath())
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = server.accept()
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "uds-hello".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("uds-hello".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            unlink(addr.path)
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace is rejected on macOS`() = runBlocking<Unit> {
+        val engine = KqueueEngine()
+        try {
+            val addr = UnixSocketAddress.abstract("keel-abstract-should-fail")
+            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+        } finally {
+            engine.close()
+        }
     }
 
     @Test

@@ -95,9 +95,32 @@ class KqueueEngine(
      */
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
+
+        memScoped {
+            val kev = alloc<kevent>()
+            keel_ev_set(
+                kev.ptr,
+                serverFd.convert(),
+                EVFILT_READ.convert(),
+                EV_ADD.convert(),
+                0u,
+                0,
+                null,
+            )
+            val result = kevent(bossLoop.kqFd, kev.ptr, 1, null, 0, null)
+            check(result >= 0) { "kevent(EV_ADD server) failed: ${errnoMessage(errno)}" }
+        }
+
+        logger.debug { "Bound to $address" }
+        return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -147,9 +170,41 @@ class KqueueEngine(
      */
     override suspend fun connect(address: SocketAddress): Channel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        val fd = PosixSocketUtils.createUnixUnconnectedSocket()
+        val (workerLoop, allocator) = workerGroup.next()
+
+        val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)
+        if (result < 0) {
+            val err = errno
+            if (err == EINPROGRESS) {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
+                    cont.invokeOnCancellation {
+                        workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
+                        close(fd)
+                    }
+                }
+                val error = PosixSocketUtils.getSocketError(fd)
+                if (error != 0) {
+                    close(fd)
+                    error("connect($address) failed: ${errnoMessage(error)}")
+                }
+            } else {
+                close(fd)
+                error("connect($address) failed: ${errnoMessage(err)}")
+            }
+        }
+
+        logger.debug { "Connected to $address" }
+        val transport = KqueueIoTransport(fd, workerLoop, allocator)
+        return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
@@ -217,9 +272,40 @@ class KqueueEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "KqueueEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog)
+
+        logger.debug { "Pipeline bound to $address" }
+
+        val serverChannel = KqueuePipelinedServerChannel(
+            serverFd = serverFd,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            localAddr = address,
+            logger = logger,
+            config = config,
+            pipelineInitializer = pipelineInitializer,
         )
+        serverChannel.start()
+        return serverChannel
+    }
+
+    private fun rejectAbstractOnNonLinux(address: UnixSocketAddress) {
+        if (address.isAbstract) {
+            throw UnsupportedOperationException(
+                "Linux abstract-namespace Unix sockets are not supported on macOS: $address",
+            )
+        }
     }
 
     private fun bindPipelineInet(

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
@@ -42,6 +43,7 @@ import platform.posix.setsockopt
 import platform.posix.socket
 import platform.posix.sockaddr_in
 import platform.posix.timeval
+import platform.posix.unlink
 import platform.posix.write
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
@@ -52,6 +54,10 @@ import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineTest {
+
+    companion object {
+        private var udsPathSeq = 0
+    }
 
     // --- Helper ---
 
@@ -642,6 +648,71 @@ class IoUringEngineTest {
         }
 
         engine.close()
+    }
+
+    // --- UnixSocketAddress ---
+
+    private fun uniqueUdsPath(): String {
+        val pid = platform.posix.getpid()
+        val seq = udsPathSeq++
+        return "/tmp/keel-uds-$pid-$seq.sock"
+    }
+
+    @Test
+    fun `UDS filesystem bind connect echo round trip`() = runBlocking {
+        val engine = IoUringEngine()
+        val addr = UnixSocketAddress(uniqueUdsPath())
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = withTimeout(5000) { server.accept() }
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "uds-hello".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("uds-hello".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            unlink(addr.path)
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `UDS abstract namespace bind connect echo round trip`() = runBlocking {
+        val engine = IoUringEngine()
+        val addr = UnixSocketAddress.abstract("keel-test-abstract-${platform.posix.getpid()}-${udsPathSeq++}")
+        try {
+            val server = engine.bind(addr)
+            val client = engine.connect(addr)
+            val serverCh = withTimeout(5000) { server.accept() }
+
+            val writeBuf = DefaultAllocator.allocate(16)
+            for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(16)
+            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            assertEquals("abstract".length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            engine.close()
+        }
     }
 
     @Test
