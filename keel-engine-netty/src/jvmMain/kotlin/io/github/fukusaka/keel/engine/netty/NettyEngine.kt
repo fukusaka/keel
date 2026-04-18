@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
+import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -111,7 +112,7 @@ class NettyEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
 
         val serverChannel = NettyServer.create()
         val bootstrap = ServerBootstrap()
@@ -220,7 +221,7 @@ class NettyEngine(
 
     private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
 
         val bootstrap = Bootstrap()
             .group(workerGroup)
@@ -327,7 +328,7 @@ class NettyEngine(
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
@@ -354,18 +355,6 @@ class NettyEngine(
         return NettyPipelinedServer(nettyServerCh, localAddr)
     }
 
-    /**
-     * Netty's `NioDomainSocketChannel` is backed by the JDK's
-     * `UnixDomainSocketAddress`, which supports only filesystem paths
-     * (Java 16+). Abstract-namespace addresses are rejected early.
-     */
-    private fun rejectAbstract(address: UnixSocketAddress) {
-        if (address.isAbstract) {
-            throw UnsupportedOperationException(
-                "Netty/NIO domain socket does not support abstract-namespace sockets: $address",
-            )
-        }
-    }
 
     private fun bindPipelineInet(
         address: InetSocketAddress,

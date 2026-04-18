@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
+import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -99,7 +100,7 @@ class NioEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
         serverChannel.configureBlocking(false)
@@ -150,7 +151,7 @@ class NioEngine(
 
     private suspend fun connectUnix(address: UnixSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
 
         val socketChannel = SocketChannel.open(StandardProtocolFamily.UNIX)
         socketChannel.configureBlocking(false)
@@ -314,7 +315,7 @@ class NioEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
-        rejectAbstract(address)
+        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
         serverChannel.configureBlocking(false)
@@ -337,21 +338,6 @@ class NioEngine(
         )
         serverPipeline.start()
         return serverPipeline
-    }
-
-    /**
-     * Linux abstract-namespace Unix sockets (`@prefix` / `\u0000`
-     * prefix) are not supported by the JDK's `UnixDomainSocketAddress`
-     * API (filesystem paths only, Java 16+). Reject early with a clear
-     * error instead of surfacing the confusing `InvalidPathException`
-     * that `Path.of("\u0000name")` would raise.
-     */
-    private fun rejectAbstract(address: UnixSocketAddress) {
-        if (address.isAbstract) {
-            throw UnsupportedOperationException(
-                "JVM UnixDomainSocketAddress does not support abstract-namespace sockets: $address",
-            )
-        }
     }
 
     /**

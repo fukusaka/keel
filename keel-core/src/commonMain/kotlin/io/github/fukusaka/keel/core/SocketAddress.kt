@@ -146,6 +146,26 @@ data class UnixSocketAddress(val path: String) : SocketAddress() {
 }
 
 /**
+ * Guards that `this` address targets the filesystem namespace, throwing
+ * [UnsupportedOperationException] otherwise. Used by engines whose
+ * underlying socket API does not implement the Linux abstract namespace
+ * (e.g. macOS kernel, Java 16+ `UnixDomainSocketAddress`, Node.js
+ * `net.createServer({ path })`, Apple `NWConnection`) so the failure
+ * surfaces at the bind / connect call site with an actionable message
+ * instead of a late kernel-level errno or an `InvalidPathException`.
+ *
+ * @param reason engine-specific context prepended to the error
+ *   message. The address is appended automatically so callers should
+ *   phrase [reason] as "X does not support abstract-namespace Unix
+ *   sockets".
+ */
+fun UnixSocketAddress.requireFilesystemOnly(reason: String) {
+    if (isAbstract) {
+        throw UnsupportedOperationException("$reason: $this")
+    }
+}
+
+/**
  * The host component of an [InetSocketAddress].
  *
  * [Name] holds a hostname string that DNS resolution converts to one
