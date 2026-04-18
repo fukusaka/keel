@@ -1,10 +1,13 @@
-headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h string.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h string.h sys/un.h stddef.h errno.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/uio.h>
 #include <string.h>
+#include <sys/un.h>
+#include <stddef.h>
+#include <errno.h>
 
 /* htons/ntohs/htonl are macros — cinterop cannot bind them directly. */
 static inline uint16_t keel_htons(uint16_t hostshort) { return htons(hostshort); }
@@ -75,4 +78,109 @@ static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int c
 static int keel_errno_message(int errnum, char *buf, size_t buflen) {
     if (buflen == 0) return -1;
     return strerror_r(errnum, buf, buflen);
+}
+
+/*
+ * Unix-domain-socket address helpers.
+ *
+ * `struct sockaddr_un.sun_path` differs in capacity across platforms
+ * (108 bytes on Linux, 104 on macOS / BSD), and abstract-namespace
+ * sockets (Linux-only) require an exact `addrlen` equal to
+ * `offsetof(struct sockaddr_un, sun_path) + 1 + name_len` — no extra
+ * NUL byte after the name — while filesystem paths are conventionally
+ * bound with the full `sizeof(struct sockaddr_un)`. The helpers below
+ * compose the `sockaddr_un` and return the matching `addrlen` so the
+ * Kotlin side never has to know about `offsetof` or the per-platform
+ * `sun_path` capacity.
+ *
+ * `keel_bind_un` / `keel_connect_un`:
+ *   - `path_len` is the length of `path` in bytes (EXCLUDING any
+ *     leading NUL for abstract sockets; the caller passes the raw name
+ *     and `is_abstract = 1`).
+ *   - `is_abstract`: 1 → Linux abstract namespace (`sun_path[0] = 0`);
+ *     0 → filesystem path (null-terminated in `sun_path`).
+ *   - Return value: the underlying `bind(2)` / `connect(2)` result
+ *     (0 on success, -1 with `errno` set on failure).
+ *   - Sets `errno = ENAMETOOLONG` and returns -1 if `path_len` overflows
+ *     `sun_path` capacity.
+ *
+ * `keel_sockaddr_un_max_path` exposes the per-platform `sun_path`
+ * capacity so Kotlin can validate at construction time if desired.
+ */
+static inline size_t keel_sockaddr_un_max_path(void) {
+    return sizeof(((struct sockaddr_un *)0)->sun_path);
+}
+
+/*
+ * Size of `struct sockaddr_un` on the target platform. Lets Kotlin
+ * code allocate a correctly-sized byte buffer (`110` on Linux glibc,
+ * `106` on macOS) without needing cinterop to bind the struct type —
+ * the actual field layout is never touched from Kotlin.
+ */
+static inline size_t keel_sockaddr_un_sizeof(void) {
+    return sizeof(struct sockaddr_un);
+}
+
+static int keel_bind_un(int fd, const unsigned char *path, size_t path_len, int is_abstract) {
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    size_t cap = sizeof(sa.sun_path);
+    if (is_abstract) {
+        /* Linux abstract: sun_path[0] = 0, then raw bytes. No trailing NUL. */
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        sa.sun_path[0] = '\0';
+        if (path_len > 0) memcpy(sa.sun_path + 1, path, path_len);
+        socklen_t addrlen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + path_len);
+        return bind(fd, (struct sockaddr *)&sa, addrlen);
+    } else {
+        /* Filesystem: null-terminated path inside sun_path, bind with the full struct. */
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        if (path_len > 0) memcpy(sa.sun_path, path, path_len);
+        sa.sun_path[path_len] = '\0';
+        return bind(fd, (struct sockaddr *)&sa, sizeof(sa));
+    }
+}
+
+/* keel_connect_un: matches keel_bind_un shape — see its comment block. */
+static int keel_connect_un(int fd, const unsigned char *path, size_t path_len, int is_abstract) {
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    size_t cap = sizeof(sa.sun_path);
+    if (is_abstract) {
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        sa.sun_path[0] = '\0';
+        if (path_len > 0) memcpy(sa.sun_path + 1, path, path_len);
+        socklen_t addrlen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + path_len);
+        return connect(fd, (struct sockaddr *)&sa, addrlen);
+    } else {
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        if (path_len > 0) memcpy(sa.sun_path, path, path_len);
+        sa.sun_path[path_len] = '\0';
+        return connect(fd, (struct sockaddr *)&sa, sizeof(sa));
+    }
+}
+
+/*
+ * Fill a `sockaddr_un` in caller-provided memory for use by io_uring
+ * `IORING_OP_CONNECT`, which needs the sockaddr pointer + addrlen
+ * directly in the SQE. Returns the addrlen to pass to the SQE, or -1
+ * with `errno = ENAMETOOLONG` if the path does not fit.
+ */
+static int keel_fill_sockaddr_un(struct sockaddr_un *sa, const unsigned char *path, size_t path_len, int is_abstract) {
+    memset(sa, 0, sizeof(*sa));
+    sa->sun_family = AF_UNIX;
+    size_t cap = sizeof(sa->sun_path);
+    if (is_abstract) {
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        sa->sun_path[0] = '\0';
+        if (path_len > 0) memcpy(sa->sun_path + 1, path, path_len);
+        return (int)(offsetof(struct sockaddr_un, sun_path) + 1 + path_len);
+    } else {
+        if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
+        if (path_len > 0) memcpy(sa->sun_path, path, path_len);
+        sa->sun_path[path_len] = '\0';
+        return (int)sizeof(*sa);
+    }
 }
