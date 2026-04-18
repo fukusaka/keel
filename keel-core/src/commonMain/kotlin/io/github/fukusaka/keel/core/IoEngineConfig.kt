@@ -31,9 +31,18 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  * @property loggerFactory Factory for creating [io.github.fukusaka.keel.logging.Logger]
  *                         instances. Defaults to [NoopLoggerFactory] which discards
  *                         all log output (zero overhead).
+ * @property resolver DNS resolver used when a [StreamEngine.bind] /
+ *                    [StreamEngine.connect] call receives an
+ *                    [InetSocketAddress] whose host is a [Host.Name]
+ *                    (unresolved hostname). Defaults to
+ *                    [DnsResolver.SYSTEM] which wraps the platform's
+ *                    blocking system resolver. Substitute with
+ *                    [CachingDnsResolver] or a custom implementation
+ *                    to share resolution across calls.
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
     val threads: Int = 0,
     val loggerFactory: LoggerFactory = NoopLoggerFactory,
+    val resolver: DnsResolver = DnsResolver.SYSTEM,
 )
