@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CPointerVar
@@ -116,9 +118,23 @@ internal class EpollIoTransport(
 
     /**
      * Releases all pending write buffers, unregisters from epoll, and
-     * closes the socket fd. Idempotent.
+     * closes the socket fd. Idempotent and thread-safe.
+     *
+     * A non-EventLoop caller dispatches the teardown onto the owning
+     * [eventLoop] so the `pendingWrites` / `pendingBytes` mutations and
+     * the `eventLoop.cleanupFd` / `close(fd)` pair stay serialised with
+     * the read / write / flush paths on the EventLoop thread.
      */
     override fun close() {
+        if (!opened) return
+        if (eventLoop.inEventLoop()) {
+            teardownOnEventLoop()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { teardownOnEventLoop() })
+        }
+    }
+
+    private fun teardownOnEventLoop() {
         if (!opened) return
         opened = false
         for (pw in pendingWrites) pw.buf.release()
