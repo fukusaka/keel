@@ -61,9 +61,38 @@ class NodeEngine(
 
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindUnix(address, bindConfig)
+    }
+
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): KeelServer {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        return suspendCoroutine { cont ->
+            val srv = Net.createServer { _ -> }
+
+            val listenOpts = js("({})")
+            listenOpts.path = address.kernelPath
+            listenOpts.backlog = bindConfig.backlog
+            srv.listen(listenOpts) {
+                val serverChannel = NodeServer(
+                    srv,
+                    address,
+                    config.allocator,
+                    bindConfig,
+                    channelLogger,
+                )
+                srv.on("connection") { socket: dynamic ->
+                    serverChannel.onConnection(socket as Socket)
+                }
+                logger.debug { "Bound to $address" }
+                cont.resume(serverChannel)
+            }
+
+            srv.on("error") { err: dynamic ->
+                cont.resumeWithException(Error(err.message as? String ?: "listen error"))
+            }
+        }
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelServer {
@@ -129,9 +158,46 @@ class NodeEngine(
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    }
+
+    private fun bindPipelineUnix(
+        address: UnixSocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedServer {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        // Listener-level TLS is TCP-specific — for UDS there is no
+        // net.tls equivalent (Node.js `tls.createServer` opens TCP
+        // listener under the hood). Fall back to plain net.createServer.
+        val srv = Net.createServer { _ -> }
+        val serverChannel = NodePipelinedServer(srv, address)
+
+        srv.on("connection") { socket: dynamic ->
+            val typedSocket = socket.unsafeCast<Socket>()
+            val channelLogger = this.channelLogger
+            val transport = NodeIoTransport(typedSocket, this.config.allocator)
+            val channel = NodePipelinedChannel(
+                transport,
+                channelLogger,
+                address,
+                null,
+            )
+            config.initializeConnection(channel)
+            pipelineInitializer(channel)
+            transport.readEnabled = true
+        }
+
+        val listenOpts = js("({})")
+        listenOpts.path = address.kernelPath
+        listenOpts.backlog = config.backlog
+        srv.listen(listenOpts) {
+            logger.debug { "Pipeline bound to $address" }
+        }
+
+        return serverChannel
     }
 
     private fun bindPipelineInet(
@@ -190,9 +256,54 @@ class NodeEngine(
 
     override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
         is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> throw UnsupportedOperationException(
-            "NodeEngine does not yet support UnixSocketAddress (Phase 11 PR C)",
-        )
+        is UnixSocketAddress -> connectUnix(address)
+    }
+
+    private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
+        check(!closed) { "Engine is closed" }
+        rejectAbstractOnNonLinux(address)
+
+        return suspendCoroutine { cont ->
+            val connectOpts = js("({})")
+            connectOpts.path = address.kernelPath
+            val socket = Net.createConnection(connectOpts)
+
+            socket.once("connect") { _: dynamic ->
+                val channelLogger = this@NodeEngine.channelLogger
+                val transport = NodeIoTransport(socket, config.allocator)
+                val channel = NodePipelinedChannel(
+                    transport,
+                    channelLogger,
+                    address,
+                    null,
+                )
+                logger.debug { "Connected to $address" }
+                cont.resume(channel)
+            }
+
+            socket.once("error") { err: dynamic ->
+                cont.resumeWithException(Error(err.message as? String ?: "connect error"))
+            }
+        }
+    }
+
+    /**
+     * Linux abstract-namespace Unix sockets are only implemented by
+     * Linux kernels. Node.js silently fails on macOS / Windows when
+     * the `path` starts with `\u0000`; surface that as an explicit
+     * engine-level error instead of letting the runtime produce an
+     * opaque `ENOENT`.
+     */
+    private fun rejectAbstractOnNonLinux(address: UnixSocketAddress) {
+        if (address.isAbstract) {
+            val platform = js("process.platform") as String
+            if (platform != "linux") {
+                throw UnsupportedOperationException(
+                    "NodeEngine abstract-namespace Unix sockets require Linux " +
+                        "(got platform '$platform'): $address",
+                )
+            }
+        }
     }
 
     private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
