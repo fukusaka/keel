@@ -740,11 +740,6 @@ internal class IoUringIoTransport(
 
     override fun close() {
         if (!opened) return
-        // Flip the open flag synchronously so [isOpen] reports closed even before
-        // the teardown task runs on the EventLoop. The flag lives in
-        // [AbstractIoTransport] and is plain `var`; memory visibility across
-        // threads is provided by the subsequent `dispatch` (MpscQueue release).
-        opened = false
         if (eventLoop.inEventLoop()) {
             teardownOnEventLoop()
         } else {
@@ -753,6 +748,11 @@ internal class IoUringIoTransport(
             // unregister, fd close) onto the owning EventLoop. Fire-and-forget:
             // pending close tasks are drained at the top of each loop iteration,
             // so the ring is never torn down before its channel teardown runs.
+            //
+            // Concurrent close() callers may both pass the `opened` read above
+            // and each enqueue a teardown task; the re-check inside
+            // `teardownOnEventLoop` keeps the cleanup idempotent on the
+            // EventLoop thread.
             eventLoop.dispatch(EmptyCoroutineContext, Runnable {
                 teardownOnEventLoop()
             })
@@ -760,6 +760,8 @@ internal class IoUringIoTransport(
     }
 
     private fun teardownOnEventLoop() {
+        if (!opened) return
+        opened = false
         if (multishotSlot >= 0) {
             eventLoop.cancelMultishot(multishotSlot)
             multishotSlot = -1
