@@ -142,3 +142,52 @@ internal fun List<IpAddress>.filterByFamily(family: FamilyPreference): List<IpAd
     FamilyPreference.V4Only -> filterIsInstance<IpAddress.V4>()
     FamilyPreference.V6Only -> filterIsInstance<IpAddress.V6>()
 }
+
+/**
+ * Resolves this address via [resolver] and invokes [attempt] on each
+ * [IpAddress] candidate in the order the resolver returned them,
+ * returning the first successful result.
+ *
+ * When every candidate fails, the last error is thrown with all prior
+ * errors attached as suppressed. [kotlinx.coroutines.CancellationException]
+ * is re-thrown immediately — the caller's cancellation always wins
+ * over fallback iteration.
+ *
+ * Sequential fallback only: candidates are tried one at a time, and
+ * each [attempt] runs to completion (success or failure) before the
+ * next is started. This does NOT race candidates concurrently. RFC 8305
+ * Happy Eyeballs semantics (V4/V6 parallel racing with staggered start,
+ * losing sockets cancelled) is out of scope for engine-level connect —
+ * it belongs in an upper dialer layer that composes multiple
+ * `engine.connect(ip, port)` attempts.
+ *
+ * @param resolver resolver used when [host] is a [Host.Name]. For a
+ *   [Host.Ip], the singleton list is used and [resolver] is not invoked.
+ * @param hints filter / timeout hints forwarded to [resolveAll].
+ * @param attempt per-candidate action. Receives the resolved
+ *   [IpAddress]; the port is available via `this.port` on the enclosing
+ *   receiver.
+ */
+suspend fun <R> InetSocketAddress.connectWithFallback(
+    resolver: DnsResolver = DnsResolver.SYSTEM,
+    hints: ResolveHints = ResolveHints.DEFAULT,
+    attempt: suspend (IpAddress) -> R,
+): R {
+    val candidates = resolveAll(resolver, hints)
+    require(candidates.isNotEmpty()) { "no candidates resolved for $this (family=${hints.family})" }
+    var lastError: Throwable? = null
+    val suppressed = mutableListOf<Throwable>()
+    for (ip in candidates) {
+        try {
+            return attempt(ip)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            if (lastError != null) suppressed.add(lastError)
+            lastError = e
+        }
+    }
+    val finalError = lastError ?: error("unreachable: candidates empty after isNotEmpty check")
+    suppressed.forEach(finalError::addSuppressed)
+    throw finalError
+}

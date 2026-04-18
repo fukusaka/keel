@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -135,9 +136,12 @@ class NioEngine(
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
+        return address.connectWithFallback(config.resolver) { ip ->
+            connectToIp(ip.toCanonicalString(), address.port)
+        }
+    }
 
-        val host = address.resolveFirst(config.resolver).toCanonicalString()
-        val port = address.port
+    private suspend fun connectToIp(host: String, port: Int): Channel {
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
         val (workerLoop, allocator) = workerGroup.next()
