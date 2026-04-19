@@ -2,6 +2,10 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
+val hostOs: String = System.getProperty("os.name").lowercase()
+val isMacHost: Boolean = hostOs.contains("mac")
+val isLinuxHost: Boolean = hostOs.contains("linux")
+
 kotlin {
     macosArm64 {
         compilations["main"].cinterops {
@@ -48,14 +52,22 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
             }
         }
-        val macosTest by getting {
-            dependencies {
-                implementation(project(":keel-engine-kqueue"))
+        // Gate per-target test wiring on the host flag: the referenced
+        // engine modules (:keel-engine-kqueue / :keel-engine-epoll) are
+        // host-gated in `settings.gradle.kts` so they only exist in the
+        // build on a matching host.
+        if (isMacHost) {
+            val macosTest by getting {
+                dependencies {
+                    implementation(project(":keel-engine-kqueue"))
+                }
             }
         }
-        val linuxTest by getting {
-            dependencies {
-                implementation(project(":keel-engine-epoll"))
+        if (isLinuxHost) {
+            val linuxTest by getting {
+                dependencies {
+                    implementation(project(":keel-engine-epoll"))
+                }
             }
         }
     }
