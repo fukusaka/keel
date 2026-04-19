@@ -4,18 +4,18 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
-import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.requireIp
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
-import io.github.fukusaka.keel.native.posix.POSIX_IPV4_RESOLVE_HINTS
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.native.posix.resolveForPosixSocket
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -117,9 +117,9 @@ class EpollEngine(
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val host = address.resolveForPosixSocket(config.resolver)
+        val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
 
         // Register server fd with the boss EventLoop's epoll so that
         // accept() readiness is notified on the boss thread.
@@ -189,16 +189,16 @@ class EpollEngine(
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
-        return address.connectWithFallback(config.resolver, POSIX_IPV4_RESOLVE_HINTS) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port)
+        return address.connectWithFallback(config.resolver) { ip ->
+            connectToIp(ip, address.port)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int): Channel {
-        val fd = PosixSocketUtils.createUnconnectedSocket()
+    private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
+        val fd = PosixSocketUtils.createUnconnectedSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = PosixSocketUtils.connectNonBlocking(fd, host, port)
+        val result = PosixSocketUtils.connectNonBlocking(fd, ip, port)
         if (result < 0) {
             val err = errno
             if (err == EINPROGRESS) {
@@ -278,9 +278,9 @@ class EpollEngine(
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val host = address.requireIpLiteral()
+        val ip = address.requireIp()
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(host, port, config.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, config.backlog)
 
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Pipeline bound to $localAddr" }

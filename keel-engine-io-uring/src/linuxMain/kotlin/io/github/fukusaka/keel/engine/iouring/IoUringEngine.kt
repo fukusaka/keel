@@ -4,20 +4,20 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
-import io.github.fukusaka.keel.core.requireIpLiteral
+import io.github.fukusaka.keel.core.requireIp
+import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
-import io.github.fukusaka.keel.native.posix.POSIX_IPV4_RESOLVE_HINTS
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
-import io.github.fukusaka.keel.native.posix.resolveForPosixSocket
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_connect
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -34,10 +34,14 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.allocArray
-import platform.posix.AF_INET
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
 import platform.posix.sockaddr_in
-import posix_socket.keel_inet_pton
+import platform.posix.sockaddr_in6
+import posix_socket.keel_fill_sockaddr_in6_addr
+import posix_socket.keel_htonl
 import posix_socket.keel_init_sockaddr_in
+import posix_socket.keel_init_sockaddr_in6
 import posix_socket.keel_sockaddr_un_sizeof
 
 /**
@@ -140,9 +144,9 @@ class IoUringEngine(
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val host = address.resolveForPosixSocket(config.resolver)
+        val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(host, port, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
         val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
         logger.debug { "Bound to $localAddr" }
         return IoUringServer(
@@ -211,13 +215,13 @@ class IoUringEngine(
 
     private suspend fun connectInet(address: InetSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
-        return address.connectWithFallback(config.resolver, POSIX_IPV4_RESOLVE_HINTS) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port)
+        return address.connectWithFallback(config.resolver) { ip ->
+            connectToIp(ip, address.port)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int): Channel {
-        val fd = PosixSocketUtils.createUnconnectedSocket()
+    private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
+        val fd = PosixSocketUtils.createUnconnectedSocket(ip)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -225,17 +229,33 @@ class IoUringEngine(
         val res: Int
         try {
             res = memScoped {
-                val addr = alloc<sockaddr_in>()
-                keel_init_sockaddr_in(addr.ptr, port.toUShort())
-                val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-                check(rc == 1) { "Invalid address: $host" }
-
-                workerLoop.submitAndAwait { sqe ->
-                    io_uring_prep_connect(
-                        sqe, fd,
-                        addr.ptr.reinterpret(),
-                        sizeOf<sockaddr_in>().convert(),
-                    )
+                when (ip) {
+                    is IpAddress.V4 -> {
+                        val addr = alloc<sockaddr_in>()
+                        keel_init_sockaddr_in(addr.ptr, port.toUShort())
+                        addr.sin_addr.s_addr = keel_htonl(ip.value.toUInt())
+                        workerLoop.submitAndAwait { sqe ->
+                            io_uring_prep_connect(
+                                sqe, fd,
+                                addr.ptr.reinterpret(),
+                                sizeOf<sockaddr_in>().convert(),
+                            )
+                        }
+                    }
+                    is IpAddress.V6 -> {
+                        val addr = alloc<sockaddr_in6>()
+                        keel_init_sockaddr_in6(addr.ptr, port.toUShort(), ip.scopeId.toUInt())
+                        ip.toByteArray().toUByteArray().usePinned { pinned ->
+                            keel_fill_sockaddr_in6_addr(addr.ptr, pinned.addressOf(0))
+                        }
+                        workerLoop.submitAndAwait { sqe ->
+                            io_uring_prep_connect(
+                                sqe, fd,
+                                addr.ptr.reinterpret(),
+                                sizeOf<sockaddr_in6>().convert(),
+                            )
+                        }
+                    }
                 }
             }
         } catch (e: Throwable) {
@@ -316,10 +336,10 @@ class IoUringEngine(
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val host = address.requireIpLiteral()
+        val ip = address.requireIp()
         val port = address.port
         val serverFds = IntArray(workerGroup.size) {
-            PosixSocketUtils.createReusePortServerSocket(host, port, config.backlog)
+            PosixSocketUtils.createReusePortServerSocket(ip, port, config.backlog)
         }
         // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
         val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
