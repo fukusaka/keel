@@ -35,6 +35,7 @@ import platform.posix.pipe
 import platform.posix.read
 import platform.posix.usleep
 import platform.posix.waitpid
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -55,7 +56,7 @@ class AwsLcHttpsEchoTest {
     )
 
     @Test
-    fun `HTTPS echo via curl`() {
+    fun `HTTPS echo via curl`() = runBlocking {
         val factory = AwsLcCodecFactory()
         val engine = createTestEngine()
 

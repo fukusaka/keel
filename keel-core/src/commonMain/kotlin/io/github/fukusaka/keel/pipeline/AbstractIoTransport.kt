@@ -2,8 +2,8 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.concurrent.Volatile
 
 /**
  * Base class for [IoTransport] implementations with shared defaults.
