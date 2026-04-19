@@ -112,7 +112,9 @@ class NettyEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val serverChannel = NettyServer.create()
         val bootstrap = ServerBootstrap()
@@ -221,7 +223,9 @@ class NettyEngine(
 
     private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val bootstrap = Bootstrap()
             .group(workerGroup)
@@ -328,7 +332,9 @@ class NettyEngine(
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)

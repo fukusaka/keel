@@ -100,7 +100,9 @@ class NioEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
         serverChannel.configureBlocking(false)
@@ -151,7 +153,9 @@ class NioEngine(
 
     private suspend fun connectUnix(address: UnixSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val socketChannel = SocketChannel.open(StandardProtocolFamily.UNIX)
         socketChannel.configureBlocking(false)
@@ -315,7 +319,9 @@ class NioEngine(
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)")
+        address.requireFilesystemOnly(
+            "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
+        )
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
         serverChannel.configureBlocking(false)
