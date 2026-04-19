@@ -17,7 +17,7 @@ import java.net.InetAddress
  * [ResolveHints.canonicalName] is true.
  */
 actual object SystemDnsResolver : DnsResolver {
-    override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
+    actual override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
         val lookup: suspend () -> ResolverResult = { doLookup(hostname, hints) }
         val timeout = hints.timeout
         return if (timeout != null) withTimeout(timeout) { lookup() } else lookup()

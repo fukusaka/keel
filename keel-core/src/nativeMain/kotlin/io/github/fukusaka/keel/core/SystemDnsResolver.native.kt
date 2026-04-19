@@ -52,7 +52,7 @@ import platform.posix.sockaddr_in6
  */
 @OptIn(ExperimentalForeignApi::class)
 actual object SystemDnsResolver : DnsResolver {
-    override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
+    actual override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
         // Fast path: numeric IP literals never need a syscall.
         val literal = IpAddress.parseOrNull(hostname)
         if (literal != null) {
