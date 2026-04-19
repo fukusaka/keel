@@ -91,8 +91,15 @@ enum class FamilyPreference { Any, V4Only, V6Only }
  *
  * Returned from [DnsResolver.SYSTEM] and used as the default on
  * [IoEngineConfig.resolver].
+ *
+ * The `resolve` contract is declared here so `compileCommonMainKotlinMetadata`
+ * (used by Dokka / KMP publishing) can verify the object is complete without
+ * seeing the platform actuals. Each actual overrides `resolve` with its
+ * platform-specific implementation.
  */
-expect object SystemDnsResolver : DnsResolver
+expect object SystemDnsResolver : DnsResolver {
+    override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult
+}
 
 /**
  * Resolves the host component of this address (if it is a hostname) and

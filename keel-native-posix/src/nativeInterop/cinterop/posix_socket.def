@@ -239,19 +239,27 @@ static int keel_connect_un(int fd, const unsigned char *path, size_t path_len, i
  * directly in the SQE. Returns the addrlen to pass to the SQE, or -1
  * with `errno = ENAMETOOLONG` if the path does not fit.
  */
-static int keel_fill_sockaddr_un(struct sockaddr_un *sa, const unsigned char *path, size_t path_len, int is_abstract) {
-    memset(sa, 0, sizeof(*sa));
-    sa->sun_family = AF_UNIX;
-    size_t cap = sizeof(sa->sun_path);
+/*
+ * Parameter is `struct sockaddr_storage *` (not `struct sockaddr_un *`)
+ * so the signature is ABI-identical across all POSIX platforms and the
+ * function can be commonized at the `nativeMain` source set by the
+ * Kotlin cinterop commonizer. `sockaddr_storage` is guaranteed to be
+ * large enough to hold any `sockaddr_*` variant (RFC 3493).
+ */
+static int keel_fill_sockaddr_un(struct sockaddr_storage *sa, const unsigned char *path, size_t path_len, int is_abstract) {
+    struct sockaddr_un *un = (struct sockaddr_un *)sa;
+    memset(un, 0, sizeof(*un));
+    un->sun_family = AF_UNIX;
+    size_t cap = sizeof(un->sun_path);
     if (is_abstract) {
         if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
-        sa->sun_path[0] = '\0';
-        if (path_len > 0) memcpy(sa->sun_path + 1, path, path_len);
+        un->sun_path[0] = '\0';
+        if (path_len > 0) memcpy(un->sun_path + 1, path, path_len);
         return (int)(offsetof(struct sockaddr_un, sun_path) + 1 + path_len);
     } else {
         if (path_len + 1 > cap) { errno = ENAMETOOLONG; return -1; }
-        if (path_len > 0) memcpy(sa->sun_path, path, path_len);
-        sa->sun_path[path_len] = '\0';
-        return (int)sizeof(*sa);
+        if (path_len > 0) memcpy(un->sun_path, path, path_len);
+        un->sun_path[path_len] = '\0';
+        return (int)sizeof(*un);
     }
 }

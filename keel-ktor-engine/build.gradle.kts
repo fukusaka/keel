@@ -5,6 +5,11 @@ plugins {
 val hostOs: String = System.getProperty("os.name").lowercase()
 
 kotlin {
+    // Native targets are host-gated because the transitive engine dependencies
+    // (keel-engine-kqueue, keel-engine-epoll) require cinterop with platform-
+    // specific headers that can only run on a matching host. Consumers such as
+    // `:benchmark` mirror the same host gating so variant resolution stays
+    // consistent across hosts.
     jvm()
     if (hostOs.contains("mac")) {
         macosArm64()

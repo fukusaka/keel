@@ -2,6 +2,10 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
+val hostOs: String = System.getProperty("os.name").lowercase()
+val isMacHost: Boolean = hostOs.contains("mac")
+val isLinuxHost: Boolean = hostOs.contains("linux")
+
 kotlin {
     applyDefaultHierarchyTemplate()
 
@@ -10,17 +14,27 @@ kotlin {
         nodejs()
         binaries.executable()
     }
-    macosArm64 {
-        binaries {
-            executable {
-                entryPoint = "io.github.fukusaka.keel.benchmark.main"
+    // Native benchmark targets are host-gated: their transitive dependencies
+    // (keel-ktor-engine → keel-engine-kqueue / keel-engine-epoll) require
+    // host-specific cinterop toolchains. Declaring a Linux target on a macOS
+    // host (or vice versa) causes Gradle variant resolution to fail when
+    // Dokka / metadata compile pulls in the classpath (no matching variant
+    // for the current host).
+    if (isMacHost) {
+        macosArm64 {
+            binaries {
+                executable {
+                    entryPoint = "io.github.fukusaka.keel.benchmark.main"
+                }
             }
         }
     }
-    linuxX64 {
-        binaries {
-            executable {
-                entryPoint = "io.github.fukusaka.keel.benchmark.main"
+    if (isLinuxHost) {
+        linuxX64 {
+            binaries {
+                executable {
+                    entryPoint = "io.github.fukusaka.keel.benchmark.main"
+                }
             }
         }
     }
@@ -30,6 +44,9 @@ kotlin {
             dependencies {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-tls"))
+                // PipelineHttpRoutes (in commonMain) uses keel-codec-http symbols
+                // so the dependency must be commonMain-wide, not per-target.
+                implementation(project(":keel-codec-http"))
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
@@ -49,7 +66,6 @@ kotlin {
             dependencies {
                 implementation(project(":keel-engine-nio"))
                 implementation(project(":keel-engine-netty"))
-                implementation(project(":keel-codec-http"))
                 implementation(libs.ktor.server.netty)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
@@ -61,25 +77,28 @@ kotlin {
         jsMain {
             dependencies {
                 implementation(project(":keel-engine-nodejs"))
-                implementation(project(":keel-codec-http"))
             }
         }
 
-        // macOS: keel-kqueue + keel-nwconnection engines + HTTP codec for pipeline benchmark
-        val macosMain by getting {
-            dependencies {
-                implementation(project(":keel-engine-kqueue"))
-                implementation(project(":keel-engine-nwconnection"))
-                implementation(project(":keel-codec-http"))
+        // macOS: keel-kqueue + keel-nwconnection engines for pipeline benchmark.
+        // Only wired when the macOS targets were declared above (isMacHost).
+        if (isMacHost) {
+            val macosMain by getting {
+                dependencies {
+                    implementation(project(":keel-engine-kqueue"))
+                    implementation(project(":keel-engine-nwconnection"))
+                }
             }
         }
 
-        // Linux: keel-epoll + keel-io-uring engines + HTTP codec for pipeline benchmark
-        val linuxMain by getting {
-            dependencies {
-                implementation(project(":keel-engine-epoll"))
-                implementation(project(":keel-engine-io-uring"))
-                implementation(project(":keel-codec-http"))
+        // Linux: keel-epoll + keel-io-uring engines for pipeline benchmark.
+        // Only wired when the Linux targets were declared above (isLinuxHost).
+        if (isLinuxHost) {
+            val linuxMain by getting {
+                dependencies {
+                    implementation(project(":keel-engine-epoll"))
+                    implementation(project(":keel-engine-io-uring"))
+                }
             }
         }
     }
@@ -132,15 +151,22 @@ if (providers.gradleProperty("tls").isPresent) {
         else -> error("Unknown TLS backend: $nativeBackend (available: openssl, awslc, mbedtls)")
     }
 
-    val macosMain = kotlin.sourceSets.getByName("macosMain")
-    macosMain.kotlin.srcDir("src/macosTls-$nativeBackend/kotlin")
-    macosMain.dependencies {
-        implementation(project(nativeTlsProject))
+    // Gate TLS wiring on the same host-conditional target declarations above
+    // so macosMain / linuxMain are only configured when the corresponding
+    // native target exists.
+    if (isMacHost) {
+        val macosMain = kotlin.sourceSets.getByName("macosMain")
+        macosMain.kotlin.srcDir("src/macosTls-$nativeBackend/kotlin")
+        macosMain.dependencies {
+            implementation(project(nativeTlsProject))
+        }
     }
-    val linuxMain = kotlin.sourceSets.getByName("linuxMain")
-    linuxMain.kotlin.srcDir("src/linuxTls-$nativeBackend/kotlin")
-    linuxMain.dependencies {
-        implementation(project(nativeTlsProject))
+    if (isLinuxHost) {
+        val linuxMain = kotlin.sourceSets.getByName("linuxMain")
+        linuxMain.kotlin.srcDir("src/linuxTls-$nativeBackend/kotlin")
+        linuxMain.dependencies {
+            implementation(project(nativeTlsProject))
+        }
     }
 }
 

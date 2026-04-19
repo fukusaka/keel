@@ -16,7 +16,7 @@ import kotlin.coroutines.resumeWithException
  * [ResolveHints.canonicalName] is ignored on this backend.
  */
 actual object SystemDnsResolver : DnsResolver {
-    override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
+    actual override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
         val timeout = hints.timeout
         return if (timeout != null) withTimeout(timeout) { doLookup(hostname, hints) } else doLookup(hostname, hints)
     }
