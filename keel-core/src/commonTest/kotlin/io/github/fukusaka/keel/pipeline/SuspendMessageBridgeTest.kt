@@ -1,10 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
-import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -15,31 +12,18 @@ class SuspendMessageBridgeTest {
     // Simple typed message for testing.
     private data class TestMessage(val value: String)
 
-    private val transport = object : IoTransport {
-        override fun write(buf: IoBuf) {}
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("bridge-test")) {}
 
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = DefaultAllocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
-
-    private fun createPipeline(bridge: SuspendMessageBridge<TestMessage>): DefaultPipeline {
-        val pipeline = DefaultPipeline(channel, transport, PrintLogger("bridge-test"))
-        channel.pipeline = pipeline
+    private fun createPipeline(bridge: SuspendMessageBridge<TestMessage>): Pipeline {
+        val pipeline = channel.pipeline
         pipeline.addLast("bridge", bridge)
         return pipeline
     }
 
     @Test
     fun `receive delivers typed message from pipeline`() {
-        runBlocking {
+        runTest {
             val bridge = SuspendMessageBridge(TestMessage::class)
             val pipeline = createPipeline(bridge)
 
@@ -53,7 +37,7 @@ class SuspendMessageBridgeTest {
 
     @Test
     fun `multiple messages are delivered in order`() {
-        runBlocking {
+        runTest {
             val bridge = SuspendMessageBridge(TestMessage::class)
             val pipeline = createPipeline(bridge)
 
@@ -69,7 +53,7 @@ class SuspendMessageBridgeTest {
 
     @Test
     fun `onInactive closes channel cleanly`() {
-        runBlocking {
+        runTest {
             val bridge = SuspendMessageBridge(TestMessage::class)
             val pipeline = createPipeline(bridge)
 
@@ -85,7 +69,7 @@ class SuspendMessageBridgeTest {
 
     @Test
     fun `onError closes channel with cause`() {
-        runBlocking {
+        runTest {
             val bridge = SuspendMessageBridge(TestMessage::class)
             val pipeline = createPipeline(bridge)
 
@@ -109,7 +93,7 @@ class SuspendMessageBridgeTest {
         pipeline.notifyRead("not a TestMessage")
 
         // Bridge channel should be empty (no matching message queued).
-        runBlocking {
+        runTest {
             // Send a real message so we can verify the bridge still works.
             pipeline.notifyRead(TestMessage("after-mismatch"))
             val result = bridge.receiveCatching()

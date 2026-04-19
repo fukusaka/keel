@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -14,27 +14,12 @@ class SuspendBridgeHandlerTest {
     private val logger = PrintLogger("bridge-test")
     private val allocator: BufferAllocator = DefaultAllocator
 
-    private val transport = object : IoTransport {
-        override fun write(buf: IoBuf) {}
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, logger) {}
 
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = this@SuspendBridgeHandlerTest.allocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
-
-    private fun createPipelineWithBridge(): Pair<DefaultPipeline, SuspendBridgeHandler> {
-        val pipeline = DefaultPipeline(channel, transport, logger)
-        channel.pipeline = pipeline
-        val bridge = SuspendBridgeHandler()
-        pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, bridge)
-        return Pair(pipeline, bridge)
+    private fun createPipelineWithBridge(): Pair<Pipeline, SuspendBridgeHandler> {
+        val bridge = channel.ensureBridge()
+        return Pair(channel.pipeline, bridge)
     }
 
     private fun allocBuf(vararg bytes: Byte): IoBuf {
@@ -45,7 +30,7 @@ class SuspendBridgeHandlerTest {
 
     @Test
     fun `readOwned returns IoBuf from queue without copying`() {
-        runBlocking {
+        runTest {
             val (pipeline, bridge) = createPipelineWithBridge()
 
             val buf = allocBuf(0x41, 0x42)
@@ -61,7 +46,7 @@ class SuspendBridgeHandlerTest {
 
     @Test
     fun `readOwned returns null on EOF`() {
-        runBlocking {
+        runTest {
             val (pipeline, bridge) = createPipelineWithBridge()
             pipeline.notifyInactive()
 
@@ -72,7 +57,7 @@ class SuspendBridgeHandlerTest {
 
     @Test
     fun `readOwned delivers multiple buffers in order`() {
-        runBlocking {
+        runTest {
             val (pipeline, bridge) = createPipelineWithBridge()
 
             pipeline.notifyRead(allocBuf(0x01))
