@@ -126,7 +126,7 @@ internal class EpollIoTransport(
      * the read / write / flush paths on the EventLoop thread.
      */
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         if (eventLoop.inEventLoop()) {
             teardownOnEventLoop()
         } else {
@@ -135,8 +135,7 @@ internal class EpollIoTransport(
     }
 
     private fun teardownOnEventLoop() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

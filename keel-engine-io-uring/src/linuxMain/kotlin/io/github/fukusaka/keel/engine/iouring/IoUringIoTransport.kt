@@ -739,7 +739,7 @@ internal class IoUringIoTransport(
     }
 
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         if (eventLoop.inEventLoop()) {
             teardownOnEventLoop()
         } else {
@@ -749,9 +749,9 @@ internal class IoUringIoTransport(
             // pending close tasks are drained at the top of each loop iteration,
             // so the ring is never torn down before its channel teardown runs.
             //
-            // Concurrent close() callers may both pass the `opened` read above
-            // and each enqueue a teardown task; the re-check inside
-            // `teardownOnEventLoop` keeps the cleanup idempotent on the
+            // Concurrent close() callers may both pass `markClosing()` under
+            // rare races and each enqueue a teardown task; `markTeardownStarted`
+            // inside `teardownOnEventLoop` keeps the cleanup idempotent on the
             // EventLoop thread.
             eventLoop.dispatch(EmptyCoroutineContext, Runnable {
                 teardownOnEventLoop()
@@ -760,8 +760,7 @@ internal class IoUringIoTransport(
     }
 
     private fun teardownOnEventLoop() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         if (multishotSlot >= 0) {
             eventLoop.cancelMultishot(multishotSlot)
             multishotSlot = -1

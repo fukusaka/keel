@@ -204,15 +204,14 @@ internal class NwIoTransport(
      * non-first invocation into a no-op.
      */
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         dispatch_async(connQueue) {
             teardownOnConnQueue()
         }
     }
 
     private fun teardownOnConnQueue() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

@@ -46,6 +46,47 @@ abstract class AbstractIoTransport(
     protected var opened = true
     override val isOpen: Boolean get() = opened
 
+    /**
+     * Marks this transport as closing by flipping [opened] from `true` to
+     * `false` and returning whether this invocation initiated the
+     * transition.
+     *
+     * Subclass [close] implementations should call this **synchronously**
+     * at the top of the method so that callers on any thread observe
+     * `isOpen = false` as soon as `close()` returns, independently of
+     * when the EventLoop-side resource teardown actually runs.
+     *
+     * Not a compare-and-swap: two concurrent callers may both see
+     * `opened = true`, both write `false`, and both return `true`.
+     * Final idempotency of the teardown body is provided by
+     * [markTeardownStarted], which is EventLoop-local and therefore
+     * race-free.
+     */
+    protected fun markClosing(): Boolean {
+        if (!opened) return false
+        opened = false
+        return true
+    }
+
+    /**
+     * Teardown-side idempotency flag. Touched only from the owning
+     * EventLoop (or the engine-specific serial dispatch queue), so no
+     * volatile / atomic is required.
+     */
+    private var teardownStarted = false
+
+    /**
+     * Returns `true` exactly once — for the first teardown invocation
+     * on the EventLoop. Subsequent calls return `false` so subclasses
+     * can collapse concurrent teardown dispatches into a single cleanup
+     * pass. **MUST** be invoked from the owning EventLoop thread.
+     */
+    protected fun markTeardownStarted(): Boolean {
+        if (teardownStarted) return false
+        teardownStarted = true
+        return true
+    }
+
     // --- Read path callbacks ---
 
     override var onRead: ((IoBuf) -> Unit)? = null
