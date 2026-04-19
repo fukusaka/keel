@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IpAddress
+import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import kotlinx.cinterop.ByteVar
@@ -17,6 +19,7 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
+import platform.posix.AF_INET6
 import platform.posix.AF_UNIX
 import platform.posix.F_GETFL
 import platform.posix.F_SETFL
@@ -38,22 +41,38 @@ import platform.posix.getsockopt
 import platform.posix.listen
 import platform.posix.setsockopt
 import platform.posix.sockaddr_in
+import platform.posix.sockaddr_in6
+import platform.posix.sockaddr_storage
 import platform.posix.socket
 import posix_socket.keel_bind_un
 import posix_socket.keel_connect_un
+import posix_socket.keel_extract_sockaddr_in6_addr
+import posix_socket.keel_fill_sockaddr_in6_addr
 import posix_socket.keel_fill_sockaddr_un
-import posix_socket.keel_inet_ntop
-import posix_socket.keel_inet_pton
+import posix_socket.keel_htonl
 import posix_socket.keel_init_sockaddr_in
+import posix_socket.keel_init_sockaddr_in6
+import posix_socket.keel_inet_ntop
 import posix_socket.keel_ntohs
+import posix_socket.keel_sockaddr_family
+import posix_socket.keel_sockaddr_in6_port
+import posix_socket.keel_sockaddr_in6_scope
+import posix_socket.keel_sockaddr_un_copy_path
 
 /**
  * Shared POSIX socket utilities for Native engines (epoll, kqueue, io_uring).
  *
- * All functions use IPv4 (AF_INET) only. IPv6 support is deferred.
+ * Accepts [IpAddress] (V4 / V6) directly. The V4 / V6 branch is handled
+ * internally by selecting between `sockaddr_in` + `AF_INET` and
+ * `sockaddr_in6` + `AF_INET6`. `getLocalAddress` / `getRemoteAddress`
+ * read back through `sockaddr_storage` and detect the family via
+ * `sa_family`.
  *
- * `inet_pton`/`inet_ntop` are wrapped via C functions in `posix_socket.def`
- * (`keel_inet_pton`/`keel_inet_ntop`) for reliable cross-platform binding.
+ * `inet_pton` / `inet_ntop` and the IPv6 sockaddr layout are wrapped via
+ * C functions in `posix_socket.def` (`keel_inet_ntop`,
+ * `keel_init_sockaddr_in6`, `keel_fill_sockaddr_in6_addr`,
+ * `keel_extract_sockaddr_in6_addr`, `keel_sockaddr_family`) for reliable
+ * cross-platform binding.
  */
 @OptIn(ExperimentalForeignApi::class)
 object PosixSocketUtils {
@@ -61,51 +80,25 @@ object PosixSocketUtils {
     private const val DEFAULT_BACKLOG = 128
     private const val INET_ADDRSTRLEN = 16
 
+    // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
+    // both; excess bytes past the platform limit are simply never written.
+    private const val UNIX_SUN_PATH_BUF = 108
+
     /**
      * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
      * non-blocking -> bind -> listen.
      *
-     * @param host Bind address. "0.0.0.0" binds to all interfaces (INADDR_ANY).
+     * The socket family follows [address]: [IpAddress.V4] → `AF_INET`,
+     * [IpAddress.V6] → `AF_INET6`.
+     *
+     * @param address Bind address. Use `IpAddress.V4.ANY` (0.0.0.0) or
+     *   `IpAddress.V6.ANY` (::) to bind to all interfaces in that family.
      * @param port Port number. 0 lets the OS assign an ephemeral port.
      * @param backlog TCP listen backlog. OS may cap this value.
      * @return The server socket file descriptor.
      */
-    fun createServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
-
-        try {
-            // SO_REUSEADDR to avoid TIME_WAIT bind failures during tests.
-            // intArrayOf(1).usePinned workaround: IntVar.value assignment
-            // fails on some Kotlin/Native versions.
-            intArrayOf(1).usePinned { pinned ->
-                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-            }
-
-            setNonBlocking(fd)
-
-            memScoped {
-                val addr = alloc<sockaddr_in>()
-                keel_init_sockaddr_in(addr.ptr, port.toUShort())
-                if (host == "0.0.0.0") {
-                    addr.sin_addr.s_addr = INADDR_ANY
-                } else {
-                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-                    check(rc == 1) { "Invalid address: $host" }
-                }
-                val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-                check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
-            }
-
-            val result = listen(fd, backlog)
-            check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
-        } catch (e: Throwable) {
-            close(fd)
-            throw e
-        }
-
-        return fd
-    }
+    fun createServerSocket(address: IpAddress, port: Int, backlog: Int = DEFAULT_BACKLOG): Int =
+        createAndBindListener(address, port, backlog, reusePort = false)
 
     /**
      * Creates a non-blocking TCP server socket with SO_REUSEPORT.
@@ -114,36 +107,56 @@ object PosixSocketUtils {
      * allowing multiple sockets to bind to the same port. The kernel
      * distributes incoming connections across sockets by hashing the
      * connection 4-tuple.
-     *
-     * @param host Bind address. "0.0.0.0" binds to all interfaces.
-     * @param port Port number.
-     * @param backlog TCP listen backlog. OS may cap this value.
-     * @return The server socket file descriptor.
-     * @throws IllegalStateException if socket/bind/listen fails.
      */
-    fun createReusePortServerSocket(host: String, port: Int, backlog: Int = DEFAULT_BACKLOG): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
+    fun createReusePortServerSocket(address: IpAddress, port: Int, backlog: Int = DEFAULT_BACKLOG): Int =
+        createAndBindListener(address, port, backlog, reusePort = true)
+
+    private fun createAndBindListener(
+        address: IpAddress,
+        port: Int,
+        backlog: Int,
+        reusePort: Boolean,
+    ): Int {
+        val family = familyOf(address)
+        val fd = socket(family, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
 
         try {
+            // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
+            // intArrayOf(1).usePinned workaround: IntVar.value assignment
+            // fails on some Kotlin/Native versions.
             intArrayOf(1).usePinned { pinned ->
                 setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                if (reusePort) {
+                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
+                }
             }
 
             setNonBlocking(fd)
 
             memScoped {
-                val addr = alloc<sockaddr_in>()
-                keel_init_sockaddr_in(addr.ptr, port.toUShort())
-                if (host == "0.0.0.0") {
-                    addr.sin_addr.s_addr = INADDR_ANY
-                } else {
-                    val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-                    check(rc == 1) { "Invalid address: $host" }
+                when (address) {
+                    is IpAddress.V4 -> {
+                        val addr = alloc<sockaddr_in>()
+                        keel_init_sockaddr_in(addr.ptr, port.toUShort())
+                        addr.sin_addr.s_addr = if (address == IpAddress.V4.ANY) {
+                            INADDR_ANY
+                        } else {
+                            keel_htonl(address.value.toUInt())
+                        }
+                        val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+                        check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
+                    }
+                    is IpAddress.V6 -> {
+                        val addr = alloc<sockaddr_in6>()
+                        keel_init_sockaddr_in6(addr.ptr, port.toUShort(), address.scopeId.toUInt())
+                        address.toByteArray().toUByteArray().usePinned { pinned ->
+                            keel_fill_sockaddr_in6_addr(addr.ptr, pinned.addressOf(0))
+                        }
+                        val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert())
+                        check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
+                    }
                 }
-                val result = bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-                check(result == 0) { "bind() failed: ${errnoMessage(errno)}" }
             }
 
             val result = listen(fd, backlog)
@@ -159,32 +172,46 @@ object PosixSocketUtils {
     /**
      * Creates a non-blocking TCP client socket without connecting.
      *
+     * The socket family follows [family]: [IpAddress.V4] → `AF_INET`,
+     * [IpAddress.V6] → `AF_INET6`. Any V4 / V6 instance selects the family;
+     * typical callers pass the address they intend to connect to.
+     *
      * The socket is set to non-blocking immediately so that a subsequent
      * `connect()` call returns `EINPROGRESS` instead of blocking.
-     * The caller is responsible for calling POSIX `connect()` and handling
-     * the `EINPROGRESS` case via EventLoop WRITE readiness.
-     *
-     * @return The unconnected socket file descriptor (non-blocking).
      */
-    fun createUnconnectedSocket(): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
+    fun createUnconnectedSocket(family: IpAddress): Int {
+        val fd = socket(familyOf(family), SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
         return fd
     }
 
     /**
-     * Initiates a non-blocking connect on [fd].
+     * Initiates a non-blocking connect on [fd] to [address]:[port].
+     *
+     * [fd] must have been created with a matching family — use
+     * [createUnconnectedSocket] with the same [address] value.
      *
      * @return 0 if connected immediately (e.g. loopback), or -1 with
      *         `errno` set (typically `EINPROGRESS` for non-blocking sockets).
      */
-    fun connectNonBlocking(fd: Int, host: String, port: Int): Int = memScoped {
-        val addr = alloc<sockaddr_in>()
-        keel_init_sockaddr_in(addr.ptr, port.toUShort())
-        val rc = keel_inet_pton(AF_INET, host, addr.sin_addr.ptr)
-        check(rc == 1) { "Invalid address: $host" }
-        connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+    fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): Int = memScoped {
+        when (address) {
+            is IpAddress.V4 -> {
+                val addr = alloc<sockaddr_in>()
+                keel_init_sockaddr_in(addr.ptr, port.toUShort())
+                addr.sin_addr.s_addr = keel_htonl(address.value.toUInt())
+                connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+            }
+            is IpAddress.V6 -> {
+                val addr = alloc<sockaddr_in6>()
+                keel_init_sockaddr_in6(addr.ptr, port.toUShort(), address.scopeId.toUInt())
+                address.toByteArray().toUByteArray().usePinned { pinned ->
+                    keel_fill_sockaddr_in6_addr(addr.ptr, pinned.addressOf(0))
+                }
+                connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert())
+            }
+        }
     }
 
     /**
@@ -210,24 +237,24 @@ object PosixSocketUtils {
         return errBuf[0]
     }
 
-    /** Retrieves the local address of [fd] via `getsockname`. */
+    /** Retrieves the local address of [fd] via `getsockname`, auto-detecting V4 / V6 / UNIX. */
     fun getLocalAddress(fd: Int): SocketAddress = memScoped {
-        val addr = alloc<sockaddr_in>()
-        // UIntArray workaround: socklen_tVar.value assignment fails
-        // on some Kotlin/Native versions. usePinned provides a stable pointer.
-        uintArrayOf(sizeOf<sockaddr_in>().toUInt()).usePinned { len ->
-            getsockname(fd, addr.ptr.reinterpret(), len.addressOf(0).reinterpret())
+        val storage = alloc<sockaddr_storage>()
+        val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
+        lenArr.usePinned { len ->
+            getsockname(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
-        toSocketAddress(addr)
+        storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
-    /** Retrieves the remote address of [fd] via `getpeername`. */
+    /** Retrieves the remote address of [fd] via `getpeername`, auto-detecting V4 / V6 / UNIX. */
     fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
-        val addr = alloc<sockaddr_in>()
-        uintArrayOf(sizeOf<sockaddr_in>().toUInt()).usePinned { len ->
-            getpeername(fd, addr.ptr.reinterpret(), len.addressOf(0).reinterpret())
+        val storage = alloc<sockaddr_storage>()
+        val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
+        lenArr.usePinned { len ->
+            getpeername(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
-        toSocketAddress(addr)
+        storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
     /** Sets O_NONBLOCK on [fd] via `fcntl`. */
@@ -236,13 +263,76 @@ object PosixSocketUtils {
         fcntl(fd, F_SETFL, flags or O_NONBLOCK)
     }
 
-    /** Converts a C `sockaddr_in` to a keel [SocketAddress]. */
+    /**
+     * Reads a `sockaddr_storage` and produces the matching keel [SocketAddress].
+     *
+     * [addrlen] is the length returned by `getsockname` / `getpeername` — used
+     * to slice the variable-length `sun_path` for AF_UNIX addresses (the
+     * meaningful portion is `addrlen - offsetof(sockaddr_un, sun_path)`).
+     */
+    private fun storageToSocketAddress(storage: sockaddr_storage, addrlen: Int): SocketAddress = memScoped {
+        val family = keel_sockaddr_family(storage.ptr)
+        when (family) {
+            AF_INET -> {
+                val v4 = storage.reinterpret<sockaddr_in>()
+                val port = keel_ntohs(v4.sin_port).toInt()
+                val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
+                keel_inet_ntop(AF_INET, v4.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
+                InetSocketAddress(Host.Ip(IpAddress.parse(hostBuf.toKString())), port)
+            }
+            AF_INET6 -> {
+                val v6 = storage.reinterpret<sockaddr_in6>()
+                val port = keel_sockaddr_in6_port(v6.ptr).toInt()
+                val scope = keel_sockaddr_in6_scope(v6.ptr).toInt()
+                val bytes = UByteArray(16)
+                val ip = bytes.usePinned { pinned ->
+                    keel_extract_sockaddr_in6_addr(v6.ptr, pinned.addressOf(0))
+                    IpAddress.ofBytes(pinned.get().toByteArray(), scope)
+                }
+                InetSocketAddress(Host.Ip(ip), port)
+            }
+            AF_UNIX -> {
+                val capacity = UNIX_SUN_PATH_BUF
+                val outBuf = UByteArray(capacity)
+                val copied = outBuf.usePinned { pinned ->
+                    keel_sockaddr_un_copy_path(
+                        storage.ptr, addrlen,
+                        pinned.addressOf(0), capacity,
+                    )
+                }
+                val path = when {
+                    copied <= 0 -> ""
+                    outBuf[0] == 0.toUByte() ->
+                        // Linux abstract namespace — keep the leading NUL so
+                        // UnixSocketAddress.isAbstract round-trips correctly.
+                        outBuf.toByteArray().decodeToString(0, copied)
+                    else -> {
+                        // Filesystem path: trim trailing NUL if present.
+                        val end = if (outBuf[copied - 1] == 0.toUByte()) copied - 1 else copied
+                        outBuf.toByteArray().decodeToString(0, end)
+                    }
+                }
+                UnixSocketAddress(path)
+            }
+            else -> error("unsupported sa_family: $family")
+        }
+    }
+
+    /**
+     * @deprecated Kept temporarily for callers still passing a
+     * dotted-decimal `sockaddr_in`. New code should use
+     * [storageToSocketAddress]-backed [getLocalAddress] / [getRemoteAddress].
+     */
     fun toSocketAddress(addr: sockaddr_in): SocketAddress = memScoped {
         val port = keel_ntohs(addr.sin_port).toInt()
         val hostBuf = allocArray<ByteVar>(INET_ADDRSTRLEN)
         keel_inet_ntop(AF_INET, addr.sin_addr.ptr, hostBuf, INET_ADDRSTRLEN.toUInt())
-        val host = hostBuf.toKString()
-        InetSocketAddress(host, port)
+        InetSocketAddress(Host.Ip(IpAddress.parse(hostBuf.toKString())), port)
+    }
+
+    private fun familyOf(address: IpAddress): Int = when (address) {
+        is IpAddress.V4 -> AF_INET
+        is IpAddress.V6 -> AF_INET6
     }
 
     /**

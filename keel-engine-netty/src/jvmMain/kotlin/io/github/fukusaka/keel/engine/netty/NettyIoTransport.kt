@@ -229,7 +229,7 @@ internal class NettyIoTransport(
      * inside [teardownOnEventLoop] keeps the cleanup idempotent.
      */
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         val loop = nettyChannel.eventLoop()
         if (loop.inEventLoop()) {
             teardownOnEventLoop()
@@ -239,8 +239,7 @@ internal class NettyIoTransport(
     }
 
     private fun teardownOnEventLoop() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

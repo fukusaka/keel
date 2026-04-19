@@ -123,8 +123,16 @@ suspend fun InetSocketAddress.resolveAll(
  * [Host.Ip]; throws [UnsupportedOperationException] for hostnames
  * since DNS resolution is a suspend operation.
  */
-fun InetSocketAddress.requireIpLiteral(): String = when (val h = host) {
-    is Host.Ip -> h.address.toCanonicalString()
+fun InetSocketAddress.requireIpLiteral(): String = requireIp().toCanonicalString()
+
+/**
+ * Non-suspending variant that returns the parsed [IpAddress]. Same
+ * semantics as [requireIpLiteral] but keeps the V4 / V6 distinction so
+ * call sites that branch on family (e.g. Native engines choosing
+ * `AF_INET` vs `AF_INET6`) do not have to re-parse the string.
+ */
+fun InetSocketAddress.requireIp(): IpAddress = when (val h = host) {
+    is Host.Ip -> h.address
     is Host.Name -> throw UnsupportedOperationException(
         "synchronous call site cannot resolve hostname '${h.value}'; " +
             "pass an IP literal or use a suspending API",

@@ -134,7 +134,7 @@ internal class KqueueIoTransport(
      * mutations stay serialised with the read / write / flush paths.
      */
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         if (eventLoop.inEventLoop()) {
             teardownOnEventLoop()
         } else {
@@ -143,8 +143,7 @@ internal class KqueueIoTransport(
     }
 
     private fun teardownOnEventLoop() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

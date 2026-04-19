@@ -121,7 +121,7 @@ internal class NioIoTransport(
      * stay serialised with [write] / [flush] on the EventLoop side.
      */
     override fun close() {
-        if (!opened) return
+        if (!markClosing()) return
         if (eventLoop.inEventLoop()) {
             teardownOnEventLoop()
         } else {
@@ -130,8 +130,7 @@ internal class NioIoTransport(
     }
 
     private fun teardownOnEventLoop() {
-        if (!opened) return
-        opened = false
+        if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
