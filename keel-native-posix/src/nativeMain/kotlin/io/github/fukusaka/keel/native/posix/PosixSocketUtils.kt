@@ -57,6 +57,7 @@ import posix_socket.keel_ntohs
 import posix_socket.keel_sockaddr_family
 import posix_socket.keel_sockaddr_in6_port
 import posix_socket.keel_sockaddr_in6_scope
+import posix_socket.keel_sockaddr_un_copy_path
 
 /**
  * Shared POSIX socket utilities for Native engines (epoll, kqueue, io_uring).
@@ -79,6 +80,10 @@ object PosixSocketUtils {
     private const val DEFAULT_BACKLOG = 128
     private const val INET_ADDRSTRLEN = 16
     private const val INET6_ADDRSTRLEN = 46
+
+    // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
+    // both; excess bytes past the platform limit are simply never written.
+    private const val UNIX_SUN_PATH_BUF = 108
 
     /**
      * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
@@ -233,22 +238,24 @@ object PosixSocketUtils {
         return errBuf[0]
     }
 
-    /** Retrieves the local address of [fd] via `getsockname`, auto-detecting V4 / V6. */
+    /** Retrieves the local address of [fd] via `getsockname`, auto-detecting V4 / V6 / UNIX. */
     fun getLocalAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
-        uintArrayOf(sizeOf<sockaddr_storage>().toUInt()).usePinned { len ->
+        val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
+        lenArr.usePinned { len ->
             getsockname(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
-        storageToSocketAddress(storage)
+        storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
-    /** Retrieves the remote address of [fd] via `getpeername`, auto-detecting V4 / V6. */
+    /** Retrieves the remote address of [fd] via `getpeername`, auto-detecting V4 / V6 / UNIX. */
     fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
-        uintArrayOf(sizeOf<sockaddr_storage>().toUInt()).usePinned { len ->
+        val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
+        lenArr.usePinned { len ->
             getpeername(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
-        storageToSocketAddress(storage)
+        storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
     /** Sets O_NONBLOCK on [fd] via `fcntl`. */
@@ -257,8 +264,14 @@ object PosixSocketUtils {
         fcntl(fd, F_SETFL, flags or O_NONBLOCK)
     }
 
-    /** Reads a `sockaddr_storage` and produces the matching keel [SocketAddress]. */
-    private fun storageToSocketAddress(storage: sockaddr_storage): SocketAddress = memScoped {
+    /**
+     * Reads a `sockaddr_storage` and produces the matching keel [SocketAddress].
+     *
+     * [addrlen] is the length returned by `getsockname` / `getpeername` — used
+     * to slice the variable-length `sun_path` for AF_UNIX addresses (the
+     * meaningful portion is `addrlen - offsetof(sockaddr_un, sun_path)`).
+     */
+    private fun storageToSocketAddress(storage: sockaddr_storage, addrlen: Int): SocketAddress = memScoped {
         val family = keel_sockaddr_family(storage.ptr)
         when (family) {
             AF_INET -> {
@@ -278,6 +291,29 @@ object PosixSocketUtils {
                     IpAddress.ofBytes(pinned.get().toByteArray(), scope)
                 }
                 InetSocketAddress(Host.Ip(ip), port)
+            }
+            AF_UNIX -> {
+                val capacity = UNIX_SUN_PATH_BUF
+                val outBuf = UByteArray(capacity)
+                val copied = outBuf.usePinned { pinned ->
+                    keel_sockaddr_un_copy_path(
+                        storage.ptr, addrlen,
+                        pinned.addressOf(0), capacity,
+                    )
+                }
+                val path = when {
+                    copied <= 0 -> ""
+                    outBuf[0] == 0.toUByte() ->
+                        // Linux abstract namespace — keep the leading NUL so
+                        // UnixSocketAddress.isAbstract round-trips correctly.
+                        outBuf.toByteArray().decodeToString(0, copied)
+                    else -> {
+                        // Filesystem path: trim trailing NUL if present.
+                        val end = if (outBuf[copied - 1] == 0.toUByte()) copied - 1 else copied
+                        outBuf.toByteArray().decodeToString(0, end)
+                    }
+                }
+                UnixSocketAddress(path)
             }
             else -> error("unsupported sa_family: $family")
         }

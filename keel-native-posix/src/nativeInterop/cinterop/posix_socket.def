@@ -97,6 +97,25 @@ static inline int keel_sockaddr_family(const struct sockaddr_storage *sa) {
 }
 
 /*
+ * Extracts the `sun_path` from a sockaddr_un into caller-provided `out`.
+ * Writes the raw bytes (including a leading NUL byte for abstract-namespace
+ * sockets on Linux) and returns the number of bytes written, or 0 when the
+ * address is anonymous (autobind peer socket with no bound path).
+ *
+ * addrlen is the length returned by getsockname / getpeername / accept. The
+ * meaningful portion of sun_path is `addrlen - offsetof(sockaddr_un, sun_path)`.
+ */
+static int keel_sockaddr_un_copy_path(const struct sockaddr_storage *sa, int addrlen,
+                                       unsigned char *out, int out_cap) {
+    int header = (int)offsetof(struct sockaddr_un, sun_path);
+    if (addrlen <= header) return 0;
+    int len = addrlen - header;
+    if (len > out_cap) len = out_cap;
+    memcpy(out, ((const struct sockaddr_un *)sa)->sun_path, (size_t)len);
+    return len;
+}
+
+/*
  * writev wrapper for gather-write optimization.
  * Accepts parallel arrays of base pointers and lengths, builds
  * iovec internally, and calls writev in a single syscall.

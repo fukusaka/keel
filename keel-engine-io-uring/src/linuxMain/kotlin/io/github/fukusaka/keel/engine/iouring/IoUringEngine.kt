@@ -347,7 +347,7 @@ class IoUringEngine(
             workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger,
         )
         server.start()
-        logger.debug { "Pipeline server bound to $host:$port (${workerGroup.size} workers)" }
+        logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
         return server
     }
 
