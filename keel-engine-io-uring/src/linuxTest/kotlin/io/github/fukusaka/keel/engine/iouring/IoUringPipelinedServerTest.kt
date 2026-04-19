@@ -227,13 +227,25 @@ class IoUringPipelinedServerTest {
         return fd
     }
 
+    // Loop until every byte has been written. The original version only
+    // asserted `n > 0` and therefore tolerated short writes silently, which
+    // could produce spurious echo-payload mismatches under load.
     private fun rawWrite(fd: Int, data: String) {
-        data.encodeToByteArray().usePinned { pinned ->
-            val n = write(fd, pinned.addressOf(0), data.length.convert())
-            assertTrue(n > 0, "write failed: n=$n")
+        val bytes = data.encodeToByteArray()
+        bytes.usePinned { pinned ->
+            var total = 0
+            while (total < bytes.size) {
+                val n = write(fd, pinned.addressOf(total), (bytes.size - total).convert())
+                assertTrue(n > 0, "write failed: n=$n at offset $total/${bytes.size}")
+                total += n.toInt()
+            }
         }
     }
 
+    // Loop until `size` bytes have been read; fail loudly on EOF / timeout
+    // rather than silently returning a partial payload (which used to mask
+    // the real cause of assertion mismatches as a bare
+    // `kotlin.AssertionError at null:-1`).
     private fun rawRead(fd: Int, size: Int): String {
         val buf = ByteArray(size)
         var total = 0
@@ -241,7 +253,10 @@ class IoUringPipelinedServerTest {
             val n = buf.usePinned { pinned ->
                 read(fd, pinned.addressOf(total), (size - total).convert())
             }
-            if (n <= 0) break
+            assertTrue(
+                n > 0,
+                "read returned $n after $total/$size bytes (EOF or SO_RCVTIMEO)",
+            )
             total += n.toInt()
         }
         return buf.decodeToString(0, total)

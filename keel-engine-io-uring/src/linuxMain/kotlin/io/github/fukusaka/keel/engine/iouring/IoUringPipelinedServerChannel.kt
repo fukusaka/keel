@@ -11,6 +11,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_prep_multishot_accept_direct
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import platform.posix.ENFILE
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -57,10 +59,32 @@ internal class IoUringPipelinedServerChannel(
     private var closed = false
 
     /**
-     * Arms multishot accept on each worker EventLoop.
+     * Arms multishot accept on each worker EventLoop and blocks the caller
+     * until every worker has enqueued its accept SQE.
      *
      * Must be called after construction. Each worker starts accepting
      * connections on its own SO_REUSEPORT server socket.
+     *
+     * **Synchronous barrier**: the accept-SQE submission is dispatched to
+     * each worker EventLoop via [IoUringEventLoop.dispatch], but this method
+     * blocks (via a per-worker [CompletableDeferred]) until every dispatched
+     * Runnable has completed its [IoUringEventLoop.submitMultishot] call.
+     * This closes the race where a caller of `bindPipeline(...)` could
+     * immediately initiate a TCP connect before the kernel-side
+     * `SO_REUSEPORT` accept queue was armed on the worker that the
+     * connection hashed to, forcing the caller's data to wait on the
+     * client-side `SO_RCVTIMEO` until that worker picked up the dispatched
+     * Runnable. Under heavy CPU contention (e.g. GitHub Actions 4-vCPU
+     * runners) that wait could exceed 5 seconds and cause spurious test
+     * failures — see `IoUringPipelinedServerTest` regression history.
+     *
+     * The barrier only waits for the SQE to be queued in userspace, not for
+     * the kernel to observe it. That is sufficient in practice because the
+     * EventLoop iteration that runs the dispatched Runnable calls
+     * `io_uring_submit_and_wait` immediately afterwards (on the next
+     * iteration of the drain-tasks / submit-and-wait loop), and the window
+     * between SQE-enqueue and submit-and-wait is bounded by the EL's
+     * internal loop, not by arbitrary scheduler latency.
      */
     fun start() {
         // Direct-allocated multishot accept requires a registered file table.
@@ -68,38 +92,53 @@ internal class IoUringPipelinedServerChannel(
         // registry is absent, fall back to the traditional accept path even
         // if acceptDirectAlloc is requested.
         val useDirectAlloc = capabilities.acceptDirectAlloc && capabilities.fixedFiles
+        val barriers = Array(workerGroup.size) { CompletableDeferred<Unit>() }
         for (i in 0 until workerGroup.size) {
             val loop = workerGroup.loopAt(i)
             val serverFd = serverFds[i]
             val hasRegistry = workerGroup.fileRegistryAt(i) != null
             val directAllocActive = useDirectAlloc && hasRegistry
+            val barrier = barriers[i]
             loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-                loop.submitMultishot(
-                    prepare = { sqe ->
-                        if (directAllocActive) {
-                            keel_prep_multishot_accept_direct(sqe, serverFd, null, null, 0)
-                        } else {
-                            io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
-                        }
-                    },
-                    onCqe = { res, _ ->
-                        if (res >= 0 && !closed) {
-                            onAccept(res, i, directAllocActive)
-                        } else if (directAllocActive && res == -ENFILE) {
-                            // Fixed file table full — kernel could not
-                            // allocate a slot for the accepted fd. The
-                            // multishot SQE stays armed (F_MORE); the next
-                            // accept will succeed if a slot is freed by a
-                            // closing connection. Persistent ENFILE means
-                            // maxFiles is too small for the workload.
-                            logger.warn {
-                                "direct-alloc accept: fixed file table full " +
-                                    "(worker=$i, increase maxFiles if persistent)"
+                try {
+                    loop.submitMultishot(
+                        prepare = { sqe ->
+                            if (directAllocActive) {
+                                keel_prep_multishot_accept_direct(sqe, serverFd, null, null, 0)
+                            } else {
+                                io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
                             }
-                        }
-                    },
-                )
+                        },
+                        onCqe = { res, _ ->
+                            if (res >= 0 && !closed) {
+                                onAccept(res, i, directAllocActive)
+                            } else if (directAllocActive && res == -ENFILE) {
+                                // Fixed file table full — kernel could not
+                                // allocate a slot for the accepted fd. The
+                                // multishot SQE stays armed (F_MORE); the next
+                                // accept will succeed if a slot is freed by a
+                                // closing connection. Persistent ENFILE means
+                                // maxFiles is too small for the workload.
+                                logger.warn {
+                                    "direct-alloc accept: fixed file table full " +
+                                        "(worker=$i, increase maxFiles if persistent)"
+                                }
+                            }
+                        },
+                    )
+                    barrier.complete(Unit)
+                } catch (e: Throwable) {
+                    barrier.completeExceptionally(e)
+                }
             })
+        }
+        // Block until every worker has enqueued its accept SQE. runBlocking
+        // here is cheap: the EL threads are already running; each await
+        // resumes as soon as the corresponding Runnable completes. Any
+        // submitMultishot failure is rethrown on the calling thread so the
+        // PipelinedServer is not returned in a half-armed state.
+        runBlocking {
+            for (b in barriers) b.await()
         }
     }
 
