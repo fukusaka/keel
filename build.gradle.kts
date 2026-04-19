@@ -133,26 +133,37 @@ subprojects {
                 }
             }
         }
-        // Disable cinterop tasks for cross-platform/cross-architecture targets.
-        // e.g., cinteropMbedtlsLinuxArm64 on macOS fails due to missing Linux headers.
+        // Disable all tasks (cinterop + compile + link + klibrary + binaries)
+        // for cross-platform / cross-architecture targets that cannot be built
+        // on the current host. e.g. cinteropMbedtlsLinuxArm64 on macOS fails
+        // due to missing Linux headers; compileKotlinMacosX64 on macosArm64
+        // host fails because its cinterop klib was disabled above but Kotlin
+        // still tries to run the downstream compile. Disabling the whole
+        // per-target task family (`(cinterop|compile|link|cleanNative)` +
+        // `<target>Binaries` / `<target>MainKlibrary` / `<target>ProcessResources`
+        // etc. — everything containing the target token) lets `./gradlew
+        // assemble` succeed on a mismatched host.
         afterEvaluate {
-            if (isMacos) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Linux", ignoreCase = true) }.configureEach {
-                    enabled = false
-                }
-            } else if (isLinux) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Macos", ignoreCase = true) }.configureEach {
+            fun disableTasksForTarget(token: String) {
+                tasks.matching { it.name.contains(token, ignoreCase = true) }.configureEach {
                     enabled = false
                 }
             }
-            if (isX64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("Arm64", ignoreCase = true) }.configureEach {
-                    enabled = false
-                }
-            } else if (isArm64) {
-                tasks.matching { it.name.startsWith("cinterop") && it.name.contains("X64", ignoreCase = true) }.configureEach {
-                    enabled = false
-                }
+            if (isMacos) {
+                disableTasksForTarget("LinuxX64")
+                disableTasksForTarget("LinuxArm64")
+            } else if (isLinux) {
+                disableTasksForTarget("MacosX64")
+                disableTasksForTarget("MacosArm64")
+            }
+            // Same-OS cross-architecture: disable the off-arch target compile
+            // since its cinterop cannot run on this host architecture.
+            if (isArm64) {
+                disableTasksForTarget("LinuxX64")
+                disableTasksForTarget("MacosX64")
+            } else if (isX64) {
+                disableTasksForTarget("LinuxArm64")
+                disableTasksForTarget("MacosArm64")
             }
         }
     }
