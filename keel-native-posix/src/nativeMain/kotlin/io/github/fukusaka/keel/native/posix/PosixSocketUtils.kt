@@ -79,7 +79,6 @@ object PosixSocketUtils {
 
     private const val DEFAULT_BACKLOG = 128
     private const val INET_ADDRSTRLEN = 16
-    private const val INET6_ADDRSTRLEN = 46
 
     // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
     // both; excess bytes past the platform limit are simply never written.
