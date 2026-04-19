@@ -1,16 +1,11 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.OutboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
-import io.github.fukusaka.keel.pipeline.DefaultPipeline
-import io.github.fukusaka.keel.pipeline.IoTransport
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -19,28 +14,11 @@ class HttpResponseEncoderTest {
 
     // --- Test infrastructure ---
 
-    /** Captures IoBufs delivered to IoTransport.write (the final outbound hop). */
-    private class CapturingTransport : IoTransport {
-        val written = mutableListOf<IoBuf>()
-        override fun write(buf: IoBuf) { written.add(buf) }
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
-
-    private val transport = CapturingTransport()
-
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = DefaultAllocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
 
     private fun createPipeline(vararg extraHandlers: Pair<String, OutboundHandler>): Pipeline {
-        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
-        channel.pipeline = pipeline
+        val pipeline = channel.pipeline
         // Outbound handlers are visited in reverse (tail → head), so add last-to-first.
         for ((name, handler) in extraHandlers) pipeline.addLast(name, handler)
         return pipeline

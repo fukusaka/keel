@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.io
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -31,7 +31,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeString() = runBlocking {
+    fun writeString() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.writeString("hello")
@@ -42,7 +42,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeAscii() = runBlocking {
+    fun writeAscii() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.writeAscii("hello")
@@ -53,7 +53,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeAsciiLargerThanBuffer() = runBlocking {
+    fun writeAsciiLargerThanBuffer() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         val large = "x".repeat(10000)
@@ -64,7 +64,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeByte() = runBlocking {
+    fun writeByte() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.writeByte(0x41)
@@ -75,7 +75,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeByteArray() = runBlocking {
+    fun writeByteArray() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.write("data".encodeToByteArray())
@@ -85,7 +85,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun bufferFlushesWhenFull() = runBlocking {
+    fun bufferFlushesWhenFull() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         // Write more than BUFFER_SIZE (8192) bytes via writeAscii, which is
@@ -101,7 +101,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeLargeByteArrayTakesDirectPath() = runBlocking {
+    fun writeLargeByteArrayTakesDirectPath() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         // Payload at or above BUFFER_SIZE (8192 bytes) should take the direct
@@ -117,7 +117,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeLargeByteArrayPreservesPriorScratchData() = runBlocking {
+    fun writeLargeByteArrayPreservesPriorScratchData() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         // Write headers (small) then body (large). On-wire ordering must be
@@ -131,7 +131,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun writeSmallByteArrayUsesScratchBuffer() = runBlocking {
+    fun writeSmallByteArrayUsesScratchBuffer() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         // Small payloads (below the direct-path threshold) are copied through
@@ -149,7 +149,7 @@ class BufferedSuspendSinkTest {
     // ============================================================
 
     @Test
-    fun deferFlush_writeDoesNotFlushImmediately() = runBlocking {
+    fun deferFlush_writeDoesNotFlushImmediately() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator, deferFlush = true)
         buffered.writeString("hello")
@@ -162,7 +162,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun deferFlush_bufferFullEnqueuesThenFreshBuffer() = runBlocking {
+    fun deferFlush_bufferFullEnqueuesThenFreshBuffer() = runTest {
         val sink = CollectingSink()
         val tracker = TrackingAllocator(DefaultAllocator)
         val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
@@ -180,7 +180,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun deferFlush_noBufferLeakOnClose() = runBlocking {
+    fun deferFlush_noBufferLeakOnClose() = runTest {
         val tracker = TrackingAllocator(DefaultAllocator)
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
@@ -191,7 +191,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun deferFlush_multipleFlushCycles() = runBlocking {
+    fun deferFlush_multipleFlushCycles() = runTest {
         val sink = CollectingSink()
         val tracker = TrackingAllocator(DefaultAllocator)
         val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
@@ -211,7 +211,7 @@ class BufferedSuspendSinkTest {
     // ============================================================
 
     @Test
-    fun closeReleasesBuffer() = runBlocking {
+    fun closeReleasesBuffer() = runTest {
         val tracker = TrackingAllocator(DefaultAllocator)
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, tracker)
@@ -222,7 +222,7 @@ class BufferedSuspendSinkTest {
     }
 
     @Test
-    fun doubleCloseIsSafe() = runBlocking {
+    fun doubleCloseIsSafe() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.close()

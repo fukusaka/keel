@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.io
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -30,7 +30,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read copies data from owned buffer to caller buffer`() = runBlocking {
+    fun `read copies data from owned buffer to caller buffer`() = runTest {
         val source = ListPushSource(listOf(filledBuf(0x41, 0x42, 0x43)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -46,7 +46,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read returns minus one on EOF`() = runBlocking {
+    fun `read returns minus one on EOF`() = runTest {
         val source = ListPushSource(emptyList())
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -59,7 +59,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read caps at writable bytes and retains leftover`() = runBlocking {
+    fun `read caps at writable bytes and retains leftover`() = runTest {
         val source = ListPushSource(listOf(filledBuf(1, 2, 3, 4, 5)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -87,7 +87,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `multiple reads drain multiple owned buffers`() = runBlocking {
+    fun `multiple reads drain multiple owned buffers`() = runTest {
         val source = ListPushSource(
             listOf(
                 filledBuf(0x41, 0x42),
@@ -111,7 +111,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `close delegates to push source`() = runBlocking {
+    fun `close delegates to push source`() = runTest {
         val source = ListPushSource(listOf(filledBuf(1)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 

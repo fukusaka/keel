@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.pipeline
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
 import kotlin.reflect.KClass
@@ -17,29 +16,30 @@ class DefaultPipelineTest {
 
     private val logger = PrintLogger("test")
 
-    private val transport = object : IoTransport {
-        val written = mutableListOf<IoBuf>()
-        var flushed = false
-        var closed = false
-        override fun write(buf: IoBuf) { written.add(buf) }
-        override fun flush(): Boolean { flushed = true; return true }
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() { closed = true }
+    /**
+     * Tracking transport that records `flush` and `close` invocations in
+     * addition to [TestIoTransport.written]. Assertions rely on these
+     * observable flags.
+     */
+    private class TrackingTransport : TestIoTransport() {
+        var flushed: Boolean = false
+        var closed: Boolean = false
+
+        override fun flush(): Boolean {
+            flushed = true
+            return super.flush()
+        }
+
+        override fun close() {
+            if (!markClosing()) return
+            closed = true
+        }
     }
 
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = error("not needed in tests")
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
+    private val transport = TrackingTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, logger) {}
 
-    private fun createPipeline(): Pipeline {
-        val pipeline = DefaultPipeline(channel, transport, logger)
-        channel.pipeline = pipeline
-        return pipeline
-    }
+    private fun createPipeline(): Pipeline = channel.pipeline
 
     // --- Recording handler ---
 

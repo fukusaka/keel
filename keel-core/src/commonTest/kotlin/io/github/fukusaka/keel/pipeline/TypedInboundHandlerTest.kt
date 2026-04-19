@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.pipeline
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,26 +9,10 @@ class TypedInboundHandlerTest {
 
     private val logger = PrintLogger("test")
 
-    private val transport = object : IoTransport {
-        override fun write(buf: io.github.fukusaka.keel.buf.IoBuf) {}
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, logger) {}
 
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = error("not needed in tests")
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
-
-    private fun createPipeline(): Pipeline {
-        val pipeline = DefaultPipeline(channel, transport, logger)
-        channel.pipeline = pipeline
-        return pipeline
-    }
+    private fun createPipeline(): Pipeline = channel.pipeline
 
     // --- Type matching ---
 

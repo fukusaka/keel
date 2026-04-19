@@ -50,6 +50,11 @@ sealed class IpAddress {
                 "${b[2].toInt() and 0xFF}.${b[3].toInt() and 0xFF}"
         }
 
+        // Data classes auto-generate `V4(value=...)`-style toString which
+        // would shadow the parent's canonical form. Redeclare to keep
+        // `"$ip"` interpolation yielding `"1.2.3.4"`.
+        override fun toString(): String = toCanonicalString()
+
         companion object {
             val ANY = V4(0)
             val LOOPBACK = V4(0x7F000001)
@@ -80,6 +85,11 @@ sealed class IpAddress {
             val s = compressIpv6(groups)
             return if (scopeId != 0) "$s%$scopeId" else s
         }
+
+        // Data classes auto-generate `V6(high=..., low=..., ...)`-style
+        // toString which would shadow the parent's canonical form. Redeclare
+        // to keep `"$ip"` interpolation yielding `"::1"`.
+        override fun toString(): String = toCanonicalString()
 
         companion object {
             val ANY = V6(0u, 0u)

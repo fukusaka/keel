@@ -4,15 +4,12 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.DuplexHandler
-import io.github.fukusaka.keel.pipeline.PipelineHandler
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
-import io.github.fukusaka.keel.pipeline.DefaultPipeline
-import io.github.fukusaka.keel.pipeline.IoTransport
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -25,30 +22,11 @@ class TlsHandlerTest {
 
     // --- Test infrastructure ---
 
-    private val transport = object : IoTransport {
-        val written = mutableListOf<IoBuf>()
-        var flushed = false
-        var closed = false
-        override fun write(buf: IoBuf) {
-            buf.retain()
-            written.add(buf)
-        }
-        override fun flush(): Boolean { flushed = true; return true }
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() { closed = true }
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, logger) {}
 
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = this@TlsHandlerTest.allocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
-
-    private fun createPipeline(tlsHandler: TlsHandler): DefaultPipeline {
-        val pipeline = DefaultPipeline(channel, transport, logger)
-        channel.pipeline = pipeline
+    private fun createPipeline(tlsHandler: TlsHandler): Pipeline {
+        val pipeline = channel.pipeline
         pipeline.addLast("tls", tlsHandler)
         return pipeline
     }

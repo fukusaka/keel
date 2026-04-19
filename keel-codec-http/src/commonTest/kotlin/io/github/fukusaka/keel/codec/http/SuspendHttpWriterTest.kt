@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.SuspendSink
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -28,7 +28,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead suspend variant writes status and headers`() = runBlocking {
+    fun `writeResponseHead suspend variant writes status and headers`() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -53,7 +53,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead with no headers`() = runBlocking {
+    fun `writeResponseHead with no headers`() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -71,7 +71,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead with HTTP 1_0`() = runBlocking {
+    fun `writeResponseHead with HTTP 1_0`() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -91,7 +91,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead round-trip with parseResponseHead`() = runBlocking {
+    fun `writeResponseHead round-trip with parseResponseHead`() = runTest {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 

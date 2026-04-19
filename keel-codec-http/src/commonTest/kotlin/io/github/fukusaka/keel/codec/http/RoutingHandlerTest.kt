@@ -1,14 +1,10 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
-import io.github.fukusaka.keel.pipeline.DefaultPipeline
-import io.github.fukusaka.keel.pipeline.IoTransport
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -17,32 +13,15 @@ class RoutingHandlerTest {
 
     // --- Test infrastructure ---
 
-    /** Captures IoBufs delivered to IoTransport.write (the final outbound hop). */
-    private class CapturingTransport : IoTransport {
-        val written = mutableListOf<IoBuf>()
-        override fun write(buf: IoBuf) { written.add(buf) }
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
-
-    private val transport = CapturingTransport()
-
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = DefaultAllocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
 
     /**
      * Builds an [encoder → decoder → routing] pipeline.
      * Outbound from RoutingHandler travels toward HEAD, intercepted by HttpResponseEncoder.
      */
     private fun createPipeline(routes: Map<String, (HttpRequestHead) -> HttpResponse>): Pipeline {
-        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
-        channel.pipeline = pipeline
+        val pipeline = channel.pipeline
         pipeline.addLast("encoder", HttpResponseEncoder())
         pipeline.addLast("decoder", HttpRequestDecoder())
         pipeline.addLast("routing", RoutingHandler(routes))

@@ -1,16 +1,12 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
-import io.github.fukusaka.keel.pipeline.DefaultPipeline
-import io.github.fukusaka.keel.pipeline.IoTransport
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.pipeline.SuspendBridgeHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -22,24 +18,11 @@ class HttpRequestDecoderTest {
 
     // --- Test infrastructure ---
 
-    private val transport = object : IoTransport {
-        override fun write(buf: IoBuf) {}
-        override fun flush(): Boolean = true
-        override var onFlushComplete: (() -> Unit)? = null
-        override fun close() {}
-    }
-
-    private val channel = object : PipelinedChannel {
-        override lateinit var pipeline: Pipeline
-        override val isActive: Boolean = true
-        override val isWritable: Boolean = true
-        override val allocator: BufferAllocator get() = DefaultAllocator
-        override fun ensureBridge(): SuspendBridgeHandler = error("not needed in tests")
-    }
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
 
     private fun createPipeline(vararg handlers: Pair<String, InboundHandler>): Pipeline {
-        val pipeline = DefaultPipeline(channel, transport, PrintLogger("test"))
-        channel.pipeline = pipeline
+        val pipeline = channel.pipeline
         for ((name, handler) in handlers) pipeline.addLast(name, handler)
         return pipeline
     }
