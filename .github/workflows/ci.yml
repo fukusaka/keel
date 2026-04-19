@@ -60,14 +60,102 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
-      - name: Static analysis (detekt)
-        run: ./gradlew -Ptls detektMetadataCommonMain detektLinuxX64Main detektJvmMain
+      # All gradle invocations use `-Ptls -Pbenchmark` so the TLS satellite
+      # modules and the `:benchmark` module are part of the build graph.
+      # Running without these flags let single-host build debts in those
+      # modules slip through PR review (see PR #304 / #305 post-mortem).
 
-      - name: Compile (JVM + linuxX64)
-        run: ./gradlew -Ptls compileKotlinJvm compileKotlinLinuxX64
+      - name: Static analysis (detekt)
+        # macosArm64 target is skipped on a Linux runner because cinterop
+        # cross-compilation for Darwin is not supported.
+        run: |
+          ./gradlew -Ptls -Pbenchmark \
+            detektMetadataCommonMain \
+            detektJvmMain \
+            detektLinuxX64Main \
+            detektJsMain
+
+      - name: Assemble (all modules, all host-enabled targets)
+        # `assemble` is a Gradle lifecycle task that transitively invokes
+        # compileKotlin* / link* / *MainKlibrary / *Binaries for every
+        # target declared on this host. It catches KMP build regressions
+        # that target-specific tasks miss (e.g. PR #305:
+        # compileLinuxMainKotlinMetadata on a mismatched host).
+        run: ./gradlew -Ptls -Pbenchmark assemble
 
       - name: Test (JVM)
-        run: ./gradlew -Ptls jvmTest
+        run: ./gradlew -Ptls -Pbenchmark jvmTest
 
       - name: Test (linuxX64)
-        run: ./gradlew -Ptls linuxX64Test
+        run: ./gradlew -Ptls -Pbenchmark linuxX64Test
+
+      - name: Test (JS / Node.js)
+        run: ./gradlew -Ptls -Pbenchmark jsNodeTest
+
+  build-macos:
+    name: Build & Test (JVM + macosArm64)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install native dependencies
+        # Homebrew ships pre-built libraries for all three TLS backends, so
+        # the Linux-side install-{mbedtls,awslc}.sh scripts (which compile
+        # against `.so` install paths) are not reused on macOS.
+        run: brew install mbedtls openssl@3 aws-lc
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # Mirrors the ubuntu-latest job with Darwin-specific target coverage:
+      # macosArm64 instead of linuxX64 for detekt / test, kqueue / NWConnection
+      # cinterop + host-gated engine modules (:keel-engine-kqueue /
+      # :keel-engine-nwconnection) that only exist on macOS hosts.
+      # Without this job, PR #305's compileKotlinMacosX64 failure and similar
+      # macOS-only regressions would only surface when developers ran
+      # `./gradlew assemble` locally on a Mac.
+
+      - name: Static analysis (detekt)
+        # linuxX64 target is skipped on a macOS runner because cinterop
+        # cross-compilation for Linux is not supported.
+        run: |
+          ./gradlew -Ptls -Pbenchmark \
+            detektMetadataCommonMain \
+            detektJvmMain \
+            detektMacosArm64Main \
+            detektJsMain
+
+      - name: Assemble (all modules, all host-enabled targets)
+        run: ./gradlew -Ptls -Pbenchmark assemble
+
+      - name: Test (JVM)
+        # JVM bytecode is platform-neutral so the Linux runner already
+        # exercises the production behavior; the duplicate on macOS catches
+        # Darwin-specific JVM quirks (e.g. NIO selector implementation
+        # differences, file-system case-sensitivity).
+        run: ./gradlew -Ptls -Pbenchmark jvmTest
+
+      - name: Test (macosArm64)
+        run: ./gradlew -Ptls -Pbenchmark macosArm64Test
+
+      # JS / Node.js is intentionally NOT re-run here: Node.js behavior
+      # is platform-neutral and the Linux job's `jsNodeTest` already covers
+      # it. Running it twice would just burn CI minutes.
