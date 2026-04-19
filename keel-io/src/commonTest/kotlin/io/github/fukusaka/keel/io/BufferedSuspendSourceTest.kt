@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.buf.BufSlice
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -28,7 +28,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readLineSimple() = runBlocking {
+    fun readLineSimple() = runTest {
         val source = BufferedSuspendSource(sourceOf("hello\r\nworld\r\n"), DefaultAllocator)
         assertEquals("hello", source.readLine())
         assertEquals("world", source.readLine())
@@ -37,7 +37,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readLineLfOnly() = runBlocking {
+    fun readLineLfOnly() = runTest {
         val source = BufferedSuspendSource(sourceOf("abc\ndef\n"), DefaultAllocator)
         assertEquals("abc", source.readLine())
         assertEquals("def", source.readLine())
@@ -45,7 +45,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readLineEofWithoutNewline() = runBlocking {
+    fun readLineEofWithoutNewline() = runTest {
         val source = BufferedSuspendSource(sourceOf("no-newline"), DefaultAllocator)
         assertEquals("no-newline", source.readLine())
         assertNull(source.readLine())
@@ -53,14 +53,14 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readLineEmptySource() = runBlocking {
+    fun readLineEmptySource() = runTest {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         assertNull(source.readLine())
         source.close()
     }
 
     @Test
-    fun readByte() = runBlocking {
+    fun readByte() = runTest {
         val source = BufferedSuspendSource(sourceOf("AB"), DefaultAllocator)
         assertEquals('A'.code.toByte(), source.readByte())
         assertEquals('B'.code.toByte(), source.readByte())
@@ -68,14 +68,14 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readByteEofThrows() = runBlocking {
+    fun readByteEofThrows() = runTest {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         assertFailsWith<KeelEofException> { source.readByte() }
         source.close()
     }
 
     @Test
-    fun readByteArray() = runBlocking {
+    fun readByteArray() = runTest {
         val source = BufferedSuspendSource(sourceOf("hello"), DefaultAllocator)
         val bytes = source.readByteArray(5)
         assertEquals("hello", bytes.decodeToString())
@@ -83,14 +83,14 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readByteArrayEofThrows() = runBlocking {
+    fun readByteArrayEofThrows() = runTest {
         val source = BufferedSuspendSource(sourceOf("hi"), DefaultAllocator)
         assertFailsWith<KeelEofException> { source.readByteArray(5) }
         source.close()
     }
 
     @Test
-    fun readAtMostTo() = runBlocking {
+    fun readAtMostTo() = runTest {
         val source = BufferedSuspendSource(sourceOf("data"), DefaultAllocator)
         val dest = ByteArray(10)
         val n = source.readAtMostTo(dest, 0, 10)
@@ -100,7 +100,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun readAtMostToEof() = runBlocking {
+    fun readAtMostToEof() = runTest {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         val dest = ByteArray(10)
         assertEquals(-1, source.readAtMostTo(dest, 0, 10))
@@ -110,7 +110,7 @@ class BufferedSuspendSourceTest {
     // -- scanLine --
 
     @Test
-    fun scanLineSimple() = runBlocking {
+    fun scanLineSimple() = runTest {
         val source = BufferedSuspendSource(sourceOf("hello\r\nworld\r\n"), DefaultAllocator)
         assertEquals("hello", source.scanLine()?.decodeToString())
         assertEquals("world", source.scanLine()?.decodeToString())
@@ -119,7 +119,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun scanLineLfOnly() = runBlocking {
+    fun scanLineLfOnly() = runTest {
         val source = BufferedSuspendSource(sourceOf("abc\ndef\n"), DefaultAllocator)
         assertEquals("abc", source.scanLine()?.decodeToString())
         assertEquals("def", source.scanLine()?.decodeToString())
@@ -127,7 +127,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun scanLineEofWithoutNewline() = runBlocking {
+    fun scanLineEofWithoutNewline() = runTest {
         val source = BufferedSuspendSource(sourceOf("no-newline"), DefaultAllocator)
         assertEquals("no-newline", source.scanLine()?.decodeToString())
         assertNull(source.scanLine())
@@ -135,14 +135,14 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun scanLineEmptySource() = runBlocking {
+    fun scanLineEmptySource() = runTest {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         assertNull(source.scanLine())
         source.close()
     }
 
     @Test
-    fun scanLineReturnsZeroCopySlice() = runBlocking {
+    fun scanLineReturnsZeroCopySlice() = runTest {
         val source = BufferedSuspendSource(sourceOf("GET /hello HTTP/1.1\r\n"), DefaultAllocator)
         val slice = source.scanLine()!!
         // Verify it's a real BufSlice, not a copy
@@ -152,7 +152,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun scanLineEmptyLine() = runBlocking {
+    fun scanLineEmptyLine() = runTest {
         val source = BufferedSuspendSource(sourceOf("first\r\n\r\n"), DefaultAllocator)
         assertEquals("first", source.scanLine()?.decodeToString())
         val empty = source.scanLine()!!
@@ -179,7 +179,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pullMode_scanLine_lineAtBufferBoundary() = runBlocking {
+    fun pullMode_scanLine_lineAtBufferBoundary() = runTest {
         // Line exactly fills BUFFER_SIZE (8192). The LF is at the buffer boundary.
         val line = "x".repeat(8191) + "\n"
         val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
@@ -190,7 +190,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pullMode_scanLine_lineSpansCompact() = runBlocking {
+    fun pullMode_scanLine_lineSpansCompact() = runTest {
         // First line consumes most of the buffer. Second line starts near
         // the end and requires compact + refill.
         val line1 = "A".repeat(8000) + "\n"
@@ -203,7 +203,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pullMode_readLine_largerThanBuffer() = runBlocking {
+    fun pullMode_readLine_largerThanBuffer() = runTest {
         // Line larger than BUFFER_SIZE (8192) — requires multiple refills.
         val line = "y".repeat(20000) + "\n"
         val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
@@ -213,7 +213,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pullMode_readByteArray_acrossRefill() = runBlocking {
+    fun pullMode_readByteArray_acrossRefill() = runTest {
         // Request more bytes than initial buffer fill provides.
         val data = "Z".repeat(100)
         val source = BufferedSuspendSource(chunkedSourceOf(data, 30), DefaultAllocator)
@@ -241,7 +241,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readLine() = runBlocking {
+    fun pushMode_readLine() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("hello\r\nworld\r\n"))
         assertEquals("hello", source.readLine())
         assertEquals("world", source.readLine())
@@ -250,7 +250,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readByte() = runBlocking {
+    fun pushMode_readByte() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("AB"))
         assertEquals('A'.code.toByte(), source.readByte())
         assertEquals('B'.code.toByte(), source.readByte())
@@ -259,7 +259,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readByteAcrossChunks() = runBlocking {
+    fun pushMode_readByteAcrossChunks() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("A", "B", "C"))
         assertEquals('A'.code.toByte(), source.readByte())
         assertEquals('B'.code.toByte(), source.readByte())
@@ -268,7 +268,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_scanLine_singleBuffer() = runBlocking {
+    fun pushMode_scanLine_singleBuffer() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("GET /hello HTTP/1.1\r\n"))
         val slice = source.scanLine()
         assertNotNull(slice)
@@ -278,7 +278,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_scanLine_crossBuffer() = runBlocking {
+    fun pushMode_scanLine_crossBuffer() = runTest {
         // Line "Hello-World" spans two chunks: "Hello-" and "World\r\n"
         val source = BufferedSuspendSource(pushSourceOf("Hello-", "World\r\n"))
         val slice = source.scanLine()
@@ -291,7 +291,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_scanLine_crossBuffer_crAtBoundary() = runBlocking {
+    fun pushMode_scanLine_crossBuffer_crAtBoundary() = runTest {
         // CR at end of first chunk, LF at start of second
         val source = BufferedSuspendSource(pushSourceOf("Header\r", "\nBody\r\n"))
         val slice = source.scanLine()
@@ -302,7 +302,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_scanLine_eofWithoutNewline() = runBlocking {
+    fun pushMode_scanLine_eofWithoutNewline() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("no-newline"))
         assertEquals("no-newline", source.scanLine()?.decodeToString())
         assertNull(source.scanLine())
@@ -310,7 +310,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readByteArray() = runBlocking {
+    fun pushMode_readByteArray() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("ABCD", "EF"))
         val result = source.readByteArray(6)
         assertEquals("ABCDEF", result.decodeToString())
@@ -318,7 +318,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readAtMostTo() = runBlocking {
+    fun pushMode_readAtMostTo() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("hello"))
         val dest = ByteArray(10)
         val n = source.readAtMostTo(dest, 0, 10)
@@ -328,7 +328,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readAtMostToEof() = runBlocking {
+    fun pushMode_readAtMostToEof() = runTest {
         val source = BufferedSuspendSource(pushSourceOf())
         val dest = ByteArray(10)
         assertEquals(-1, source.readAtMostTo(dest, 0, 10))
@@ -336,7 +336,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_readLineAcrossChunks() = runBlocking {
+    fun pushMode_readLineAcrossChunks() = runTest {
         // Line spans two chunks
         val source = BufferedSuspendSource(pushSourceOf("hel", "lo\r\n"))
         assertEquals("hello", source.readLine())
@@ -344,7 +344,7 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pushMode_multipleLines() = runBlocking {
+    fun pushMode_multipleLines() = runTest {
         val source = BufferedSuspendSource(pushSourceOf("line1\r\nline2\r\n", "line3\r\n"))
         assertEquals("line1", source.readLine())
         assertEquals("line2", source.readLine())

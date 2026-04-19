@@ -109,7 +109,7 @@ class DnsResolverTest {
         }
 
         assertEquals("ok-1.2.3.4", result)
-        assertEquals(listOf(IpAddress.V4(0x01020304)), tried, "second candidate not tried")
+        assertEquals<List<IpAddress>>(listOf(IpAddress.V4(0x01020304)), tried, "second candidate not tried")
     }
 
     @Test
@@ -125,7 +125,7 @@ class DnsResolverTest {
         }
 
         assertEquals("ok-127.0.0.1", result)
-        assertEquals(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK), tried)
+        assertEquals<List<IpAddress>>(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK), tried)
     }
 
     @Test
