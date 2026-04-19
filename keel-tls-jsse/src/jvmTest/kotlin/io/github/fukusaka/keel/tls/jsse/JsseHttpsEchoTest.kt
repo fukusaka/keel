@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -37,7 +38,7 @@ class JsseHttpsEchoTest {
     )
 
     @Test
-    fun `HTTPS echo via curl`() {
+    fun `HTTPS echo via curl`() = runBlocking {
         val factory = JsseTlsCodecFactory()
         val engine = NioEngine()
 
@@ -55,7 +56,7 @@ class JsseHttpsEchoTest {
 
         val (exitCode, output) = curlHttps(port, "/hello")
 
-        // Cleanup
+        // Cleanup — `engine.close()` became `suspend` in Phase 11 (#291), hence runBlocking.
         server.close()
         factory.close()
         engine.close()
