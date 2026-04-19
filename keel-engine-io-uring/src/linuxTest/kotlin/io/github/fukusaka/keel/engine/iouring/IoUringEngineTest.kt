@@ -1150,4 +1150,38 @@ class IoUringEngineTest {
     // requires the TCP send buffer to be partially full, which cannot
     // be reliably triggered in a unit test. It is exercised implicitly
     // by high-concurrency benchmarks (wrk -c100 /large).
+
+    // --- IPv6 ---
+
+    @Test
+    fun `IPv6 loopback bind connect echo round trip`() = runBlocking {
+        val engine = IoUringEngine()
+        try {
+            val server = engine.bind("::1", 0)
+            val local = server.localAddress as InetSocketAddress
+            assertEquals("::1", local.hostString)
+            val port = local.port
+
+            val client = engine.connect("::1", port)
+            val serverCh = server.accept()
+
+            val msg = "v6-echo"
+            val writeBuf = DefaultAllocator.allocate(32)
+            for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
+            writeBuf.release()
+
+            val readBuf = DefaultAllocator.allocate(32)
+            val n = withTimeout(3000) { serverCh.read(readBuf) }
+            assertEquals(msg.length, n)
+            readBuf.release()
+
+            client.close()
+            serverCh.close()
+            server.close()
+        } finally {
+            engine.close()
+        }
+    }
 }
