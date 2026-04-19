@@ -60,14 +60,34 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
-      - name: Static analysis (detekt)
-        run: ./gradlew -Ptls detektMetadataCommonMain detektLinuxX64Main detektJvmMain
+      # All gradle invocations use `-Ptls -Pbenchmark` so the TLS satellite
+      # modules and the `:benchmark` module are part of the build graph.
+      # Running without these flags let single-host build debts in those
+      # modules slip through PR review (see PR #304 / #305 post-mortem).
 
-      - name: Compile (JVM + linuxX64)
-        run: ./gradlew -Ptls compileKotlinJvm compileKotlinLinuxX64
+      - name: Static analysis (detekt)
+        # macosArm64 target is skipped on a Linux runner because cinterop
+        # cross-compilation for Darwin is not supported.
+        run: |
+          ./gradlew -Ptls -Pbenchmark \
+            detektMetadataCommonMain \
+            detektJvmMain \
+            detektLinuxX64Main \
+            detektJsMain
+
+      - name: Assemble (all modules, all host-enabled targets)
+        # `assemble` is a Gradle lifecycle task that transitively invokes
+        # compileKotlin* / link* / *MainKlibrary / *Binaries for every
+        # target declared on this host. It catches KMP build regressions
+        # that target-specific tasks miss (e.g. PR #305:
+        # compileLinuxMainKotlinMetadata on a mismatched host).
+        run: ./gradlew -Ptls -Pbenchmark assemble
 
       - name: Test (JVM)
-        run: ./gradlew -Ptls jvmTest
+        run: ./gradlew -Ptls -Pbenchmark jvmTest
 
       - name: Test (linuxX64)
-        run: ./gradlew -Ptls linuxX64Test
+        run: ./gradlew -Ptls -Pbenchmark linuxX64Test
+
+      - name: Test (JS / Node.js)
+        run: ./gradlew -Ptls -Pbenchmark jsNodeTest
