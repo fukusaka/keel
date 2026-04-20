@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.bootstrap.Bootstrap
@@ -148,11 +149,15 @@ class NettyEngine(
             }
         }
 
-        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
-
-        serverChannel.init(nettyServerCh, localAddr, bindConfig)
-        logger.debug { "Bound to $localAddr" }
-        return serverChannel
+        try {
+            val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
+            serverChannel.init(nettyServerCh, localAddr, bindConfig)
+            logger.debug { "Bound to $localAddr" }
+            return serverChannel
+        } catch (t: Throwable) {
+            closeQuietly(nettyServerCh, "bindUnix cleanup")
+            throw t
+        }
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -200,12 +205,16 @@ class NettyEngine(
             }
         }
 
-        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
-            ?: error("Failed to get local address")
-
-        serverChannel.init(nettyServerCh, localAddr, bindConfig)
-        logger.debug { "Bound to $localAddr" }
-        return serverChannel
+        try {
+            val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
+                ?: error("Failed to get local address")
+            serverChannel.init(nettyServerCh, localAddr, bindConfig)
+            logger.debug { "Bound to $localAddr" }
+            return serverChannel
+        } catch (t: Throwable) {
+            closeQuietly(nettyServerCh, "bindInet cleanup")
+            throw t
+        }
     }
 
     /**
@@ -356,9 +365,14 @@ class NettyEngine(
             })
 
         val nettyServerCh = bootstrap.bind(UnixDomainSocketAddress.of(Path.of(address.path))).sync().channel()
-        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
-        logger.debug { "Pipeline bound to $localAddr" }
-        return NettyPipelinedServer(nettyServerCh, localAddr)
+        try {
+            val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
+            logger.debug { "Pipeline bound to $localAddr" }
+            return NettyPipelinedServer(nettyServerCh, localAddr)
+        } catch (t: Throwable) {
+            closeQuietly(nettyServerCh, "bindPipelineUnix cleanup")
+            throw t
+        }
     }
 
 
@@ -392,11 +406,31 @@ class NettyEngine(
             })
 
         val nettyServerCh = bootstrap.bind(host, port).sync().channel()
-        val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
-            ?: error("Failed to get local address")
+        try {
+            val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
+                ?: error("Failed to get local address")
+            logger.debug { "Pipeline bound to $localAddr" }
+            return NettyPipelinedServer(nettyServerCh, localAddr)
+        } catch (t: Throwable) {
+            closeQuietly(nettyServerCh, "bindPipelineInet cleanup")
+            throw t
+        }
+    }
 
-        logger.debug { "Pipeline bound to $localAddr" }
-        return NettyPipelinedServer(nettyServerCh, localAddr)
+    /**
+     * Closes [channel] during an error cleanup path, logging any secondary
+     * exception from the close itself rather than re-throwing it — the
+     * original failure that triggered the cleanup is preserved by the
+     * caller's `throw t`. The close is fire-and-forget (no `.sync()`) to
+     * avoid blocking the caller on a Netty EventLoop round-trip in the
+     * error path; Netty drains the channel asynchronously.
+     */
+    private fun closeQuietly(channel: NettyNativeChannel, context: String) {
+        try {
+            channel.close()
+        } catch (e: Throwable) {
+            logger.warn(e) { "Netty channel close() failed during $context" }
+        }
     }
 
     /**

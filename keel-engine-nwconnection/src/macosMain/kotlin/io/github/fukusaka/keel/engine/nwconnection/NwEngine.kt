@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
@@ -115,56 +116,65 @@ class NwEngine(
 
         val lsnr = nw_listener_create_with_port(portStr, params)
             ?: error("nw_listener_create_with_port returned null")
-        listener = lsnr
 
-        val listenerQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.listener", null,
-        )
+        try {
+            listener = lsnr
 
-        // Create ServerChannel before starting the listener so
-        // onNewConnection can be called immediately if connections
-        // arrive during startup. localAddress is updated after the
-        // assigned port is known.
-        val serverChannel = NwServer(
-            lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
-        )
+            val listenerQueue = dispatch_queue_create(
+                "io.github.fukusaka.keel.nwconnection.listener", null,
+            )
 
-        nw_listener_set_queue(lsnr, listenerQueue)
+            // Create ServerChannel before starting the listener so
+            // onNewConnection can be called immediately if connections
+            // arrive during startup. localAddress is updated after the
+            // assigned port is known.
+            val serverChannel = NwServer(
+                lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
+            )
 
-        // Suspend until listener reaches ready or failed state.
-        // The state_changed_handler resumes the coroutine via CallbackContext.
-        // CallbackContext prevents double-resume if the state handler fires
-        // multiple times (e.g. ready then cancelled) or after coroutine cancel.
-        val assignedPort = suspendCancellableCoroutine<Int> { cont ->
-            val cbCtx = CallbackContext(cont)
+            nw_listener_set_queue(lsnr, listenerQueue)
 
-            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
-                if (state == nw_listener_state_ready) {
-                    val p = nw_listener_get_port(lsnr).toInt()
-                    cbCtx.tryResume(p)
-                } else if (state == nw_listener_state_failed) {
-                    cbCtx.tryResume(-1)
+            // Suspend until listener reaches ready or failed state.
+            // The state_changed_handler resumes the coroutine via CallbackContext.
+            // CallbackContext prevents double-resume if the state handler fires
+            // multiple times (e.g. ready then cancelled) or after coroutine cancel.
+            val assignedPort = suspendCancellableCoroutine<Int> { cont ->
+                val cbCtx = CallbackContext(cont)
+
+                nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                    if (state == nw_listener_state_ready) {
+                        val p = nw_listener_get_port(lsnr).toInt()
+                        cbCtx.tryResume(p)
+                    } else if (state == nw_listener_state_failed) {
+                        cbCtx.tryResume(-1)
+                    }
                 }
+
+                nw_listener_set_new_connection_handler(lsnr) { conn ->
+                    if (conn != null) {
+                        serverChannel.onNewConnection(conn)
+                    }
+                }
+
+                nw_listener_start(lsnr)
+                cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
 
-            nw_listener_set_new_connection_handler(lsnr) { conn ->
-                if (conn != null) {
-                    serverChannel.onNewConnection(conn)
-                }
+            check(assignedPort > 0) {
+                "NWListener failed to start (port=$assignedPort)"
             }
 
-            nw_listener_start(lsnr)
-            cont.invokeOnCancellation { cbCtx.markCancelled() }
+            // Update the local address with the assigned port
+            serverChannel.updateLocalAddress(InetSocketAddress(host, assignedPort))
+            logger.debug { "Bound to $host:$assignedPort" }
+            return serverChannel
+        } catch (t: Throwable) {
+            cancelListenerQuietly(lsnr, "bindInet cleanup")
+            // Release the engine-field reference so engine.close() does not
+            // attempt a second cancel on this already-cancelled listener.
+            if (listener == lsnr) listener = null
+            throw t
         }
-
-        check(assignedPort > 0) {
-            "NWListener failed to start (port=$assignedPort)"
-        }
-
-        // Update the local address with the assigned port
-        serverChannel.updateLocalAddress(InetSocketAddress(host, assignedPort))
-        logger.debug { "Bound to $host:$assignedPort" }
-        return serverChannel
     }
 
     /**
@@ -213,63 +223,68 @@ class NwEngine(
         val lsnr = nw_listener_create_with_port(portStr, params)
             ?: error("nw_listener_create_with_port returned null")
 
-        val listenerQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.pipeline.listener", null,
-        )
+        try {
+            val listenerQueue = dispatch_queue_create(
+                "io.github.fukusaka.keel.nwconnection.pipeline.listener", null,
+            )
 
-        nw_listener_set_queue(lsnr, listenerQueue)
+            nw_listener_set_queue(lsnr, listenerQueue)
 
-        // Block until listener reaches ready state.
-        val sem = dispatch_semaphore_create(0)
-        var assignedPort = -1
+            // Block until listener reaches ready state.
+            val sem = dispatch_semaphore_create(0)
+            var assignedPort = -1
 
-        nw_listener_set_state_changed_handler(lsnr) { state, _ ->
-            if (state == nw_listener_state_ready) {
-                assignedPort = nw_listener_get_port(lsnr).toInt()
-                dispatch_semaphore_signal(sem)
-            } else if (state == nw_listener_state_failed) {
-                dispatch_semaphore_signal(sem)
-            }
-        }
-
-        nw_listener_set_new_connection_handler(lsnr) { conn ->
-            if (conn != null) {
-                val connQueue = dispatch_queue_create(
-                    "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
-                )
-                nw_connection_set_queue(conn, connQueue)
-                // Fire-and-forget start: nw_connection_receive can be called
-                // immediately after start — NWConnection queues the receive
-                // internally until the connection reaches the ready state.
-                nw_connection_start(conn)
-
-                val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
-                val channel = NwPipelinedChannel(transport, logger)
-                // Listener-level TLS: connections arrive already TLS-encrypted,
-                // so skip per-connection TLS initialization.
-                if (!listenerLevelTls) {
-                    config.initializeConnection(channel)
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                if (state == nw_listener_state_ready) {
+                    assignedPort = nw_listener_get_port(lsnr).toInt()
+                    dispatch_semaphore_signal(sem)
+                } else if (state == nw_listener_state_failed) {
+                    dispatch_semaphore_signal(sem)
                 }
-                pipelineInitializer(channel)
-                transport.readEnabled = true
             }
-        }
 
-        nw_listener_start(lsnr)
-        // Generous timeout for listener startup, prevents permanent hang
-        // if the dispatch queue or state handler is never delivered.
-        val deadline = dispatch_time(
-            DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
-        )
-        val waitResult = dispatch_semaphore_wait(sem, deadline)
-        check(waitResult == 0L) {
-            "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
-        }
-        check(assignedPort > 0) { "NWListener failed to start" }
-        val localAddr = InetSocketAddress(host, assignedPort)
-        logger.debug { "Pipeline bound to $host:$assignedPort" }
+            nw_listener_set_new_connection_handler(lsnr) { conn ->
+                if (conn != null) {
+                    val connQueue = dispatch_queue_create(
+                        "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
+                    )
+                    nw_connection_set_queue(conn, connQueue)
+                    // Fire-and-forget start: nw_connection_receive can be called
+                    // immediately after start — NWConnection queues the receive
+                    // internally until the connection reaches the ready state.
+                    nw_connection_start(conn)
 
-        return NwPipelinedServer(lsnr, localAddr)
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
+                    val channel = NwPipelinedChannel(transport, logger)
+                    // Listener-level TLS: connections arrive already TLS-encrypted,
+                    // so skip per-connection TLS initialization.
+                    if (!listenerLevelTls) {
+                        config.initializeConnection(channel)
+                    }
+                    pipelineInitializer(channel)
+                    transport.readEnabled = true
+                }
+            }
+
+            nw_listener_start(lsnr)
+            // Generous timeout for listener startup, prevents permanent hang
+            // if the dispatch queue or state handler is never delivered.
+            val deadline = dispatch_time(
+                DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
+            )
+            val waitResult = dispatch_semaphore_wait(sem, deadline)
+            check(waitResult == 0L) {
+                "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+            }
+            check(assignedPort > 0) { "NWListener failed to start" }
+            val localAddr = InetSocketAddress(host, assignedPort)
+            logger.debug { "Pipeline bound to $host:$assignedPort" }
+
+            return NwPipelinedServer(lsnr, localAddr)
+        } catch (t: Throwable) {
+            cancelListenerQuietly(lsnr, "bindPipelineInet cleanup")
+            throw t
+        }
     }
 
     /** Pipeline server wrapping an NWListener. */
@@ -364,37 +379,44 @@ class NwEngine(
             ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
-        listener = lsnr
 
-        val listenerQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.listener.unix", null,
-        )
-        val serverChannel = NwServer(
-            lsnr, address, config.allocator, bindConfig, config.loggerFactory,
-        )
-        nw_listener_set_queue(lsnr, listenerQueue)
+        try {
+            listener = lsnr
 
-        val rc = suspendCancellableCoroutine<Int> { cont ->
-            val cbCtx = CallbackContext(cont)
-            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
-                if (state == nw_listener_state_ready) {
-                    cbCtx.tryResume(0)
-                } else if (state == nw_listener_state_failed) {
-                    cbCtx.tryResume(-1)
+            val listenerQueue = dispatch_queue_create(
+                "io.github.fukusaka.keel.nwconnection.listener.unix", null,
+            )
+            val serverChannel = NwServer(
+                lsnr, address, config.allocator, bindConfig, config.loggerFactory,
+            )
+            nw_listener_set_queue(lsnr, listenerQueue)
+
+            val rc = suspendCancellableCoroutine<Int> { cont ->
+                val cbCtx = CallbackContext(cont)
+                nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                    if (state == nw_listener_state_ready) {
+                        cbCtx.tryResume(0)
+                    } else if (state == nw_listener_state_failed) {
+                        cbCtx.tryResume(-1)
+                    }
                 }
-            }
-            nw_listener_set_new_connection_handler(lsnr) { conn ->
-                if (conn != null) {
-                    serverChannel.onNewConnection(conn)
+                nw_listener_set_new_connection_handler(lsnr) { conn ->
+                    if (conn != null) {
+                        serverChannel.onNewConnection(conn)
+                    }
                 }
+                nw_listener_start(lsnr)
+                cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
-            nw_listener_start(lsnr)
-            cont.invokeOnCancellation { cbCtx.markCancelled() }
+            check(rc == 0) { "NWListener failed to start on ${address.path}" }
+
+            logger.debug { "Bound UDS ${address.path}" }
+            return serverChannel
+        } catch (t: Throwable) {
+            cancelListenerQuietly(lsnr, "bindUnix cleanup")
+            if (listener == lsnr) listener = null
+            throw t
         }
-        check(rc == 0) { "NWListener failed to start on ${address.path}" }
-
-        logger.debug { "Bound UDS ${address.path}" }
-        return serverChannel
     }
 
     /**
@@ -452,46 +474,66 @@ class NwEngine(
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
 
-        val listenerQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.pipeline.listener.unix", null,
-        )
-        nw_listener_set_queue(lsnr, listenerQueue)
+        try {
+            val listenerQueue = dispatch_queue_create(
+                "io.github.fukusaka.keel.nwconnection.pipeline.listener.unix", null,
+            )
+            nw_listener_set_queue(lsnr, listenerQueue)
 
-        val sem = dispatch_semaphore_create(0)
-        var ready = false
-        nw_listener_set_state_changed_handler(lsnr) { state, _ ->
-            if (state == nw_listener_state_ready) {
-                ready = true
-                dispatch_semaphore_signal(sem)
-            } else if (state == nw_listener_state_failed) {
-                dispatch_semaphore_signal(sem)
+            val sem = dispatch_semaphore_create(0)
+            var ready = false
+            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                if (state == nw_listener_state_ready) {
+                    ready = true
+                    dispatch_semaphore_signal(sem)
+                } else if (state == nw_listener_state_failed) {
+                    dispatch_semaphore_signal(sem)
+                }
             }
-        }
-        nw_listener_set_new_connection_handler(lsnr) { conn ->
-            if (conn != null) {
-                val connQueue = dispatch_queue_create(
-                    "io.github.fukusaka.keel.nwconnection.pipeline.conn.unix", null,
-                )
-                nw_connection_set_queue(conn, connQueue)
-                nw_connection_start(conn)
+            nw_listener_set_new_connection_handler(lsnr) { conn ->
+                if (conn != null) {
+                    val connQueue = dispatch_queue_create(
+                        "io.github.fukusaka.keel.nwconnection.pipeline.conn.unix", null,
+                    )
+                    nw_connection_set_queue(conn, connQueue)
+                    nw_connection_start(conn)
 
-                val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
-                val channel = NwPipelinedChannel(transport, logger)
-                config.initializeConnection(channel)
-                pipelineInitializer(channel)
-                transport.readEnabled = true
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
+                    val channel = NwPipelinedChannel(transport, logger)
+                    config.initializeConnection(channel)
+                    pipelineInitializer(channel)
+                    transport.readEnabled = true
+                }
             }
-        }
 
-        nw_listener_start(lsnr)
-        val deadline = dispatch_time(DISPATCH_TIME_NOW, BIND_TIMEOUT_NS)
-        val waitResult = dispatch_semaphore_wait(sem, deadline)
-        check(waitResult == 0L) {
-            "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+            nw_listener_start(lsnr)
+            val deadline = dispatch_time(DISPATCH_TIME_NOW, BIND_TIMEOUT_NS)
+            val waitResult = dispatch_semaphore_wait(sem, deadline)
+            check(waitResult == 0L) {
+                "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
+            }
+            check(ready) { "NWListener failed to start on ${address.path}" }
+            logger.debug { "Pipeline bound UDS ${address.path}" }
+            return NwPipelinedServer(lsnr, address)
+        } catch (t: Throwable) {
+            cancelListenerQuietly(lsnr, "bindPipelineUnix cleanup")
+            throw t
         }
-        check(ready) { "NWListener failed to start on ${address.path}" }
-        logger.debug { "Pipeline bound UDS ${address.path}" }
-        return NwPipelinedServer(lsnr, address)
+    }
+
+    /**
+     * Cancels an NWListener during a bind-path error cleanup, swallowing
+     * and logging any secondary exception from the cancel itself so that
+     * the caller's `throw t` preserves the original failure. The cancel
+     * is fire-and-forget — Network.framework tears the listener down on
+     * its own queue asynchronously.
+     */
+    private fun cancelListenerQuietly(lsnr: nw_listener_t, context: String) {
+        try {
+            nw_listener_cancel(lsnr)
+        } catch (e: Throwable) {
+            logger.warn(e) { "nw_listener_cancel failed during $context" }
+        }
     }
 
     /**
