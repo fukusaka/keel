@@ -381,9 +381,12 @@ public class KeelApplicationEngine(
      *
      * **Dispatcher model**: pipeline codec runs on the EventLoop thread
      * (push-mode). The Ktor application pipeline runs on
-     * [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher]:
-     * - Native (kqueue/epoll): EventLoop — zero context switches
-     * - JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing
+     * [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher],
+     * which is aligned with [channel.ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
+     * on every engine: the entire request pipeline runs on the same
+     * thread that drives I/O — zero per-request context switches. User
+     * handlers are therefore expected to be non-blocking; blocking I/O
+     * should be wrapped in `withContext(Dispatchers.IO)` by the caller.
      *
      * Response output flows through the pipeline: [KeelApplicationResponse]
      * emits [HttpResponseHead] / [HttpBody] / [HttpBodyEnd] via

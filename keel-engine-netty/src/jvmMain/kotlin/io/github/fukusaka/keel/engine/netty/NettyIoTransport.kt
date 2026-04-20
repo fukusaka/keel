@@ -58,10 +58,9 @@ import io.netty.channel.Channel as NettyNativeChannel
  * pipeline runs on the same EventLoop thread — avoiding per-request
  * cross-thread dispatch overhead. User handlers are therefore expected
  * to be non-blocking; blocking I/O should be wrapped in
- * `withContext(Dispatchers.IO)` by the caller. This matches the Native
- * engines' model. `NioIoTransport` continues to override `appDispatcher`
- * to `Dispatchers.Default` because its own history / benchmarks drove a
- * different default; revisiting that default is tracked separately.
+ * `withContext(Dispatchers.IO)` by the caller. This matches the NIO and
+ * Native engines' model — every engine in keel now resumes the Ktor
+ * application pipeline on the same thread that drives I/O.
  *
  * **No awaitPendingFlush**: Netty internally buffers data submitted via
  * `writeAndFlush` and processes it in EventLoop order. Even if the channel
