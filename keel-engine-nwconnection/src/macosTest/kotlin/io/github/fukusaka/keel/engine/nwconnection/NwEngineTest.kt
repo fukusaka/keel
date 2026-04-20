@@ -805,32 +805,15 @@ class NwEngineTest {
         val baselineInfo = kotlin.native.runtime.GC.lastGCInfo
         val baselineHeap = baselineInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
 
-        // Run 10 echo cycles. Kqueue / epoll equivalents use 100 cycles;
-        // this is intentionally lower as a **temporary workaround** for a
-        // thread-safety bug in [SuspendBridgeHandler] that manifests on
-        // NwEngine specifically:
-        //
-        // - `NwIoTransport.ioDispatcher = Dispatchers.Default`, so
-        //   `ch.read(buf)` → `withContext(Default) { bridge.read(buf) }`
-        //   runs on a Default-pool worker.
-        // - The NW receive callback fires on the dispatch queue and
-        //   invokes `bridge.onRead` from that queue thread.
-        // - `SuspendBridgeHandler.readCont` is a plain `var` (no
-        //   `@Volatile` / atomic), so the cont assignment on the Default
-        //   worker is not guaranteed to be visible to the dispatch-queue
-        //   thread that calls `cont.resume(Unit)`.
-        //
-        // On GitHub Actions `macos-latest` (3-vCPU M1 VM) this race
-        // deterministically stalls at cycle 13 after GC-triggered thread
-        // cache invalidation. Reducing to 10 cycles keeps the test inside
-        // the stable window.
-        //
-        // The proper fix lives outside this PR — see the "NwIoTransport /
-        // SuspendBridgeHandler thread-safety" entry in plan.md's
-        // "テスト安定化 (CI timing races)" section. Once the bridge /
-        // callback dispatch is made thread-safe, restore the cycle count
-        // to 50+ for a stronger GC leak signal.
-        repeat(10) {
+        // Run 50 echo cycles (fewer than kqueue/epoll due to dispatch callback latency).
+        // Prior to [NwConnectionQueueDispatcher] this loop stalled at cycle 13 on
+        // GitHub Actions `macos-latest` because `ioDispatcher = Dispatchers.Default`
+        // raced with NWConnection's dispatch-queue callbacks against
+        // `SuspendBridgeHandler`'s single-thread invariant (PR #308 workaround).
+        // With `ioDispatcher` now pointing at `connQueue`, both `onRead` and
+        // `bridge.read` run serialised on the same queue and the race is
+        // structurally eliminated.
+        repeat(50) {
             rawWrite(clientFd, "test")
             val buf = DefaultAllocator.allocate(64)
             val n = withTimeout(GC_ECHO_OP_TIMEOUT_MS) { ch.read(buf) }
@@ -840,7 +823,7 @@ class NwEngineTest {
             }
             buf.release()
         }
-        rawRead(clientFd, 40) // drain echoed data (10 cycles × 4 bytes)
+        rawRead(clientFd, 200) // drain echoed data
 
         // Post-test GC
         kotlin.native.runtime.GC.collect()
@@ -855,7 +838,7 @@ class NwEngineTest {
         val maxAllowed = baselineHeap + heapGrowthTolerance
         assertTrue(
             afterHeap <= maxAllowed,
-            "Heap grew from $baselineHeap to $afterHeap bytes after 10 echo cycles " +
+            "Heap grew from $baselineHeap to $afterHeap bytes after 50 echo cycles " +
                 "(tolerance: ${heapGrowthTolerance / 1024}KB). Possible memory leak.",
         )
 
