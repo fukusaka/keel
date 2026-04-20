@@ -561,10 +561,6 @@ class KqueueEngineTest {
         return "/tmp/keel-uds-$pid-$seq.sock"
     }
 
-    companion object {
-        private var udsPathSeq = 0
-    }
-
     @Test
     fun `UDS filesystem bind connect echo round trip`() = runBlocking {
         val engine = KqueueEngine()
@@ -581,7 +577,7 @@ class KqueueEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("uds-hello".length, n)
             readBuf.release()
 
@@ -660,7 +656,7 @@ class KqueueEngineTest {
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
-            withTimeout(3000) {
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
                 engine.connect("127.0.0.1", port)
             }
         }
@@ -878,7 +874,7 @@ class KqueueEngineTest {
 
         val clients = (1..clientCount).map { connectRawClient(port) }
 
-        val channels = withTimeout(5000) { acceptJob.await() }
+        val channels = withTimeout(IO_OP_TIMEOUT_MS) { acceptJob.await() }
         assertEquals(clientCount, channels.size)
         channels.forEach { assertTrue(it.isOpen) }
 
@@ -918,7 +914,7 @@ class KqueueEngineTest {
         // Client disconnect triggers channelInactive → read returns -1
         close(clientFd)
 
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         ch.close()
@@ -949,7 +945,7 @@ class KqueueEngineTest {
         delay(100)
         readJob.cancel()
 
-        withTimeout(3000) { readJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
@@ -1048,7 +1044,7 @@ class KqueueEngineTest {
         delay(100)
         server.close()
 
-        withTimeout(3000) { acceptJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { acceptJob.join() }
         assertTrue(acceptJob.isCancelled)
 
         engine.close()
@@ -1441,7 +1437,7 @@ class KqueueEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(32)
-            val n = withTimeout(3000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals(msg.length, n)
             readBuf.release()
 
@@ -1451,5 +1447,16 @@ class KqueueEngineTest {
         } finally {
             engine.close()
         }
+    }
+
+    companion object {
+        private var udsPathSeq = 0
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <10ms) but long enough not to
+        // flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
     }
 }

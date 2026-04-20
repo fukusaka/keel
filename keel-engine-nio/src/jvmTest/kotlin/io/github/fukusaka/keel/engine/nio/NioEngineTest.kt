@@ -422,7 +422,7 @@ class NioEngineTest {
         server.close()
 
         try {
-            val ch = withTimeout(3000) {
+            val ch = withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
                 engine.connect("127.0.0.1", port)
             }
             // Connect succeeded (OS race) — just close
@@ -640,7 +640,7 @@ class NioEngineTest {
 
         val clients = (1..clientCount).map { connectRawClient(port) }
 
-        val channels = withTimeout(5000) { acceptJob.await() }
+        val channels = withTimeout(IO_OP_TIMEOUT_MS) { acceptJob.await() }
         assertEquals(clientCount, channels.size)
         channels.forEach { assertTrue(it.isOpen) }
 
@@ -673,7 +673,7 @@ class NioEngineTest {
         delay(100)
         client.close()
 
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         ch.close()
@@ -704,7 +704,7 @@ class NioEngineTest {
         delay(100)
         readJob.cancel()
 
-        withTimeout(3000) { readJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
@@ -725,7 +725,7 @@ class NioEngineTest {
         delay(100)
         server.close()
 
-        withTimeout(3000) { acceptJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { acceptJob.join() }
         assertTrue(acceptJob.isCancelled)
 
         engine.close()
@@ -802,10 +802,10 @@ class NioEngineTest {
             String(buf, 0, total)
         }
 
-        withTimeout(10_000) { ch.flush() }
+        withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() }
         writeBuf.release()
 
-        val received = withTimeout(10_000) { readResult.await() }
+        val received = withTimeout(IO_OP_LONG_TIMEOUT_MS) { readResult.await() }
         assertEquals(payloadSize, received.length)
         assertEquals(payload, received)
 
@@ -850,9 +850,9 @@ class NioEngineTest {
             String(buf, 0, total)
         }
 
-        withTimeout(10_000) { ch.flush() }
+        withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() }
 
-        val received = withTimeout(10_000) { readResult.await() }
+        val received = withTimeout(IO_OP_LONG_TIMEOUT_MS) { readResult.await() }
         assertEquals(totalSize, received.length)
         assertEquals(payload, received)
 
@@ -878,10 +878,10 @@ class NioEngineTest {
         client.getOutputStream().flush()
 
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(3000) { ch.read(buf) }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(10, n)
         ch.write(buf)
-        withTimeout(3000) { ch.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
         buf.release()
 
         val echo = ByteArray(10)
@@ -916,7 +916,7 @@ class NioEngineTest {
         var totalRead = 0
         while (totalRead < payload.length) {
             val buf = DefaultAllocator.allocate(8192)
-            val n = withTimeout(3000) { ch.read(buf) }
+            val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
             if (n <= 0) {
                 buf.release()
                 break
@@ -950,11 +950,11 @@ class NioEngineTest {
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
-        withTimeout(3000) { clientCh.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { clientCh.flush() }
         writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
-        withTimeout(3000) { serverCh.read(readBuf) }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
         readBuf.release()
 
         clientCh.close()
@@ -984,7 +984,7 @@ class NioEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-nio".encodeToByteArray()) writeBuf.writeByte(b)
@@ -993,7 +993,7 @@ class NioEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("uds-nio".length, n)
             readBuf.release()
 
@@ -1020,5 +1020,16 @@ class NioEngineTest {
 
     companion object {
         private val udsSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <10ms) but long enough not to
+        // flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
+        // Longer bound for large-payload flush / accumulate scenarios where
+        // write back-pressure + coroutine dispatch can legitimately push
+        // beyond IO_OP_TIMEOUT_MS on slow runners.
+        private const val IO_OP_LONG_TIMEOUT_MS = 10_000L
     }
 }

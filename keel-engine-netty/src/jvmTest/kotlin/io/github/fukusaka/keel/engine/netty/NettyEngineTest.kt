@@ -585,7 +585,7 @@ class NettyEngineTest {
         // Connect all clients
         val clients = (1..clientCount).map { connectRawClient(port) }
 
-        val channels = withTimeout(5000) { acceptJob.await() }
+        val channels = withTimeout(IO_OP_TIMEOUT_MS) { acceptJob.await() }
         assertEquals(clientCount, channels.size)
         channels.forEach { assertTrue(it.isOpen) }
 
@@ -623,7 +623,7 @@ class NettyEngineTest {
         ch.close()
 
         // Read should return -1 (EOF) without hanging
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         client.close()
@@ -653,7 +653,7 @@ class NettyEngineTest {
         server.close()
 
         // Accept should be cancelled without hanging
-        val result = withTimeout(3000) { acceptResult.await() }
+        val result = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { acceptResult.await() }
         assertEquals("cancelled", result)
 
         engine.close()
@@ -685,7 +685,7 @@ class NettyEngineTest {
         client.close()
 
         // Read should return -1 from channelInactive resume
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         ch.close()
@@ -721,7 +721,7 @@ class NettyEngineTest {
         readJob.cancel()
 
         // Should complete without hanging
-        withTimeout(3000) { readJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readJob.join() }
 
         // Channel should still be usable after cancellation
         assertTrue(ch.isOpen)
@@ -748,10 +748,10 @@ class NettyEngineTest {
         client.getOutputStream().flush()
 
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(3000) { ch.read(buf) }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(10, n)
         ch.write(buf)
-        withTimeout(3000) { ch.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
         buf.release()
 
         val echo = ByteArray(10)
@@ -789,7 +789,7 @@ class NettyEngineTest {
         var totalRead = 0
         while (totalRead < payload.length) {
             val buf = DefaultAllocator.allocate(8192)
-            val n = withTimeout(5000) { ch.read(buf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
             if (n <= 0) {
                 buf.release()
                 break
@@ -823,11 +823,11 @@ class NettyEngineTest {
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
         clientCh.write(writeBuf)
-        withTimeout(3000) { clientCh.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { clientCh.flush() }
         writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
-        withTimeout(3000) { serverCh.read(readBuf) }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
         readBuf.release()
 
         clientCh.close()
@@ -857,7 +857,7 @@ class NettyEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-netty".encodeToByteArray()) writeBuf.writeByte(b)
@@ -866,7 +866,7 @@ class NettyEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("uds-netty".length, n)
             readBuf.release()
 
@@ -893,5 +893,12 @@ class NettyEngineTest {
 
     companion object {
         private val udsSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <10ms) but long enough not to
+        // flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
     }
 }

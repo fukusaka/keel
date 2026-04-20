@@ -55,10 +55,6 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineTest {
 
-    companion object {
-        private var udsPathSeq = 0
-    }
-
     // --- Helper ---
 
     private fun connectRawClient(port: Int): Int {
@@ -141,7 +137,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
         assertTrue(ch.isOpen)
         assertTrue(ch.isActive)
 
@@ -163,12 +159,12 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val serverCh = withTimeout(5000) { server.accept() }
+        val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "hello")
 
         val readBuf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { serverCh.read(readBuf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
         assertEquals(5, n)
 
         serverCh.write(readBuf)
@@ -191,12 +187,12 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         close(clientFd)
 
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { ch.read(buf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(-1, n)
 
         buf.release()
@@ -212,7 +208,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
@@ -240,7 +236,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val buf1 = DefaultAllocator.allocate(4)
         buf1.writeByte(0x41)
@@ -272,13 +268,13 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "abc")
 
         val buf = DefaultAllocator.allocate(64)
         assertEquals(0, buf.writerIndex)
-        withTimeout(5000) { ch.read(buf) }
+        withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(3, buf.writerIndex)
         assertEquals(3, buf.readableBytes)
 
@@ -296,7 +292,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val payloadSize = 8192
         val payload = ByteArray(payloadSize) { (it % 256).toByte() }
@@ -316,7 +312,7 @@ class IoUringEngineTest {
         val received = ByteArray(payloadSize)
         while (totalRead < payloadSize) {
             val buf = DefaultAllocator.allocate(payloadSize)
-            val n = withTimeout(5000) { ch.read(buf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
             if (n <= 0) { buf.release(); break }
             for (i in 0 until n) received[totalRead + i] = buf.readByte()
             totalRead += n
@@ -338,7 +334,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val payloadSize = 8193
         val payload = ByteArray(payloadSize) { (it % 256).toByte() }
@@ -356,7 +352,7 @@ class IoUringEngineTest {
         val received = ByteArray(payloadSize)
         while (totalRead < payloadSize) {
             val buf = DefaultAllocator.allocate(payloadSize)
-            val n = withTimeout(5000) { ch.read(buf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
             if (n <= 0) { buf.release(); break }
             for (i in 0 until n) received[totalRead + i] = buf.readByte()
             totalRead += n
@@ -378,7 +374,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         // 256KB — large enough to trigger short writes or EAGAIN
         // when the kernel send buffer fills up.
@@ -418,7 +414,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         ch.shutdownOutput()
 
@@ -442,14 +438,14 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         ch.shutdownOutput()
 
         rawWrite(clientFd, "hi")
 
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { ch.read(buf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(2, n)
         assertEquals('h'.code.toByte(), buf.readByte())
         assertEquals('i'.code.toByte(), buf.readByte())
@@ -472,11 +468,11 @@ class IoUringEngineTest {
         val accepted = CompletableDeferred<io.github.fukusaka.keel.core.Channel>()
         launch { accepted.complete(server.accept()) }
 
-        val client = withTimeout(5000) { engine.connect("127.0.0.1", port) }
+        val client = withTimeout(IO_OP_TIMEOUT_MS) { engine.connect("127.0.0.1", port) }
         assertTrue(client.isOpen)
         assertTrue(client.isActive)
 
-        val serverCh = withTimeout(5000) { accepted.await() }
+        val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { accepted.await() }
         serverCh.close()
         client.close()
         server.close()
@@ -540,7 +536,7 @@ class IoUringEngineTest {
                 ByteArray(1) { 0x42 }.usePinned { write(writeFds[0], it.addressOf(0), 1uL) }
             }
 
-            withTimeout(2000) { dispatched.await() }
+            withTimeout(DISPATCH_AWAIT_TIMEOUT_MS) { dispatched.await() }
 
             // Unblock remaining reads and wait for all jobs to finish.
             ByteArray(1) { 0x42 }.usePinned { pinned ->
@@ -600,7 +596,7 @@ class IoUringEngineTest {
 
             // EventLoop must still be functional: write + read on the same pipe.
             ByteArray(1) { 0x42 }.usePinned { write(writeFd, it.addressOf(0), 1uL) }
-            val n = withTimeout(2000) {
+            val n = withTimeout(DISPATCH_AWAIT_TIMEOUT_MS) {
                 withContext(loop) {
                     loop.submitAndAwait { sqe ->
                         io_uring_prep_read(sqe, readFd, buf2.unsafePointer, 1u, 0u)
@@ -626,7 +622,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         ch.close()
         ch.close() // second close must not throw
@@ -665,7 +661,7 @@ class IoUringEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-hello".encodeToByteArray()) writeBuf.writeByte(b)
@@ -674,7 +670,7 @@ class IoUringEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("uds-hello".length, n)
             readBuf.release()
 
@@ -694,7 +690,7 @@ class IoUringEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
@@ -703,7 +699,7 @@ class IoUringEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("abstract".length, n)
             readBuf.release()
 
@@ -739,7 +735,7 @@ class IoUringEngineTest {
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
-            withTimeout(3000) {
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
                 engine.connect("127.0.0.1", port)
             }
         }
@@ -755,7 +751,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val buf = DefaultAllocator.allocate(8)
         // buf has 0 readableBytes
@@ -779,7 +775,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         // Write multiple buffers but do not flush — close releases them.
         val buf1 = ch.allocator.allocate(8)
@@ -810,11 +806,11 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "ping")
         val buf = ch.allocator.allocate(64)
-        withTimeout(5000) { ch.read(buf) }
+        withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
         ch.write(buf)
         ch.flush()
         buf.release()
@@ -840,7 +836,7 @@ class IoUringEngineTest {
         val clientFds = IntArray(5) { connectRawClient(port) }
 
         val channels = (0 until 5).map {
-            withTimeout(5000) { server.accept() }
+            withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
         }
 
         assertEquals(5, channels.size)
@@ -862,13 +858,13 @@ class IoUringEngineTest {
 
         repeat(3) { i ->
             val clientFd = connectRawClient(port)
-            val ch = withTimeout(5000) { server.accept() }
+            val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val msg = "msg$i"
             rawWrite(clientFd, msg)
 
             val buf = DefaultAllocator.allocate(64)
-            val n = withTimeout(5000) { ch.read(buf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
             assertEquals(msg.length, n)
 
             ch.write(buf)
@@ -894,7 +890,7 @@ class IoUringEngineTest {
 
         // Accept one connection to arm the multishot SQE.
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
         ch.close()
         close(clientFd)
 
@@ -914,7 +910,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
         sink.writeString("hello")
@@ -937,7 +933,7 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val sink = BufferedSuspendSink(ch.asSuspendSink(), ch.allocator)
         sink.writeString("foo")
@@ -964,7 +960,7 @@ class IoUringEngineTest {
 
         // Accept 4 connections: should cycle through 2 workers
         val clientFds = IntArray(4) { connectRawClient(port) }
-        val channels = (0 until 4).map { withTimeout(5000) { server.accept() } }
+        val channels = (0 until 4).map { withTimeout(IO_OP_TIMEOUT_MS) { server.accept() } }
 
         // channel[0] and channel[2] should share the same dispatcher (worker 0)
         // channel[1] and channel[3] should share the same dispatcher (worker 1)
@@ -987,13 +983,13 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "hello")
 
         val source = ch.asSuspendSource()
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { source.read(buf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { source.read(buf) }
         assertEquals(5, n)
         assertEquals('h'.code.toByte(), buf.readByte())
         assertEquals('e'.code.toByte(), buf.readByte())
@@ -1016,13 +1012,13 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         close(clientFd)
 
         val source = ch.asSuspendSource()
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { source.read(buf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { source.read(buf) }
         assertEquals(-1, n)
 
         buf.release()
@@ -1039,13 +1035,13 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "ping")
 
         val source = ch.asSuspendSource()
         val readBuf = DefaultAllocator.allocate(64)
-        val n = withTimeout(5000) { source.read(readBuf) }
+        val n = withTimeout(IO_OP_TIMEOUT_MS) { source.read(readBuf) }
         assertEquals(4, n)
 
         ch.write(readBuf)
@@ -1069,18 +1065,18 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         val source = ch.asSuspendSource()
 
         rawWrite(clientFd, "AAA")
         val buf1 = DefaultAllocator.allocate(64)
-        val n1 = withTimeout(5000) { source.read(buf1) }
+        val n1 = withTimeout(IO_OP_TIMEOUT_MS) { source.read(buf1) }
         assertTrue(n1 > 0)
 
         rawWrite(clientFd, "BBB")
         val buf2 = DefaultAllocator.allocate(64)
-        val n2 = withTimeout(5000) { source.read(buf2) }
+        val n2 = withTimeout(IO_OP_TIMEOUT_MS) { source.read(buf2) }
         assertTrue(n2 > 0)
 
         buf1.release()
@@ -1099,16 +1095,16 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         rawWrite(clientFd, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
 
         val source = BufferedSuspendSource(ch.asSuspendSource(), DefaultAllocator)
-        val line1 = withTimeout(5000) { source.readLine() }
+        val line1 = withTimeout(IO_OP_TIMEOUT_MS) { source.readLine() }
         assertEquals("GET / HTTP/1.1", line1)
-        val line2 = withTimeout(5000) { source.readLine() }
+        val line2 = withTimeout(IO_OP_TIMEOUT_MS) { source.readLine() }
         assertEquals("Host: localhost", line2)
-        val line3 = withTimeout(5000) { source.readLine() }
+        val line3 = withTimeout(IO_OP_TIMEOUT_MS) { source.readLine() }
         assertEquals("", line3)
 
         source.close()
@@ -1125,13 +1121,13 @@ class IoUringEngineTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
-        val ch = withTimeout(5000) { server.accept() }
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
         // Read once to arm the multishot recv SQE.
         rawWrite(clientFd, "data")
         val source = ch.asSuspendSource()
         val buf = DefaultAllocator.allocate(64)
-        withTimeout(5000) { source.read(buf) }
+        withTimeout(IO_OP_TIMEOUT_MS) { source.read(buf) }
         buf.release()
 
         // Close while multishot recv is armed — must not leak slots or crash.
@@ -1173,7 +1169,7 @@ class IoUringEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(32)
-            val n = withTimeout(3000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals(msg.length, n)
             readBuf.release()
 
@@ -1183,5 +1179,21 @@ class IoUringEngineTest {
         } finally {
             engine.close()
         }
+    }
+
+    companion object {
+        private var udsPathSeq = 0
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <10ms) but long enough not to
+        // flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        // Shorter variant for ops expected to complete quickly on the happy
+        // path (e.g. a read that should already have data queued).
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
+        // Tighter bound for dispatch-await latency — if the EL hasn't
+        // picked the scheduled job up in 2 seconds, something is wrong.
+        private const val DISPATCH_AWAIT_TIMEOUT_MS = 2_000L
     }
 }

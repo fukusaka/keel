@@ -604,7 +604,7 @@ class NwEngineTest {
 
         val clients = (1..clientCount).map { connectRawClient(port) }
 
-        val channels = withTimeout(5000) { acceptJob.await() }
+        val channels = withTimeout(IO_OP_TIMEOUT_MS) { acceptJob.await() }
         assertEquals(clientCount, channels.size)
         channels.forEach { assertTrue(it.isOpen) }
 
@@ -642,7 +642,7 @@ class NwEngineTest {
         delay(100)
         close(clientFd)
 
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         ch.close()
@@ -673,7 +673,7 @@ class NwEngineTest {
         delay(100)
         readJob.cancel()
 
-        withTimeout(3000) { readJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
@@ -706,7 +706,7 @@ class NwEngineTest {
         delay(100)
         writeJob.cancel()
 
-        withTimeout(3000) { writeJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { writeJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
@@ -729,17 +729,17 @@ class NwEngineTest {
 
         rawWrite(clientFd, "leak-check")
         val buf = DefaultAllocator.allocate(64)
-        val n = withTimeout(3000) { ch.read(buf) }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(10, n)
         ch.write(buf)
-        withTimeout(3000) { ch.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
         buf.release()
 
         val echo = rawRead(clientFd, 10)
         assertEquals("leak-check", echo)
 
         ch.close()
-        withTimeout(3000) { ch.awaitClosed() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.awaitClosed() }
         close(clientFd)
         server.close()
         engine.close()
@@ -763,17 +763,17 @@ class NwEngineTest {
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
-        withTimeout(3000) { client.flush() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { client.flush() }
         writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
-        withTimeout(3000) { serverCh.read(readBuf) }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
         readBuf.release()
 
         client.close()
-        withTimeout(3000) { client.awaitClosed() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { client.awaitClosed() }
         serverCh.close()
-        withTimeout(3000) { serverCh.awaitClosed() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.awaitClosed() }
         server.close()
         engine.close()
 
@@ -797,7 +797,7 @@ class NwEngineTest {
         val ch = server.accept()
         rawWrite(clientFd, "warmup")
         val warmBuf = DefaultAllocator.allocate(64)
-        withTimeout(3000) { ch.read(warmBuf) }
+        withTimeout(GC_ECHO_OP_TIMEOUT_MS) { ch.read(warmBuf) }
         warmBuf.release()
 
         // Baseline GC
@@ -809,10 +809,10 @@ class NwEngineTest {
         repeat(50) {
             rawWrite(clientFd, "test")
             val buf = DefaultAllocator.allocate(64)
-            val n = withTimeout(3000) { ch.read(buf) }
+            val n = withTimeout(GC_ECHO_OP_TIMEOUT_MS) { ch.read(buf) }
             if (n > 0) {
                 ch.write(buf)
-                withTimeout(3000) { ch.flush() }
+                withTimeout(GC_ECHO_OP_TIMEOUT_MS) { ch.flush() }
             }
             buf.release()
         }
@@ -851,6 +851,19 @@ class NwEngineTest {
 
     companion object {
         private var udsPathSeq = 0
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <50ms locally, <500ms on CI)
+        // but long enough not to flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
+
+        // Per-operation timeout used specifically by the GC heap echo-cycle
+        // test. Separate constant so the heap-echo loop can be tuned
+        // independently from the other NWConnection tests if its
+        // retention-sensitive workload needs a different bound.
+        private const val GC_ECHO_OP_TIMEOUT_MS = 3_000L
     }
 
     @Test
@@ -869,7 +882,7 @@ class NwEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("nw-uds".length, n)
             readBuf.release()
 
