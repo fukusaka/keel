@@ -33,19 +33,14 @@ import kotlin.coroutines.resume
  * [ioDispatcher] is the NIO [NioEventLoop] itself, so coroutine-side
  * `withContext(ioDispatcher)` hops (e.g. `PipelinedChannel.read` / `write` /
  * `flush`) resume on the same Selector thread that drives
- * [SocketChannel.read] / [SocketChannel.write]. [appDispatcher] inherits
- * from [ioDispatcher] (= EventLoop), so Ktor application-pipeline execution
- * runs on the same thread as I/O, avoiding per-request cross-thread dispatch
- * overhead. User handlers are therefore expected to be non-blocking;
- * blocking I/O should be wrapped in `withContext(Dispatchers.IO)` by the
- * caller. This matches the Netty and Native engines' model. An earlier
+ * [SocketChannel.read] / [SocketChannel.write]. An earlier `appDispatcher`
  * override to `Dispatchers.Default` was motivated by a historical
  * measurement on luna.local (design.md §17) in which EL dispatch regressed
- * ktor-keel-nio by -37%; the regression no longer reproduces in Phase 11
- * (ktor-keel-nio 513k → 562k req/s, +9.5% on luna.local 4t/100c/10s)
- * because the Phase 10 PipelinedChannel / HttpWriter rewrite and
- * `NioEventLoop.dispatch`'s `inEventLoop` wakeup-skip optimisation
- * together remove the overhead that motivated the override.
+ * `ktor-keel-nio` by -37%; the regression no longer reproduces in Phase 11
+ * (513k → 562k req/s, +9.5% on luna.local 4t/100c/10s) because the Phase 10
+ * PipelinedChannel / HttpWriter rewrite and `NioEventLoop.dispatch`'s
+ * `inEventLoop` wakeup-skip optimisation together remove the overhead that
+ * motivated the override.
  */
 internal class NioIoTransport(
     private val socketChannel: SocketChannel,

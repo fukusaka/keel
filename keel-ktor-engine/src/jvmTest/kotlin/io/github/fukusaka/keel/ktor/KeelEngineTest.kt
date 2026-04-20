@@ -167,14 +167,17 @@ class KeelEngineTest {
     fun `concurrent requests are handled without blocking`() {
         // Verifies that suspending handlers yield their dispatcher so other
         // in-flight requests can make progress, regardless of whether the
-        // Ktor pipeline runs on the EventLoop (current default — ioDispatcher
-        // = appDispatcher = EL) or on a separate thread pool. `delay` is a
-        // coroutine suspension, not a blocking sleep: the EL thread is free
-        // to drive other pipelines during the 200 ms wait, so 5 concurrent
-        // `/slow` requests complete in ~200 ms total rather than serialising
-        // to ~1000 ms. A blocking handler (e.g. `Thread.sleep(200)`) would
-        // stall the EL under the current dispatcher alignment; users who
-        // need blocking I/O must wrap it in `withContext(Dispatchers.IO)`.
+        // Ktor pipeline runs on the EventLoop (the default, with
+        // `applicationDispatcher = null`) or on a separate thread pool
+        // (`applicationDispatcher = Dispatchers.Default` etc.). `delay` is
+        // a coroutine suspension, not a blocking sleep: the EL thread is
+        // free to drive other pipelines during the 200 ms wait, so 5
+        // concurrent `/slow` requests complete in ~200 ms total rather
+        // than serialising to ~1000 ms. A blocking handler (e.g.
+        // `Thread.sleep(200)`) would stall the EL under the default
+        // configuration; users who need blocking I/O must wrap it in
+        // `withContext(Dispatchers.IO)` or set
+        // `applicationDispatcher = Dispatchers.Default` explicitly.
         withKeelServer({
             routing {
                 get("/slow") {

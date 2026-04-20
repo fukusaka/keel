@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.concurrent.Volatile
 
 /**
@@ -16,8 +15,8 @@ import kotlin.concurrent.Volatile
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
  * - **Callback properties**: [onRead], [onReadClosed], [onFlushComplete],
  *   [onWritabilityChanged] initialized to `null`.
- * - **Defaults**: [appDispatcher] = [ioDispatcher], [supportsDeferredFlush] = true,
- *   [awaitPendingFlush] = no-op, [awaitClosed] = no-op.
+ * - **Defaults**: [supportsDeferredFlush] = true, [awaitPendingFlush] = no-op,
+ *   [awaitClosed] = no-op.
  *
  * Engine implementations extend this class and override platform-specific
  * members: [readEnabled] setter, [flush], [shutdownOutput], [close].
@@ -156,7 +155,6 @@ abstract class AbstractIoTransport(
 
     // --- Defaults ---
 
-    override val appDispatcher: CoroutineDispatcher get() = ioDispatcher
     override val supportsDeferredFlush: Boolean get() = true
     override suspend fun awaitPendingFlush() {}
     override suspend fun awaitClosed() {}
