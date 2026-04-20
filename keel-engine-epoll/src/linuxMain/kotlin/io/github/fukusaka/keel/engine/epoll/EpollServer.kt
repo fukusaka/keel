@@ -84,9 +84,7 @@ internal class EpollServer(
         while (true) {
             val clientFd = accept(serverFd, null, null)
             if (clientFd >= 0) {
-                PosixSocketUtils.setNonBlocking(clientFd)
-                val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
-                val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
+                val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
                 val (workerLoop, allocator) = workerGroup.next()
                 val transport = EpollIoTransport(clientFd, workerLoop, allocator)
                 val channel = EpollPipelinedChannel(
