@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.warn
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
@@ -105,14 +106,19 @@ class NioEngine(
         )
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
-        serverChannel.configureBlocking(false)
-        serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), bindConfig.backlog)
+        try {
+            serverChannel.configureBlocking(false)
+            serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), bindConfig.backlog)
 
-        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
-        val selectionKey = bossLoop.registerChannel(serverChannel)
+            val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
+            val selectionKey = bossLoop.registerChannel(serverChannel)
 
-        logger.debug { "Bound to $localAddr" }
-        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            logger.debug { "Bound to $localAddr" }
+            return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+        } catch (t: Throwable) {
+            closeQuietly(serverChannel, "bindUnix cleanup")
+            throw t
+        }
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -121,17 +127,22 @@ class NioEngine(
         val host = address.resolveFirst(config.resolver).toCanonicalString()
         val port = address.port
         val serverChannel = ServerSocketChannel.open()
-        serverChannel.configureBlocking(false)
-        serverChannel.bind(JavaInetSocketAddress(host, port), bindConfig.backlog)
+        try {
+            serverChannel.configureBlocking(false)
+            serverChannel.bind(JavaInetSocketAddress(host, port), bindConfig.backlog)
 
-        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
-            ?: error("Failed to get local address")
+            val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
+                ?: error("Failed to get local address")
 
-        // One-time registration with the boss Selector
-        val selectionKey = bossLoop.registerChannel(serverChannel)
+            // One-time registration with the boss Selector
+            val selectionKey = bossLoop.registerChannel(serverChannel)
 
-        logger.debug { "Bound to $localAddr" }
-        return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            logger.debug { "Bound to $localAddr" }
+            return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+        } catch (t: Throwable) {
+            closeQuietly(serverChannel, "bindInet cleanup")
+            throw t
+        }
     }
 
     /**
@@ -291,26 +302,31 @@ class NioEngine(
         val host = address.requireIpLiteral()
         val port = address.port
         val serverChannel = java.nio.channels.ServerSocketChannel.open()
-        serverChannel.configureBlocking(false)
-        serverChannel.bind(JavaInetSocketAddress(host, port), config.backlog)
+        try {
+            serverChannel.configureBlocking(false)
+            serverChannel.bind(JavaInetSocketAddress(host, port), config.backlog)
 
-        val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
+            val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 
-        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
-        logger.debug { "Pipeline bound to $localAddr" }
+            val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
+            logger.debug { "Pipeline bound to $localAddr" }
 
-        val serverPipeline = NioPipelinedServerChannel(
-            serverChannel = serverChannel,
-            selectionKey = selectionKey,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            localAddr = localAddr ?: error("Failed to get local address"),
-            logger = logger,
-            config = config,
-            pipelineInitializer = pipelineInitializer,
-        )
-        serverPipeline.start()
-        return serverPipeline
+            val serverPipeline = NioPipelinedServerChannel(
+                serverChannel = serverChannel,
+                selectionKey = selectionKey,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddr = localAddr ?: error("Failed to get local address"),
+                logger = logger,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+            )
+            serverPipeline.start()
+            return serverPipeline
+        } catch (t: Throwable) {
+            closeQuietly(serverChannel, "bindPipelineInet cleanup")
+            throw t
+        }
     }
 
     private fun bindPipelineUnix(
@@ -324,26 +340,45 @@ class NioEngine(
         )
 
         val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
-        serverChannel.configureBlocking(false)
-        serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), config.backlog)
+        try {
+            serverChannel.configureBlocking(false)
+            serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), config.backlog)
 
-        val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
+            val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 
-        val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
-        logger.debug { "Pipeline bound to $localAddr" }
+            val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
+            logger.debug { "Pipeline bound to $localAddr" }
 
-        val serverPipeline = NioPipelinedServerChannel(
-            serverChannel = serverChannel,
-            selectionKey = selectionKey,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            localAddr = localAddr,
-            logger = logger,
-            config = config,
-            pipelineInitializer = pipelineInitializer,
-        )
-        serverPipeline.start()
-        return serverPipeline
+            val serverPipeline = NioPipelinedServerChannel(
+                serverChannel = serverChannel,
+                selectionKey = selectionKey,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddr = localAddr,
+                logger = logger,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+            )
+            serverPipeline.start()
+            return serverPipeline
+        } catch (t: Throwable) {
+            closeQuietly(serverChannel, "bindPipelineUnix cleanup")
+            throw t
+        }
+    }
+
+    /**
+     * Closes [channel] during an error cleanup path, logging any
+     * secondary [java.io.IOException] from the close itself rather than
+     * re-throwing it — the original failure that triggered the cleanup
+     * is preserved by the caller's `throw t`.
+     */
+    private fun closeQuietly(channel: java.nio.channels.ServerSocketChannel, context: String) {
+        try {
+            channel.close()
+        } catch (e: Throwable) {
+            logger.warn(e) { "ServerSocketChannel.close() failed during $context" }
+        }
     }
 
     /**

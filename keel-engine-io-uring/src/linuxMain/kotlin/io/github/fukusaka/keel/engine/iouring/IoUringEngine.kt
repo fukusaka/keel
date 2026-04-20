@@ -135,10 +135,15 @@ class IoUringEngine(
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
         val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
-        logger.debug { "Bound to $address" }
-        return IoUringServer(
-            serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger,
-        )
+        try {
+            logger.debug { "Bound to $address" }
+            return IoUringServer(
+                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger,
+            )
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindUnix cleanup")
+            throw t
+        }
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -147,11 +152,16 @@ class IoUringEngine(
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
-        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Bound to $localAddr" }
-        return IoUringServer(
-            serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger,
-        )
+        try {
+            val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
+            logger.debug { "Bound to $localAddr" }
+            return IoUringServer(
+                serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger,
+            )
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindInet cleanup")
+            throw t
+        }
     }
 
     /**
@@ -321,12 +331,17 @@ class IoUringEngine(
         // workloads are typically low-fanout (IPC / sidecars) so the loss of
         // kernel-side connection hashing is acceptable.
         val serverFds = intArrayOf(PosixSocketUtils.createUnixServerSocket(address, config.backlog))
-        val server = IoUringPipelinedServerChannel(
-            workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger,
-        )
-        server.start()
-        logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
-        return server
+        try {
+            val server = IoUringPipelinedServerChannel(
+                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger,
+            )
+            server.start()
+            logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
+            return server
+        } catch (t: Throwable) {
+            for (fd in serverFds) closeFdSafely(fd, logger, "bindPipelineUnix cleanup")
+            throw t
+        }
     }
 
     private fun bindPipelineInet(
@@ -338,17 +353,29 @@ class IoUringEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFds = IntArray(workerGroup.size) {
-            PosixSocketUtils.createReusePortServerSocket(ip, port, config.backlog)
+        // Track how many fds have been successfully created so that a mid-loop
+        // failure (e.g. EMFILE between workers) closes only the fds actually
+        // acquired, not uninitialised zero slots which would be interpreted as
+        // stdin and produce a spurious `close(0)` warning.
+        val serverFds = IntArray(workerGroup.size)
+        var createdCount = 0
+        try {
+            for (i in serverFds.indices) {
+                serverFds[i] = PosixSocketUtils.createReusePortServerSocket(ip, port, config.backlog)
+                createdCount = i + 1
+            }
+            // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
+            val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
+            val server = IoUringPipelinedServerChannel(
+                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger,
+            )
+            server.start()
+            logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
+            return server
+        } catch (t: Throwable) {
+            for (i in 0 until createdCount) closeFdSafely(serverFds[i], logger, "bindPipelineInet cleanup")
+            throw t
         }
-        // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
-        val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
-        val server = IoUringPipelinedServerChannel(
-            workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger,
-        )
-        server.start()
-        logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
-        return server
     }
 
     /**

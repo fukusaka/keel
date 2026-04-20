@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -102,16 +103,21 @@ class EpollEngine(
 
         val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
 
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = EPOLLIN.toUInt()
-            ev.data.fd = serverFd
-            val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
-            check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
-        }
+        try {
+            memScoped {
+                val ev = alloc<epoll_event>()
+                ev.events = EPOLLIN.toUInt()
+                ev.data.fd = serverFd
+                val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
+                check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
+            }
 
-        logger.debug { "Bound to $address" }
-        return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
+            logger.debug { "Bound to $address" }
+            return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindUnix cleanup")
+            throw t
+        }
     }
 
     private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
@@ -121,19 +127,24 @@ class EpollEngine(
         val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
 
-        // Register server fd with the boss EventLoop's epoll so that
-        // accept() readiness is notified on the boss thread.
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = EPOLLIN.toUInt()
-            ev.data.fd = serverFd
-            val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
-            check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
-        }
+        try {
+            // Register server fd with the boss EventLoop's epoll so that
+            // accept() readiness is notified on the boss thread.
+            memScoped {
+                val ev = alloc<epoll_event>()
+                ev.events = EPOLLIN.toUInt()
+                ev.data.fd = serverFd
+                val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
+                check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
+            }
 
-        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Bound to $localAddr" }
-        return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
+            logger.debug { "Bound to $localAddr" }
+            return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger)
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindInet cleanup")
+            throw t
+        }
     }
 
     /**
@@ -256,19 +267,23 @@ class EpollEngine(
 
         val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog)
 
-        logger.debug { "Pipeline bound to $address" }
-
-        val serverChannel = EpollPipelinedServerChannel(
-            serverFd = serverFd,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            localAddr = address,
-            logger = logger,
-            config = config,
-            pipelineInitializer = pipelineInitializer,
-        )
-        serverChannel.start()
-        return serverChannel
+        try {
+            logger.debug { "Pipeline bound to $address" }
+            val serverChannel = EpollPipelinedServerChannel(
+                serverFd = serverFd,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddr = address,
+                logger = logger,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+            )
+            serverChannel.start()
+            return serverChannel
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindPipelineUnix cleanup")
+            throw t
+        }
     }
 
     private fun bindPipelineInet(
@@ -282,20 +297,24 @@ class EpollEngine(
         val port = address.port
         val serverFd = PosixSocketUtils.createServerSocket(ip, port, config.backlog)
 
-        val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
-        logger.debug { "Pipeline bound to $localAddr" }
-
-        val serverChannel = EpollPipelinedServerChannel(
-            serverFd = serverFd,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            localAddr = localAddr,
-            logger = logger,
-            config = config,
-            pipelineInitializer = pipelineInitializer,
-        )
-        serverChannel.start()
-        return serverChannel
+        try {
+            val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
+            logger.debug { "Pipeline bound to $localAddr" }
+            val serverChannel = EpollPipelinedServerChannel(
+                serverFd = serverFd,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddr = localAddr,
+                logger = logger,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+            )
+            serverChannel.start()
+            return serverChannel
+        } catch (t: Throwable) {
+            closeFdSafely(serverFd, logger, "bindPipelineInet cleanup")
+            throw t
+        }
     }
 
     /**
