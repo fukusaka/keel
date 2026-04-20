@@ -53,14 +53,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  * Netty uses for inbound callbacks. This satisfies
  * [io.github.fukusaka.keel.pipeline.SuspendBridgeHandler]'s documented
  * single-thread invariant the same way the EventLoop-based Native engines
- * (epoll / kqueue / io_uring) already do. `appDispatcher` is intentionally
- * left inherited (= `ioDispatcher` = EventLoop) so the Ktor application
- * pipeline runs on the same EventLoop thread — avoiding per-request
- * cross-thread dispatch overhead. User handlers are therefore expected
- * to be non-blocking; blocking I/O should be wrapped in
- * `withContext(Dispatchers.IO)` by the caller. This matches the NIO and
- * Native engines' model — every engine in keel now resumes the Ktor
- * application pipeline on the same thread that drives I/O.
+ * (epoll / kqueue / io_uring) already do.
  *
  * **No awaitPendingFlush**: Netty internally buffers data submitted via
  * `writeAndFlush` and processes it in EventLoop order. Even if the channel

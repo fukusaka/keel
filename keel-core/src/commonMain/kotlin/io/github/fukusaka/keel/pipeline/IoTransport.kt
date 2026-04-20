@@ -28,7 +28,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  * otherwise noted.
  *
  * Pure interface — no default implementations. Use [AbstractIoTransport]
- * for shared defaults (appDispatcher, supportsDeferredFlush, awaitPendingFlush,
+ * for shared defaults (supportsDeferredFlush, awaitPendingFlush,
  * awaitClosed, callback properties).
  *
  * ## Read Path
@@ -188,20 +188,13 @@ interface IoTransport {
     /**
      * Dispatcher for I/O operations on this transport.
      *
-     * Typically the EventLoop thread for poll-based engines (kqueue,
-     * epoll, NIO, io_uring) or [kotlinx.coroutines.Dispatchers.Default]
-     * for framework-driven engines (Netty, NWConnection).
+     * Typically the EventLoop thread that drives the engine's native I/O
+     * primitive (kqueue / epoll / io_uring pthread, NIO Selector thread,
+     * Netty `EventLoop`, GCD dispatch queue, Node.js event loop). Every
+     * keel engine resumes coroutines on that same thread so
+     * `channel.read` / `write` / `flush` do not cross threads.
      */
     val ioDispatcher: CoroutineDispatcher
-
-    /**
-     * Dispatcher for application-level coroutines.
-     *
-     * Typically the same as [ioDispatcher]. NIO overrides this to
-     * [kotlinx.coroutines.Dispatchers.Default] because NIO's Selector
-     * thread should not run application blocking logic.
-     */
-    val appDispatcher: CoroutineDispatcher
 
     /**
      * Whether the transport supports deferred flush (write buffering

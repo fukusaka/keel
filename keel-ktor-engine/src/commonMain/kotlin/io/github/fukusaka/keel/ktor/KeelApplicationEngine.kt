@@ -39,6 +39,7 @@ import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -55,18 +56,21 @@ import kotlin.coroutines.ContinuationInterceptor
 /**
  * Ktor server engine backed by keel I/O engines.
  *
- * **Dispatcher model**: on every engine the channel's
- * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher] is
- * aligned with
- * [appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher] —
- * both resolve to the same single-thread EventLoop that drives the
- * underlying native I/O primitive (epoll / kqueue / io_uring pthread,
- * the NIO Selector thread, a Netty `EventLoop`, a per-connection GCD
- * dispatch queue, or the Node.js event loop). Connection I/O, HTTP
- * codec, and the Ktor application pipeline all run on that one
- * thread — zero per-request cross-thread dispatch. User handlers are
- * therefore expected to be non-blocking; blocking I/O should be
- * wrapped in `withContext(Dispatchers.IO)` by the caller.
+ * **Dispatcher model**: every engine exposes a single-threaded
+ * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
+ * that drives its native I/O primitive (epoll / kqueue / io_uring
+ * pthread, the NIO Selector thread, a Netty `EventLoop`, a
+ * per-connection GCD dispatch queue, or the Node.js event loop).
+ * Connection I/O and the HTTP codec always run on that thread. The
+ * Ktor application pipeline runs on
+ * [Configuration.applicationDispatcher] — null (default) collapses to
+ * the channel's `ioDispatcher`, so the entire request flows on one
+ * thread with no cross-thread hop. User handlers are expected to be
+ * non-blocking under the default; blocking I/O should be wrapped in
+ * `withContext(Dispatchers.IO)` by the caller, or
+ * `applicationDispatcher` can be set to an explicit pool (e.g.
+ * [Dispatchers.Default]) to offload the pipeline there at the cost of
+ * one hop per request.
  *
  * Supports HTTP and HTTPS. HTTPS is enabled per-connector via
  * [Configuration.sslConnector], which installs a `TlsHandler` in the
@@ -121,6 +125,28 @@ public class KeelApplicationEngine(
          *   failure, resets on success (default: 100ms initial, 1s max)
          */
         public var acceptBackoff: AcceptBackoff = AcceptBackoff.Exponential()
+
+        /**
+         * Dispatcher for the Ktor application pipeline (routing, interceptors,
+         * user handlers, response generation).
+         *
+         * When null (the default), the pipeline runs on the channel's
+         * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
+         * — the EventLoop thread that drives the engine's native I/O
+         * primitive. Every request proceeds I/O → HTTP codec → handler →
+         * response encode on that one thread, eliminating per-request
+         * cross-thread dispatch. User handlers are expected to be
+         * non-blocking; blocking I/O should be wrapped in
+         * `withContext(Dispatchers.IO)` by the caller.
+         *
+         * Set this to an explicit dispatcher (e.g. [Dispatchers.Default])
+         * to offload the Ktor pipeline onto a separate thread pool — useful
+         * when deploying handlers that frequently perform blocking work
+         * and the application prefers to absorb that in a work-stealing
+         * pool rather than by asking every handler to wrap its blocking
+         * calls. This re-introduces a per-request cross-thread hop.
+         */
+        public var applicationDispatcher: CoroutineDispatcher? = null
 
         /**
          * TLS configuration per connector.
@@ -388,13 +414,16 @@ public class KeelApplicationEngine(
      * an error occurs, or the connection is closed by the peer.
      *
      * **Dispatcher model**: pipeline codec runs on the EventLoop thread
-     * (push-mode). The Ktor application pipeline runs on
-     * [channel.appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher],
-     * which is aligned with [channel.ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
-     * on every engine: the entire request pipeline runs on the same
-     * thread that drives I/O — zero per-request context switches. User
-     * handlers are therefore expected to be non-blocking; blocking I/O
-     * should be wrapped in `withContext(Dispatchers.IO)` by the caller.
+     * (push-mode). The Ktor application pipeline runs on the dispatcher
+     * chosen by [Configuration.applicationDispatcher] — when null
+     * (default) the pipeline runs on
+     * [channel.ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
+     * (= EventLoop), so the entire request flows on one thread with no
+     * cross-thread hop. User handlers are expected to be non-blocking
+     * under the default; blocking I/O should be wrapped in
+     * `withContext(Dispatchers.IO)` by the caller, or
+     * `applicationDispatcher` can be set to an explicit pool to absorb
+     * blocking handlers there at the cost of one hop per request.
      *
      * Response output flows through the pipeline: [KeelApplicationResponse]
      * emits [HttpResponseHead] / [HttpBody] / [HttpBodyEnd] via
@@ -465,13 +494,20 @@ public class KeelApplicationEngine(
                     scheme = scheme,
                 )
 
-                // Run the Ktor pipeline on channel.appDispatcher, which
-                // every engine aligns with channel.ioDispatcher (= the
-                // EventLoop driving native I/O). The ReferenceEquals check
-                // short-circuits the withContext when we are already on
-                // the right dispatcher — which is the common case after
-                // receiveCatching() resumed us on the EventLoop thread.
-                val appCtx = channel.appDispatcher
+                // Run the Ktor pipeline on the configured application
+                // dispatcher — null (default) means channel.ioDispatcher,
+                // i.e. the EventLoop driving native I/O, so the entire
+                // request runs on one thread with no cross-thread hop.
+                // A non-null configuration.applicationDispatcher (e.g.
+                // Dispatchers.Default) offloads the pipeline onto a
+                // separate pool, costing one hop per request but
+                // absorbing blocking handlers in that pool instead of
+                // on the EventLoop. The ReferenceEquals check short-
+                // circuits the withContext when we are already on the
+                // target dispatcher — the common case after
+                // receiveCatching() resumed us on the EventLoop thread
+                // and no applicationDispatcher is configured.
+                val appCtx = configuration.applicationDispatcher ?: pipelinedChannel.ioDispatcher
                 if (appCtx !== coroutineContext[ContinuationInterceptor]) {
                     withContext(appCtx) { pipeline.execute(call) }
                 } else {

@@ -146,21 +146,6 @@ interface Channel : AutoCloseable {
      */
     val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
-    /**
-     * The [CoroutineDispatcher] for application-level processing (e.g. Ktor pipeline).
-     *
-     * Every engine currently returns [ioDispatcher] — running the entire
-     * request pipeline on the same thread that drives I/O, avoiding
-     * per-request cross-thread dispatch overhead. User handlers are
-     * therefore expected to be non-blocking; blocking I/O should be wrapped
-     * in [kotlinx.coroutines.withContext] with `Dispatchers.IO` (or the
-     * `kotlinx.coroutines.Dispatchers` `.IO` equivalent on the target
-     * platform) by the caller.
-     *
-     * Default: same as [ioDispatcher].
-     */
-    val appDispatcher: CoroutineDispatcher get() = ioDispatcher
-
     // --- Flush strategy ---
 
     /**
