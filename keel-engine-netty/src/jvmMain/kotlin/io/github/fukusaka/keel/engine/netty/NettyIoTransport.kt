@@ -6,13 +6,13 @@ import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
+import io.netty.channel.EventLoop
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
 import kotlin.coroutines.resume
@@ -43,9 +43,25 @@ import io.netty.channel.Channel as NettyNativeChannel
  * callback releases all buffers after Netty finishes sending.
  *
  * **Thread model**: [channelRead], [channelInactive], and [exceptionCaught]
- * run on Netty's worker EventLoop thread. Pipeline handlers execute
+ * run on Netty's worker [EventLoop] thread. Pipeline handlers execute
  * synchronously on the same thread. The flush completion callback runs
- * on Netty's EventLoop thread.
+ * on the same EventLoop.
+ *
+ * [ioDispatcher] is a [NettyEventLoopDispatcher] bound to this channel's
+ * [EventLoop], so coroutine-side `withContext(ioDispatcher)` hops (e.g.
+ * `PipelinedChannel.read` / `write` / `flush`) resume on the same thread
+ * Netty uses for inbound callbacks. This satisfies
+ * [io.github.fukusaka.keel.pipeline.SuspendBridgeHandler]'s documented
+ * single-thread invariant the same way the EventLoop-based Native engines
+ * (epoll / kqueue / io_uring) already do. `appDispatcher` is intentionally
+ * left inherited (= `ioDispatcher` = EventLoop) so the Ktor application
+ * pipeline runs on the same EventLoop thread — avoiding per-request
+ * cross-thread dispatch overhead. User handlers are therefore expected
+ * to be non-blocking; blocking I/O should be wrapped in
+ * `withContext(Dispatchers.IO)` by the caller. This matches the Native
+ * engines' model. `NioIoTransport` continues to override `appDispatcher`
+ * to `Dispatchers.Default` because its own history / benchmarks drove a
+ * different default; revisiting that default is tracked separately.
  *
  * **No awaitPendingFlush**: Netty internally buffers data submitted via
  * `writeAndFlush` and processes it in EventLoop order. Even if the channel
@@ -61,7 +77,7 @@ internal class NettyIoTransport(
     allocator: BufferAllocator,
 ) : AbstractIoTransport(allocator) {
 
-    override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+    override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
 
     // --- Read path ---
 
