@@ -97,7 +97,10 @@ internal class EpollIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            shutdown(fd, SHUT_WR)
+            val ret = shutdown(fd, SHUT_WR)
+            if (ret < 0) {
+                eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+            }
         }
     }
 
