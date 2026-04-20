@@ -3,7 +3,9 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.writeGather
 import io.github.fukusaka.keel.native.posix.writeSingle
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -164,7 +166,8 @@ internal class KqueueIoTransport(
                     return false
                 }
                 is WriteResult.Failed -> {
-                    // Other error (EPIPE, ECONNRESET) — release and drop.
+                    // Other error (EPIPE, ECONNRESET) — log, release and drop.
+                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
                     return true
@@ -191,7 +194,8 @@ internal class KqueueIoTransport(
                 return false
             }
             is WriteResult.Failed -> {
-                // Other error — release all and return.
+                // Other error — log, release all and return.
+                eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
                 for (pw in pendingWrites) pw.buf.release()
                 pendingWrites.clear()
                 updatePendingBytes(-totalBytes)

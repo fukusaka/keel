@@ -3,7 +3,9 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.writeGather
 import io.github.fukusaka.keel.native.posix.writeSingle
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -156,6 +158,7 @@ internal class EpollIoTransport(
                     return false
                 }
                 is WriteResult.Failed -> {
+                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
                     return true
@@ -181,6 +184,7 @@ internal class EpollIoTransport(
                 return false
             }
             is WriteResult.Failed -> {
+                eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
                 for (pw in pendingWrites) pw.buf.release()
                 pendingWrites.clear()
                 updatePendingBytes(-totalBytes)

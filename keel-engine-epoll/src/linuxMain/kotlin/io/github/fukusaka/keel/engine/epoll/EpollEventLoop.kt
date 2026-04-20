@@ -96,7 +96,7 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollEventLoop(
-    private val logger: Logger,
+    internal val logger: Logger,
 ) : CoroutineDispatcher() {
 
     /**
