@@ -7,7 +7,6 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
@@ -70,7 +69,18 @@ internal class NwIoTransport(
     allocator: BufferAllocator,
 ) : AbstractIoTransport(allocator) {
 
-    override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
+    /**
+     * Coroutine dispatcher for this transport. Points at [connQueue]
+     * (the per-connection serial dispatch queue) rather than
+     * `Dispatchers.Default` so that coroutine-side `withContext` hops
+     * (e.g. `PipelinedChannel.read`) land on the same thread that
+     * NWConnection uses for its read / write completion callbacks.
+     *
+     * This aligns the engine with the single-thread contract of
+     * `SuspendBridgeHandler` (see `NwConnectionQueueDispatcher` KDoc
+     * for the race this fixes).
+     */
+    override val ioDispatcher: CoroutineDispatcher = NwConnectionQueueDispatcher(connQueue)
 
     // --- Read path ---
 
