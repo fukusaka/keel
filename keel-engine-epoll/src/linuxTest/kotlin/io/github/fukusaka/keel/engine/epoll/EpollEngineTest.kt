@@ -47,10 +47,6 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineTest {
 
-    companion object {
-        private var udsPathSeq = 0
-    }
-
     private fun uniqueUdsPath(): String {
         val pid = platform.posix.getpid()
         val seq = udsPathSeq++
@@ -580,7 +576,7 @@ class EpollEngineTest {
         server.close()
 
         val ex = assertFailsWith<IllegalStateException> {
-            withTimeout(3000) {
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
                 engine.connect("127.0.0.1", port)
             }
         }
@@ -796,7 +792,7 @@ class EpollEngineTest {
 
         val clients = (1..clientCount).map { connectRawClient(port) }
 
-        val channels = withTimeout(5000) { acceptJob.await() }
+        val channels = withTimeout(IO_OP_TIMEOUT_MS) { acceptJob.await() }
         assertEquals(clientCount, channels.size)
         channels.forEach { assertTrue(it.isOpen) }
 
@@ -833,7 +829,7 @@ class EpollEngineTest {
         delay(100)
         close(clientFd)
 
-        val n = withTimeout(3000) { readResult.await() }
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readResult.await() }
         assertEquals(-1, n)
 
         ch.close()
@@ -864,7 +860,7 @@ class EpollEngineTest {
         delay(100)
         readJob.cancel()
 
-        withTimeout(3000) { readJob.join() }
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { readJob.join() }
         assertTrue(ch.isOpen)
 
         ch.close()
@@ -1275,7 +1271,7 @@ class EpollEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-epoll".encodeToByteArray()) writeBuf.writeByte(b)
@@ -1284,7 +1280,7 @@ class EpollEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("uds-epoll".length, n)
             readBuf.release()
 
@@ -1304,7 +1300,7 @@ class EpollEngineTest {
         try {
             val server = engine.bind(addr)
             val client = engine.connect(addr)
-            val serverCh = withTimeout(5000) { server.accept() }
+            val serverCh = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
@@ -1313,7 +1309,7 @@ class EpollEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
-            val n = withTimeout(5000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals("abstract".length, n)
             readBuf.release()
 
@@ -1347,7 +1343,7 @@ class EpollEngineTest {
             writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(32)
-            val n = withTimeout(3000) { serverCh.read(readBuf) }
+            val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
             assertEquals(msg.length, n)
             readBuf.release()
 
@@ -1357,5 +1353,16 @@ class EpollEngineTest {
         } finally {
             engine.close()
         }
+    }
+
+    companion object {
+        private var udsPathSeq = 0
+
+        // Per-operation hang-detection timeout for tests that exercise
+        // accept / read / job completion. Short enough to surface a real
+        // hang (normal latency on loopback is <10ms) but long enough not to
+        // flake on CI runners under load.
+        private const val IO_OP_TIMEOUT_MS = 5_000L
+        private const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
     }
 }

@@ -225,7 +225,7 @@ class IoModeTest {
         }
     }
 
-    private suspend fun echoSmall(engine: IoUringEngine) = withTimeout(10_000) {
+    private suspend fun echoSmall(engine: IoUringEngine) = withTimeout(ECHO_TEST_TIMEOUT_MS) {
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
         val client = engine.connect("127.0.0.1", port)
@@ -285,7 +285,7 @@ class IoModeTest {
         echoWithMode(IoModeSelectors.SEND_ZC, payloadSize = 100_000)
     }
 
-    private suspend fun echoWithMode(selector: IoModeSelector, payloadSize: Int = 13) = withTimeout(10_000) {
+    private suspend fun echoWithMode(selector: IoModeSelector, payloadSize: Int = 13) = withTimeout(ECHO_TEST_TIMEOUT_MS) {
         // threads=2: CQE/SEND_ZC flush suspends the EventLoop via
         // awaitPendingFlush. Client and server must be on separate
         // EventLoops to avoid deadlock.
@@ -346,5 +346,13 @@ class IoModeTest {
         } finally {
             engine.close()
         }
+    }
+
+    companion object {
+        // Test-level timeout for echo round-trip scenarios that exercise
+        // multiple IoMode code paths within a single block. 10 seconds is
+        // generous enough to cover CI-runner slowdown while still catching
+        // true hangs.
+        private const val ECHO_TEST_TIMEOUT_MS = 10_000L
     }
 }
