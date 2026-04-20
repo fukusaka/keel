@@ -98,7 +98,7 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueEventLoop(
-    private val logger: Logger,
+    internal val logger: Logger,
 ) : CoroutineDispatcher() {
 
     /**

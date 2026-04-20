@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: `IORING_SETUP_COOP_TASKRUN` ring setup flag (Linux 6.0+) ([#274])
 - `engine-io-uring`: SENDMSG_ZC mode for gather write + zero-copy ([#271]); fixed file descriptors via `IORING_REGISTER_FILES` ([#272]); registered buffers for `SEND_ZC_FIXED` ([#273])
 - `native-posix`: `errnoMessage(errno: Int): String` helper wrapping thread-safe `strerror_r`; `closeFdSafely(fd, logger, context)` for silent-leak-free cleanup paths ([#275])
+- `native-posix`: `PosixSocketUtils.acceptClient(fd)` wraps the `setNonBlocking` + `getRemoteAddress` + `getLocalAddress` sequence; `writeSingle(fd, ptr, length)` / `writeGather(fd, writes)` with sealed `WriteResult` (`Written` / `WouldBlock` / `Failed`) share POSIX `write(2)` / `writev(2)` wrappers across `EpollIoTransport` / `KqueueIoTransport` / `EpollServer` / `KqueueServer` / `IoUringServer` ([#316])
 - `core`: `AbstractPipelinedChannel` base class in commonMain — wires `IoTransport` callbacks to the pipeline without per-engine boilerplate ([#266])
 - `core`: `BindConfig.initializeConnection(channel)` auto-called by every `Server.accept()` — removes duplicate init calls in engine code ([#265])
 - `io`: `BufferAllocator.registerPoolSize(size, maxSlots)` for dynamic multi-class pools; `BufferAllocator.wrapBytes(ByteArray, Int, Int)` / `BufferAllocator.slice(IoBuf, Int, Int)` for zero-copy views; `EmptyIoBuf` singleton ([#263], [#264])
@@ -498,3 +499,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#311]: https://github.com/fukusaka/keel/pull/311
 [#312]: https://github.com/fukusaka/keel/pull/312
 [#313]: https://github.com/fukusaka/keel/pull/313
+[#316]: https://github.com/fukusaka/keel/pull/316

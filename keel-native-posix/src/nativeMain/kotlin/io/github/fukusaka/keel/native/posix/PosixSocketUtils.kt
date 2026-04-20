@@ -264,6 +264,27 @@ object PosixSocketUtils {
     }
 
     /**
+     * Prepares a freshly-accepted client fd for use as a transport:
+     * switches the socket to non-blocking mode and reads back the local
+     * / remote endpoint addresses.
+     *
+     * Callers (`EpollServer.accept` / `KqueueServer.accept` /
+     * `IoUringServer.accept`) previously did the three calls inline.
+     * Centralising the sequence ensures every engine follows the same
+     * contract (non-blocking + address resolved before returning to
+     * user code) without each call site having to remember the order.
+     *
+     * @return `(remoteAddress, localAddress)` read from the kernel via
+     *   `getpeername` / `getsockname` respectively.
+     */
+    fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress> {
+        setNonBlocking(clientFd)
+        val remote = getRemoteAddress(clientFd)
+        val local = getLocalAddress(clientFd)
+        return remote to local
+    }
+
+    /**
      * Reads a `sockaddr_storage` and produces the matching keel [SocketAddress].
      *
      * [addrlen] is the length returned by `getsockname` / `getpeername` — used

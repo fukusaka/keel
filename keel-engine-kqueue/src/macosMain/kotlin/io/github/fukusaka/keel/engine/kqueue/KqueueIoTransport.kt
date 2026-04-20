@@ -3,6 +3,11 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.posix.writeGather
+import io.github.fukusaka.keel.native.posix.writeSingle
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
@@ -11,15 +16,8 @@ import kotlinx.coroutines.Runnable
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.CPointerVar
-import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
 import platform.posix.SHUT_WR
@@ -27,9 +25,6 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.read
 import platform.posix.shutdown
-import platform.posix.write
-import kotlinx.cinterop.ByteVar
-import posix_socket.keel_writev
 
 /**
  * kqueue [IoTransport] implementation for macOS.
@@ -102,7 +97,10 @@ internal class KqueueIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            shutdown(fd, SHUT_WR)
+            val ret = shutdown(fd, SHUT_WR)
+            if (ret < 0) {
+                eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+            }
         }
     }
 
@@ -160,13 +158,9 @@ internal class KqueueIoTransport(
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            val remaining = (pw.length - written).convert<ULong>()
-            val n = write(fd, ptr, remaining)
-            if (n >= 0) {
-                written += n.toInt()
-            } else {
-                val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) {
+            when (val result = writeSingle(fd, ptr, pw.length - written)) {
+                is WriteResult.Written -> written += result.bytes
+                WriteResult.WouldBlock -> {
                     // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
                     pendingWrites.add(0, remainder)
@@ -174,10 +168,13 @@ internal class KqueueIoTransport(
                     registerWriteCallback()
                     return false
                 }
-                // Other error (EPIPE, ECONNRESET) — release and drop.
-                pw.buf.release()
-                updatePendingBytes(-pw.length)
-                return true
+                is WriteResult.Failed -> {
+                    // Other error (EPIPE, ECONNRESET) — log, release and drop.
+                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
+                    pw.buf.release()
+                    updatePendingBytes(-pw.length)
+                    return true
+                }
             }
         }
         pw.buf.release()
@@ -193,31 +190,21 @@ internal class KqueueIoTransport(
      */
     private fun flushGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
-        val writtenBytes: Int
-
-        memScoped {
-            val count = pendingWrites.size
-            val bases = allocArray<CPointerVar<ByteVar>>(count)
-            val lens = allocArray<ULongVar>(count)
-            for ((i, pw) in pendingWrites.withIndex()) {
-                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-                lens[i] = pw.length.convert()
+        val writtenBytes: Int = when (val result = writeGather(fd, pendingWrites)) {
+            WriteResult.WouldBlock -> {
+                // Nothing written — register WRITE and retry all later.
+                registerWriteCallback()
+                return false
             }
-            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
-            if (n < 0) {
-                val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) {
-                    // Nothing written — register WRITE and retry all later.
-                    registerWriteCallback()
-                    return false
-                }
-                // Other error — release all and return.
+            is WriteResult.Failed -> {
+                // Other error — log, release all and return.
+                eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
                 for (pw in pendingWrites) pw.buf.release()
                 pendingWrites.clear()
                 updatePendingBytes(-totalBytes)
                 return true
             }
-            writtenBytes = n.toInt()
+            is WriteResult.Written -> result.bytes
         }
 
         if (writtenBytes >= totalBytes) {

@@ -101,9 +101,7 @@ internal class IoUringServer(
         }
 
         try {
-            PosixSocketUtils.setNonBlocking(clientFd)
-            val remoteAddr = PosixSocketUtils.getRemoteAddress(clientFd)
-            val localAddr = PosixSocketUtils.getLocalAddress(clientFd)
+            val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val allocator = workerGroup.allocatorAt(wi)
