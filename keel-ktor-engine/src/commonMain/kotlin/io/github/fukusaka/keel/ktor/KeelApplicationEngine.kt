@@ -55,12 +55,18 @@ import kotlin.coroutines.ContinuationInterceptor
 /**
  * Ktor server engine backed by keel I/O engines.
  *
- * **Dispatcher model**: Connection I/O (read/parse) runs on the channel's
- * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher]
- * (EventLoop thread for kqueue/epoll/NIO), while the Ktor application
- * pipeline is offloaded to [Dispatchers.Default] to avoid blocking the
- * EventLoop with user code. For engines without a dedicated EventLoop
- * (Netty, NWConnection, Node.js), both use [Dispatchers.Default].
+ * **Dispatcher model**: on every engine the channel's
+ * [ioDispatcher][io.github.fukusaka.keel.core.Channel.ioDispatcher] is
+ * aligned with
+ * [appDispatcher][io.github.fukusaka.keel.core.Channel.appDispatcher] —
+ * both resolve to the same single-thread EventLoop that drives the
+ * underlying native I/O primitive (epoll / kqueue / io_uring pthread,
+ * the NIO Selector thread, a Netty `EventLoop`, a per-connection GCD
+ * dispatch queue, or the Node.js event loop). Connection I/O, HTTP
+ * codec, and the Ktor application pipeline all run on that one
+ * thread — zero per-request cross-thread dispatch. User handlers are
+ * therefore expected to be non-blocking; blocking I/O should be
+ * wrapped in `withContext(Dispatchers.IO)` by the caller.
  *
  * Supports HTTP and HTTPS. HTTPS is enabled per-connector via
  * [Configuration.sslConnector], which installs a `TlsHandler` in the
@@ -338,11 +344,13 @@ public class KeelApplicationEngine(
                 // and [stopSuspend]'s grace phase can wait for them
                 // explicitly via `engine.coroutineContext.job.children`.
                 //
-                // Dispatcher is the channel's EventLoop so read/parse
-                // runs on the I/O thread without cross-thread dispatch.
-                // For engines without a dedicated EventLoop (Netty,
-                // NWConnection, Node.js) this falls back to
-                // [Dispatchers.Default].
+                // Dispatcher is the channel's EventLoop so read/parse,
+                // HTTP codec, and the Ktor application pipeline all run
+                // on the I/O thread without cross-thread dispatch. Every
+                // engine aligns ioDispatcher with its native EventLoop
+                // primitive (epoll / kqueue / io_uring pthread, Selector
+                // thread, Netty EventLoop, GCD dispatch queue, or JS
+                // event loop).
                 engine.launch(channel.ioDispatcher) {
                     handleConnection(channel, scheme)
                 }
@@ -457,9 +465,12 @@ public class KeelApplicationEngine(
                     scheme = scheme,
                 )
 
-                // Run the Ktor pipeline on channel.appDispatcher.
-                // Native engines (kqueue/epoll): EventLoop — zero context switches.
-                // JVM NIO: Dispatchers.Default — ForkJoinPool work-stealing.
+                // Run the Ktor pipeline on channel.appDispatcher, which
+                // every engine aligns with channel.ioDispatcher (= the
+                // EventLoop driving native I/O). The ReferenceEquals check
+                // short-circuits the withContext when we are already on
+                // the right dispatcher — which is the common case after
+                // receiveCatching() resumed us on the EventLoop thread.
                 val appCtx = channel.appDispatcher
                 if (appCtx !== coroutineContext[ContinuationInterceptor]) {
                     withContext(appCtx) { pipeline.execute(call) }
