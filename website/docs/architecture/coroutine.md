@@ -124,7 +124,7 @@ channel.flush()  // sends headers + body together when possible
 
 When `server.accept()` or `channel.read()` suspends, the calling coroutine releases its thread and the EventLoop is free to handle other connections. When I/O can proceed, the EventLoop resumes the coroutine on `channel.ioDispatcher`.
 
-`keel-ktor-engine` uses both dispatchers internally: it launches the connection handler on `ioDispatcher` so that I/O reads and request parsing run on the EventLoop thread, then switches to `appDispatcher` via `withContext` to execute the Ktor pipeline (routing, response generation). When using `keel-ktor-engine`, this is managed automatically.
+`keel-ktor-engine` launches the connection handler on `ioDispatcher` so that I/O reads, request parsing, the Ktor pipeline, and response encoding all run on the same thread. `appDispatcher` is aligned with `ioDispatcher` on every engine, so the `withContext(appDispatcher)` wrapper around the Ktor pipeline is a no-op (same dispatcher, elided by the coroutine runtime) — zero per-request context switches.
 
 When writing custom server code and launching additional coroutines that perform I/O on the same channel, use `ioDispatcher` to keep them on the correct thread:
 
@@ -136,17 +136,26 @@ launch(channel.ioDispatcher) {
 
 Where these dispatchers point depends on the engine:
 
-| Engine | `ioDispatcher` | `appDispatcher` |
-|---|---|---|
-| epoll / kqueue / io_uring | EventLoop thread | EventLoop thread |
-| NIO (JVM) | EventLoop thread | `Dispatchers.Default` |
-| Netty / NWConnection / Node.js | `Dispatchers.Default` | `Dispatchers.Default` |
+| Engine | `ioDispatcher` / `appDispatcher` |
+|---|---|
+| epoll / kqueue / io_uring | Per-channel EventLoop thread (single pthread) |
+| NIO (JVM) | `NioEventLoop` Selector thread |
+| Netty (JVM) | `io.netty.channel.EventLoop` via `NettyEventLoopDispatcher` |
+| NWConnection | Per-connection GCD serial dispatch queue via `NwConnectionQueueDispatcher` |
+| Node.js | JS event loop (`Dispatchers.Unconfined`) |
 
-**Native engines (epoll, kqueue, io_uring)**: both dispatchers return the EventLoop thread. I/O reads, request parsing, and the Ktor pipeline all run on the same thread — no cross-thread handoff, no wakeup syscalls when code is already on the EventLoop thread. The trade-off: coroutine code must not block; CPU-intensive work should be offloaded to `Dispatchers.Default`.
+Every engine resumes coroutines on the same thread that drives its native I/O primitive — epoll `epoll_wait`, kqueue `kevent`, io_uring CQE, Java NIO `Selector.select`, Netty `EventLoop.run`, GCD `dispatch_async`, Node.js microtask queue. The entire request pipeline (I/O read → HTTP parse → Ktor handler → response encode) runs on that one thread with no cross-thread handoff.
 
-**NIO (JVM)**: `ioDispatcher` returns the EventLoop thread; `appDispatcher` returns `Dispatchers.Default`. NIO runs fewer EventLoop threads than there are connections, so each EventLoop handles a fixed subset of connections with no way to rebalance. `Dispatchers.Default` (ForkJoinPool) actively solves this: work-stealing continuously redistributes tasks across all cores regardless of which EventLoop accepted the connection.
+The trade-off: user handlers must not block the EventLoop. Blocking I/O — JDBC, `Thread.sleep`, filesystem reads on non-async APIs — stalls every other connection multiplexed on the same EventLoop until the blocking call completes. Wrap blocking calls in `withContext(Dispatchers.IO)` to hand them off to a cached thread pool:
 
-**Netty / NWConnection / Node.js**: keel does not own the EventLoop for these engines. Both dispatchers return `Dispatchers.Default`, deferring to each engine's own threading model.
+```kotlin
+get("/user/{id}") {
+    val user = withContext(Dispatchers.IO) { jdbcTemplate.queryForObject(...) }
+    call.respond(user)
+}
+```
+
+CPU-intensive work should similarly be offloaded via `withContext(Dispatchers.Default)`.
 
 ## Performance
 

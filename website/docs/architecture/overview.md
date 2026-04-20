@@ -55,10 +55,7 @@ An **EventLoop** is a single-threaded loop that monitors I/O events and dispatch
 
 keel runs one EventLoop per thread. The thread count is set via `IoEngineConfig(threads = N)` — `0` (default) means one thread per CPU core.
 
-**Coroutine mode**: the EventLoop resumes the suspended coroutine when I/O is ready (epoll, kqueue, NIO) or complete (io_uring). Where the coroutine then runs depends on the target:
-
-- **Native engines (epoll, kqueue, io_uring)** — the coroutine runs directly on the EventLoop thread. The EventLoop is also the coroutine executor; no cross-thread handoff occurs.
-- **NIO (JVM)** — the EventLoop thread handles I/O notification, then dispatches coroutine resumption to `Dispatchers.Default`. On JVM, separating I/O monitoring from coroutine execution lets the work-stealing thread pool schedule coroutines across all available cores independently of the EventLoop.
+**Coroutine mode**: the EventLoop resumes the suspended coroutine when I/O is ready (epoll, kqueue, NIO, Netty) or complete (io_uring, NWConnection). The coroutine runs directly on the EventLoop thread — keel aligns `channel.ioDispatcher` (and `appDispatcher`) with the thread that drives the engine's native I/O primitive, so there is no cross-thread handoff between I/O notification and coroutine resumption on any engine. User handlers that need to perform blocking or CPU-intensive work should explicitly offload via `withContext(Dispatchers.IO)` / `withContext(Dispatchers.Default)`.
 
 **Pipeline mode**: the EventLoop invokes handler chains synchronously on its own thread. No coroutine and no cross-thread dispatch — all handler code runs on the EventLoop thread.
 

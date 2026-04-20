@@ -90,9 +90,16 @@ OP_WRITE is deregistered.
 
 ## Pipeline Dispatcher
 
-NIO uses `Dispatchers.Default` (ForkJoinPool work-stealing) as the application dispatcher
-instead of the EventLoop fixed-thread. This avoids head-of-line blocking when one channel's
-handler chain is slow, and better utilizes CPU cores under mixed workloads.
+Both `ioDispatcher` and `appDispatcher` point at the NIO `NioEventLoop` Selector thread,
+so the entire request pipeline — I/O read, HTTP parse, Ktor handler, response encode —
+runs on a single EL thread with no per-request cross-thread dispatch. User handlers are
+expected to be non-blocking; blocking I/O must be wrapped in `withContext(Dispatchers.IO)`
+by the caller. An earlier override to `Dispatchers.Default` was motivated by a historical
+measurement (design.md §17) where EL dispatch regressed ktor-keel-nio by -37% on
+luna.local; the regression no longer reproduces in Phase 11 (+9.5% improvement instead),
+because the Phase 10 PipelinedChannel / HttpWriter rewrite together with
+`NioEventLoop.dispatch`'s `inEventLoop`-based wakeup skip remove the overhead that
+motivated the split.
 
 ## Key Classes
 
