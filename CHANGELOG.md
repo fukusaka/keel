@@ -8,133 +8,133 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `core`: `UnixSocketAddress` with `@prefix` / `\u0000`-prefix convention for Linux abstract-namespace UDS; `isAbstract` / `kernelPath` properties; `UnixSocketAddress.filesystem(path)` / `abstract(name)` factories (#298)
-- `core`: `CachingDnsResolver(delegate, ttl = 30.seconds, maxSize = 1024)` — LRU positive cache, single-flight via decoupled `SupervisorJob` scope, `close()` / `invalidate()` for graceful shutdown (#297)
-- `core`: `InetSocketAddress.connectWithFallback(resolver, hints, attempt)` — sequential fallback over resolved candidates, preserves `CancellationException`. Happy Eyeballs deferred to HTTP Dialer layer (#297)
-- `engine-*` (Native): IPv6 end-to-end for `KqueueEngine` / `EpollEngine` / `IoUringEngine`; `PosixSocketUtils` accepts `IpAddress`, `sockaddr_in` / `sockaddr_in6` branching inside C wrappers to sidestep glibc / Darwin union field-name incompatibility (#301)
-- `engine-*` (Native): UDS support for `bind` / `connect` / `bindPipeline` (filesystem + Linux abstract on epoll / io_uring, filesystem only on kqueue) (#298)
-- `engine-nio` / `engine-netty`: UDS support via Java 16+ `UnixDomainSocketAddress`; `NioServerDomainSocketChannel` / `NioDomainSocketChannel` on Netty (filesystem only — JDK limitation) (#299)
-- `engine-nodejs` / `engine-nwconnection`: UDS support; Node uses `net.createServer({ path })`, `NwEngine` uses public `nw_endpoint_create_address(sockaddr_un *)` + `nw_parameters_set_local_endpoint`. Darwin `sun_path[104]` limit validated up-front (#300)
-- `engine-io-uring`: IO_WQ max workers limits (Linux 5.15+, opt-in) via `IoUringCapabilities.iowqMaxWorkers` (#285)
-- `engine-io-uring`: NAPI busy-poll registration (Linux 6.9+, opt-in) via `IoUringCapabilities.napiBusyPoll` (#284)
-- `engine-io-uring`: direct-allocated multishot accept (Linux 5.19+, opt-in) — saves one `register_files_update` syscall per accept. Recommend with SEND_ZC on real NICs (#283)
-- `engine-io-uring`: `io_uring_register_ring_fd` self-registration (Linux 5.18+), promoted to default-on (#280)
-- `engine-io-uring`: `IORING_OP_MSG_RING` cross-EventLoop wakeup (Linux 5.18+, opt-in) (#279)
-- `engine-io-uring`: `IORING_SETUP_DEFER_TASKRUN` ring setup flag (Linux 6.1+, opt-in) for p99 latency (#278)
-- `engine-io-uring`: `IORING_SETUP_SINGLE_ISSUER` ring setup flag (Linux 6.0+, opt-in) (#277)
-- `engine-io-uring`: `IORING_SETUP_COOP_TASKRUN` ring setup flag (Linux 6.0+) (#274)
-- `engine-io-uring`: SENDMSG_ZC mode for gather write + zero-copy (#271); fixed file descriptors via `IORING_REGISTER_FILES` (#272); registered buffers for `SEND_ZC_FIXED` (#273)
-- `native-posix`: `errnoMessage(errno: Int): String` helper wrapping thread-safe `strerror_r`; `closeFdSafely(fd, logger, context)` for silent-leak-free cleanup paths (#275)
-- `core`: `AbstractPipelinedChannel` base class in commonMain — wires `IoTransport` callbacks to the pipeline without per-engine boilerplate (#266)
-- `core`: `BindConfig.initializeConnection(channel)` auto-called by every `Server.accept()` — removes duplicate init calls in engine code (#265)
-- `io`: `BufferAllocator.registerPoolSize(size, maxSlots)` for dynamic multi-class pools; `BufferAllocator.wrapBytes(ByteArray, Int, Int)` / `BufferAllocator.slice(IoBuf, Int, Int)` for zero-copy views; `EmptyIoBuf` singleton (#263, #264)
-- `core`: `SuspendMessageBridge<T>` — generic pipeline handler that bridges typed messages to suspend consumers (#260, #261)
-- `codec-http`: `HttpMessage` sealed supertype; `HttpBody` / `HttpBodyEnd` streaming body types; `HttpHeaders.EMPTY`; `HttpBodyAggregator` pipeline handler (streaming → complete `HttpRequest`) (#258)
-- `io`: direct-write path in `BufferedSuspendSink.write(ByteArray, Int, Int)` bypassing the buffer for large writes (#246)
-- `io`: `LeakDetectingAllocator` with Cleaner-based detection (Native) / `PhantomReference` (JVM); `BufferAllocator.withTracking()` / `withLeakDetection()` wrappers (#245)
-- `core`: write backpressure with high/low water marks on `IoTransport` — `isWritable`, `pendingBytes`, `setWritabilityWaterMarks`, `onWritabilityChanged` (#241)
-- `engine-netty`: implement `bindPipeline` for push-mode I/O without Ktor overhead (#227)
-- `engine-nodejs`: implement `bindPipeline` for push-mode I/O without Ktor overhead (#228)
-- `benchmark`: `bench-remote.sh` — single-engine A/B over real-NIC LAN (env-var configured, no hardcoded host) (#282)
-- `benchmark`: pipeline-http-* TLS support (kqueue / epoll / io_uring / nio) + `--tls=jsse|openssl|awslc|mbedtls` CLI flag (#226)
-- `benchmark`: `pipeline-http-netty` / `pipeline-http-nodejs` entries added to `bench-keel.sh` / `bench-all.sh` (#227, #229)
-- `ktor-engine`: HTTPS via connector-based `sslConnector` DSL with keel `TlsConfig` (works on all KMP targets); `TlsInstaller` interface for engine-specific TLS (`NettySslInstaller` for Netty `SslHandler`) (#213, #219, #220)
-- `tls`: PEM/DER converter (`PemDerConverter`, `Pkcs8KeyUnwrapper`); `asPem()` / `asDer()` extensions on `TlsCertificateSource`; `TlsCertificateSource.Der` support on OpenSSL / AWS-LC / MbedTLS / Netty / Node.js (#233)
-- `engine-nwconnection`: listener-level TLS via Network.framework `SecIdentity` + `NwTlsParams` (#234)
-- `engine-nodejs`: `tls.createServer()` listener-level TLS (#232)
-- `tls-jsse` / `tls-openssl` / `tls-awslc` / `tls-mbedtls`: four TLS backends with `TlsCodec` / `TlsCodecFactory` buffer-to-buffer codec; `TlsHandler` pipeline handler; `TlsHandshakeComplete` user event + `TlsErrorCategory` structured errors (#210, #211)
-- `native-posix`: shared POSIX socket utilities module extracting common code across epoll / kqueue / io_uring (#223)
-- `core`: `Pipeline.onUserEvent` / `propagateUserEvent` / `notifyUserEvent` (#230)
-- `core`: `PipelinedServer` interface and `IoEngine.bindPipeline` — non-suspend pipeline server API (#230)
-- `build`: `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions (#204)
-- `ci`: OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows (#212)
+- `core`: `UnixSocketAddress` with `@prefix` / `\u0000`-prefix convention for Linux abstract-namespace UDS; `isAbstract` / `kernelPath` properties; `UnixSocketAddress.filesystem(path)` / `abstract(name)` factories ([#298])
+- `core`: `CachingDnsResolver(delegate, ttl = 30.seconds, maxSize = 1024)` — LRU positive cache, single-flight via decoupled `SupervisorJob` scope, `close()` / `invalidate()` for graceful shutdown ([#297])
+- `core`: `InetSocketAddress.connectWithFallback(resolver, hints, attempt)` — sequential fallback over resolved candidates, preserves `CancellationException`. Happy Eyeballs deferred to HTTP Dialer layer ([#297])
+- `engine-*` (Native): IPv6 end-to-end for `KqueueEngine` / `EpollEngine` / `IoUringEngine`; `PosixSocketUtils` accepts `IpAddress`, `sockaddr_in` / `sockaddr_in6` branching inside C wrappers to sidestep glibc / Darwin union field-name incompatibility ([#301])
+- `engine-*` (Native): UDS support for `bind` / `connect` / `bindPipeline` (filesystem + Linux abstract on epoll / io_uring, filesystem only on kqueue) ([#298])
+- `engine-nio` / `engine-netty`: UDS support via Java 16+ `UnixDomainSocketAddress`; `NioServerDomainSocketChannel` / `NioDomainSocketChannel` on Netty (filesystem only — JDK limitation) ([#299])
+- `engine-nodejs` / `engine-nwconnection`: UDS support; Node uses `net.createServer({ path })`, `NwEngine` uses public `nw_endpoint_create_address(sockaddr_un *)` + `nw_parameters_set_local_endpoint`. Darwin `sun_path[104]` limit validated up-front ([#300])
+- `engine-io-uring`: IO_WQ max workers limits (Linux 5.15+, opt-in) via `IoUringCapabilities.iowqMaxWorkers` ([#285])
+- `engine-io-uring`: NAPI busy-poll registration (Linux 6.9+, opt-in) via `IoUringCapabilities.napiBusyPoll` ([#284])
+- `engine-io-uring`: direct-allocated multishot accept (Linux 5.19+, opt-in) — saves one `register_files_update` syscall per accept. Recommend with SEND_ZC on real NICs ([#283])
+- `engine-io-uring`: `io_uring_register_ring_fd` self-registration (Linux 5.18+), promoted to default-on ([#280])
+- `engine-io-uring`: `IORING_OP_MSG_RING` cross-EventLoop wakeup (Linux 5.18+, opt-in) ([#279])
+- `engine-io-uring`: `IORING_SETUP_DEFER_TASKRUN` ring setup flag (Linux 6.1+, opt-in) for p99 latency ([#278])
+- `engine-io-uring`: `IORING_SETUP_SINGLE_ISSUER` ring setup flag (Linux 6.0+, opt-in) ([#277])
+- `engine-io-uring`: `IORING_SETUP_COOP_TASKRUN` ring setup flag (Linux 6.0+) ([#274])
+- `engine-io-uring`: SENDMSG_ZC mode for gather write + zero-copy ([#271]); fixed file descriptors via `IORING_REGISTER_FILES` ([#272]); registered buffers for `SEND_ZC_FIXED` ([#273])
+- `native-posix`: `errnoMessage(errno: Int): String` helper wrapping thread-safe `strerror_r`; `closeFdSafely(fd, logger, context)` for silent-leak-free cleanup paths ([#275])
+- `core`: `AbstractPipelinedChannel` base class in commonMain — wires `IoTransport` callbacks to the pipeline without per-engine boilerplate ([#266])
+- `core`: `BindConfig.initializeConnection(channel)` auto-called by every `Server.accept()` — removes duplicate init calls in engine code ([#265])
+- `io`: `BufferAllocator.registerPoolSize(size, maxSlots)` for dynamic multi-class pools; `BufferAllocator.wrapBytes(ByteArray, Int, Int)` / `BufferAllocator.slice(IoBuf, Int, Int)` for zero-copy views; `EmptyIoBuf` singleton ([#263], [#264])
+- `core`: `SuspendMessageBridge<T>` — generic pipeline handler that bridges typed messages to suspend consumers ([#260], [#261])
+- `codec-http`: `HttpMessage` sealed supertype; `HttpBody` / `HttpBodyEnd` streaming body types; `HttpHeaders.EMPTY`; `HttpBodyAggregator` pipeline handler (streaming → complete `HttpRequest`) ([#258])
+- `io`: direct-write path in `BufferedSuspendSink.write(ByteArray, Int, Int)` bypassing the buffer for large writes ([#246])
+- `io`: `LeakDetectingAllocator` with Cleaner-based detection (Native) / `PhantomReference` (JVM); `BufferAllocator.withTracking()` / `withLeakDetection()` wrappers ([#245])
+- `core`: write backpressure with high/low water marks on `IoTransport` — `isWritable`, `pendingBytes`, `setWritabilityWaterMarks`, `onWritabilityChanged` ([#241])
+- `engine-netty`: implement `bindPipeline` for push-mode I/O without Ktor overhead ([#227])
+- `engine-nodejs`: implement `bindPipeline` for push-mode I/O without Ktor overhead ([#228])
+- `benchmark`: `bench-remote.sh` — single-engine A/B over real-NIC LAN (env-var configured, no hardcoded host) ([#282])
+- `benchmark`: pipeline-http-* TLS support (kqueue / epoll / io_uring / nio) + `--tls=jsse|openssl|awslc|mbedtls` CLI flag ([#226])
+- `benchmark`: `pipeline-http-netty` / `pipeline-http-nodejs` entries added to `bench-keel.sh` / `bench-all.sh` ([#227], [#229])
+- `ktor-engine`: HTTPS via connector-based `sslConnector` DSL with keel `TlsConfig` (works on all KMP targets); `TlsInstaller` interface for engine-specific TLS (`NettySslInstaller` for Netty `SslHandler`) ([#213], [#219], [#220])
+- `tls`: PEM/DER converter (`PemDerConverter`, `Pkcs8KeyUnwrapper`); `asPem()` / `asDer()` extensions on `TlsCertificateSource`; `TlsCertificateSource.Der` support on OpenSSL / AWS-LC / MbedTLS / Netty / Node.js ([#233])
+- `engine-nwconnection`: listener-level TLS via Network.framework `SecIdentity` + `NwTlsParams` ([#234])
+- `engine-nodejs`: `tls.createServer()` listener-level TLS ([#232])
+- `tls-jsse` / `tls-openssl` / `tls-awslc` / `tls-mbedtls`: four TLS backends with `TlsCodec` / `TlsCodecFactory` buffer-to-buffer codec; `TlsHandler` pipeline handler; `TlsHandshakeComplete` user event + `TlsErrorCategory` structured errors ([#210], [#211])
+- `native-posix`: shared POSIX socket utilities module extracting common code across epoll / kqueue / io_uring ([#223])
+- `core`: `Pipeline.onUserEvent` / `propagateUserEvent` / `notifyUserEvent` ([#230])
+- `core`: `PipelinedServer` interface and `IoEngine.bindPipeline` — non-suspend pipeline server API ([#230])
+- `build`: `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions ([#204])
+- `ci`: OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows ([#212])
 
 ### Changed
 
-- **BREAKING** (`core`): remove `Channel.appDispatcher` / `IoTransport.appDispatcher`; move to `KeelApplicationEngine.Configuration.applicationDispatcher: CoroutineDispatcher? = null` (null default = `channel.ioDispatcher`). Custom `IoTransport` implementations drop the override; NIO users relying on Default-pool pipeline set `applicationDispatcher = Dispatchers.Default` (#312)
-- `engine-nio`: drop `appDispatcher = Dispatchers.Default` override; Ktor pipeline runs on the `NioEventLoop` Selector thread (ktor-keel-nio +9.5% on 32-core Ryzen loopback; prior regression no longer reproduces after the `PipelinedChannel` / `HttpWriter` rewrite landed in the same release cycle) (#311)
-- **BREAKING** (`core`): `StreamEngine.bind` / `connect` / `bindPipeline` take `SocketAddress` sealed hierarchy instead of `(host: String, port: Int)`. `(host, port)` preserved as default interface method. Non-suspend `bindPipeline` requires IP literals (#294)
-- **BREAKING** (`core`): `SocketAddress` → sealed hierarchy: `InetSocketAddress(host: Host, port: Int)` and `UnixSocketAddress(path: String)`. `Host` / `IpAddress` also sealed. Pure-Kotlin RFC 5952 parser; canonical V6 compressed form with `%scope` (#294)
-- **BREAKING** (`core`): `IoEngineConfig.resolver: DnsResolver` field (default `DnsResolver.SYSTEM`); `DnsResolver` / `ResolveHints` / `FamilyPreference` / `ResolverResult` public. JVM uses `InetAddress.getAllByName`, JS uses `dns.lookup`, Native uses `getaddrinfo` (#295, #296)
-- **BREAKING** (`core`): `IoEngine` promoted from `AutoCloseable` to `CoroutineScope`; `close()` now `suspend`. All seven engines carry a `SupervisorJob` and `cancelAndJoin` children before teardown. `engine.use { }` no longer supported; wrap in `runBlocking { engine.close() }` from non-suspend contexts (#291)
-- **BREAKING** (`native-posix`): remove `POSIX_IPV4_RESOLVE_HINTS` / `InetSocketAddress.resolveForPosixSocket`. Callers use `resolveFirst(resolver)` / `connectWithFallback` with `FamilyPreference.Any` default (#301)
-- `engine-*`: route `connectInet` through `InetSocketAddress.connectWithFallback` for resolver-ordered multi-IP fallback (native + JVM engines); NodeEngine / NwEngine defer to OS-driven retry (#297)
-- `engine-io-uring`: restructure ring and register-class lifecycle so `io_uring_queue_init` and all `io_uring_register_*` calls run on the owning EventLoop pthread; 2-phase init (user-space alloc → kernel registration on loop); per-loop teardown hook (#276)
-- All Native engines + TLS: syscall-error reporting switched to the shared `errnoMessage(errno)` helper (thread-safe strerror_r); `close(fd)` cleanup paths use `closeFdSafely(fd, logger, context)` (#275)
-- `engine-epoll` / `engine-kqueue`: add `assertInEventLoop(operation)` guard + promote `inEventLoop()` to internal — matches `IoUringEventLoop` pattern. Runtime assertion on EL-only methods (#286)
-- `benchmark`: `bench-pull.sh` no longer hardcodes an internal host default — requires positional arg or `BENCH_REMOTE_HOST` env var with usage on stderr (#281)
-- `core`: rename Channel-prefixed pipeline types to avoid confusion with the transport `Channel` — `ChannelInboundHandler` → `InboundHandler`, `ChannelPipeline` → `Pipeline`, etc. (#267)
-- `ktor-engine`: full pipeline HTTP codec migration — request parsing via `HttpRequestDecoder` + `HttpBodyAggregator`; response via `HttpResponseEncoder`; pipeline runs on EventLoop push-mode (#260, #261)
-- `engine-netty`: one buffer allocator per worker `EventLoop` — bounds direct memory footprint to `numEventLoops × localPoolSize × bufferSize`, independent of connection count (#247)
-- `io`: `PooledDirectAllocator.createForEventLoop()` returns an allocator bound to the calling EL thread — per-EL freelist without CAS contention (#247)
-- `core`: `BindConfig` converted from marker interface to open class with `backlog` + `initializeConnection()` defaults; `StreamEngine.bind()` / `bindPipeline()` accept `BindConfig` (#235, #236)
-- `tls`: `TlsConnectorConfig.installer` is now nullable (null = engine-specific default); accepts `backlog` via `BindConfig` inheritance (#235)
-- `codec-http`: `HttpRequestDecoder` rewritten as byte-offset parser (no intermediate `String` allocation); decodes Content-Length and chunked transfer encoding inline; emits streaming `HttpBody` / `HttpBodyEnd`; `RoutingHandler` rewritten from suspend-bridge to pure pipeline handler (#252, #258)
-- `core`: `IoTransport` extended with read path (`onRead`, `onReadClosed`, `readEnabled`) + lifecycle (`shutdownOutput`, `awaitClosed`) + properties (`allocator`, `isOpen`, `ioDispatcher`, `supportsDeferredFlush`). All 7 engines encapsulate full lifecycle; engine-specific `PipelinedChannel` classes reduce to empty `AbstractPipelinedChannel` subclasses (#266)
-- `tls`: split `TLS_RECORD_BUF_SIZE` (17 KiB) into `TLS_PLAINTEXT_BUF_SIZE` (16 KiB) + overhead slack, aligning with TLS record size limits (#264)
-- `io`: `PooledDirectAllocator` (JVM) + `SlabAllocator` (Native) rewritten with Treiber-stack intrusive freelists for lock-free per-EL access (#264)
-- `engine-nwconnection`: unify `NwChannel` into `NwPipelinedChannel` (single type for Pipeline + Coroutine modes) (#217)
-- `engine-netty`: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` (#218)
-- `engine-nio`: unify `NioChannel` into `NioPipelinedChannel` (#184)
-- `engine-epoll`: unify `EpollChannel` into `EpollPipelinedChannel` (#185)
-- `engine-io-uring`: unify `IoUringChannel` into `IoUringPipelinedChannel` (#186)
-- `engine-nodejs`: unify `NodeChannel` into `NodePipelinedChannel` (#228)
-- `engine-nio` / `engine-epoll` / `engine-kqueue` / `engine-io-uring`: Channel mode `write()` / `flush()` use `requestFlush()` + `awaitFlushComplete()` — fire-and-forget flush with explicit completion await (#187, #188)
-- `core`: rename `ServerChannel` → `Server` across all engines (server is not a channel) (#197, #198)
-- `core`: `StreamEngine` sub-interface for byte-stream transports; `IoEngine` root interface reserves space for future `DatagramEngine` (#222)
-- Rename public modules with `keel-` prefix (e.g. `:core` → `:keel-core`); merge `:logging` into `:keel-core` (#221)
-- `benchmark`: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` (#216)
-- `io`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers enqueued and sent in a single `writev()` syscall (epoll `/large`: 9K → 201K req/s) (#115)
-- `io`: `BufferedSuspendSource.fill()` compacts only when writable space falls below 1 KiB threshold (skips ~87% of unnecessary compact calls) (#118)
-- `core`: `IoEngineConfig.allocator` defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`) (#116)
-- `engine-nwconnection`: batch flush via `keel_nw_writev_async` — concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call (#117)
-- Dokka: conditional plugin application by host OS; cross-platform Dokka HTML merging via `scripts/merge-dokka.py`; CI parallel macOS + Linux aggregation (#163, #179)
-- `io`: rename `NativeBuf` to `IoBuf`; platform implementations `NativeIoBuf` / `JvmIoBuf` / `JsIoBuf`; extract `IoBuf` from `expect class` to `interface` with `NativePointerAccess` for cross-type unsafe pointer access (#141, #143)
+- **BREAKING** (`core`): remove `Channel.appDispatcher` / `IoTransport.appDispatcher`; move to `KeelApplicationEngine.Configuration.applicationDispatcher: CoroutineDispatcher? = null` (null default = `channel.ioDispatcher`). Custom `IoTransport` implementations drop the override; NIO users relying on Default-pool pipeline set `applicationDispatcher = Dispatchers.Default` ([#312])
+- `engine-nio`: drop `appDispatcher = Dispatchers.Default` override; Ktor pipeline runs on the `NioEventLoop` Selector thread (ktor-keel-nio +9.5% on 32-core Ryzen loopback; prior regression no longer reproduces after the `PipelinedChannel` / `HttpWriter` rewrite landed in the same release cycle) ([#311])
+- **BREAKING** (`core`): `StreamEngine.bind` / `connect` / `bindPipeline` take `SocketAddress` sealed hierarchy instead of `(host: String, port: Int)`. `(host, port)` preserved as default interface method. Non-suspend `bindPipeline` requires IP literals ([#294])
+- **BREAKING** (`core`): `SocketAddress` → sealed hierarchy: `InetSocketAddress(host: Host, port: Int)` and `UnixSocketAddress(path: String)`. `Host` / `IpAddress` also sealed. Pure-Kotlin RFC 5952 parser; canonical V6 compressed form with `%scope` ([#294])
+- **BREAKING** (`core`): `IoEngineConfig.resolver: DnsResolver` field (default `DnsResolver.SYSTEM`); `DnsResolver` / `ResolveHints` / `FamilyPreference` / `ResolverResult` public. JVM uses `InetAddress.getAllByName`, JS uses `dns.lookup`, Native uses `getaddrinfo` ([#295], [#296])
+- **BREAKING** (`core`): `IoEngine` promoted from `AutoCloseable` to `CoroutineScope`; `close()` now `suspend`. All seven engines carry a `SupervisorJob` and `cancelAndJoin` children before teardown. `engine.use { }` no longer supported; wrap in `runBlocking { engine.close() }` from non-suspend contexts ([#291])
+- **BREAKING** (`native-posix`): remove `POSIX_IPV4_RESOLVE_HINTS` / `InetSocketAddress.resolveForPosixSocket`. Callers use `resolveFirst(resolver)` / `connectWithFallback` with `FamilyPreference.Any` default ([#301])
+- `engine-*`: route `connectInet` through `InetSocketAddress.connectWithFallback` for resolver-ordered multi-IP fallback (native + JVM engines); NodeEngine / NwEngine defer to OS-driven retry ([#297])
+- `engine-io-uring`: restructure ring and register-class lifecycle so `io_uring_queue_init` and all `io_uring_register_*` calls run on the owning EventLoop pthread; 2-phase init (user-space alloc → kernel registration on loop); per-loop teardown hook ([#276])
+- All Native engines + TLS: syscall-error reporting switched to the shared `errnoMessage(errno)` helper (thread-safe strerror_r); `close(fd)` cleanup paths use `closeFdSafely(fd, logger, context)` ([#275])
+- `engine-epoll` / `engine-kqueue`: add `assertInEventLoop(operation)` guard + promote `inEventLoop()` to internal — matches `IoUringEventLoop` pattern. Runtime assertion on EL-only methods ([#286])
+- `benchmark`: `bench-pull.sh` no longer hardcodes an internal host default — requires positional arg or `BENCH_REMOTE_HOST` env var with usage on stderr ([#281])
+- `core`: rename Channel-prefixed pipeline types to avoid confusion with the transport `Channel` — `ChannelInboundHandler` → `InboundHandler`, `ChannelPipeline` → `Pipeline`, etc. ([#267])
+- `ktor-engine`: full pipeline HTTP codec migration — request parsing via `HttpRequestDecoder` + `HttpBodyAggregator`; response via `HttpResponseEncoder`; pipeline runs on EventLoop push-mode ([#260], [#261])
+- `engine-netty`: one buffer allocator per worker `EventLoop` — bounds direct memory footprint to `numEventLoops × localPoolSize × bufferSize`, independent of connection count ([#247])
+- `io`: `PooledDirectAllocator.createForEventLoop()` returns an allocator bound to the calling EL thread — per-EL freelist without CAS contention ([#247])
+- `core`: `BindConfig` converted from marker interface to open class with `backlog` + `initializeConnection()` defaults; `StreamEngine.bind()` / `bindPipeline()` accept `BindConfig` ([#235], [#236])
+- `tls`: `TlsConnectorConfig.installer` is now nullable (null = engine-specific default); accepts `backlog` via `BindConfig` inheritance ([#235])
+- `codec-http`: `HttpRequestDecoder` rewritten as byte-offset parser (no intermediate `String` allocation); decodes Content-Length and chunked transfer encoding inline; emits streaming `HttpBody` / `HttpBodyEnd`; `RoutingHandler` rewritten from suspend-bridge to pure pipeline handler ([#252], [#258])
+- `core`: `IoTransport` extended with read path (`onRead`, `onReadClosed`, `readEnabled`) + lifecycle (`shutdownOutput`, `awaitClosed`) + properties (`allocator`, `isOpen`, `ioDispatcher`, `supportsDeferredFlush`). All 7 engines encapsulate full lifecycle; engine-specific `PipelinedChannel` classes reduce to empty `AbstractPipelinedChannel` subclasses ([#266])
+- `tls`: split `TLS_RECORD_BUF_SIZE` (17 KiB) into `TLS_PLAINTEXT_BUF_SIZE` (16 KiB) + overhead slack, aligning with TLS record size limits ([#264])
+- `io`: `PooledDirectAllocator` (JVM) + `SlabAllocator` (Native) rewritten with Treiber-stack intrusive freelists for lock-free per-EL access ([#264])
+- `engine-nwconnection`: unify `NwChannel` into `NwPipelinedChannel` (single type for Pipeline + Coroutine modes) ([#217])
+- `engine-netty`: unify `NettyChannel` into `NettyPipelinedChannel` with `NettyIoTransport` ([#218])
+- `engine-nio`: unify `NioChannel` into `NioPipelinedChannel` ([#184])
+- `engine-epoll`: unify `EpollChannel` into `EpollPipelinedChannel` ([#185])
+- `engine-io-uring`: unify `IoUringChannel` into `IoUringPipelinedChannel` ([#186])
+- `engine-nodejs`: unify `NodeChannel` into `NodePipelinedChannel` ([#228])
+- `engine-nio` / `engine-epoll` / `engine-kqueue` / `engine-io-uring`: Channel mode `write()` / `flush()` use `requestFlush()` + `awaitFlushComplete()` — fire-and-forget flush with explicit completion await ([#187], [#188])
+- `core`: rename `ServerChannel` → `Server` across all engines (server is not a channel) ([#197], [#198])
+- `core`: `StreamEngine` sub-interface for byte-stream transports; `IoEngine` root interface reserves space for future `DatagramEngine` ([#222])
+- Rename public modules with `keel-` prefix (e.g. `:core` → `:keel-core`); merge `:logging` into `:keel-core` ([#221])
+- `benchmark`: select single Native TLS backend via `-Ptls-backend=openssl|awslc|mbedtls` ([#216])
+- `io`: `BufferedSuspendSink.flushBuffer()` defers `flush()` to the caller; filled buffers enqueued and sent in a single `writev()` syscall (epoll `/large`: 9K → 201K req/s) ([#115])
+- `io`: `BufferedSuspendSource.fill()` compacts only when writable space falls below 1 KiB threshold (skips ~87% of unnecessary compact calls) ([#118])
+- `core`: `IoEngineConfig.allocator` defaults to `defaultAllocator()` (Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `HeapAllocator`) ([#116])
+- `engine-nwconnection`: batch flush via `keel_nw_writev_async` — concatenates pending writes into a single `dispatch_data_t` for one `nw_connection_send` call ([#117])
+- Dokka: conditional plugin application by host OS; cross-platform Dokka HTML merging via `scripts/merge-dokka.py`; CI parallel macOS + Linux aggregation ([#163], [#179])
+- `io`: rename `NativeBuf` to `IoBuf`; platform implementations `NativeIoBuf` / `JvmIoBuf` / `JsIoBuf`; extract `IoBuf` from `expect class` to `interface` with `NativePointerAccess` for cross-type unsafe pointer access ([#141], [#143])
 
 ### Fixed
 
-- `engine-*`: release server fd / channel / NWListener along `bind()` / `bindPipeline()` error paths across all six engines. Was orphaned on `epoll_ctl` / `kevent` / `start()` / `dispatch_semaphore_wait` failures; `IoUringEngine.bindPipelineInet` tracks `createdCount` so partial `SO_REUSEPORT` fanout only closes acquired fds. New private helpers `closeQuietly` / `cancelListenerQuietly` (#313)
-- `engine-netty`: align `NettyIoTransport.ioDispatcher` with channel `EventLoop` via new `NettyEventLoopDispatcher` — fixes latent `SuspendBridgeHandler` cross-thread race (ktor-keel-netty +17% on loopback) (#310)
-- `engine-nwconnection`: align `NwIoTransport.ioDispatcher` with per-connection `connQueue` via new `NwConnectionQueueDispatcher` — fixes `NwEngineTest.GC heap` cycle-13 stall on CI `macos-latest` (ktor-keel-nwconnection +11%) (#309)
-- `engine-io-uring`: `IoUringPipelinedServerChannel.start()` blocks until every worker has enqueued its multishot accept SQE — fixes spurious `acceptDirectAlloc` test race under CI load (#307)
-- `build`: `./gradlew assemble` succeeds on single-host — host-gate platform-specific engine modules in `settings.gradle.kts` + consumer source-set gating + widen cross-arch cinterop disable filter (#305)
-- `build`: `./gradlew dokkaGeneratePublicationHtml` succeeds on clean `main` — declares `resolve(hostname, hints)` in `SystemDnsResolver` expect body; `keel_fill_sockaddr_un` signature switched to `sockaddr_storage *` for cinterop commonization; `:benchmark` Native targets host-gated (#304)
-- `ci`: expand CI workflow with `assemble` + `jsNodeTest` + `detektJsMain` + macOS runner for Darwin target coverage (#306)
-- `core`: `IpAddress.V4` / `V6` `toString()` returns RFC 5952 canonical form (compressed V6, `%scope` suffix); previously returned `Host.Ip` wrapper `toString()` (#302)
-- All engines: `IoTransport.close()` dispatches teardown onto the owning EventLoop / connQueue — fixes cross-thread `pendingWrites` mutation race (#293)
-- All engines: `Server.close()` thread-safe across all engines via EventLoop dispatch (#292)
-- `ktor-engine`: `KeelApplicationEngine.stop()` returns within the configured grace period — `engine.coroutineContext.job.children` enumeration + cancellation (#291)
-- `engine-nio`: fix `ClassCastException: CompletedContinuation cannot be cast to CancellableContinuation` during server shutdown — unify interest callback protocol (#288)
-- `engine-io-uring`: check return values for previously-ignored teardown syscalls (`io_uring_unregister_buffers`, `pthread_join`, `close(fd)` etc.); warn-level log on failure so silent kernel-side errors are observable (#275)
-- `tls`: `TlsHandler.processOutbound` hardened against three latent codec-state races; `TLS_RECORD_BUF_SIZE` overflow-behaviour KDoc neutralized; `TlsException` with `TlsErrorCategory` on write-path errors (#249, #250)
-- `codec-http`: `HttpResponseEncoder` emits response bodies at or above 8 KiB — previously buffered indefinitely waiting for a small-size path (#248)
-- `engine-netty`: `NettyPipelinedChannel.channelRead` rounds inbound buffer capacity to `POOL_FRIENDLY_CAPACITY` (8 KiB) so small packets hit the freelist; DirectIoBuf double-release on `/large` responses via `supportsDeferredFlush = false` (#242, #247)
-- `engine-nodejs`: byte-by-byte read loop replaced with bulk `Int8Array.subarray` / `set` — eliminates per-byte coroutine dispatch on large reads (#243)
-- `engine-io-uring`: `writev` gather write in `FALLBACK_CQE` direct-flush path; fd leak in `connect()` / `Server.accept()` / `PipelinedServerChannel.close()`; `NativeBuf` leak in `flushSingle` / `flushGather` on submit failure; potential `IoUringEventLoop` deadlock when wakeup races submit (#244)
-- `io`: `IoBuf.clear()` on JVM resets DirectByteBuffer position/limit; `NativeBuf.writeBytes()` bulk copy replaces per-byte loop; potential double-release in `BufferedSuspendSink` deferFlush path (#148, #151)
-- `engine-kqueue`: `check(!closed)` guard on Channel mode `read()` / `write()` / `flush()` — fail-fast on use-after-close (#183)
-- `engine-nio` / `engine-netty`: 10-second test timeout on all JVM tests to prevent hang (#191)
-- `engine-epoll` / `engine-kqueue`: fix fd registration race window in `EventLoop.register()` — concurrent registration from multiple threads now safe via MPSC queue + single-thread consumer (#174, #185)
-- `engine-io-uring`: `IoUringIoTransport.flush()` data loss when EAGAIN occurs mid-writev — remaining buffers now re-queued instead of dropped (#186)
-- All engines: cancel pending `accept()` coroutine with `CancellationException` on server close (#69)
-- `tls`: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights spanning multiple writes (#195)
-- `tls-mbedtls`: `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto split; `--allow-shlib-undefined` for Linux lld indirect deps (#207)
-- `tls`: remove `msg.release()` from `TlsHandler.onWrite` to fix double-release under HTTPS load (#215)
-- `engine-nwconnection`: dispatch `NwIoTransport.close()` on connection queue (resolves cross-thread mutation during close) (#293)
-- `benchmark`: `bench-one.sh` reads `BENCH_ENDPOINT` env var; pre-encoded byte payloads for all servers; SIGTERM with graceful fallback instead of SIGKILL in `kill_port` (#119)
+- `engine-*`: release server fd / channel / NWListener along `bind()` / `bindPipeline()` error paths across all six engines. Was orphaned on `epoll_ctl` / `kevent` / `start()` / `dispatch_semaphore_wait` failures; `IoUringEngine.bindPipelineInet` tracks `createdCount` so partial `SO_REUSEPORT` fanout only closes acquired fds. New private helpers `closeQuietly` / `cancelListenerQuietly` ([#313])
+- `engine-netty`: align `NettyIoTransport.ioDispatcher` with channel `EventLoop` via new `NettyEventLoopDispatcher` — fixes latent `SuspendBridgeHandler` cross-thread race (ktor-keel-netty +17% on loopback) ([#310])
+- `engine-nwconnection`: align `NwIoTransport.ioDispatcher` with per-connection `connQueue` via new `NwConnectionQueueDispatcher` — fixes `NwEngineTest.GC heap` cycle-13 stall on CI `macos-latest` (ktor-keel-nwconnection +11%) ([#309])
+- `engine-io-uring`: `IoUringPipelinedServerChannel.start()` blocks until every worker has enqueued its multishot accept SQE — fixes spurious `acceptDirectAlloc` test race under CI load ([#307])
+- `build`: `./gradlew assemble` succeeds on single-host — host-gate platform-specific engine modules in `settings.gradle.kts` + consumer source-set gating + widen cross-arch cinterop disable filter ([#305])
+- `build`: `./gradlew dokkaGeneratePublicationHtml` succeeds on clean `main` — declares `resolve(hostname, hints)` in `SystemDnsResolver` expect body; `keel_fill_sockaddr_un` signature switched to `sockaddr_storage *` for cinterop commonization; `:benchmark` Native targets host-gated ([#304])
+- `ci`: expand CI workflow with `assemble` + `jsNodeTest` + `detektJsMain` + macOS runner for Darwin target coverage ([#306])
+- `core`: `IpAddress.V4` / `V6` `toString()` returns RFC 5952 canonical form (compressed V6, `%scope` suffix); previously returned `Host.Ip` wrapper `toString()` ([#302])
+- All engines: `IoTransport.close()` dispatches teardown onto the owning EventLoop / connQueue — fixes cross-thread `pendingWrites` mutation race ([#293])
+- All engines: `Server.close()` thread-safe across all engines via EventLoop dispatch ([#292])
+- `ktor-engine`: `KeelApplicationEngine.stop()` returns within the configured grace period — `engine.coroutineContext.job.children` enumeration + cancellation ([#291])
+- `engine-nio`: fix `ClassCastException: CompletedContinuation cannot be cast to CancellableContinuation` during server shutdown — unify interest callback protocol ([#288])
+- `engine-io-uring`: check return values for previously-ignored teardown syscalls (`io_uring_unregister_buffers`, `pthread_join`, `close(fd)` etc.); warn-level log on failure so silent kernel-side errors are observable ([#275])
+- `tls`: `TlsHandler.processOutbound` hardened against three latent codec-state races; `TLS_RECORD_BUF_SIZE` overflow-behaviour KDoc neutralized; `TlsException` with `TlsErrorCategory` on write-path errors ([#249], [#250])
+- `codec-http`: `HttpResponseEncoder` emits response bodies at or above 8 KiB — previously buffered indefinitely waiting for a small-size path ([#248])
+- `engine-netty`: `NettyPipelinedChannel.channelRead` rounds inbound buffer capacity to `POOL_FRIENDLY_CAPACITY` (8 KiB) so small packets hit the freelist; DirectIoBuf double-release on `/large` responses via `supportsDeferredFlush = false` ([#242], [#247])
+- `engine-nodejs`: byte-by-byte read loop replaced with bulk `Int8Array.subarray` / `set` — eliminates per-byte coroutine dispatch on large reads ([#243])
+- `engine-io-uring`: `writev` gather write in `FALLBACK_CQE` direct-flush path; fd leak in `connect()` / `Server.accept()` / `PipelinedServerChannel.close()`; `NativeBuf` leak in `flushSingle` / `flushGather` on submit failure; potential `IoUringEventLoop` deadlock when wakeup races submit ([#244])
+- `io`: `IoBuf.clear()` on JVM resets DirectByteBuffer position/limit; `NativeBuf.writeBytes()` bulk copy replaces per-byte loop; potential double-release in `BufferedSuspendSink` deferFlush path ([#148], [#151])
+- `engine-kqueue`: `check(!closed)` guard on Channel mode `read()` / `write()` / `flush()` — fail-fast on use-after-close ([#183])
+- `engine-nio` / `engine-netty`: 10-second test timeout on all JVM tests to prevent hang ([#191])
+- `engine-epoll` / `engine-kqueue`: fix fd registration race window in `EventLoop.register()` — concurrent registration from multiple threads now safe via MPSC queue + single-thread consumer ([#174], [#185])
+- `engine-io-uring`: `IoUringIoTransport.flush()` data loss when EAGAIN occurs mid-writev — remaining buffers now re-queued instead of dropped ([#186])
+- All engines: cancel pending `accept()` coroutine with `CancellationException` on server close ([#69])
+- `tls`: loop `TlsHandler.flushHandshakeResponse` to handle handshake flights spanning multiple writes ([#195])
+- `tls-mbedtls`: `-ltfpsacrypto` linker option for Mbed TLS 4.x PSA Crypto split; `--allow-shlib-undefined` for Linux lld indirect deps ([#207])
+- `tls`: remove `msg.release()` from `TlsHandler.onWrite` to fix double-release under HTTPS load ([#215])
+- `engine-nwconnection`: dispatch `NwIoTransport.close()` on connection queue (resolves cross-thread mutation during close) ([#293])
+- `benchmark`: `bench-one.sh` reads `BENCH_ENDPOINT` env var; pre-encoded byte payloads for all servers; SIGTERM with graceful fallback instead of SIGKILL in `kill_port` ([#119])
 
 ### Removed
 
-- **BREAKING** (`core`): `PushChannel` / `PushServerChannel` — incompatible with unified Pipeline model (#199)
-- **BREAKING** (`tls-mbedtls`): `TestEngine` workaround / `findFreePort` — use `IoEngine.bindPipeline` + `PipelinedServer.localAddress` directly (#202)
-- `engine-nwconnection`: `NwTlsInstaller` sentinel (replaced by `installer == null` convention) (#220); `NodeTlsInstaller` / `MacosTlsInstallerInit` sentinels similarly removed
+- **BREAKING** (`core`): `PushChannel` / `PushServerChannel` — incompatible with unified Pipeline model ([#199])
+- **BREAKING** (`tls-mbedtls`): `TestEngine` workaround / `findFreePort` — use `IoEngine.bindPipeline` + `PipelinedServer.localAddress` directly ([#202])
+- `engine-nwconnection`: `NwTlsInstaller` sentinel (replaced by `installer == null` convention) ([#220]); `NodeTlsInstaller` / `MacosTlsInstallerInit` sentinels similarly removed
 
 ### Documentation
 
-- Dokka: cover all visibility levels (public, internal, protected, private); GitHub source links per declaration; `module.md` for all 13 + 6 TLS modules; shortened navigation package names (#253, #254, #255)
-- website: rewrite `intro.md` as Getting Started guide with Quick Start; add performance-based engine selection tables; macOS → Linux development workflow; keel vs Netty vs Ktor positioning (#251)
-- website: Coroutine / Pipeline / HTTP / WebSocket architecture pages (#257, #269); Japanese translations for all pages (#251)
-- README / README.ja: update `/hello` Pipeline and HTTPS Pipeline tables with 3-run median measurements (#239)
+- Dokka: cover all visibility levels (public, internal, protected, private); GitHub source links per declaration; `module.md` for all 13 + 6 TLS modules; shortened navigation package names ([#253], [#254], [#255])
+- website: rewrite `intro.md` as Getting Started guide with Quick Start; add performance-based engine selection tables; macOS → Linux development workflow; keel vs Netty vs Ktor positioning ([#251])
+- website: Coroutine / Pipeline / HTTP / WebSocket architecture pages ([#257], [#269]); Japanese translations for all pages ([#251])
+- README / README.ja: update `/hello` Pipeline and HTTPS Pipeline tables with 3-run median measurements ([#239])
 
 ## [0.3.0] - 2026-03-28
 
@@ -382,3 +382,119 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`: `KqueueEngineTest` — 4 unit tests including loopback echo test
 - `kqueue.def`: `keel_htons`, `keel_ntohs`, `keel_htonl`, `keel_loopback_addr` wrappers (Darwin byte-order macros)
 - `core`: added `macosX64` target to unblock cinterop commonization
+
+<!-- PR reference definitions for [Unreleased] section -->
+[#69]: https://github.com/fukusaka/keel/pull/69
+[#115]: https://github.com/fukusaka/keel/pull/115
+[#116]: https://github.com/fukusaka/keel/pull/116
+[#117]: https://github.com/fukusaka/keel/pull/117
+[#118]: https://github.com/fukusaka/keel/pull/118
+[#119]: https://github.com/fukusaka/keel/pull/119
+[#141]: https://github.com/fukusaka/keel/pull/141
+[#143]: https://github.com/fukusaka/keel/pull/143
+[#148]: https://github.com/fukusaka/keel/pull/148
+[#151]: https://github.com/fukusaka/keel/pull/151
+[#163]: https://github.com/fukusaka/keel/pull/163
+[#174]: https://github.com/fukusaka/keel/pull/174
+[#179]: https://github.com/fukusaka/keel/pull/179
+[#183]: https://github.com/fukusaka/keel/pull/183
+[#184]: https://github.com/fukusaka/keel/pull/184
+[#185]: https://github.com/fukusaka/keel/pull/185
+[#186]: https://github.com/fukusaka/keel/pull/186
+[#187]: https://github.com/fukusaka/keel/pull/187
+[#188]: https://github.com/fukusaka/keel/pull/188
+[#191]: https://github.com/fukusaka/keel/pull/191
+[#195]: https://github.com/fukusaka/keel/pull/195
+[#197]: https://github.com/fukusaka/keel/pull/197
+[#198]: https://github.com/fukusaka/keel/pull/198
+[#199]: https://github.com/fukusaka/keel/pull/199
+[#202]: https://github.com/fukusaka/keel/pull/202
+[#204]: https://github.com/fukusaka/keel/pull/204
+[#207]: https://github.com/fukusaka/keel/pull/207
+[#210]: https://github.com/fukusaka/keel/pull/210
+[#211]: https://github.com/fukusaka/keel/pull/211
+[#212]: https://github.com/fukusaka/keel/pull/212
+[#213]: https://github.com/fukusaka/keel/pull/213
+[#215]: https://github.com/fukusaka/keel/pull/215
+[#216]: https://github.com/fukusaka/keel/pull/216
+[#217]: https://github.com/fukusaka/keel/pull/217
+[#218]: https://github.com/fukusaka/keel/pull/218
+[#219]: https://github.com/fukusaka/keel/pull/219
+[#220]: https://github.com/fukusaka/keel/pull/220
+[#221]: https://github.com/fukusaka/keel/pull/221
+[#222]: https://github.com/fukusaka/keel/pull/222
+[#223]: https://github.com/fukusaka/keel/pull/223
+[#226]: https://github.com/fukusaka/keel/pull/226
+[#227]: https://github.com/fukusaka/keel/pull/227
+[#228]: https://github.com/fukusaka/keel/pull/228
+[#229]: https://github.com/fukusaka/keel/pull/229
+[#230]: https://github.com/fukusaka/keel/pull/230
+[#232]: https://github.com/fukusaka/keel/pull/232
+[#233]: https://github.com/fukusaka/keel/pull/233
+[#234]: https://github.com/fukusaka/keel/pull/234
+[#235]: https://github.com/fukusaka/keel/pull/235
+[#236]: https://github.com/fukusaka/keel/pull/236
+[#239]: https://github.com/fukusaka/keel/pull/239
+[#241]: https://github.com/fukusaka/keel/pull/241
+[#242]: https://github.com/fukusaka/keel/pull/242
+[#243]: https://github.com/fukusaka/keel/pull/243
+[#244]: https://github.com/fukusaka/keel/pull/244
+[#245]: https://github.com/fukusaka/keel/pull/245
+[#246]: https://github.com/fukusaka/keel/pull/246
+[#247]: https://github.com/fukusaka/keel/pull/247
+[#248]: https://github.com/fukusaka/keel/pull/248
+[#249]: https://github.com/fukusaka/keel/pull/249
+[#250]: https://github.com/fukusaka/keel/pull/250
+[#251]: https://github.com/fukusaka/keel/pull/251
+[#252]: https://github.com/fukusaka/keel/pull/252
+[#253]: https://github.com/fukusaka/keel/pull/253
+[#254]: https://github.com/fukusaka/keel/pull/254
+[#255]: https://github.com/fukusaka/keel/pull/255
+[#257]: https://github.com/fukusaka/keel/pull/257
+[#258]: https://github.com/fukusaka/keel/pull/258
+[#260]: https://github.com/fukusaka/keel/pull/260
+[#261]: https://github.com/fukusaka/keel/pull/261
+[#263]: https://github.com/fukusaka/keel/pull/263
+[#264]: https://github.com/fukusaka/keel/pull/264
+[#265]: https://github.com/fukusaka/keel/pull/265
+[#266]: https://github.com/fukusaka/keel/pull/266
+[#267]: https://github.com/fukusaka/keel/pull/267
+[#269]: https://github.com/fukusaka/keel/pull/269
+[#271]: https://github.com/fukusaka/keel/pull/271
+[#272]: https://github.com/fukusaka/keel/pull/272
+[#273]: https://github.com/fukusaka/keel/pull/273
+[#274]: https://github.com/fukusaka/keel/pull/274
+[#275]: https://github.com/fukusaka/keel/pull/275
+[#276]: https://github.com/fukusaka/keel/pull/276
+[#277]: https://github.com/fukusaka/keel/pull/277
+[#278]: https://github.com/fukusaka/keel/pull/278
+[#279]: https://github.com/fukusaka/keel/pull/279
+[#280]: https://github.com/fukusaka/keel/pull/280
+[#281]: https://github.com/fukusaka/keel/pull/281
+[#282]: https://github.com/fukusaka/keel/pull/282
+[#283]: https://github.com/fukusaka/keel/pull/283
+[#284]: https://github.com/fukusaka/keel/pull/284
+[#285]: https://github.com/fukusaka/keel/pull/285
+[#286]: https://github.com/fukusaka/keel/pull/286
+[#288]: https://github.com/fukusaka/keel/pull/288
+[#291]: https://github.com/fukusaka/keel/pull/291
+[#292]: https://github.com/fukusaka/keel/pull/292
+[#293]: https://github.com/fukusaka/keel/pull/293
+[#294]: https://github.com/fukusaka/keel/pull/294
+[#295]: https://github.com/fukusaka/keel/pull/295
+[#296]: https://github.com/fukusaka/keel/pull/296
+[#297]: https://github.com/fukusaka/keel/pull/297
+[#298]: https://github.com/fukusaka/keel/pull/298
+[#299]: https://github.com/fukusaka/keel/pull/299
+[#300]: https://github.com/fukusaka/keel/pull/300
+[#301]: https://github.com/fukusaka/keel/pull/301
+[#302]: https://github.com/fukusaka/keel/pull/302
+[#304]: https://github.com/fukusaka/keel/pull/304
+[#305]: https://github.com/fukusaka/keel/pull/305
+[#306]: https://github.com/fukusaka/keel/pull/306
+[#307]: https://github.com/fukusaka/keel/pull/307
+[#309]: https://github.com/fukusaka/keel/pull/309
+[#310]: https://github.com/fukusaka/keel/pull/310
+[#311]: https://github.com/fukusaka/keel/pull/311
+[#312]: https://github.com/fukusaka/keel/pull/312
+[#313]: https://github.com/fukusaka/keel/pull/313
