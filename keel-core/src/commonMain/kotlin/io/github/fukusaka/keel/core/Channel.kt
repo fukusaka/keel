@@ -149,10 +149,13 @@ interface Channel : AutoCloseable {
     /**
      * The [CoroutineDispatcher] for application-level processing (e.g. Ktor pipeline).
      *
-     * Native engines (kqueue, epoll) return the EventLoop dispatcher (same as
-     * [ioDispatcher]), running the entire request pipeline on the I/O
-     * thread — same model as Netty. JVM NIO returns [Dispatchers.Default] to
-     * leverage ForkJoinPool work-stealing for better load distribution.
+     * Every engine currently returns [ioDispatcher] — running the entire
+     * request pipeline on the same thread that drives I/O, avoiding
+     * per-request cross-thread dispatch overhead. User handlers are
+     * therefore expected to be non-blocking; blocking I/O should be wrapped
+     * in [kotlinx.coroutines.withContext] with `Dispatchers.IO` (or the
+     * `kotlinx.coroutines.Dispatchers` `.IO` equivalent on the target
+     * platform) by the caller.
      *
      * Default: same as [ioDispatcher].
      */

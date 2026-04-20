@@ -55,10 +55,7 @@ IoEngine  (config + close)
 
 keel は 1 EventLoop につき 1 スレッドで動作します。スレッド数は `IoEngineConfig(threads = N)` で設定します — `0`（デフォルト）は CPU コア数と同数です。
 
-**Coroutine モード**: I/O の準備が整ったとき（epoll、kqueue、NIO）または完了したとき（io_uring）、EventLoop が中断中のコルーチンを再開します。コルーチンがどこで実行されるかはターゲットによって異なります:
-
-- **Native エンジン（epoll、kqueue、io_uring）** — コルーチンは EventLoop スレッド上で直接実行されます。EventLoop がコルーチンの実行スレッドを兼ねており、スレッド間の受け渡しは発生しません。
-- **NIO（JVM）** — EventLoop スレッドが I/O 通知を処理し、コルーチンの再開を `Dispatchers.Default` にディスパッチします。JVM では I/O 監視とコルーチン実行を分離することで、ワークスティーリングのスレッドプールが EventLoop とは独立してコルーチンを全コアに分散できます。
+**Coroutine モード**: I/O の準備が整ったとき（epoll、kqueue、NIO、Netty）または完了したとき（io_uring、NWConnection）、EventLoop が中断中のコルーチンを再開します。コルーチンは EventLoop スレッド上で直接実行されます — keel は `channel.ioDispatcher`（および `appDispatcher`）をエンジンの native I/O プリミティブを駆動するスレッドと揃えているため、I/O 通知からコルーチン再開までスレッド間の受け渡しは発生しません（全エンジン共通）。ブロッキング I/O や CPU 負荷の高い処理を行うユーザーハンドラは `withContext(Dispatchers.IO)` / `withContext(Dispatchers.Default)` で明示的にオフロードしてください。
 
 **Pipeline モード**: EventLoop がハンドラチェーンを自スレッド上で同期的に呼び出します。コルーチンもスレッド間ディスパッチもなく、すべてのハンドラコードは EventLoop スレッド上で実行されます。
 

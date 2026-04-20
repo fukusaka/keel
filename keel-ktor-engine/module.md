@@ -61,9 +61,17 @@ HEAD ↔ [TlsHandler] ↔ HttpResponseEncoder ↔ HttpRequestDecoder
 ## Dispatcher Model
 
 The pipeline HTTP codec runs on the EventLoop thread (push-mode). The Ktor
-application pipeline runs on the channel's `appDispatcher`:
-- Native (kqueue/epoll): EventLoop — zero context switches
-- JVM NIO: `Dispatchers.Default` — ForkJoinPool work-stealing
+application pipeline also runs on the channel's `appDispatcher`, which is aligned
+with `ioDispatcher` on every engine: the entire request pipeline runs on the same
+thread that drives I/O — zero per-request context switches.
+
+| Engine | `ioDispatcher` / `appDispatcher` |
+|---|---|
+| epoll / kqueue / io-uring | Per-channel EventLoop thread (single pthread) |
+| NIO | `NioEventLoop` Selector thread |
+| Netty | `io.netty.channel.EventLoop` (per-channel, wrapped by `NettyEventLoopDispatcher`) |
+| NWConnection | Per-connection GCD serial dispatch queue (wrapped by `NwConnectionQueueDispatcher`) |
+| Node.js | JS event loop (`Dispatchers.Unconfined`) |
 
 User code that performs blocking I/O should use `withContext(Dispatchers.IO)` to
 avoid stalling the EventLoop.

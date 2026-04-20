@@ -124,7 +124,7 @@ channel.flush()  // 可能な場合はヘッダとボディを 1 回の OS 呼�
 
 `server.accept()` や `channel.read()` が suspend すると、呼び出し元コルーチンはスレッドを手放し、EventLoop は他の接続の I/O を処理できます。I/O が進行可能になると、EventLoop は `channel.ioDispatcher` でコルーチンを再開します。
 
-`keel-ktor-engine` は両ディスパッチャを内部で使い分けます。接続ハンドラを `ioDispatcher` で起動して I/O 読み取りとリクエストパースを EventLoop スレッド上で実行し、その後 `withContext` で `appDispatcher` に切り替えて Ktor パイプライン（ルーティング・レスポンス生成）を実行します。`keel-ktor-engine` を使う場合、この切り替えは自動で管理されます。
+`keel-ktor-engine` は接続ハンドラを `ioDispatcher` で起動し、I/O 読み取り・リクエストパース・Ktor パイプライン・レスポンス符号化をすべて同一スレッド上で実行します。`appDispatcher` は全エンジンで `ioDispatcher` と一致するため、Ktor パイプラインを囲む `withContext(appDispatcher)` は no-op（同一ディスパッチャなのでコルーチンランタイムが省略）となり、リクエストごとのスレッド切り替えコストはゼロです。
 
 カスタムサーバーコードで同じチャネルの I/O を行う追加コルーチンを起動する場合は `ioDispatcher` を使ってください:
 
@@ -136,17 +136,26 @@ launch(channel.ioDispatcher) {
 
 各ディスパッチャが指すスレッドはエンジンによって異なります:
 
-| エンジン | `ioDispatcher` | `appDispatcher` |
-|---|---|---|
-| epoll / kqueue / io_uring | EventLoop スレッド | EventLoop スレッド |
-| NIO（JVM） | EventLoop スレッド | `Dispatchers.Default` |
-| Netty / NWConnection / Node.js | `Dispatchers.Default` | `Dispatchers.Default` |
+| エンジン | `ioDispatcher` / `appDispatcher` |
+|---|---|
+| epoll / kqueue / io_uring | チャネルごとの EventLoop スレッド（単一 pthread） |
+| NIO（JVM） | `NioEventLoop` の Selector スレッド |
+| Netty（JVM） | `io.netty.channel.EventLoop`（`NettyEventLoopDispatcher` でラップ） |
+| NWConnection | 接続ごとの GCD serial dispatch queue（`NwConnectionQueueDispatcher` でラップ） |
+| Node.js | JS イベントループ（`Dispatchers.Unconfined`） |
 
-**Native エンジン（epoll、kqueue、io_uring）**: 両ディスパッチャとも EventLoop スレッドを返します。I/O 読み取り・リクエストパース・Ktor パイプラインがすべて同一スレッド上で実行されるため、スレッド間の受け渡しと wakeup syscall を排除できます。トレードオフとして、コルーチンコードでブロックしてはなりません。CPU 負荷の高い処理は `Dispatchers.Default` にオフロードしてください。
+どのエンジンも native I/O プリミティブ（epoll `epoll_wait`、kqueue `kevent`、io_uring CQE、Java NIO `Selector.select`、Netty `EventLoop.run`、GCD `dispatch_async`、Node.js microtask queue）を駆動するのと同じスレッドでコルーチンを再開します。リクエストの全処理（I/O 読み取り → HTTP パース → Ktor ハンドラ → レスポンス符号化）がそのスレッド上で実行され、スレッド間の受け渡しは発生しません。
 
-**NIO（JVM）**: `ioDispatcher` は EventLoop スレッドを返しますが、`appDispatcher` は `Dispatchers.Default` を返します。NIO は接続数に対して EventLoop スレッド数が少なく、各 EventLoop が担当する接続は固定されるため再分配できません。`Dispatchers.Default`（ForkJoinPool）はこの問題を積極的に解決します。work-stealing がどの EventLoop で接続を受け付けたかに関わらず、全コアにタスクを継続的に再分配します。
+トレードオフとして、ユーザーハンドラで EventLoop を長時間ブロックしてはなりません。ブロッキング I/O — JDBC、`Thread.sleep`、非同期 API 未対応のファイルシステム読み書き — は同一 EventLoop に多重化された他の全接続を当該呼び出しの完了までストールさせます。ブロッキング処理は `withContext(Dispatchers.IO)` でキャッシュスレッドプールに逃がしてください:
 
-**Netty / NWConnection / Node.js**: keel はこれらのエンジンの EventLoop を管理しません。両ディスパッチャとも `Dispatchers.Default` を返し、各エンジン固有のスレッドモデルに委譲します。
+```kotlin
+get("/user/{id}") {
+    val user = withContext(Dispatchers.IO) { jdbcTemplate.queryForObject(...) }
+    call.respond(user)
+}
+```
+
+CPU 負荷の高い処理も同様に `withContext(Dispatchers.Default)` でオフロードします。
 
 ## パフォーマンス
 
