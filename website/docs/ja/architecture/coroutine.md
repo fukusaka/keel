@@ -86,7 +86,6 @@ interface Channel : AutoCloseable {
     override fun close()                   // 両方向を閉じ、リソースを解放する
 
     val ioDispatcher: CoroutineDispatcher  // このチャネルの I/O に最適なディスパッチャ
-    val appDispatcher: CoroutineDispatcher        // アプリケーション処理用ディスパッチャ
 }
 ```
 
@@ -124,7 +123,7 @@ channel.flush()  // 可能な場合はヘッダとボディを 1 回の OS 呼�
 
 `server.accept()` や `channel.read()` が suspend すると、呼び出し元コルーチンはスレッドを手放し、EventLoop は他の接続の I/O を処理できます。I/O が進行可能になると、EventLoop は `channel.ioDispatcher` でコルーチンを再開します。
 
-`keel-ktor-engine` は接続ハンドラを `ioDispatcher` で起動し、I/O 読み取り・リクエストパース・Ktor パイプライン・レスポンス符号化をすべて同一スレッド上で実行します。`appDispatcher` は全エンジンで `ioDispatcher` と一致するため、Ktor パイプラインを囲む `withContext(appDispatcher)` は no-op（同一ディスパッチャなのでコルーチンランタイムが省略）となり、リクエストごとのスレッド切り替えコストはゼロです。
+`keel-ktor-engine` は接続ハンドラを `ioDispatcher` で起動し、I/O 読み取り・リクエストパース・Ktor パイプライン・レスポンス符号化をすべて同一スレッド上で実行します。Ktor パイプライン自体は `KeelApplicationEngine.Configuration.applicationDispatcher` で実行され、null（デフォルト）の場合は `ioDispatcher` に collapse するため、パイプラインを囲む内部 `withContext(applicationDispatcher)` は no-op（同一ディスパッチャなのでコルーチンランタイムが省略）となり、リクエストごとのスレッド切り替えコストはゼロです。ブロッキング処理を多用するハンドラを抱えるデプロイでは `applicationDispatcher = Dispatchers.Default` を明示設定して work-stealing pool に offload することも可能です（リクエストごとに 1 回の hop コスト）。
 
 カスタムサーバーコードで同じチャネルの I/O を行う追加コルーチンを起動する場合は `ioDispatcher` を使ってください:
 
@@ -134,9 +133,9 @@ launch(channel.ioDispatcher) {
 }
 ```
 
-各ディスパッチャが指すスレッドはエンジンによって異なります:
+`ioDispatcher` が指すスレッドはエンジンによって異なります:
 
-| エンジン | `ioDispatcher` / `appDispatcher` |
+| エンジン | `ioDispatcher`（EventLoop） |
 |---|---|
 | epoll / kqueue / io_uring | チャネルごとの EventLoop スレッド（単一 pthread） |
 | NIO（JVM） | `NioEventLoop` の Selector スレッド |

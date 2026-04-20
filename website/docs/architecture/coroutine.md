@@ -86,7 +86,6 @@ interface Channel : AutoCloseable {
     override fun close()                   // closes both sides, releases resources
 
     val ioDispatcher: CoroutineDispatcher  // optimal dispatcher for I/O on this channel
-    val appDispatcher: CoroutineDispatcher        // dispatcher for application-level processing
 }
 ```
 
@@ -124,7 +123,7 @@ channel.flush()  // sends headers + body together when possible
 
 When `server.accept()` or `channel.read()` suspends, the calling coroutine releases its thread and the EventLoop is free to handle other connections. When I/O can proceed, the EventLoop resumes the coroutine on `channel.ioDispatcher`.
 
-`keel-ktor-engine` launches the connection handler on `ioDispatcher` so that I/O reads, request parsing, the Ktor pipeline, and response encoding all run on the same thread. `appDispatcher` is aligned with `ioDispatcher` on every engine, so the `withContext(appDispatcher)` wrapper around the Ktor pipeline is a no-op (same dispatcher, elided by the coroutine runtime) — zero per-request context switches.
+`keel-ktor-engine` launches the connection handler on `ioDispatcher` so that I/O reads, request parsing, the Ktor pipeline, and response encoding all run on the same thread. The Ktor pipeline itself runs on `KeelApplicationEngine.Configuration.applicationDispatcher`: when null (the default) it collapses to `ioDispatcher`, so the internal `withContext(applicationDispatcher)` wrapper around the Ktor pipeline is a no-op (same dispatcher, elided by the coroutine runtime) — zero per-request context switches. Setting `applicationDispatcher = Dispatchers.Default` explicitly offloads the pipeline onto a work-stealing pool at the cost of one hop per request, useful when handlers routinely perform blocking work.
 
 When writing custom server code and launching additional coroutines that perform I/O on the same channel, use `ioDispatcher` to keep them on the correct thread:
 
@@ -134,9 +133,9 @@ launch(channel.ioDispatcher) {
 }
 ```
 
-Where these dispatchers point depends on the engine:
+Where `ioDispatcher` points depends on the engine:
 
-| Engine | `ioDispatcher` / `appDispatcher` |
+| Engine | `ioDispatcher` (EventLoop) |
 |---|---|
 | epoll / kqueue / io_uring | Per-channel EventLoop thread (single pthread) |
 | NIO (JVM) | `NioEventLoop` Selector thread |

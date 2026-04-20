@@ -81,7 +81,7 @@ Configuration shared by all engines:
 | `Pipeline` | `pipeline` | Handler chain interface |
 | `DefaultPipeline` | `pipeline` | Doubly-linked handler chain implementation |
 | `PipelinedChannel` | `pipeline` | Channel with attached `Pipeline` |
-| `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`, `appDispatcher`) |
+| `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`) |
 | `AbstractIoTransport` | `pipeline` | Base `IoTransport` with write buffering, backpressure, and callback initialization |
 | `AbstractPipelinedChannel` | `pipeline` | Base `PipelinedChannel` that wires `IoTransport` callbacks to the pipeline |
 | `SuspendBridgeHandler` | `pipeline` | Pipeline-to-suspend bridge for raw `IoBuf` (Coroutine mode) |

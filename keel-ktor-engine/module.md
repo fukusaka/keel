@@ -60,12 +60,12 @@ HEAD ↔ [TlsHandler] ↔ HttpResponseEncoder ↔ HttpRequestDecoder
 
 ## Dispatcher Model
 
-The pipeline HTTP codec runs on the EventLoop thread (push-mode). The Ktor
-application pipeline also runs on the channel's `appDispatcher`, which is aligned
-with `ioDispatcher` on every engine: the entire request pipeline runs on the same
-thread that drives I/O — zero per-request context switches.
+The pipeline HTTP codec runs on the channel's EventLoop thread (push-mode).
+The Ktor application pipeline runs on `Configuration.applicationDispatcher`:
+when null (default) it collapses to the channel's `ioDispatcher` so the entire
+request flows on the EventLoop with zero per-request cross-thread dispatch.
 
-| Engine | `ioDispatcher` / `appDispatcher` |
+| Engine | `ioDispatcher` (EventLoop) |
 |---|---|
 | epoll / kqueue / io-uring | Per-channel EventLoop thread (single pthread) |
 | NIO | `NioEventLoop` Selector thread |
@@ -73,8 +73,11 @@ thread that drives I/O — zero per-request context switches.
 | NWConnection | Per-connection GCD serial dispatch queue (wrapped by `NwConnectionQueueDispatcher`) |
 | Node.js | JS event loop (`Dispatchers.Unconfined`) |
 
-User code that performs blocking I/O should use `withContext(Dispatchers.IO)` to
-avoid stalling the EventLoop.
+User code that performs blocking I/O should wrap the blocking call in
+`withContext(Dispatchers.IO)`. Alternatively, set
+`applicationDispatcher = Dispatchers.Default` in the engine configuration to
+offload the whole Ktor pipeline onto a work-stealing pool at the cost of one
+hop per request.
 
 ## HTTP/1.1 Keep-Alive
 
