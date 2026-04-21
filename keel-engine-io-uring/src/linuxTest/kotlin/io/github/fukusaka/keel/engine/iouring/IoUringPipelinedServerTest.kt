@@ -4,6 +4,9 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io_uring.io_uring
@@ -56,7 +59,7 @@ class IoUringPipelinedServerTest {
     // connects a raw client, and asserts byte-for-byte echo.
     private fun runEchoTest(directAlloc: Boolean) {
         val caps = detectCaps().copy(acceptDirectAlloc = directAlloc)
-        val engine = IoUringEngine(capabilities = caps)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
@@ -98,7 +101,7 @@ class IoUringPipelinedServerTest {
             iowqMaxBoundedWorkers = 4,
             iowqMaxUnboundedWorkers = 8,
         )
-        val engine = IoUringEngine(capabilities = caps)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
@@ -125,7 +128,7 @@ class IoUringPipelinedServerTest {
         // false positive.
         if (!kernelSupportsNapiBusyPoll()) return
         val caps = detectCaps().copy(napiBusyPoll = true, napiBusyPollTimeoutUs = 50)
-        val engine = IoUringEngine(capabilities = caps)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
@@ -146,7 +149,7 @@ class IoUringPipelinedServerTest {
     fun `multiple connections work with acceptDirectAlloc enabled`() {
         if (!kernelSupportsAcceptDirectAlloc()) return
         val caps = detectCaps().copy(acceptDirectAlloc = true)
-        val engine = IoUringEngine(capabilities = caps)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
             channel.pipeline.addLast("echo", EchoHandler())
         }
@@ -173,6 +176,17 @@ class IoUringPipelinedServerTest {
     }
 
     // --- Helpers ---
+
+    /**
+     * [IoEngineConfig] wired to [PrintLogger] at DEBUG so CQE callback
+     * exception warnings (added in PR #318) and direct-alloc slot traces
+     * (PR #317) appear in CI test output — `NoopLoggerFactory` (default)
+     * would silently drop them and the `io_uring stress` workflow's
+     * JUnit XML / HTML reports would surface only the `read -1` symptom
+     * without any server-side context.
+     */
+    private fun testConfig(): IoEngineConfig =
+        IoEngineConfig(loggerFactory = PrintLogger.Factory(LogLevel.DEBUG))
 
     /**
      * Detect current kernel caps via a throwaway ring. We can't use the
