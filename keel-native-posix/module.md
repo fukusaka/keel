@@ -36,7 +36,7 @@ Two cinterop definitions expose POSIX functions that Kotlin/Native cannot bind d
 | `createServerSocket(host, port, backlog)` | `socket` → `SO_REUSEADDR` → non-blocking → `bind` → `listen` |
 | `createReusePortServerSocket(host, port, backlog)` | Same as above + `SO_REUSEPORT`. Used by io_uring Pipeline mode — the kernel distributes connections across worker sockets by 4-tuple hash |
 | `createUnconnectedSocket()` | Creates a non-blocking TCP socket; caller drives `connect()` |
-| `connectNonBlocking(fd, host, port)` | Initiates non-blocking `connect()`. Returns 0 on immediate success (e.g. loopback) or -1 with `errno` set to `EINPROGRESS` for non-blocking sockets |
+| `connectNonBlocking(fd, host, port)` | Initiates non-blocking `connect()`. Returns a [ConnectResult] — `Connected` on immediate success (e.g. loopback), `InProgress` on `EINPROGRESS` / `EINTR`, or `Failed(errno)` otherwise |
 | `getSocketError(fd)` | Reads `SO_ERROR` via `getsockopt` after EventLoop reports WRITE readiness (non-blocking connect completion check) |
 | `getLocalAddress(fd)` | `getsockname` → `SocketAddress` |
 | `getRemoteAddress(fd)` | `getpeername` → `SocketAddress` |
