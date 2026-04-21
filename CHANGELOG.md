@@ -94,6 +94,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: EventLoop no longer dies on unhandled CQE callback exceptions; log + continue instead ([#318])
 - `engine-*`: release server fd / channel / NWListener along `bind()` / `bindPipeline()` error paths across all six engines. Was orphaned on `epoll_ctl` / `kevent` / `start()` / `dispatch_semaphore_wait` failures; `IoUringEngine.bindPipelineInet` tracks `createdCount` so partial `SO_REUSEPORT` fanout only closes acquired fds. New private helpers `closeQuietly` / `cancelListenerQuietly` ([#313])
 - `engine-netty`: align `NettyIoTransport.ioDispatcher` with channel `EventLoop` via new `NettyEventLoopDispatcher` — fixes latent `SuspendBridgeHandler` cross-thread race (ktor-keel-netty +17% on loopback) ([#310])
 - `engine-nwconnection`: align `NwIoTransport.ioDispatcher` with per-connection `connQueue` via new `NwConnectionQueueDispatcher` — fixes `NwEngineTest.GC heap` cycle-13 stall on CI `macos-latest` (ktor-keel-nwconnection +11%) ([#309])
@@ -503,3 +504,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#313]: https://github.com/fukusaka/keel/pull/313
 [#316]: https://github.com/fukusaka/keel/pull/316
 [#317]: https://github.com/fukusaka/keel/pull/317
+[#318]: https://github.com/fukusaka/keel/pull/318
