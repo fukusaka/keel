@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.logging.Logger
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -33,7 +34,6 @@ import platform.posix.SO_REUSEPORT
 import platform.posix.bind
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
-import platform.posix.close
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.getpeername
@@ -98,8 +98,12 @@ object PosixSocketUtils {
      * @param backlog TCP listen backlog. OS may cap this value.
      * @return The server socket file descriptor.
      */
-    fun createServerSocket(address: IpAddress, port: Int, backlog: Int = DEFAULT_BACKLOG): Int =
-        createAndBindListener(address, port, backlog, reusePort = false)
+    fun createServerSocket(
+        address: IpAddress,
+        port: Int,
+        backlog: Int = DEFAULT_BACKLOG,
+        logger: Logger,
+    ): Int = createAndBindListener(address, port, backlog, reusePort = false, logger)
 
     /**
      * Creates a non-blocking TCP server socket with SO_REUSEPORT.
@@ -109,14 +113,19 @@ object PosixSocketUtils {
      * distributes incoming connections across sockets by hashing the
      * connection 4-tuple.
      */
-    fun createReusePortServerSocket(address: IpAddress, port: Int, backlog: Int = DEFAULT_BACKLOG): Int =
-        createAndBindListener(address, port, backlog, reusePort = true)
+    fun createReusePortServerSocket(
+        address: IpAddress,
+        port: Int,
+        backlog: Int = DEFAULT_BACKLOG,
+        logger: Logger,
+    ): Int = createAndBindListener(address, port, backlog, reusePort = true, logger)
 
     private fun createAndBindListener(
         address: IpAddress,
         port: Int,
         backlog: Int,
         reusePort: Boolean,
+        logger: Logger,
     ): Int {
         val family = familyOf(address)
         val fd = socket(family, SOCK_STREAM, 0)
@@ -163,7 +172,7 @@ object PosixSocketUtils {
             val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            close(fd)
+            closeFdSafely(fd, logger, "createServerSocket cleanup")
             throw e
         }
 
@@ -376,7 +385,11 @@ object PosixSocketUtils {
      *
      * @throws IllegalStateException if socket / bind / listen fails.
      */
-    fun createUnixServerSocket(address: UnixSocketAddress, backlog: Int = DEFAULT_BACKLOG): Int {
+    fun createUnixServerSocket(
+        address: UnixSocketAddress,
+        backlog: Int = DEFAULT_BACKLOG,
+        logger: Logger,
+    ): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
 
@@ -401,7 +414,7 @@ object PosixSocketUtils {
             val listenRc = listen(fd, backlog)
             check(listenRc == 0) { "listen(AF_UNIX) failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            close(fd)
+            closeFdSafely(fd, logger, "createUnixServerSocket cleanup")
             throw e
         }
         return fd
