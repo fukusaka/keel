@@ -52,6 +52,15 @@ import kotlinx.cinterop.ExperimentalForeignApi
  *   unused fd.
  * - **No kernel side effects**: `shutdown` / `close` only update the
  *   fake's bookkeeping — no actual socket is touched.
+ * - **No argument capture**: `connect(addr, addrLen)`,
+ *   `shutdown(how)`, `send(flags)`, `writev(regions)` and the
+ *   `length` parameter are consumed but NOT recorded. Tests cannot
+ *   assert that the system under test built the correct sockaddr or
+ *   picked the correct `how`. If an assertion like that is needed,
+ *   wrap the fake via composition and override the relevant method
+ *   to snapshot the argument — keeping the base class argument-less
+ *   avoids dragging capture state into every test that doesn't
+ *   need it.
  */
 @OptIn(ExperimentalForeignApi::class)
 public class FakeNativeSocket : NativeSocket {
