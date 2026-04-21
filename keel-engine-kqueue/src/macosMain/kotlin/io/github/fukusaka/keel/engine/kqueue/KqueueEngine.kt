@@ -33,7 +33,6 @@ import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
-import platform.posix.close
 import platform.posix.errno
 
 /**
@@ -199,17 +198,17 @@ class KqueueEngine(
                     workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
-                        close(fd)
+                        closeFdSafely(fd, logger, "connect cancellation")
                     }
                 }
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    close(fd)
+                    closeFdSafely(fd, logger, "connect cleanup")
                     error("connect($address) failed: ${errnoMessage(error)}")
                 }
             }
             is ConnectResult.Failed -> {
-                close(fd)
+                closeFdSafely(fd, logger, "connect cleanup")
                 error("connect($address) failed: ${errnoMessage(result.errno)}")
             }
         }
@@ -238,18 +237,18 @@ class KqueueEngine(
                     workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
-                        close(fd)
+                        closeFdSafely(fd, logger, "connect cancellation")
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    close(fd)
+                    closeFdSafely(fd, logger, "connect cleanup")
                     error("connect() failed: ${errnoMessage(error)}")
                 }
             }
             is ConnectResult.Failed -> {
-                close(fd)
+                closeFdSafely(fd, logger, "connect cleanup")
                 error("connect() failed: ${errnoMessage(result.errno)}")
             }
         }

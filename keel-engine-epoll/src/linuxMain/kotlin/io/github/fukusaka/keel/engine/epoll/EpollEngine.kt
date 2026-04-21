@@ -31,7 +31,6 @@ import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
-import platform.posix.close
 import platform.posix.errno
 
 /**
@@ -178,17 +177,17 @@ class EpollEngine(
                     workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, EpollEventLoop.Interest.WRITE)
-                        close(fd)
+                        closeFdSafely(fd, logger, "connect cancellation")
                     }
                 }
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    close(fd)
+                    closeFdSafely(fd, logger, "connect cleanup")
                     error("connect($address) failed: ${errnoMessage(error)}")
                 }
             }
             is ConnectResult.Failed -> {
-                close(fd)
+                closeFdSafely(fd, logger, "connect cleanup")
                 error("connect($address) failed: ${errnoMessage(result.errno)}")
             }
         }
@@ -217,18 +216,18 @@ class EpollEngine(
                     workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
                         workerLoop.unregister(fd, EpollEventLoop.Interest.WRITE)
-                        close(fd)
+                        closeFdSafely(fd, logger, "connect cancellation")
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
                 val error = PosixSocketUtils.getSocketError(fd)
                 if (error != 0) {
-                    close(fd)
+                    closeFdSafely(fd, logger, "connect cleanup")
                     error("connect() failed: ${errnoMessage(error)}")
                 }
             }
             is ConnectResult.Failed -> {
-                close(fd)
+                closeFdSafely(fd, logger, "connect cleanup")
                 error("connect() failed: ${errnoMessage(result.errno)}")
             }
         }
