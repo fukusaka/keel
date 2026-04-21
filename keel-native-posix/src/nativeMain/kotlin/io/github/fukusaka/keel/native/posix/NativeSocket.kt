@@ -156,12 +156,24 @@ public sealed class ReadResult {
     public data class Failed(val errno: Int) : ReadResult()
 }
 
-// Outcome of [NativeSocket.write] / writev / send. The shape matches
-// the pre-existing `PosixWrite.WriteResult` (Written / WouldBlock /
-// Failed) so existing consumers (`EpollIoTransport` / `KqueueIoTransport`)
-// can migrate to [NativeSocket] in a follow-up PR without re-writing
-// their when-branches. Once migration is complete, `PosixWrite.kt`
-// itself will be deprecated.
+/**
+ * Outcome of [NativeSocket.write] / [NativeSocket.writev] / [NativeSocket.send].
+ *
+ * - [Written] — the kernel accepted some bytes. Partial writes are
+ *   possible; callers drive a loop until all bytes are transferred.
+ * - [WouldBlock] — the send buffer was full (`EAGAIN` / `EWOULDBLOCK`).
+ *   Callers register a write-readiness callback (`EPOLLOUT` /
+ *   `EVFILT_WRITE`) and resume later.
+ * - [Failed] — any other `errno`. A `send(2)` / `write(2)` that returns
+ *   0 on a non-empty request is also mapped to `Failed(errno = 0)` by
+ *   the production impl; callers that want to distinguish this edge
+ *   case branch on `errno == 0` inside the failure handler.
+ */
+public sealed class WriteResult {
+    public data class Written(val bytes: Int) : WriteResult()
+    public object WouldBlock : WriteResult()
+    public data class Failed(val errno: Int) : WriteResult()
+}
 
 /**
  * Outcome of [NativeSocket.accept].
