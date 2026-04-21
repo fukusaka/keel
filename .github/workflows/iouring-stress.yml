@@ -1,15 +1,19 @@
 name: io_uring stress (flaky-test repro)
 
-# Manually-triggered workflow to repro the CI-only flake in
-# IoUringPipelinedServerTest.
+# Runs the io_uring linuxX64 test suite N times with per-iteration
+# report snapshots, so a single run produces enough samples to observe
+# the flake rate and capture descriptive failure messages (rawRead /
+# rawWrite helpers assert with EOF / SO_RCVTIMEO context since
+# PR #307 / #308).
 #
-# Runs the io_uring linuxX64 test suite N times with `--rerun-tasks`
-# and preserves JUnit XML + HTML reports per iteration, so a single
-# dispatch produces enough samples to observe the flake rate and
-# capture the descriptive failure message (rawRead / rawWrite helpers
-# assert with EOF / SO_RCVTIMEO context since PR #307 / #308).
-#
-# Use via Actions tab → "io_uring stress" → Run workflow.
+# Triggers:
+#   - workflow_dispatch: manual run with configurable iteration count
+#     (Actions tab → "io_uring stress" → Run workflow)
+#   - pull_request: auto-runs on PRs that touch engine-io-uring, gated
+#     by the same `needs-pr-check` label as the main CI workflow. Uses
+#     the default 20 iteration count. Auto-triggering keeps diagnostic
+#     coverage close to the change that introduced regressions without
+#     forcing contributors to remember to dispatch the workflow.
 
 on:
   workflow_dispatch:
@@ -18,12 +22,29 @@ on:
         description: 'Number of test-suite iterations'
         required: false
         default: '20'
+  pull_request:
+    types: [ labeled, synchronize ]
+    paths:
+      - 'keel-engine-io-uring/**'
+      - '.github/workflows/iouring-stress.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   stress:
-    name: Stress (linuxX64) x${{ github.event.inputs.iterations }}
+    name: Stress (linuxX64) x${{ github.event.inputs.iterations || '20' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+
+    env:
+      ITERATIONS_DEFAULT: '20'
 
     steps:
       - uses: actions/checkout@v6
@@ -55,7 +76,9 @@ jobs:
       # iteration on CI).
       - name: Stress loop
         env:
-          ITERATIONS: ${{ github.event.inputs.iterations }}
+          # workflow_dispatch provides the input; pull_request trigger falls
+          # back to the default 20 iterations.
+          ITERATIONS: ${{ github.event.inputs.iterations || env.ITERATIONS_DEFAULT }}
         run: |
           set +e
           mkdir -p stress-reports
