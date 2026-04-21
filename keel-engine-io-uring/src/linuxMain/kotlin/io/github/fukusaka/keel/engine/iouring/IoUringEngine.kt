@@ -134,7 +134,7 @@ class IoUringEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog, logger)
         try {
             logger.debug { "Bound to $address" }
             return IoUringServer(
@@ -151,7 +151,7 @@ class IoUringEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog, logger)
         try {
             val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
@@ -330,7 +330,7 @@ class IoUringEngine(
         // single server fd. Only one worker receives accept readiness — UDS
         // workloads are typically low-fanout (IPC / sidecars) so the loss of
         // kernel-side connection hashing is acceptable.
-        val serverFds = intArrayOf(PosixSocketUtils.createUnixServerSocket(address, config.backlog))
+        val serverFds = intArrayOf(PosixSocketUtils.createUnixServerSocket(address, config.backlog, logger))
         try {
             val server = IoUringPipelinedServerChannel(
                 workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger,
@@ -361,7 +361,7 @@ class IoUringEngine(
         var createdCount = 0
         try {
             for (i in serverFds.indices) {
-                serverFds[i] = PosixSocketUtils.createReusePortServerSocket(ip, port, config.backlog)
+                serverFds[i] = PosixSocketUtils.createReusePortServerSocket(ip, port, config.backlog, logger)
                 createdCount = i + 1
             }
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
