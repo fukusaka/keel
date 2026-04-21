@@ -4,20 +4,8 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.set
-import platform.posix.EAGAIN
-import platform.posix.EWOULDBLOCK
-import platform.posix.errno
-import platform.posix.write
-import posix_socket.keel_writev
 
 /**
  * Outcome of a single POSIX `write(2)` / `writev(2)` invocation.
@@ -40,60 +28,37 @@ sealed class WriteResult {
 }
 
 /**
- * Writes up to [length] bytes from [ptr] to [fd] via POSIX `write(2)`.
+ * Writes up to [length] bytes from [ptr] to [fd].
  *
- * Callers (`EpollIoTransport.flushSingle` / `KqueueIoTransport.flushSingle`)
- * previously inlined the `write` call, `errno` check, and `EAGAIN` /
- * `EWOULDBLOCK` translation. Centralising here ensures every engine treats
- * "would block" and "hard failure" consistently: the sealed [WriteResult]
- * forces every call site to handle all three branches exhaustively at
- * compile time.
+ * Delegates to [NativeSocket.write] on [PosixNativeSocket], which
+ * routes through the Layer 1 `keel_write` cinterop wrapper — EINTR
+ * is retried transparently, so the returned [WriteResult] never
+ * represents "interrupted mid-syscall" as a spurious failure. The
+ * Sealed-result shape (`Written` / `WouldBlock` / `Failed`) matches
+ * `NativeSocket.write` directly.
+ *
+ * Retained as a free function for backwards compatibility with
+ * existing `EpollIoTransport.flushSingle` / `KqueueIoTransport.flushSingle`
+ * call sites. New code should prefer [PosixNativeSocket.write] directly.
  */
 @OptIn(ExperimentalForeignApi::class)
-fun writeSingle(fd: Int, ptr: CPointer<ByteVar>, length: Int): WriteResult {
-    val n = write(fd, ptr, length.convert<ULong>())
-    return if (n >= 0) {
-        WriteResult.Written(n.toInt())
-    } else {
-        val err = errno
-        if (err == EAGAIN || err == EWOULDBLOCK) WriteResult.WouldBlock
-        else WriteResult.Failed(err)
-    }
-}
+fun writeSingle(fd: Int, ptr: CPointer<ByteVar>, length: Int): WriteResult =
+    PosixNativeSocket.write(fd, ptr, length)
 
 /**
- * Gather-writes every [PendingWrite] in [writes] to [fd] via the C
- * `keel_writev` wrapper (POSIX `writev(2)`).
+ * Gather-writes every [PendingWrite] in [writes] to [fd].
  *
- * Each buffer is submitted from its
- * [unsafePointer][io.github.fukusaka.keel.buf.unsafePointer] + `offset`
- * with length `length`; the caller supplies non-zero-length entries only.
+ * Delegates to [NativeSocket.writev] on [PosixNativeSocket] (Layer 1
+ * `keel_writev` cinterop wrapper with EINTR retry).
  *
- * Callers (`EpollIoTransport.flushGather` / `KqueueIoTransport.flushGather`)
- * previously duplicated the iovec array preparation, `keel_writev`
- * invocation, and `errno` interpretation. Centralising the syscall
- * wrapper leaves only the engine-specific post-processing (partial-write
- * re-enqueue, `registerWriteCallback` for `WouldBlock`, buffer release
- * for `Failed`) in the engine IoTransport — the POSIX-level concerns
- * (`iovec` layout, `ULongVar` / `CPointerVar` cinterop dance, `errno`
- * semantics) stay in `keel-native-posix`.
+ * Retained as a free function for backwards compatibility with
+ * existing `EpollIoTransport.flushGather` / `KqueueIoTransport.flushGather`
+ * call sites. New code should prefer [PosixNativeSocket.writev] directly.
  */
 @OptIn(ExperimentalForeignApi::class)
-fun writeGather(fd: Int, writes: List<PendingWrite>): WriteResult = memScoped {
-    val count = writes.size
-    val bases = allocArray<CPointerVar<ByteVar>>(count)
-    val lens = allocArray<ULongVar>(count)
-    for (i in writes.indices) {
-        val pw = writes[i]
-        bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-        lens[i] = pw.length.convert()
+fun writeGather(fd: Int, writes: List<PendingWrite>): WriteResult {
+    val regions = writes.map { pw ->
+        NativeRegion((pw.buf.unsafePointer + pw.offset)!!, pw.length)
     }
-    val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
-    if (n >= 0) {
-        WriteResult.Written(n.toInt())
-    } else {
-        val err = errno
-        if (err == EAGAIN || err == EWOULDBLOCK) WriteResult.WouldBlock
-        else WriteResult.Failed(err)
-    }
+    return PosixNativeSocket.writev(fd, regions)
 }

@@ -8,6 +8,9 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.ShutdownResult
+import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -19,7 +22,6 @@ import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
 import platform.posix.ENOBUFS
 import platform.posix.SHUT_WR
-import platform.posix.shutdown
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_free_iovec
@@ -38,7 +40,6 @@ import platform.posix.EAGAIN
 import platform.posix.EWOULDBLOCK
 import platform.posix.MSG_NOSIGNAL
 import platform.posix.errno
-import platform.posix.send
 import posix_socket.keel_writev
 
 /**
@@ -184,9 +185,11 @@ internal class IoUringIoTransport(
                     },
                 )
             } else {
-                val ret = shutdown(fd, SHUT_WR)
-                if (ret != 0) {
-                    eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+                when (val result = PosixNativeSocket.shutdown(fd, SHUT_WR)) {
+                    ShutdownResult.Ok -> Unit
+                    is ShutdownResult.Failed -> eventLoop.logger.warn {
+                        "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
+                    }
                 }
             }
         }
@@ -350,44 +353,41 @@ internal class IoUringIoTransport(
         var fatalError = false
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            val remaining = (pw.length - written).toULong()
-            val n = send(fd, ptr, remaining, MSG_NOSIGNAL)
-            when {
-                n > 0 -> {
-                    written += n.toInt()
-                    flushBytesWritten += n
+            val remaining = pw.length - written
+            when (val result = PosixNativeSocket.send(fd, ptr, remaining, MSG_NOSIGNAL)) {
+                is WriteResult.Written -> {
+                    written += result.bytes
+                    flushBytesWritten += result.bytes.toLong()
                 }
-                n == 0L -> {
-                    // TCP send() returning 0 is unexpected (writes always transfer
-                    // at least 1 byte on success or fail). Treat as fatal so the
-                    // orphaned connection is torn down instead of being silently
-                    // marked "flushed".
-                    eventLoop.logger.warn {
-                        "send() returned 0 unexpectedly: fd=$fd written=$written/${pw.length}"
-                    }
-                    fatalError = true
-                    break
+                WriteResult.WouldBlock -> {
+                    flushHadEagain = true
+                    // Decrement sync-written portion; async remainder tracked via asyncPendingFlushBytes.
+                    updatePendingBytes(-written)
+                    val asyncBytes = pw.length - written
+                    asyncPendingFlushBytes += asyncBytes
+                    // Transfer buffer ownership to submitAsyncSend.
+                    // Do NOT release here — submitAsyncSend manages the lifecycle.
+                    submitAsyncSend(pw.buf, pw.offset + written, asyncBytes)
+                    return false
                 }
-                else -> {
-                    val err = errno
-                    if (err == EAGAIN || err == EWOULDBLOCK) {
-                        flushHadEagain = true
-                        // Decrement sync-written portion; async remainder tracked via asyncPendingFlushBytes.
-                        updatePendingBytes(-written)
-                        val asyncBytes = pw.length - written
-                        asyncPendingFlushBytes += asyncBytes
-                        // Transfer buffer ownership to submitAsyncSend.
-                        // Do NOT release here — submitAsyncSend manages the lifecycle.
-                        submitAsyncSend(pw.buf, pw.offset + written, asyncBytes)
-                        return false
-                    }
-                    // Unrecoverable error (e.g., EPIPE after peer RST, ECONNRESET,
-                    // EBADF). Log with errno and mark the connection for teardown
-                    // — previously we silently released the buffer and returned
-                    // "flush complete", leaving the orphaned transport alive and
-                    // the pipeline unaware that the echo never reached the peer.
+                is WriteResult.Failed -> {
+                    val err = result.errno
+                    // PosixNativeSocket maps send()==0 to Failed(errno=0). TCP send
+                    // returning 0 for a non-empty request is spec-unexpected — log
+                    // with the dedicated message so errnoMessage(0) ("Success")
+                    // doesn't muddy the trail.
                     eventLoop.logger.warn {
-                        "send() failed: fd=$fd ${errnoMessage(err)} (written=$written/${pw.length})"
+                        if (err == 0) {
+                            "send() returned 0 unexpectedly: fd=$fd written=$written/${pw.length}"
+                        } else {
+                            // Unrecoverable error (e.g., EPIPE after peer RST,
+                            // ECONNRESET, EBADF). Mark the connection for teardown
+                            // — previously we silently released the buffer and
+                            // returned "flush complete", leaving the orphaned
+                            // transport alive and the pipeline unaware that the
+                            // echo never reached the peer.
+                            "send() failed: fd=$fd ${errnoMessage(err)} (written=$written/${pw.length})"
+                        }
                     }
                     fatalError = true
                     break

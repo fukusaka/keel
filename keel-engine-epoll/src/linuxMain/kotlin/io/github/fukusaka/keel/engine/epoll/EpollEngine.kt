@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -30,7 +31,6 @@ import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
-import platform.posix.EINPROGRESS
 import platform.posix.close
 import platform.posix.errno
 
@@ -171,10 +171,9 @@ class EpollEngine(
         val fd = PosixSocketUtils.createUnixUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)
-        if (result < 0) {
-            val err = errno
-            if (err == EINPROGRESS) {
+        when (val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)) {
+            ConnectResult.Connected -> Unit
+            ConnectResult.InProgress -> {
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
@@ -187,9 +186,10 @@ class EpollEngine(
                     close(fd)
                     error("connect($address) failed: ${errnoMessage(error)}")
                 }
-            } else {
+            }
+            is ConnectResult.Failed -> {
                 close(fd)
-                error("connect($address) failed: ${errnoMessage(err)}")
+                error("connect($address) failed: ${errnoMessage(result.errno)}")
             }
         }
 
@@ -209,10 +209,9 @@ class EpollEngine(
         val fd = PosixSocketUtils.createUnconnectedSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = PosixSocketUtils.connectNonBlocking(fd, ip, port)
-        if (result < 0) {
-            val err = errno
-            if (err == EINPROGRESS) {
+        when (val result = PosixSocketUtils.connectNonBlocking(fd, ip, port)) {
+            ConnectResult.Connected -> Unit
+            ConnectResult.InProgress -> {
                 // Connection in progress — suspend until fd is writable
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, EpollEventLoop.Interest.WRITE, cont)
@@ -227,9 +226,10 @@ class EpollEngine(
                     close(fd)
                     error("connect() failed: ${errnoMessage(error)}")
                 }
-            } else {
+            }
+            is ConnectResult.Failed -> {
                 close(fd)
-                error("connect() failed: ${errnoMessage(err)}")
+                error("connect() failed: ${errnoMessage(result.errno)}")
             }
         }
 

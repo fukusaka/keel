@@ -4,6 +4,9 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.writeGather
@@ -16,15 +19,9 @@ import kotlinx.coroutines.Runnable
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
-import platform.posix.EAGAIN
-import platform.posix.EWOULDBLOCK
 import platform.posix.SHUT_WR
 import platform.posix.close
-import platform.posix.errno
-import platform.posix.read
-import platform.posix.shutdown
 
 /**
  * kqueue [IoTransport] implementation for macOS.
@@ -66,26 +63,24 @@ internal class KqueueIoTransport(
         if (!opened) return
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        val n = read(fd, ptr, buf.writableBytes.convert())
-        when {
-            n > 0 -> {
-                buf.writerIndex += n.toInt()
+        when (val result = PosixNativeSocket.read(fd, ptr, buf.writableBytes)) {
+            is ReadResult.Bytes -> {
+                buf.writerIndex += result.bytes
                 onRead?.invoke(buf)
                 armRead()
             }
-            n == 0L -> {
+            ReadResult.Eof -> {
                 buf.release()
                 onReadClosed?.invoke()
             }
-            else -> {
-                val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) {
-                    buf.release()
-                    armRead()
-                } else {
-                    buf.release()
-                    onReadClosed?.invoke()
-                }
+            ReadResult.WouldBlock -> {
+                buf.release()
+                armRead()
+            }
+            is ReadResult.Failed -> {
+                eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
+                buf.release()
+                onReadClosed?.invoke()
             }
         }
     }
@@ -97,9 +92,11 @@ internal class KqueueIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            val ret = shutdown(fd, SHUT_WR)
-            if (ret < 0) {
-                eventLoop.logger.warn { "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(errno)}" }
+            when (val result = PosixNativeSocket.shutdown(fd, SHUT_WR)) {
+                ShutdownResult.Ok -> Unit
+                is ShutdownResult.Failed -> eventLoop.logger.warn {
+                    "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
+                }
             }
         }
     }

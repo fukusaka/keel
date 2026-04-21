@@ -31,8 +31,9 @@ import platform.posix.SO_ERROR
 import platform.posix.SO_REUSEADDR
 import platform.posix.SO_REUSEPORT
 import platform.posix.bind
+import platform.posix.EINPROGRESS
+import platform.posix.EINTR
 import platform.posix.close
-import platform.posix.connect
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.getpeername
@@ -192,16 +193,17 @@ object PosixSocketUtils {
      * [fd] must have been created with a matching family — use
      * [createUnconnectedSocket] with the same [address] value.
      *
-     * @return 0 if connected immediately (e.g. loopback), or -1 with
-     *         `errno` set (typically `EINPROGRESS` for non-blocking sockets).
+     * Delegates to [PosixNativeSocket.connect], so `EINTR` is mapped to
+     * [ConnectResult.InProgress] (see the method KDoc on
+     * [NativeSocket.connect] for the POSIX rationale).
      */
-    fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): Int = memScoped {
+    fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): ConnectResult = memScoped {
         when (address) {
             is IpAddress.V4 -> {
                 val addr = alloc<sockaddr_in>()
                 keel_init_sockaddr_in(addr.ptr, port.toUShort())
                 addr.sin_addr.s_addr = keel_htonl(address.value.toUInt())
-                connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
+                PosixNativeSocket.connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().toInt())
             }
             is IpAddress.V6 -> {
                 val addr = alloc<sockaddr_in6>()
@@ -209,7 +211,7 @@ object PosixSocketUtils {
                 address.toByteArray().toUByteArray().usePinned { pinned ->
                     keel_fill_sockaddr_in6_addr(addr.ptr, pinned.addressOf(0))
                 }
-                connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().convert())
+                PosixNativeSocket.connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in6>().toInt())
             }
         }
     }
@@ -423,13 +425,13 @@ object PosixSocketUtils {
      * so the caller need not compute the per-platform `sun_path`
      * `addrlen` or handle the abstract-namespace offset.
      *
-     * @return 0 if connected immediately, or -1 with `errno` set
-     *   (typically `EINPROGRESS` for non-blocking sockets or
-     *   `ECONNREFUSED` if no listener is bound at the path).
+     * Return value mirrors [connectNonBlocking] — [ConnectResult.Connected]
+     * on immediate completion, [ConnectResult.InProgress] on `EINPROGRESS`
+     * / `EINTR`, [ConnectResult.Failed] otherwise.
      */
-    fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): Int {
+    fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): ConnectResult {
         val kernelBytes = address.unixKernelBytes()
-        return if (kernelBytes.isEmpty()) {
+        val rc = if (kernelBytes.isEmpty()) {
             keel_connect_un(fd, null, 0u.convert(), if (address.isAbstract) 1 else 0)
         } else {
             kernelBytes.toUByteArray().usePinned { pinned ->
@@ -440,6 +442,16 @@ object PosixSocketUtils {
                     if (address.isAbstract) 1 else 0,
                 )
             }
+        }
+        return if (rc == 0) {
+            ConnectResult.Connected
+        } else {
+            val err = errno
+            // EINTR handling matches PosixNativeSocket.connect — see the
+            // POSIX rationale in NativeSocket.connect KDoc. keel_connect_un
+            // does not retry internally (same reason).
+            if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
+            else ConnectResult.Failed(err)
         }
     }
 }

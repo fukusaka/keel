@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -32,7 +33,6 @@ import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.kevent
-import platform.posix.EINPROGRESS
 import platform.posix.close
 import platform.posix.errno
 
@@ -192,10 +192,9 @@ class KqueueEngine(
         val fd = PosixSocketUtils.createUnixUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)
-        if (result < 0) {
-            val err = errno
-            if (err == EINPROGRESS) {
+        when (val result = PosixSocketUtils.connectUnixNonBlocking(fd, address)) {
+            ConnectResult.Connected -> Unit
+            ConnectResult.InProgress -> {
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
                     cont.invokeOnCancellation {
@@ -208,9 +207,10 @@ class KqueueEngine(
                     close(fd)
                     error("connect($address) failed: ${errnoMessage(error)}")
                 }
-            } else {
+            }
+            is ConnectResult.Failed -> {
                 close(fd)
-                error("connect($address) failed: ${errnoMessage(err)}")
+                error("connect($address) failed: ${errnoMessage(result.errno)}")
             }
         }
 
@@ -230,10 +230,9 @@ class KqueueEngine(
         val fd = PosixSocketUtils.createUnconnectedSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
-        val result = PosixSocketUtils.connectNonBlocking(fd, ip, port)
-        if (result < 0) {
-            val err = errno
-            if (err == EINPROGRESS) {
+        when (val result = PosixSocketUtils.connectNonBlocking(fd, ip, port)) {
+            ConnectResult.Connected -> Unit
+            ConnectResult.InProgress -> {
                 // Connection in progress — suspend until fd is writable
                 suspendCancellableCoroutine<Unit> { cont ->
                     workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
@@ -248,9 +247,10 @@ class KqueueEngine(
                     close(fd)
                     error("connect() failed: ${errnoMessage(error)}")
                 }
-            } else {
+            }
+            is ConnectResult.Failed -> {
                 close(fd)
-                error("connect() failed: ${errnoMessage(err)}")
+                error("connect() failed: ${errnoMessage(result.errno)}")
             }
         }
 
