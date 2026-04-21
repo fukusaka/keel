@@ -280,16 +280,18 @@ class IoUringPipelinedServerTest {
 /**
  * Echoes each received [IoBuf] back down the pipeline.
  *
- * Holds the buffer via [IoBuf.retain] across the write, releases
- * its original reference, and lets the pipeline (IoTransport.flush)
- * release the retained copy on completion.
+ * `transport.write` retains the buffer for its own async-send lifecycle;
+ * this handler releases the inbound reference so the ring buffer slot is
+ * returned once the send CQE fires. Without the release, the provided
+ * buffer ring accumulated leaked slots per connection (previously the
+ * code also called `retain()` with no matching release).
  */
 private class EchoHandler : InboundHandler {
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is IoBuf) {
-            msg.retain()
             ctx.propagateWrite(msg)
             ctx.propagateFlush()
+            msg.release()
         } else {
             ctx.propagateRead(msg)
         }
