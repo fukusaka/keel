@@ -27,6 +27,7 @@ import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_RCVTIMEO
+import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.connect
 import platform.posix.errno
@@ -243,9 +244,11 @@ class IoUringPipelinedServerTest {
         return fd
     }
 
-    // Loop until every byte has been written. The original version only
-    // asserted `n > 0` and therefore tolerated short writes silently, which
-    // could produce spurious echo-payload mismatches under load.
+    // Loop until every byte has been written. Retries on EINTR (the
+    // Kotlin/Native runtime sends thread-signaling signals — likely SIGURG
+    // for GC safepoints — that interrupt blocking syscalls under CPU
+    // contention on GHA 4-vCPU runners). Also surfaces the errno on
+    // unrecoverable failures so the real cause is visible in artifacts.
     private fun rawWrite(fd: Int, data: String) {
         val bytes = data.encodeToByteArray()
         bytes.usePinned { pinned ->
@@ -254,6 +257,7 @@ class IoUringPipelinedServerTest {
                 val n = write(fd, pinned.addressOf(total), (bytes.size - total).convert())
                 if (n <= 0) {
                     val err = errno
+                    if (n < 0 && err == EINTR) continue
                     assertTrue(
                         false,
                         "write returned $n at offset $total/${bytes.size} " +
@@ -265,12 +269,10 @@ class IoUringPipelinedServerTest {
         }
     }
 
-    // Loop until `size` bytes have been read; fail loudly on EOF / timeout
-    // rather than silently returning a partial payload. Include errno on
-    // failure — `read returned -1` alone cannot distinguish EAGAIN
-    // (SO_RCVTIMEO) from ECONNRESET / ENOTCONN / EBADF, which each imply
-    // a different root cause for the `IoUringPipelinedServerTest` GHA
-    // flake.
+    // Loop until `size` bytes have been read; retry on EINTR for the same
+    // reason as [rawWrite]. Surfaces errno on non-EINTR failure so
+    // ECONNRESET / ENOTCONN / EBADF are distinguishable from EAGAIN
+    // (SO_RCVTIMEO) in the artifact.
     private fun rawRead(fd: Int, size: Int): String {
         val buf = ByteArray(size)
         var total = 0
@@ -280,6 +282,7 @@ class IoUringPipelinedServerTest {
             }
             if (n <= 0) {
                 val err = errno
+                if (n < 0 && err == EINTR) continue
                 assertTrue(
                     false,
                     "read returned $n after $total/$size bytes " +
