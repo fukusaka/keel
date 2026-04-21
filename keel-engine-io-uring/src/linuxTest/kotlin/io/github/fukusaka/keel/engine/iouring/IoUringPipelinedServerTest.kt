@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
@@ -35,7 +36,7 @@ import kotlin.test.assertTrue
  * but are expected to be end-to-end equivalent from the client's
  * view.
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
 class IoUringPipelinedServerTest {
 
     // Runs an echo pipeline server with the given capabilities override,

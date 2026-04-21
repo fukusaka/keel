@@ -48,6 +48,7 @@ import kotlin.time.TimeSource
  * signal storm cannot extend the bound beyond the caller's
  * requested [Duration].
  */
+@InternalTestApi
 @OptIn(ExperimentalForeignApi::class)
 public object PosixRawClient {
 
