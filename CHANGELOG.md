@@ -135,6 +135,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Documentation
 
 - `engine-io-uring`: route `IoUringPipelinedServerTest` through `PrintLogger(DEBUG)` so CQE diagnostics surface in CI test output ([#319]); `EchoHandler` no longer leaks the inbound buffer reference ([#321]); `rawRead` / `rawWrite` retry on EINTR — Kotlin/Native runtime signals (likely GC safepoints under CPU contention) were interrupting the blocking syscalls on GHA 4-vCPU runners and surfacing as the long-running `read returned -1` flake ([#321])
+- `native-posix`: extract `PosixRawClient` test-only helpers (`rawConnect` / `rawWrite` / `rawRead` / `rawReadBytes` / `rawReadUpTo` / `rawReadOnce`) with EINTR retry; 5 engine tests (`EpollEngineTest` / `KqueueEngineTest` / `IoUringEngineTest` / `IoUringPipelinedServerTest` / `NwEngineTest`) now share the same raw-client idiom ([#322])
 - `ci(iouring-stress)`: auto-trigger on PRs touching `keel-engine-io-uring` (gated by `needs-pr-check` label) ([#321])
 - `ci`: upload JUnit XML + HTML test reports as artifacts; add manually-dispatched `io_uring stress` workflow ([#317])
 - `engine-io-uring`: debug trace logs in `FixedFileRegistry` and pipelined server accept CQE ([#317]); armRecv submission + per-recv-CQE traces ([#320])
@@ -511,3 +512,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#319]: https://github.com/fukusaka/keel/pull/319
 [#320]: https://github.com/fukusaka/keel/pull/320
 [#321]: https://github.com/fukusaka/keel/pull/321
+[#322]: https://github.com/fukusaka/keel/pull/322
