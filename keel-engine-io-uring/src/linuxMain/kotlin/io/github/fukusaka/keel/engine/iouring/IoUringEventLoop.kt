@@ -973,7 +973,18 @@ internal class IoUringEventLoop(
                     // Single-shot SQEs never set F_MORE, so slot is released on first CQE.
                     val msCb = callbackSlots[slot]
                     if (msCb != null) {
-                        msCb(res, cqeFlags)
+                        // Catch callback exceptions to keep the EventLoop alive.
+                        // A throw here (e.g., `error(...)` in an onAccept path)
+                        // would otherwise crash the EL thread and leave worker
+                        // resources in a half-set-up state, producing opaque
+                        // ECONNRESET symptoms on the peer side with no trace.
+                        try {
+                            msCb(res, cqeFlags)
+                        } catch (t: Throwable) {
+                            logger.warn(t) {
+                                "io_uring CQE callback threw: slot=$slot res=$res flags=$cqeFlags"
+                            }
+                        }
                         if (keel_cqe_has_more(cqeFlags) == 0) {
                             callbackSlots[slot] = null
                             releaseSlot(slot)
