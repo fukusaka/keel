@@ -103,7 +103,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, bindConfig.backlog, logger)
 
         try {
             memScoped {
@@ -134,7 +134,7 @@ class KqueueEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, bindConfig.backlog, logger)
 
         try {
             // Register server fd with the boss EventLoop's kqueue so that
@@ -294,7 +294,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog)
+        val serverFd = PosixSocketUtils.createUnixServerSocket(address, config.backlog, logger)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -324,7 +324,7 @@ class KqueueEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = PosixSocketUtils.createServerSocket(ip, port, config.backlog)
+        val serverFd = PosixSocketUtils.createServerSocket(ip, port, config.backlog, logger)
 
         try {
             val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
