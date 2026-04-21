@@ -1,9 +1,10 @@
-headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h string.h sys/un.h stddef.h errno.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h unistd.h string.h sys/un.h stddef.h errno.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/uio.h>
+#include <unistd.h>
 #include <string.h>
 #include <sys/un.h>
 #include <stddef.h>
@@ -115,11 +116,90 @@ static int keel_sockaddr_un_copy_path(const struct sockaddr_storage *sa, int add
     return len;
 }
 
+/* ====================================================================
+ * EINTR-transparent syscall wrappers.
+ *
+ * Every blocking / non-blocking socket syscall keel invokes from Kotlin
+ * goes through one of these wrappers. The wrappers loop internally on
+ * `EINTR` so callers never observe it: a signal delivered to the thread
+ * (Kotlin/Native runtime GC safepoints, debugger attach, etc.) restarts
+ * the syscall transparently. This is the `TEMP_FAILURE_RETRY` idiom
+ * from glibc, applied at the C wrapper layer so every consumer (every
+ * engine, every test helper) gets the same behaviour without having to
+ * write `if (errno == EINTR) continue` at each call site.
+ *
+ * `close(2)` is intentionally NOT wrapped here: POSIX leaves the fd
+ * state undefined on EINTR, and retrying may close an fd that the
+ * kernel silently re-allocated to another open() between calls.
+ * Call sites should just invoke `close(2)` directly (or via
+ * `closeFdSafely` for the logged variant).
+ *
+ * All wrappers are `static inline` so the compiler can inline them at
+ * the call site — zero cost compared to a direct syscall.
+ * ==================================================================== */
+
+static inline ssize_t keel_read(int fd, void *buf, size_t count) {
+    ssize_t n;
+    do { n = read(fd, buf, count); } while (n < 0 && errno == EINTR);
+    return n;
+}
+
+static inline ssize_t keel_write(int fd, const void *buf, size_t count) {
+    ssize_t n;
+    do { n = write(fd, buf, count); } while (n < 0 && errno == EINTR);
+    return n;
+}
+
+static inline int keel_accept(int fd) {
+    int r;
+    do { r = accept(fd, NULL, NULL); } while (r < 0 && errno == EINTR);
+    return r;
+}
+
+/*
+ * connect(2) is intentionally NOT retried on EINTR.
+ *
+ * POSIX (Open Group, connect()): "If connect() is interrupted by a
+ * signal that is caught while blocked waiting to establish a
+ * connection, connect() shall fail and set errno to EINTR, but the
+ * connection request shall not be aborted, and the connection shall
+ * be established asynchronously."
+ *
+ * Re-invoking connect() on the same fd after EINTR therefore returns
+ * `EALREADY` (handshake in progress) or `EISCONN` (already completed)
+ * — never a clean "success". A naive retry loop would surface those
+ * to the caller as a generic failure even though the connection is
+ * actually fine.
+ *
+ * The correct POSIX pattern on EINTR is to wait for write-readiness
+ * (select / poll / epoll / kevent) and then `getsockopt(SO_ERROR)` to
+ * discover the final result — exactly the same flow as `EINPROGRESS`
+ * on non-blocking sockets. `PosixNativeSocket.connect` maps both
+ * `EINPROGRESS` and `EINTR` to `ConnectResult.InProgress` so the
+ * caller's event-loop path handles them identically.
+ */
+static inline int keel_connect(int fd, const struct sockaddr *addr, socklen_t len) {
+    return connect(fd, addr, len);
+}
+
+static inline ssize_t keel_send(int fd, const void *buf, size_t count, int flags) {
+    ssize_t n;
+    do { n = send(fd, buf, count, flags); } while (n < 0 && errno == EINTR);
+    return n;
+}
+
+static inline int keel_shutdown(int fd, int how) {
+    int r;
+    do { r = shutdown(fd, how); } while (r < 0 && errno == EINTR);
+    return r;
+}
+
 /*
  * writev wrapper for gather-write optimization.
  * Accepts parallel arrays of base pointers and lengths, builds
  * iovec internally, and calls writev in a single syscall.
- * Marked static to avoid symbol collisions when linked with other engines.
+ * Retries transparently on `EINTR` (matches the other `keel_*`
+ * wrappers above — callers never need to handle EINTR).
  */
 static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
     struct iovec iov[count];
@@ -127,7 +207,9 @@ static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int c
         iov[i].iov_base = (void *)bases[i];
         iov[i].iov_len = lens[i];
     }
-    return writev(fd, iov, count);
+    ssize_t n;
+    do { n = writev(fd, iov, count); } while (n < 0 && errno == EINTR);
+    return n;
 }
 
 /*
