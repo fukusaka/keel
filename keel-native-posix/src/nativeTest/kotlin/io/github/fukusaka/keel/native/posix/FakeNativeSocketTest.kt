@@ -15,7 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
 class FakeNativeSocketTest {
 
     /** Scratch 1-byte buffer — the fake ignores buffer contents. */
