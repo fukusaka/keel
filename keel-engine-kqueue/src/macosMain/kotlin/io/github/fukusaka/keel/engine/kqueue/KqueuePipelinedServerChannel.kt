@@ -6,14 +6,13 @@ import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.EAGAIN
-import platform.posix.EWOULDBLOCK
-import platform.posix.accept
 import platform.posix.close
-import platform.posix.errno
 
 /**
  * Pipeline server channel for kqueue-based connection acceptance.
@@ -74,18 +73,23 @@ internal class KqueuePipelinedServerChannel(
         if (closed) return
         // Accept all pending connections in a loop (edge-triggered behavior).
         while (true) {
-            val clientFd = accept(serverFd, null, null)
-            if (clientFd < 0) {
-                val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) break
-                // Transient error — log and continue accepting.
-                logger.error { "accept() failed: errno=$err" }
-                break
+            when (val result = PosixNativeSocket.accept(serverFd)) {
+                is AcceptResult.Accepted -> {
+                    PosixSocketUtils.setNonBlocking(result.fd)
+                    dispatchToWorker(result.fd)
+                }
+                AcceptResult.WouldBlock -> {
+                    armAccept()
+                    return
+                }
+                is AcceptResult.Failed -> {
+                    // Transient error — log and continue accepting.
+                    logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
+                    armAccept()
+                    return
+                }
             }
-            PosixSocketUtils.setNonBlocking(clientFd)
-            dispatchToWorker(clientFd)
         }
-        armAccept()
     }
 
     private fun dispatchToWorker(clientFd: Int) {

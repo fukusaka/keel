@@ -5,7 +5,10 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -15,10 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
-import platform.posix.EAGAIN
-import platform.posix.accept
 import platform.posix.close
-import platform.posix.errno
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
@@ -88,46 +88,46 @@ internal class KqueueServer(
         check(_active) { "ServerChannel is closed" }
 
         while (true) {
-            val clientFd = accept(serverFd, null, null)
-            if (clientFd >= 0) {
-                val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
-                val (workerLoop, allocator) = workerGroup.next()
-                val transport = KqueueIoTransport(clientFd, workerLoop, allocator)
-                val channel = KqueuePipelinedChannel(
-                    transport, logger, remoteAddr, localAddr,
-                )
-                bindConfig.initializeConnection(channel)
-                return channel
-            }
-
-            val err = errno
-            if (err == EAGAIN) {
-                // Suspend until boss EventLoop reports serverFd is readable
-                suspendCancellableCoroutine<Unit> { cont ->
-                    val closedAlready = withLock {
-                        if (!_active) {
-                            true
-                        } else {
-                            pendingAcceptCont = cont
-                            false
-                        }
-                    }
-                    if (closedAlready) {
-                        cont.resumeWithException(CancellationException("ServerChannel closed"))
-                        return@suspendCancellableCoroutine
-                    }
-                    bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
-                    cont.invokeOnCancellation {
-                        withLock {
-                            if (pendingAcceptCont === cont) pendingAcceptCont = null
-                        }
-                        bossLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
-                    }
+            when (val result = PosixNativeSocket.accept(serverFd)) {
+                is AcceptResult.Accepted -> {
+                    val clientFd = result.fd
+                    val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
+                    val (workerLoop, allocator) = workerGroup.next()
+                    val transport = KqueueIoTransport(clientFd, workerLoop, allocator)
+                    val channel = KqueuePipelinedChannel(
+                        transport, logger, remoteAddr, localAddr,
+                    )
+                    bindConfig.initializeConnection(channel)
+                    return channel
                 }
-                withLock { pendingAcceptCont = null }
-                continue
+                AcceptResult.WouldBlock -> {
+                    // Suspend until boss EventLoop reports serverFd is readable
+                    suspendCancellableCoroutine<Unit> { cont ->
+                        val closedAlready = withLock {
+                            if (!_active) {
+                                true
+                            } else {
+                                pendingAcceptCont = cont
+                                false
+                            }
+                        }
+                        if (closedAlready) {
+                            cont.resumeWithException(CancellationException("ServerChannel closed"))
+                            return@suspendCancellableCoroutine
+                        }
+                        bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
+                        cont.invokeOnCancellation {
+                            withLock {
+                                if (pendingAcceptCont === cont) pendingAcceptCont = null
+                            }
+                            bossLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
+                        }
+                    }
+                    withLock { pendingAcceptCont = null }
+                    // Loop back and retry accept.
+                }
+                is AcceptResult.Failed -> error("accept() failed: ${errnoMessage(result.errno)}")
             }
-            error("accept() failed: errno=$err")
         }
     }
 
