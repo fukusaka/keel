@@ -135,7 +135,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `engine-io-uring`: route `IoUringPipelinedServerTest` through `PrintLogger(DEBUG)` so CQE diagnostics surface in CI test output ([#319])
 - `ci`: upload JUnit XML + HTML test reports as artifacts; add manually-dispatched `io_uring stress` workflow ([#317])
-- `engine-io-uring`: debug trace logs in `FixedFileRegistry` and pipelined server accept CQE ([#317])
+- `engine-io-uring`: debug trace logs in `FixedFileRegistry` and pipelined server accept CQE ([#317]); armRecv submission + per-recv-CQE traces ([#320])
 - Dokka: cover all visibility levels (public, internal, protected, private); GitHub source links per declaration; `module.md` for all 13 + 6 TLS modules; shortened navigation package names ([#253], [#254], [#255])
 - website: rewrite `intro.md` as Getting Started guide with Quick Start; add performance-based engine selection tables; macOS → Linux development workflow; keel vs Netty vs Ktor positioning ([#251])
 - website: Coroutine / Pipeline / HTTP / WebSocket architecture pages ([#257], [#269]); Japanese translations for all pages ([#251])
@@ -507,3 +507,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#317]: https://github.com/fukusaka/keel/pull/317
 [#318]: https://github.com/fukusaka/keel/pull/318
 [#319]: https://github.com/fukusaka/keel/pull/319
+[#320]: https://github.com/fukusaka/keel/pull/320
