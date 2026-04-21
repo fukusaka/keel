@@ -37,6 +37,11 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(project(":keel-tls"))
+                // `keel-native-posix` is test-only here: NwEngineTest uses
+                // `PosixRawClient` to build a dumb TCP client without going
+                // through the engine's Channel abstraction. Production
+                // `:keel-engine-nwconnection` does not depend on posix.
+                implementation(project(":keel-native-posix"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
             }

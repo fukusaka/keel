@@ -9,17 +9,12 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io_uring.io_uring_prep_read
-import posix_socket.keel_htons
-import posix_socket.keel_loopback_addr
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -31,18 +26,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import platform.posix.AF_INET
-import platform.posix.SOCK_STREAM
-import platform.posix.SOL_SOCKET
-import platform.posix.SO_RCVTIMEO
 import platform.posix.close
-import platform.posix.connect
 import platform.posix.pipe
-import platform.posix.read
-import platform.posix.setsockopt
-import platform.posix.socket
-import platform.posix.sockaddr_in
-import platform.posix.timeval
 import platform.posix.unlink
 import platform.posix.write
 import kotlin.coroutines.EmptyCoroutineContext
@@ -57,42 +42,13 @@ class IoUringEngineTest {
 
     // --- Helper ---
 
-    private fun connectRawClient(port: Int): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0)
-        memScoped {
-            val tv = alloc<timeval>()
-            tv.tv_sec = 5
-            tv.tv_usec = 0
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv.ptr, sizeOf<timeval>().convert())
+    private fun connectRawClient(port: Int): Int = PosixRawClient.rawConnect(port)
 
-            val addr = alloc<sockaddr_in>()
-            addr.sin_family = AF_INET.convert()
-            addr.sin_port = keel_htons(port.toUShort())
-            addr.sin_addr.s_addr = keel_loopback_addr()
-            connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-        }
-        return fd
-    }
+    private fun rawWrite(fd: Int, data: String): Unit = PosixRawClient.rawWrite(fd, data)
 
-    private fun rawWrite(fd: Int, data: String) {
-        data.encodeToByteArray().usePinned { pinned ->
-            write(fd, pinned.addressOf(0), data.length.convert())
-        }
-    }
+    private fun rawWrite(fd: Int, data: ByteArray): Unit = PosixRawClient.rawWrite(fd, data)
 
-    private fun rawRead(fd: Int, size: Int): String {
-        val buf = ByteArray(size)
-        var total = 0
-        while (total < size) {
-            val n = buf.usePinned { pinned ->
-                read(fd, pinned.addressOf(total), (size - total).convert())
-            }
-            if (n <= 0) break
-            total += n.toInt()
-        }
-        return buf.decodeToString(0, total)
-    }
+    private fun rawRead(fd: Int, size: Int): String = PosixRawClient.rawRead(fd, size)
 
     // --- lifecycle ---
 
@@ -298,14 +254,7 @@ class IoUringEngineTest {
         val payload = ByteArray(payloadSize) { (it % 256).toByte() }
 
         // Client sends exactly BUFFER_SIZE bytes
-        payload.usePinned { pinned ->
-            var written = 0
-            while (written < payloadSize) {
-                val n = write(clientFd, pinned.addressOf(written), (payloadSize - written).convert())
-                if (n <= 0) break
-                written += n.toInt()
-            }
-        }
+        rawWrite(clientFd, payload)
 
         // Server reads all bytes
         var totalRead = 0
@@ -339,14 +288,7 @@ class IoUringEngineTest {
         val payloadSize = 8193
         val payload = ByteArray(payloadSize) { (it % 256).toByte() }
 
-        payload.usePinned { pinned ->
-            var written = 0
-            while (written < payloadSize) {
-                val n = write(clientFd, pinned.addressOf(written), (payloadSize - written).convert())
-                if (n <= 0) break
-                written += n.toInt()
-            }
-        }
+        rawWrite(clientFd, payload)
 
         var totalRead = 0
         val received = ByteArray(payloadSize)
@@ -387,16 +329,7 @@ class IoUringEngineTest {
         ch.flush()
         buf.release()
 
-        val received = ByteArray(payloadSize)
-        var totalRead = 0
-        while (totalRead < payloadSize) {
-            val n = received.usePinned { pinned ->
-                read(clientFd, pinned.addressOf(totalRead), (payloadSize - totalRead).convert())
-            }
-            if (n <= 0) break
-            totalRead += n.toInt()
-        }
-        assertEquals(payloadSize, totalRead)
+        val received = PosixRawClient.rawReadBytes(clientFd, payloadSize)
         assertTrue(payload.contentEquals(received))
 
         ch.close()
@@ -419,11 +352,8 @@ class IoUringEngineTest {
         ch.shutdownOutput()
 
         // Peer should see EOF (read returns 0)
-        val buf = ByteArray(1)
-        val n = buf.usePinned { pinned ->
-            read(clientFd, pinned.addressOf(0), 1u.convert())
-        }
-        assertEquals(0, n.toInt())
+        val n = PosixRawClient.rawReadOnce(clientFd, 1)
+        assertEquals(0, n)
 
         ch.close()
         close(clientFd)
