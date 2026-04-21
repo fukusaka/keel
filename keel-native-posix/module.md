@@ -54,7 +54,13 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 | Type | Role |
 |------|------|
 | `PosixSocketUtils` | Singleton. POSIX TCP socket lifecycle: create, bind, connect, query |
+| `NativeSocket` | Interface. `read` / `write` / `writev` / `accept` / `connect` / `send` / `shutdown` / `close`. Sealed `Result` types replace raw errno |
+| `PosixNativeSocket` | Singleton. Production `NativeSocket` impl backed by EINTR-retrying `keel_*` C wrappers |
+| `PosixRawClient` | Test helper. Blocking loopback client I/O on top of `NativeSocket` |
+| `FakeNativeSocket` | Test helper. Scripted in-memory `NativeSocket` with per-fd FIFO response queues + fd-lifecycle tracking |
 
 # Package io.github.fukusaka.keel.native.posix
 
-Shared POSIX socket utilities for Native engines: `PosixSocketUtils`.
+Shared POSIX socket utilities for Native engines: `PosixSocketUtils`
+(production) + `NativeSocket` seam (`PosixNativeSocket` in production,
+`FakeNativeSocket` in unit tests).

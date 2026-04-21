@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `native-posix`: `FakeNativeSocket` — scripted in-memory `NativeSocket` impl with per-fd FIFO response queues for `read` / `write` / `writev` / `send` / `accept` / `connect` / `shutdown` / `close`, `default*` fallbacks, per-syscall call counters, ordered `closedFds` tracking, and `assertNoDoubleClose` / `assertAllConsumed` helpers. Lets unit tests drive engine code through specific errno branches without a real kernel ([#330])
 - `core`: `UnixSocketAddress` with `@prefix` / `\u0000`-prefix convention for Linux abstract-namespace UDS; `isAbstract` / `kernelPath` properties; `UnixSocketAddress.filesystem(path)` / `abstract(name)` factories ([#298])
 - `core`: `CachingDnsResolver(delegate, ttl = 30.seconds, maxSize = 1024)` — LRU positive cache, single-flight via decoupled `SupervisorJob` scope, `close()` / `invalidate()` for graceful shutdown ([#297])
 - `core`: `InetSocketAddress.connectWithFallback(resolver, hints, attempt)` — sequential fallback over resolved candidates, preserves `CancellationException`. Happy Eyeballs deferred to HTTP Dialer layer ([#297])
@@ -525,3 +526,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#327]: https://github.com/fukusaka/keel/pull/327
 [#328]: https://github.com/fukusaka/keel/pull/328
 [#329]: https://github.com/fukusaka/keel/pull/329
+[#330]: https://github.com/fukusaka/keel/pull/330
