@@ -116,7 +116,26 @@ internal class IoUringPipelinedServerChannel(
                                     val label = if (directAllocActive) "slot" else "fd"
                                     "accept CQE: worker=$i $label=$res"
                                 }
-                                onAccept(res, i, directAllocActive)
+                                // Exceptions from onAccept (e.g., `error(...)`
+                                // if a required capability is missing, or a
+                                // transport init failure) would otherwise
+                                // propagate to the EL CQE drain and leave the
+                                // accepted connection orphaned — the kernel
+                                // holds it connected but there is no reader,
+                                // so the peer sees ECONNRESET on the next
+                                // read. Log the context here so the accepted
+                                // fd / slot is traceable before falling
+                                // through to the EL-level generic catch.
+                                try {
+                                    onAccept(res, i, directAllocActive)
+                                } catch (t: Throwable) {
+                                    val label = if (directAllocActive) "slot" else "fd"
+                                    logger.warn(t) {
+                                        "accept handler threw; connection orphaned: " +
+                                            "worker=$i $label=$res"
+                                    }
+                                    throw t
+                                }
                             } else if (directAllocActive && res == -ENFILE) {
                                 // Fixed file table full — kernel could not
                                 // allocate a slot for the accepted fd. The
