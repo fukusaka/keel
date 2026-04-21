@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io_uring.io_uring
@@ -28,6 +29,7 @@ import platform.posix.SOL_SOCKET
 import platform.posix.SO_RCVTIMEO
 import platform.posix.close
 import platform.posix.connect
+import platform.posix.errno
 import platform.posix.read
 import platform.posix.setsockopt
 import platform.posix.socket
@@ -250,16 +252,25 @@ class IoUringPipelinedServerTest {
             var total = 0
             while (total < bytes.size) {
                 val n = write(fd, pinned.addressOf(total), (bytes.size - total).convert())
-                assertTrue(n > 0, "write failed: n=$n at offset $total/${bytes.size}")
+                if (n <= 0) {
+                    val err = errno
+                    assertTrue(
+                        false,
+                        "write returned $n at offset $total/${bytes.size} " +
+                            "errno=$err (${errnoMessage(err)})",
+                    )
+                }
                 total += n.toInt()
             }
         }
     }
 
     // Loop until `size` bytes have been read; fail loudly on EOF / timeout
-    // rather than silently returning a partial payload (which used to mask
-    // the real cause of assertion mismatches as a bare
-    // `kotlin.AssertionError at null:-1`).
+    // rather than silently returning a partial payload. Include errno on
+    // failure — `read returned -1` alone cannot distinguish EAGAIN
+    // (SO_RCVTIMEO) from ECONNRESET / ENOTCONN / EBADF, which each imply
+    // a different root cause for the `IoUringPipelinedServerTest` GHA
+    // flake.
     private fun rawRead(fd: Int, size: Int): String {
         val buf = ByteArray(size)
         var total = 0
@@ -267,10 +278,14 @@ class IoUringPipelinedServerTest {
             val n = buf.usePinned { pinned ->
                 read(fd, pinned.addressOf(total), (size - total).convert())
             }
-            assertTrue(
-                n > 0,
-                "read returned $n after $total/$size bytes (EOF or SO_RCVTIMEO)",
-            )
+            if (n <= 0) {
+                val err = errno
+                assertTrue(
+                    false,
+                    "read returned $n after $total/$size bytes " +
+                        "errno=$err (${errnoMessage(err)})",
+                )
+            }
             total += n.toInt()
         }
         return buf.decodeToString(0, total)
