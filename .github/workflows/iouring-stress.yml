@@ -48,16 +48,21 @@ jobs:
       - name: Build test binary once
         run: ./gradlew :keel-engine-io-uring:linkDebugTestLinuxX64
 
-      # --rerun-tasks forces Gradle to re-execute the test task each
-      # iteration instead of reusing cached UP-TO-DATE output.
+      # Per iteration, only the `linuxX64Test` task's output is cleaned
+      # so Gradle re-executes the tests without re-linking the test
+      # binary (which `--rerun-tasks` would do, since it forces every
+      # upstream task in the graph to rerun — ~30s relink overhead per
+      # iteration on CI).
       - name: Stress loop
+        env:
+          ITERATIONS: ${{ github.event.inputs.iterations }}
         run: |
           set +e
           mkdir -p stress-reports
           fail_count=0
-          for i in $(seq 1 ${{ github.event.inputs.iterations }}); do
+          for i in $(seq 1 "$ITERATIONS"); do
             echo "=== iteration $i ==="
-            ./gradlew :keel-engine-io-uring:linuxX64Test --rerun-tasks
+            ./gradlew :keel-engine-io-uring:cleanLinuxX64Test :keel-engine-io-uring:linuxX64Test
             rc=$?
             # Snapshot reports for this iteration before the next run clobbers them.
             if [ -d keel-engine-io-uring/build/reports/tests ]; then
@@ -71,7 +76,7 @@ jobs:
               echo "iteration $i FAILED (rc=$rc, total failures=$fail_count)"
             fi
           done
-          echo "=== summary: $fail_count / ${{ github.event.inputs.iterations }} iterations failed ==="
+          echo "=== summary: $fail_count / $ITERATIONS iterations failed ==="
           # Exit 0 so artifacts upload even if some iterations failed;
           # the summary line above is the signal.
 
