@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -816,7 +817,7 @@ internal class IoUringIoTransport(
         // register_files_update(slot, -1) which closes the kernel-held fd.
         // There is no userspace fd to close via POSIX close().
         if (!useDirectAlloc) {
-            platform.posix.close(fd)
+            closeFdSafely(fd, eventLoop.logger, "transport teardown")
         }
     }
 

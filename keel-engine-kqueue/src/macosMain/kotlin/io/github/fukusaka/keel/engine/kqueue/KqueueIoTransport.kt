@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -20,7 +21,6 @@ import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.plus
 import platform.posix.SHUT_WR
-import platform.posix.close
 
 /**
  * kqueue [IoTransport] implementation for macOS.
@@ -141,7 +141,7 @@ internal class KqueueIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
-        close(fd)
+        closeFdSafely(fd, eventLoop.logger, "transport teardown")
     }
 
     // --- Single-buffer flush ---
