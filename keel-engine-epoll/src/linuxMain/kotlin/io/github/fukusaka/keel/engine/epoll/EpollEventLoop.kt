@@ -16,6 +16,7 @@ import kotlinx.cinterop.asStableRef
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
@@ -31,7 +32,6 @@ import platform.linux.epoll_wait
 import platform.posix.EAGAIN
 import platform.posix.EEXIST
 import platform.posix.EINTR
-import platform.posix.close
 import platform.posix.errno
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
@@ -441,8 +441,8 @@ internal class EpollEventLoop(
             if (t != null) {
                 pthread_join(t, null)
             }
-            close(wakeupFd)
-            close(epFd)
+            closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
+            closeFdSafely(epFd, logger, "event loop teardown (epFd)")
             pthread_mutex_destroy(regMutex.ptr)
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()

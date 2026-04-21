@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -17,7 +18,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.posix.close
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
@@ -144,7 +144,7 @@ internal class EpollServer(
             c
         }
         cont?.resumeWithException(CancellationException("ServerChannel closed"))
-        close(serverFd)
+        closeFdSafely(serverFd, logger, "server close")
         pthread_mutex_destroy(mutex.ptr)
         arena.clear()
     }

@@ -54,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route every remaining production `close(fd)` (IoTransport teardown, Server / PipelinedServer close, EventLoop teardown, Engine connect cleanup / cancellation) through `closeFdSafely`. Previously silent drops on `close(2)` failure now surface as warn-level logs with fd + `<role>` context ([#328])
 - `native-posix`: `closeFdSafely(fd, logger, context)` now routes through `PosixNativeSocket.close` (sealed `CloseResult`), so every production `close(fd)` call shares the `NativeSocket` seam and test fakes can track fd lifecycle uniformly ([#327])
 - `native-posix` / `engine-epoll` / `engine-kqueue`: inline `PosixWrite.writeSingle` / `writeGather` back-compat helpers into `EpollIoTransport` / `KqueueIoTransport` flush paths and delete `PosixWrite.kt`. `WriteResult` sealed class moves to `NativeSocket.kt` alongside the other result types ([#326])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route read / write / accept / connect / shutdown / send through `PosixNativeSocket`; EINTR retried in Layer 1 so the engines cannot misclassify signal interrupts as EOF. `PosixSocketUtils.connectNonBlocking` / `connectUnixNonBlocking` return sealed `ConnectResult` instead of raw `Int` + ambient errno ([#325])
@@ -521,3 +522,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#325]: https://github.com/fukusaka/keel/pull/325
 [#326]: https://github.com/fukusaka/keel/pull/326
 [#327]: https://github.com/fukusaka/keel/pull/327
+[#328]: https://github.com/fukusaka/keel/pull/328

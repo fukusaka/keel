@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -31,7 +32,6 @@ import platform.darwin.kevent
 import platform.darwin.kqueue
 import platform.posix.EAGAIN
 import platform.posix.EINTR
-import platform.posix.close
 import platform.posix.errno
 import platform.posix.pipe
 import platform.posix.pthread_create
@@ -468,9 +468,9 @@ internal class KqueueEventLoop(
             if (t != null) {
                 pthread_join(t, null)
             }
-            close(wakeupFds[0])
-            close(wakeupFds[1])
-            close(kqFd)
+            closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
+            closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
+            closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
             pthread_mutex_destroy(regMutex.ptr)
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
