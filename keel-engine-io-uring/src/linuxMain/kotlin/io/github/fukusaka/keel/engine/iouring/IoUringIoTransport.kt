@@ -372,13 +372,22 @@ internal class IoUringIoTransport(
                 }
                 is WriteResult.Failed -> {
                     val err = result.errno
-                    // Unrecoverable error (e.g., EPIPE after peer RST, ECONNRESET,
-                    // EBADF). Log with errno and mark the connection for teardown
-                    // — previously we silently released the buffer and returned
-                    // "flush complete", leaving the orphaned transport alive and
-                    // the pipeline unaware that the echo never reached the peer.
+                    // PosixNativeSocket maps send()==0 to Failed(errno=0). TCP send
+                    // returning 0 for a non-empty request is spec-unexpected — log
+                    // with the dedicated message so errnoMessage(0) ("Success")
+                    // doesn't muddy the trail.
                     eventLoop.logger.warn {
-                        "send() failed: fd=$fd ${errnoMessage(err)} (written=$written/${pw.length})"
+                        if (err == 0) {
+                            "send() returned 0 unexpectedly: fd=$fd written=$written/${pw.length}"
+                        } else {
+                            // Unrecoverable error (e.g., EPIPE after peer RST,
+                            // ECONNRESET, EBADF). Mark the connection for teardown
+                            // — previously we silently released the buffer and
+                            // returned "flush complete", leaving the orphaned
+                            // transport alive and the pipeline unaware that the
+                            // echo never reached the peer.
+                            "send() failed: fd=$fd ${errnoMessage(err)} (written=$written/${pw.length})"
+                        }
                     }
                     fatalError = true
                     break
