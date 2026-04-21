@@ -55,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`native-posix`): `PosixSocketUtils.createServerSocket` / `createReusePortServerSocket` / `createUnixServerSocket` take a trailing `logger: Logger` parameter and route error-cleanup `close(fd)` through `closeFdSafely`. Closes the last production silent `close(fd)` inside `keel-native-posix` itself ([#331])
 - `ci`: drop `pull_request` auto-trigger on the `io_uring stress` workflow — NativeSocket refactor (#323 → #328) fixed the flake root cause structurally, so per-PR 20-iteration stress runs are no longer needed. `workflow_dispatch` remains for on-demand diagnostics ([#329])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route every remaining production `close(fd)` (IoTransport teardown, Server / PipelinedServer close, EventLoop teardown, Engine connect cleanup / cancellation) through `closeFdSafely`. Previously silent drops on `close(2)` failure now surface as warn-level logs with fd + `<role>` context ([#328])
 - `native-posix`: `closeFdSafely(fd, logger, context)` now routes through `PosixNativeSocket.close` (sealed `CloseResult`), so every production `close(fd)` call shares the `NativeSocket` seam and test fakes can track fd lifecycle uniformly ([#327])
@@ -527,3 +528,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#328]: https://github.com/fukusaka/keel/pull/328
 [#329]: https://github.com/fukusaka/keel/pull/329
 [#330]: https://github.com/fukusaka/keel/pull/330
+[#331]: https://github.com/fukusaka/keel/pull/331
