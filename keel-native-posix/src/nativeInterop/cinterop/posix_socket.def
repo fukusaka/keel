@@ -1,9 +1,10 @@
-headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h string.h sys/un.h stddef.h errno.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h string.h sys/un.h stddef.h errno.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/uio.h>
+#include <sys/time.h>
 #include <string.h>
 #include <sys/un.h>
 #include <stddef.h>
@@ -262,4 +263,33 @@ static int keel_fill_sockaddr_un(struct sockaddr_storage *sa, const unsigned cha
         un->sun_path[path_len] = '\0';
         return (int)sizeof(*un);
     }
+}
+
+/*
+ * keel_connect_inet_loopback: connects `fd` to 127.0.0.1:`port`.
+ * Built as a C wrapper so `struct sockaddr_in` field widths (sin_family
+ * short vs. sa_family_t, sin_addr.s_addr endianness) stay inside C and
+ * don't leak into `nativeMain` Kotlin code, where type differences
+ * between linuxX64 and macosArm64 would fail cinterop commonization.
+ */
+static inline int keel_connect_inet_loopback(int fd, uint16_t port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+}
+
+/*
+ * keel_set_rcvtimeo: sets SO_RCVTIMEO on `fd` to `timeout_sec` seconds.
+ * `struct timeval` is kept inside C for the same reason as above
+ * (tv_sec / tv_usec widths differ between Linux and macOS under
+ * cinterop).
+ */
+static inline int keel_set_rcvtimeo(int fd, long timeout_sec) {
+    struct timeval tv;
+    tv.tv_sec = timeout_sec;
+    tv.tv_usec = 0;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
