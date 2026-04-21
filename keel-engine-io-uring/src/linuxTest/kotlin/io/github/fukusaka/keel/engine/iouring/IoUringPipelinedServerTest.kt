@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io_uring.io_uring
@@ -26,8 +27,10 @@ import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
 import platform.posix.SO_RCVTIMEO
+import platform.posix.EINTR
 import platform.posix.close
 import platform.posix.connect
+import platform.posix.errno
 import platform.posix.read
 import platform.posix.setsockopt
 import platform.posix.socket
@@ -241,25 +244,35 @@ class IoUringPipelinedServerTest {
         return fd
     }
 
-    // Loop until every byte has been written. The original version only
-    // asserted `n > 0` and therefore tolerated short writes silently, which
-    // could produce spurious echo-payload mismatches under load.
+    // Loop until every byte has been written. Retries on EINTR (the
+    // Kotlin/Native runtime sends thread-signaling signals — likely SIGURG
+    // for GC safepoints — that interrupt blocking syscalls under CPU
+    // contention on GHA 4-vCPU runners). Also surfaces the errno on
+    // unrecoverable failures so the real cause is visible in artifacts.
     private fun rawWrite(fd: Int, data: String) {
         val bytes = data.encodeToByteArray()
         bytes.usePinned { pinned ->
             var total = 0
             while (total < bytes.size) {
                 val n = write(fd, pinned.addressOf(total), (bytes.size - total).convert())
-                assertTrue(n > 0, "write failed: n=$n at offset $total/${bytes.size}")
+                if (n <= 0) {
+                    val err = errno
+                    if (n < 0 && err == EINTR) continue
+                    assertTrue(
+                        false,
+                        "write returned $n at offset $total/${bytes.size} " +
+                            "errno=$err (${errnoMessage(err)})",
+                    )
+                }
                 total += n.toInt()
             }
         }
     }
 
-    // Loop until `size` bytes have been read; fail loudly on EOF / timeout
-    // rather than silently returning a partial payload (which used to mask
-    // the real cause of assertion mismatches as a bare
-    // `kotlin.AssertionError at null:-1`).
+    // Loop until `size` bytes have been read; retry on EINTR for the same
+    // reason as [rawWrite]. Surfaces errno on non-EINTR failure so
+    // ECONNRESET / ENOTCONN / EBADF are distinguishable from EAGAIN
+    // (SO_RCVTIMEO) in the artifact.
     private fun rawRead(fd: Int, size: Int): String {
         val buf = ByteArray(size)
         var total = 0
@@ -267,10 +280,15 @@ class IoUringPipelinedServerTest {
             val n = buf.usePinned { pinned ->
                 read(fd, pinned.addressOf(total), (size - total).convert())
             }
-            assertTrue(
-                n > 0,
-                "read returned $n after $total/$size bytes (EOF or SO_RCVTIMEO)",
-            )
+            if (n <= 0) {
+                val err = errno
+                if (n < 0 && err == EINTR) continue
+                assertTrue(
+                    false,
+                    "read returned $n after $total/$size bytes " +
+                        "errno=$err (${errnoMessage(err)})",
+                )
+            }
             total += n.toInt()
         }
         return buf.decodeToString(0, total)
@@ -280,16 +298,18 @@ class IoUringPipelinedServerTest {
 /**
  * Echoes each received [IoBuf] back down the pipeline.
  *
- * Holds the buffer via [IoBuf.retain] across the write, releases
- * its original reference, and lets the pipeline (IoTransport.flush)
- * release the retained copy on completion.
+ * `transport.write` retains the buffer for its own async-send lifecycle;
+ * this handler releases the inbound reference so the ring buffer slot is
+ * returned once the send CQE fires. Without the release, the provided
+ * buffer ring accumulated leaked slots per connection (previously the
+ * code also called `retain()` with no matching release).
  */
 private class EchoHandler : InboundHandler {
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is IoBuf) {
-            msg.retain()
             ctx.propagateWrite(msg)
             ctx.propagateFlush()
+            msg.release()
         } else {
             ctx.propagateRead(msg)
         }

@@ -94,6 +94,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: `flushDirectSendSingle` / `submitAsyncSendSequential` now log the errno and trigger teardown on fatal send errors instead of silently releasing the buffer and reporting flush complete ([#321])
 - `engine-io-uring`: EventLoop no longer dies on unhandled CQE callback exceptions; log + continue instead ([#318])
 - `engine-*`: release server fd / channel / NWListener along `bind()` / `bindPipeline()` error paths across all six engines. Was orphaned on `epoll_ctl` / `kevent` / `start()` / `dispatch_semaphore_wait` failures; `IoUringEngine.bindPipelineInet` tracks `createdCount` so partial `SO_REUSEPORT` fanout only closes acquired fds. New private helpers `closeQuietly` / `cancelListenerQuietly` ([#313])
 - `engine-netty`: align `NettyIoTransport.ioDispatcher` with channel `EventLoop` via new `NettyEventLoopDispatcher` — fixes latent `SuspendBridgeHandler` cross-thread race (ktor-keel-netty +17% on loopback) ([#310])
@@ -133,7 +134,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
-- `engine-io-uring`: route `IoUringPipelinedServerTest` through `PrintLogger(DEBUG)` so CQE diagnostics surface in CI test output ([#319])
+- `engine-io-uring`: route `IoUringPipelinedServerTest` through `PrintLogger(DEBUG)` so CQE diagnostics surface in CI test output ([#319]); `EchoHandler` no longer leaks the inbound buffer reference ([#321]); `rawRead` / `rawWrite` retry on EINTR — Kotlin/Native runtime signals (likely GC safepoints under CPU contention) were interrupting the blocking syscalls on GHA 4-vCPU runners and surfacing as the long-running `read returned -1` flake ([#321])
+- `ci(iouring-stress)`: auto-trigger on PRs touching `keel-engine-io-uring` (gated by `needs-pr-check` label) ([#321])
 - `ci`: upload JUnit XML + HTML test reports as artifacts; add manually-dispatched `io_uring stress` workflow ([#317])
 - `engine-io-uring`: debug trace logs in `FixedFileRegistry` and pipelined server accept CQE ([#317]); armRecv submission + per-recv-CQE traces ([#320])
 - Dokka: cover all visibility levels (public, internal, protected, private); GitHub source links per declaration; `module.md` for all 13 + 6 TLS modules; shortened navigation package names ([#253], [#254], [#255])
@@ -508,3 +510,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#318]: https://github.com/fukusaka/keel/pull/318
 [#319]: https://github.com/fukusaka/keel/pull/319
 [#320]: https://github.com/fukusaka/keel/pull/320
+[#321]: https://github.com/fukusaka/keel/pull/321
