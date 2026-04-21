@@ -9,10 +9,10 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.close
 
 /**
  * Pipeline server channel for epoll-based connection acceptance on Linux.
@@ -97,6 +97,6 @@ internal class EpollPipelinedServerChannel(
     override fun close() {
         if (closed) return
         closed = true
-        close(serverFd)
+        closeFdSafely(serverFd, logger, "pipelined server close")
     }
 }
