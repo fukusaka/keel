@@ -92,6 +92,21 @@ jobs:
       - name: Test (JS / Node.js)
         run: ./gradlew -Ptls -Pbenchmark jsNodeTest
 
+      # Preserve JUnit XML + HTML test reports even when the job is
+      # cancelled or a test step fails, so flaky-test post-mortems can
+      # read the actual failure message instead of relying on live logs
+      # (GH Actions truncates / drops step output on cancellation).
+      - name: Upload test reports (linux)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-linux
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   build-macos:
     name: Build & Test (JVM + macosArm64)
     runs-on: macos-latest
@@ -155,6 +170,17 @@ jobs:
 
       - name: Test (macosArm64)
         run: ./gradlew -Ptls -Pbenchmark macosArm64Test
+
+      - name: Upload test reports (macos)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-macos
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # JS / Node.js is intentionally NOT re-run here: Node.js behavior
       # is platform-neutral and the Linux job's `jsNodeTest` already covers
