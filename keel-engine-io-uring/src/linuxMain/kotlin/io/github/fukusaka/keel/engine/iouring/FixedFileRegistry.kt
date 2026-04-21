@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io_uring.keel_register_files
@@ -137,6 +138,7 @@ internal class FixedFileRegistry(
             return false
         }
         freeBitmap[word] = freeBitmap[word] and bit.inv()
+        logger.debug { "FixedFileRegistry.claim: index=$index" }
         return true
     }
 
@@ -159,6 +161,7 @@ internal class FixedFileRegistry(
             }
         }
         releaseSlot(index)
+        logger.debug { "FixedFileRegistry.unregister: index=$index" }
     }
 
     /**
