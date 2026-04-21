@@ -96,6 +96,9 @@ object PosixSocketUtils {
      *   `IpAddress.V6.ANY` (::) to bind to all interfaces in that family.
      * @param port Port number. 0 lets the OS assign an ephemeral port.
      * @param backlog TCP listen backlog. OS may cap this value.
+     * @param logger Used by the error-cleanup branch to route `close(fd)`
+     *   through [closeFdSafely], so a `close(2)` failure during the
+     *   unwind of a `bind` / `listen` error does not silently leak the fd.
      * @return The server socket file descriptor.
      */
     fun createServerSocket(
@@ -112,6 +115,9 @@ object PosixSocketUtils {
      * allowing multiple sockets to bind to the same port. The kernel
      * distributes incoming connections across sockets by hashing the
      * connection 4-tuple.
+     *
+     * @param logger Used by the error-cleanup branch to route `close(fd)`
+     *   through [closeFdSafely] (same contract as [createServerSocket]).
      */
     fun createReusePortServerSocket(
         address: IpAddress,
@@ -384,6 +390,11 @@ object PosixSocketUtils {
      * bytes fed to `sockaddr_un.sun_path`; `@name` input is translated
      * into the leading-NUL form expected by the Linux kernel.
      *
+     * @param address AF_UNIX bind target. `filesystem` or `abstract`
+     *   form; see [UnixSocketAddress].
+     * @param backlog `listen(2)` backlog.
+     * @param logger Used by the error-cleanup branch to route `close(fd)`
+     *   through [closeFdSafely] (same contract as [createServerSocket]).
      * @throws IllegalStateException if socket / bind / listen fails.
      */
     fun createUnixServerSocket(
