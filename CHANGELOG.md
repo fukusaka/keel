@@ -55,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `native-posix`: `closeFdSafely(fd, logger, context)` now routes through `PosixNativeSocket.close` (sealed `CloseResult`), so every production `close(fd)` call shares the `NativeSocket` seam and test fakes can track fd lifecycle uniformly ([#327])
+- `native-posix` / `engine-epoll` / `engine-kqueue`: inline `PosixWrite.writeSingle` / `writeGather` back-compat helpers into `EpollIoTransport` / `KqueueIoTransport` flush paths and delete `PosixWrite.kt`. `WriteResult` sealed class moves to `NativeSocket.kt` alongside the other result types ([#326])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route read / write / accept / connect / shutdown / send through `PosixNativeSocket`; EINTR retried in Layer 1 so the engines cannot misclassify signal interrupts as EOF. `PosixSocketUtils.connectNonBlocking` / `connectUnixNonBlocking` return sealed `ConnectResult` instead of raw `Int` + ambient errno ([#325])
 - **BREAKING** (`core`): remove `Channel.appDispatcher` / `IoTransport.appDispatcher`; move to `KeelApplicationEngine.Configuration.applicationDispatcher: CoroutineDispatcher? = null` (null default = `channel.ioDispatcher`). Custom `IoTransport` implementations drop the override; NIO users relying on Default-pool pipeline set `applicationDispatcher = Dispatchers.Default` ([#312])
 - `engine-nio`: drop `appDispatcher = Dispatchers.Default` override; Ktor pipeline runs on the `NioEventLoop` Selector thread (ktor-keel-nio +9.5% on 32-core Ryzen loopback; prior regression no longer reproduces after the `PipelinedChannel` / `HttpWriter` rewrite landed in the same release cycle) ([#311])
@@ -518,4 +519,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#323]: https://github.com/fukusaka/keel/pull/323
 [#324]: https://github.com/fukusaka/keel/pull/324
 [#325]: https://github.com/fukusaka/keel/pull/325
+[#326]: https://github.com/fukusaka/keel/pull/326
 [#327]: https://github.com/fukusaka/keel/pull/327

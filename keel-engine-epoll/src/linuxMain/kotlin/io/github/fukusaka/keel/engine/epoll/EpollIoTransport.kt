@@ -4,13 +4,12 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.NativeRegion
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.native.posix.writeGather
-import io.github.fukusaka.keel.native.posix.writeSingle
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
@@ -151,7 +150,7 @@ internal class EpollIoTransport(
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            when (val result = writeSingle(fd, ptr, pw.length - written)) {
+            when (val result = PosixNativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
@@ -181,7 +180,10 @@ internal class EpollIoTransport(
      */
     private fun flushGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
-        val writtenBytes: Int = when (val result = writeGather(fd, pendingWrites)) {
+        val regions = pendingWrites.map { pw ->
+            NativeRegion((pw.buf.unsafePointer + pw.offset)!!, pw.length)
+        }
+        val writtenBytes: Int = when (val result = PosixNativeSocket.writev(fd, regions)) {
             WriteResult.WouldBlock -> {
                 registerWriteCallback()
                 return false
