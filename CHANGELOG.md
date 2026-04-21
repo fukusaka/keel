@@ -54,6 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route read / write / accept / connect / shutdown / send through `PosixNativeSocket`; EINTR retried in Layer 1 so the engines cannot misclassify signal interrupts as EOF. `PosixSocketUtils.connectNonBlocking` / `connectUnixNonBlocking` return sealed `ConnectResult` instead of raw `Int` + ambient errno ([#325])
 - **BREAKING** (`core`): remove `Channel.appDispatcher` / `IoTransport.appDispatcher`; move to `KeelApplicationEngine.Configuration.applicationDispatcher: CoroutineDispatcher? = null` (null default = `channel.ioDispatcher`). Custom `IoTransport` implementations drop the override; NIO users relying on Default-pool pipeline set `applicationDispatcher = Dispatchers.Default` ([#312])
 - `engine-nio`: drop `appDispatcher = Dispatchers.Default` override; Ktor pipeline runs on the `NioEventLoop` Selector thread (ktor-keel-nio +9.5% on 32-core Ryzen loopback; prior regression no longer reproduces after the `PipelinedChannel` / `HttpWriter` rewrite landed in the same release cycle) ([#311])
 - **BREAKING** (`core`): `StreamEngine.bind` / `connect` / `bindPipeline` take `SocketAddress` sealed hierarchy instead of `(host: String, port: Int)`. `(host, port)` preserved as default interface method. Non-suspend `bindPipeline` requires IP literals ([#294])
@@ -515,3 +516,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#321]: https://github.com/fukusaka/keel/pull/321
 [#323]: https://github.com/fukusaka/keel/pull/323
 [#324]: https://github.com/fukusaka/keel/pull/324
+[#325]: https://github.com/fukusaka/keel/pull/325
