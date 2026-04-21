@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-io-uring`: SENDMSG_ZC mode for gather write + zero-copy ([#271]); fixed file descriptors via `IORING_REGISTER_FILES` ([#272]); registered buffers for `SEND_ZC_FIXED` ([#273])
 - `native-posix`: `errnoMessage(errno: Int): String` helper wrapping thread-safe `strerror_r`; `closeFdSafely(fd, logger, context)` for silent-leak-free cleanup paths ([#275])
 - `native-posix`: `NativeSocket` interface + `PosixNativeSocket` impl with sealed `ReadResult` / `AcceptResult` / `ConnectResult` / `ShutdownResult` / `CloseResult` (and reused `WriteResult`); EINTR-retrying C wrappers for `read` / `write` / `accept` / `send` / `shutdown` / `writev`; `keel_connect` deliberately does NOT retry (POSIX: interrupted connect continues async → `PosixNativeSocket.connect` maps `EINTR` to `ConnectResult.InProgress`); `close(2)` not retried per POSIX undefined-state rules ([#323])
+- `native-posix`: `PosixRawClient` test helper (`rawConnect` / `rawWrite` / `rawRead` / `rawReadBytes` / `rawReadUpTo` / `rawReadOnce`) built on `NativeSocket` — EINTR retry handled by Layer 1, `rawRead` enforces an absolute monotonic deadline so signal storms cannot extend the timeout via kernel `SO_RCVTIMEO` reset; 5 engine tests (`EpollEngineTest` / `KqueueEngineTest` / `IoUringEngineTest` / `IoUringPipelinedServerTest` / `NwEngineTest`) consolidated onto the shared helper ([#324])
 - `native-posix`: `PosixSocketUtils.acceptClient(fd)` wraps the `setNonBlocking` + `getRemoteAddress` + `getLocalAddress` sequence; `writeSingle(fd, ptr, length)` / `writeGather(fd, writes)` with sealed `WriteResult` (`Written` / `WouldBlock` / `Failed`) share POSIX `write(2)` / `writev(2)` wrappers across `EpollIoTransport` / `KqueueIoTransport` / `EpollServer` / `KqueueServer` / `IoUringServer` ([#316])
 - `core`: `AbstractPipelinedChannel` base class in commonMain — wires `IoTransport` callbacks to the pipeline without per-engine boilerplate ([#266])
 - `core`: `BindConfig.initializeConnection(channel)` auto-called by every `Server.accept()` — removes duplicate init calls in engine code ([#265])
@@ -513,3 +514,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#320]: https://github.com/fukusaka/keel/pull/320
 [#321]: https://github.com/fukusaka/keel/pull/321
 [#323]: https://github.com/fukusaka/keel/pull/323
+[#324]: https://github.com/fukusaka/keel/pull/324

@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
-import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io_uring.io_uring
@@ -15,30 +15,10 @@ import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.sizeOf
-import kotlinx.cinterop.usePinned
-import platform.posix.AF_INET
-import platform.posix.SOCK_STREAM
-import platform.posix.SOL_SOCKET
-import platform.posix.SO_RCVTIMEO
-import platform.posix.EINTR
 import platform.posix.close
-import platform.posix.connect
-import platform.posix.errno
-import platform.posix.read
-import platform.posix.setsockopt
-import platform.posix.socket
-import platform.posix.sockaddr_in
-import platform.posix.timeval
-import platform.posix.write
-import posix_socket.keel_htons
-import posix_socket.keel_loopback_addr
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -225,74 +205,17 @@ class IoUringPipelinedServerTest {
         return kv >= KernelVersion(5, 15)
     }
 
-    private fun rawConnect(port: Int): Int {
-        val fd = socket(AF_INET, SOCK_STREAM, 0)
-        check(fd >= 0)
-        memScoped {
-            val tv = alloc<timeval>()
-            tv.tv_sec = 5
-            tv.tv_usec = 0
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv.ptr, sizeOf<timeval>().convert())
+    // Thin facades over shared PosixRawClient.
+    // EINTR retry (PR #321's in-file workaround) now lives at Layer 1
+    // (cinterop `keel_read` / `keel_write`). rawRead also enforces an
+    // absolute monotonic deadline so signal storms cannot extend the
+    // timeout via kernel timer reset.
 
-            val addr = alloc<sockaddr_in>()
-            addr.sin_family = AF_INET.convert()
-            addr.sin_port = keel_htons(port.toUShort())
-            addr.sin_addr.s_addr = keel_loopback_addr()
-            val rc = connect(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
-            check(rc == 0) { "connect failed: rc=$rc" }
-        }
-        return fd
-    }
+    private fun rawConnect(port: Int): Int = PosixRawClient.rawConnect(port)
 
-    // Loop until every byte has been written. Retries on EINTR (the
-    // Kotlin/Native runtime sends thread-signaling signals — likely SIGURG
-    // for GC safepoints — that interrupt blocking syscalls under CPU
-    // contention on GHA 4-vCPU runners). Also surfaces the errno on
-    // unrecoverable failures so the real cause is visible in artifacts.
-    private fun rawWrite(fd: Int, data: String) {
-        val bytes = data.encodeToByteArray()
-        bytes.usePinned { pinned ->
-            var total = 0
-            while (total < bytes.size) {
-                val n = write(fd, pinned.addressOf(total), (bytes.size - total).convert())
-                if (n <= 0) {
-                    val err = errno
-                    if (n < 0 && err == EINTR) continue
-                    assertTrue(
-                        false,
-                        "write returned $n at offset $total/${bytes.size} " +
-                            "errno=$err (${errnoMessage(err)})",
-                    )
-                }
-                total += n.toInt()
-            }
-        }
-    }
+    private fun rawWrite(fd: Int, data: String): Unit = PosixRawClient.rawWrite(fd, data)
 
-    // Loop until `size` bytes have been read; retry on EINTR for the same
-    // reason as [rawWrite]. Surfaces errno on non-EINTR failure so
-    // ECONNRESET / ENOTCONN / EBADF are distinguishable from EAGAIN
-    // (SO_RCVTIMEO) in the artifact.
-    private fun rawRead(fd: Int, size: Int): String {
-        val buf = ByteArray(size)
-        var total = 0
-        while (total < size) {
-            val n = buf.usePinned { pinned ->
-                read(fd, pinned.addressOf(total), (size - total).convert())
-            }
-            if (n <= 0) {
-                val err = errno
-                if (n < 0 && err == EINTR) continue
-                assertTrue(
-                    false,
-                    "read returned $n after $total/$size bytes " +
-                        "errno=$err (${errnoMessage(err)})",
-                )
-            }
-            total += n.toInt()
-        }
-        return buf.decodeToString(0, total)
-    }
+    private fun rawRead(fd: Int, size: Int): String = PosixRawClient.rawRead(fd, size)
 }
 
 /**
