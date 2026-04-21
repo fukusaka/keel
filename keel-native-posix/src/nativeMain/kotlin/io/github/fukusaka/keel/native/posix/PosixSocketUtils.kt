@@ -172,7 +172,8 @@ object PosixSocketUtils {
             val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            closeFdSafely(fd, logger, "createServerSocket cleanup")
+            val context = if (reusePort) "createReusePortServerSocket cleanup" else "createServerSocket cleanup"
+            closeFdSafely(fd, logger, context)
             throw e
         }
 
