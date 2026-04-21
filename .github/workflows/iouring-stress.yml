@@ -1,0 +1,90 @@
+name: io_uring stress (flaky-test repro)
+
+# Manually-triggered workflow to repro the CI-only flake in
+# IoUringPipelinedServerTest.
+#
+# Runs the io_uring linuxX64 test suite N times with `--rerun-tasks`
+# and preserves JUnit XML + HTML reports per iteration, so a single
+# dispatch produces enough samples to observe the flake rate and
+# capture the descriptive failure message (rawRead / rawWrite helpers
+# assert with EOF / SO_RCVTIMEO context since PR #307 / #308).
+#
+# Use via Actions tab → "io_uring stress" → Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of test-suite iterations'
+        required: false
+        default: '20'
+
+jobs:
+  stress:
+    name: Stress (linuxX64) x${{ github.event.inputs.iterations }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install native dependencies
+        run: sudo apt-get install -y liburing-dev
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      - name: Build test binary once
+        run: ./gradlew :keel-engine-io-uring:linkDebugTestLinuxX64
+
+      # Per iteration, only the `linuxX64Test` task's output is cleaned
+      # so Gradle re-executes the tests without re-linking the test
+      # binary (which `--rerun-tasks` would do, since it forces every
+      # upstream task in the graph to rerun — ~30s relink overhead per
+      # iteration on CI).
+      - name: Stress loop
+        env:
+          ITERATIONS: ${{ github.event.inputs.iterations }}
+        run: |
+          set +e
+          mkdir -p stress-reports
+          fail_count=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "=== iteration $i ==="
+            ./gradlew :keel-engine-io-uring:cleanLinuxX64Test :keel-engine-io-uring:linuxX64Test
+            rc=$?
+            # Snapshot reports for this iteration before the next run clobbers them.
+            if [ -d keel-engine-io-uring/build/reports/tests ]; then
+              cp -r keel-engine-io-uring/build/reports/tests "stress-reports/iter-$i-reports"
+            fi
+            if [ -d keel-engine-io-uring/build/test-results ]; then
+              cp -r keel-engine-io-uring/build/test-results "stress-reports/iter-$i-results"
+            fi
+            if [ $rc -ne 0 ]; then
+              fail_count=$((fail_count + 1))
+              echo "iteration $i FAILED (rc=$rc, total failures=$fail_count)"
+            fi
+          done
+          echo "=== summary: $fail_count / $ITERATIONS iterations failed ==="
+          # Exit 0 so artifacts upload even if some iterations failed;
+          # the summary line above is the signal.
+
+      - name: Upload stress reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iouring-stress-reports
+          path: stress-reports/
+          if-no-files-found: ignore
+          retention-days: 14

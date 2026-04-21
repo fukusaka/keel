@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -111,6 +112,10 @@ internal class IoUringPipelinedServerChannel(
                         },
                         onCqe = { res, _ ->
                             if (res >= 0 && !closed) {
+                                logger.debug {
+                                    val label = if (directAllocActive) "slot" else "fd"
+                                    "accept CQE: worker=$i $label=$res"
+                                }
                                 onAccept(res, i, directAllocActive)
                             } else if (directAllocActive && res == -ENFILE) {
                                 // Fixed file table full — kernel could not
