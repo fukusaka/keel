@@ -6,6 +6,7 @@ import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -137,6 +138,9 @@ internal class IoUringIoTransport(
             bgid = ring.bgid,
             onCqe = { res, flags ->
                 if (!opened) return@submitMultishotRecv
+                eventLoop.logger.debug {
+                    "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
+                }
                 when {
                     res > 0 -> {
                         val bufId = keel_cqe_get_buf_id(flags).toInt()
@@ -150,6 +154,9 @@ internal class IoUringIoTransport(
                 }
             },
         )
+        eventLoop.logger.debug {
+            "armRecv submitted: sqeFd=$sqeFd fixedFile=$useFixedFile multishotSlot=$multishotSlot"
+        }
     }
 
     // --- Lifecycle ---
