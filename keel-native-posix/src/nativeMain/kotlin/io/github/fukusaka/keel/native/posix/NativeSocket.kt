@@ -44,6 +44,17 @@ public interface NativeSocket {
      * Reads up to [length] bytes from [fd] into [buf].
      *
      * EINTR is never observed (handled by the production impl).
+     *
+     * **`SO_RCVTIMEO` caveat**: when the caller has set `SO_RCVTIMEO`
+     * on a blocking socket, the kernel timer resets on every `EINTR`
+     * retry performed by the underlying wrapper. A busy signal rate
+     * therefore weakens the timeout guarantee — worst-case `read`
+     * duration becomes `timeout × signal_rate / (signal_rate - 1)`
+     * rather than `timeout`. Callers that require a strict bound
+     * should use an absolute monotonic deadline and recompute
+     * `SO_RCVTIMEO` per retry, or switch to non-blocking I/O driven
+     * by an event loop (which is what production engines do — only
+     * test helpers hit this edge case).
      */
     public fun read(fd: Int, buf: CPointer<ByteVar>, length: Int): ReadResult
 
@@ -52,6 +63,7 @@ public interface NativeSocket {
      *
      * Returns [WriteResult.Written] even on partial writes — callers
      * must drive a loop until all bytes are transferred.
+     * The same `SO_SNDTIMEO` timer-reset caveat as [read] applies.
      */
     public fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult
 
@@ -73,12 +85,21 @@ public interface NativeSocket {
      * Initiates (or completes) a connect on [fd] to the given
      * sockaddr. For non-blocking sockets, typically returns
      * [ConnectResult.InProgress] on the first call.
+     *
+     * **EINTR semantics**: unlike [read] / [write] / [accept], connect
+     * is NOT retried on `EINTR` — POSIX specifies that an interrupted
+     * connect continues asynchronously in the kernel, so a subsequent
+     * `connect(2)` call would return `EALREADY` or `EISCONN` rather
+     * than a clean success. This implementation maps both `EINPROGRESS`
+     * and `EINTR` to [ConnectResult.InProgress]; the caller waits for
+     * write-readiness and completes via `getsockopt(SO_ERROR)`.
      */
     public fun connect(fd: Int, addr: CPointer<ByteVar>, addrLen: Int): ConnectResult
 
     /**
      * Sends up to [length] bytes from [buf] with [flags] (e.g.
      * `MSG_NOSIGNAL`).
+     * The same `SO_SNDTIMEO` timer-reset caveat as [read] applies.
      */
     public fun send(fd: Int, buf: CPointer<ByteVar>, length: Int, flags: Int): WriteResult
 
@@ -87,6 +108,25 @@ public interface NativeSocket {
      * [how] is `SHUT_RD` / `SHUT_WR` / `SHUT_RDWR`.
      */
     public fun shutdown(fd: Int, how: Int): ShutdownResult
+
+    /**
+     * Closes [fd].
+     *
+     * **EINTR semantics**: `close(2)` is NOT retried on `EINTR`. POSIX
+     * leaves the file descriptor state undefined after an interrupted
+     * close, and on Linux the fd is released even when `close(2)`
+     * returns `-1 EINTR`. Naive retry would therefore risk closing
+     * a descriptor that the kernel silently re-allocated to another
+     * `open(2)` in the meantime. Callers that want logging on
+     * failure should go through the pre-existing `closeFdSafely`
+     * helper (which delegates to this method).
+     *
+     * Included on [NativeSocket] primarily for test mockability:
+     * a fake impl can track fd lifecycle (leak detection, post-close
+     * I/O verification) without needing to intercept
+     * `platform.posix.close` directly.
+     */
+    public fun close(fd: Int): CloseResult
 }
 
 /**
@@ -163,4 +203,13 @@ public sealed class ConnectResult {
 public sealed class ShutdownResult {
     public object Ok : ShutdownResult()
     public data class Failed(val errno: Int) : ShutdownResult()
+}
+
+/**
+ * Outcome of [NativeSocket.close]. See the method-level KDoc for the
+ * EINTR handling policy.
+ */
+public sealed class CloseResult {
+    public object Ok : CloseResult()
+    public data class Failed(val errno: Int) : CloseResult()
 }

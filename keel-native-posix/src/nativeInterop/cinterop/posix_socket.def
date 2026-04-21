@@ -156,10 +156,30 @@ static inline int keel_accept(int fd) {
     return r;
 }
 
+/*
+ * connect(2) is intentionally NOT retried on EINTR.
+ *
+ * POSIX (Open Group, connect()): "If connect() is interrupted by a
+ * signal that is caught while blocked waiting to establish a
+ * connection, connect() shall fail and set errno to EINTR, but the
+ * connection request shall not be aborted, and the connection shall
+ * be established asynchronously."
+ *
+ * Re-invoking connect() on the same fd after EINTR therefore returns
+ * `EALREADY` (handshake in progress) or `EISCONN` (already completed)
+ * — never a clean "success". A naive retry loop would surface those
+ * to the caller as a generic failure even though the connection is
+ * actually fine.
+ *
+ * The correct POSIX pattern on EINTR is to wait for write-readiness
+ * (select / poll / epoll / kevent) and then `getsockopt(SO_ERROR)` to
+ * discover the final result — exactly the same flow as `EINPROGRESS`
+ * on non-blocking sockets. `PosixNativeSocket.connect` maps both
+ * `EINPROGRESS` and `EINTR` to `ConnectResult.InProgress` so the
+ * caller's event-loop path handles them identically.
+ */
 static inline int keel_connect(int fd, const struct sockaddr *addr, socklen_t len) {
-    int r;
-    do { r = connect(fd, addr, len); } while (r < 0 && errno == EINTR);
-    return r;
+    return connect(fd, addr, len);
 }
 
 static inline ssize_t keel_send(int fd, const void *buf, size_t count, int flags) {

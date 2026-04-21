@@ -12,6 +12,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
+import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
 import platform.posix.errno
 import posix_socket.keel_accept
@@ -82,7 +83,12 @@ public object PosixNativeSocket : NativeSocket {
             r == 0 -> ConnectResult.Connected
             else -> {
                 val err = errno
-                if (err == EINPROGRESS) ConnectResult.InProgress
+                // EINTR is mapped to InProgress for the same reason as EINPROGRESS:
+                // POSIX guarantees the connection continues asynchronously after a
+                // signal interrupts connect(2) (see `keel_connect` KDoc in the
+                // cinterop def). Callers then wait for write-readiness and call
+                // `getsockopt(SO_ERROR)` — identical to the non-blocking flow.
+                if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
                 else ConnectResult.Failed(err)
             }
         }
@@ -96,6 +102,15 @@ public object PosixNativeSocket : NativeSocket {
     override fun shutdown(fd: Int, how: Int): ShutdownResult {
         val r = keel_shutdown(fd, how)
         return if (r == 0) ShutdownResult.Ok else ShutdownResult.Failed(errno)
+    }
+
+    override fun close(fd: Int): CloseResult {
+        // Intentionally NOT wrapped by a `keel_close` cinterop helper —
+        // close(2) on EINTR has undefined fd state per POSIX, and
+        // retrying would risk closing a descriptor the kernel
+        // re-allocated in the interim. See NativeSocket.close KDoc.
+        val r = platform.posix.close(fd)
+        return if (r == 0) CloseResult.Ok else CloseResult.Failed(errno)
     }
 
     private fun decodeWriteResult(n: Long): WriteResult = when {
