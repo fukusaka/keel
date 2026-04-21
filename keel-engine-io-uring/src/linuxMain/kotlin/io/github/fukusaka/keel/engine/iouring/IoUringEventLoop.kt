@@ -54,6 +54,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
@@ -61,7 +62,6 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.EAGAIN
 import platform.posix.EINTR
-import platform.posix.close
 import platform.posix.errno
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
@@ -418,10 +418,7 @@ internal class IoUringEventLoop(
                 }
             }
             io_uring_queue_exit(ring.ptr)
-            val closeRet = close(wakeupFd)
-            if (closeRet != 0) {
-                logger.warn { "close(wakeupFd) failed: ${errnoMessage(errno)}" }
-            }
+            closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             arena.clear()
         }
     }
