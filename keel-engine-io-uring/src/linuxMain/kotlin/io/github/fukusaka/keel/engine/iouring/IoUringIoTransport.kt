@@ -347,6 +347,7 @@ internal class IoUringIoTransport(
      */
     private fun flushDirectSendSingle(pw: PendingWrite): Boolean {
         var written = 0
+        var fatalError = false
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             val remaining = (pw.length - written).toULong()
@@ -356,7 +357,17 @@ internal class IoUringIoTransport(
                     written += n.toInt()
                     flushBytesWritten += n
                 }
-                n == 0L -> break
+                n == 0L -> {
+                    // TCP send() returning 0 is unexpected (writes always transfer
+                    // at least 1 byte on success or fail). Treat as fatal so the
+                    // orphaned connection is torn down instead of being silently
+                    // marked "flushed".
+                    eventLoop.logger.warn {
+                        "send() returned 0 unexpectedly: fd=$fd written=$written/${pw.length}"
+                    }
+                    fatalError = true
+                    break
+                }
                 else -> {
                     val err = errno
                     if (err == EAGAIN || err == EWOULDBLOCK) {
@@ -370,12 +381,27 @@ internal class IoUringIoTransport(
                         submitAsyncSend(pw.buf, pw.offset + written, asyncBytes)
                         return false
                     }
-                    break // unrecoverable error
+                    // Unrecoverable error (e.g., EPIPE after peer RST, ECONNRESET,
+                    // EBADF). Log with errno and mark the connection for teardown
+                    // — previously we silently released the buffer and returned
+                    // "flush complete", leaving the orphaned transport alive and
+                    // the pipeline unaware that the echo never reached the peer.
+                    eventLoop.logger.warn {
+                        "send() failed: fd=$fd ${errnoMessage(err)} (written=$written/${pw.length})"
+                    }
+                    fatalError = true
+                    break
                 }
             }
         }
         pw.buf.release()
         updatePendingBytes(-pw.length)
+        if (fatalError) {
+            // Route through the read-closed path so the pipeline notifies
+            // inactive and the channel tears down cleanly. Safe even though
+            // the error is write-side: the connection is unusable either way.
+            onReadClosed?.invoke()
+        }
         return true
     }
 
@@ -434,9 +460,18 @@ internal class IoUringIoTransport(
                     // Partial send: submit another SQE for the remainder.
                     submitAsyncSendSequential(buf, offset + sent, remaining, onComplete)
                 } else {
-                    // Done (all sent, or error): release the buffer.
+                    // Surface async send errors (EPIPE / ECONNRESET / etc.) —
+                    // previously we silently released the buffer and called
+                    // onComplete, leaving the pipeline unaware that the
+                    // echo never landed and the orphaned transport alive.
+                    if (res < 0) {
+                        eventLoop.logger.warn {
+                            "async send CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
+                        }
+                    }
                     buf.release()
                     onComplete()
+                    if (res < 0) onReadClosed?.invoke()
                 }
             },
         )
