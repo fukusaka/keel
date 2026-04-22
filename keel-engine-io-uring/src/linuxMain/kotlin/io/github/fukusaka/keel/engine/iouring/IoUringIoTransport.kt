@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
@@ -78,6 +79,7 @@ internal class IoUringIoTransport(
      * [FixedFileRegistry.register].
      */
     preAllocatedIndex: Int = -1,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -186,7 +188,7 @@ internal class IoUringIoTransport(
                     },
                 )
             } else {
-                when (val result = PosixNativeSocket.shutdown(fd, SHUT_WR)) {
+                when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
                     ShutdownResult.Ok -> Unit
                     is ShutdownResult.Failed -> eventLoop.logger.warn {
                         "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
@@ -355,7 +357,7 @@ internal class IoUringIoTransport(
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             val remaining = pw.length - written
-            when (val result = PosixNativeSocket.send(fd, ptr, remaining, MSG_NOSIGNAL)) {
+            when (val result = nativeSocket.send(fd, ptr, remaining, MSG_NOSIGNAL)) {
                 is WriteResult.Written -> {
                     written += result.bytes
                     flushBytesWritten += result.bytes.toLong()

@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -43,6 +44,7 @@ internal class KqueuePipelinedServerChannel(
     private val logger: Logger,
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -73,7 +75,7 @@ internal class KqueuePipelinedServerChannel(
         if (closed) return
         // Accept all pending connections in a loop (edge-triggered behavior).
         while (true) {
-            when (val result = PosixNativeSocket.accept(serverFd)) {
+            when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     PosixSocketUtils.setNonBlocking(result.fd)
                     dispatchToWorker(result.fd)
@@ -101,7 +103,7 @@ internal class KqueuePipelinedServerChannel(
     }
 
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
-        val transport = KqueueIoTransport(clientFd, loop, allocator)
+        val transport = KqueueIoTransport(clientFd, loop, allocator, nativeSocket)
         val channel = KqueuePipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

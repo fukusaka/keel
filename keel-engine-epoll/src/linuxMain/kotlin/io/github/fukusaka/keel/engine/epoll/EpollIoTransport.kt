@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeRegion
+import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.ShutdownResult
@@ -39,6 +40,7 @@ internal class EpollIoTransport(
     private val fd: Int,
     private val eventLoop: EpollEventLoop,
     allocator: BufferAllocator,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -62,7 +64,7 @@ internal class EpollIoTransport(
         if (!opened) return
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        when (val result = PosixNativeSocket.read(fd, ptr, buf.writableBytes)) {
+        when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
                 buf.writerIndex += result.bytes
                 onRead?.invoke(buf)
@@ -94,7 +96,7 @@ internal class EpollIoTransport(
     override fun shutdownOutput() {
         if (!outputShutdown && opened) {
             outputShutdown = true
-            when (val result = PosixNativeSocket.shutdown(fd, SHUT_WR)) {
+            when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
                 ShutdownResult.Ok -> Unit
                 is ShutdownResult.Failed -> eventLoop.logger.warn {
                     "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
@@ -150,7 +152,7 @@ internal class EpollIoTransport(
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            when (val result = PosixNativeSocket.write(fd, ptr, pw.length - written)) {
+            when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
@@ -183,7 +185,7 @@ internal class EpollIoTransport(
         val regions = pendingWrites.map { pw ->
             NativeRegion((pw.buf.unsafePointer + pw.offset)!!, pw.length)
         }
-        val writtenBytes: Int = when (val result = PosixNativeSocket.writev(fd, regions)) {
+        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, regions)) {
             WriteResult.WouldBlock -> {
                 registerWriteCallback()
                 return false

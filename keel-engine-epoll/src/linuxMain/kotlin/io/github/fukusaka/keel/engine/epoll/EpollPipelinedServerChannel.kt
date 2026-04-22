@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -32,6 +33,7 @@ internal class EpollPipelinedServerChannel(
     private val logger: Logger,
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -56,7 +58,7 @@ internal class EpollPipelinedServerChannel(
     private fun onAcceptable() {
         if (closed) return
         while (true) {
-            when (val result = PosixNativeSocket.accept(serverFd)) {
+            when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     PosixSocketUtils.setNonBlocking(result.fd)
                     dispatchToWorker(result.fd)
@@ -83,7 +85,7 @@ internal class EpollPipelinedServerChannel(
     }
 
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, allocator: BufferAllocator) {
-        val transport = EpollIoTransport(clientFd, loop, allocator)
+        val transport = EpollIoTransport(clientFd, loop, allocator, nativeSocket)
         val channel = EpollPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

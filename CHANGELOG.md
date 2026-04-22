@@ -55,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-epoll` / `engine-kqueue` / `engine-io-uring`: expose `nativeSocket: NativeSocket = PosixNativeSocket` engine-constructor parameter and thread it through `*Server` / `*PipelinedServerChannel` / `*IoTransport`; engines now dispatch every POSIX syscall through the injected instance instead of the `PosixNativeSocket` singleton. Production behaviour unchanged (default resolves to the singleton); tests can inject `FakeNativeSocket` to drive errno branches without a real kernel ([#332])
 - **BREAKING** (`native-posix`): `PosixSocketUtils.createServerSocket` / `createReusePortServerSocket` / `createUnixServerSocket` take a trailing `logger: Logger` parameter and route error-cleanup `close(fd)` through `closeFdSafely`. Closes the last production silent `close(fd)` inside `keel-native-posix` itself ([#331])
 - `ci`: drop `pull_request` auto-trigger on the `io_uring stress` workflow — NativeSocket refactor (#323 → #328) fixed the flake root cause structurally, so per-PR 20-iteration stress runs are no longer needed. `workflow_dispatch` remains for on-demand diagnostics ([#329])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: route every remaining production `close(fd)` (IoTransport teardown, Server / PipelinedServer close, EventLoop teardown, Engine connect cleanup / cancellation) through `closeFdSafely`. Previously silent drops on `close(2)` failure now surface as warn-level logs with fd + `<role>` context ([#328])
@@ -529,3 +530,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#329]: https://github.com/fukusaka/keel/pull/329
 [#330]: https://github.com/fukusaka/keel/pull/330
 [#331]: https://github.com/fukusaka/keel/pull/331
+[#332]: https://github.com/fukusaka/keel/pull/332

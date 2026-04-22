@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -52,6 +54,7 @@ internal class IoUringPipelinedServerChannel(
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -201,6 +204,7 @@ internal class IoUringPipelinedServerChannel(
                 fixedFileRegistry = fileRegistry,
                 registeredBufferTable = bufferTable,
                 preAllocatedIndex = acceptRes,
+                nativeSocket = nativeSocket,
             )
         } else {
             PosixSocketUtils.setNonBlocking(acceptRes)
@@ -212,6 +216,7 @@ internal class IoUringPipelinedServerChannel(
                 bufferRing = bufferRing,
                 fixedFileRegistry = fileRegistry,
                 registeredBufferTable = bufferTable,
+                nativeSocket = nativeSocket,
             )
         }
         val channel = IoUringPipelinedChannel(transport, logger)
