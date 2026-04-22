@@ -65,10 +65,15 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * The interface hardcodes `SO_REUSEADDR` (TCP server) and `O_NONBLOCK`
  * (all sockets); `SO_REUSEPORT` is opt-in via [bindListener]'s
- * `reusePort` parameter. User-facing socket options (`TCP_NODELAY`,
- * `SO_KEEPALIVE`, `SO_RCVBUF`, etc.) are not yet exposed — planned as
- * an extension of `BindConfig` / `ConnectConfig` rather than new
- * seam methods.
+ * `reusePort` parameter.
+ *
+ * User-facing socket options (`TCP_NODELAY`, `SO_KEEPALIVE`,
+ * `SO_RCVBUF`, `SO_SNDBUF`) are exposed via
+ * [io.github.fukusaka.keel.core.SocketOptions] and applied through
+ * [setSocketOption] + the [applySocketOptions] extension — engines
+ * call these after `openClientSocket` / at `accept` time, per
+ * [io.github.fukusaka.keel.core.ConnectConfig.socketOptions] /
+ * [io.github.fukusaka.keel.core.BindConfig.childSocketOptions].
  *
  * ## Testability
  *
