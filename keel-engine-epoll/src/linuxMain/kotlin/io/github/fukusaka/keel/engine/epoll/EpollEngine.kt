@@ -15,6 +15,8 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -65,10 +67,15 @@ import platform.posix.errno
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
  *               to `availableProcessors()`.
+ * @param nativeSocket POSIX syscall seam. Defaults to [PosixNativeSocket]
+ *                     (the production impl that delegates to `keel_*`
+ *                     C wrappers). Tests inject a fake implementation to
+ *                     drive specific errno branches without real fds.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -112,7 +119,7 @@ class EpollEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
+            return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
@@ -139,7 +146,7 @@ class EpollEngine(
 
             val localAddr = PosixSocketUtils.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -193,7 +200,7 @@ class EpollEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = EpollIoTransport(fd, workerLoop, allocator)
+        val transport = EpollIoTransport(fd, workerLoop, allocator, nativeSocket)
         return EpollPipelinedChannel(transport, logger, address, null)
     }
 
@@ -235,7 +242,7 @@ class EpollEngine(
         val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
         val localAddr = PosixSocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = EpollIoTransport(fd, workerLoop, allocator)
+        val transport = EpollIoTransport(fd, workerLoop, allocator, nativeSocket)
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
@@ -276,6 +283,7 @@ class EpollEngine(
                 logger = logger,
                 config = config,
                 pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
             )
             serverChannel.start()
             return serverChannel
@@ -307,6 +315,7 @@ class EpollEngine(
                 logger = logger,
                 config = config,
                 pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
             )
             serverChannel.start()
             return serverChannel

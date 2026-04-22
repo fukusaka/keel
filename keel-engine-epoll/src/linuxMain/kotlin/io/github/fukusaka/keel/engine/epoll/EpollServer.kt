@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -54,6 +55,7 @@ internal class EpollServer(
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : ServerChannel {
 
     // State transitions may be observed from the boss EventLoop thread
@@ -82,12 +84,12 @@ internal class EpollServer(
         check(_active) { "ServerChannel is closed" }
 
         while (true) {
-            when (val result = PosixNativeSocket.accept(serverFd)) {
+            when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
                     val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
                     val (workerLoop, allocator) = workerGroup.next()
-                    val transport = EpollIoTransport(clientFd, workerLoop, allocator)
+                    val transport = EpollIoTransport(clientFd, workerLoop, allocator, nativeSocket)
                     val channel = EpollPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
