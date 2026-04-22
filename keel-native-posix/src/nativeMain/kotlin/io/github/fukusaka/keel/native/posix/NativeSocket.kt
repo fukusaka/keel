@@ -75,9 +75,9 @@ public interface NativeSocket {
 
     /**
      * Accepts a connection on [serverFd] with `accept(fd, NULL, NULL)`.
-     * Address / length are resolved via a separate `getpeername`
-     * helper because most engine call sites don't need them at accept
-     * time (see [PosixNativeSocketOps.acceptClient]).
+     * Address / length are resolved separately via
+     * [NativeSocketOps.getRemoteAddress] / [NativeSocketOps.getLocalAddress]
+     * because most engine call sites don't need them at accept time.
      */
     public fun accept(serverFd: Int): AcceptResult
 

@@ -79,7 +79,7 @@ import posix_socket.keel_sockaddr_un_sizeof
  *                     async SQE paths still go through io_uring.
  * @param nativeSocketOps Cold-path POSIX lifecycle seam (socket / bind /
  *                       listen / setsockopt / getsockname / getpeername
- *                       + composite `acceptClient` / `create*ServerSocket`).
+ *                       + composite `bindListener` / `bindUnixListener`).
  *                       Defaults to [PosixNativeSocketOps]. Tests inject a
  *                       fake to drive bind failure (EADDRINUSE) /
  *                       address-read branches. `connect()` paths are

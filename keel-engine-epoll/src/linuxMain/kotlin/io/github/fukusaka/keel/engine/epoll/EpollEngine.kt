@@ -74,8 +74,8 @@ import platform.posix.errno
  *                     drive specific errno branches without real fds.
  * @param nativeSocketOps Cold-path POSIX lifecycle seam (socket / bind /
  *                       listen / setsockopt / getsockname / getpeername /
- *                       getsockopt(SO_ERROR) + composite `acceptClient`
- *                       and `create*ServerSocket`). Defaults to
+ *                       getsockopt(SO_ERROR) + composite `bindListener`
+ *                       and `bindUnixListener`). Defaults to
  *                       [PosixNativeSocketOps]. Tests inject a fake to
  *                       drive `ConnectResult.Failed` / `SO_ERROR`
  *                       non-zero / address-read branches without a real
