@@ -97,7 +97,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollEventLoop(
     internal val logger: Logger,
-) : CoroutineDispatcher() {
+) : CoroutineDispatcher(), EpollSuspendRegister {
 
     /**
      * The epoll file descriptor, created at construction.
@@ -555,6 +555,18 @@ internal class EpollEventLoop(
             return block()
         } finally {
             pthread_mutex_unlock(regMutex.ptr)
+        }
+    }
+
+    // --- EpollSuspendRegister impl (seam for connect InProgress) ---
+
+    override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
+        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+            register(fd, Interest.WRITE, cont)
+            cont.invokeOnCancellation {
+                unregister(fd, Interest.WRITE)
+                io.github.fukusaka.keel.native.posix.closeFdSafely(fd, logger, "connect cancellation")
+            }
         }
     }
 

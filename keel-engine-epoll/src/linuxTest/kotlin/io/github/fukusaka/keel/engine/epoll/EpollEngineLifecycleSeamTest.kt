@@ -50,11 +50,16 @@ class EpollEngineLifecycleSeamTest {
     private fun newEngine(
         fakeSocket: FakeNativeSocket = FakeNativeSocket(),
         fakeOps: FakeNativeSocketOps = FakeNativeSocketOps(),
+        suspendRegisterOverride: EpollSuspendRegister? = null,
     ): EpollEngine = EpollEngine(
         config = IoEngineConfig(threads = 1),
         nativeSocket = fakeSocket,
         nativeSocketOps = fakeOps,
+        suspendRegisterOverride = suspendRegisterOverride,
     )
+
+    /** Immediate-resume fake: returns normally from `awaitWriteReady`. */
+    private val immediateSuspendRegister = EpollSuspendRegister { _, _ -> /* no-op */ }
 
     // --- connect Inet: Failed branch ---
 
@@ -169,6 +174,82 @@ class EpollEngineLifecycleSeamTest {
             assertEquals(0, fakeOps.getLocalAddressCalls)
             fakeOps.assertAllConsumed()
             channel.close()
+        } finally {
+            engine.close()
+        }
+    }
+
+    // --- connect Inet: InProgress branch (suspend + SO_ERROR) ---
+
+    @Test
+    fun `connectInet InProgress then SO_ERROR non-zero throws`() = runBlocking {
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenClientSocket(800)
+            enqueueConnect(fd = 800, ConnectResult.InProgress)
+            enqueueSocketError(800, platform.posix.ECONNREFUSED)
+        }
+        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+            }
+            assertTrue(
+                ex.message!!.contains("Connection refused"),
+                "message must carry the errno from getSocketError, got: ${ex.message}",
+            )
+            // Confirm the InProgress path was actually exercised — if the
+            // seam override hadn't been used, workerLoop.register would
+            // have EBADF'd on fake fd 800 and the coroutine would hang.
+            assertEquals(1, fakeOps.connectCalls)
+            assertEquals(1, fakeOps.getSocketErrorCalls)
+            fakeOps.assertAllConsumed()
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `connectInet InProgress then SO_ERROR zero returns channel`() = runBlocking {
+        val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
+        val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenClientSocket(801)
+            enqueueConnect(fd = 801, ConnectResult.InProgress)
+            enqueueSocketError(801, 0)
+            enqueueRemoteAddress(801, remote)
+            enqueueLocalAddress(801, local)
+        }
+        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+        try {
+            val channel = engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+            assertNotNull(channel)
+            assertEquals(remote, channel.remoteAddress)
+            assertEquals(local, channel.localAddress)
+            assertEquals(1, fakeOps.getSocketErrorCalls)
+            fakeOps.assertAllConsumed()
+            channel.close()
+        } finally {
+            engine.close()
+        }
+    }
+
+    // --- connect Unix: InProgress ---
+
+    @Test
+    fun `connectUnix InProgress then SO_ERROR non-zero throws`() = runBlocking {
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenUnixClientSocket(802)
+            enqueueConnectUnix(fd = 802, ConnectResult.InProgress)
+            enqueueSocketError(802, platform.posix.ECONNREFUSED)
+        }
+        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.connect(UnixSocketAddress("/tmp/keel-fake.sock"))
+            }
+            assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
+            assertEquals(1, fakeOps.connectUnixCalls)
+            assertEquals(1, fakeOps.getSocketErrorCalls)
         } finally {
             engine.close()
         }
