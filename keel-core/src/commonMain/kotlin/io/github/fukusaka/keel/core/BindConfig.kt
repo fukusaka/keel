@@ -5,14 +5,16 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 /**
  * Per-server bind configuration for [StreamEngine.bind] and [StreamEngine.bindPipeline].
  *
- * Provides bind-time parameters (e.g., listen backlog) and an optional
- * per-connection initialization hook (e.g., TLS handler installation).
+ * Provides bind-time parameters (e.g., listen backlog, accepted-client
+ * socket options) and an optional per-connection initialization hook
+ * (e.g., TLS handler installation).
  *
  * ```
  * Config scope:
  *   IoEngineConfig  -- engine-wide (allocator, threads)
- *   BindConfig      -- per-server  (backlog, TLS)
- *   Channel props   -- per-channel (readTimeout, tcpNoDelay: deferred)
+ *   BindConfig      -- per-server  (backlog, child socket options, TLS)
+ *   ConnectConfig   -- per-client  (socket options)
+ *   Channel props   -- per-channel (runtime)
  * ```
  *
  * Subclass [BindConfig] to add protocol-specific settings.
@@ -20,9 +22,17 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * extends this class with TLS certificates and installer configuration.
  *
  * @param backlog TCP listen backlog. OS may cap or adjust this value.
+ * @param childSocketOptions Socket options applied to every accepted
+ *   client fd immediately after `accept(2)` and before the pipeline
+ *   initializer runs. Listener-side options (`SO_REUSEADDR` /
+ *   `SO_REUSEPORT`) are kernel invariants and NOT configurable here —
+ *   they are set unconditionally by
+ *   [io.github.fukusaka.keel.native.posix.NativeSocketOps.bindListener].
+ *   Default: no options set.
  */
 open class BindConfig(
     val backlog: Int = DEFAULT_BACKLOG,
+    val childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
 ) {
 
     /**

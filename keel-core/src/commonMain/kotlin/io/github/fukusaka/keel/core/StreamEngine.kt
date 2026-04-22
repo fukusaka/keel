@@ -121,6 +121,30 @@ interface StreamEngine : IoEngine {
     suspend fun connect(address: SocketAddress): Channel
 
     /**
+     * Opens an outbound connection with per-connect configuration
+     * (e.g., socket options).
+     *
+     * Default implementation delegates to [connect] and throws
+     * [UnsupportedOperationException] if [config] carries any
+     * non-default socket options — signals that the engine does not
+     * yet support per-connect configuration and the caller's options
+     * would otherwise be silently ignored. Engines that support
+     * configuration override this method.
+     *
+     * @param address Remote endpoint (same semantics as [connect]).
+     * @param config Per-connect configuration including socket options.
+     */
+    suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel {
+        if (!config.socketOptions.isEmpty) {
+            throw UnsupportedOperationException(
+                "${this::class.simpleName} does not support socket options " +
+                    "via ConnectConfig — got $config",
+            )
+        }
+        return connect(address)
+    }
+
+    /**
      * Convenience overload: connect to `host:port`.
      */
     suspend fun connect(host: String, port: Int): Channel =

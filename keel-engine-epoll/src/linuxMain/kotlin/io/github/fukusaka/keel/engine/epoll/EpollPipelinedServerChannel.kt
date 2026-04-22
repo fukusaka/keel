@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -63,6 +64,7 @@ internal class EpollPipelinedServerChannel(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     nativeSocketOps.setNonBlocking(result.fd)
+                    nativeSocketOps.applySocketOptions(result.fd, config.childSocketOptions)
                     dispatchToWorker(result.fd)
                 }
                 AcceptResult.WouldBlock -> {

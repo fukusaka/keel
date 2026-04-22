@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
@@ -210,6 +211,7 @@ internal class IoUringPipelinedServerChannel(
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
+            nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions)
             IoUringIoTransport(
                 fd = acceptRes,
                 eventLoop = loop,

@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
 
@@ -64,10 +65,15 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * The interface hardcodes `SO_REUSEADDR` (TCP server) and `O_NONBLOCK`
  * (all sockets); `SO_REUSEPORT` is opt-in via [bindListener]'s
- * `reusePort` parameter. User-facing socket options (`TCP_NODELAY`,
- * `SO_KEEPALIVE`, `SO_RCVBUF`, etc.) are not yet exposed — planned as
- * an extension of `BindConfig` / `ConnectConfig` rather than new
- * seam methods.
+ * `reusePort` parameter.
+ *
+ * User-facing socket options (`TCP_NODELAY`, `SO_KEEPALIVE`,
+ * `SO_RCVBUF`, `SO_SNDBUF`) are exposed via
+ * [io.github.fukusaka.keel.core.SocketOptions] and applied through
+ * [setSocketOption] + the [applySocketOptions] extension — engines
+ * call these after `openClientSocket` / at `accept` time, per
+ * [io.github.fukusaka.keel.core.ConnectConfig.socketOptions] /
+ * [io.github.fukusaka.keel.core.BindConfig.childSocketOptions].
  *
  * ## Testability
  *
@@ -141,6 +147,19 @@ public interface NativeSocketOps {
 
     /** Sets `O_NONBLOCK` on [fd] via `fcntl(F_SETFL, ...)`. */
     public fun setNonBlocking(fd: Int)
+
+    /**
+     * Applies a user-facing socket option to [fd] via `setsockopt(2)`.
+     *
+     * Each [SocketOption] variant maps to a specific
+     * `(level, optname, optval)` triple in the production impl
+     * ([PosixNativeSocketOps.setSocketOption]). Failures are logged
+     * and swallowed — option application is best-effort and does
+     * not fail the surrounding bind / connect / accept flow
+     * (matches the convention of Netty `ChannelOption` and Java
+     * `Socket.setTcpNoDelay`).
+     */
+    public fun setSocketOption(fd: Int, option: SocketOption)
 
     /**
      * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` listener fd:
