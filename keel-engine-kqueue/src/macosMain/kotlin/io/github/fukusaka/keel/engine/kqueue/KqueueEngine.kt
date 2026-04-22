@@ -18,8 +18,8 @@ import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSocketOps
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -74,11 +74,11 @@ import platform.posix.errno
  *                     (the production impl that delegates to `keel_*`
  *                     C wrappers). Tests inject a fake implementation to
  *                     drive specific errno branches without real fds.
- * @param posixSocketOps Cold-path POSIX lifecycle seam (socket / bind /
+ * @param nativeSocketOps Cold-path POSIX lifecycle seam (socket / bind /
  *                       listen / setsockopt / getsockname / getpeername /
  *                       getsockopt(SO_ERROR) + composite `acceptClient`
  *                       and `create*ServerSocket`). Defaults to
- *                       [PosixSocketUtils]. Tests inject a fake to
+ *                       [PosixNativeSocketOps]. Tests inject a fake to
  *                       drive `ConnectResult.Failed` / `SO_ERROR`
  *                       non-zero / address-read branches without a real
  *                       kernel.
@@ -87,7 +87,7 @@ import platform.posix.errno
 class KqueueEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -120,7 +120,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = posixSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
 
         try {
             memScoped {
@@ -139,7 +139,7 @@ class KqueueEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, posixSocketOps)
+            return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
@@ -151,7 +151,7 @@ class KqueueEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = posixSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
 
         try {
             // Register server fd with the boss EventLoop's kqueue so that
@@ -171,9 +171,9 @@ class KqueueEngine(
                 check(result >= 0) { "kevent(EV_ADD server) failed: ${errnoMessage(errno)}" }
             }
 
-            val localAddr = posixSocketOps.getLocalAddress(serverFd)
+            val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return KqueueServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, posixSocketOps)
+            return KqueueServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -205,10 +205,10 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val fd = posixSocketOps.createUnixUnconnectedSocket()
+        val fd = nativeSocketOps.createUnixUnconnectedSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
-        when (val result = posixSocketOps.connectUnixNonBlocking(fd, address)) {
+        when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 suspendCancellableCoroutine<Unit> { cont ->
@@ -218,7 +218,7 @@ class KqueueEngine(
                         closeFdSafely(fd, logger, "connect cancellation")
                     }
                 }
-                val error = posixSocketOps.getSocketError(fd)
+                val error = nativeSocketOps.getSocketError(fd)
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect($address) failed: ${errnoMessage(error)}")
@@ -243,10 +243,10 @@ class KqueueEngine(
     }
 
     private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
-        val fd = posixSocketOps.createUnconnectedSocket(ip)
+        val fd = nativeSocketOps.createUnconnectedSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
-        when (val result = posixSocketOps.connectNonBlocking(fd, ip, port)) {
+        when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 // Connection in progress — suspend until fd is writable
@@ -258,7 +258,7 @@ class KqueueEngine(
                     }
                 }
                 // Verify connection succeeded via SO_ERROR
-                val error = posixSocketOps.getSocketError(fd)
+                val error = nativeSocketOps.getSocketError(fd)
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect() failed: ${errnoMessage(error)}")
@@ -270,8 +270,8 @@ class KqueueEngine(
             }
         }
 
-        val remoteAddr = posixSocketOps.getRemoteAddress(fd)
-        val localAddr = posixSocketOps.getLocalAddress(fd)
+        val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
+        val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
         val transport = KqueueIoTransport(fd, workerLoop, allocator, nativeSocket)
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
@@ -311,7 +311,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = posixSocketOps.createUnixServerSocket(address, config.backlog, logger)
+        val serverFd = nativeSocketOps.createUnixServerSocket(address, config.backlog, logger)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -324,7 +324,7 @@ class KqueueEngine(
                 config = config,
                 pipelineInitializer = pipelineInitializer,
                 nativeSocket = nativeSocket,
-                posixSocketOps = posixSocketOps,
+                nativeSocketOps = nativeSocketOps,
             )
             serverChannel.start()
             return serverChannel
@@ -343,10 +343,10 @@ class KqueueEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = posixSocketOps.createServerSocket(ip, port, config.backlog, logger)
+        val serverFd = nativeSocketOps.createServerSocket(ip, port, config.backlog, logger)
 
         try {
-            val localAddr = posixSocketOps.getLocalAddress(serverFd)
+            val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Pipeline bound to $localAddr" }
             val serverChannel = KqueuePipelinedServerChannel(
                 serverFd = serverFd,
@@ -357,7 +357,7 @@ class KqueueEngine(
                 config = config,
                 pipelineInitializer = pipelineInitializer,
                 nativeSocket = nativeSocket,
-                posixSocketOps = posixSocketOps,
+                nativeSocketOps = nativeSocketOps,
             )
             serverChannel.start()
             return serverChannel

@@ -8,11 +8,11 @@ import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
 
 /**
- * Test-only in-memory [PosixSocketOps] implementation.
+ * Test-only in-memory [NativeSocketOps] implementation.
  *
  * Sibling of [FakeNativeSocket] (hot-path seam fake). Where
  * [FakeNativeSocket] scripts per-syscall responses keyed by `fd`,
- * [FakePosixSocketOps] scripts lifecycle responses — fd allocation
+ * [FakeNativeSocketOps] scripts lifecycle responses — fd allocation
  * for `create*Socket*`, [ConnectResult] for `connect*NonBlocking`,
  * [Int] for `getSocketError`, and `(remote, local)` pairs for
  * `acceptClient` / `getLocalAddress` / `getRemoteAddress`.
@@ -55,7 +55,7 @@ import io.github.fukusaka.keel.logging.Logger
  *   The scripted [ConnectResult] is returned directly.
  */
 @InternalTestApi
-public class FakePosixSocketOps : PosixSocketOps {
+public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- Scripted queues (FIFO) ---
 
@@ -133,7 +133,7 @@ public class FakePosixSocketOps : PosixSocketOps {
         return fd
     }
 
-    // --- PosixSocketOps impl ---
+    // --- NativeSocketOps impl ---
 
     override fun createServerSocket(address: IpAddress, port: Int, backlog: Int, logger: Logger): Int {
         createServerSocketCalls++

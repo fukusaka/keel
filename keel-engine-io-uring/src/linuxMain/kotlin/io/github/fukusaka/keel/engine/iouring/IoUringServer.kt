@@ -8,8 +8,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSocketOps
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
@@ -62,7 +62,7 @@ internal class IoUringServer(
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : ServerChannel {
 
     // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
@@ -106,7 +106,7 @@ internal class IoUringServer(
         }
 
         try {
-            val (remoteAddr, localAddr) = posixSocketOps.acceptClient(clientFd)
+            val (remoteAddr, localAddr) = nativeSocketOps.acceptClient(clientFd)
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val allocator = workerGroup.allocatorAt(wi)

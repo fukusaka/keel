@@ -8,8 +8,8 @@ import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSocketOps
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io_uring.io_uring_prep_multishot_accept
@@ -56,7 +56,7 @@ internal class IoUringPipelinedServerChannel(
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -209,7 +209,7 @@ internal class IoUringPipelinedServerChannel(
                 nativeSocket = nativeSocket,
             )
         } else {
-            posixSocketOps.setNonBlocking(acceptRes)
+            nativeSocketOps.setNonBlocking(acceptRes)
             IoUringIoTransport(
                 fd = acceptRes,
                 eventLoop = loop,

@@ -76,7 +76,7 @@ import posix_socket.keel_sockaddr_un_copy_path
  * cross-platform binding.
  */
 @OptIn(ExperimentalForeignApi::class)
-object PosixSocketUtils : PosixSocketOps {
+object PosixNativeSocketOps : NativeSocketOps {
 
     private const val INET_ADDRSTRLEN = 16
 

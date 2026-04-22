@@ -11,7 +11,7 @@ import io.github.fukusaka.keel.logging.Logger
  * Parallels [NativeSocket] (the hot-path I/O seam). Where
  * [NativeSocket] abstracts per-byte syscalls (`read` / `write` /
  * `send` / `accept` / `shutdown` / `close` / `writev` / `connect`),
- * [PosixSocketOps] abstracts the socket-lifecycle / configuration
+ * [NativeSocketOps] abstracts the socket-lifecycle / configuration
  * syscalls — mostly one-shot operations that happen at bind, connect,
  * or accept-completion time:
  *
@@ -29,10 +29,10 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * - **Layer 1** (C cinterop, `posix_socket.def`): platform-specific
  *   sockaddr struct layouts kept inside C.
- * - **Layer 2** (Kotlin, [PosixSocketUtils]): composite syscall
+ * - **Layer 2** (Kotlin, [PosixNativeSocketOps]): composite syscall
  *   sequences with error handling + typed results.
- * - **Layer 3** (engine code): depends on [PosixSocketOps], never on
- *   the `PosixSocketUtils` singleton directly — so tests can inject a
+ * - **Layer 3** (engine code): depends on [NativeSocketOps], never on
+ *   the `PosixNativeSocketOps` singleton directly — so tests can inject a
  *   fake.
  *
  * ## Why two interfaces and not one
@@ -42,20 +42,20 @@ import io.github.fukusaka.keel.logging.Logger
  * fakes simple. Folding lifecycle syscalls into it would inflate the
  * interface to ~20 methods, most of which are called once per
  * connection lifetime — not worth polluting the hot-path seam. See
- * `plan.md` § "`PosixSocketOps` interface + engine injection" for
+ * `plan.md` § "`NativeSocketOps` interface + engine injection" for
  * the case 2 (narrow hot-path) rationale.
  *
  * ## Testability
  *
- * Engine classes accept a [PosixSocketOps] parameter (defaulting to
- * [PosixSocketUtils]). Unit tests can inject a fake implementation
+ * Engine classes accept a [NativeSocketOps] parameter (defaulting to
+ * [PosixNativeSocketOps]). Unit tests can inject a fake implementation
  * to drive the engine through specific branches —
  * [ConnectResult.Failed] (ECONNREFUSED), `bind` failure (EADDRINUSE),
  * `SO_ERROR` non-zero after a suspend — without touching a real
  * kernel. Coverage includes the `connect()` / `accept()` chains that
  * were out of reach of the [NativeSocket] seam alone.
  */
-public interface PosixSocketOps {
+public interface NativeSocketOps {
 
     /**
      * Creates a non-blocking TCP server socket:

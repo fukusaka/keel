@@ -16,8 +16,8 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSocketOps
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
@@ -77,10 +77,10 @@ import posix_socket.keel_sockaddr_un_sizeof
  *                     Only used for the synchronous fallback paths
  *                     (`shutdownOutput`, `flushDirectSendSingle`); the
  *                     async SQE paths still go through io_uring.
- * @param posixSocketOps Cold-path POSIX lifecycle seam (socket / bind /
+ * @param nativeSocketOps Cold-path POSIX lifecycle seam (socket / bind /
  *                       listen / setsockopt / getsockname / getpeername
  *                       + composite `acceptClient` / `create*ServerSocket`).
- *                       Defaults to [PosixSocketUtils]. Tests inject a
+ *                       Defaults to [PosixNativeSocketOps]. Tests inject a
  *                       fake to drive bind failure (EADDRINUSE) /
  *                       address-read branches. `connect()` paths are
  *                       NOT routed through this seam because io_uring
@@ -93,7 +93,7 @@ class IoUringEngine(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -155,11 +155,11 @@ class IoUringEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
-        val serverFd = posixSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
         try {
             logger.debug { "Bound to $address" }
             return IoUringServer(
-                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, posixSocketOps,
+                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
@@ -172,12 +172,12 @@ class IoUringEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = posixSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
         try {
-            val localAddr = posixSocketOps.getLocalAddress(serverFd)
+            val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return IoUringServer(
-                serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, posixSocketOps,
+                serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
@@ -202,7 +202,7 @@ class IoUringEngine(
     private suspend fun connectUnix(address: UnixSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
-        val fd = posixSocketOps.createUnixUnconnectedSocket()
+        val fd = nativeSocketOps.createUnixUnconnectedSocket()
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -252,7 +252,7 @@ class IoUringEngine(
     }
 
     private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
-        val fd = posixSocketOps.createUnconnectedSocket(ip)
+        val fd = nativeSocketOps.createUnconnectedSocket(ip)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -299,8 +299,8 @@ class IoUringEngine(
             error("connect() failed: ${errnoMessage(-res)}")
         }
 
-        val remoteAddr = posixSocketOps.getRemoteAddress(fd)
-        val localAddr = posixSocketOps.getLocalAddress(fd)
+        val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
+        val localAddr = nativeSocketOps.getLocalAddress(fd)
         val bufferRing = workerGroup.bufferRingAt(wi)
         val fileRegistry = workerGroup.fileRegistryAt(wi)
         val bufferTable = workerGroup.bufferTableAt(wi)
@@ -351,10 +351,10 @@ class IoUringEngine(
         // single server fd. Only one worker receives accept readiness — UDS
         // workloads are typically low-fanout (IPC / sidecars) so the loss of
         // kernel-side connection hashing is acceptable.
-        val serverFds = intArrayOf(posixSocketOps.createUnixServerSocket(address, config.backlog, logger))
+        val serverFds = intArrayOf(nativeSocketOps.createUnixServerSocket(address, config.backlog, logger))
         try {
             val server = IoUringPipelinedServerChannel(
-                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, posixSocketOps,
+                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
             logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
@@ -382,13 +382,13 @@ class IoUringEngine(
         var createdCount = 0
         try {
             for (i in serverFds.indices) {
-                serverFds[i] = posixSocketOps.createReusePortServerSocket(ip, port, config.backlog, logger)
+                serverFds[i] = nativeSocketOps.createReusePortServerSocket(ip, port, config.backlog, logger)
                 createdCount = i + 1
             }
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
-            val localAddr = posixSocketOps.getLocalAddress(serverFds[0])
+            val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
             val server = IoUringPipelinedServerChannel(
-                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, posixSocketOps,
+                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
             logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
