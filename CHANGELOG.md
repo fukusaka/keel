@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-epoll` / `engine-kqueue`: seam-level `bind()` happy-path tests via a real `socket(AF_INET, SOCK_STREAM, 0)` fd as sentinel — `bindListener` / `bindUnixListener` is scripted to return a real fd so `epoll_ctl(ADD)` / `kevent(EV_ADD)` succeeds, letting the engine read the scripted local address and construct `EpollServer` / `KqueueServer`. Closes the final `bind` gap in `*EngineLifecycleSeamTest`; full accept flow remains integration-only ([#338])
 - `engine-epoll` / `engine-kqueue`: `EpollSuspendRegister` / `KqueueSuspendRegister` narrow seam (1 method `awaitWriteReady(fd, logger)`) over the "suspend until fd write-ready" pattern used by `connect()`'s `ConnectResult.InProgress` branch. `EpollEventLoop` / `KqueueEventLoop` implement directly; engine constructors accept a nullable override for tests. Unlocks seam-level tests for `InProgress → SO_ERROR != 0` (throws) and `InProgress → SO_ERROR 0` (happy path) — previously only integration-testable. Each engine gains 3 cases (TCP-error / TCP-success / UDS-error) ([#337])
 - `core`: `SocketOptions` (typed properties: `tcpNoDelay` / `keepAlive` / `receiveBufferSize` / `sendBufferSize`) + `SocketOption` sealed type + `ConnectConfig(socketOptions)` + `BindConfig.childSocketOptions` — user-facing socket option configuration. `null` values leave kernel defaults; engines apply non-null properties via `setsockopt(2)` ([#336])
 - `native-posix`: `NativeSocketOps.setSocketOption(fd, option)` primitive (11th method) + `applySocketOptions(fd, options)` free extension. Production `PosixNativeSocketOps` maps [`SocketOption` variants to `(level, optname, optval)` for `setsockopt(2)`]; `FakeNativeSocketOps` tracks applied options in `appliedOptions: List<Pair<Int, SocketOption>>` ([#336])
@@ -545,3 +546,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#335]: https://github.com/fukusaka/keel/pull/335
 [#336]: https://github.com/fukusaka/keel/pull/336
 [#337]: https://github.com/fukusaka/keel/pull/337
+[#338]: https://github.com/fukusaka/keel/pull/338
