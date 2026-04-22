@@ -17,6 +17,13 @@ import kotlin.concurrent.AtomicReference
  * **Thread safety**: spin lock per pool. EventLoop-based engines
  * (kqueue/epoll) access from a single thread (always uncontended).
  *
+ * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh child
+ * allocator with the parent's size classes propagated but per-pool capacity
+ * capped at `LOCAL_POOL_SLOTS` (8), so each EventLoop owns its own pool
+ * confined to a single thread. The parent allocator (the instance passed
+ * to `IoEngineConfig`) is used only for size-class registration at startup;
+ * the per-EL children perform the actual allocations.
+ *
  * @param maxTotalBytes Maximum total bytes across all pool classes.
  *   Acts as a safety valve. Default: 256 KiB.
  */

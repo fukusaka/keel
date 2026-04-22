@@ -19,6 +19,13 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * **Thread safety**: lock-free via [AtomicReference] CAS on each stack head.
  *
+ * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh child
+ * allocator with the parent's size classes propagated but per-pool capacity
+ * capped at `LOCAL_POOL_SLOTS` (8), so each EventLoop owns its own pool
+ * confined to a single thread. The parent allocator (the instance passed
+ * to `IoEngineConfig`) is used only for size-class registration at startup;
+ * the per-EL children perform the actual allocations.
+ *
  * @param maxTotalBytes Maximum total bytes across all pool classes.
  *   Acts as a safety valve; per-class [maxSlots] in [registerPoolSize]
  *   is the primary control. Default: 256 KiB.
