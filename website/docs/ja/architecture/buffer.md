@@ -8,9 +8,11 @@ sidebar_position: 3
 
 - `IoBuf` は keel のバイトバッファ型。読み書きは `readByte()` / `writeByte()` による。
 - 使用終了時は `release()` を呼び出す。GC に依存しない明示的な解放が前提である。
-- 別 API に buffer を渡した時点で所有権は移譲され、元の呼び出し側は以降そのバッファに触れてはならない。
+- 所有権モデルは **2 層** で異なる:
+  - **Pipeline 内 (handler 間)**: ownership transfer — `ctx.propagateRead(msg)` で渡したら触らない。
+  - **Transport / Channel 境界**: retain-on-input — `channel.write(buf)` は transport が retain し `readerIndex` を消費する。caller も `release()` を呼ぶ責任がある。
 
-`IoBuf` は Netty の `ByteBuf` と同系統の設計で、NIO の `ByteBuffer` に明示的な `release()` を加えたものと見なせる。
+`IoBuf` は Netty の `ByteBuf` と同系統の設計で、Pipeline 層は Netty と同じ transfer convention だが、`channel.write` レベルでは Netty より明示的な release 管理を要求する。NIO の `ByteBuffer` に参照カウントと明示的な `release()` を加えたものと見なせる。
 
 ## IoBuf の概要
 
@@ -105,43 +107,94 @@ Netty `ByteBuf` は cross-thread 共有を安全に許容するために atomic 
 
 参照カウント起因のバグはほぼすべてこのモデルの誤解に由来する。
 
-### 既定動作: 所有権移譲
+### 2 層の所有権モデル
 
-buffer を API に渡した時点で、その API が所有権を引き受ける。呼び出し側は以降 read / write / `release()` のいずれも行わない。受け取った API が責任を持って release する。
+keel の buffer 所有権は **層によって 2 つのモデル**を使い分ける。層を混同すると leak または double-release になるので、まずここを押さえる。
+
+| 層 | モデル | 該当 API |
+|---|---|---|
+| **Pipeline 内 (handler 間)** | ownership transfer (渡したら触らない) | `onRead` / `onWrite` / `ctx.propagateRead` / `ctx.propagateWrite` / `transport.onRead` callback |
+| **Transport / Channel 境界** | retain-on-input (caller も transport も ref を持つ) | `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` |
+| **読み取り API** | 非移譲 (caller が buffer を渡して fill してもらう) | `Channel.read(buf)` / `IoTransport.read(buf)` |
+
+#### 層 1: Pipeline 内の ownership transfer
+
+pipeline 内で buffer を渡すと所有権が移譲される。渡した側は以降触れない。最終 handler が release する（または次の handler に `propagateRead` で渡し続ける）。
 
 ```kotlin
-val buf = allocator.allocate(1024)
-buf.writeAscii("hello", 0, 5)
-channel.write(buf)
-// 以降 buf には触れない。
-// channel が flush 完了後に release する。
+class HttpDecoder : InboundHandler<IoBuf> {
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+        try {
+            // msg は handler が所有。処理して下流に slice を渡す
+            val slice = ctx.allocator.slice(msg, msg.readerIndex, bytesToEmit)
+            ctx.propagateRead(HttpBody(slice))   // slice を下流に移譲
+        } finally {
+            msg.release()     // handler が元 msg を release (所有権を引き受けた責任)
+        }
+    }
+}
 ```
 
-Netty `ByteBuf` も同一の convention を採用しており、Netty 経験者は同じ mental model で扱える。
+Netty `ByteBuf` の pipeline convention と同じ mental model。
+
+#### 層 2: Transport / Channel 境界の retain-on-input
+
+user code が `channel.write(buf)` を呼ぶと、**transport は内部で retain** し、**caller の `readerIndex` を消費**する。caller は自身の参照を release する責任を持つ。
+
+```kotlin
+val buf = allocator.allocate(128)                // refCount = 1
+buf.writeAscii("hello", 0, 5)                   // writerIndex = 5
+channel.write(buf)                                // transport が retain (refCount = 2)
+                                                  // buf.readerIndex が 5 に進む (consumed)
+channel.flush()
+buf.release()                                     // caller が自分の参照を release (refCount = 1)
+// transport が flush 完了後に retained ref を release (refCount = 0、memory free)
+```
+
+**caller が `release()` を呼ばないとメモリリーク** — transport の retain だけでは refCount が 1 に残り、memory は解放されない。
+
+なぜこの設計か: 同じ buffer に header + body を連続書き込みする codec 使用例で自然。Netty の `channel.writeAndFlush(buf.retain())` のような ceremony を省ける。トレードオフは release 忘れの leak リスクと、pipeline 層との mental model 非対称性。
+
+#### 層 3: 読み取り API (非移譲)
+
+`channel.read(buf)` / `transport.read(buf)` は caller が allocate した buffer を渡し、engine が中身を fill する。所有権は caller が継続保持、caller が release する。
+
+```kotlin
+val buf = allocator.allocate(8192)
+val n = channel.read(buf)       // n bytes が buf に入る、所有権は caller のまま
+processData(buf)
+buf.release()
+```
 
 ### API の所有権分類
 
-**buffer を引数で受け取り、所有権を移譲する API**（呼び出し側は以降 buffer に触れない）:
+**A. Pipeline 層: ownership transfer**（渡したら触らない）
 
 | API | 移譲先の release タイミング |
 |---|---|
-| `Channel.write(buf)` | channel が flush 完了後 |
-| `IoTransport.write(buf)` | transport が flush 完了後 |
-| `HandlerContext.fireChannelRead(msg)` | 下流 handler（最終 handler が release） |
-| `HandlerContext.fireUserEventTriggered(evt)` | 下流 handler（`evt` が `IoBuf` の場合） |
-| `BufferedSuspendSink.write(buf: IoBuf)` | sink が内部処理後 |
+| `transport.onRead(buf)` callback | pipeline HEAD → handler chain の最終 handler |
+| `onRead(ctx, msg)` / `onReadTyped(ctx, msg)` | handler 自身（`try/finally` で release するのが慣用） |
+| `ctx.propagateRead(msg)` / `ctx.propagateWrite(msg)` | 下流 / 上流 handler |
+| `ctx.propagateUserEvent(evt)` | 下流 handler（`evt` が `IoBuf` の場合） |
 
-**buffer を引数で受け取るが、所有権を移譲しない API**（呼び出し側が所有権を保持し続ける）:
+**B. Transport / Channel 境界: retain-on-input**（caller も release する）
 
-| API | 呼び出し側の責任 |
+| API | transport 側 | caller 側 |
+|---|---|---|
+| `Channel.write(buf)` | 内部で `buf.retain()`、flush 完了後に release | `readerIndex` が消費される。**自身の参照を `release()` する責任あり** |
+| `IoTransport.write(buf)` | 同上 | 同上 |
+| `SuspendSink.write(buf: IoBuf)` | 同上 (実装による) | 同上 |
+
+**C. 非移譲 API**（caller が所有権を継続保持）
+
+| API | caller の責任 |
 |---|---|
-| `Channel.read(buf)` | caller が最後に release |
-| `IoTransport.read(buf)` | caller が最後に release |
-| `buf.readByte()` / `writeByte()` / `getByte(i)` / `readByteArray(...)` / `writeByteArray(...)` | 所有権は変化しない（index のみ進む） |
+| `Channel.read(buf)` / `IoTransport.read(buf)` | buffer を渡して fill 後、使用が終わったら release |
+| `buf.readByte()` / `writeByte()` / `getByte(i)` / `readByteArray(...)` / `writeByteArray(...)` | 所有権不変（index のみ進む） |
 | `buf.copyTo(dest, length)` | source / dest どちらも caller 所有のまま |
-| `buf.compact()` / `clear()` | 所有権は変化しない |
+| `buf.compact()` / `clear()` | 所有権不変 |
 
-**新しい buffer を返し、呼び出し側が所有権を取得する API**:
+**D. 新しい buffer を返す API**（caller が所有権を取得）
 
 | API | 返り値の初期 refCount | release 責任 |
 |---|---|---|
@@ -150,45 +203,63 @@ Netty `ByteBuf` も同一の convention を採用しており、Netty 経験者�
 | `allocator.slice(src, offset, length)` | 1（slice 独自のカウント） | slice 所有者（`src` は allocator 内部で管理） |
 | `buf.retain()` | 既存 refCount +1、同 instance を返す | 追加参照を作成した主体 |
 
-`BufferedSuspendSink.write(bytes: ByteArray, offset, length)` は `ByteArray` 引数を取るため所有権分類の対象外である。sink は内部で `wrapBytes` または scratch copy を経由して `IoBuf` を生成し、その `IoBuf` の release も sink 自身が担う。
+`BufferedSuspendSink.write(bytes: ByteArray, offset, length)` は `ByteArray` 引数を取るため本分類の対象外である。sink は内部で `wrapBytes` または scratch copy を経由して `IoBuf` を生成し、その `IoBuf` の release も sink 自身が担う。
 
 ### retain() を呼ぶ条件
 
-呼び出し側が buffer の参照を追加で保持する必要がある場合にのみ `retain()` を呼ぶ。該当する場面は以下の 3 種である。
+呼び出し側が buffer の参照を追加で保持する必要がある場合にのみ `retain()` を呼ぶ。該当する場面は以下の 3 種である。Pipeline 層の ownership transfer 下での話で、Transport/Channel 境界の retain-on-input では caller は暗黙的に参照を保持するので不要。
 
-**(1) field に保存して後続処理で再利用する場合**
+**(1) Pipeline handler が msg を field に保存して後続 event で再利用する場合**
 
 ```kotlin
-class DelayedEcho : ChannelInboundHandler {
+class DelayedEcho : InboundHandler<IoBuf> {
     private var cached: IoBuf? = null
 
-    override fun channelRead(ctx: HandlerContext, msg: Any) {
-        val buf = msg as IoBuf
-        cached = buf.retain()    // handler が保持する参照 (+1)
-        ctx.fireChannelRead(msg)  // 元の参照は下流に移譲
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+        cached = msg.retain()        // handler が保持する参照 (+1)
+        ctx.propagateRead(msg)        // 元の参照を下流に移譲 (transfer)
     }
 
-    override fun channelInactive(ctx: HandlerContext) {
-        cached?.release()         // retain と対の release
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        cached?.release()              // retain と対の release
         cached = null
     }
 }
 ```
 
-**(2) 複数の consumer に fan-out する場合**
+**(2) Pipeline 内で同じ msg を複数の downstream に fan-out する場合**
 
 ```kotlin
-consumer1.write(buf.retain())     // 追加参照を primary に渡す
-consumer2.write(buf.retain())     // 追加参照を secondary に渡す
-consumer3.write(buf)              // 元の参照を最後の consumer に渡す
-// 各 consumer が 1 回ずつ release する。
+override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+    ctx.propagateRead(msg.retain())   // 追加参照を primary 下流に
+    ctx.propagateRead(msg)             // 元の参照を secondary 下流に
+    // 各 downstream が 1 回ずつ release する
+}
 ```
 
-`retain()` は必ず所有権移譲の**前**に呼ぶ。最後の consumer には元の参照を渡すため `retain()` を呼ばない。N consumer に配布するなら `retain()` 呼び出し数は `N - 1` 回となる。
+`retain()` は ownership transfer の**前**に呼ぶ。最後の移譲先には元の参照を渡すため `retain()` 不要。N 回 propagate するなら `retain()` は `N - 1` 回。
 
 **(3) 非同期処理のスコープを跨ぐ場合**
 
-coroutine の suspend を跨いで buffer を保持する必要がある場合、元の owner が release する前に retain して自分の生存期間を確保する。
+coroutine の suspend を跨いで msg を保持する必要がある場合、元の owner が release する前に retain して生存期間を確保する。
+
+**Transport/Channel 境界での「fan-out write」は retain だけでは成立しない**。`channel.write(buf)` は `readerIndex` を消費するため、単純に複数 channel に渡しても 2 回目以降は `readableBytes = 0` となる。対処法:
+
+```kotlin
+// 方法 1: readerIndex を save / restore
+val saved = buf.readerIndex
+channel1.write(buf)       // retain + readerIndex 消費
+buf.readerIndex = saved    // reset
+channel2.write(buf)       // retain + 同じ範囲を再 read
+buf.release()              // caller の参照を release
+
+// 方法 2: slice で独立 view を作る (allocator.slice が src を内部 retain)
+val view1 = allocator.slice(buf, buf.readerIndex, bytes)
+val view2 = allocator.slice(buf, buf.readerIndex, bytes)
+channel1.write(view1); channel2.write(view2)
+view1.release(); view2.release()   // slice 所有者が release
+buf.release()                       // 元 buffer の caller 所有分
+```
 
 ### release() の責任
 
@@ -217,16 +288,23 @@ coroutine の suspend を跨いで buffer を保持する必要がある場合�
 
 ## 典型的な使用パターン
 
-### パターン 1: 書き込み後に送信する
+### パターン 1: Transport/Channel に書き込み (retain-on-input)
+
+`channel.write(buf)` は **transport が内部で retain** する。caller は自分の参照を明示的に release する必要がある (layer 2 モデル)。
 
 ```kotlin
 val buf = allocator.allocate(128)
 buf.writeAscii("hello", 0, 5)
-channel.write(buf)
-// channel が release を担う。以降 buf には触れない。
+channel.write(buf)      // transport が retain (refCount 2)、caller の readerIndex 消費
+channel.flush()
+buf.release()            // caller の参照を release (transport が flush 後に自身の retain を release)
 ```
 
-### パターン 2: 読み取り後に処理・解放する
+`buf.release()` を忘れると memory leak。`channel.write` に渡した後でも caller は同じ buffer に続けて書き込みを行い、再度 `channel.write` で送ることもできる（writable region が残っていれば）。
+
+### パターン 2: Transport/Channel から読み取り (非移譲)
+
+`channel.read(buf)` は所有権を移譲しない。caller が allocate した buffer を渡して engine に fill してもらい、caller が release する。
 
 ```kotlin
 val buf = allocator.allocate(8192)
@@ -235,48 +313,51 @@ processData(buf)
 buf.release()
 ```
 
-`channel.read(buf)` は `buf` の所有権を取得しない。呼び出し側が渡し、呼び出し側が release する（`write(buf)` と対照的である）。
+### パターン 3: Pipeline handler で msg を field に保存 (retain 必要)
 
-### パターン 3: 後続処理のために保存する
-
-handler 等が buffer を field に保持して後続の event で使う場合。保持前に `retain()` を呼び、teardown 時に release する。
+Pipeline 層 (ownership transfer) で handler が msg を field に保存する場合、保持前に `retain()` を呼び teardown 時に release する。
 
 ```kotlin
-class DelayedEcho : ChannelInboundHandler {
+class DelayedEcho : InboundHandler<IoBuf> {
     private var cached: IoBuf? = null
 
-    override fun channelRead(ctx: HandlerContext, msg: Any) {
-        val buf = msg as IoBuf
-        cached = buf.retain()    // handler 保持分 (+1)
-        ctx.fireChannelRead(msg)  // 元参照は下流に移譲
+    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+        cached = msg.retain()        // handler 保持分 (+1)
+        ctx.propagateRead(msg)        // 元参照は下流に移譲
     }
 
-    override fun channelInactive(ctx: HandlerContext) {
+    override fun onInactive(ctx: PipelineHandlerContext) {
         cached?.release()
         cached = null
     }
 }
 ```
 
-### パターン 4: 複数 consumer に配布する
+### パターン 4: Pipeline 内で下流複数 handler に fan-out (retain 必要)
 
-1 つの buffer を複数の consumer に渡す場合、`retain()` を **移譲前** に呼ぶ。最後の consumer には元の参照を渡すため `retain()` を呼ばない。N consumer なら `retain()` は `N - 1` 回。
+`ctx.propagateRead(msg)` は pipeline 内で ownership transfer なので、複数下流に配るには `retain()` を**移譲前**に呼ぶ。最後の移譲先には元参照を渡すため `retain()` 不要。N 回 propagate なら `retain()` は `N - 1` 回。
 
 ```kotlin
-consumer1.write(buf.retain())     // +1 を primary へ
-consumer2.write(buf.retain())     // +1 を secondary へ
-consumer3.write(buf)              // 元参照を最終 consumer へ
-// 各 consumer が 1 回ずつ release する。
+override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+    ctx.propagateRead(msg.retain())   // +1 を primary 下流へ
+    ctx.propagateRead(msg)             // 元参照を secondary 下流へ
+    // 各下流 handler が 1 回ずつ release する
+}
 ```
+
+Transport/Channel 境界の `channel.write` は retain-on-input なので `buf.retain()` を足しても index consumption は解消されない。2 つ以上の channel に同じ内容を書く場合は「retain() を呼ぶ条件」節の方法 1 (readerIndex save/restore) または方法 2 (slice) を参照。
 
 ## 典型的な不具合パターン
 
 | 不具合 | 症状 | 原因 |
 |---|---|---|
-| 二重 `release()` | `IllegalStateException: Buffer already released` | `channel.write(buf)` に所有権を移譲した後、呼び出し側でも release を呼んだ |
+| `channel.write` 後の `release()` 忘れ | memory leak（leak detection で検出可能） | retain-on-input モデルを transfer と誤解。caller の参照 release が必要 |
+| Pipeline 層での release 忘れ | memory leak | handler が `msg.release()` を呼ばず `propagateRead` もしない（どちらか一方は必須） |
+| 二重 `release()` | `IllegalStateException: Buffer already released` | Pipeline handler で `propagateRead(msg)` した後に自分で `msg.release()` した |
 | use-after-release | Native で segfault、JVM で invalid data、JS で silent corruption | release 後の buffer に対して read / write を行った |
-| `release()` 忘れ | memory leak（leak detection で検出可能） | handler で retain したが teardown 時に release していない |
-| 所有権移譲後の release | 次のアクセスで `IllegalStateException` | `channel.write(buf)` が既に参照を消費済み |
+| Pipeline handler 内で retain without release | memory leak | handler で field に保持 (`retain()`) したが teardown (`onInactive`) 時に release していない |
+| retain-on-input 経路で ownership transfer 前提のコード | memory leak (caller 側) or double-release | `channel.write(buf)` の後で触らず release しない Netty 式の書き方。keel では `buf.release()` が必須 |
+| `channel.write` 連鎖で fan-out を期待 | 2 回目以降の write が 0 bytes | `readerIndex` が 1 回目で消費される。readerIndex reset または slice が必要 |
 
 テスト実行時に疑わしい場合、allocator を `TrackingAllocator` で wrap し、終了時に `assertNoLeaks()` を呼ぶことで検出できる（次節参照）。
 
@@ -531,7 +612,7 @@ keel を触る開発者の多くは、他の networking ライブラリで既に
 
 **要点**:
 
-- **Netty 経験者**: mental model は同一。相違点は「非 atomic refcount」「固定 capacity（dynamic resize なし）」の 2 点である
+- **Netty 経験者**: Pipeline 層 (handler 間 ownership transfer) は同一 mental model。ただし `channel.write(buf)` が **retain-on-input** である点が Netty と異なる (Netty は transfer)。keel では caller が `buf.release()` を明示的に呼ぶ必要がある。他に「非 atomic refcount」「固定 capacity」の差がある
 - **SwiftNIO 経験者**: API 形状は近い。違いは Swift の値型 + CoW ではなく明示的 `retain` / `release` で、`release()` 忘れが leak になる（SwiftNIO は参照カウントを言語機構に委ねる）
 - **tokio `bytes` 経験者**: `IoBuf` は `BytesMut` に近いが、split による分離ではなく `retain()` で refcount を増やすのが主流
 - **NIO 経験者**: reader と writer の index が分離しているため `flip()` を要しない。代わりに end-of-life で `release()` が必須

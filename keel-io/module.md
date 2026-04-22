@@ -25,6 +25,19 @@ codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
 count reaches zero, the backing memory is freed. Engines call `retain()` when
 buffering a write; the flush completion callback calls `release()`.
 
+**Ownership model** (two layers — see `website/docs/architecture/buffer.md`
+for the full classification):
+
+- **Pipeline layer** (`onRead` / `ctx.propagateRead` / handler → handler):
+  ownership transfer. Once a buffer is propagated, the sender must not touch it.
+- **Transport / Channel boundary** (`Channel.write(buf)` /
+  `IoTransport.write(buf)` / `SuspendSink.write(buf)`): retain-on-input.
+  The transport retains internally and consumes the caller's `readerIndex`;
+  the caller still holds its own reference and must call `release()` on it.
+- **Read APIs** (`Channel.read(buf)` / `IoTransport.read(buf)`): non-transfer.
+  The caller allocates the buffer, the engine fills it, and the caller
+  releases it.
+
 **Platform implementations**:
 
 | Platform | Class | Backing memory |

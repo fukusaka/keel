@@ -28,8 +28,19 @@ package io.github.fukusaka.keel.buf
  * Call [retain] to increment and [release] to decrement.
  * When the count reaches zero, the underlying memory is freed.
  *
- * **Thread safety**: designed for single-threaded use (EventLoop model).
- * Concurrent access from multiple threads requires external synchronisation.
+ * **Ownership model**: two layers — the pipeline layer uses ownership
+ * transfer (hand off via `ctx.propagateRead`, do not touch afterwards),
+ * while `Channel.write(buf)` / `IoTransport.write(buf)` use retain-on-input
+ * (transport retains internally, caller keeps its ref and must still call
+ * [release]). See the architecture docs (`website/docs/architecture/buffer.md`)
+ * for the full classification.
+ *
+ * **Thread safety**: the reference count and indices are non-atomic. All
+ * operations on a given buffer must happen on the single EventLoop thread
+ * that owns it.
+ * Cross-thread access is a contract violation (not guarded by atomics);
+ * ownership transfer across threads must go through a dispatch mechanism
+ * (e.g., EventLoop `dispatch`) that provides a happens-before relation.
  *
  * **Engine-layer zero-copy access**: platform-specific implementations
  * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or
@@ -180,7 +191,13 @@ interface IoBuf {
      * Safe to call multiple times (idempotent on Native via `freed` flag;
      * no-op on JVM/JS where memory is GC-managed).
      *
-     * Prefer [release] for normal lifecycle management.
+     * **Prefer [release] for normal lifecycle management.** [close] is
+     * intended for teardown paths (e.g., forcibly reclaiming buffers still
+     * outstanding in a pipeline during engine shutdown). Some implementations
+     * may intentionally leak backing resources here when the normal
+     * `release` path is preferred: for example, `RingBufferIoBuf` in
+     * engine-io-uring does not return its slot to the provided-buffer ring
+     * on [close] — [close] exists there for `AutoCloseable` compatibility.
      */
     fun close()
 }
