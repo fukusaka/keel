@@ -1,0 +1,64 @@
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/time.h string.h errno.h
+---
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+#include <string.h>
+#include <errno.h>
+
+/* ====================================================================
+ * Test-only socket helpers.
+ *
+ * Extracted from keel-native-posix/posix_socket.def (2026-04-23) along
+ * with PosixRawClient.kt, so the production keel-native-posix artifact
+ * no longer compiles test-only C wrappers.
+ *
+ * These let `PosixRawClient` set up a dumb TCP client against an
+ * engine's server socket without re-implementing `sockaddr_in` /
+ * `struct timeval` field access in Kotlin — those structs have
+ * platform-specific field widths (Linux `time_t` / `suseconds_t` vs
+ * macOS `__darwin_time_t` / `__darwin_suseconds_t`) that break
+ * cinterop commonization at the nativeMain source set.
+ *
+ * Production code must not call these.
+ * ==================================================================== */
+
+/*
+ * keel_connect_inet_loopback: blocking-connect `fd` to 127.0.0.1:`port`.
+ *
+ * Uses `connect(2)` directly (same semantics as the Layer 1
+ * `keel_connect` wrapper — no EINTR retry, because POSIX keeps an
+ * interrupted connect continuing asynchronously in the kernel).
+ * Callers handle the `EINTR` / `EINPROGRESS` / `EISCONN` / `EALREADY`
+ * spectrum themselves; for loopback the kernel fast-path completes
+ * in microseconds so the interrupt window is essentially zero in
+ * practice.
+ */
+static inline int keel_connect_inet_loopback(int fd, uint16_t port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+}
+
+/*
+ * keel_set_rcvtimeo: sets SO_RCVTIMEO on `fd` to (`sec` s + `usec` µs).
+ *
+ * Sub-second granularity lets `PosixRawClient` re-set the timeout per
+ * EINTR retry with a computed remainder of an absolute monotonic
+ * deadline, sidestepping the kernel's timer-reset-on-EINTR behaviour
+ * that would otherwise let a busy signal rate weaken the read bound.
+ *
+ * `struct timeval` field widths stay inside C: Linux `time_t` /
+ * `suseconds_t` and macOS `__darwin_time_t` / `__darwin_suseconds_t`
+ * commonize to different Kotlin types under cinterop.
+ */
+static inline int keel_set_rcvtimeo(int fd, long sec, long usec) {
+    struct timeval tv;
+    tv.tv_sec = sec;
+    tv.tv_usec = usec;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
