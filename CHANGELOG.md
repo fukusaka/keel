@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-epoll` / `engine-kqueue` / `engine-io-uring`: seam-level errno-branch unit tests (`*TransportSeamTest`) covering `shutdownOutput` + `flush` / `flushSingle` / `flushGather` (epoll/kqueue) and `shutdownOutput` + `flushDirectSendSingle` (io_uring) through `FakeNativeSocket`. Exhausts `ShutdownResult` / `WriteResult` branches without real kernel readiness; integration tests retain cross-fd coverage ([#333])
 - `native-posix`: `FakeNativeSocket` — scripted in-memory `NativeSocket` impl with per-fd FIFO response queues for `read` / `write` / `writev` / `send` / `accept` / `connect` / `shutdown` / `close`, `default*` fallbacks, per-syscall call counters, ordered `closedFds` tracking, and `assertNoDoubleClose` / `assertAllConsumed` helpers. Lets unit tests drive engine code through specific errno branches without a real kernel ([#330])
 - `core`: `UnixSocketAddress` with `@prefix` / `\u0000`-prefix convention for Linux abstract-namespace UDS; `isAbstract` / `kernelPath` properties; `UnixSocketAddress.filesystem(path)` / `abstract(name)` factories ([#298])
 - `core`: `CachingDnsResolver(delegate, ttl = 30.seconds, maxSize = 1024)` — LRU positive cache, single-flight via decoupled `SupervisorJob` scope, `close()` / `invalidate()` for graceful shutdown ([#297])
@@ -531,3 +532,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#330]: https://github.com/fukusaka/keel/pull/330
 [#331]: https://github.com/fukusaka/keel/pull/331
 [#332]: https://github.com/fukusaka/keel/pull/332
+[#333]: https://github.com/fukusaka/keel/pull/333
