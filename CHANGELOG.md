@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-nodejs`: `ConnectConfig.socketOptions` + `BindConfig.childSocketOptions` support — `tcpNoDelay` / `keepAlive` applied via Node.js `net.Socket.setNoDelay` / `setKeepAlive`. `receiveBufferSize` / `sendBufferSize` silently ignored (Node.js `net.Socket` exposes no buffer-size API). Completes the typed Socket Options API across all 6 engines (with platform-coverage note for NWConnection + Node.js) ([#341])
 - `engine-nwconnection`: `ConnectConfig.socketOptions` + `BindConfig.childSocketOptions` support — `tcpNoDelay` / `keepAlive` applied via NW framework's TCP configure block (`nw_tcp_options_set_no_delay` / `_set_enable_keepalive`). New C wrappers `keel_nw_create_tcp_params_with_options` / `keel_nw_create_tls_tcp_params_with_options` / `keel_nw_create_tcp_params_unix_listener_with_options`. `receiveBufferSize` / `sendBufferSize` are silently ignored (NW framework has no buffer-size API) — platform-coverage note added to `SocketOptions` KDoc ([#340])
 - `engine-nio` / `engine-netty`: `ConnectConfig.socketOptions` and `BindConfig.childSocketOptions` support for JVM engines. NIO applies via `SocketChannel.setOption(StandardSocketOptions.*)` before `connect(2)` (client) and after `accept(2)` (server); Netty uses `Bootstrap.option` / `ServerBootstrap.childOption` with `ChannelOption.*`. Completes the JVM side of the user-facing Socket Options API introduced for Native engines in #336 ([#339])
 - `engine-epoll` / `engine-kqueue`: seam-level `bind()` happy-path tests via a real `socket(AF_INET, SOCK_STREAM, 0)` fd as sentinel — `bindListener` / `bindUnixListener` is scripted to return a real fd so `epoll_ctl(ADD)` / `kevent(EV_ADD)` succeeds, letting the engine read the scripted local address and construct `EpollServer` / `KqueueServer`. Closes the final `bind` gap in `*EngineLifecycleSeamTest`; full accept flow remains integration-only ([#338])
@@ -551,3 +552,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#338]: https://github.com/fukusaka/keel/pull/338
 [#339]: https://github.com/fukusaka/keel/pull/339
 [#340]: https://github.com/fukusaka/keel/pull/340
+[#341]: https://github.com/fukusaka/keel/pull/341
