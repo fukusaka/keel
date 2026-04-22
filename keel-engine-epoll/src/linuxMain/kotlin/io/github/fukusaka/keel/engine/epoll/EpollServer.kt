@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.PosixSocketOps
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -56,6 +57,7 @@ internal class EpollServer(
     private val bindConfig: BindConfig,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
 ) : ServerChannel {
 
     // State transitions may be observed from the boss EventLoop thread
@@ -87,7 +89,7 @@ internal class EpollServer(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
-                    val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
+                    val (remoteAddr, localAddr) = posixSocketOps.acceptClient(clientFd)
                     val (workerLoop, allocator) = workerGroup.next()
                     val transport = EpollIoTransport(clientFd, workerLoop, allocator, nativeSocket)
                     val channel = EpollPipelinedChannel(
