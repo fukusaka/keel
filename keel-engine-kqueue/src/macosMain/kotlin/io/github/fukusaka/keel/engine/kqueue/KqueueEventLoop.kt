@@ -1,6 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -160,8 +160,8 @@ internal class KqueueEventLoop(
         // Create wakeup pipe and register the read end with kqueue
         val result = pipe(wakeupFds.refTo(0))
         check(result == 0) { "pipe() failed" }
-        PosixSocketUtils.setNonBlocking(wakeupFds[0])
-        PosixSocketUtils.setNonBlocking(wakeupFds[1])
+        PosixNativeSocketOps.setNonBlocking(wakeupFds[0])
+        PosixNativeSocketOps.setNonBlocking(wakeupFds[1])
 
         memScoped {
             val kev = alloc<kevent>()

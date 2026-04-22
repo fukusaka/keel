@@ -8,7 +8,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSocketUtils
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -55,6 +56,7 @@ internal class KqueueServer(
     private val bindConfig: BindConfig,
     private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : ServerChannel {
 
     // State transitions may be observed from the boss EventLoop thread
@@ -93,7 +95,9 @@ internal class KqueueServer(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
-                    val (remoteAddr, localAddr) = PosixSocketUtils.acceptClient(clientFd)
+                    nativeSocketOps.setNonBlocking(clientFd)
+                    val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
+                    val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val (workerLoop, allocator) = workerGroup.next()
                     val transport = KqueueIoTransport(clientFd, workerLoop, allocator, nativeSocket)
                     val channel = KqueuePipelinedChannel(

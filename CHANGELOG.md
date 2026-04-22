@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `native-posix`: `NativeSocketOps` cold-path seam — 10-method minimal interface (`bindListener` + reusePort flag, `openClientSocket`, `connectNonBlocking`, `getSocketError`, `getLocalAddress`, `getRemoteAddress`, `setNonBlocking` + UDS variants) with `PosixNativeSocketOps` as the production singleton impl (renamed from `PosixSocketUtils`) + `FakeNativeSocketOps` for unit tests. Naming follows observable state transitions (`bindListener` = bind + listen returning listener fd, `openClientSocket` = socket + setNonBlocking returning unconnected fd). Parallels the `NativeSocket` hot-path seam but kept separate to keep the hot path 8-method narrow ([#334])
+- `engine-*` (Native): inject `nativeSocketOps: NativeSocketOps = PosixNativeSocketOps` via engine constructor and thread through `*Server` / `*PipelinedServerChannel`. Unblocks seam tests for `connect()` / `accept` chain / bind-failure branches that were outside the `NativeSocket` seam. Also fixes latent bugs from PR #332 where `KqueueServer` / `IoUringServer` constructors were omitting the injected `nativeSocket` on the `bindInet` path, falling back to the singleton default ([#334])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: seam-level errno-branch unit tests through `FakeNativeSocket` — `*TransportSeamTest` covers `shutdownOutput` + `flush` / `flushSingle` / `flushGather` (epoll/kqueue) and `shutdownOutput` + `flushDirectSendSingle` (io_uring); `*OnReadableSeamTest` (epoll/kqueue) exhausts `ReadResult` variants via a pipe-driven real EventLoop as direct regression coverage for the PR #321 `EINTR → onReadClosed` misclassification. 39 cases total; integration tests retain cross-fd coverage ([#333])
 - `native-posix`: `FakeNativeSocket` — scripted in-memory `NativeSocket` impl with per-fd FIFO response queues for `read` / `write` / `writev` / `send` / `accept` / `connect` / `shutdown` / `close`, `default*` fallbacks, per-syscall call counters, ordered `closedFds` tracking, and `assertNoDoubleClose` / `assertAllConsumed` helpers. Lets unit tests drive engine code through specific errno branches without a real kernel ([#330])
 - `core`: `UnixSocketAddress` with `@prefix` / `\u0000`-prefix convention for Linux abstract-namespace UDS; `isAbstract` / `kernelPath` properties; `UnixSocketAddress.filesystem(path)` / `abstract(name)` factories ([#298])
@@ -533,3 +535,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#331]: https://github.com/fukusaka/keel/pull/331
 [#332]: https://github.com/fukusaka/keel/pull/332
 [#333]: https://github.com/fukusaka/keel/pull/333
+[#334]: https://github.com/fukusaka/keel/pull/334
