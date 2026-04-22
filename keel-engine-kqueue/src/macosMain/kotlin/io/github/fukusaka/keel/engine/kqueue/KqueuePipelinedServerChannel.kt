@@ -74,7 +74,11 @@ internal class KqueuePipelinedServerChannel(
         }
     }
 
-    private fun onAcceptable() {
+    // `internal` (was `private`) so accept-branch seam tests can drive the
+    // edge-triggered accept loop directly without going through kqueue
+    // readiness delivery. Call site in production remains the
+    // `bossLoop.registerCallback` lambda armed by [armAccept].
+    internal fun onAcceptable() {
         if (closed) return
         // Accept all pending connections in a loop (edge-triggered behavior).
         while (true) {
