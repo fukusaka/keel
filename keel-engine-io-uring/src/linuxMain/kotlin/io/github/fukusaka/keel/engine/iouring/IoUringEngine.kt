@@ -14,6 +14,8 @@ import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -67,12 +69,20 @@ import posix_socket.keel_sockaddr_un_sizeof
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
  *               to `availableProcessors()`.
+ * @param nativeSocket POSIX syscall seam. Defaults to [PosixNativeSocket]
+ *                     (the production impl that delegates to `keel_*`
+ *                     C wrappers). Tests inject a fake implementation to
+ *                     drive specific errno branches without real fds.
+ *                     Only used for the synchronous fallback paths
+ *                     (`shutdownOutput`, `flushDirectSendSingle`); the
+ *                     async SQE paths still go through io_uring.
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -138,7 +148,7 @@ class IoUringEngine(
         try {
             logger.debug { "Bound to $address" }
             return IoUringServer(
-                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger,
+                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
@@ -217,7 +227,7 @@ class IoUringEngine(
         val fileRegistry = workerGroup.fileRegistryAt(wi)
         val bufferTable = workerGroup.bufferTableAt(wi)
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
         }
         logger.debug { "Connected to $address" }
         return IoUringPipelinedChannel(transport, logger, address, null)
@@ -287,7 +297,7 @@ class IoUringEngine(
         // `FixedFileRegistry.register(fd)` (invoked from the transport
         // constructor's property initialiser) runs on the submitter task.
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
         }
         logger.debug { "Connected to $remoteAddr" }
         return IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
@@ -333,7 +343,7 @@ class IoUringEngine(
         val serverFds = intArrayOf(PosixSocketUtils.createUnixServerSocket(address, config.backlog, logger))
         try {
             val server = IoUringPipelinedServerChannel(
-                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger,
+                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket,
             )
             server.start()
             logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
@@ -367,7 +377,7 @@ class IoUringEngine(
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
             val localAddr = PosixSocketUtils.getLocalAddress(serverFds[0])
             val server = IoUringPipelinedServerChannel(
-                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger,
+                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket,
             )
             server.start()
             logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }

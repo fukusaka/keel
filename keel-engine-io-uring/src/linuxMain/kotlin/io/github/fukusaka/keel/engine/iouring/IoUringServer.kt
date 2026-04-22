@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io_uring.io_uring_prep_multishot_accept
@@ -58,6 +60,7 @@ internal class IoUringServer(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : ServerChannel {
 
     // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
@@ -110,7 +113,7 @@ internal class IoUringServer(
             val bufferTable = workerGroup.bufferTableAt(wi)
             // Construct on the worker EventLoop pthread — same reason as IoUringEngine.connect.
             val transport = withContext(workerLoop) {
-                IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable)
+                IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
             }
             val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)
