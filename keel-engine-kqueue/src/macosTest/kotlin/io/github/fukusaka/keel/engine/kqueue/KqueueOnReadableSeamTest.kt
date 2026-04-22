@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -30,7 +29,7 @@ import platform.posix.write
  *
  * Per `.claude/rules/testing.md` § "二層テスト戦略".
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class KqueueOnReadableSeamTest {
 
     private val logger = NoopLoggerFactory.logger("KqueueOnReadableSeamTest")

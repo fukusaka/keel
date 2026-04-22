@@ -12,7 +12,6 @@ import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import platform.posix.AF_INET
@@ -48,7 +47,7 @@ import kotlin.test.assertTrue
  *   Full accept flow (client → kernel → EVFILT_READ → accept) is still
  *   integration-only.
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class KqueueEngineLifecycleSeamTest {
 
     private fun newEngine(

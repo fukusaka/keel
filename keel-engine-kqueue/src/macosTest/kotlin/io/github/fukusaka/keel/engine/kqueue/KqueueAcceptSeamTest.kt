@@ -10,7 +10,6 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import platform.posix.AF_INET
@@ -49,7 +48,7 @@ import kotlin.test.assertTrue
  *   on the (fake) accepted fd and fails with EBADF. Integration tests
  *   cover the full accept-to-first-byte flow.
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class KqueueAcceptSeamTest {
 
     private fun newEngine(

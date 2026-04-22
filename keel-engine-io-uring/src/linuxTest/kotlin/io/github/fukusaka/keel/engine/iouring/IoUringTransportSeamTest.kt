@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -36,7 +35,7 @@ import kotlin.test.assertTrue
  * real SQE — that branch is left to integration coverage in
  * [IoUringEngineTest]. Per `.claude/rules/testing.md` § "二層テスト戦略".
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class IoUringTransportSeamTest {
 
     private val logger = NoopLoggerFactory.logger("IoUringTransportSeamTest")

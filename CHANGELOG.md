@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING** (`native-posix-testing` test consumers): `@InternalTestApi` opt-in annotation removed. It was a guard against production callers reaching into test scaffolding when those lived inside `keel-native-posix`'s production source set; since PR #346 moved them into the test-only `keel-native-posix-testing` module, external consumers cannot reach them and the opt-in is redundant. Test consumers remove their `@OptIn(InternalTestApi::class)` annotations + the corresponding import. No runtime behaviour change ([#347])
+
 ### Changed
 
 - **BREAKING** (`native-posix` test consumers): `FakeNativeSocket` / `FakeNativeSocketOps` / `PosixRawClient` / `@InternalTestApi` extracted from `keel-native-posix` (production artifact) into a new `keel-native-posix-testing` module. Engine test modules must switch `implementation(project(":keel-native-posix"))` in test source sets to `implementation(project(":keel-native-posix-testing"))`. Import paths (`io.github.fukusaka.keel.native.posix.*`) are unchanged. Production artifact no longer carries test scaffolding; the 2 test-only C helpers (`keel_connect_inet_loopback` / `keel_set_rcvtimeo`) moved with `PosixRawClient` to a separate `posix_testing` cinterop def. Not published to Maven, not included in Dokka ([#346])
@@ -560,3 +564,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#341]: https://github.com/fukusaka/keel/pull/341
 [#342]: https://github.com/fukusaka/keel/pull/342
 [#346]: https://github.com/fukusaka/keel/pull/346
+[#347]: https://github.com/fukusaka/keel/pull/347
