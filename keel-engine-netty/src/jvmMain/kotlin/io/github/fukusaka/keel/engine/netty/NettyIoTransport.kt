@@ -65,7 +65,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  * @param allocator    Buffer allocator for read operations.
  */
 internal class NettyIoTransport(
-    private val nettyChannel: NettyNativeChannel,
+    internal val nettyChannel: NettyNativeChannel,
     allocator: BufferAllocator,
 ) : AbstractIoTransport(allocator) {
 
