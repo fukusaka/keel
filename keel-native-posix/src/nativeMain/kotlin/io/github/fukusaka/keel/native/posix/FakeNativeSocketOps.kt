@@ -60,11 +60,23 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- Scripted queues (FIFO) ---
 
-    private val bindListenerQueue = ArrayDeque<Int>()
-    private val bindListenerReusePortQueue = ArrayDeque<Int>()
-    private val bindUnixListenerQueue = ArrayDeque<Int>()
-    private val openClientSocketQueue = ArrayDeque<Int>()
-    private val openUnixClientSocketQueue = ArrayDeque<Int>()
+    /**
+     * Response type for `bindListener` / `openClientSocket` family
+     * methods. [Fd] returns the fd as the method's normal return
+     * value; [Throws] throws the supplied exception from the method
+     * body, emulating production failure paths like socket EMFILE /
+     * bind EADDRINUSE.
+     */
+    private sealed class FdResponse {
+        data class Fd(val fd: Int) : FdResponse()
+        data class Throws(val exception: Throwable) : FdResponse()
+    }
+
+    private val bindListenerQueue = ArrayDeque<FdResponse>()
+    private val bindListenerReusePortQueue = ArrayDeque<FdResponse>()
+    private val bindUnixListenerQueue = ArrayDeque<FdResponse>()
+    private val openClientSocketQueue = ArrayDeque<FdResponse>()
+    private val openUnixClientSocketQueue = ArrayDeque<FdResponse>()
     private val connectQueue = mutableMapOf<Int, ArrayDeque<ConnectResult>>()
     private val connectUnixQueue = mutableMapOf<Int, ArrayDeque<ConnectResult>>()
     private val socketErrorQueue = mutableMapOf<Int, ArrayDeque<Int>>()
@@ -124,8 +136,12 @@ public class FakeNativeSocketOps : NativeSocketOps {
     /** Ordered list of fds passed to [setNonBlocking]. */
     public val nonBlockingFds: List<Int> get() = _nonBlockingFds.toList()
 
-    private fun allocateFd(queue: ArrayDeque<Int>): Int {
-        val fd = queue.removeFirstOrNull() ?: nextCreatedFd++
+    private fun allocateFd(queue: ArrayDeque<FdResponse>): Int {
+        val fd = when (val r = queue.removeFirstOrNull()) {
+            null -> nextCreatedFd++
+            is FdResponse.Fd -> r.fd
+            is FdResponse.Throws -> throw r.exception
+        }
         _createdFds.add(fd)
         return fd
     }
@@ -196,27 +212,60 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     /** Appends fds the fake will hand out from `bindListener(reusePort = false)`. */
     public fun enqueueBindListener(vararg fds: Int) {
-        bindListenerQueue.addAll(fds.toList())
+        bindListenerQueue.addAll(fds.map { FdResponse.Fd(it) })
+    }
+
+    /**
+     * Appends scripted exceptions thrown from `bindListener(reusePort = false)`.
+     * Emulates production failures like socket EMFILE or bind EADDRINUSE.
+     * Ordering is FIFO and interleaved with [enqueueBindListener] —
+     * the first enqueued response fires first regardless of type.
+     */
+    public fun enqueueBindListenerThrows(vararg exceptions: Throwable) {
+        bindListenerQueue.addAll(exceptions.map { FdResponse.Throws(it) })
     }
 
     /** Appends fds the fake will hand out from `bindListener(reusePort = true)`. */
     public fun enqueueBindListenerReusePort(vararg fds: Int) {
-        bindListenerReusePortQueue.addAll(fds.toList())
+        bindListenerReusePortQueue.addAll(fds.map { FdResponse.Fd(it) })
+    }
+
+    /** Appends scripted exceptions for `bindListener(reusePort = true)`. */
+    public fun enqueueBindListenerReusePortThrows(vararg exceptions: Throwable) {
+        bindListenerReusePortQueue.addAll(exceptions.map { FdResponse.Throws(it) })
     }
 
     /** Appends fds the fake will hand out from `bindUnixListener`. */
     public fun enqueueBindUnixListener(vararg fds: Int) {
-        bindUnixListenerQueue.addAll(fds.toList())
+        bindUnixListenerQueue.addAll(fds.map { FdResponse.Fd(it) })
+    }
+
+    /** Appends scripted exceptions for `bindUnixListener`. */
+    public fun enqueueBindUnixListenerThrows(vararg exceptions: Throwable) {
+        bindUnixListenerQueue.addAll(exceptions.map { FdResponse.Throws(it) })
     }
 
     /** Appends fds the fake will hand out from `openClientSocket`. */
     public fun enqueueOpenClientSocket(vararg fds: Int) {
-        openClientSocketQueue.addAll(fds.toList())
+        openClientSocketQueue.addAll(fds.map { FdResponse.Fd(it) })
+    }
+
+    /**
+     * Appends scripted exceptions for `openClientSocket`.
+     * Emulates production failures like socket EMFILE.
+     */
+    public fun enqueueOpenClientSocketThrows(vararg exceptions: Throwable) {
+        openClientSocketQueue.addAll(exceptions.map { FdResponse.Throws(it) })
     }
 
     /** Appends fds the fake will hand out from `openUnixClientSocket`. */
     public fun enqueueOpenUnixClientSocket(vararg fds: Int) {
-        openUnixClientSocketQueue.addAll(fds.toList())
+        openUnixClientSocketQueue.addAll(fds.map { FdResponse.Fd(it) })
+    }
+
+    /** Appends scripted exceptions for `openUnixClientSocket`. */
+    public fun enqueueOpenUnixClientSocketThrows(vararg exceptions: Throwable) {
+        openUnixClientSocketQueue.addAll(exceptions.map { FdResponse.Throws(it) })
     }
 
     /** Appends scripted [ConnectResult] responses for `connectNonBlocking(fd, ...)`. */
