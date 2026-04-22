@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-epoll` / `engine-kqueue`: seam-level connect lifecycle tests (`*EngineLifecycleSeamTest`) through `FakeNativeSocketOps` — 5 cases per engine covering `ConnectResult.{Connected, Failed(errno)}` for TCP + UDS. First use of the `NativeSocketOps` cold-path seam for engine-level unit testing. `ConnectResult.InProgress` and `bind` happy path remain integration-tested because they require real fd readiness ([#335])
 - `native-posix`: `NativeSocketOps` cold-path seam — 10-method minimal interface (`bindListener` + reusePort flag, `openClientSocket`, `connectNonBlocking`, `getSocketError`, `getLocalAddress`, `getRemoteAddress`, `setNonBlocking` + UDS variants) with `PosixNativeSocketOps` as the production singleton impl (renamed from `PosixSocketUtils`) + `FakeNativeSocketOps` for unit tests. Naming follows observable state transitions (`bindListener` = bind + listen returning listener fd, `openClientSocket` = socket + setNonBlocking returning unconnected fd). Parallels the `NativeSocket` hot-path seam but kept separate to keep the hot path 8-method narrow ([#334])
 - `engine-*` (Native): inject `nativeSocketOps: NativeSocketOps = PosixNativeSocketOps` via engine constructor and thread through `*Server` / `*PipelinedServerChannel`. Unblocks seam tests for `connect()` / `accept` chain / bind-failure branches that were outside the `NativeSocket` seam. Also fixes latent bugs from PR #332 where `KqueueServer` / `IoUringServer` constructors were omitting the injected `nativeSocket` on the `bindInet` path, falling back to the singleton default ([#334])
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: seam-level errno-branch unit tests through `FakeNativeSocket` — `*TransportSeamTest` covers `shutdownOutput` + `flush` / `flushSingle` / `flushGather` (epoll/kqueue) and `shutdownOutput` + `flushDirectSendSingle` (io_uring); `*OnReadableSeamTest` (epoll/kqueue) exhausts `ReadResult` variants via a pipe-driven real EventLoop as direct regression coverage for the PR #321 `EINTR → onReadClosed` misclassification. 39 cases total; integration tests retain cross-fd coverage ([#333])
@@ -536,3 +537,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#332]: https://github.com/fukusaka/keel/pull/332
 [#333]: https://github.com/fukusaka/keel/pull/333
 [#334]: https://github.com/fukusaka/keel/pull/334
+[#335]: https://github.com/fukusaka/keel/pull/335
