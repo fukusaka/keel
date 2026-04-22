@@ -16,6 +16,8 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -67,10 +69,15 @@ import platform.posix.errno
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
  *               to `availableProcessors()`.
+ * @param nativeSocket POSIX syscall seam. Defaults to [PosixNativeSocket]
+ *                     (the production impl that delegates to `keel_*`
+ *                     C wrappers). Tests inject a fake implementation to
+ *                     drive specific errno branches without real fds.
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
+    private val nativeSocket: NativeSocket = PosixNativeSocket,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -122,7 +129,7 @@ class KqueueEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger)
+            return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
@@ -214,7 +221,7 @@ class KqueueEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = KqueueIoTransport(fd, workerLoop, allocator)
+        val transport = KqueueIoTransport(fd, workerLoop, allocator, nativeSocket)
         return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
@@ -256,7 +263,7 @@ class KqueueEngine(
         val remoteAddr = PosixSocketUtils.getRemoteAddress(fd)
         val localAddr = PosixSocketUtils.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = KqueueIoTransport(fd, workerLoop, allocator)
+        val transport = KqueueIoTransport(fd, workerLoop, allocator, nativeSocket)
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
@@ -306,6 +313,7 @@ class KqueueEngine(
                 logger = logger,
                 config = config,
                 pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
             )
             serverChannel.start()
             return serverChannel
@@ -337,6 +345,7 @@ class KqueueEngine(
                 logger = logger,
                 config = config,
                 pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
             )
             serverChannel.start()
             return serverChannel
