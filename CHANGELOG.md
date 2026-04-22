@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `native-posix`: `AbstractPosixPipelinedServerChannel` nativeMain base class that provides the common edge-triggered `onAcceptable` loop + `@Volatile closed` state + fd-close teardown for POSIX callback-based pipelined server channels. `EpollPipelinedServerChannel` + `KqueuePipelinedServerChannel` now extend it and only supply engine-specific `registerReadyCallback` (boss-loop arm) + `dispatchToWorker` (round-robin + transport / channel construction + `readEnabled`) hooks. Sibling of `AbstractPosixServer` (PR #343) for the push-side accept path ([#344])
 - `native-posix`: `AbstractPosixServer` nativeMain base class that provides the common edge-triggered accept loop + close-race state machine (mutex / `_active` / `pendingAcceptCont`) for POSIX coroutine-based server channels. `EpollServer` + `KqueueServer` now extend it and only supply engine-specific `buildChannel` / `armReadReadiness` / `unregisterReadReadiness` hooks — 270 lines of duplication in `EpollServer.kt` / `KqueueServer.kt` collapsed to 70. io_uring keeps its independent multishot-accept model ([#343])
 - `engine-epoll` / `engine-kqueue`: seam-level accept-path tests via `FakeNativeSocket.enqueueAccept` — covers `EpollServer.accept` / `KqueueServer.accept` Failed (ECONNABORTED / EMFILE) + Accepted (full `setNonBlocking` + `getRemoteAddress` + `getLocalAddress` + `childSocketOptions` chain) branches and `EpollPipelinedServerChannel.onAcceptable` / `KqueuePipelinedServerChannel.onAcceptable` Failed + WouldBlock re-arm branches. `onAcceptable` relaxed from `private` to `internal` so tests can drive the edge-triggered accept loop directly (6 cases per engine, 12 total) ([#342])
 - `engine-nodejs`: `ConnectConfig.socketOptions` + `BindConfig.childSocketOptions` support — `tcpNoDelay` / `keepAlive` applied via Node.js `net.Socket.setNoDelay` / `setKeepAlive`. `receiveBufferSize` / `sendBufferSize` silently ignored (Node.js `net.Socket` exposes no buffer-size API). Completes the typed Socket Options API across all 6 engines (with platform-coverage note for NWConnection + Node.js) ([#341])
@@ -557,3 +558,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#341]: https://github.com/fukusaka/keel/pull/341
 [#342]: https://github.com/fukusaka/keel/pull/342
 [#343]: https://github.com/fukusaka/keel/pull/343
+[#344]: https://github.com/fukusaka/keel/pull/344
