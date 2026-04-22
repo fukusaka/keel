@@ -85,52 +85,17 @@ object PosixNativeSocketOps : NativeSocketOps {
     private const val UNIX_SUN_PATH_BUF = 108
 
     /**
-     * Creates a non-blocking TCP server socket: socket -> SO_REUSEADDR ->
-     * non-blocking -> bind -> listen.
+     * Opens a non-blocking TCP listener fd:
+     * `socket → SO_REUSEADDR [→ SO_REUSEPORT] → setNonBlocking → bind → listen`.
      *
-     * The socket family follows [address]: [IpAddress.V4] → `AF_INET`,
-     * [IpAddress.V6] → `AF_INET6`.
-     *
-     * @param address Bind address. Use `IpAddress.V4.ANY` (0.0.0.0) or
-     *   `IpAddress.V6.ANY` (::) to bind to all interfaces in that family.
-     * @param port Port number. 0 lets the OS assign an ephemeral port.
-     * @param backlog TCP listen backlog. OS may cap this value.
-     * @param logger Used by the error-cleanup branch to route `close(fd)`
-     *   through [closeFdSafely], so a `close(2)` failure during the
-     *   unwind of a `bind` / `listen` error does not silently leak the fd.
-     * @return The server socket file descriptor.
+     * See [NativeSocketOps.bindListener] for the full contract.
      */
-    override fun createServerSocket(
+    override fun bindListener(
         address: IpAddress,
         port: Int,
         backlog: Int,
         logger: Logger,
-    ): Int = createAndBindListener(address, port, backlog, reusePort = false, logger)
-
-    /**
-     * Creates a non-blocking TCP server socket with SO_REUSEPORT.
-     *
-     * Same as [createServerSocket] but additionally sets SO_REUSEPORT,
-     * allowing multiple sockets to bind to the same port. The kernel
-     * distributes incoming connections across sockets by hashing the
-     * connection 4-tuple.
-     *
-     * @param logger Used by the error-cleanup branch to route `close(fd)`
-     *   through [closeFdSafely] (same contract as [createServerSocket]).
-     */
-    override fun createReusePortServerSocket(
-        address: IpAddress,
-        port: Int,
-        backlog: Int,
-        logger: Logger,
-    ): Int = createAndBindListener(address, port, backlog, reusePort = true, logger)
-
-    private fun createAndBindListener(
-        address: IpAddress,
-        port: Int,
-        backlog: Int,
         reusePort: Boolean,
-        logger: Logger,
     ): Int {
         val family = familyOf(address)
         val fd = socket(family, SOCK_STREAM, 0)
@@ -177,7 +142,7 @@ object PosixNativeSocketOps : NativeSocketOps {
             val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            val context = if (reusePort) "createReusePortServerSocket cleanup" else "createServerSocket cleanup"
+            val context = if (reusePort) "bindListener(reusePort) cleanup" else "bindListener cleanup"
             closeFdSafely(fd, logger, context)
             throw e
         }
@@ -186,16 +151,10 @@ object PosixNativeSocketOps : NativeSocketOps {
     }
 
     /**
-     * Creates a non-blocking TCP client socket without connecting.
-     *
-     * The socket family follows [family]: [IpAddress.V4] → `AF_INET`,
-     * [IpAddress.V6] → `AF_INET6`. Any V4 / V6 instance selects the family;
-     * typical callers pass the address they intend to connect to.
-     *
-     * The socket is set to non-blocking immediately so that a subsequent
-     * `connect()` call returns `EINPROGRESS` instead of blocking.
+     * Opens a non-blocking TCP client socket without connecting.
+     * See [NativeSocketOps.openClientSocket] for the contract.
      */
-    override fun createUnconnectedSocket(family: IpAddress): Int {
+    override fun openClientSocket(family: IpAddress): Int {
         val fd = socket(familyOf(family), SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
@@ -204,13 +163,9 @@ object PosixNativeSocketOps : NativeSocketOps {
 
     /**
      * Initiates a non-blocking connect on [fd] to [address]:[port].
-     *
-     * [fd] must have been created with a matching family — use
-     * [createUnconnectedSocket] with the same [address] value.
-     *
-     * Delegates to [PosixNativeSocket.connect], so `EINTR` is mapped to
-     * [ConnectResult.InProgress] (see the method KDoc on
-     * [NativeSocket.connect] for the POSIX rationale).
+     * See [NativeSocketOps.connectNonBlocking] for the contract.
+     * Delegates to [PosixNativeSocket.connect] for the underlying
+     * `connect(2)` syscall + EINTR handling.
      */
     override fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): ConnectResult = memScoped {
         when (address) {
@@ -278,27 +233,6 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
         fcntl(fd, F_SETFL, flags or O_NONBLOCK)
-    }
-
-    /**
-     * Prepares a freshly-accepted client fd for use as a transport:
-     * switches the socket to non-blocking mode and reads back the local
-     * / remote endpoint addresses.
-     *
-     * Callers (`EpollServer.accept` / `KqueueServer.accept` /
-     * `IoUringServer.accept`) previously did the three calls inline.
-     * Centralising the sequence ensures every engine follows the same
-     * contract (non-blocking + address resolved before returning to
-     * user code) without each call site having to remember the order.
-     *
-     * @return `(remoteAddress, localAddress)` read from the kernel via
-     *   `getpeername` / `getsockname` respectively.
-     */
-    override fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress> {
-        setNonBlocking(clientFd)
-        val remote = getRemoteAddress(clientFd)
-        val local = getLocalAddress(clientFd)
-        return remote to local
     }
 
     /**
@@ -374,8 +308,8 @@ object PosixNativeSocketOps : NativeSocketOps {
     }
 
     /**
-     * Creates a non-blocking `AF_UNIX` / `SOCK_STREAM` server socket:
-     * socket -> non-blocking -> `bind(sockaddr_un)` -> listen.
+     * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` listener fd:
+     * `socket → setNonBlocking → bind(sockaddr_un) → listen`.
      *
      * `SO_REUSEADDR` is not applied because it has no meaningful effect
      * for filesystem sockets (stale socket files must be unlinked
@@ -385,18 +319,9 @@ object PosixNativeSocketOps : NativeSocketOps {
      * path themselves before calling this — matching the convention
      * used by libuv, Netty, and sd_bus.
      *
-     * The [address]'s [UnixSocketAddress.kernelPath] supplies the raw
-     * bytes fed to `sockaddr_un.sun_path`; `@name` input is translated
-     * into the leading-NUL form expected by the Linux kernel.
-     *
-     * @param address AF_UNIX bind target. `filesystem` or `abstract`
-     *   form; see [UnixSocketAddress].
-     * @param backlog `listen(2)` backlog.
-     * @param logger Used by the error-cleanup branch to route `close(fd)`
-     *   through [closeFdSafely] (same contract as [createServerSocket]).
-     * @throws IllegalStateException if socket / bind / listen fails.
+     * See [NativeSocketOps.bindUnixListener] for the contract.
      */
-    override fun createUnixServerSocket(
+    override fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
         logger: Logger,
@@ -425,18 +350,18 @@ object PosixNativeSocketOps : NativeSocketOps {
             val listenRc = listen(fd, backlog)
             check(listenRc == 0) { "listen(AF_UNIX) failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            closeFdSafely(fd, logger, "createUnixServerSocket cleanup")
+            closeFdSafely(fd, logger, "bindUnixListener cleanup")
             throw e
         }
         return fd
     }
 
     /**
-     * Creates a non-blocking `AF_UNIX` / `SOCK_STREAM` client socket
-     * without connecting. Counterpart to [createUnconnectedSocket] for
-     * TCP.
+     * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` client socket
+     * without connecting. See [NativeSocketOps.openUnixClientSocket]
+     * for the contract.
      */
-    override fun createUnixUnconnectedSocket(): Int {
+    override fun openUnixClientSocket(): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
@@ -445,13 +370,10 @@ object PosixNativeSocketOps : NativeSocketOps {
 
     /**
      * Initiates a non-blocking connect on [fd] against a Unix domain
-     * socket. Parallels [connectNonBlocking] but wraps `keel_connect_un`
-     * so the caller need not compute the per-platform `sun_path`
-     * `addrlen` or handle the abstract-namespace offset.
-     *
-     * Return value mirrors [connectNonBlocking] — [ConnectResult.Connected]
-     * on immediate completion, [ConnectResult.InProgress] on `EINPROGRESS`
-     * / `EINTR`, [ConnectResult.Failed] otherwise.
+     * socket. See [NativeSocketOps.connectUnixNonBlocking] for the
+     * contract. Wraps `keel_connect_un` so the caller need not compute
+     * the per-platform `sun_path` `addrlen` or handle the
+     * abstract-namespace offset.
      */
     override fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): ConnectResult {
         val kernelBytes = address.unixKernelBytes()

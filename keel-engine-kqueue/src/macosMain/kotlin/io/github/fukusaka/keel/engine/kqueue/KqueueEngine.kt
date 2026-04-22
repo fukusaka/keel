@@ -120,7 +120,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = nativeSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
 
         try {
             memScoped {
@@ -151,7 +151,7 @@ class KqueueEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = nativeSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog, logger)
 
         try {
             // Register server fd with the boss EventLoop's kqueue so that
@@ -205,7 +205,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val fd = nativeSocketOps.createUnixUnconnectedSocket()
+        val fd = nativeSocketOps.openUnixClientSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -243,7 +243,7 @@ class KqueueEngine(
     }
 
     private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
-        val fd = nativeSocketOps.createUnconnectedSocket(ip)
+        val fd = nativeSocketOps.openClientSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
@@ -311,7 +311,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = nativeSocketOps.createUnixServerSocket(address, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog, logger)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -343,7 +343,7 @@ class KqueueEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = nativeSocketOps.createServerSocket(ip, port, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog, logger)
 
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)

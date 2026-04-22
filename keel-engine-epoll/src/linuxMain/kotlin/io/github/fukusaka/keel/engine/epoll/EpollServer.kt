@@ -89,7 +89,9 @@ internal class EpollServer(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
-                    val (remoteAddr, localAddr) = nativeSocketOps.acceptClient(clientFd)
+                    nativeSocketOps.setNonBlocking(clientFd)
+                    val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
+                    val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val (workerLoop, allocator) = workerGroup.next()
                     val transport = EpollIoTransport(clientFd, workerLoop, allocator, nativeSocket)
                     val channel = EpollPipelinedChannel(

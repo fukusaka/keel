@@ -12,18 +12,21 @@ import io.github.fukusaka.keel.logging.Logger
  * [NativeSocket] abstracts per-byte syscalls (`read` / `write` /
  * `send` / `accept` / `shutdown` / `close` / `writev` / `connect`),
  * [NativeSocketOps] abstracts the socket-lifecycle / configuration
- * syscalls — mostly one-shot operations that happen at bind, connect,
- * or accept-completion time:
+ * syscalls — one-shot operations that happen at bind / connect /
+ * accept-completion time:
  *
- * - socket creation (TCP / UDS, with / without `connect`)
- * - bind + listen (+ `SO_REUSEADDR` / `SO_REUSEPORT` + non-blocking)
- * - connect initiation (delegates to [NativeSocket.connect] but also
- *   builds the sockaddr buffer — the engine-visible contract is
- *   "give me the result")
- * - `SO_ERROR` check after `EINPROGRESS` / readiness
- * - `getsockname` / `getpeername`
- * - `setNonBlocking` (`fcntl(F_SETFL, O_NONBLOCK)`)
- * - compound `acceptClient` (non-blocking + both address reads)
+ * - [bindListener] / [bindUnixListener] — composite
+ *   (`socket → setsockopt → setNonBlocking → bind → listen`) returning
+ *   a ready-to-accept listener fd
+ * - [openClientSocket] / [openUnixClientSocket] — non-blocking client
+ *   socket without connecting (caller invokes [connectNonBlocking]
+ *   next and registers for write-readiness)
+ * - [connectNonBlocking] / [connectUnixNonBlocking] — initiates
+ *   non-blocking `connect(2)`
+ * - [getSocketError] — `getsockopt(SO_ERROR)` after `EINPROGRESS`
+ * - [getLocalAddress] / [getRemoteAddress] — `getsockname` /
+ *   `getpeername`
+ * - [setNonBlocking] — `fcntl(F_SETFL, O_NONBLOCK)`
  *
  * ## Layering
  *
@@ -32,18 +35,39 @@ import io.github.fukusaka.keel.logging.Logger
  * - **Layer 2** (Kotlin, [PosixNativeSocketOps]): composite syscall
  *   sequences with error handling + typed results.
  * - **Layer 3** (engine code): depends on [NativeSocketOps], never on
- *   the `PosixNativeSocketOps` singleton directly — so tests can inject a
- *   fake.
+ *   the [PosixNativeSocketOps] singleton directly — so tests can
+ *   inject a fake.
  *
  * ## Why two interfaces and not one
  *
  * [NativeSocket] is deliberately narrow (8 methods) to keep the
  * hot-path virtual dispatch cost trivial and to keep argument-capture
  * fakes simple. Folding lifecycle syscalls into it would inflate the
- * interface to ~20 methods, most of which are called once per
- * connection lifetime — not worth polluting the hot-path seam. See
- * `plan.md` § "`NativeSocketOps` interface + engine injection" for
- * the case 2 (narrow hot-path) rationale.
+ * interface to ~18 methods, most of which are called once per
+ * connection lifetime — not worth polluting the hot-path seam.
+ *
+ * ## Why the composite naming (`bindListener` / `openClientSocket`)
+ *
+ * `bindListener` does more than `socket(2)` — it runs the full
+ * `socket → setsockopt → setNonBlocking → bind → listen` chain and
+ * returns an fd in the "ready to accept" state. Naming after the last
+ * observable state transition (bind+listen) is more accurate than
+ * `createServerSocket`, which suggests the method only allocates.
+ * Same rationale for `bindUnixListener`.
+ *
+ * `openClientSocket` returns an unconnected non-blocking socket —
+ * `open` mirrors POSIX `open(2)` semantics (an fd that needs further
+ * setup before use) and distinguishes it from the "listener" state
+ * produced by `bind*`.
+ *
+ * ## Socket options
+ *
+ * The interface hardcodes `SO_REUSEADDR` (TCP server) and `O_NONBLOCK`
+ * (all sockets); `SO_REUSEPORT` is opt-in via [bindListener]'s
+ * `reusePort` parameter. User-facing socket options (`TCP_NODELAY`,
+ * `SO_KEEPALIVE`, `SO_RCVBUF`, etc.) are not yet exposed — planned as
+ * an extension of `BindConfig` / `ConnectConfig` rather than new
+ * seam methods.
  *
  * ## Testability
  *
@@ -51,57 +75,48 @@ import io.github.fukusaka.keel.logging.Logger
  * [PosixNativeSocketOps]). Unit tests can inject a fake implementation
  * to drive the engine through specific branches —
  * [ConnectResult.Failed] (ECONNREFUSED), `bind` failure (EADDRINUSE),
- * `SO_ERROR` non-zero after a suspend — without touching a real
- * kernel. Coverage includes the `connect()` / `accept()` chains that
- * were out of reach of the [NativeSocket] seam alone.
+ * `SO_ERROR` non-zero after suspend — without touching a real
+ * kernel.
  */
 public interface NativeSocketOps {
 
     /**
-     * Creates a non-blocking TCP server socket:
-     * `socket` → `SO_REUSEADDR` → non-blocking → `bind` → `listen`.
+     * Opens a non-blocking TCP listener fd: `socket → SO_REUSEADDR
+     * [→ SO_REUSEPORT] → setNonBlocking → bind → listen`. The returned
+     * fd is in the listen state ready for `accept(2)`.
      *
      * Socket family follows [address]: [IpAddress.V4] → `AF_INET`,
-     * [IpAddress.V6] → `AF_INET6`.
+     * [IpAddress.V6] → `AF_INET6`. `SO_REUSEADDR` is always set to
+     * avoid `TIME_WAIT` bind failures; [reusePort] additionally enables
+     * kernel-side load balancing across multiple sockets bound to the
+     * same address.
      *
      * @param logger Used by the error-cleanup branch to route
      *   `close(fd)` through [closeFdSafely], so a `close(2)` failure
      *   during the unwind of a `bind` / `listen` error does not
      *   silently leak the fd.
-     * @return The server socket file descriptor.
+     * @return The listener fd.
      */
-    public fun createServerSocket(
+    public fun bindListener(
         address: IpAddress,
         port: Int,
         backlog: Int,
         logger: Logger,
+        reusePort: Boolean = false,
     ): Int
 
     /**
-     * Creates a non-blocking TCP server socket with `SO_REUSEPORT`.
-     * Same contract as [createServerSocket] but additionally sets
-     * `SO_REUSEPORT` so multiple sockets can bind to the same port
-     * (kernel distributes connections by 4-tuple hash).
+     * Opens a non-blocking TCP client socket (unconnected): `socket →
+     * setNonBlocking`. The returned fd is ready for a subsequent
+     * [connectNonBlocking] call. The family follows [family]
+     * ([IpAddress.V4] → `AF_INET`, [IpAddress.V6] → `AF_INET6`).
      */
-    public fun createReusePortServerSocket(
-        address: IpAddress,
-        port: Int,
-        backlog: Int,
-        logger: Logger,
-    ): Int
-
-    /**
-     * Creates a non-blocking TCP client socket without connecting.
-     * The family follows [family]; the socket is set non-blocking
-     * so a subsequent `connect()` call returns `EINPROGRESS` instead
-     * of blocking.
-     */
-    public fun createUnconnectedSocket(family: IpAddress): Int
+    public fun openClientSocket(family: IpAddress): Int
 
     /**
      * Initiates a non-blocking `connect(2)` on [fd] to [address]:[port].
      * [fd] must have been created with a matching family — usually by
-     * [createUnconnectedSocket] with the same [address] value.
+     * [openClientSocket] with the same [address] value.
      *
      * Delegates to [NativeSocket.connect] under the hood, so `EINTR`
      * is mapped to [ConnectResult.InProgress] (see the method KDoc on
@@ -128,38 +143,27 @@ public interface NativeSocketOps {
     public fun setNonBlocking(fd: Int)
 
     /**
-     * Prepares a freshly-accepted client fd for use as a transport:
-     * switches the socket to non-blocking mode and reads back the
-     * local / remote endpoint addresses via `getpeername` /
-     * `getsockname`.
-     *
-     * @return `(remoteAddress, localAddress)`.
-     */
-    public fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress>
-
-    /**
-     * Creates a non-blocking `AF_UNIX` / `SOCK_STREAM` server socket:
-     * `socket` → non-blocking → `bind(sockaddr_un)` → `listen`.
+     * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` listener fd:
+     * `socket → setNonBlocking → bind(sockaddr_un) → listen`.
      *
      * `SO_REUSEADDR` is NOT applied because it has no meaningful effect
      * for filesystem sockets and is not supported for abstract sockets.
      *
      * @param logger Used by the error-cleanup branch to route
      *   `close(fd)` through [closeFdSafely] (same contract as
-     *   [createServerSocket]).
+     *   [bindListener]).
      */
-    public fun createUnixServerSocket(
+    public fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
         logger: Logger,
     ): Int
 
     /**
-     * Creates a non-blocking `AF_UNIX` / `SOCK_STREAM` client socket
-     * without connecting. Counterpart to [createUnconnectedSocket]
-     * for TCP.
+     * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` client socket
+     * (unconnected). Counterpart to [openClientSocket] for UDS.
      */
-    public fun createUnixUnconnectedSocket(): Int
+    public fun openUnixClientSocket(): Int
 
     /**
      * Initiates a non-blocking `connect(2)` on [fd] against a Unix

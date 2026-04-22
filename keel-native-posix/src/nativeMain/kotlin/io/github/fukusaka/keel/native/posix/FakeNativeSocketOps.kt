@@ -13,9 +13,10 @@ import io.github.fukusaka.keel.logging.Logger
  * Sibling of [FakeNativeSocket] (hot-path seam fake). Where
  * [FakeNativeSocket] scripts per-syscall responses keyed by `fd`,
  * [FakeNativeSocketOps] scripts lifecycle responses — fd allocation
- * for `create*Socket*`, [ConnectResult] for `connect*NonBlocking`,
- * [Int] for `getSocketError`, and `(remote, local)` pairs for
- * `acceptClient` / `getLocalAddress` / `getRemoteAddress`.
+ * for `bindListener` / `openClientSocket` / UDS variants,
+ * [ConnectResult] for `connect*NonBlocking`, [Int] for
+ * `getSocketError`, and addresses for `getLocalAddress` /
+ * `getRemoteAddress`.
  *
  * ## Model
  *
@@ -32,8 +33,8 @@ import io.github.fukusaka.keel.logging.Logger
  * Call tracking mirrors [FakeNativeSocket] — per-method counters +
  * an ordered [createdFds] list (records every fd the fake handed
  * out) plus [nonBlockingFds] (records `setNonBlocking` invocations,
- * useful for asserting the `acceptClient` chain ran non-blocking
- * before address reads).
+ * useful for asserting the server's accepted-client chain ran
+ * non-blocking before address reads).
  *
  * ## Thread safety
  *
@@ -43,13 +44,13 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * ## What the fake does NOT do
  *
- * - **No kernel state**: `createServerSocket` etc. do not actually
+ * - **No kernel state**: `bindListener` etc. do not actually
  *   bind anything; the returned fd is just an int the test can
  *   later assert on.
  * - **No argument capture**: `port` / `backlog` / `address` /
- *   `logger` are consumed but not recorded. Tests cannot assert
- *   that the correct port or backlog was passed. Compose a wrapper
- *   if capture is needed — base class stays argument-less.
+ *   `logger` / `reusePort` are consumed but not recorded. Tests
+ *   cannot assert that the correct port or backlog was passed.
+ *   Compose a wrapper if capture is needed.
  * - **No NativeSocket coordination**: `connectNonBlocking` does NOT
  *   delegate to [NativeSocket.connect] like the real impl does.
  *   The scripted [ConnectResult] is returned directly.
@@ -59,21 +60,20 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- Scripted queues (FIFO) ---
 
-    private val createServerSocketQueue = ArrayDeque<Int>()
-    private val createReusePortServerSocketQueue = ArrayDeque<Int>()
-    private val createUnixServerSocketQueue = ArrayDeque<Int>()
-    private val createUnconnectedSocketQueue = ArrayDeque<Int>()
-    private val createUnixUnconnectedSocketQueue = ArrayDeque<Int>()
+    private val bindListenerQueue = ArrayDeque<Int>()
+    private val bindListenerReusePortQueue = ArrayDeque<Int>()
+    private val bindUnixListenerQueue = ArrayDeque<Int>()
+    private val openClientSocketQueue = ArrayDeque<Int>()
+    private val openUnixClientSocketQueue = ArrayDeque<Int>()
     private val connectQueue = mutableMapOf<Int, ArrayDeque<ConnectResult>>()
     private val connectUnixQueue = mutableMapOf<Int, ArrayDeque<ConnectResult>>()
     private val socketErrorQueue = mutableMapOf<Int, ArrayDeque<Int>>()
     private val localAddressQueue = mutableMapOf<Int, ArrayDeque<SocketAddress>>()
     private val remoteAddressQueue = mutableMapOf<Int, ArrayDeque<SocketAddress>>()
-    private val acceptClientQueue = mutableMapOf<Int, ArrayDeque<Pair<SocketAddress, SocketAddress>>>()
 
     // --- Defaults / counters ---
 
-    /** Seed for auto-incrementing fd allocation on unscripted create* calls. */
+    /** Seed for auto-incrementing fd allocation on unscripted `bindListener` / `openClientSocket` calls. */
     public var nextCreatedFd: Int = 100
 
     /** Returned by [connectNonBlocking] / [connectUnixNonBlocking] when no queue entry is scripted for the fd. */
@@ -83,25 +83,24 @@ public class FakeNativeSocketOps : NativeSocketOps {
     public var defaultSocketError: Int = 0
 
     /**
-     * Returned by [getLocalAddress] / [getRemoteAddress] /
-     * [acceptClient] when the per-fd queue is empty. `.first` is
-     * treated as remote, `.second` as local; `acceptClient` returns
-     * the pair as-is.
+     * Returned by [getLocalAddress] / [getRemoteAddress] when the
+     * per-fd queue is empty. `.first` is treated as remote, `.second`
+     * as local.
      */
     public var defaultAddresses: Pair<SocketAddress, SocketAddress> =
         InetSocketAddress(Host.Ip(IpAddress.V4.ANY), 0) to InetSocketAddress(Host.Ip(IpAddress.V4.ANY), 0)
 
     // --- Call tracking ---
 
-    public var createServerSocketCalls: Int = 0
+    public var bindListenerCalls: Int = 0
         private set
-    public var createReusePortServerSocketCalls: Int = 0
+    public var bindListenerReusePortCalls: Int = 0
         private set
-    public var createUnixServerSocketCalls: Int = 0
+    public var bindUnixListenerCalls: Int = 0
         private set
-    public var createUnconnectedSocketCalls: Int = 0
+    public var openClientSocketCalls: Int = 0
         private set
-    public var createUnixUnconnectedSocketCalls: Int = 0
+    public var openUnixClientSocketCalls: Int = 0
         private set
     public var connectCalls: Int = 0
         private set
@@ -115,16 +114,14 @@ public class FakeNativeSocketOps : NativeSocketOps {
         private set
     public var setNonBlockingCalls: Int = 0
         private set
-    public var acceptClientCalls: Int = 0
-        private set
 
     private val _createdFds = mutableListOf<Int>()
     private val _nonBlockingFds = mutableListOf<Int>()
 
-    /** Ordered list of fds returned by any `create*` method. */
+    /** Ordered list of fds returned by any `bindListener` / `openClientSocket` / UDS variant. */
     public val createdFds: List<Int> get() = _createdFds.toList()
 
-    /** Ordered list of fds passed to [setNonBlocking] (direct calls only, not chain-nested). */
+    /** Ordered list of fds passed to [setNonBlocking]. */
     public val nonBlockingFds: List<Int> get() = _nonBlockingFds.toList()
 
     private fun allocateFd(queue: ArrayDeque<Int>): Int {
@@ -135,19 +132,24 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- NativeSocketOps impl ---
 
-    override fun createServerSocket(address: IpAddress, port: Int, backlog: Int, logger: Logger): Int {
-        createServerSocketCalls++
-        return allocateFd(createServerSocketQueue)
+    override fun bindListener(
+        address: IpAddress,
+        port: Int,
+        backlog: Int,
+        logger: Logger,
+        reusePort: Boolean,
+    ): Int {
+        if (reusePort) {
+            bindListenerReusePortCalls++
+            return allocateFd(bindListenerReusePortQueue)
+        }
+        bindListenerCalls++
+        return allocateFd(bindListenerQueue)
     }
 
-    override fun createReusePortServerSocket(address: IpAddress, port: Int, backlog: Int, logger: Logger): Int {
-        createReusePortServerSocketCalls++
-        return allocateFd(createReusePortServerSocketQueue)
-    }
-
-    override fun createUnconnectedSocket(family: IpAddress): Int {
-        createUnconnectedSocketCalls++
-        return allocateFd(createUnconnectedSocketQueue)
+    override fun openClientSocket(family: IpAddress): Int {
+        openClientSocketCalls++
+        return allocateFd(openClientSocketQueue)
     }
 
     override fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): ConnectResult {
@@ -175,19 +177,14 @@ public class FakeNativeSocketOps : NativeSocketOps {
         _nonBlockingFds.add(fd)
     }
 
-    override fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress> {
-        acceptClientCalls++
-        return acceptClientQueue[clientFd]?.removeFirstOrNull() ?: defaultAddresses
+    override fun bindUnixListener(address: UnixSocketAddress, backlog: Int, logger: Logger): Int {
+        bindUnixListenerCalls++
+        return allocateFd(bindUnixListenerQueue)
     }
 
-    override fun createUnixServerSocket(address: UnixSocketAddress, backlog: Int, logger: Logger): Int {
-        createUnixServerSocketCalls++
-        return allocateFd(createUnixServerSocketQueue)
-    }
-
-    override fun createUnixUnconnectedSocket(): Int {
-        createUnixUnconnectedSocketCalls++
-        return allocateFd(createUnixUnconnectedSocketQueue)
+    override fun openUnixClientSocket(): Int {
+        openUnixClientSocketCalls++
+        return allocateFd(openUnixClientSocketQueue)
     }
 
     override fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): ConnectResult {
@@ -197,29 +194,29 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- Script setup ---
 
-    /** Appends fds the fake will hand out from `createServerSocket`. */
-    public fun enqueueCreateServerSocket(vararg fds: Int) {
-        createServerSocketQueue.addAll(fds.toList())
+    /** Appends fds the fake will hand out from `bindListener(reusePort = false)`. */
+    public fun enqueueBindListener(vararg fds: Int) {
+        bindListenerQueue.addAll(fds.toList())
     }
 
-    /** Appends fds the fake will hand out from `createReusePortServerSocket`. */
-    public fun enqueueCreateReusePortServerSocket(vararg fds: Int) {
-        createReusePortServerSocketQueue.addAll(fds.toList())
+    /** Appends fds the fake will hand out from `bindListener(reusePort = true)`. */
+    public fun enqueueBindListenerReusePort(vararg fds: Int) {
+        bindListenerReusePortQueue.addAll(fds.toList())
     }
 
-    /** Appends fds the fake will hand out from `createUnixServerSocket`. */
-    public fun enqueueCreateUnixServerSocket(vararg fds: Int) {
-        createUnixServerSocketQueue.addAll(fds.toList())
+    /** Appends fds the fake will hand out from `bindUnixListener`. */
+    public fun enqueueBindUnixListener(vararg fds: Int) {
+        bindUnixListenerQueue.addAll(fds.toList())
     }
 
-    /** Appends fds the fake will hand out from `createUnconnectedSocket`. */
-    public fun enqueueCreateUnconnectedSocket(vararg fds: Int) {
-        createUnconnectedSocketQueue.addAll(fds.toList())
+    /** Appends fds the fake will hand out from `openClientSocket`. */
+    public fun enqueueOpenClientSocket(vararg fds: Int) {
+        openClientSocketQueue.addAll(fds.toList())
     }
 
-    /** Appends fds the fake will hand out from `createUnixUnconnectedSocket`. */
-    public fun enqueueCreateUnixUnconnectedSocket(vararg fds: Int) {
-        createUnixUnconnectedSocketQueue.addAll(fds.toList())
+    /** Appends fds the fake will hand out from `openUnixClientSocket`. */
+    public fun enqueueOpenUnixClientSocket(vararg fds: Int) {
+        openUnixClientSocketQueue.addAll(fds.toList())
     }
 
     /** Appends scripted [ConnectResult] responses for `connectNonBlocking(fd, ...)`. */
@@ -247,11 +244,6 @@ public class FakeNativeSocketOps : NativeSocketOps {
         remoteAddressQueue.getOrPut(fd) { ArrayDeque() }.addAll(addresses)
     }
 
-    /** Appends scripted `(remote, local)` pairs for `acceptClient(clientFd)`. */
-    public fun enqueueAcceptClient(clientFd: Int, vararg pairs: Pair<SocketAddress, SocketAddress>) {
-        acceptClientQueue.getOrPut(clientFd) { ArrayDeque() }.addAll(pairs)
-    }
-
     // --- Assertion helper ---
 
     /**
@@ -262,18 +254,18 @@ public class FakeNativeSocketOps : NativeSocketOps {
      */
     public fun assertAllConsumed() {
         val leftovers = buildList {
-            if (createServerSocketQueue.isNotEmpty()) add("createServerSocket: ${createServerSocketQueue.size} remaining")
-            if (createReusePortServerSocketQueue.isNotEmpty()) {
-                add("createReusePortServerSocket: ${createReusePortServerSocketQueue.size} remaining")
+            if (bindListenerQueue.isNotEmpty()) add("bindListener: ${bindListenerQueue.size} remaining")
+            if (bindListenerReusePortQueue.isNotEmpty()) {
+                add("bindListener(reusePort): ${bindListenerReusePortQueue.size} remaining")
             }
-            if (createUnixServerSocketQueue.isNotEmpty()) {
-                add("createUnixServerSocket: ${createUnixServerSocketQueue.size} remaining")
+            if (bindUnixListenerQueue.isNotEmpty()) {
+                add("bindUnixListener: ${bindUnixListenerQueue.size} remaining")
             }
-            if (createUnconnectedSocketQueue.isNotEmpty()) {
-                add("createUnconnectedSocket: ${createUnconnectedSocketQueue.size} remaining")
+            if (openClientSocketQueue.isNotEmpty()) {
+                add("openClientSocket: ${openClientSocketQueue.size} remaining")
             }
-            if (createUnixUnconnectedSocketQueue.isNotEmpty()) {
-                add("createUnixUnconnectedSocket: ${createUnixUnconnectedSocketQueue.size} remaining")
+            if (openUnixClientSocketQueue.isNotEmpty()) {
+                add("openUnixClientSocket: ${openUnixClientSocketQueue.size} remaining")
             }
             fun report(name: String, queues: Map<Int, ArrayDeque<*>>) {
                 for ((fd, q) in queues) {
@@ -285,7 +277,6 @@ public class FakeNativeSocketOps : NativeSocketOps {
             report("socketError", socketErrorQueue)
             report("localAddress", localAddressQueue)
             report("remoteAddress", remoteAddressQueue)
-            report("acceptClient", acceptClientQueue)
         }
         check(leftovers.isEmpty()) { "unconsumed scripted responses: $leftovers" }
     }

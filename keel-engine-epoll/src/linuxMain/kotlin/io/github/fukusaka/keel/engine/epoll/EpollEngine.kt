@@ -117,7 +117,7 @@ class EpollEngine(
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = nativeSocketOps.createUnixServerSocket(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
 
         try {
             memScoped {
@@ -141,7 +141,7 @@ class EpollEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = nativeSocketOps.createServerSocket(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog, logger)
 
         try {
             // Register server fd with the boss EventLoop's epoll so that
@@ -184,7 +184,7 @@ class EpollEngine(
     private suspend fun connectUnix(address: UnixSocketAddress): Channel {
         check(!closed) { "Engine is closed" }
 
-        val fd = nativeSocketOps.createUnixUnconnectedSocket()
+        val fd = nativeSocketOps.openUnixClientSocket()
         val (workerLoop, allocator) = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -222,7 +222,7 @@ class EpollEngine(
     }
 
     private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
-        val fd = nativeSocketOps.createUnconnectedSocket(ip)
+        val fd = nativeSocketOps.openClientSocket(ip)
         val (workerLoop, allocator) = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
@@ -281,7 +281,7 @@ class EpollEngine(
     ): PipelinedServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = nativeSocketOps.createUnixServerSocket(address, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog, logger)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -313,7 +313,7 @@ class EpollEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = nativeSocketOps.createServerSocket(ip, port, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog, logger)
 
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)

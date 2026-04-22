@@ -106,7 +106,9 @@ internal class IoUringServer(
         }
 
         try {
-            val (remoteAddr, localAddr) = nativeSocketOps.acceptClient(clientFd)
+            nativeSocketOps.setNonBlocking(clientFd)
+            val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
+            val localAddr = nativeSocketOps.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()
             val workerLoop = workerGroup.loopAt(wi)
             val allocator = workerGroup.allocatorAt(wi)
