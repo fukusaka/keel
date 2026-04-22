@@ -33,7 +33,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.CoroutineContext
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
@@ -91,6 +90,7 @@ class KqueueEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val suspendRegisterOverride: KqueueSuspendRegister? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -217,13 +217,7 @@ class KqueueEngine(
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
-                suspendCancellableCoroutine<Unit> { cont ->
-                    workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
-                    cont.invokeOnCancellation {
-                        workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
-                        closeFdSafely(fd, logger, "connect cancellation")
-                    }
-                }
+                (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
                 val error = nativeSocketOps.getSocketError(fd)
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
@@ -256,15 +250,9 @@ class KqueueEngine(
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
-                // Connection in progress — suspend until fd is writable
-                suspendCancellableCoroutine<Unit> { cont ->
-                    workerLoop.register(fd, KqueueEventLoop.Interest.WRITE, cont)
-                    cont.invokeOnCancellation {
-                        workerLoop.unregister(fd, KqueueEventLoop.Interest.WRITE)
-                        closeFdSafely(fd, logger, "connect cancellation")
-                    }
-                }
-                // Verify connection succeeded via SO_ERROR
+                // Connection in progress — suspend until fd is writable.
+                (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
+                // Verify connection succeeded via SO_ERROR.
                 val error = nativeSocketOps.getSocketError(fd)
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
