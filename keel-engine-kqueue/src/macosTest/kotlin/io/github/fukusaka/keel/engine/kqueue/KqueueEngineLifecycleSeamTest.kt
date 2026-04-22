@@ -15,8 +15,12 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.InternalTestApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import platform.posix.AF_INET
 import platform.posix.ECONNREFUSED
 import platform.posix.ECONNRESET
+import platform.posix.SOCK_STREAM
+import platform.posix.close
+import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -36,9 +40,13 @@ import kotlin.test.assertTrue
  * - **`ConnectResult.InProgress` branch** — requires a real fd to
  *   become writable via `kevent(EVFILT_WRITE)`. Exercised by
  *   `KqueueEngineTest` integration tests.
- * - **`bind` happy path** — after `bindListener` the engine runs
- *   `kevent(EV_ADD, serverFd)` on the boss event loop to arm accept
- *   readiness. With a fake fd this fails. Covered by integration.
+ * - **`bind` happy path** — covered here via a real socket fd as
+ *   sentinel (see `bindInet / bindUnix happy path` tests). `bindListener`
+ *   is scripted to return a `socket(AF_INET, SOCK_STREAM, 0)` fd so
+ *   `kevent(EV_ADD, serverFd)` on the boss loop succeeds; the engine
+ *   then reads the scripted local address and constructs `KqueueServer`.
+ *   Full accept flow (client → kernel → EVFILT_READ → accept) is still
+ *   integration-only.
  */
 @OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
 class KqueueEngineLifecycleSeamTest {
@@ -340,6 +348,70 @@ class KqueueEngineLifecycleSeamTest {
             ).close()
             assertEquals(listOf(702 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
             assertEquals(1, fakeOps.setSocketOptionCalls)
+        } finally {
+            engine.close()
+        }
+    }
+
+    // --- bind: happy path (real socket fd as sentinel) ---
+    //
+    // The engine's bind() registers serverFd with the boss kqueue via
+    // kevent(EV_ADD). Fake fds (e.g. 100) fail. We obtain a real but
+    // unbound socket fd, pass it through FakeNativeSocketOps.enqueueBindListener,
+    // and let the engine wire it to kqueue. No accept() is ever driven —
+    // we close the server channel immediately, which unwinds the kqueue
+    // registration and closes the fd.
+
+    @Test
+    fun `bindInet happy path returns ServerChannel with scripted local address`() = runBlocking {
+        val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
+        check(sentinelFd >= 0) { "failed to create sentinel socket" }
+        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindListener(sentinelFd)
+            enqueueLocalAddress(sentinelFd, scriptedLocal)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val server = engine.bind(
+                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                BindConfig(),
+            )
+            assertEquals(scriptedLocal, server.localAddress)
+            assertTrue(server.isActive)
+            assertEquals(1, fakeOps.bindListenerCalls)
+            assertEquals(1, fakeOps.getLocalAddressCalls)
+            fakeOps.assertAllConsumed()
+            server.close()
+        } catch (t: Throwable) {
+            close(sentinelFd)
+            throw t
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `bindUnix happy path returns ServerChannel with passed address`() = runBlocking {
+        val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
+        check(sentinelFd >= 0) { "failed to create sentinel socket" }
+        val addr = UnixSocketAddress("/tmp/keel-fake.sock")
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindUnixListener(sentinelFd)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val server = engine.bind(addr, BindConfig())
+            assertEquals(addr, server.localAddress)
+            assertTrue(server.isActive)
+            assertEquals(1, fakeOps.bindUnixListenerCalls)
+            // bindUnix uses the caller-supplied address; no getLocalAddress lookup.
+            assertEquals(0, fakeOps.getLocalAddressCalls)
+            fakeOps.assertAllConsumed()
+            server.close()
+        } catch (t: Throwable) {
+            close(sentinelFd)
+            throw t
         } finally {
             engine.close()
         }
