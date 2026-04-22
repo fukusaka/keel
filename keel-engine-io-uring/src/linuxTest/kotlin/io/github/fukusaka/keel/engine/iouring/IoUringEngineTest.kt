@@ -9,7 +9,6 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io_uring.io_uring_prep_read
@@ -39,7 +38,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class IoUringEngineTest {
 
     // --- Helper: thin facades over shared PosixRawClient ---

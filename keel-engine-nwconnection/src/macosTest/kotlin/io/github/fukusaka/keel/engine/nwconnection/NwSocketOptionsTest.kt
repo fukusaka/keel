@@ -5,7 +5,6 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
@@ -35,7 +34,7 @@ import kotlin.time.Duration.Companion.seconds
  * Strong verification (e.g., observing `TCP_NODELAY` packet timing)
  * would require packet capture and is outside unit-test scope.
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class NwSocketOptionsTest {
 
     private val testTimeout = 10.seconds

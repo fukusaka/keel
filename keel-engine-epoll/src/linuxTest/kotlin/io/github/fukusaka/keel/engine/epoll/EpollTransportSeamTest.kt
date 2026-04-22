@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -31,7 +30,7 @@ import kotlin.test.assertTrue
  * require real readiness events (`onReadable`) remain covered by
  * [EpollEngineTest] integration tests.
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class EpollTransportSeamTest {
 
     private val logger = NoopLoggerFactory.logger("EpollTransportSeamTest")

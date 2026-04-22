@@ -56,7 +56,6 @@ import io.github.fukusaka.keel.logging.Logger
  *   delegate to [NativeSocket.connect] like the real impl does.
  *   The scripted [ConnectResult] is returned directly.
  */
-@InternalTestApi
 public class FakeNativeSocketOps : NativeSocketOps {
 
     // --- Scripted queues (FIFO) ---

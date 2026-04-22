@@ -62,7 +62,6 @@ import kotlinx.cinterop.ExperimentalForeignApi
  *   avoids dragging capture state into every test that doesn't
  *   need it.
  */
-@InternalTestApi
 @OptIn(ExperimentalForeignApi::class)
 public class FakeNativeSocket : NativeSocket {
 

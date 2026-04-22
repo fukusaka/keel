@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -47,7 +46,7 @@ import platform.posix.write
  * behaviour (any spurious branch routing to `onReadClosed`) would
  * fail at the unit-test layer.
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class EpollOnReadableSeamTest {
 
     private val logger = NoopLoggerFactory.logger("EpollOnReadableSeamTest")

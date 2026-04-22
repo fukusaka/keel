@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.InternalTestApi
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -29,7 +28,7 @@ import kotlin.test.assertTrue
  *
  * Per `.claude/rules/testing.md` § "二層テスト戦略".
  */
-@OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
+@OptIn(ExperimentalForeignApi::class)
 class KqueueTransportSeamTest {
 
     private val logger = NoopLoggerFactory.logger("KqueueTransportSeamTest")
