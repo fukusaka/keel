@@ -32,6 +32,8 @@ external interface Socket : NodeEventEmitter {
     fun write(data: dynamic): Boolean
     fun end(): Socket
     fun destroy(): Socket
+    fun setNoDelay(noDelay: Boolean = definedExternally): Socket
+    fun setKeepAlive(enable: Boolean = definedExternally, initialDelay: Int = definedExternally): Socket
     val remoteAddress: String?
     val remotePort: Int?
     val localAddress: String?

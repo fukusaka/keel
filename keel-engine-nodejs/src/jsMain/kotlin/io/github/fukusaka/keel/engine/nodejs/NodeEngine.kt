@@ -1,10 +1,12 @@
 package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.requireIpLiteral
@@ -177,6 +179,7 @@ class NodeEngine(
 
         srv.on("connection") { socket: dynamic ->
             val typedSocket = socket.unsafeCast<Socket>()
+            applySocketOptions(typedSocket, config.childSocketOptions)
             val channelLogger = this.channelLogger
             val transport = NodeIoTransport(typedSocket, this.config.allocator)
             val channel = NodePipelinedChannel(
@@ -220,6 +223,7 @@ class NodeEngine(
 
         srv.on(connectionEvent) { socket: dynamic ->
             val typedSocket = socket.unsafeCast<Socket>()
+            applySocketOptions(typedSocket, config.childSocketOptions)
             val remoteAddr = typedSocket.remoteAddress?.let { h ->
                 typedSocket.remotePort?.let { p -> InetSocketAddress(h, p) }
             }
@@ -254,12 +258,14 @@ class NodeEngine(
         return serverChannel
     }
 
-    override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
-        is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> connectUnix(address)
+    override suspend fun connect(address: SocketAddress): KeelChannel = connect(address, ConnectConfig.DEFAULT)
+
+    override suspend fun connect(address: SocketAddress, config: ConnectConfig): KeelChannel = when (address) {
+        is InetSocketAddress -> connectInet(address, config.socketOptions)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
+    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): KeelChannel {
         check(!closed) { "Engine is closed" }
         rejectAbstractOnNonLinux(address)
 
@@ -267,6 +273,7 @@ class NodeEngine(
             val connectOpts = js("({})")
             connectOpts.path = address.kernelPath
             val socket = Net.createConnection(connectOpts)
+            applySocketOptions(socket, socketOptions)
 
             socket.once("connect") { _: dynamic ->
                 val channelLogger = this@NodeEngine.channelLogger
@@ -306,13 +313,14 @@ class NodeEngine(
         }
     }
 
-    private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
+    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): KeelChannel {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
         val port = address.port
         return suspendCoroutine { cont ->
             val socket = Net.createConnection(port, host)
+            applySocketOptions(socket, socketOptions)
 
             socket.once("connect") { _: dynamic ->
                 val remoteAddr = InetSocketAddress(host, port)

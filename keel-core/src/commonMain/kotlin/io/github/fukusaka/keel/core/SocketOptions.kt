@@ -37,9 +37,10 @@ package io.github.fukusaka.keel.core
  *   all four options supported via `setsockopt(2)`.
  * - **JVM engines** (`engine-nio` / `engine-netty`): all four supported
  *   via `SocketChannel.setOption` / Netty `ChannelOption`.
- * - **NWConnection** (macOS `engine-nwconnection`): only [tcpNoDelay]
- *   and [keepAlive] supported — NW framework does not expose buffer-size
- *   APIs ([receiveBufferSize] / [sendBufferSize] are silently ignored).
+ * - **NWConnection** (macOS `engine-nwconnection`) and **Node.js**
+ *   (`engine-nodejs`): only [tcpNoDelay] and [keepAlive] supported —
+ *   NW framework / Node.js `net.Socket` do not expose buffer-size APIs
+ *   ([receiveBufferSize] / [sendBufferSize] are silently ignored).
  *
  * ## Escape hatch
  *

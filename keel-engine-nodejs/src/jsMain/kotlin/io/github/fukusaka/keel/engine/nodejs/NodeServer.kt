@@ -65,6 +65,8 @@ internal class NodeServer(
             }
         }
 
+        applySocketOptions(socket, bindConfig.childSocketOptions)
+
         val remoteAddr = socket.remoteAddress?.let { host ->
             socket.remotePort?.let { port -> InetSocketAddress(host, port) }
         }
