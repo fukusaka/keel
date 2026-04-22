@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
@@ -10,6 +11,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 import nwconnection.keel_nw_create_private_key
 import nwconnection.keel_nw_create_tls_tcp_params
+import nwconnection.keel_nw_create_tls_tcp_params_with_options
 import platform.CoreFoundation.CFDataCreate
 import platform.CoreFoundation.CFRelease
 import platform.Network.nw_parameters_t
@@ -51,6 +53,7 @@ internal object NwTlsParams {
         certDer: ByteArray,
         innerKeyDer: ByteArray,
         keyAlgorithm: Pkcs8KeyUnwrapper.KeyAlgorithm,
+        socketOptions: SocketOptions = SocketOptions.DEFAULT,
     ): nw_parameters_t {
         val cert = createCertificate(certDer)
             ?: error("SecCertificateCreateWithData failed — invalid certificate DER")
@@ -78,8 +81,16 @@ internal object NwTlsParams {
         CFRelease(identity)
         checkNotNull(secIdentity) { "sec_identity_create failed" }
 
-        return keel_nw_create_tls_tcp_params(secIdentity)
-            ?: error("keel_nw_create_tls_tcp_params failed")
+        return if (socketOptions.isEmpty) {
+            keel_nw_create_tls_tcp_params(secIdentity)
+                ?: error("keel_nw_create_tls_tcp_params failed")
+        } else {
+            keel_nw_create_tls_tcp_params_with_options(
+                secIdentity,
+                socketOptions.toNwNoDelayFlag(),
+                socketOptions.toNwKeepAliveFlag(),
+            ) ?: error("keel_nw_create_tls_tcp_params_with_options failed")
+        }
     }
 
     private fun createCertificate(certDer: ByteArray) = certDer.usePinned { pinned ->

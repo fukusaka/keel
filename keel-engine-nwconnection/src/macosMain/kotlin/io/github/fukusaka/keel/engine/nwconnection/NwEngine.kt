@@ -2,11 +2,13 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.requireFilesystemOnly
@@ -29,6 +31,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_create_tcp_params_unix_listener
+import nwconnection.keel_nw_create_tcp_params_unix_listener_with_options
+import nwconnection.keel_nw_create_tcp_params_with_options
 import nwconnection.keel_nw_endpoint_create_unix
 import nwconnection.keel_nw_start_conn_async
 import nwconnection.keel_nw_unix_path_max
@@ -112,7 +116,7 @@ class NwEngine(
         val host = address.resolveFirst(config.resolver).toCanonicalString()
         val port = address.port
         val portStr = if (port == 0) "0" else port.toString()
-        val params = keel_nw_create_tcp_params()
+        val params = createTcpParams(bindConfig.childSocketOptions)
 
         val lsnr = nw_listener_create_with_port(portStr, params)
             ?: error("nw_listener_create_with_port returned null")
@@ -215,9 +219,9 @@ class NwEngine(
         val portStr = if (port == 0) "0" else port.toString()
         val listenerLevelTls = isListenerLevelTls(config)
         val params = if (listenerLevelTls) {
-            createTlsParams(config as TlsConnectorConfig)
+            createTlsParams(config as TlsConnectorConfig, config.childSocketOptions)
         } else {
-            keel_nw_create_tcp_params()
+            createTcpParams(config.childSocketOptions)
         }
 
         val lsnr = nw_listener_create_with_port(portStr, params)
@@ -312,18 +316,20 @@ class NwEngine(
      * Starts the NWConnection asynchronously via [keel_nw_start_conn_async]
      * and suspends until it reaches the ready state.
      */
-    override suspend fun connect(address: SocketAddress): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> connectUnix(address)
+    override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
+
+    override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address, config.socketOptions)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress): Channel {
+    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
         val port = address.port
         val endpoint = nw_endpoint_create_host(host, port.toString())
-        val params = keel_nw_create_tcp_params()
+        val params = createTcpParams(socketOptions)
         val conn = nw_connection_create(endpoint, params)
             ?: error("nw_connection_create returned null")
 
@@ -375,7 +381,7 @@ class NwEngine(
         address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
         validateUnixPath(address.path)
 
-        val params = keel_nw_create_tcp_params_unix_listener(address.path)
+        val params = createUnixListenerTcpParams(address.path, bindConfig.childSocketOptions)
             ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
@@ -422,14 +428,14 @@ class NwEngine(
     /**
      * Creates a client connection to a filesystem Unix-domain socket path.
      */
-    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
         validateUnixPath(address.path)
 
         val endpoint = keel_nw_endpoint_create_unix(address.path)
             ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
-        val params = keel_nw_create_tcp_params()
+        val params = createTcpParams(socketOptions)
         val conn = nw_connection_create(endpoint, params)
             ?: error("nw_connection_create returned null")
 
@@ -469,7 +475,7 @@ class NwEngine(
             "NwEngine does not support listener-level TLS over UDS"
         }
 
-        val params = keel_nw_create_tcp_params_unix_listener(address.path)
+        val params = createUnixListenerTcpParams(address.path, config.childSocketOptions)
             ?: error("nw_endpoint_create_address(sockaddr_un) failed for UDS path ${address.path}")
         val lsnr = nw_listener_create(params)
             ?: error("nw_listener_create returned null for ${address.path}")
@@ -583,7 +589,10 @@ class NwEngine(
      * Converts certificates to DER, unwraps PKCS#8 if needed, and delegates
      * to [NwTlsParams.createTlsParameters] for SecIdentity creation.
      */
-    private fun createTlsParams(tlsConfig: TlsConnectorConfig): platform.Network.nw_parameters_t {
+    private fun createTlsParams(
+        tlsConfig: TlsConnectorConfig,
+        socketOptions: SocketOptions,
+    ): platform.Network.nw_parameters_t {
         val certs = requireNotNull(tlsConfig.config.certificates) {
             "NWConnection listener-level TLS requires certificates"
         }.asDer()
@@ -594,7 +603,44 @@ class NwEngine(
             // Already inner key format (PKCS#1/SEC1)
             Pkcs8KeyUnwrapper.UnwrapResult(keyDer, Pkcs8KeyUnwrapper.KeyAlgorithm.UNKNOWN)
         }
-        return NwTlsParams.createTlsParameters(certs.certificate, innerKey, algorithm)
+        return NwTlsParams.createTlsParameters(certs.certificate, innerKey, algorithm, socketOptions)
+    }
+
+    /**
+     * Creates non-TLS TCP parameters, applying [socketOptions] via the
+     * `_with_options` C wrapper when any supported option is set.
+     * Falls back to the default wrapper (no per-creation cost) when the
+     * caller passes empty options.
+     */
+    private fun createTcpParams(socketOptions: SocketOptions): platform.Network.nw_parameters_t {
+        return if (socketOptions.isEmpty) {
+            keel_nw_create_tcp_params()
+                ?: error("keel_nw_create_tcp_params returned null")
+        } else {
+            keel_nw_create_tcp_params_with_options(
+                socketOptions.toNwNoDelayFlag(),
+                socketOptions.toNwKeepAliveFlag(),
+            ) ?: error("keel_nw_create_tcp_params_with_options returned null")
+        }
+    }
+
+    /**
+     * Creates non-TLS UDS listener parameters, applying [socketOptions]
+     * via the `_with_options` C wrapper when any supported option is set.
+     */
+    private fun createUnixListenerTcpParams(
+        path: String,
+        socketOptions: SocketOptions,
+    ): platform.Network.nw_parameters_t {
+        return if (socketOptions.isEmpty) {
+            keel_nw_create_tcp_params_unix_listener(path)
+        } else {
+            keel_nw_create_tcp_params_unix_listener_with_options(
+                path,
+                socketOptions.toNwNoDelayFlag(),
+                socketOptions.toNwKeepAliveFlag(),
+            )
+        }
     }
 
     companion object {
