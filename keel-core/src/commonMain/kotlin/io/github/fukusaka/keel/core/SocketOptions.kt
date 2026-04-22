@@ -31,6 +31,16 @@ package io.github.fukusaka.keel.core
  * - [sendBufferSize]: `SO_SNDBUF`. Same contract as
  *   [receiveBufferSize] for the send direction.
  *
+ * ## Engine coverage
+ *
+ * - **POSIX engines** (`engine-epoll` / `engine-kqueue` / `engine-io-uring`):
+ *   all four options supported via `setsockopt(2)`.
+ * - **JVM engines** (`engine-nio` / `engine-netty`): all four supported
+ *   via `SocketChannel.setOption` / Netty `ChannelOption`.
+ * - **NWConnection** (macOS `engine-nwconnection`): only [tcpNoDelay]
+ *   and [keepAlive] supported — NW framework does not expose buffer-size
+ *   APIs ([receiveBufferSize] / [sendBufferSize] are silently ignored).
+ *
  * ## Escape hatch
  *
  * Rare options (`IP_TOS`, `TCP_CORK`, `TCP_FASTOPEN`, etc.) are not
