@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -35,9 +36,6 @@ import kotlin.test.assertTrue
  * - **`bind` happy path** — after `bindListener` the engine runs
  *   `kevent(EV_ADD, serverFd)` on the boss event loop to arm accept
  *   readiness. With a fake fd this fails. Covered by integration.
- * - **`bindListener` / `bindUnixListener` failure branches** — the
- *   current `FakeNativeSocketOps` doesn't expose a "throw from
- *   create" mode. Covered by integration tests.
  */
 @OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
 class KqueueEngineLifecycleSeamTest {
@@ -159,6 +157,50 @@ class KqueueEngineLifecycleSeamTest {
             assertEquals(0, fakeOps.getLocalAddressCalls)
             fakeOps.assertAllConsumed()
             channel.close()
+        } finally {
+            engine.close()
+        }
+    }
+
+    // --- bind: failure branches (throw-from-create) ---
+
+    @Test
+    fun `bindInet surfaces bindListener EADDRINUSE`() = runBlocking {
+        val expected = IllegalStateException("bind() failed: Address already in use")
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindListenerThrows(expected)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.bind(InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 12345), BindConfig())
+            }
+            assertTrue(
+                ex.message!!.contains("Address already in use"),
+                "got: ${ex.message}",
+            )
+            assertEquals(1, fakeOps.bindListenerCalls)
+            assertEquals(0, fakeOps.getLocalAddressCalls)
+            fakeOps.assertAllConsumed()
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `bindUnix surfaces bindUnixListener permission denied`() = runBlocking {
+        val expected = IllegalStateException("bind(AF_UNIX) failed: Permission denied")
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindUnixListenerThrows(expected)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.bind(UnixSocketAddress("/var/run/restricted.sock"), BindConfig())
+            }
+            assertTrue(ex.message!!.contains("Permission denied"), "got: ${ex.message}")
+            assertEquals(1, fakeOps.bindUnixListenerCalls)
+            fakeOps.assertAllConsumed()
         } finally {
             engine.close()
         }

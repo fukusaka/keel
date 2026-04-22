@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -39,10 +40,6 @@ import kotlin.test.assertTrue
  *   `epoll_ctl(ADD, serverFd)` on the boss event loop to arm accept
  *   readiness. With a fake fd this fails with EBADF. Server-channel
  *   lifecycle is covered by integration tests.
- * - **`bindListener` / `bindUnixListener` failure branches** (bind
- *   EADDRINUSE, socket EMFILE) — the current `FakeNativeSocketOps`
- *   doesn't expose a "throw from create" mode. Covered by
- *   integration tests (TCP port collisions, resource exhaustion).
  */
 @OptIn(ExperimentalForeignApi::class, InternalTestApi::class)
 class EpollEngineLifecycleSeamTest {
@@ -174,4 +171,48 @@ class EpollEngineLifecycleSeamTest {
         }
     }
 
+    // --- bind: failure branches (throw-from-create) ---
+
+    @Test
+    fun `bindInet surfaces bindListener EADDRINUSE`() = runBlocking {
+        val expected = IllegalStateException("bind() failed: Address already in use")
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindListenerThrows(expected)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.bind(InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 12345), BindConfig())
+            }
+            assertTrue(
+                ex.message!!.contains("Address already in use"),
+                "message must carry the original errno text, got: ${ex.message}",
+            )
+            assertEquals(1, fakeOps.bindListenerCalls)
+            // No subsequent address read / server construction after throw.
+            assertEquals(0, fakeOps.getLocalAddressCalls)
+            fakeOps.assertAllConsumed()
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `bindUnix surfaces bindUnixListener permission denied`() = runBlocking {
+        val expected = IllegalStateException("bind(AF_UNIX) failed: Permission denied")
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueBindUnixListenerThrows(expected)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val ex = assertFailsWith<IllegalStateException> {
+                engine.bind(UnixSocketAddress("/var/run/restricted.sock"), BindConfig())
+            }
+            assertTrue(ex.message!!.contains("Permission denied"), "got: ${ex.message}")
+            assertEquals(1, fakeOps.bindUnixListenerCalls)
+            fakeOps.assertAllConsumed()
+        } finally {
+            engine.close()
+        }
+    }
 }
