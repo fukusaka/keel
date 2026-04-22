@@ -92,9 +92,12 @@ interface IoTransport {
     /**
      * Buffers [buf] for a subsequent [flush].
      *
-     * The transport retains the buffer (calls [IoBuf.retain]).
-     * The caller's readerIndex is advanced immediately so it can
-     * reuse the buffer. The buffer is released after flush completes.
+     * **Ownership (retain-on-input)**: the transport calls [IoBuf.retain] on
+     * [buf] and advances the caller's readerIndex immediately. The transport's
+     * retained reference is released after flush completes. **The caller
+     * retains its own reference and must call [IoBuf.release] on it** —
+     * forgetting this leaks memory. The caller may continue writing into the
+     * same buffer (if writable space remains) and submit it again.
      */
     fun write(buf: IoBuf)
 
