@@ -24,6 +24,7 @@ import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
@@ -500,11 +501,11 @@ internal class KqueueEventLoop(
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
-        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+        suspendCancellableCoroutine<Unit> { cont ->
             register(fd, Interest.WRITE, cont)
             cont.invokeOnCancellation {
                 unregister(fd, Interest.WRITE)
-                io.github.fukusaka.keel.native.posix.closeFdSafely(fd, logger, "connect cancellation")
+                closeFdSafely(fd, logger, "connect cancellation")
             }
         }
     }

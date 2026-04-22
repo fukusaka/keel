@@ -21,6 +21,7 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.linux.EPOLL_CTL_ADD
@@ -561,11 +562,11 @@ internal class EpollEventLoop(
     // --- EpollSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
-        kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
+        suspendCancellableCoroutine<Unit> { cont ->
             register(fd, Interest.WRITE, cont)
             cont.invokeOnCancellation {
                 unregister(fd, Interest.WRITE)
-                io.github.fukusaka.keel.native.posix.closeFdSafely(fd, logger, "connect cancellation")
+                closeFdSafely(fd, logger, "connect cancellation")
             }
         }
     }
