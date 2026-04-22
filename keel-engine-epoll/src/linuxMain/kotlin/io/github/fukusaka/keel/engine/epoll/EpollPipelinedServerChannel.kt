@@ -58,7 +58,11 @@ internal class EpollPipelinedServerChannel(
         }
     }
 
-    private fun onAcceptable() {
+    // `internal` (was `private`) so accept-branch seam tests can drive the
+    // edge-triggered accept loop directly without going through epoll
+    // readiness delivery. Call site in production remains the
+    // `bossLoop.registerCallback` lambda armed by [armAccept].
+    internal fun onAcceptable() {
         if (closed) return
         while (true) {
             when (val result = nativeSocket.accept(serverFd)) {
