@@ -43,7 +43,7 @@ import kotlin.coroutines.resume
  * motivated the override.
  */
 internal class NioIoTransport(
-    private val socketChannel: SocketChannel,
+    internal val socketChannel: SocketChannel,
     private val selectionKey: SelectionKey,
     private val eventLoop: NioEventLoop,
     allocator: BufferAllocator,
