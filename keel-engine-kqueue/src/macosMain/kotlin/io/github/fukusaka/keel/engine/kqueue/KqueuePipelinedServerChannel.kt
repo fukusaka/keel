@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.PosixSocketOps
 import io.github.fukusaka.keel.native.posix.PosixSocketUtils
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -45,6 +46,7 @@ internal class KqueuePipelinedServerChannel(
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    private val posixSocketOps: PosixSocketOps = PosixSocketUtils,
 ) : PipelinedServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -77,7 +79,7 @@ internal class KqueuePipelinedServerChannel(
         while (true) {
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
-                    PosixSocketUtils.setNonBlocking(result.fd)
+                    posixSocketOps.setNonBlocking(result.fd)
                     dispatchToWorker(result.fd)
                 }
                 AcceptResult.WouldBlock -> {
