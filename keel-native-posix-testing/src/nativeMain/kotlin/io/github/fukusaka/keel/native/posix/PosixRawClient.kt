@@ -11,8 +11,8 @@ import platform.posix.EINTR
 import platform.posix.SOCK_STREAM
 import platform.posix.errno
 import platform.posix.socket
-import posix_socket.keel_connect_inet_loopback
-import posix_socket.keel_set_rcvtimeo
+import posix_testing.keel_connect_inet_loopback
+import posix_testing.keel_set_rcvtimeo
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource

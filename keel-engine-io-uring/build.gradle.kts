@@ -38,6 +38,10 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+                // FakeNativeSocket / FakeNativeSocketOps / PosixRawClient /
+                // InternalTestApi were extracted from keel-native-posix's
+                // nativeMain into this test-only module on 2026-04-23.
+                implementation(project(":keel-native-posix-testing"))
             }
         }
     }

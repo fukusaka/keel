@@ -37,11 +37,11 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(project(":keel-tls"))
-                // `keel-native-posix` is test-only here: NwEngineTest drives a
-                // dumb TCP client via `PosixRawClient` to verify the engine
-                // from the peer side. Production `keel-engine-nwconnection`
-                // uses Network.framework exclusively, no POSIX dep.
-                implementation(project(":keel-native-posix"))
+                // `keel-native-posix-testing` provides PosixRawClient + fakes:
+                // NwEngineTest drives a dumb TCP client from the peer side.
+                // Production `keel-engine-nwconnection` uses Network.framework
+                // exclusively, no POSIX dep.
+                implementation(project(":keel-native-posix-testing"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
             }

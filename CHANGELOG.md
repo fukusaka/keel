@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** (`native-posix` test consumers): `FakeNativeSocket` / `FakeNativeSocketOps` / `PosixRawClient` / `@InternalTestApi` extracted from `keel-native-posix` (production artifact) into a new `keel-native-posix-testing` module. Engine test modules must switch `implementation(project(":keel-native-posix"))` in test source sets to `implementation(project(":keel-native-posix-testing"))`. Import paths (`io.github.fukusaka.keel.native.posix.*`) are unchanged. Production artifact no longer carries test scaffolding; the 2 test-only C helpers (`keel_connect_inet_loopback` / `keel_set_rcvtimeo`) moved with `PosixRawClient` to a separate `posix_testing` cinterop def. Not published to Maven, not included in Dokka ([#346])
+
 ### Added
 
 - `engine-epoll` / `engine-kqueue`: seam-level accept-path tests via `FakeNativeSocket.enqueueAccept` — covers `EpollServer.accept` / `KqueueServer.accept` Failed (ECONNABORTED / EMFILE) + Accepted (full `setNonBlocking` + `getRemoteAddress` + `getLocalAddress` + `childSocketOptions` chain) branches and `EpollPipelinedServerChannel.onAcceptable` / `KqueuePipelinedServerChannel.onAcceptable` Failed + WouldBlock re-arm branches. `onAcceptable` relaxed from `private` to `internal` so tests can drive the edge-triggered accept loop directly (6 cases per engine, 12 total) ([#342])
@@ -555,3 +559,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#340]: https://github.com/fukusaka/keel/pull/340
 [#341]: https://github.com/fukusaka/keel/pull/341
 [#342]: https://github.com/fukusaka/keel/pull/342
+[#346]: https://github.com/fukusaka/keel/pull/346
