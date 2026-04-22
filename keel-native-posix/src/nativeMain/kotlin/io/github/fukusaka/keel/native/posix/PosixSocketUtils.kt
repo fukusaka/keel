@@ -76,9 +76,8 @@ import posix_socket.keel_sockaddr_un_copy_path
  * cross-platform binding.
  */
 @OptIn(ExperimentalForeignApi::class)
-object PosixSocketUtils {
+object PosixSocketUtils : PosixSocketOps {
 
-    private const val DEFAULT_BACKLOG = 128
     private const val INET_ADDRSTRLEN = 16
 
     // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
@@ -101,10 +100,10 @@ object PosixSocketUtils {
      *   unwind of a `bind` / `listen` error does not silently leak the fd.
      * @return The server socket file descriptor.
      */
-    fun createServerSocket(
+    override fun createServerSocket(
         address: IpAddress,
         port: Int,
-        backlog: Int = DEFAULT_BACKLOG,
+        backlog: Int,
         logger: Logger,
     ): Int = createAndBindListener(address, port, backlog, reusePort = false, logger)
 
@@ -119,10 +118,10 @@ object PosixSocketUtils {
      * @param logger Used by the error-cleanup branch to route `close(fd)`
      *   through [closeFdSafely] (same contract as [createServerSocket]).
      */
-    fun createReusePortServerSocket(
+    override fun createReusePortServerSocket(
         address: IpAddress,
         port: Int,
-        backlog: Int = DEFAULT_BACKLOG,
+        backlog: Int,
         logger: Logger,
     ): Int = createAndBindListener(address, port, backlog, reusePort = true, logger)
 
@@ -196,7 +195,7 @@ object PosixSocketUtils {
      * The socket is set to non-blocking immediately so that a subsequent
      * `connect()` call returns `EINPROGRESS` instead of blocking.
      */
-    fun createUnconnectedSocket(family: IpAddress): Int {
+    override fun createUnconnectedSocket(family: IpAddress): Int {
         val fd = socket(familyOf(family), SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
@@ -213,7 +212,7 @@ object PosixSocketUtils {
      * [ConnectResult.InProgress] (see the method KDoc on
      * [NativeSocket.connect] for the POSIX rationale).
      */
-    fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): ConnectResult = memScoped {
+    override fun connectNonBlocking(fd: Int, address: IpAddress, port: Int): ConnectResult = memScoped {
         when (address) {
             is IpAddress.V4 -> {
                 val addr = alloc<sockaddr_in>()
@@ -239,7 +238,7 @@ object PosixSocketUtils {
      * EventLoop reports WRITE readiness. A return value of 0 indicates
      * successful connection; non-zero is an errno (e.g. `ECONNREFUSED`).
      */
-    fun getSocketError(fd: Int): Int {
+    override fun getSocketError(fd: Int): Int {
         // IntArray.usePinned workaround: IntVar.value / socklen_tVar.value
         // assignment fails on some Kotlin/Native versions.
         val errBuf = intArrayOf(0)
@@ -256,7 +255,7 @@ object PosixSocketUtils {
     }
 
     /** Retrieves the local address of [fd] via `getsockname`, auto-detecting V4 / V6 / UNIX. */
-    fun getLocalAddress(fd: Int): SocketAddress = memScoped {
+    override fun getLocalAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
         lenArr.usePinned { len ->
@@ -266,7 +265,7 @@ object PosixSocketUtils {
     }
 
     /** Retrieves the remote address of [fd] via `getpeername`, auto-detecting V4 / V6 / UNIX. */
-    fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
+    override fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
         lenArr.usePinned { len ->
@@ -276,7 +275,7 @@ object PosixSocketUtils {
     }
 
     /** Sets O_NONBLOCK on [fd] via `fcntl`. */
-    fun setNonBlocking(fd: Int) {
+    override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
         fcntl(fd, F_SETFL, flags or O_NONBLOCK)
     }
@@ -295,7 +294,7 @@ object PosixSocketUtils {
      * @return `(remoteAddress, localAddress)` read from the kernel via
      *   `getpeername` / `getsockname` respectively.
      */
-    fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress> {
+    override fun acceptClient(clientFd: Int): Pair<SocketAddress, SocketAddress> {
         setNonBlocking(clientFd)
         val remote = getRemoteAddress(clientFd)
         val local = getLocalAddress(clientFd)
@@ -397,9 +396,9 @@ object PosixSocketUtils {
      *   through [closeFdSafely] (same contract as [createServerSocket]).
      * @throws IllegalStateException if socket / bind / listen fails.
      */
-    fun createUnixServerSocket(
+    override fun createUnixServerSocket(
         address: UnixSocketAddress,
-        backlog: Int = DEFAULT_BACKLOG,
+        backlog: Int,
         logger: Logger,
     ): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -437,7 +436,7 @@ object PosixSocketUtils {
      * without connecting. Counterpart to [createUnconnectedSocket] for
      * TCP.
      */
-    fun createUnixUnconnectedSocket(): Int {
+    override fun createUnixUnconnectedSocket(): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
         setNonBlocking(fd)
@@ -454,7 +453,7 @@ object PosixSocketUtils {
      * on immediate completion, [ConnectResult.InProgress] on `EINPROGRESS`
      * / `EINTR`, [ConnectResult.Failed] otherwise.
      */
-    fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): ConnectResult {
+    override fun connectUnixNonBlocking(fd: Int, address: UnixSocketAddress): ConnectResult {
         val kernelBytes = address.unixKernelBytes()
         val rc = if (kernelBytes.isEmpty()) {
             keel_connect_un(fd, null, 0u.convert(), if (address.isAbstract) 1 else 0)
