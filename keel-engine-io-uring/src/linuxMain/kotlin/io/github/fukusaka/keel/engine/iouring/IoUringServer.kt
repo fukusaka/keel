@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io_uring.io_uring_prep_multishot_accept
 import io_uring.keel_cqe_has_more
@@ -107,6 +108,7 @@ internal class IoUringServer(
 
         try {
             nativeSocketOps.setNonBlocking(clientFd)
+            nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
             val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
             val localAddr = nativeSocketOps.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()

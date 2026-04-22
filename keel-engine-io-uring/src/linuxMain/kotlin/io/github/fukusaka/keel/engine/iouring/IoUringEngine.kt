@@ -2,12 +2,14 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
@@ -18,6 +20,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
@@ -194,15 +197,18 @@ class IoUringEngine(
      *
      * @throws IllegalStateException if the engine is closed or the address is invalid.
      */
-    override suspend fun connect(address: SocketAddress): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> connectUnix(address)
+    override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
+
+    override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address, config.socketOptions)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -244,15 +250,16 @@ class IoUringEngine(
         return IoUringPipelinedChannel(transport, logger, address, null)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress): Channel {
+    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip, address.port)
+            connectToIp(ip, address.port, socketOptions)
         }
     }
 
-    private suspend fun connectToIp(ip: IpAddress, port: Int): Channel {
+    private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)

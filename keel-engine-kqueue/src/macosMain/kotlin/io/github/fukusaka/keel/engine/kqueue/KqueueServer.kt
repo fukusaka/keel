@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -96,6 +97,7 @@ internal class KqueueServer(
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
                     nativeSocketOps.setNonBlocking(clientFd)
+                    nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
                     val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
                     val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val (workerLoop, allocator) = workerGroup.next()

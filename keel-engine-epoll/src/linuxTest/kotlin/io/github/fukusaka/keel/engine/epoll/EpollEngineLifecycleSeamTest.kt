@@ -1,10 +1,13 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
+import io.github.fukusaka.keel.core.SocketOption
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
@@ -192,6 +195,90 @@ class EpollEngineLifecycleSeamTest {
             // No subsequent address read / server construction after throw.
             assertEquals(0, fakeOps.getLocalAddressCalls)
             fakeOps.assertAllConsumed()
+        } finally {
+            engine.close()
+        }
+    }
+
+    // --- Socket options application ---
+
+    @Test
+    fun `connect with ConnectConfig applies socket options before connectNonBlocking`() = runBlocking {
+        val options = SocketOptions(
+            tcpNoDelay = true,
+            keepAlive = true,
+            receiveBufferSize = 65536,
+            sendBufferSize = 131072,
+        )
+        val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
+        val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenClientSocket(700)
+            enqueueConnect(fd = 700, ConnectResult.Connected)
+            enqueueRemoteAddress(700, remote)
+            enqueueLocalAddress(700, local)
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            val channel = engine.connect(
+                InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
+                ConnectConfig(socketOptions = options),
+            )
+            assertNotNull(channel)
+            // Options applied in declaration order: tcpNoDelay → keepAlive →
+            // receiveBufferSize → sendBufferSize. All targeted the fd from
+            // openClientSocket (700).
+            assertEquals(
+                listOf(
+                    700 to SocketOption.TcpNoDelay(true),
+                    700 to SocketOption.KeepAlive(true),
+                    700 to SocketOption.ReceiveBufferSize(65536),
+                    700 to SocketOption.SendBufferSize(131072),
+                ),
+                fakeOps.appliedOptions,
+            )
+            assertEquals(4, fakeOps.setSocketOptionCalls)
+            channel.close()
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `connect without ConnectConfig skips setSocketOption entirely`() = runBlocking {
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenClientSocket(701)
+            enqueueConnect(fd = 701, ConnectResult.Connected)
+            enqueueRemoteAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+            enqueueLocalAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)).close()
+            assertEquals(0, fakeOps.setSocketOptionCalls)
+            assertTrue(fakeOps.appliedOptions.isEmpty())
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `connect with ConnectConfig partial options skips null properties`() = runBlocking {
+        val fakeOps = FakeNativeSocketOps().apply {
+            enqueueOpenClientSocket(702)
+            enqueueConnect(fd = 702, ConnectResult.Connected)
+            enqueueRemoteAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+            enqueueLocalAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
+        }
+        val engine = newEngine(fakeOps = fakeOps)
+        try {
+            engine.connect(
+                InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
+                ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true)),
+            ).close()
+            // Only tcpNoDelay is set; other three properties are null.
+            assertEquals(listOf(702 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
+            assertEquals(1, fakeOps.setSocketOptionCalls)
         } finally {
             engine.close()
         }

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import kotlinx.cinterop.ByteVar
@@ -28,9 +29,14 @@ import platform.posix.INADDR_ANY
 import platform.posix.O_NONBLOCK
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
+import platform.posix.IPPROTO_TCP
 import platform.posix.SO_ERROR
+import platform.posix.SO_KEEPALIVE
+import platform.posix.SO_RCVBUF
 import platform.posix.SO_REUSEADDR
 import platform.posix.SO_REUSEPORT
+import platform.posix.SO_SNDBUF
+import platform.posix.TCP_NODELAY
 import platform.posix.bind
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
@@ -233,6 +239,44 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
         fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+    }
+
+    /**
+     * Applies a [SocketOption] to [fd] via `setsockopt(2)`. See
+     * [NativeSocketOps.setSocketOption] for the overall contract.
+     *
+     * Failures are swallowed (kernel returned non-zero). Callers
+     * have no recovery path — failures here indicate a misuse
+     * (wrong `optlen`) or environmental issue that doesn't affect
+     * the surrounding connect / bind / accept flow.
+     */
+    override fun setSocketOption(fd: Int, option: SocketOption) {
+        when (option) {
+            is SocketOption.TcpNoDelay -> setsockoptInt(
+                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0,
+            )
+            is SocketOption.KeepAlive -> setsockoptInt(
+                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0,
+            )
+            is SocketOption.ReceiveBufferSize -> setsockoptInt(
+                fd, SOL_SOCKET, SO_RCVBUF, option.bytes,
+            )
+            is SocketOption.SendBufferSize -> setsockoptInt(
+                fd, SOL_SOCKET, SO_SNDBUF, option.bytes,
+            )
+        }
+    }
+
+    /**
+     * `setsockopt(2)` helper for int-valued options. Uses the
+     * `IntArray.usePinned` workaround pattern (see [getSocketError])
+     * because `IntVar.value` assignment is unreliable on some
+     * Kotlin/Native versions.
+     */
+    private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int) {
+        intArrayOf(value).usePinned { pinned ->
+            setsockopt(fd, level, optname, pinned.addressOf(0), sizeOf<IntVar>().convert())
+        }
     }
 
     /**

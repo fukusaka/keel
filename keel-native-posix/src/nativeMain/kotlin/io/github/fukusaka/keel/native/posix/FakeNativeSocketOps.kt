@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
 
@@ -126,15 +127,26 @@ public class FakeNativeSocketOps : NativeSocketOps {
         private set
     public var setNonBlockingCalls: Int = 0
         private set
+    public var setSocketOptionCalls: Int = 0
+        private set
 
     private val _createdFds = mutableListOf<Int>()
     private val _nonBlockingFds = mutableListOf<Int>()
+    private val _appliedOptions = mutableListOf<Pair<Int, SocketOption>>()
 
     /** Ordered list of fds returned by any `bindListener` / `openClientSocket` / UDS variant. */
     public val createdFds: List<Int> get() = _createdFds.toList()
 
     /** Ordered list of fds passed to [setNonBlocking]. */
     public val nonBlockingFds: List<Int> get() = _nonBlockingFds.toList()
+
+    /**
+     * Ordered list of `(fd, option)` pairs passed to
+     * [setSocketOption]. Use to assert the exact sequence of option
+     * applications (e.g., `assertEquals(listOf(fd to TcpNoDelay(true),
+     * fd to KeepAlive(true)), fake.appliedOptions)`).
+     */
+    public val appliedOptions: List<Pair<Int, SocketOption>> get() = _appliedOptions.toList()
 
     private fun allocateFd(queue: ArrayDeque<FdResponse>): Int {
         val fd = when (val r = queue.removeFirstOrNull()) {
@@ -191,6 +203,11 @@ public class FakeNativeSocketOps : NativeSocketOps {
     override fun setNonBlocking(fd: Int) {
         setNonBlockingCalls++
         _nonBlockingFds.add(fd)
+    }
+
+    override fun setSocketOption(fd: Int, option: SocketOption) {
+        setSocketOptionCalls++
+        _appliedOptions.add(fd to option)
     }
 
     override fun bindUnixListener(address: UnixSocketAddress, backlog: Int, logger: Logger): Int {
