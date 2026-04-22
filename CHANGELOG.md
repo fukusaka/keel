@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- `website` (architecture): rewrite `buffer.md` (EN + JA) for first-time readers — ownership rules, thread-safety contract, per-platform implementation details, 6-way buffer API comparison, 5 factual-error fixes ([#348])
+
 ### Removed
 
 - **BREAKING** (`native-posix-testing` test consumers): `@InternalTestApi` opt-in annotation removed. It was a guard against production callers reaching into test scaffolding when those lived inside `keel-native-posix`'s production source set; since PR #346 moved them into the test-only `keel-native-posix-testing` module, external consumers cannot reach them and the opt-in is redundant. Test consumers remove their `@OptIn(InternalTestApi::class)` annotations + the corresponding import. No runtime behaviour change ([#347])
@@ -565,3 +569,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 [#342]: https://github.com/fukusaka/keel/pull/342
 [#346]: https://github.com/fukusaka/keel/pull/346
 [#347]: https://github.com/fukusaka/keel/pull/347
+[#348]: https://github.com/fukusaka/keel/pull/348
