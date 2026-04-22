@@ -59,6 +59,7 @@ internal class NioPipelinedServerChannel(
         while (true) {
             val client = serverChannel.accept() ?: break
             client.configureBlocking(false)
+            applySocketOptions(client, config.childSocketOptions)
             dispatchToWorker(client)
         }
         armAccept()

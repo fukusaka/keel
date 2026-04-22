@@ -2,11 +2,13 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
@@ -157,12 +159,14 @@ class NioEngine(
      * The connected channel is assigned to the next worker EventLoop
      * in round-robin order with a cached [SelectionKey].
      */
-    override suspend fun connect(address: SocketAddress): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> connectUnix(address)
+    override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
+
+    override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
+        is InetSocketAddress -> connectInet(address, config.socketOptions)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress): Channel {
+    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
@@ -170,6 +174,7 @@ class NioEngine(
 
         val socketChannel = SocketChannel.open(StandardProtocolFamily.UNIX)
         socketChannel.configureBlocking(false)
+        applySocketOptions(socketChannel, socketOptions)
         val (workerLoop, allocator) = workerGroup.next()
 
         val connected = try {
@@ -209,16 +214,17 @@ class NioEngine(
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress): Channel {
+    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port)
+            connectToIp(ip.toCanonicalString(), address.port, socketOptions)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int): Channel {
+    private suspend fun connectToIp(host: String, port: Int, socketOptions: SocketOptions): Channel {
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
+        applySocketOptions(socketChannel, socketOptions)
         val (workerLoop, allocator) = workerGroup.next()
 
         // Try connect first — loopback may succeed or fail immediately

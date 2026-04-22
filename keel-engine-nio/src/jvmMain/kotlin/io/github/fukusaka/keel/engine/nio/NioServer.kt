@@ -85,6 +85,7 @@ internal class NioServer(
             val client = serverChannel.accept()
             if (client != null) {
                 client.configureBlocking(false)
+                applySocketOptions(client, bindConfig.childSocketOptions)
                 val remoteAddr = NioPipelinedChannel.toSocketAddress(client.remoteAddress)
                 val localAddr = NioPipelinedChannel.toSocketAddress(client.localAddress)
                 val (workerLoop, allocator) = workerGroup.next()

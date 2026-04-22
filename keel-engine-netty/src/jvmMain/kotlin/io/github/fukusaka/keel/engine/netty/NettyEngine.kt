@@ -2,11 +2,13 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
@@ -121,6 +123,7 @@ class NettyEngine(
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerDomainSocketChannel::class.java)
+            .applyChildSocketOptions(bindConfig.childSocketOptions)
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
                     ch.config().isAutoRead = false
@@ -175,6 +178,7 @@ class NettyEngine(
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
             .option(ChannelOption.SO_BACKLOG, bindConfig.backlog)
+            .applyChildSocketOptions(bindConfig.childSocketOptions)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     // Disable auto-read initially. Auto-read is enabled
@@ -225,12 +229,14 @@ class NettyEngine(
      * yet receiving data until [NettyIoTransport.readEnabled] is set
      * (`autoRead = false`).
      */
-    override suspend fun connect(address: SocketAddress): KeelChannel = when (address) {
-        is InetSocketAddress -> connectInet(address)
-        is UnixSocketAddress -> connectUnix(address)
+    override suspend fun connect(address: SocketAddress): KeelChannel = connect(address, ConnectConfig.DEFAULT)
+
+    override suspend fun connect(address: SocketAddress, config: ConnectConfig): KeelChannel = when (address) {
+        is InetSocketAddress -> connectInet(address, config.socketOptions)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress): KeelChannel {
+    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): KeelChannel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
@@ -239,6 +245,7 @@ class NettyEngine(
         val bootstrap = Bootstrap()
             .group(workerGroup)
             .channel(NioDomainSocketChannel::class.java)
+            .applySocketOptions(socketOptions)
             .handler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
                     ch.config().isAutoRead = false
@@ -271,17 +278,18 @@ class NettyEngine(
         return keelChannel
     }
 
-    private suspend fun connectInet(address: InetSocketAddress): KeelChannel {
+    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): KeelChannel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port)
+            connectToIp(ip.toCanonicalString(), address.port, socketOptions)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int): KeelChannel {
+    private suspend fun connectToIp(host: String, port: Int, socketOptions: SocketOptions): KeelChannel {
         val bootstrap = Bootstrap()
             .group(workerGroup)
             .channel(NioSocketChannel::class.java)
+            .applySocketOptions(socketOptions)
             .handler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     // Disable auto-read initially
@@ -348,6 +356,7 @@ class NettyEngine(
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerDomainSocketChannel::class.java)
+            .applyChildSocketOptions(config.childSocketOptions)
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
                     ch.config().isAutoRead = false
@@ -389,6 +398,7 @@ class NettyEngine(
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel::class.java)
             .option(ChannelOption.SO_BACKLOG, config.backlog)
+            .applyChildSocketOptions(config.childSocketOptions)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     ch.config().isAutoRead = false
