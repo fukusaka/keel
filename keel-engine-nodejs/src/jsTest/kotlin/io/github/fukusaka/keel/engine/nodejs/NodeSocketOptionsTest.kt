@@ -46,14 +46,13 @@ class NodeSocketOptionsTest {
 
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf)
+        clientCh.write(writeBuf) // transfer
         clientCh.flush()
 
         val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
-        writeBuf.release()
         readBuf.release()
         clientCh.close()
         serverCh.close()
@@ -75,14 +74,13 @@ class NodeSocketOptionsTest {
 
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "world".encodeToByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf)
+        clientCh.write(writeBuf) // transfer
         clientCh.flush()
 
         val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
-        writeBuf.release()
         readBuf.release()
         clientCh.close()
         serverCh.close()
