@@ -3,18 +3,14 @@ package io.github.fukusaka.keel.buf
 /**
  * Delegating [BufferAllocator] that counts allocate/release calls.
  *
- * Wraps the delegate's [IoBuf.deallocator] to intercept release
- * events, so `buf.release()` is correctly counted regardless of where
- * it is called.
+ * Wraps the delegate's [IoBuf.memoryOwner] with a decorator that
+ * intercepts release events, so `buf.release()` is correctly counted
+ * regardless of where it is called.
  *
  * Used for testing (asserting allocate/release symmetry) and profiling
  * (measuring allocation frequency during benchmarks).
  *
- * Can be combined with [LeakDetectingAllocator] in either order:
- * - `TrackingAllocator(LeakDetectingAllocator(delegate))` — count + leak detection
- * - `LeakDetectingAllocator(TrackingAllocator(delegate))` — same, different order
- *
- * Both work because each wraps the deallocator chain independently.
+ * Can be combined with [LeakDetectingAllocator] in either order.
  *
  * **Thread safety**: not thread-safe. Intended for single-threaded test
  * execution where allocate/release are called from the same thread.
@@ -51,15 +47,20 @@ class TrackingAllocator(
                 "TrackingAllocator requires a PoolableIoBuf-compatible allocator, " +
                     "but delegate returned ${buf::class.simpleName}",
             )
-        val original = poolable.deallocator
-        poolable.deallocator = { b ->
+        poolable.memoryOwner = TrackingOwner(poolable.memoryOwner)
+        return buf
+    }
+
+    private inner class TrackingOwner(
+        private val delegate: IoBufMemoryOwner,
+    ) : IoBufMemoryOwner {
+        override fun release(buf: IoBuf) {
             releaseCount++
             check(releaseCount <= allocateCount) {
                 "Double release detected: releaseCount ($releaseCount) > allocateCount ($allocateCount)"
             }
-            original?.invoke(b) ?: b.close()
+            delegate.release(buf)
         }
-        return buf
     }
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? =

@@ -24,17 +24,19 @@ import java.lang.ref.ReferenceQueue
 internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): IoBuf {
     val allocationSite = Exception("Buffer allocated here").stackTraceToString()
     val poolable = buf as PoolableIoBuf
-    val originalDeallocator = poolable.deallocator
 
     val entry = LeakEntry(allocationSite, onLeak)
     val ref = PhantomReference<IoBuf>(buf, leakQueue)
     leakEntries[ref as PhantomReference<*>] = entry
 
-    poolable.deallocator = { b ->
-        entry.released = true
-        leakEntries.remove(ref as PhantomReference<*>)
-        ref.clear()
-        originalDeallocator?.invoke(b) ?: b.close()
+    val originalOwner = poolable.memoryOwner
+    poolable.memoryOwner = object : IoBufMemoryOwner {
+        override fun release(buf: IoBuf) {
+            entry.released = true
+            leakEntries.remove(ref as PhantomReference<*>)
+            ref.clear()
+            originalOwner.release(buf)
+        }
     }
 
     // Drain queue on each allocation to report previously leaked buffers.

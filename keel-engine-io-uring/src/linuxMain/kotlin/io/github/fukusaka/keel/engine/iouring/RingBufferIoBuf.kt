@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufMemoryOwner
 import io.github.fukusaka.keel.buf.NativePointerAccess
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
@@ -14,6 +15,23 @@ import platform.posix.memcpy
 import platform.posix.memmove
 
 /**
+ * [IoBufMemoryOwner] for a [ProvidedBufferRing] slot.
+ *
+ * When a [RingBufferIoBuf] reaches refcount zero, the owner returns the
+ * slot to the ring via [ProvidedBufferRing.returnBuffer]. Used by
+ * io_uring's multishot-recv path, where the kernel writes into
+ * kernel-managed ring slots and the application borrows them per CQE.
+ */
+internal class RingSlotOwner(
+    private val bufferRing: ProvidedBufferRing,
+    private val bufId: Int,
+) : IoBufMemoryOwner {
+    override fun release(buf: IoBuf) {
+        bufferRing.returnBuffer(bufId)
+    }
+}
+
+/**
  * [IoBuf] implementation backed by a [ProvidedBufferRing] slot.
  *
  * Each instance is permanently bound to a buffer slot identified by [bufId].
@@ -22,21 +40,19 @@ import platform.posix.memmove
  *
  * **Lifecycle**: Pre-allocated per buffer slot in [IoUringPushSource].
  * On each CQE, [reset] restores the buffer to initial state for reuse.
- * When the caller calls [release], the [onRelease] callback returns the
- * buffer to the ring via [ProvidedBufferRing.returnBuffer].
+ * When the caller calls [release], [memoryOwner] (a [RingSlotOwner])
+ * returns the buffer to the ring via [ProvidedBufferRing.returnBuffer].
  *
  * **Zero allocation**: No object creation on the CQE hot path. The wrapper
- * is reused across CQE callbacks via [reset].
+ * (and its [memoryOwner]) is reused across CQE callbacks via [reset].
  *
  * @param bufId      The buffer slot index in the provided buffer ring.
  * @param bufferRing The [ProvidedBufferRing] that owns the underlying memory.
- * @param onRelease  Callback invoked when refCount reaches 0 in [release].
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class RingBufferIoBuf(
     private val bufId: Int,
     private val bufferRing: ProvidedBufferRing,
-    private val onRelease: (RingBufferIoBuf) -> Unit,
 ) : IoBuf, NativePointerAccess {
 
     // Cached pointer to the buffer slot. Pointer arithmetic (basePtr + bufId * bufferSize)
@@ -44,6 +60,7 @@ internal class RingBufferIoBuf(
     private var ptr: CPointer<ByteVar> = bufferRing.getPointer(bufId)
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     override val capacity: Int get() = bufferRing.bufferSize
+    override val memoryOwner: IoBufMemoryOwner = RingSlotOwner(bufferRing, bufId)
 
     private var refCount = 1
 
@@ -135,27 +152,26 @@ internal class RingBufferIoBuf(
     }
 
     /**
-     * Decrements the reference count. When it reaches 0, invokes [onRelease]
-     * which returns the buffer slot to the [ProvidedBufferRing].
+     * Decrements the reference count. When it reaches 0, [memoryOwner]
+     * returns the slot to the [ProvidedBufferRing].
      *
      * @throws IllegalStateException if the buffer has already been released.
      */
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            onRelease(this)
+            memoryOwner.release(this)
             return true
         }
         return false
     }
 
     /**
-     * Abandons this buffer without returning the slot to the [ProvidedBufferRing].
-     *
-     * Unlike [release], this does **not** invoke [onRelease]. The buffer slot
-     * is permanently lost until the [ProvidedBufferRing] is closed. Use [release]
-     * for normal lifecycle; this method exists only for [AutoCloseable] compatibility.
-     * Idempotent: safe to call multiple times.
+     * Abandons this buffer without returning the slot to the
+     * [ProvidedBufferRing]. Unlike [release] this does not invoke
+     * [memoryOwner], so the buffer slot is permanently lost until the
+     * [ProvidedBufferRing] is closed. Teardown escape hatch only; the
+     * normal lifecycle is [release]. Idempotent.
      */
     override fun close() {
         refCount = 0

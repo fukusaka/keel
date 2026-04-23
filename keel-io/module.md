@@ -21,9 +21,13 @@ kernel recv → IoBuf → BufferedSuspendSource → codec (readLine/readByte)
 codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
 ```
 
-**Reference counting**: `retain()` increments, `release()` decrements. When the
-count reaches zero, the backing memory is freed. Engines call `retain()` when
-buffering a write; the flush completion callback calls `release()`.
+**Reference counting**: `retain()` increments, `release()` decrements. When
+the count reaches zero, the buffer's `memoryOwner` is invoked to free,
+return, or recycle the backing — the strategy depends on which owner
+was installed at allocation time (`HeapOwner`, `PoolOwner`,
+`SliceOwner`, `ExternalWrapOwner`, or engine-specific variants such as
+`RingSlotOwner` and `FixedBufferOwner`). See
+`website/docs/architecture/buffer.md` for the full taxonomy.
 
 **Ownership model** (see `website/docs/architecture/buffer.md` for details):
 

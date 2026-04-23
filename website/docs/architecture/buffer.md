@@ -533,6 +533,62 @@ Approximate allocation counts for a 1 MiB response:
 
 On JVM, the GC-pressure difference is large. Full-matrix benchmarks have recorded 10–30% throughput improvements on the `/large` path once the zero-copy write is enabled (details in `benchmark/results-summary/`).
 
+## Backing ownership strategies
+
+Orthogonal to the ref-count flow (who calls `retain` / `release`) is the
+question of **what happens to the backing memory when refcount reaches
+zero** — free the native allocation, return to a pool, unpin an
+externally-wrapped array, return a kernel-managed slot, …
+
+keel expresses this via [`IoBufMemoryOwner`](https://github.com/fukusaka/keel/blob/main/keel-io/src/commonMain/kotlin/io/github/fukusaka/keel/buf/IoBufMemoryOwner.kt),
+a plain interface carried as an immutable `val memoryOwner` on every
+`IoBuf`. `IoBuf.release()` invokes `memoryOwner.release(this)` exactly
+once when the refcount reaches zero.
+
+### Strategy taxonomy
+
+| Strategy | Backing | Extra state | Release behaviour |
+|---|---|---|---|
+| `HeapOwner` (singleton) | `nativeHeap` / `ByteBuffer.allocateDirect` / `Int8Array` | none | `nativeHeap.free` on Native; GC-managed on JVM/JS (via `HeapManagedBacking` marker) |
+| `PoolOwner` | platform backing, managed by a pool | `returnToPool` lambda | push back to the Treiber stack / LIFO slot |
+| `SliceOwner` | sub-range of a parent `IoBuf` | `parent` ref | `parent.release()` |
+| `ExternalWrapOwner` | caller's pinned `ByteArray` or pre-allocated direct `ByteBuffer` | `unpin` lambda | drop the pin / external hold |
+| `RingSlotOwner` (engine-io-uring) | `ProvidedBufferRing` kernel slot | `ring`, `bufId` | return slot to the ring (`multishot recv`) |
+| `FixedBufferOwner` (engine-io-uring, future) | `io_uring_register_buffers` region | `registry`, `bufIndex` | return to the fixed-buffer registry (enables `READ_FIXED` / `WRITE_FIXED`) |
+| `NettyByteBufOwner` (engine-netty, future) | Netty pooled `ByteBuf` | `nettyBuf` ref | delegate to `nettyBuf.release()` |
+
+The interface is deliberately **plain, not sealed**: engine modules or
+downstream consumers can add their own owner variants without
+modifying keel-io (for example, a custom engine could introduce a
+`ShmOwner` for POSIX shared memory). Engines that need to distinguish
+strategies on the hot path (io_uring picking `WRITE_FIXED` vs `WRITE`)
+use a direct type check: `owner is FixedBufferOwner` gives both the
+identification and the strategy-specific state (`bufIndex`) in one
+step.
+
+### When this matters in practice
+
+Ordinary callers never notice: `allocator.allocate(size)` returns an
+`IoBuf` with the correct owner for the backing storage, and
+`buf.release()` does the right thing. Engines do not query owners on
+the common path either; only specialised paths (fixed-buffer io_uring,
+leak-tracking decorators) do.
+
+Where the taxonomy pays off:
+
+- **Slice safety**: `SliceOwner` stores only a parent ref, not a
+  `bufIndex`. A slice can therefore never be routed to `WRITE_FIXED`
+  by accident — the type check that would pick FIXED I/O simply
+  fails, and the write falls back to the regular path.
+- **Pool return path**: `PoolOwner` captures the single pool instance
+  and is reused across all allocations from that pool, avoiding the
+  per-allocation lambda closures of the older `deallocator`
+  approach.
+- **Leak detection**: `TrackingAllocator` and `LeakDetectingAllocator`
+  wrap the owner in place (via the internal `PoolableIoBuf`
+  interface) so every release goes through a counting or
+  stack-recording decorator before reaching the real owner.
+
 ## Comparison with other buffer APIs
 
 Most developers approaching keel already know a buffer API from another networking library. The table below compares `IoBuf` with six representative implementations.

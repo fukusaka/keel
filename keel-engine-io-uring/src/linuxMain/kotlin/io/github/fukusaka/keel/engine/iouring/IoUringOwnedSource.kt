@@ -62,7 +62,7 @@ internal class IoUringOwnedSource(
     // is permanently bound to a buffer slot; the kernel guarantees a bufId is
     // not reissued until returnBuffer() adds it back to the ring.
     private val wrappers = Array(bufferRing.bufferCount) { bufId ->
-        RingBufferIoBuf(bufId, bufferRing) { _ -> bufferRing.returnBuffer(bufId) }
+        RingBufferIoBuf(bufId, bufferRing)
     }
 
     // Buffered IoBufs delivered by CQE callbacks but not yet claimed by readOwned().

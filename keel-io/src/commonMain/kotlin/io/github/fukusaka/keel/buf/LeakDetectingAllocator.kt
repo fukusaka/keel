@@ -105,9 +105,9 @@ class LeakDetectingAllocator(
 /**
  * Installs platform-specific leak detection on [buf].
  *
- * Intercepts the buffer's [PoolableIoBuf.deallocator] to track whether
- * release() is called before the buffer is garbage-collected:
- * - **Released path**: deallocator fires → marks as released → no leak.
+ * Decorates the buffer's [IoBuf.memoryOwner] (via [PoolableIoBuf.memoryOwner])
+ * so the release path flips a `released` flag before the real owner runs:
+ * - **Released path**: decorator fires → marks as released → no leak.
  * - **Leaked path**: buffer becomes unreachable → GC reclaims → platform
  *   mechanism detects unreleased state → [onLeak] fires with stack trace.
  *

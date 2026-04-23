@@ -122,7 +122,7 @@ internal class IoUringIoTransport(
     // Reused on each CQE callback via reset() — zero allocation on hot path.
     private val wrappers = bufferRing?.let { ring ->
         Array(ring.bufferCount) { bufId ->
-            RingBufferIoBuf(bufId, ring) { ring.returnBuffer(bufId) }
+            RingBufferIoBuf(bufId, ring)
         }
     }
 

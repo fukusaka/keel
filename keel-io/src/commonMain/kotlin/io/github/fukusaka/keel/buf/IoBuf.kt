@@ -76,6 +76,23 @@ interface IoBuf {
     val writableBytes: Int
 
     /**
+     * Strategy object that decides what happens to the backing memory
+     * when this buffer's refcount reaches zero.
+     *
+     * Set once at construction; never changes for a given [IoBuf]
+     * instance (pool reuse keeps the same owner — the same instance is
+     * handed out again, so its owner naturally matches the pool).
+     *
+     * Engines that need to dispatch based on memory provenance (e.g.
+     * io_uring picking `WRITE_FIXED` vs `WRITE`) use a direct type check
+     * such as `owner is FixedBufferOwner` and read the strategy-specific
+     * state off the concrete owner type.
+     *
+     * See [IoBufMemoryOwner] for the taxonomy of concrete owners.
+     */
+    val memoryOwner: IoBufMemoryOwner
+
+    /**
      * Writes [value] at the current write position and advances [writerIndex].
      *
      * **Precondition**: caller must ensure `writableBytes > 0`. Behaviour when
@@ -190,18 +207,18 @@ interface IoBuf {
     fun release(): Boolean
 
     /**
-     * Releases the underlying native memory immediately, ignoring the reference count.
-     *
-     * Safe to call multiple times (idempotent on Native via `freed` flag;
-     * no-op on JVM/JS where memory is GC-managed).
+     * Teardown escape hatch: forces the reference count to zero without
+     * invoking [memoryOwner]'s normal release path.
      *
      * **Prefer [release] for normal lifecycle management.** [close] is
-     * intended for teardown paths (e.g., forcibly reclaiming buffers still
-     * outstanding in a pipeline during engine shutdown). Some implementations
-     * may intentionally leak backing resources here when the normal
-     * `release` path is preferred: for example, `RingBufferIoBuf` in
-     * engine-io-uring does not return its slot to the provided-buffer ring
-     * on [close] — [close] exists there for `AutoCloseable` compatibility.
+     * an escape for engine shutdown / emergency teardown scenarios where
+     * holding a pool slot or kernel-registered index is acceptable to
+     * leak (the whole allocator or engine is going away anyway). It
+     * intentionally bypasses [memoryOwner] so pool returns and kernel
+     * slot returns do not happen; for heap-backed buffers, backing
+     * memory is freed directly via the concrete IoBuf type.
+     *
+     * Safe to call multiple times (idempotent).
      */
     fun close()
 }
@@ -209,22 +226,23 @@ interface IoBuf {
 /**
  * Extended [IoBuf] interface for pool-managed buffers.
  *
- * Adds [deallocator] callback, [nextLink] for intrusive freelist,
- * and [resetForReuse] for pool recycling. Used internally by
+ * Adds [nextLink] for intrusive freelist, [resetForReuse] for pool
+ * recycling, and a widened [memoryOwner] (var) that internal
+ * decorators such as [TrackingAllocator] / [LeakDetectingAllocator]
+ * can wrap. Public [IoBuf.memoryOwner] stays `val` so external
+ * callers cannot mutate the owner mid-life; only engine-internal
+ * tooling in keel-io reaches here. Used internally by
  * [BufferAllocator] implementations within io-core.
  */
 internal interface PoolableIoBuf : IoBuf {
 
     /**
-     * Callback invoked when [release] decrements the reference count to zero.
-     *
-     * Set by the [BufferAllocator] that created this buffer. Pool-based
-     * allocators set this to return the buffer to the pool instead of
-     * freeing the underlying memory.
-     *
-     * When `null`, [release] falls back to [close] (direct memory free).
+     * Internal-mutable owner slot. Default construction assigns an
+     * immutable owner (matches the [IoBuf.memoryOwner] contract from
+     * the caller's perspective); decorators that need to intercept the
+     * release path replace it in-place.
      */
-    var deallocator: ((IoBuf) -> Unit)?
+    override var memoryOwner: IoBufMemoryOwner
 
     /**
      * Intrusive link for lock-free pool freelists (Treiber stack).

@@ -20,18 +20,21 @@ import org.khronos.webgl.Int8Array
 class TypedArrayIoBuf private constructor(
     private val buf: Int8Array,
     override val capacity: Int,
-) : IoBuf, PoolableIoBuf {
+    override var memoryOwner: IoBufMemoryOwner,
+) : IoBuf, PoolableIoBuf, HeapManagedBacking {
 
     /**
-     * Creates a [TypedArrayIoBuf] backed by a newly allocated [Int8Array].
+     * Creates a heap-owned [TypedArrayIoBuf]. V8 reclaims the backing
+     * [Int8Array] via GC; [memoryOwner] is [HeapOwner] with a no-op
+     * backing free.
      */
     constructor(capacity: Int) : this(
         Int8Array(capacity),
         capacity,
+        HeapOwner,
     )
 
     private var refCount = 1
-    override var deallocator: ((IoBuf) -> Unit)? = null
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -116,12 +119,7 @@ class TypedArrayIoBuf private constructor(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            val d = deallocator
-            if (d != null) {
-                d(this)
-            } else {
-                close()
-            }
+            memoryOwner.release(this)
             return true
         }
         return false
@@ -129,7 +127,13 @@ class TypedArrayIoBuf private constructor(
 
     override fun close() {
         refCount = 0
-        // Int8Array is GC-managed; nothing to free
+        // Int8Array is GC-managed; escape-hatch path bypasses memoryOwner
+        // so pool slots / external handles leak (intentional).
+    }
+
+    /** @see HeapManagedBacking */
+    override fun freeHeapBacking() {
+        // Int8Array is GC-managed; nothing to do.
     }
 
     /** The backing [Int8Array] for engine-layer I/O. */
@@ -137,20 +141,22 @@ class TypedArrayIoBuf private constructor(
 
     companion object {
         /**
-         * Wraps an externally-owned [Int8Array] as a [TypedArrayIoBuf] without allocation.
+         * Wraps an externally-owned [Int8Array] as a [TypedArrayIoBuf]
+         * without allocation.
          *
-         * The returned buffer does NOT own the array; [close] is a no-op
-         * for memory management (V8 GC handles the underlying ArrayBuffer).
-         * Set [deallocator] to handle buffer recycling if needed.
+         * The returned buffer does NOT own the array; the supplied
+         * [memoryOwner] handles cleanup on refcount-zero.
          *
          * @param array         The external [Int8Array] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @param memoryOwner   Strategy invoked at refcount-zero.
          * @return A [TypedArrayIoBuf] wrapping the external array.
          */
         internal fun wrapExternal(
             array: Int8Array,
             bytesWritten: Int,
-        ): TypedArrayIoBuf = TypedArrayIoBuf(array, array.length).also {
+            memoryOwner: IoBufMemoryOwner = HeapOwner,
+        ): TypedArrayIoBuf = TypedArrayIoBuf(array, array.length, memoryOwner).also {
             it.writerIndex = bytesWritten
         }
     }

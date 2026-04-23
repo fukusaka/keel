@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `io`: introduce `IoBufMemoryOwner` as a plain interface carried on every `IoBuf` as an immutable `val memoryOwner`; unifies the previous three ad-hoc release paths (`PoolableIoBuf.deallocator` lambda, `RingBufferIoBuf.onRelease`, `NativeIoBuf.ownsMemory`) behind a single `memoryOwner.release(buf)` call at refcount zero. Ships concrete owners (`HeapOwner`, `PoolOwner`, `SliceOwner`, `ExternalWrapOwner`) plus a `HeapManagedBacking` marker used by `HeapOwner` to delegate platform-specific backing free. `RingBufferIoBuf` now uses a new `RingSlotOwner` instead of a per-instance `onRelease` callback. No public API change for normal callers
+
 ### Documentation
 
 - `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — single rule ("writes transfer, reads don't") + 3 `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md (#350)

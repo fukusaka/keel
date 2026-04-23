@@ -534,6 +534,36 @@ JS で非対応なのは、`Int8Array` ベースの V8 memory model で ByteArra
 
 JVM では GC 圧力差が顕著。full matrix benchmark では `/large` path で zero-copy 有効化により 10〜30% の throughput 改善を計測している（詳細は `benchmark/results-summary/`）。
 
+## Backing ownership strategies
+
+refcount の流れ (誰が `retain` / `release` を呼ぶか) とは直交する次元として、**refcount=0 到達時に backing memory に何が起こるか** — native allocation を free するか、pool に返すか、wrap された外部 array を unpin するか、kernel 管理 slot を返すか、等 — がある。
+
+keel はこれを [`IoBufMemoryOwner`](https://github.com/fukusaka/keel/blob/main/keel-io/src/commonMain/kotlin/io/github/fukusaka/keel/buf/IoBufMemoryOwner.kt) (plain interface) で表現する。各 `IoBuf` は immutable な `val memoryOwner` を持ち、`release()` が refcount=0 到達時に `memoryOwner.release(this)` を 1 回だけ呼ぶ。
+
+### 戦略一覧
+
+| 戦略 | backing | 追加 state | refcount=0 時の挙動 |
+|---|---|---|---|
+| `HeapOwner` (singleton) | `nativeHeap` / `ByteBuffer.allocateDirect` / `Int8Array` | なし | Native は `nativeHeap.free`、JVM/JS は GC (`HeapManagedBacking` marker 経由) |
+| `PoolOwner` | platform backing、pool が管理 | `returnToPool` lambda | Treiber stack / LIFO slot に戻す |
+| `SliceOwner` | 親 `IoBuf` の部分領域 | `parent` ref | `parent.release()` |
+| `ExternalWrapOwner` | caller の pinned `ByteArray` / 事前確保 direct `ByteBuffer` | `unpin` lambda | pin / 外部 hold を解除 |
+| `RingSlotOwner` (engine-io-uring) | `ProvidedBufferRing` kernel slot | `ring`, `bufId` | slot を ring に返却 (`multishot recv` 用) |
+| `FixedBufferOwner` (engine-io-uring、将来) | `io_uring_register_buffers` 登録領域 | `registry`, `bufIndex` | fixed-buffer registry に返却 (`READ_FIXED` / `WRITE_FIXED` 有効化) |
+| `NettyByteBufOwner` (engine-netty、将来) | Netty pooled `ByteBuf` | `nettyBuf` ref | `nettyBuf.release()` に委譲 |
+
+interface はあえて **sealed でない plain interface**。engine module や外部利用者が keel-io を変更せず独自 owner を追加できる (例: 独自 engine で POSIX 共有メモリ用 `ShmOwner` を導入する、等)。engine が hot path で戦略を識別する必要がある場合 (io_uring が `WRITE_FIXED` vs `WRITE` を選ぶ場合) は、`owner is FixedBufferOwner` の型 check だけで識別 + 戦略固有 state (`bufIndex`) 取得が 1 段で済む。
+
+### 実用上どこで効くか
+
+通常の caller は意識しない。`allocator.allocate(size)` が backing 対応の owner を装着した `IoBuf` を返し、`buf.release()` が自動的に正しい動作をする。engine も common path では owner を query しない。特殊 path (fixed-buffer io_uring、leak tracking decorator) だけが query する。
+
+taxonomy の実用価値:
+
+- **Slice 安全性**: `SliceOwner` は parent ref のみを持ち、`bufIndex` は保持しない。したがって slice が誤って `WRITE_FIXED` に流れることは型レベルで不可能 — FIXED I/O を選ぶ型 check が失敗し、自動的に通常 path に落ちる
+- **Pool 返却 path**: `PoolOwner` は pool instance を 1 つだけ保持し、同 pool の全 allocate で使い回される。以前の `deallocator` lambda が allocate 毎に closure allocation していたコストが消える
+- **leak detector**: `TrackingAllocator` / `LeakDetectingAllocator` は internal `PoolableIoBuf` interface 経由で owner を wrap することで、すべての release が counting / stack-recording decorator を通ってから実 owner に届く
+
 ## 他の buffer API との比較
 
 keel を触る開発者の多くは、他の networking ライブラリで既に何らかの buffer API に馴染んでいる。以下は代表的な 6 実装との対応表である。

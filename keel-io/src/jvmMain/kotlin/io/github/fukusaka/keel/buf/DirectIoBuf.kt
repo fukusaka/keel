@@ -10,11 +10,14 @@ import java.nio.ByteBuffer
  * copying. The [unsafeBuffer] property exposes the underlying [ByteBuffer].
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
- * [ByteBuffer] without allocation. Use [deallocator] to handle cleanup
- * (e.g., releasing a Netty ByteBuf).
+ * [ByteBuffer] without allocation. The caller supplies an
+ * [IoBufMemoryOwner] that handles cleanup (for example,
+ * [ExternalWrapOwner] to unpin or [PoolOwner] to return to a pool).
  *
  * **Reference counting**: non-atomic (single-threaded EventLoop model).
- * [close] is a no-op since the [ByteBuffer] is GC-managed.
+ * [close] is a teardown escape hatch; the direct [ByteBuffer] is
+ * GC-managed so there is no native memory to free here, and the normal
+ * release path goes through [memoryOwner] instead.
  *
  * **position/limit management**: [clear] resets both `position` and `limit`
  * on the underlying [ByteBuffer] because NIO `SocketChannel.write` may
@@ -24,20 +27,29 @@ import java.nio.ByteBuffer
 class DirectIoBuf private constructor(
     private val buf: ByteBuffer,
     override val capacity: Int,
-) : IoBuf, PoolableIoBuf {
+    override var memoryOwner: IoBufMemoryOwner,
+) : IoBuf, PoolableIoBuf, HeapManagedBacking {
 
     /**
-     * Creates a [DirectIoBuf] backed by a newly allocated direct [ByteBuffer].
+     * Creates a heap-owned [DirectIoBuf]. The backing direct
+     * [ByteBuffer] is GC-reclaimed, so the owner is [HeapOwner].
      */
     constructor(capacity: Int) : this(
         ByteBuffer.allocateDirect(capacity),
         capacity,
+        HeapOwner,
+    )
+
+    /** Used by pool-backed allocators to install a custom [memoryOwner]. */
+    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(
+        ByteBuffer.allocateDirect(capacity),
+        capacity,
+        memoryOwner,
     )
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
     private var refCount = 1
-    override var deallocator: ((IoBuf) -> Unit)? = null
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -140,12 +152,7 @@ class DirectIoBuf private constructor(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            val d = deallocator
-            if (d != null) {
-                d(this)
-            } else {
-                close()
-            }
+            memoryOwner.release(this)
             return true
         }
         return false
@@ -153,26 +160,35 @@ class DirectIoBuf private constructor(
 
     override fun close() {
         refCount = 0
-        // ByteBuffer is GC-managed; nothing to do here.
-        // For external buffers, the deallocator handles cleanup (e.g., Netty ByteBuf.release()).
+        // Escape hatch. ByteBuffer is GC-managed; intentionally does NOT
+        // call memoryOwner so pool slots / external handles leak. Normal
+        // lifecycle is [release]; use this only for teardown paths.
+    }
+
+    /** @see HeapManagedBacking */
+    override fun freeHeapBacking() {
+        // ByteBuffer is GC-managed; nothing to do.
     }
 
     companion object {
         /**
          * Wraps an externally-owned [ByteBuffer] as a [DirectIoBuf] without allocation.
          *
-         * The returned buffer does NOT own the [ByteBuffer]; [close] is a no-op
-         * for memory management. Set [deallocator] to handle cleanup (e.g.,
-         * releasing a Netty ByteBuf).
+         * The returned buffer does NOT own the [ByteBuffer]; the supplied
+         * [memoryOwner] handles cleanup on refcount-zero (e.g.,
+         * [ExternalWrapOwner] to drop the hold on the external resource,
+         * or [PoolOwner] to return a pooled Netty `ByteBuf`).
          *
          * @param buffer        The external [ByteBuffer] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
+         * @param memoryOwner   Strategy invoked at refcount-zero.
          * @return A [DirectIoBuf] wrapping the external buffer.
          */
         internal fun wrapExternal(
             buffer: ByteBuffer,
             bytesWritten: Int,
-        ): DirectIoBuf = DirectIoBuf(buffer, buffer.capacity()).also {
+            memoryOwner: IoBufMemoryOwner = HeapOwner,
+        ): DirectIoBuf = DirectIoBuf(buffer, buffer.capacity(), memoryOwner).also {
             it.writerIndex = bytesWritten
         }
     }
