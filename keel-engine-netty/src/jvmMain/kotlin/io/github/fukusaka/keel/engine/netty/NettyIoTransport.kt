@@ -225,10 +225,19 @@ internal class NettyIoTransport(
         try {
             var lastFuture: ChannelFuture? = null
             for ((i, pw) in writes.withIndex()) {
-                val bb = pw.buf.unsafeBuffer.duplicate()
-                bb.position(pw.offset)
-                bb.limit(pw.offset + pw.length)
-                val nettyBuf = Unpooled.wrappedBuffer(bb)
+                val buf = pw.buf
+                val nettyBuf: ByteBuf = if (buf is NettyByteBufIoBuf) {
+                    // Zero-wrap path: keel IoBuf is directly a Netty ByteBuf.
+                    // Hand the underlying ByteBuf to Netty with retained slice
+                    // so the flush listener's buf.release() still matches one
+                    // retain (ByteBuf refCnt dropped by Netty after send).
+                    buf.byteBuf.retainedSlice(pw.offset, pw.length)
+                } else {
+                    val bb = buf.unsafeBuffer.duplicate()
+                    bb.position(pw.offset)
+                    bb.limit(pw.offset + pw.length)
+                    Unpooled.wrappedBuffer(bb)
+                }
                 if (i == size - 1) {
                     lastFuture = nettyChannel.writeAndFlush(nettyBuf)
                 } else {
