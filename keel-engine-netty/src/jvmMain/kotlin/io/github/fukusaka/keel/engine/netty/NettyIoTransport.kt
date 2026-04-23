@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -23,12 +24,15 @@ import io.netty.channel.Channel as NettyNativeChannel
  *
  * Handles both read and write paths for Netty channels.
  *
- * **Read path (copy from ByteBuf)**: Unlike kqueue/epoll/NIO which read
- * directly into [IoBuf], Netty delivers data asynchronously via
- * [channelRead] before the user provides a buffer. The [ByteBuf] content
- * is copied into [IoBuf] via [ByteBuf.getBytes]. This is an accepted
- * limitation — same structural constraint as NWConnection's
- * `dispatch_data_t` copy. Zero-copy push model support is future work.
+ * **Read path**: Netty delivers data asynchronously via [channelRead]
+ * before the user provides a buffer. When the inbound [ByteBuf] has a
+ * single NIO backing (`nioBufferCount() == 1`), the transport wraps
+ * [ByteBuf.nioBuffer] via [DirectIoBuf.wrapExternal] + a
+ * [NettyByteBufOwner] — zero copy, pool pressure shifted to Netty's
+ * arena. Composite buffers fall back to the allocate-and-copy path.
+ * The other push-mode engine (NWConnection) still has the structural
+ * constraint of `dispatch_data_t` copy; zero-copy for that engine is
+ * future work.
  *
  * **auto-read**: Pipeline mode uses `autoRead = true` (Netty delivers data
  * continuously). Coroutine mode starts with `autoRead = false` and switches
@@ -96,34 +100,58 @@ internal class NettyIoTransport(
      * Netty [ChannelInboundHandlerAdapter] that bridges push events to
      * the keel [IoTransport] callbacks.
      *
-     * [channelRead] copies [ByteBuf] data into [IoBuf] and delivers it
-     * via [onRead]. The copy is unavoidable because Netty delivers data
-     * before the user provides a destination buffer.
+     * **Zero-copy path**: when the inbound [ByteBuf] is backed by a
+     * single NIO [ByteBuffer] (`nioBufferCount() == 1`), the transport
+     * wraps [ByteBuf.nioBuffer] via [DirectIoBuf.wrapExternal] and
+     * installs a [NettyByteBufOwner]. Ownership of the Netty [ByteBuf]
+     * is transferred to the wrapping `IoBuf`; the pooled buffer is
+     * returned to Netty's arena when the keel pipeline releases the
+     * `IoBuf`. No memory copy occurs.
      *
-     * The allocation size is rounded up to [POOL_FRIENDLY_CAPACITY] when
-     * the inbound packet is smaller, so that [PooledDirectAllocator]'s
-     * per-EventLoop freelist can serve the request instead of allocating a
-     * fresh `DirectByteBuffer` per packet. Only the actual [readable] bytes
-     * are copied; the remaining capacity stays writable but unused.
+     * **Copy fallback**: composite buffers (`nioBufferCount() > 1`) fall
+     * back to allocating a keel [DirectIoBuf] and copying into it via
+     * [ByteBuf.getBytes]. The allocation size is rounded up to
+     * [POOL_FRIENDLY_CAPACITY] so the keel [PooledDirectAllocator]
+     * freelist can serve it.
      */
     internal val handler = object : ChannelInboundHandlerAdapter() {
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
             val byteBuf = msg as ByteBuf
-            try {
-                if (!byteBuf.isReadable) return
-
-                val readable = byteBuf.readableBytes()
-                val cap = maxOf(readable, POOL_FRIENDLY_CAPACITY)
-                val buf = allocator.allocate(cap)
-                val bb = buf.unsafeBuffer
-                bb.position(buf.writerIndex)
-                bb.limit(buf.writerIndex + readable)
-                byteBuf.getBytes(byteBuf.readerIndex(), bb)
-                buf.writerIndex += readable
-
-                onRead?.invoke(buf)
-            } finally {
+            if (!byteBuf.isReadable) {
                 byteBuf.release()
+                return
+            }
+
+            val readable = byteBuf.readableBytes()
+            if (byteBuf.nioBufferCount() == 1) {
+                // Zero-copy wrap: ownership of byteBuf transfers to the owner.
+                val nio = byteBuf.nioBuffer(byteBuf.readerIndex(), readable)
+                val buf = DirectIoBuf.wrapExternal(
+                    buffer = nio,
+                    bytesWritten = readable,
+                    memoryOwner = NettyByteBufOwner(byteBuf),
+                )
+                try {
+                    onRead?.invoke(buf)
+                } catch (t: Throwable) {
+                    // onRead did not take ownership (threw before release);
+                    // ensure the Netty ref is not leaked.
+                    buf.release()
+                    throw t
+                }
+            } else {
+                try {
+                    val cap = maxOf(readable, POOL_FRIENDLY_CAPACITY)
+                    val buf = allocator.allocate(cap)
+                    val bb = buf.unsafeBuffer
+                    bb.position(buf.writerIndex)
+                    bb.limit(buf.writerIndex + readable)
+                    byteBuf.getBytes(byteBuf.readerIndex(), bb)
+                    buf.writerIndex += readable
+                    onRead?.invoke(buf)
+                } finally {
+                    byteBuf.release()
+                }
             }
         }
 
@@ -197,10 +225,19 @@ internal class NettyIoTransport(
         try {
             var lastFuture: ChannelFuture? = null
             for ((i, pw) in writes.withIndex()) {
-                val bb = pw.buf.unsafeBuffer.duplicate()
-                bb.position(pw.offset)
-                bb.limit(pw.offset + pw.length)
-                val nettyBuf = Unpooled.wrappedBuffer(bb)
+                val buf = pw.buf
+                val nettyBuf: ByteBuf = if (buf is NettyByteBufIoBuf) {
+                    // Zero-wrap path: keel IoBuf is directly a Netty ByteBuf.
+                    // Hand the underlying ByteBuf to Netty with retained slice
+                    // so the flush listener's buf.release() still matches one
+                    // retain (ByteBuf refCnt dropped by Netty after send).
+                    buf.byteBuf.retainedSlice(pw.offset, pw.length)
+                } else {
+                    val bb = buf.unsafeBuffer.duplicate()
+                    bb.position(pw.offset)
+                    bb.limit(pw.offset + pw.length)
+                    Unpooled.wrappedBuffer(bb)
+                }
                 if (i == size - 1) {
                     lastFuture = nettyChannel.writeAndFlush(nettyBuf)
                 } else {

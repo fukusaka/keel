@@ -105,7 +105,11 @@ class NettyEngine(
 
     private fun allocatorFor(ch: NettyNativeChannel): BufferAllocator =
         eventLoopAllocators.computeIfAbsent(ch.eventLoop()) {
-            config.allocator.createForEventLoop()
+            // Route write-path buffers through Netty's pooled ByteBuf arena
+            // so flush can hand the underlying ByteBuf directly to
+            // writeAndFlush (no Unpooled.wrappedBuffer alloc / duplicate()).
+            // See design.md §24 "将来の改善方向 Netty engine" #3.
+            NettyByteBufAllocator(ch.alloc())
         }
 
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
