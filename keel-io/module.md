@@ -25,18 +25,19 @@ codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
 count reaches zero, the backing memory is freed. Engines call `retain()` when
 buffering a write; the flush completion callback calls `release()`.
 
-**Ownership model** (two layers — see `website/docs/architecture/buffer.md`
-for the full classification):
+**Ownership model** (see `website/docs/architecture/buffer.md` for details):
 
-- **Pipeline layer** (`onRead` / `ctx.propagateRead` / handler → handler):
-  ownership transfer. Once a buffer is propagated, the sender must not touch it.
-- **Transport / Channel boundary** (`Channel.write(buf)` /
-  `IoTransport.write(buf)` / `SuspendSink.write(buf)`): retain-on-input.
-  The transport retains internally and consumes the caller's `readerIndex`;
-  the caller still holds its own reference and must call `release()` on it.
-- **Read APIs** (`Channel.read(buf)` / `IoTransport.read(buf)`): non-transfer.
-  The caller allocates the buffer, the engine fills it, and the caller
-  releases it.
+- **Writes transfer ownership.** `Channel.write(buf)` / `IoTransport.write(buf)` /
+  `SuspendSink.write(buf)` / `ctx.propagateWrite(msg)` take over the caller's
+  reference. After the call returns, do not touch the buffer (no read/write,
+  no `release()`, no index inspection). The engine releases the buffer after
+  flush completes.
+- **Reads are non-transfer (the inverse).** `Channel.read(buf)` / `IoTransport.read(buf)`
+  take a caller-allocated buffer as a slot to fill; ownership never leaves
+  the caller, who releases when done.
+- **`retain()` only when you deliberately need an extra reference** —
+  fan-out to multiple sinks, holding across a suspension, or storing for
+  later processing in a handler.
 
 **Platform implementations**:
 

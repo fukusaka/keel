@@ -8,9 +8,9 @@ import kotlinx.coroutines.Dispatchers
 /**
  * No-op [AbstractIoTransport] for pipeline unit tests.
  *
- * Captures write buffers into [written] so tests can assert on output
- * without plumbing a real socket. [flush] returns `true` synchronously
- * so `awaitPendingFlush` also resolves immediately.
+ * Under ownership-transfer semantics, `write(buf)` takes over the caller's
+ * reference. We stash it into [written] so tests can assert on output; the
+ * transport releases every entry at [close] time.
  */
 internal open class TestIoTransport : AbstractIoTransport(DefaultAllocator) {
     val written: MutableList<IoBuf> = mutableListOf()
@@ -19,7 +19,7 @@ internal open class TestIoTransport : AbstractIoTransport(DefaultAllocator) {
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
 
     override fun write(buf: IoBuf) {
-        buf.retain()
+        // Ownership transferred from caller.
         written.add(buf)
     }
 

@@ -127,13 +127,12 @@ class NettyEngineTest {
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
-        serverCh.write(readBuf)
+        serverCh.write(readBuf) // transfer
         serverCh.flush()
 
         val echo = rawRead(client, 5)
         assertEquals("hello", echo)
 
-        readBuf.release()
         serverCh.close()
         client.close()
         server.close()
@@ -174,7 +173,7 @@ class NettyEngineTest {
         buf.writeByte(0x41)
         buf.writeByte(0x42)
 
-        val written = ch.write(buf)
+        val written = ch.write(buf) // transfer
         assertEquals(2, written)
 
         ch.flush()
@@ -182,7 +181,6 @@ class NettyEngineTest {
         val received = rawRead(client, 2)
         assertEquals("AB", received)
 
-        buf.release()
         ch.close()
         client.close()
         server.close()
@@ -206,15 +204,13 @@ class NettyEngineTest {
         buf2.writeByte(0x43)
         buf2.writeByte(0x44)
 
-        ch.write(buf1)
-        ch.write(buf2)
+        ch.write(buf1) // transfer
+        ch.write(buf2) // transfer
         ch.flush()
 
         val received = rawRead(client, 4)
         assertEquals("ABCD", received)
 
-        buf1.release()
-        buf2.release()
         ch.close()
         client.close()
         server.close()
@@ -246,7 +242,10 @@ class NettyEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runTest {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runTest {
+        // Ownership transfer semantics: write() takes the caller's reference,
+        // captures (readerIndex, readableBytes) as a snapshot, and does not
+        // mutate the live buffer indices (matches Netty ChannelOutboundBuffer).
         val engine = NettyEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -257,14 +256,16 @@ class NettyEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        ch.write(buf)
-        assertEquals(2, buf.readerIndex)
+        // Retain so we can legally inspect the indices after the transfer.
+        val observer = buf.retain()
+        ch.write(buf) // transfer
+        assertEquals(0, observer.readerIndex) // not advanced
+        assertEquals(2, observer.writerIndex)
 
         ch.flush()
 
-        buf.release()
+        observer.release()
         ch.close()
         client.close()
         server.close()
@@ -524,10 +525,9 @@ class NettyEngineTest {
         val ch = server.accept()
 
         val buf = DefaultAllocator.allocate(8)
-        val written = ch.write(buf)
+        val written = ch.write(buf) // transfer (empty)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         client.close()
         server.close()
@@ -750,9 +750,8 @@ class NettyEngineTest {
         val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(10, n)
-        ch.write(buf)
+        ch.write(buf) // transfer
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
-        buf.release()
 
         val echo = ByteArray(10)
         client.getInputStream().read(echo)
@@ -822,9 +821,8 @@ class NettyEngineTest {
 
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf)
+        clientCh.write(writeBuf) // transfer
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { clientCh.flush() }
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -861,9 +859,8 @@ class NettyEngineTest {
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-netty".encodeToByteArray()) writeBuf.writeByte(b)
-            client.write(writeBuf)
+            client.write(writeBuf) // transfer
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }

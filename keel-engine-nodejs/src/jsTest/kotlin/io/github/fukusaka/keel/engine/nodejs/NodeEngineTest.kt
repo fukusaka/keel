@@ -161,7 +161,6 @@ class NodeEngineTest {
         assertEquals(0x41.toByte(), readBuf.readByte())
         assertEquals(0x42.toByte(), readBuf.readByte())
 
-        buf.release()
         readBuf.release()
         clientCh.close()
         serverCh.close()
@@ -189,7 +188,6 @@ class NodeEngineTest {
         assertEquals(3, buf.writerIndex)
         assertEquals(3, buf.readableBytes)
 
-        writeBuf.release()
         buf.release()
         clientCh.close()
         serverCh.close()
@@ -216,7 +214,6 @@ class NodeEngineTest {
 
         serverCh.flush()
 
-        buf.release()
         clientCh.close()
         serverCh.close()
         server.close()
@@ -270,7 +267,6 @@ class NodeEngineTest {
         assertEquals('h'.code.toByte(), buf.readByte())
         assertEquals('i'.code.toByte(), buf.readByte())
 
-        writeBuf.release()
         buf.release()
         clientCh.close()
         serverCh.close()
@@ -393,7 +389,6 @@ class NodeEngineTest {
         val written = ch.write(buf)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         serverCh.close()
         server.close()
@@ -417,7 +412,6 @@ class NodeEngineTest {
         writeBuf.writeByte(0x42)
         clientCh.write(writeBuf)
         clientCh.flush()
-        writeBuf.release()
 
         // Read via asSuspendSource bridge
         val source = BufferedSuspendSource(serverCh.asSuspendSource(), DefaultAllocator)
@@ -509,7 +503,6 @@ class NodeEngineTest {
             for (b in "uds-nodejs".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = serverCh.read(readBuf)

@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** (`core` / `io`): unify `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` on ownership-transfer semantics (match Netty `ByteBuf`). Callers must no longer call `IoBuf.release()` after a write — the transport takes over the reference and releases it after flush. Use `buf.retain()` before the write to keep an alive reference (fan-out, delayed processing). Also drops the caller's `readerIndex` advance at write time; transport captures the snapshot in `PendingWrite` instead, matching Netty `ChannelOutboundBuffer`. `HttpResponseEncoder` / `BufferedSuspendSink` internal paths updated accordingly
+
 ### Documentation
 
+- `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — a single rule ("writes transfer, reads don't") plus three concrete `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md
 - `core` / `io` / `website`: document `Channel.write(buf)` / `IoTransport.write(buf)` as retain-on-input (caller must still `release()`), not transfer; aligns `buffer.md` (EN + JA), KDocs, and `module.md` (#349)
 - `website` (architecture): rewrite `buffer.md` (EN + JA) for first-time readers — ownership rules, thread-safety contract, per-platform implementation details, 6-way buffer API comparison, 5 factual-error fixes ([#348])
 

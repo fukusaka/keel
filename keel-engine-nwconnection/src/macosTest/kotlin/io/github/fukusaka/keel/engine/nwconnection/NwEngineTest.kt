@@ -117,7 +117,6 @@ class NwEngineTest {
         val echo = rawRead(clientFd, 5)
         assertEquals("hello", echo)
 
-        readBuf.release()
         serverCh.close()
         close(clientFd)
         server.close()
@@ -166,7 +165,6 @@ class NwEngineTest {
         val received = rawRead(clientFd, 2)
         assertEquals("AB", received)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -197,8 +195,6 @@ class NwEngineTest {
         val received = rawRead(clientFd, 4)
         assertEquals("ABCD", received)
 
-        buf1.release()
-        buf2.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -230,7 +226,7 @@ class NwEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runBlocking {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runBlocking {
         val engine = NwEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -241,14 +237,15 @@ class NwEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        ch.write(buf)
-        assertEquals(2, buf.readerIndex)
+        val observer = buf.retain()
+        ch.write(buf) // transfer
+        assertEquals(0, observer.readerIndex) // not advanced
+        assertEquals(2, observer.writerIndex)
 
         ch.flush()
+        observer.release()
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -496,7 +493,6 @@ class NwEngineTest {
         val written = ch.write(buf)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -645,7 +641,6 @@ class NwEngineTest {
                 // flush suspends on keel_nw_write_async callback
                 ch.flush()
             } finally {
-                buf.release()
             }
         }
 
@@ -679,7 +674,6 @@ class NwEngineTest {
         assertEquals(10, n)
         ch.write(buf)
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
-        buf.release()
 
         val echo = rawRead(clientFd, 10)
         assertEquals("leak-check", echo)
@@ -710,7 +704,6 @@ class NwEngineTest {
         for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { client.flush() }
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -767,7 +760,6 @@ class NwEngineTest {
                 ch.write(buf)
                 withTimeout(GC_ECHO_OP_TIMEOUT_MS) { ch.flush() }
             }
-            buf.release()
         }
         rawRead(clientFd, 200) // drain echoed data
 
@@ -832,7 +824,6 @@ class NwEngineTest {
             for (b in "nw-uds".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }

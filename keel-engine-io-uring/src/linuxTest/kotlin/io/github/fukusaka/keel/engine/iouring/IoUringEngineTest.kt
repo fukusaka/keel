@@ -128,7 +128,6 @@ class IoUringEngineTest {
         val echo = rawRead(clientFd, 5)
         assertEquals("hello", echo)
 
-        readBuf.release()
         serverCh.close()
         close(clientFd)
         server.close()
@@ -177,7 +176,6 @@ class IoUringEngineTest {
         val received = rawRead(clientFd, 2)
         assertEquals("AB", received)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -208,8 +206,6 @@ class IoUringEngineTest {
         val received = rawRead(clientFd, 4)
         assertEquals("ABCD", received)
 
-        buf1.release()
-        buf2.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -326,7 +322,6 @@ class IoUringEngineTest {
         for (b in payload) buf.writeByte(b)
         ch.write(buf)
         ch.flush()
-        buf.release()
 
         val received = PosixRawClient.rawReadBytes(clientFd, payloadSize)
         assertTrue(payload.contentEquals(received))
@@ -595,7 +590,6 @@ class IoUringEngineTest {
             for (b in "uds-hello".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -624,7 +618,6 @@ class IoUringEngineTest {
             for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -686,7 +679,6 @@ class IoUringEngineTest {
         val written = ch.write(buf)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -716,8 +708,6 @@ class IoUringEngineTest {
 
         // Close without flush: pendingWrites should be released.
         ch.close()
-        buf1.release()
-        buf2.release()
 
         close(clientFd)
         server.close()
@@ -741,7 +731,6 @@ class IoUringEngineTest {
         withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
         ch.write(buf)
         ch.flush()
-        buf.release()
 
         rawRead(clientFd, 4)
 
@@ -801,7 +790,6 @@ class IoUringEngineTest {
             val echo = rawRead(clientFd, msg.length)
             assertEquals(msg, echo)
 
-            buf.release()
             ch.close()
             close(clientFd)
         }
@@ -978,7 +966,6 @@ class IoUringEngineTest {
         val echo = rawRead(clientFd, 4)
         assertEquals("ping", echo)
 
-        readBuf.release()
         source.close()
         ch.close()
         close(clientFd)
@@ -1094,7 +1081,6 @@ class IoUringEngineTest {
             for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(32)
             val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }

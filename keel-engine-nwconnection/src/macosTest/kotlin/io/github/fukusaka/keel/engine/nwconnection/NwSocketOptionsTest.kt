@@ -62,7 +62,6 @@ class NwSocketOptionsTest {
             serverCh.write(buf)
             serverCh.flush()
             assertEquals("hello", PosixRawClient.rawRead(clientFd, 5))
-            buf.release()
             serverCh.close()
         } finally {
             close(clientFd)
@@ -93,7 +92,6 @@ class NwSocketOptionsTest {
                 "hello".encodeToByteArray().forEach { send.writeByte(it) }
                 client.write(send)
                 client.flush()
-                send.release()
 
                 val recv = DefaultAllocator.allocate(64)
                 val n = serverCh.read(recv)

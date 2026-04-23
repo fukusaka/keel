@@ -9,9 +9,9 @@ import kotlinx.coroutines.Dispatchers
 /**
  * No-op [AbstractIoTransport] for TLS handler unit tests.
  *
- * Captures retained write buffers into [written] and tracks [flushed] /
- * [closed] flags so tests can assert on output and lifecycle without
- * plumbing a real socket.
+ * Under ownership-transfer semantics, `write(buf)` takes over the caller's
+ * reference. We stash it into [written] so tests can inspect the bytes and
+ * then release them (test is the final owner of the captured list).
  */
 internal open class TestIoTransport : AbstractIoTransport(DefaultAllocator) {
     val written: MutableList<IoBuf> = mutableListOf()
@@ -22,7 +22,8 @@ internal open class TestIoTransport : AbstractIoTransport(DefaultAllocator) {
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
 
     override fun write(buf: IoBuf) {
-        buf.retain()
+        // Ownership transferred from caller. Test owns the captured ref until
+        // it releases each entry in `written`.
         written.add(buf)
     }
 

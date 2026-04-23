@@ -29,7 +29,7 @@ Application
 
 - **Write/flush separation**: `write()` buffers; `flush()` sends. Enables writev/gather-write batching.
 - **Zero-copy I/O**: `read(IoBuf)` / `write(IoBuf)` pass `unsafePointer` (Native) or `unsafeBuffer` (JVM) directly to OS syscalls.
-- **Buffer ownership (retain-on-input)**: `write(buf)` retains `buf` internally and consumes `readerIndex`. The caller keeps its own reference and must call `IoBuf.release()` on it (forgetting this leaks memory). `read(buf)` is non-transfer: caller allocates, engine fills, caller releases. See `website/docs/architecture/buffer.md` for the pipeline vs transport ownership distinction.
+- **Buffer ownership (transfer for writes, non-transfer for reads)**: `write(buf)` takes over the caller's reference and releases it after flush completes — the caller must not touch `buf` after the call. `read(buf)` is the inverse: the caller allocates, the engine fills, the caller releases. To keep a reference alive across a write (e.g., fan-out), call `IoBuf.retain()` before passing the buffer in. See `website/docs/architecture/buffer.md`.
 - **Half-close**: `shutdownOutput()` sends TCP FIN; input remains open.
 - **Codec bridge**: `asSuspendSource()` / `asSuspendSink()` expose the channel as kotlinx-io-compatible streams.
 - **`ioDispatcher`**: returns the engine's EventLoop dispatcher. I/O + processing run on the same thread — no cross-thread dispatch overhead.
