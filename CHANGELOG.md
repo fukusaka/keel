@@ -6,13 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- **BREAKING** (`core` / `io`): unify `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` on ownership-transfer semantics (match Netty `ByteBuf`). Callers must no longer call `IoBuf.release()` after a write — the transport takes over the reference and releases it after flush. Use `buf.retain()` before the write to keep an alive reference (fan-out, delayed processing). Also drops the caller's `readerIndex` advance at write time; transport captures the snapshot in `PendingWrite` instead, matching Netty `ChannelOutboundBuffer`. `HttpResponseEncoder` / `BufferedSuspendSink` internal paths updated accordingly
-
 ### Documentation
 
-- `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — a single rule ("writes transfer, reads don't") plus three concrete `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md
+- `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — single rule ("writes transfer, reads don't") + 3 `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md (#350)
 - `core` / `io` / `website`: document `Channel.write(buf)` / `IoTransport.write(buf)` as retain-on-input (caller must still `release()`), not transfer; aligns `buffer.md` (EN + JA), KDocs, and `module.md` (#349)
 - `website` (architecture): rewrite `buffer.md` (EN + JA) for first-time readers — ownership rules, thread-safety contract, per-platform implementation details, 6-way buffer API comparison, 5 factual-error fixes ([#348])
 
@@ -22,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`core` / `io`): `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` now use ownership-transfer semantics (match Netty `ByteBuf`). Callers must not call `IoBuf.release()` after write — transport takes the ref and releases after flush. Use `buf.retain()` before write to keep an alive ref. `readerIndex` advance at write time also dropped; snapshot captured in `PendingWrite` (match Netty `ChannelOutboundBuffer`) (#350)
 - **BREAKING** (`native-posix` test consumers): `FakeNativeSocket` / `FakeNativeSocketOps` / `PosixRawClient` / `@InternalTestApi` extracted from `keel-native-posix` (production artifact) into a new `keel-native-posix-testing` module. Engine test modules must switch `implementation(project(":keel-native-posix"))` in test source sets to `implementation(project(":keel-native-posix-testing"))`. Import paths (`io.github.fukusaka.keel.native.posix.*`) are unchanged. Production artifact no longer carries test scaffolding; the 2 test-only C helpers (`keel_connect_inet_loopback` / `keel_set_rcvtimeo`) moved with `PosixRawClient` to a separate `posix_testing` cinterop def. Not published to Maven, not included in Dokka ([#346])
 
 ### Added

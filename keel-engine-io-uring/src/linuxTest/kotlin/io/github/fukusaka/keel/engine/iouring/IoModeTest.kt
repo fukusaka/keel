@@ -235,7 +235,6 @@ class IoModeTest {
         writeBuf.writeByte(0x42)
         client.write(writeBuf)
         client.flush()
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(16)
         val n = conn.read(readBuf)
@@ -306,7 +305,6 @@ class IoModeTest {
             for (b in payload) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             // Read on server
             val readBuf = DefaultAllocator.allocate(payloadSize + 1024)
@@ -324,7 +322,6 @@ class IoModeTest {
             for (b in payload) echoBuf.writeByte(b)
             conn.write(echoBuf)
             conn.flush()
-            echoBuf.release()
 
             // Read echo on client
             val responseBuf = DefaultAllocator.allocate(payloadSize + 1024)

@@ -232,7 +232,10 @@ class EpollEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runBlocking {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runBlocking {
+        // Ownership transfer: write() takes over the caller's reference and
+        // captures (readerIndex, readableBytes) as a snapshot; it does not
+        // mutate the live buffer indices (matches Netty ChannelOutboundBuffer).
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -243,12 +246,14 @@ class EpollEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        ch.write(buf)
-        assertEquals(2, buf.readerIndex)
+        val observer = buf.retain() // retain so we can legally inspect after transfer
+        ch.write(buf) // transfer
+        assertEquals(0, observer.readerIndex) // not advanced
+        assertEquals(2, observer.writerIndex)
 
         ch.flush()
+        observer.release()
 
         ch.close()
         close(clientFd)
