@@ -83,14 +83,23 @@ class DirectIoBuf private constructor(
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
-        val destBuf = (dest as DirectIoBuf).buf
-        val srcView = buf.duplicate()
-        srcView.position(readerIndex)
-        srcView.limit(readerIndex + length)
-        destBuf.position(dest.writerIndex)
-        destBuf.put(srcView)
-        readerIndex += length
-        dest.writerIndex += length
+        if (dest is DirectIoBuf) {
+            // Fast path: ByteBuffer-to-ByteBuffer bulk copy.
+            val destBuf = dest.buf
+            val srcView = buf.duplicate()
+            srcView.position(readerIndex)
+            srcView.limit(readerIndex + length)
+            destBuf.position(dest.writerIndex)
+            destBuf.put(srcView)
+            readerIndex += length
+            dest.writerIndex += length
+        } else {
+            // Cross-type fallback (e.g. engine-side IoBuf impls like
+            // NettyByteBufIoBuf). Transfer via a pooled scratch ByteArray.
+            val tmp = ByteArray(length)
+            readByteArray(tmp, 0, length)
+            dest.writeByteArray(tmp, 0, length)
+        }
     }
 
     override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
