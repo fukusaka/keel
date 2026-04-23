@@ -6,13 +6,28 @@ sidebar_position: 3
 
 ## Summary
 
-- `IoBuf` is keel's byte buffer type. Reading and writing go through `readByte()` and `writeByte()`.
-- Call `release()` when use ends. GC is not relied upon; explicit release is required.
-- The ownership model is **two-layered**:
-  - **Inside the pipeline (between handlers)**: ownership transfer — once you call `ctx.propagateRead(msg)`, do not touch the buffer.
-  - **At the Transport / Channel boundary**: retain-on-input — `channel.write(buf)` causes the transport to retain the buffer and consume its `readerIndex`. The caller must also call `release()`.
+`IoBuf` is keel's byte buffer type. Two rules cover 95% of usage:
 
-`IoBuf` follows the same design family as Netty's `ByteBuf`. The pipeline layer uses the same transfer convention as Netty, but at the `channel.write` level keel requires more explicit release management. Compared with NIO's `ByteBuffer`, the additions are reference counting and explicit `release()`.
+1. **Writes transfer ownership.** After `channel.write(buf)` (or `sink.write`, or `ctx.propagateWrite`), the buffer is gone — do not touch it, do not `release()` it, do not inspect its indices. The engine releases it once the bytes have been sent.
+2. **Reads keep ownership.** You allocate a buffer, pass it to `channel.read(buf)` so the engine fills it, then you read from it and `release()` it when done.
+
+That's it. Everything else — `retain()`, fan-out, slicing, pool behaviour — only matters when you step outside those two rules on purpose.
+
+```kotlin
+// Write
+val buf = allocator.allocate(128)
+buf.writeAscii("hello", 0, 5)
+channel.write(buf)    // ownership transferred; do not touch buf afterwards
+channel.flush()
+
+// Read
+val buf = allocator.allocate(8192)
+val n = channel.read(buf)
+processData(buf)
+buf.release()         // caller-owned; release when done
+```
+
+**If you're coming from Netty**: the model is the same as Netty's `ByteBuf` + `ctx.writeAndFlush(buf)` — write transfers, call `retain()` to keep. keel's differences are cosmetic (non-atomic `refCount`, fixed capacity, platform-native backing).
 
 ## Overview
 
@@ -105,161 +120,153 @@ If that premise breaks (for example, a user wants to aggregate many buffers in a
 
 ## Ownership model
 
-Nearly every reference-count bug stems from a misunderstanding of this model.
+The ownership model is **ownership transfer for writes, non-transfer for reads** — a single rule with one inverse operation. Almost all reference-count bugs come from missing this distinction, so we spend a bit of space on it here.
 
-### Two-layer ownership model
+### The core rule
 
-keel's buffer ownership uses **two different models depending on the layer**. Mixing them up is how leaks and double-releases happen; get this part right first.
+> Any API that takes a filled `IoBuf` and sends it somewhere **takes over the reference**. The caller must not touch the buffer afterwards.
 
-| Layer | Model | APIs |
-|---|---|---|
-| **Inside the pipeline (between handlers)** | Ownership transfer (do not touch after passing) | `onRead` / `onWrite` / `ctx.propagateRead` / `ctx.propagateWrite` / `transport.onRead` callback |
-| **At the Transport / Channel boundary** | Retain-on-input (caller and transport both hold a ref) | `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` |
-| **Read-side APIs** | Non-transfer (the caller allocates a buffer for the engine to fill) | `Channel.read(buf)` / `IoTransport.read(buf)` |
+Concretely, these APIs all behave this way:
 
-#### Layer 1: ownership transfer inside the pipeline
+| Category | APIs |
+|---|---|
+| Transport-layer write | `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` |
+| Pipeline-layer write | `ctx.propagateWrite(msg)` |
+| Pipeline-layer inbound propagation | `ctx.propagateRead(msg)` / `transport.onRead(buf)` callback |
+| User-event propagation | `ctx.propagateUserEvent(evt)` (when `evt` carries an `IoBuf`) |
 
-When a buffer is passed between handlers, ownership is transferred. The sender must not touch the buffer afterwards. The final handler releases it (or propagates it onward via `propagateRead`).
+"Do not touch afterwards" means: no `readByte` / `writeByte`, no `release()`, no reading `readerIndex` or `writerIndex`. The engine / next handler releases the buffer once it's done with it.
 
-```kotlin
-class HttpDecoder : InboundHandler<IoBuf> {
-    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
-        try {
-            // The handler owns `msg`. Produce a slice and pass it downstream.
-            val slice = ctx.allocator.slice(msg, msg.readerIndex, bytesToEmit)
-            ctx.propagateRead(HttpBody(slice))   // slice ownership is transferred downstream
-        } finally {
-            msg.release()     // handler releases the original msg (responsibility of the owner)
-        }
-    }
-}
-```
-
-This matches the Netty `ByteBuf` pipeline convention.
-
-#### Layer 2: retain-on-input at the Transport / Channel boundary
-
-When user code calls `channel.write(buf)`, **the transport retains internally** and **consumes the caller's `readerIndex`**. The caller is still responsible for releasing its own reference.
+### Writes
 
 ```kotlin
-val buf = allocator.allocate(128)                // refCount = 1
-buf.writeAscii("hello", 0, 5)                   // writerIndex = 5
-channel.write(buf)                                // transport retains (refCount = 2);
-                                                  // buf.readerIndex advances to 5 (consumed)
+val buf = allocator.allocate(128)
+buf.writeAscii("hello", 0, 5)
+channel.write(buf)    // transferred; buf is gone from the caller's POV
 channel.flush()
-buf.release()                                     // caller releases its own reference (refCount = 1)
-// Transport releases its retained reference after flush (refCount = 0, memory freed)
+// Do not call buf.release() here — the transport does it.
 ```
 
-**If the caller forgets to call `release()`, the buffer leaks** — the transport's retain alone keeps refCount at 1; the memory is never freed.
+If you forget and add `buf.release()` after the write, you will get a double-release error (`IllegalStateException: Buffer already released`) the next time the transport tries to release.
 
-Why this design: it makes it natural to write a header and a body into the same buffer and call `channel.write` repeatedly (common in codec layers) — no `buf.retain()` ceremony like Netty's `channel.writeAndFlush(buf.retain())`. The trade-offs are the leak risk from forgotten `release()` calls and the asymmetry with the pipeline layer.
+### Reads are the inverse
 
-#### Layer 3: non-transfer for read APIs
-
-`channel.read(buf)` / `transport.read(buf)` take a caller-allocated buffer and let the engine fill it. Ownership stays with the caller, who releases when done.
+Reads don't transfer — they're the **inverse operation**: the caller allocates an empty buffer and lends it to the engine for filling. Ownership never leaves the caller.
 
 ```kotlin
 val buf = allocator.allocate(8192)
-val n = channel.read(buf)       // n bytes written into buf; ownership unchanged
+val n = channel.read(buf)   // engine fills buf; caller still owns it
 processData(buf)
-buf.release()
+buf.release()               // caller releases when done
 ```
 
-### API ownership classification
+This isn't really a "third ownership model" — it's just that `read` is an inverted `write`. The caller is the sink for the bytes, and the engine is the source, so the ownership flow goes the other way.
 
-**A. Pipeline layer: ownership transfer** (do not touch after passing)
+### Engine-delivered reads (advanced)
 
-| API | Release timing on the receiving side |
+Some push-model engines — NWConnection, Netty, Node.js — already have received data sitting in their own buffers, so it's wasteful to have the caller allocate a separate one just to be filled. For that path there is `OwnedSuspendSource.readOwned(): IoBuf?`:
+
+```kotlin
+val source: OwnedSuspendSource = channel.asOwnedSuspendSource()
+val buf = source.readOwned() ?: return   // null == EOF
+// The engine handed us a ready-made buffer; we own it now.
+processData(buf)
+buf.release()                              // release when done
+```
+
+The mental model stays the same: **whoever ends up holding the buffer releases it when done**. The only thing that changes from `channel.read(buf)` is *where the buffer came from*:
+
+- `channel.read(buf)` — you allocated it and lent it to the engine; you release it afterwards.
+- `readOwned()` — the engine allocated it and returned it to you; you release it afterwards.
+
+Treat `readOwned` as a buffer-returning function: receive → use → release. Concretely, it still counts as a new reference in the caller's hands, so the API classification below groups it under "New-reference APIs" alongside `allocator.allocate(...)`.
+
+`OwnedSuspendSource` is an engine-integration interface — Ktor and the codec layers don't touch it directly. First-time keel users typically only deal with `Channel.read(buf)`, so feel free to skip this section until you actually need zero-copy push-mode reads.
+
+### API ownership at a glance
+
+**Transfer (the caller gives up the reference)**
+
+| API | Who releases |
 |---|---|
-| `transport.onRead(buf)` callback | Pipeline HEAD → final handler in the chain |
-| `onRead(ctx, msg)` / `onReadTyped(ctx, msg)` | The handler itself (typically via `try/finally`) |
-| `ctx.propagateRead(msg)` / `ctx.propagateWrite(msg)` | Next downstream / upstream handler |
-| `ctx.propagateUserEvent(evt)` | Downstream handler (when `evt` is an `IoBuf`) |
+| `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` | Transport, after flush completes |
+| `ctx.propagateWrite(msg)` / `ctx.propagateRead(msg)` | Downstream/upstream handler (final consumer) |
+| `transport.onRead(buf)` callback → pipeline HEAD | Pipeline chain's terminal handler |
+| `onRead(ctx, msg)` / `onReadTyped(ctx, msg)` | The handler itself (typically `try/finally`) |
 
-**B. Transport / Channel boundary: retain-on-input** (caller also releases)
-
-| API | Transport side | Caller side |
-|---|---|---|
-| `Channel.write(buf)` | Calls `buf.retain()` internally; releases after flush | `readerIndex` is consumed. **Must call `release()` on its own reference.** |
-| `IoTransport.write(buf)` | Same | Same |
-| `SuspendSink.write(buf: IoBuf)` | Same (impl-dependent) | Same |
-
-**C. Non-transfer APIs** (caller retains ownership)
+**Non-transfer (the caller keeps the reference)**
 
 | API | Caller's responsibility |
 |---|---|
-| `Channel.read(buf)` / `IoTransport.read(buf)` | Release after the buffer contents have been consumed |
-| `buf.readByte()` / `writeByte()` / `getByte(i)` / `readByteArray(...)` / `writeByteArray(...)` | Ownership unchanged (only indices advance) |
-| `buf.copyTo(dest, length)` | Both source and dest remain caller-owned |
+| `Channel.read(buf)` / `IoTransport.read(buf)` | Allocated the buffer → releases when done |
+| `buf.readByte()` / `writeByte()` / `getByte(i)` / `readByteArray(...)` / `writeByteArray(...)` | Owns the buffer; indices advance, ownership unchanged |
+| `buf.copyTo(dst, length)` | Source + dst both caller-owned |
 | `buf.compact()` / `clear()` | Ownership unchanged |
 
-**D. APIs returning a new buffer** (caller takes ownership)
+**New-reference APIs (caller receives ownership)**
 
-| API | Returned refCount | Release responsibility |
+| API | Initial refCount | Who releases |
 |---|---|---|
 | `allocator.allocate(size)` | 1 | The final consumer |
-| `allocator.wrapBytes(bytes, offset, length)` | 1 (non-null only on allocators that support wrapping) | The final consumer (input `bytes` stays caller-owned) |
-| `allocator.slice(src, offset, length)` | 1 (slice has its own count) | The slice owner (`src` is managed internally by the allocator) |
-| `buf.retain()` | Existing refCount + 1, same instance returned | Whoever created the additional reference |
+| `allocator.wrapBytes(bytes, offset, length)` | 1 (or `null` on JS) | The final consumer (the input `ByteArray` stays caller-owned) |
+| `allocator.slice(src, offset, length)` | 1 (independent of `src`) | Whoever owns the slice (`src` is tracked internally) |
+| `buf.retain()` | existing + 1, same instance | Whoever added the reference |
+| `OwnedSuspendSource.readOwned()` | 1 (or `null` on EOF) | Caller (engine transfers via return value — see "Engine-delivered reads") |
 
-`BufferedSuspendSink.write(bytes: ByteArray, offset, length)` takes a `ByteArray` and is out of scope for this classification. Internally the sink creates an `IoBuf` via either `wrapBytes` or a scratch copy; the sink releases that `IoBuf` itself.
+### Transport-level indices: not advanced by the engine
 
-### When to call `retain()`
+After `channel.write(buf)` returns, `buf.readerIndex` and `buf.writerIndex` are **unchanged** — the engine captures them as a snapshot in its pending-writes queue and does not mutate the live buffer. This matches Netty's `ChannelOutboundBuffer` semantics.
 
-`retain()` is called only when the caller needs to hold an additional reference. Three scenarios apply. This is a concern for the pipeline layer (ownership transfer); at the Transport / Channel boundary the caller implicitly retains its ref under retain-on-input, so `retain()` is usually unnecessary.
+The caller can't observe this because the caller isn't supposed to touch the buffer anyway. But if a holder of a `retain()` reference inspects the indices, they see the buffer in the state it had at write time — which is the useful, non-surprising answer.
 
-**(1) A pipeline handler stores `msg` in a field for use in a later event**
+### When to use `retain()`
+
+`retain()` only matters when you deliberately step outside the "transfer" rule. Three realistic cases:
+
+**(1) Fan-out: send the same buffer to multiple sinks**
+
+```kotlin
+channel1.write(buf.retain())   // +1 for channel1
+channel2.write(buf.retain())   // +1 for channel2
+channel3.write(buf)             // last one takes the original ref
+```
+
+For N sinks, call `retain()` on `N - 1` of them. Netty users will recognize this pattern.
+
+**(2) Hold a buffer for later processing**
 
 ```kotlin
 class DelayedEcho : InboundHandler<IoBuf> {
     private var cached: IoBuf? = null
 
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
-        cached = msg.retain()        // handler's own reference (+1)
-        ctx.propagateRead(msg)        // original reference transferred downstream
+        cached = msg.retain()       // +1 for this handler
+        ctx.propagateRead(msg)       // original ref transferred downstream
     }
 
     override fun onInactive(ctx: PipelineHandlerContext) {
-        cached?.release()
+        cached?.release()            // balances the retain() above
         cached = null
     }
 }
 ```
 
-**(2) Fan-out `msg` to multiple downstream handlers inside the pipeline**
+**(3) Keep a buffer alive across a suspension before writing**
 
 ```kotlin
-override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
-    ctx.propagateRead(msg.retain())   // +1 reference for the primary downstream
-    ctx.propagateRead(msg)             // original reference for the secondary downstream
-    // Each downstream handler releases exactly once.
+suspend fun relay(src: Channel, dst: Channel) {
+    val buf = allocator.allocate(8192)
+    try {
+        val n = src.read(buf)                // non-transfer
+        if (n > 0) dst.write(buf.retain())  // transfer one ref, keep our own
+        // buf still usable here
+    } finally {
+        buf.release()                         // our ref
+    }
 }
 ```
 
-Call `retain()` **before** each ownership transfer. The last transfer receives the original reference, so `retain()` is not needed for it. For N propagations, `retain()` is called `N - 1` times.
-
-**(3) Crossing an async boundary**
-
-When `msg` must outlive the caller's scope (for example, across a coroutine suspension), `retain()` before the original owner releases to keep the buffer alive for your continuation.
-
-**Fan-out writes at the Transport / Channel boundary are a separate problem.** `channel.write(buf)` consumes `readerIndex`, so simply handing the same buffer to two channels produces zero readable bytes on the second call. Options:
-
-```kotlin
-// Option 1: save and restore readerIndex
-val saved = buf.readerIndex
-channel1.write(buf)       // retains + consumes readerIndex
-buf.readerIndex = saved    // reset
-channel2.write(buf)       // retains + reads the same range again
-buf.release()              // caller releases its reference
-
-// Option 2: use slices to obtain independent views (allocator.slice retains src internally)
-val view1 = allocator.slice(buf, buf.readerIndex, bytes)
-val view2 = allocator.slice(buf, buf.readerIndex, bytes)
-channel1.write(view1); channel2.write(view2)
-view1.release(); view2.release()   // slice owner releases each slice
-buf.release()                       // caller's reference to the original buffer
-```
+If you didn't `retain()` in the `dst.write` line, the buffer would be gone after `dst.write` returns and the `finally` block's `release()` would double-release. Always match every "keep across boundary" with a `retain()`.
 
 ### Responsibility for `release()`
 
@@ -286,78 +293,15 @@ The reference count starts at 1 after `allocate()`, increments with each `retain
 
 `close()` is intended for teardown paths (e.g., engine shutdown with buffers still outstanding in a pipeline). Normal lifecycle management is handled by `release()` alone.
 
-## Typical usage patterns
-
-### Pattern 1: Transport / Channel write (retain-on-input)
-
-`channel.write(buf)` **retains internally in the transport**. The caller must explicitly release its own reference (layer 2 model).
-
-```kotlin
-val buf = allocator.allocate(128)
-buf.writeAscii("hello", 0, 5)
-channel.write(buf)      // transport retains (refCount 2); caller's readerIndex consumed
-channel.flush()
-buf.release()            // caller releases its reference (transport releases its retain after flush)
-```
-
-Forgetting `buf.release()` leaks memory. After `channel.write`, the caller may keep writing into the same buffer (if writable space remains) and submit it again.
-
-### Pattern 2: Transport / Channel read (non-transfer)
-
-`channel.read(buf)` does not transfer ownership. The caller allocates the buffer, hands it to the engine for fill, and releases it.
-
-```kotlin
-val buf = allocator.allocate(8192)
-val n = channel.read(buf)
-processData(buf)
-buf.release()
-```
-
-### Pattern 3: Pipeline handler saves `msg` in a field (retain required)
-
-In the pipeline layer (ownership transfer), when a handler keeps `msg` in a field, call `retain()` before storing and release on teardown.
-
-```kotlin
-class DelayedEcho : InboundHandler<IoBuf> {
-    private var cached: IoBuf? = null
-
-    override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
-        cached = msg.retain()        // handler's own reference (+1)
-        ctx.propagateRead(msg)        // original reference transferred downstream
-    }
-
-    override fun onInactive(ctx: PipelineHandlerContext) {
-        cached?.release()
-        cached = null
-    }
-}
-```
-
-### Pattern 4: Pipeline fan-out to multiple downstream handlers (retain required)
-
-`ctx.propagateRead(msg)` is an ownership transfer inside the pipeline, so fanning out to multiple downstreams requires calling `retain()` **before** each transfer. The last transfer receives the original reference, so no `retain()` is needed for it. For N propagations, `retain()` is called `N - 1` times.
-
-```kotlin
-override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
-    ctx.propagateRead(msg.retain())   // +1 for primary downstream
-    ctx.propagateRead(msg)             // original reference for secondary downstream
-    // Each downstream handler releases exactly once.
-}
-```
-
-At the Transport / Channel boundary `channel.write` is retain-on-input, so adding `buf.retain()` does not solve the index-consumption issue. To write the same payload to multiple channels, use the `readerIndex` save/restore or `slice` approach shown in the "When to call `retain()`" section.
-
-## Typical bugs
+## Common bugs
 
 | Bug | Symptom | Cause |
 |---|---|---|
-| Forgetting `release()` after `channel.write` | Memory leak (detectable via leak detection) | Misunderstanding retain-on-input as transfer. The caller's own reference must be released. |
-| Missing `release()` in the pipeline layer | Memory leak | A handler neither called `msg.release()` nor `propagateRead` (one of the two is required). |
-| Double `release()` | `IllegalStateException: Buffer already released` | Released `msg` after `propagateRead(msg)` had transferred ownership. |
-| Use after release | Native segfault, JVM invalid data, JS silent corruption | Read or wrote a released buffer. |
-| Pipeline-handler retain without release | Memory leak | Stored in a field with `retain()` but not released in teardown (`onInactive`). |
-| Netty-style "transfer" code on the retain-on-input path | Caller-side leak or double-release | Not touching the buffer after `channel.write(buf)` in Netty style. keel requires `buf.release()`. |
-| Expecting `channel.write` chain to fan out | Second and later writes see 0 bytes | `readerIndex` is consumed on the first call; reset it or use `slice`. |
+| Extra `release()` after `channel.write(buf)` | `IllegalStateException: Buffer already released` on the next transport operation | The transport released the buffer after flush — calling `release()` yourself double-releases. |
+| Missing `release()` in a handler that doesn't propagate | Memory leak (detectable via `TrackingAllocator`) | A handler received `msg` and neither `propagateRead(msg)` nor `msg.release()`. One of the two is required. |
+| Use after write | Native segfault, JVM invalid data, JS silent corruption | Touched the buffer after `channel.write(buf)` (read a byte, checked `readerIndex`, etc.). |
+| Fan-out without `retain()` | First write works, second sees `readableBytes == 0` or throws | The first `channel.write(buf)` consumed ownership; the second receives a released buffer. Use `buf.retain()` on all but the last. |
+| Handler stores `msg` without retaining | Use-after-release in later event | The transferred msg was released downstream; the handler's stored reference is stale. `retain()` before storing. |
 
 When a refcount bug is suspected in tests, wrap the allocator in `TrackingAllocator` and call `assertNoLeaks()` at the end (see next section).
 
@@ -612,7 +556,7 @@ Most developers approaching keel already know a buffer API from another networki
 
 **Takeaways**:
 
-- **Netty users**: the pipeline layer (handler-to-handler ownership transfer) is the same mental model. The difference is that `channel.write(buf)` is **retain-on-input** rather than transfer (Netty), so in keel the caller must explicitly call `buf.release()`. Other differences are "non-atomic refcount" and "fixed capacity".
+- **Netty users**: the mental model is identical — both at the pipeline layer (handler-to-handler) and at the `Channel.write` boundary, ownership transfers to the callee. Call `buf.retain()` before the write if you need to keep a reference. The remaining differences are implementation details: keel uses a non-atomic `refCount` (single-EventLoop assumption) and a fixed capacity (no dynamic resize).
 - **SwiftNIO users**: the API shape is close. The difference is explicit `retain` / `release` instead of value type + CoW; forgetting `release()` leaks (SwiftNIO delegates refcounting to the language).
 - **tokio `bytes` users**: `IoBuf` is closer to `BytesMut`, but relies on `retain()` for refcount sharing rather than `split` to create independent handles.
 - **NIO users**: separate reader and writer indices remove the need for `flip()`. In return, `release()` is required at end-of-life.

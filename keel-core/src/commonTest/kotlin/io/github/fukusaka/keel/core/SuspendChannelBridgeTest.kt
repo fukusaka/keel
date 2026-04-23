@@ -32,7 +32,7 @@ class SuspendChannelBridgeTest {
         override suspend fun write(buf: IoBuf): Int {
             writeCalled = true
             val n = buf.readableBytes
-            buf.readerIndex += n
+            buf.release() // transfer: channel owns buf
             return n
         }
 
@@ -65,13 +65,12 @@ class SuspendChannelBridgeTest {
 
         val buf = DefaultAllocator.allocate(16)
         buf.writeByte(0x41)
-        val n = sink.write(buf)
+        val n = sink.write(buf) // transfer: sink owns buf from here
         sink.flush()
 
         assertEquals(1, n)
         assertEquals(true, channel.writeCalled)
         assertEquals(true, channel.flushCalled)
-        buf.release()
     }
 
     @Test

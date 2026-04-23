@@ -123,7 +123,6 @@ class EpollEngineTest {
         val echo = rawRead(clientFd, 5)
         assertEquals("hello", echo)
 
-        readBuf.release()
         serverCh.close()
         close(clientFd)
         server.close()
@@ -172,7 +171,6 @@ class EpollEngineTest {
         val received = rawRead(clientFd, 2)
         assertEquals("AB", received)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -203,8 +201,6 @@ class EpollEngineTest {
         val received = rawRead(clientFd, 4)
         assertEquals("ABCD", received)
 
-        buf1.release()
-        buf2.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -236,7 +232,10 @@ class EpollEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runBlocking {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runBlocking {
+        // Ownership transfer: write() takes over the caller's reference and
+        // captures (readerIndex, readableBytes) as a snapshot; it does not
+        // mutate the live buffer indices (matches Netty ChannelOutboundBuffer).
         val engine = EpollEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -247,14 +246,15 @@ class EpollEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        ch.write(buf)
-        assertEquals(2, buf.readerIndex)
+        val observer = buf.retain() // retain so we can legally inspect after transfer
+        ch.write(buf) // transfer
+        assertEquals(0, observer.readerIndex) // not advanced
+        assertEquals(2, observer.writerIndex)
 
         ch.flush()
+        observer.release()
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -280,7 +280,6 @@ class EpollEngineTest {
         for (b in payload) buf.writeByte(b)
         ch.write(buf)
         ch.flush()
-        buf.release()
 
         // Client reads all bytes
         val received = PosixRawClient.rawReadBytes(clientFd, payloadSize)
@@ -309,9 +308,8 @@ class EpollEngineTest {
                 for (j in 0 until chunkSize) buf.writeByte(((i * chunkSize + j) % 256).toByte())
             }
         }
-        for (buf in bufs) ch.write(buf)
+        for (buf in bufs) ch.write(buf) // transfer each
         ch.flush()
-        for (buf in bufs) buf.release()
 
         // Client reads all bytes
         val totalSize = chunkSize * 3
@@ -347,7 +345,6 @@ class EpollEngineTest {
             for (b in data.encodeToByteArray()) buf.writeByte(b)
             ch.write(buf)
             ch.flush()
-            buf.release()
 
             val received = rawRead(clientFd, data.length)
             assertEquals(data, received, "Round $round mismatch")
@@ -479,14 +476,12 @@ class EpollEngineTest {
         for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         client.flush()
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(msg.length, n)
         serverCh.write(readBuf)
         serverCh.flush()
-        readBuf.release()
 
         val echoBuf = DefaultAllocator.allocate(64)
         val n2 = client.read(echoBuf)
@@ -670,7 +665,6 @@ class EpollEngineTest {
         val written = ch.write(buf)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         close(clientFd)
         server.close()
@@ -866,7 +860,6 @@ class EpollEngineTest {
 
             ch.write(buf)
             ch.flush()
-            buf.release()
         }
 
         val echo = rawRead(clientFd, 5)
@@ -981,7 +974,6 @@ class EpollEngineTest {
 
                 ch.write(buf)
                 ch.flush()
-                buf.release()
 
                 val echo = rawRead(clientFd, msg.length)
                 ch.close()
@@ -1046,7 +1038,6 @@ class EpollEngineTest {
         assertEquals(10, n)
         ch.write(buf)
         ch.flush()
-        buf.release()
 
         val echo = rawRead(clientFd, 10)
         assertEquals("leak-check", echo)
@@ -1113,7 +1104,6 @@ class EpollEngineTest {
         for (b in "test".encodeToByteArray()) writeBuf.writeByte(b)
         client.write(writeBuf)
         client.flush()
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         serverCh.read(readBuf)
@@ -1161,7 +1151,6 @@ class EpollEngineTest {
                 ch.write(buf)
                 ch.flush()
             }
-            buf.release()
         }
         rawRead(clientFd, 400)
 
@@ -1209,7 +1198,6 @@ class EpollEngineTest {
             for (b in "uds-epoll".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -1238,7 +1226,6 @@ class EpollEngineTest {
             for (b in "abstract".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -1272,7 +1259,6 @@ class EpollEngineTest {
             for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(32)
             val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }

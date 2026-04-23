@@ -18,7 +18,9 @@ class SuspendHttpWriterTest {
             val bytes = ByteArray(buf.readableBytes)
             for (i in bytes.indices) bytes[i] = buf.readByte()
             chunks.add(bytes)
-            return bytes.size
+            val size = bytes.size
+            buf.release() // transfer: sink owns buf
+            return size
         }
         override suspend fun flush() {}
         override fun close() {}

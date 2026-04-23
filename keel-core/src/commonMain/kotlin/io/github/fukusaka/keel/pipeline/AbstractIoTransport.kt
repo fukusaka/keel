@@ -8,8 +8,11 @@ import kotlin.concurrent.Volatile
  * Base class for [IoTransport] implementations with shared defaults.
  *
  * Provides:
- * - **Write buffering**: [write] retains and enqueues buffers into [pendingWrites].
- *   Subclasses implement [flush] to drain the queue via platform syscalls.
+ * - **Write buffering (ownership transfer)**: [write] takes ownership of the
+ *   caller's buffer reference and enqueues it into [pendingWrites]. Subclasses
+ *   implement [flush] to drain the queue via platform syscalls and release
+ *   each buffer after successful transmission. The caller must not touch the
+ *   buffer after [write] returns.
  * - **Write backpressure**: [pendingBytes] / [isWritable] / [updatePendingBytes]
  *   track buffered data and invoke [onWritabilityChanged] at high/low water marks.
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
@@ -99,7 +102,7 @@ abstract class AbstractIoTransport(
     // --- Write buffering ---
 
     /**
-     * Queue of retained buffers awaiting [flush].
+     * Queue of owned buffers awaiting [flush].
      *
      * [write] appends to this list; [flush] implementations drain it
      * via platform-specific syscalls and release each buffer after
@@ -108,17 +111,25 @@ abstract class AbstractIoTransport(
     protected val pendingWrites = mutableListOf<PendingWrite>()
 
     /**
-     * Buffers [buf] for the next [flush] call.
+     * Buffers [buf] for the next [flush] call under ownership-transfer
+     * semantics: the transport takes over the caller's reference and
+     * releases it after the buffer has been flushed (or the transport is
+     * torn down). The caller must not touch [buf] after this call returns.
      *
-     * Captures (readerIndex, readableBytes) snapshot and retains the buffer.
-     * The caller's readerIndex is advanced immediately so it can reuse the buf.
+     * Captures (readerIndex, readableBytes) as a snapshot so [flush]
+     * implementations can read the intended byte range regardless of
+     * later pipeline activity.
+     *
+     * Empty writes release the buffer immediately — the caller still
+     * transferred ownership, and there is nothing to enqueue.
      */
     override fun write(buf: IoBuf) {
         val bytes = buf.readableBytes
-        if (bytes == 0) return
+        if (bytes == 0) {
+            buf.release()
+            return
+        }
         val offset = buf.readerIndex
-        buf.retain()
-        buf.readerIndex += bytes
         pendingWrites.add(PendingWrite(buf, offset, bytes))
         updatePendingBytes(bytes)
     }
@@ -160,11 +171,13 @@ abstract class AbstractIoTransport(
     override suspend fun awaitClosed() {}
 
     /**
-     * Snapshot of a buffered write: the [IoBuf] (retained), the byte offset
-     * where readable data starts, and the number of bytes to write.
+     * Snapshot of a buffered write: the [IoBuf] (owned by the transport),
+     * the byte offset where readable data starts, and the number of bytes
+     * to write.
      *
-     * Offset/length are recorded separately because [IoBuf.readerIndex] is
-     * advanced at [write] time so the caller can reuse the buffer immediately.
+     * Offset/length are recorded separately so that [flush] implementations
+     * always see the range that was current at [write] time, independent of
+     * any subsequent read-side mutation to the buffer's indices.
      */
     class PendingWrite(val buf: IoBuf, val offset: Int, val length: Int)
 }

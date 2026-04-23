@@ -87,7 +87,7 @@ class NodeEngineTest {
         // Client sends "hello"
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf)
+        clientCh.write(writeBuf) // transfer
         clientCh.flush()
 
         // Server reads
@@ -96,7 +96,7 @@ class NodeEngineTest {
         assertEquals(5, n)
 
         // Server echoes back
-        serverCh.write(readBuf)
+        serverCh.write(readBuf) // transfer
         serverCh.flush()
 
         // Client receives
@@ -107,8 +107,6 @@ class NodeEngineTest {
         val received = ByteArray(5) { echoBuf.readByte() }.decodeToString()
         assertEquals("hello", received)
 
-        writeBuf.release()
-        readBuf.release()
         echoBuf.release()
         clientCh.close()
         serverCh.close()
@@ -161,7 +159,6 @@ class NodeEngineTest {
         assertEquals(0x41.toByte(), readBuf.readByte())
         assertEquals(0x42.toByte(), readBuf.readByte())
 
-        buf.release()
         readBuf.release()
         clientCh.close()
         serverCh.close()
@@ -189,7 +186,6 @@ class NodeEngineTest {
         assertEquals(3, buf.writerIndex)
         assertEquals(3, buf.readableBytes)
 
-        writeBuf.release()
         buf.release()
         clientCh.close()
         serverCh.close()
@@ -198,7 +194,7 @@ class NodeEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runTest {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runTest {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -209,14 +205,15 @@ class NodeEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        serverCh.write(buf)
-        assertEquals(2, buf.readerIndex)
+        val observer = buf.retain()
+        serverCh.write(buf) // transfer
+        assertEquals(0, observer.readerIndex) // not advanced
+        assertEquals(2, observer.writerIndex)
 
         serverCh.flush()
+        observer.release()
 
-        buf.release()
         clientCh.close()
         serverCh.close()
         server.close()
@@ -270,7 +267,6 @@ class NodeEngineTest {
         assertEquals('h'.code.toByte(), buf.readByte())
         assertEquals('i'.code.toByte(), buf.readByte())
 
-        writeBuf.release()
         buf.release()
         clientCh.close()
         serverCh.close()
@@ -393,7 +389,6 @@ class NodeEngineTest {
         val written = ch.write(buf)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         serverCh.close()
         server.close()
@@ -417,7 +412,6 @@ class NodeEngineTest {
         writeBuf.writeByte(0x42)
         clientCh.write(writeBuf)
         clientCh.flush()
-        writeBuf.release()
 
         // Read via asSuspendSource bridge
         val source = BufferedSuspendSource(serverCh.asSuspendSource(), DefaultAllocator)
@@ -509,7 +503,6 @@ class NodeEngineTest {
             for (b in "uds-nodejs".encodeToByteArray()) writeBuf.writeByte(b)
             client.write(writeBuf)
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = serverCh.read(readBuf)

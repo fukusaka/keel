@@ -126,13 +126,12 @@ class NioEngineTest {
         val n = serverCh.read(readBuf)
         assertEquals(5, n)
 
-        serverCh.write(readBuf)
+        serverCh.write(readBuf) // transfer: serverCh owns readBuf
         serverCh.flush()
 
         val echo = rawRead(client, 5)
         assertEquals("hello", echo)
 
-        readBuf.release()
         serverCh.close()
         client.close()
         server.close()
@@ -173,7 +172,7 @@ class NioEngineTest {
         buf.writeByte(0x41) // 'A'
         buf.writeByte(0x42) // 'B'
 
-        val written = ch.write(buf)
+        val written = ch.write(buf) // transfer: ch owns buf
         assertEquals(2, written)
 
         ch.flush()
@@ -181,7 +180,6 @@ class NioEngineTest {
         val received = rawRead(client, 2)
         assertEquals("AB", received)
 
-        buf.release()
         ch.close()
         client.close()
         server.close()
@@ -205,15 +203,13 @@ class NioEngineTest {
         buf2.writeByte(0x43) // 'C'
         buf2.writeByte(0x44) // 'D'
 
-        ch.write(buf1)
-        ch.write(buf2)
+        ch.write(buf1) // transfer
+        ch.write(buf2) // transfer
         ch.flush()
 
         val received = rawRead(client, 4)
         assertEquals("ABCD", received)
 
-        buf1.release()
-        buf2.release()
         ch.close()
         client.close()
         server.close()
@@ -245,7 +241,12 @@ class NioEngineTest {
     }
 
     @Test
-    fun writeAdvancesIoBufReaderIndex() = runTest {
+    fun writeTransfersOwnershipButDoesNotAdvanceReaderIndex() = runTest {
+        // Under ownership-transfer semantics, transport.write takes over the
+        // caller's reference and captures (readerIndex, readableBytes) as a
+        // PendingWrite snapshot. The buffer's live readerIndex is left alone
+        // (matches Netty ChannelOutboundBuffer). The caller must not touch
+        // buf after the transfer.
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -256,14 +257,16 @@ class NioEngineTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x41)
         buf.writeByte(0x42)
-        assertEquals(0, buf.readerIndex)
 
-        ch.write(buf)
-        assertEquals(2, buf.readerIndex)
+        // Keep a retained ref so we can legally observe indices after transfer.
+        val observer = buf.retain()
+        ch.write(buf) // transfer of the original ref; observer still holds 1
+        assertEquals(0, observer.readerIndex) // not advanced by transport
+        assertEquals(2, observer.writerIndex)
 
         ch.flush()
 
-        buf.release()
+        observer.release() // the only caller-side release we should make
         ch.close()
         client.close()
         server.close()
@@ -389,16 +392,14 @@ class NioEngineTest {
         val msg = "async-connect"
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
-        client.write(writeBuf)
+        client.write(writeBuf) // transfer
         client.flush()
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         val n = serverCh.read(readBuf)
         assertEquals(msg.length, n)
-        serverCh.write(readBuf)
+        serverCh.write(readBuf) // transfer
         serverCh.flush()
-        readBuf.release()
 
         val echoBuf = DefaultAllocator.allocate(64)
         val n2 = client.read(echoBuf)
@@ -583,10 +584,9 @@ class NioEngineTest {
         val ch = server.accept()
 
         val buf = DefaultAllocator.allocate(8)
-        val written = ch.write(buf)
+        val written = ch.write(buf) // transfer even for empty (impl releases on empty)
         assertEquals(0, written)
 
-        buf.release()
         ch.close()
         client.close()
         server.close()
@@ -753,9 +753,8 @@ class NioEngineTest {
             val n = ch.read(buf)
             assertEquals(msg.length, n)
 
-            ch.write(buf)
+            ch.write(buf) // transfer
             ch.flush()
-            buf.release()
 
             val echo = rawRead(client, msg.length)
             assertEquals(msg, echo)
@@ -785,7 +784,7 @@ class NioEngineTest {
 
         val writeBuf = DefaultAllocator.allocate(payloadSize)
         for (b in payload.encodeToByteArray()) writeBuf.writeByte(b)
-        ch.write(writeBuf)
+        ch.write(writeBuf) // transfer
 
         // Read on a separate coroutine to prevent deadlock:
         // flush blocks until all data is sent, but the socket buffer
@@ -803,7 +802,6 @@ class NioEngineTest {
         }
 
         withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() }
-        writeBuf.release()
 
         val received = withTimeout(IO_OP_LONG_TIMEOUT_MS) { readResult.await() }
         assertEquals(payloadSize, received.length)
@@ -834,8 +832,7 @@ class NioEngineTest {
         for (i in 0 until chunks) {
             val buf = DefaultAllocator.allocate(chunkSize)
             for (b in "y".repeat(chunkSize).encodeToByteArray()) buf.writeByte(b)
-            ch.write(buf)
-            buf.release() // write retains
+            ch.write(buf) // transfer
         }
 
         val readResult = async {
@@ -880,9 +877,8 @@ class NioEngineTest {
         val buf = DefaultAllocator.allocate(64)
         val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
         assertEquals(10, n)
-        ch.write(buf)
+        ch.write(buf) // transfer
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
-        buf.release()
 
         val echo = ByteArray(10)
         client.getInputStream().read(echo)
@@ -949,9 +945,8 @@ class NioEngineTest {
 
         val writeBuf = DefaultAllocator.allocate(64)
         for (b in "test".toByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf)
+        clientCh.write(writeBuf) // transfer
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { clientCh.flush() }
-        writeBuf.release()
 
         val readBuf = DefaultAllocator.allocate(64)
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(readBuf) }
@@ -988,9 +983,8 @@ class NioEngineTest {
 
             val writeBuf = DefaultAllocator.allocate(16)
             for (b in "uds-nio".encodeToByteArray()) writeBuf.writeByte(b)
-            client.write(writeBuf)
+            client.write(writeBuf) // transfer
             client.flush()
-            writeBuf.release()
 
             val readBuf = DefaultAllocator.allocate(16)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { serverCh.read(readBuf) }

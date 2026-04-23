@@ -28,12 +28,16 @@ package io.github.fukusaka.keel.buf
  * Call [retain] to increment and [release] to decrement.
  * When the count reaches zero, the underlying memory is freed.
  *
- * **Ownership model**: two layers — the pipeline layer uses ownership
- * transfer (hand off via `ctx.propagateRead`, do not touch afterwards),
- * while `Channel.write(buf)` / `IoTransport.write(buf)` use retain-on-input
- * (transport retains internally, caller keeps its ref and must still call
- * [release]). See the architecture docs (`website/docs/architecture/buffer.md`)
- * for the full classification.
+ * **Ownership model**: ownership transfer everywhere. Passing a buffer to
+ * a pipeline handler (`ctx.propagateRead` / `ctx.propagateWrite`), a
+ * transport (`Channel.write` / `IoTransport.write`), or a sink
+ * (`SuspendSink.write`) hands the reference over — the caller must not
+ * touch it afterwards (no read/write, no [release], no index inspection).
+ * To keep a reference alive (fan-out, delayed processing), call [retain]
+ * **before** the transfer. Read APIs (`Channel.read(buf)`) are the
+ * inverse: the caller supplies an empty buffer for the engine to fill, and
+ * retains ownership throughout. See `website/docs/architecture/buffer.md`
+ * for details.
  *
  * **Thread safety**: the reference count and indices are non-atomic. All
  * operations on a given buffer must happen on the single EventLoop thread

@@ -21,6 +21,13 @@ interface SuspendSink : AutoCloseable {
     /**
      * Writes bytes from [buf] between [IoBuf.readerIndex] and [IoBuf.writerIndex].
      *
+     * **Ownership (transfer)**: takes over the caller's reference. The caller
+     * must not touch [buf] after this call returns — no further read/write,
+     * no [IoBuf.release], and no index inspection. The sink releases the
+     * buffer once the data has been sent (or on teardown). To keep a
+     * reference alive (e.g., for inspection or re-sending), the caller must
+     * call [IoBuf.retain] **before** passing the buffer in.
+     *
      * Suspends until the data is accepted by the underlying transport.
      * Transport-level errors (e.g., connection reset, broken pipe) propagate
      * as platform-specific exceptions.

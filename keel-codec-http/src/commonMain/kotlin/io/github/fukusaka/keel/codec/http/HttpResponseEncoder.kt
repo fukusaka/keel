@@ -78,18 +78,19 @@ class HttpResponseEncoder : OutboundHandler {
         if (body != null && body.size >= DIRECT_BODY_THRESHOLD) {
             val wrapped = allocator.tryWrapBytes(body, 0, body.size)
             if (wrapped != null) {
-                try {
-                    val headBuf = allocator.allocate(calculateHeadSize(response, reasonPhrase))
-                    writeStatusLine(response.version, response.status.code, reasonPhrase, headBuf)
-                    writeHeaders(response.headers, headBuf)
-                    ctx.propagateWrite(headBuf)
-                    ctx.propagateWrite(wrapped)
-                } finally {
-                    // Downstream retains during propagateWrite; release our local reference.
-                    // The try scope covers both propagateWrite calls so that an exception
-                    // from writing the head does not leak the wrapped body reference.
+                val headBuf = try {
+                    allocator.allocate(calculateHeadSize(response, reasonPhrase)).also {
+                        writeStatusLine(response.version, response.status.code, reasonPhrase, it)
+                        writeHeaders(response.headers, it)
+                    }
+                } catch (t: Throwable) {
+                    // propagateWrite would have taken ownership of wrapped; we never got
+                    // that far, so release it here on the failure path.
                     wrapped.release()
+                    throw t
                 }
+                ctx.propagateWrite(headBuf) // ownership transfer
+                ctx.propagateWrite(wrapped) // ownership transfer
                 return
             }
         }
