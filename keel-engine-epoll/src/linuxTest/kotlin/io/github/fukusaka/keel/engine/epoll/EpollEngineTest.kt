@@ -308,9 +308,8 @@ class EpollEngineTest {
                 for (j in 0 until chunkSize) buf.writeByte(((i * chunkSize + j) % 256).toByte())
             }
         }
-        for (buf in bufs) ch.write(buf)
+        for (buf in bufs) ch.write(buf) // transfer each
         ch.flush()
-        for (buf in bufs) buf.release()
 
         // Client reads all bytes
         val totalSize = chunkSize * 3
