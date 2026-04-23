@@ -118,13 +118,9 @@ class BufferedSuspendSink(
             if (wrapped != null) {
                 // Flush any scratch data first to keep ordering (headers before body).
                 flushBuffer()
-                try {
-                    sink.write(wrapped)
-                    if (!deferFlush) sink.flush()
-                } finally {
-                    // sink.write retains its own reference; release our local one.
-                    wrapped.release()
-                }
+                // Ownership transfer: sink.write takes over `wrapped`.
+                sink.write(wrapped)
+                if (!deferFlush) sink.flush()
                 return
             }
         }
@@ -153,31 +149,32 @@ class BufferedSuspendSink(
      * Sends the internal buffer's contents to the underlying sink.
      *
      * When [deferFlush] is true (EventLoop-based engines: kqueue/epoll/NIO):
-     * enqueues the buffer via sink.write(), releases our reference, and
-     * allocates a fresh buffer from the pool. The old buffer remains in the
-     * Channel's pending-write queue until the caller's [flush] sends all
-     * accumulated buffers in a single writev() syscall.
+     * transfers the buffer to sink.write() and allocates a fresh replacement.
+     * The old buffer remains in the Channel's pending-write queue until the
+     * caller's [flush] sends all accumulated buffers in a single writev()
+     * syscall; the transport releases it when the flush completes.
      *
      * When [deferFlush] is false (push-model engines: Netty/NWConnection/Node.js):
-     * calls sink.write() + sink.flush() synchronously and reuses the same
-     * buffer. This is required because push-model engines may flush on a
-     * different thread, making pool-based buffer recycling unsafe.
+     * retains the buffer so it survives sink.write()'s ownership transfer,
+     * flushes synchronously, then clears indices on our retained reference
+     * so the same buffer can be reused in place. The explicit [IoBuf.retain]
+     * keeps pool pressure down on push-model engines where sink.write() +
+     * sink.flush() would otherwise round-trip the buffer through a
+     * potentially cross-thread pool on every small flush.
      */
     private suspend fun flushBuffer() {
         if (buf.readableBytes > 0) {
             if (deferFlush) {
-                // Deferred flush: Channel.write() retains buf internally.
-                // We release our reference and allocate a fresh buffer.
-                // Allocate BEFORE release to ensure buf field always points
-                // to a valid buffer — if allocate throws, buf is still valid
-                // and close() can release it safely.
-                sink.write(buf)
+                // Allocate the replacement BEFORE handing `buf` off so that
+                // `this.buf` always points to a valid buffer — if allocate
+                // throws, the old buf is still valid and close() can release
+                // it safely.
                 val oldBuf = buf
                 buf = allocator.allocate(BUFFER_SIZE)
-                oldBuf.release()
+                sink.write(oldBuf) // transfers ownership of oldBuf to sink
             } else {
-                // Immediate flush: write + flush, then reuse the same buffer.
-                sink.write(buf)
+                // Retain so our reference survives sink.write()'s transfer.
+                sink.write(buf.retain())
                 sink.flush()
                 buf.clear()
             }

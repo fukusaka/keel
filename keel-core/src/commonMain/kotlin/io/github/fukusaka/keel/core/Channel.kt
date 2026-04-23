@@ -78,12 +78,13 @@ interface Channel : AutoCloseable {
      * Advances [IoBuf.readerIndex] by the number of bytes consumed.
      * Data is buffered until [flush] is called.
      *
-     * **Ownership (retain-on-input)**: the implementation calls [IoBuf.retain]
-     * on [buf] and records the byte range. [flush] releases the transport's
-     * retained reference after writing. **The caller retains its own reference
-     * and must call [IoBuf.release] on it** — forgetting this leaks memory.
-     * The caller may continue writing into the same buffer (if writable space
-     * remains) and submit it again.
+     * **Ownership (transfer)**: this method takes ownership of [buf] from the
+     * caller. The caller must not touch the buffer after this call returns —
+     * no further read/write, no [IoBuf.release], and no index inspection.
+     * The transport releases the buffer after [flush] completes (or on teardown).
+     * If the caller wants to keep a reference alive (for example, to write the
+     * same data to multiple channels), it must call [IoBuf.retain] **before**
+     * passing the buffer in.
      *
      * @return number of bytes written to the outbound buffer.
      */
