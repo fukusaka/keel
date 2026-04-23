@@ -21,14 +21,15 @@ import kotlin.coroutines.resumeWithException
  * reuses a pre-allocated [IoBuf] wrapper bound to the kernel-selected
  * buffer slot via [IoBuf.resetForReuse].
  *
- * **Zero-allocation CQE path**: IoBuf wrappers and deallocator closures
+ * **Zero-allocation CQE path**: IoBuf wrappers and their [RingSlotOwner]s
  * are pre-allocated at construction (one per buffer slot). The CQE callback
  * calls [IoBuf.resetForReuse] and sets [IoBuf.writerIndex] to the
  * received byte count — no object creation on the hot path.
  *
  * **Ownership contract**: The returned [IoBuf] wraps external memory from
- * the provided buffer ring. The [IoBuf.deallocator] returns the buffer to
- * the ring when [IoBuf.release] is called. The caller MUST call release.
+ * the provided buffer ring. Its [IoBuf.memoryOwner] (a [RingSlotOwner])
+ * returns the buffer to the ring when [IoBuf.release] is called. The caller
+ * MUST call release.
  *
  * **Buffer exhaustion**: When all provided buffers are consumed, the kernel
  * returns `-ENOBUFS` and terminates the multishot SQE. After the caller
@@ -43,7 +44,7 @@ import kotlin.coroutines.resumeWithException
  * Data flow:
  *   kernel recv → CQE (buf_id, bytes) → wrappers[buf_id].resetForReuse()
  *   → readOwned() returns to caller → caller reads → release()
- *   → deallocator → ProvidedBufferRing.returnBuffer(buf_id)
+ *   → RingSlotOwner → ProvidedBufferRing.returnBuffer(buf_id)
  * ```
  *
  * @param fd         The connected socket file descriptor.
@@ -62,7 +63,7 @@ internal class IoUringOwnedSource(
     // is permanently bound to a buffer slot; the kernel guarantees a bufId is
     // not reissued until returnBuffer() adds it back to the ring.
     private val wrappers = Array(bufferRing.bufferCount) { bufId ->
-        RingBufferIoBuf(bufId, bufferRing) { _ -> bufferRing.returnBuffer(bufId) }
+        RingBufferIoBuf(bufId, bufferRing)
     }
 
     // Buffered IoBufs delivered by CQE callbacks but not yet claimed by readOwned().
@@ -209,7 +210,7 @@ internal class IoUringOwnedSource(
                 pendingReadCont = null
                 cont.resumeWithException(CancellationException("PushSource closed"))
             }
-            // Release any buffered IoBufs (triggers deallocator → returnBuffer).
+            // Release any buffered IoBufs (triggers RingSlotOwner → returnBuffer).
             while (pendingBufs.isNotEmpty()) {
                 pendingBufs.removeFirst().release()
             }

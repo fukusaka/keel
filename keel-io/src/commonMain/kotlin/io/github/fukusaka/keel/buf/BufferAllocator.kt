@@ -4,9 +4,8 @@ package io.github.fukusaka.keel.buf
  * Allocates [IoBuf] instances.
  *
  * Pluggable design: each engine uses the allocator best suited for its
- * platform. Buffer deallocation is handled by the deallocator callback
- * (see [PoolableIoBuf]) set during [allocate] — callers simply call
- * [IoBuf.release].
+ * platform. Buffer release is handled by the [IoBufMemoryOwner] installed
+ * on the buffer at [allocate] time — callers simply call [IoBuf.release].
  *
  * ```
  * Allocator              Target        Engine
@@ -47,8 +46,8 @@ interface BufferAllocator {
      * is compatible with the engine's transport layer.
      *
      * [source] is [retained][IoBuf.retain] at creation. The returned
-     * buffer's [deallocator][PoolableIoBuf.deallocator] releases [source]
-     * when the slice's reference count reaches zero.
+     * buffer's [memoryOwner][IoBuf.memoryOwner] is a [SliceOwner] that
+     * releases [source] when the slice's reference count reaches zero.
      */
     fun slice(source: IoBuf, offset: Int, length: Int): IoBuf
 

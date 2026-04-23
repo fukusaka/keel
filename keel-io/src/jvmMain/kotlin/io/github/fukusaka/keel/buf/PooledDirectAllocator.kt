@@ -63,6 +63,8 @@ class PooledDirectAllocator(
         pools.putIfAbsent(size, Pool(effectiveMaxSlots))
     }
 
+    private val poolOwner: IoBufMemoryOwner = PoolOwner(::returnToPool)
+
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
         val pool = pools[capacity]
@@ -70,8 +72,7 @@ class PooledDirectAllocator(
             pool.pop()?.also { it.resetForReuse() }
         } else {
             null
-        } ?: DirectIoBuf(capacity)
-        buf.deallocator = ::returnToPool
+        } ?: DirectIoBuf(capacity, poolOwner)
         return buf
     }
 
@@ -93,9 +94,7 @@ class PooledDirectAllocator(
             position(offset)
             limit(offset + length)
         }.slice()
-        return DirectIoBuf.wrapExternal(view, bytesWritten = length).also {
-            it.deallocator = { _ -> source.release() }
-        }
+        return DirectIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
     }
 
     private fun returnToPool(buf: IoBuf) {

@@ -13,17 +13,13 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * **Ownership contract**: The caller receives ownership of the returned
  * [IoBuf] and MUST call [IoBuf.release] when done reading.
- * The [IoBuf]'s deallocator returns the buffer to the engine's pool
+ * The [IoBuf]'s memory owner returns the buffer to the engine's pool
  * (e.g., a provided buffer ring in the io_uring engine).
  *
  * **Integration with codec layer**: Use the push-mode
  * [BufferedSuspendSource] constructor for zero-copy codec integration.
  * Alternatively, [OwnedToSuspendSourceAdapter] provides pull-model
  * compatibility with one [IoBuf.copyTo] per read.
- *
- * **MemoryOwner not used**: A `MemoryOwner<IoBuf>` wrapper was considered
- * but [IoBuf] already provides [IoBuf.retain]/[IoBuf.release] with
- * deallocator callback, making the wrapper redundant. See design.md §4.7.
  *
  * **Thread safety**: implementations are typically single-threaded
  * (EventLoop model). [readOwned] dispatches to the EventLoop when
@@ -39,8 +35,8 @@ interface OwnedSuspendSource : AutoCloseable {
      *
      * The returned [IoBuf] contains data between [IoBuf.readerIndex]
      * and [IoBuf.writerIndex]. The caller MUST call [IoBuf.release]
-     * after reading, which triggers the deallocator to return
-     * the buffer to the engine's pool.
+     * after reading, which triggers the buffer's memory owner to
+     * return the buffer to the engine's pool.
      *
      * @return An [IoBuf] with readable data, or `null` on EOF.
      */

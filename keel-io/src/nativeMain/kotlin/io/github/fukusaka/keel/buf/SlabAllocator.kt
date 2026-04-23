@@ -70,6 +70,8 @@ class SlabAllocator(
         }
     }
 
+    private val poolOwner: IoBufMemoryOwner = PoolOwner(::returnToPool)
+
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
         val buf: NativeIoBuf = withSpinLock {
@@ -79,8 +81,7 @@ class SlabAllocator(
             } else {
                 null
             }
-        } ?: NativeIoBuf(capacity)
-        buf.deallocator = ::returnToPool
+        } ?: NativeIoBuf(capacity, poolOwner)
         return buf
     }
 
@@ -90,9 +91,7 @@ class SlabAllocator(
         val pinned = bytes.pin()
         @Suppress("UnsafeCallOnNullableType")
         val ptr = pinned.addressOf(offset)!!
-        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length) { _ ->
-            pinned.unpin()
-        }
+        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = ExternalWrapOwner { pinned.unpin() })
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -101,9 +100,7 @@ class SlabAllocator(
         source.retain()
         @Suppress("UnsafeCallOnNullableType")
         val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
-        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length) { _ ->
-            source.release()
-        }
+        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = SliceOwner(source))
     }
 
     private fun returnToPool(buf: IoBuf) {

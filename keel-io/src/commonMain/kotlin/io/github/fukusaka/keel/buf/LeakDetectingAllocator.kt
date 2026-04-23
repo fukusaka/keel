@@ -22,9 +22,9 @@ package io.github.fukusaka.keel.buf
  *
  * - **Simple leak**: `allocate()` without any `release()`.
  * - **Retained leak**: `allocate()` + `retain()` + only one `release()`
- *   (refCount never reaches 0, deallocator never fires).
+ *   (refCount never reaches 0, the memory owner never fires).
  * - **Not a leak**: `allocate()` + N×`retain()` + (N+1)×`release()`
- *   (refCount reaches 0, deallocator marks as released).
+ *   (refCount reaches 0, the memory owner marks as released).
  *
  * ## Detection timing (platform-specific)
  *
@@ -56,7 +56,7 @@ package io.github.fukusaka.keel.buf
  * - TrackingAllocator: "is there a leak?" (count mismatch)
  * - LeakDetectingAllocator: "where was the leaked buffer allocated?" (stack trace)
  *
- * Both orders work because each wraps the deallocator chain independently:
+ * Both orders work because each wraps the memory-owner chain independently:
  * ```
  * // Order 1: count + detect
  * LeakDetectingAllocator(TrackingAllocator(delegate))
@@ -105,9 +105,9 @@ class LeakDetectingAllocator(
 /**
  * Installs platform-specific leak detection on [buf].
  *
- * Intercepts the buffer's [PoolableIoBuf.deallocator] to track whether
- * release() is called before the buffer is garbage-collected:
- * - **Released path**: deallocator fires → marks as released → no leak.
+ * Decorates the buffer's [IoBuf.memoryOwner] (via [PoolableIoBuf.memoryOwner])
+ * so the release path flips a `released` flag before the real owner runs:
+ * - **Released path**: decorator fires → marks as released → no leak.
  * - **Leaked path**: buffer becomes unreachable → GC reclaims → platform
  *   mechanism detects unreleased state → [onLeak] fires with stack trace.
  *

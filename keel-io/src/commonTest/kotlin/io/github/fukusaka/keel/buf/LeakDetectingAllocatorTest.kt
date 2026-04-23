@@ -18,12 +18,17 @@ class LeakDetectingAllocatorTest {
     }
 
     @Test
-    fun `deallocator chain is preserved through leak detection`() {
-        var deallocatorCalled = false
+    fun `memoryOwner chain is preserved through leak detection`() {
+        var ownerReleaseCalled = false
+        val customOwner = object : IoBufMemoryOwner {
+            override fun release(buf: IoBuf) {
+                ownerReleaseCalled = true
+            }
+        }
         val delegate = object : BufferAllocator {
             override fun allocate(capacity: Int): IoBuf {
                 val buf = DefaultAllocator.allocate(capacity)
-                (buf as PoolableIoBuf).deallocator = { deallocatorCalled = true }
+                (buf as PoolableIoBuf).memoryOwner = customOwner
                 return buf
             }
             override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
@@ -35,7 +40,7 @@ class LeakDetectingAllocatorTest {
         val buf = allocator.allocate(64)
         buf.release()
 
-        assertTrue(deallocatorCalled, "Original deallocator should be called through leak detection")
+        assertTrue(ownerReleaseCalled, "Original memoryOwner.release should be invoked through leak detection")
     }
 
     @Test

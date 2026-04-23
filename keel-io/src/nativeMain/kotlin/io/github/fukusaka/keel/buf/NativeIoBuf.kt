@@ -17,39 +17,52 @@ import platform.posix.memmove
  * Native [IoBuf] implementation backed by [nativeHeap] memory or external memory.
  *
  * **Owned memory** (primary constructor): allocated via
- * `nativeHeap.allocArray<ByteVar>(capacity)` and freed in [close] via `nativeHeap.free`.
+ * `nativeHeap.allocArray<ByteVar>(capacity)` and freed by [HeapOwner]
+ * (via [freeHeapBacking]) when refcount reaches zero.
  *
- * **External memory** ([wrapExternal] factory): wraps a caller-provided pointer
- * without any allocation. The buffer does NOT own the memory; [close] skips
- * `nativeHeap.free`. Use [deallocator] to return the buffer to its source
- * (e.g., a provided buffer ring).
+ * **External memory** ([wrapExternal] factory): wraps a caller-provided
+ * pointer without any allocation. The buffer does NOT own the memory; the
+ * supplied [memoryOwner] handles cleanup on refcount-zero (e.g. an
+ * [ExternalWrapOwner] to drop the pinned hold, or a ring-specific owner
+ * to return the slot).
  *
  * The [unsafePointer] property exposes the raw `CPointer<ByteVar>` for
  * zero-copy I/O with POSIX syscalls (read/write/writev).
  *
  * **Reference counting**: non-atomic (single-threaded EventLoop model).
- * A `freed` flag prevents double-free in [close].
+ * A `freed` flag guards [freeHeapBacking] / [close] against double-free.
  */
 @OptIn(ExperimentalForeignApi::class)
 class NativeIoBuf private constructor(
     private val ptr: CPointer<ByteVar>,
     override val capacity: Int,
     private val ownsMemory: Boolean,
-) : IoBuf, PoolableIoBuf, NativePointerAccess {
+    override var memoryOwner: IoBufMemoryOwner,
+) : IoBuf, PoolableIoBuf, NativePointerAccess, HeapManagedBacking {
 
     /**
-     * Creates a [NativeIoBuf] backed by newly allocated [nativeHeap] memory.
+     * Creates a heap-owned [NativeIoBuf] backed by freshly-allocated
+     * [nativeHeap] memory. The [memoryOwner] is [HeapOwner], which frees
+     * the backing via [freeHeapBacking] on refcount-zero.
      */
     constructor(capacity: Int) : this(
         nativeHeap.allocArray<ByteVar>(capacity),
         capacity,
         ownsMemory = true,
+        memoryOwner = HeapOwner,
+    )
+
+    /** Used by pool-backed allocators to install a custom [memoryOwner]. */
+    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(
+        nativeHeap.allocArray<ByteVar>(capacity),
+        capacity,
+        ownsMemory = true,
+        memoryOwner = memoryOwner,
     )
 
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false
-    override var deallocator: ((IoBuf) -> Unit)? = null
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -146,12 +159,7 @@ class NativeIoBuf private constructor(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            val d = deallocator
-            if (d != null) {
-                d(this)
-            } else {
-                close()
-            }
+            memoryOwner.release(this)
             return true
         }
         return false
@@ -161,6 +169,20 @@ class NativeIoBuf private constructor(
         if (!freed) {
             freed = true
             refCount = 0
+            // Escape hatch: intentionally does NOT invoke memoryOwner —
+            // pool returns and kernel-slot handoffs are skipped. For
+            // heap-backed buffers we still free the native memory here
+            // so teardown does not leak the nativeHeap allocation.
+            if (ownsMemory) {
+                nativeHeap.free(ptr.rawValue)
+            }
+        }
+    }
+
+    /** @see HeapManagedBacking */
+    override fun freeHeapBacking() {
+        if (!freed) {
+            freed = true
             if (ownsMemory) {
                 nativeHeap.free(ptr.rawValue)
             }
@@ -169,29 +191,30 @@ class NativeIoBuf private constructor(
 
     companion object {
         /**
-         * Wraps an externally-owned memory region as a [NativeIoBuf] without allocation.
+         * Wraps an externally-owned memory region as a [NativeIoBuf]
+         * without allocation.
          *
-         * The returned buffer does NOT own the memory: [close] will not call
-         * `nativeHeap.free`. The [deallocator] callback handles recycling
-         * (e.g., returning a buffer to a provided buffer ring).
+         * The returned buffer does NOT own the memory; the supplied
+         * [memoryOwner] handles cleanup on refcount-zero (for instance,
+         * [ExternalWrapOwner] to drop a pinned [ByteArray] hold, or a
+         * ring-specific owner to return a slot to the source pool).
          *
-         * For hot-path usage, pre-allocate wrappers at startup and reuse them
-         * via [resetForReuse] to avoid object creation overhead.
+         * For hot-path usage, pre-allocate wrappers at startup and reuse
+         * them via [resetForReuse] to avoid object creation overhead.
          *
          * @param ptr           Pointer to the external memory region.
          * @param capacity      Size of the memory region in bytes.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @param deallocator   Called on [release] when refCount reaches 0.
+         * @param memoryOwner   Strategy invoked at refcount-zero.
          * @return A [NativeIoBuf] wrapping the external memory.
          */
         internal fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
-            deallocator: ((IoBuf) -> Unit)? = null,
-        ): NativeIoBuf = NativeIoBuf(ptr, capacity, ownsMemory = false).also {
+            memoryOwner: IoBufMemoryOwner,
+        ): NativeIoBuf = NativeIoBuf(ptr, capacity, ownsMemory = false, memoryOwner = memoryOwner).also {
             it.writerIndex = bytesWritten
-            it.deallocator = deallocator
         }
     }
 }

@@ -7,7 +7,7 @@ import kotlin.native.ref.createCleaner
 /**
  * Native leak detection using [createCleaner].
  *
- * When the buffer object is garbage-collected without its deallocator being
+ * When the buffer object is garbage-collected without its memory owner being
  * invoked (i.e., release() was never called to reach refCount=0), the Cleaner
  * fires and invokes [onLeak] with the allocation site stack trace.
  *
@@ -24,7 +24,6 @@ import kotlin.native.ref.createCleaner
 internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): IoBuf {
     val allocationSite = Exception("Buffer allocated here").stackTraceToString()
     val poolable = buf as PoolableIoBuf
-    val originalDeallocator = poolable.deallocator
 
     // State object that the Cleaner captures. Must not reference buf.
     val state = LeakState(allocationSite, onLeak)
@@ -37,10 +36,14 @@ internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): 
         }
     }
 
-    // Intercept deallocator to mark as released before pool return / close.
-    poolable.deallocator = { b ->
-        state.released = true
-        originalDeallocator?.invoke(b) ?: b.close()
+    // Decorate the owner to flip `state.released` before delegating to the
+    // real release path. Avoids capturing `buf` inside the cleaner.
+    val originalOwner = poolable.memoryOwner
+    poolable.memoryOwner = object : IoBufMemoryOwner {
+        override fun release(buf: IoBuf) {
+            state.released = true
+            originalOwner.release(buf)
+        }
     }
 
     return buf

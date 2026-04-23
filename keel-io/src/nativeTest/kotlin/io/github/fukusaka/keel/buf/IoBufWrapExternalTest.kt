@@ -20,7 +20,7 @@ class IoBufWrapExternalTest {
         try {
             ptr[0] = 0x41
             ptr[1] = 0x42
-            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 16, bytesWritten = 2)
+            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 16, bytesWritten = 2, memoryOwner = HeapOwner)
             assertEquals(16, buf.capacity)
             assertEquals(0, buf.readerIndex)
             assertEquals(2, buf.writerIndex)
@@ -38,7 +38,7 @@ class IoBufWrapExternalTest {
         try {
             ptr[0] = 0x48 // 'H'
             ptr[1] = 0x69 // 'i'
-            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 2)
+            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 2, memoryOwner = HeapOwner)
             assertEquals('H'.code.toByte(), buf.readByte())
             assertEquals('i'.code.toByte(), buf.readByte())
             buf.close()
@@ -52,7 +52,7 @@ class IoBufWrapExternalTest {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
             ptr[0] = 0x01
-            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 1)
+            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 4, bytesWritten = 1, memoryOwner = HeapOwner)
             buf.close()
             // External memory is still accessible after close.
             assertEquals(0x01.toByte(), ptr[0])
@@ -62,17 +62,17 @@ class IoBufWrapExternalTest {
     }
 
     @Test
-    fun `wrapExternal deallocator called on release`() {
+    fun `wrapExternal memoryOwner release invoked on refcount zero`() {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
-            var deallocatorCalled = false
+            var released = false
+            val owner = ExternalWrapOwner { released = true }
             val buf = NativeIoBuf.wrapExternal(
-                ptr, capacity = 4, bytesWritten = 1,
-                deallocator = { deallocatorCalled = true },
+                ptr, capacity = 4, bytesWritten = 1, memoryOwner = owner,
             )
-            assertFalse(deallocatorCalled)
+            assertFalse(released)
             buf.release()
-            assertTrue(deallocatorCalled)
+            assertTrue(released)
         } finally {
             nativeHeap.free(ptr.rawValue)
         }
@@ -82,18 +82,18 @@ class IoBufWrapExternalTest {
     fun `wrapExternal retain and release lifecycle`() {
         val ptr = nativeHeap.allocArray<ByteVar>(4)
         try {
-            var deallocatorCount = 0
+            var releaseCount = 0
+            val owner = ExternalWrapOwner { releaseCount++ }
             val buf = NativeIoBuf.wrapExternal(
-                ptr, capacity = 4, bytesWritten = 0,
-                deallocator = { deallocatorCount++ },
+                ptr, capacity = 4, bytesWritten = 0, memoryOwner = owner,
             )
 
             buf.retain()
             assertFalse(buf.release()) // refCount 2 → 1
-            assertEquals(0, deallocatorCount)
+            assertEquals(0, releaseCount)
 
             assertTrue(buf.release()) // refCount 1 → 0
-            assertEquals(1, deallocatorCount)
+            assertEquals(1, releaseCount)
         } finally {
             nativeHeap.free(ptr.rawValue)
         }
@@ -103,7 +103,7 @@ class IoBufWrapExternalTest {
     fun `wrapExternal write and read`() {
         val ptr = nativeHeap.allocArray<ByteVar>(8)
         try {
-            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 0)
+            val buf = NativeIoBuf.wrapExternal(ptr, capacity = 8, bytesWritten = 0, memoryOwner = HeapOwner)
             buf.writeByte(0x61) // 'a'
             buf.writeByte(0x62) // 'b'
             assertEquals(2, buf.writerIndex)

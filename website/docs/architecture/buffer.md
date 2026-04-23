@@ -371,23 +371,23 @@ A stateless implementation that allocates fresh on every call. It simply invokes
 
 Holds a Treiber stack per size class and operates on the pool lock-free. The stack head is an `AtomicReference<DirectIoBuf?>`; pool entries are linked intrusively via `IoBuf.nextLink`.
 
-- **`allocate`**: CAS-pop from the pool; on miss, fresh `ByteBuffer.allocateDirect(capacity)`. The returned buffer's deallocator is set to `returnToPool`.
-- **`release` (refCount reaches 0)**: the deallocator CAS-pushes onto the stack. If the pool is full (`maxSlots` exceeded), the push is abandoned and `buf.close()` is invoked instead.
+- **`allocate`**: CAS-pop from the pool; on miss, fresh `ByteBuffer.allocateDirect(capacity)`. The returned buffer's `memoryOwner` is a shared `PoolOwner` bound to this pool.
+- **`release` (refCount reaches 0)**: `PoolOwner` CAS-pushes onto the stack. If the pool is full (`maxSlots` exceeded), the push is abandoned and the backing direct buffer is left to the JVM GC.
 - **`registerPoolSize(size, maxSlots)`**: lazy registration. If the total-memory budget (`maxTotalBytes`, default 251 KiB) is exceeded, `maxSlots` is automatically reduced. Duplicate registrations are no-ops.
 - **`createForEventLoop()`**: returns a new instance with the parent's size classes propagated, per-pool limit reduced to `LOCAL_POOL_SLOTS = 8` (from the parent's default of 16).
 - **`wrapBytes`**: zero-copy via `ByteBuffer.wrap(bytes, offset, length)`, returned as `DirectIoBuf.wrapExternal`. The backing array is caller-owned and must not be mutated until release.
-- **`slice`**: zero-copy via `ByteBuffer.duplicate().slice()`. Retains `source` and installs a deallocator that releases `source` when the slice is released.
+- **`slice`**: zero-copy via `ByteBuffer.duplicate().slice()`. Retains `source` and installs a `SliceOwner(source)` that releases the parent on slice release.
 
 ### `SlabAllocator` (Native)
 
 Holds an `ArrayDeque<NativeIoBuf>` per size class as a LIFO pool. The whole pool `HashMap` is protected by a spin-lock (`AtomicReference<Boolean>` with CAS).
 
-- **`allocate`**: `removeLast()` under the spin-lock; on miss, fresh `NativeIoBuf(capacity)` via `nativeHeap`. Deallocator is set to `returnToPool`.
-- **`release` (refCount reaches 0)**: deallocator `addLast()` under the spin-lock. If the pool is full, `buf.close()` frees via `nativeHeap.free`.
+- **`allocate`**: `removeLast()` under the spin-lock; on miss, fresh `NativeIoBuf(capacity)` via `nativeHeap`. The returned buffer's `memoryOwner` is a shared `PoolOwner` bound to this pool.
+- **`release` (refCount reaches 0)**: `PoolOwner` `addLast()` under the spin-lock. If the pool is full, the backing is freed via `nativeHeap.free`.
 - **`registerPoolSize(size, maxSlots)`**: lazy, budget-aware (`maxTotalBytes`, default 256 KiB). Duplicate check and insert happen atomically under the spin-lock.
 - **`createForEventLoop()`**: returns a new instance with parent's size classes and `LOCAL_POOL_SLOTS = 8`.
-- **`wrapBytes`**: zero-copy via a pinned `ByteArray` + `CPointer`, returned as `NativeIoBuf.wrapExternal`. The deallocator unpins on release.
-- **`slice`**: zero-copy via pointer arithmetic. Retains `source` and installs a deallocator that releases `source` when the slice is released.
+- **`wrapBytes`**: zero-copy via a pinned `ByteArray` + `CPointer`, returned as `NativeIoBuf.wrapExternal`. An `ExternalWrapOwner` unpins on release.
+- **`slice`**: zero-copy via pointer arithmetic. Retains `source` and installs a `SliceOwner(source)` that releases the parent on slice release.
 
 ### Shared design principles
 
@@ -408,7 +408,7 @@ The concrete `IoBuf` implementation differs per platform. All of them share the 
 | Implementation | Target | Backing storage | `close()` behaviour | External wrap support |
 |---|---|---|---|---|
 | `DirectIoBuf` | JVM | `ByteBuffer.allocateDirect(capacity)` | No-op (GC-managed) | `wrapExternal(buffer, bytesWritten)` |
-| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>(capacity)` | Invokes `nativeHeap.free`; `freed` flag for idempotency | `wrapExternal(ptr, capacity, bytesWritten, deallocator)` |
+| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>(capacity)` | Invokes `nativeHeap.free`; `freed` flag for idempotency | `wrapExternal(ptr, capacity, bytesWritten, memoryOwner)` |
 | `TypedArrayIoBuf` | JS | `Int8Array(capacity)` (V8 heap) | No-op (GC-managed) | `wrapExternal(array, bytesWritten)` |
 | `RingBufferIoBuf` | io_uring engine | `ProvidedBufferRing` slot (kernel-managed) | Intentionally leaks the slot (`AutoCloseable` compat only; the normal path is `release()`) | The class itself is wrap-only |
 
@@ -416,8 +416,8 @@ The concrete `IoBuf` implementation differs per platform. All of them share the 
 
 - **Backing storage**: primary constructor allocates `ByteBuffer.allocateDirect(capacity)`. Capacity is an immutable field.
 - **Refcount**: bare `Int refCount = 1` (non-atomic).
-- **Release path**: decrements `refCount`; at zero, invokes the deallocator (if set) or `close()`. Double-release is guarded only by the `refCount > 0` check.
-- **`close()` behaviour**: sets `refCount = 0` and otherwise lets the JVM GC reclaim the direct buffer. External wraps delegate cleanup to the deallocator callback.
+- **Release path**: decrements `refCount`; at zero, invokes `memoryOwner.release(this)`. Double-release is guarded only by the `refCount > 0` check.
+- **`close()` behaviour**: escape hatch — sets `refCount = 0` and skips the owner entirely; the direct buffer is left to the JVM GC.
 - **`writeByte` / `readByte`**: `buf.put(writerIndex++, value)` / `buf.get(readerIndex++)`, no bounds check (hot-path thinning).
 - **`writeByteArray` / `readByteArray`**: bounds-checked; use `ByteBuffer.put(src, offset, length)` / `get(dst)` for the bulk copy.
 - **`compact` / `clear`**: `ByteBuffer.compact()` on the properly positioned view; `clear()` resets indices plus position/limit.
@@ -427,29 +427,29 @@ The concrete `IoBuf` implementation differs per platform. All of them share the 
 
 ### `NativeIoBuf` (Native: Linux / macOS)
 
-- **Backing storage**: primary constructor allocates via `nativeHeap.allocArray<ByteVar>(capacity)` and sets `ownsMemory = true`.
+- **Backing storage**: primary constructor allocates via `nativeHeap.allocArray<ByteVar>(capacity)` and installs `HeapOwner` as the default `memoryOwner`. The class implements an internal `HeapManagedBacking` marker so owners can delegate "free the backing" to the buffer.
 - **Refcount**: bare `Int refCount = 1` (non-atomic) plus a `freed: Boolean` flag that guards against double-free.
-- **Release path**: decrements `refCount`; at zero, invokes the deallocator or `close()`.
-- **`close()` behaviour**: `if (!freed)` guard, then `freed = true` and `refCount = 0`; calls `nativeHeap.free(ptr.rawValue)` only when `ownsMemory` is true. **Of the four implementations, this is the only one that performs an actual memory deallocation.**
+- **Release path**: decrements `refCount`; at zero, invokes `memoryOwner.release(this)`. For the default `HeapOwner`, this delegates back to `freeHeapBacking()` (the `HeapManagedBacking` method) which calls `nativeHeap.free(ptr.rawValue)`. **Of the four implementations, this is the only one that performs an actual memory deallocation.**
+- **`close()` behaviour**: escape hatch — `if (!freed)` guard, then `freed = true` + `refCount = 0`, and the heap-managed backing is freed directly (skipping any custom owner).
 - **`writeByte` / `readByte`**: `ptr[writerIndex++] = value` / `ptr[readerIndex++]`, no bounds check.
 - **`writeByteArray` / `readByteArray`**: bounds-checked; pin + `memcpy(ptr + index, src, length)` for bulk copy.
 - **`compact`**: no-op when `readerIndex == 0`; otherwise `memmove(ptr, ptr + readerIndex, readable)`.
 - **`copyTo`**: when the destination implements `NativePointerAccess` (exposes `unsafePointer`), transfers directly with `memcpy`.
 - **Engine accessor**: `unsafePointer: CPointer<ByteVar>` (interface member), used for POSIX syscalls (`read(2)` / `write(2)` / `writev(2)`).
-- **`wrapExternal`**: companion factory that accepts a raw pointer, capacity, `bytesWritten`, and an optional deallocator. Initializes `ownsMemory = false`; `resetForReuse()` resets indices and clears the `freed` flag (preserving `ptr` and `ownsMemory`) so pools can reuse the wrapper.
+- **`wrapExternal`**: companion factory that accepts a raw pointer, capacity, `bytesWritten`, and an explicit `memoryOwner` (e.g. `ExternalWrapOwner` for pinned `ByteArray`, `SliceOwner` for parent-retained slices). `resetForReuse()` resets indices and clears the `freed` flag (preserving `ptr`) so pools can reuse the wrapper.
 
 ### `TypedArrayIoBuf` (JS)
 
 - **Backing storage**: `Int8Array(capacity)` allocated on the V8 heap; `capacity = array.length`.
 - **Refcount**: bare `Int refCount = 1` (JS is single-threaded).
-- **Release path**: decrements `refCount`; at zero, invokes the deallocator or `close()`.
-- **`close()` behaviour**: sets `refCount = 0`; the `Int8Array` is reclaimed by V8's GC (effective no-op).
+- **Release path**: decrements `refCount`; at zero, invokes `memoryOwner.release(this)`.
+- **`close()` behaviour**: escape hatch — sets `refCount = 0` and skips the owner; the `Int8Array` is reclaimed by V8's GC.
 - **`writeByte` / `readByte`**: `buf.asDynamic()[writerIndex++] = value` / `(buf.asDynamic()[readerIndex++] as Int).toByte()`. The `asDynamic()` cast is required because Kotlin/JS IR mode does not compile typed-array indexing directly; the dynamic call lands on V8-native operations.
 - **`writeByteArray` / `readByteArray`**: bounds-checked; element-wise loops via `asDynamic()`.
 - **`compact`**: uses V8-native `Int8Array.copyWithin(0, readerIndex, writerIndex)`.
 - **`copyTo`**: `destBuf.set(buf.subarray(readerIndex, ...), dest.writerIndex)`, V8's optimized typed-array bulk copy.
 - **Engine accessor**: `unsafeArray: Int8Array` (property + extension), used for Node.js `net.Socket.write` and similar APIs.
-- **`wrapExternal`**: companion factory that wraps a pre-allocated `Int8Array` and sets `writerIndex = bytesWritten`. No `ownsMemory` field (always false semantically).
+- **`wrapExternal`**: companion factory that wraps a pre-allocated `Int8Array` and sets `writerIndex = bytesWritten`. The JS heap is GC-managed so the default owner is a no-op.
 
 ### `RingBufferIoBuf` (io_uring engine)
 
@@ -458,8 +458,8 @@ This implementation is qualitatively different from the other three. It is a **w
 - **Backing storage**: a slot in the `ProvidedBufferRing`. The pointer is computed via `bufferRing.getPointer(bufId)` and cached in the constructor (avoiding per-access recomputation).
 - **Refcount**: bare `Int refCount = 1`.
 - **Lifecycle**: no `allocate` factory. Slot-sized instances are created once at source startup, and each CQE callback calls `reset()` (which resets the indices and `refCount = 1` while preserving `ptr` and the `bufferRing` reference). **Hot-path object allocation is zero.**
-- **Release path**: when `refCount` reaches 0, the `onRelease(this)` callback fires, returning the slot to the ring.
-- **`close()` behaviour**: sets `refCount = 0` but does NOT call `onRelease`. The slot is **intentionally leaked** — `close()` exists purely for `AutoCloseable` compatibility; the normal path is `release()`.
+- **Release path**: when `refCount` reaches 0, `memoryOwner.release(this)` runs. The default owner is a `RingSlotOwner(bufferRing, bufId)` that returns the slot to the ring.
+- **`close()` behaviour**: escape hatch — sets `refCount = 0` and skips the owner, so the slot is **intentionally leaked** for `AutoCloseable` compatibility; the normal path is `release()`.
 - **`writeByte` / `readByte` / bulk ops**: structurally identical to `NativeIoBuf` (`ptr[index++]` / `memcpy` / `memmove`).
 - **Engine accessor**: `unsafePointer: CPointer<ByteVar>` (implements `NativePointerAccess`), used to submit SQEs (`io_uring_prep_recv`, etc.).
 - **Platform-unique**: no hot-path allocation means the implementation can plug directly into a zero-copy read path once Fixed Buffers / MemoryOwner infrastructure lands.
@@ -532,6 +532,61 @@ Approximate allocation counts for a 1 MiB response:
 | Zero-copy (wrap) | 1 | 1 | 1 | 0 |
 
 On JVM, the GC-pressure difference is large. Full-matrix benchmarks have recorded 10–30% throughput improvements on the `/large` path once the zero-copy write is enabled (details in `benchmark/results-summary/`).
+
+## Backing ownership strategies
+
+Orthogonal to the ref-count flow (who calls `retain` / `release`) is the
+question of **what happens to the backing memory when refcount reaches
+zero** — free the native allocation, return to a pool, unpin an
+externally-wrapped array, return a kernel-managed slot, …
+
+keel expresses this via [`IoBufMemoryOwner`](https://github.com/fukusaka/keel/blob/main/keel-io/src/commonMain/kotlin/io/github/fukusaka/keel/buf/IoBufMemoryOwner.kt),
+a plain interface carried as an immutable `val memoryOwner` on every
+`IoBuf`. `IoBuf.release()` invokes `memoryOwner.release(this)` exactly
+once when the refcount reaches zero.
+
+### Strategy taxonomy
+
+| Strategy | Backing | Extra state | Release behaviour |
+|---|---|---|---|
+| `HeapOwner` (singleton) | `nativeHeap` / `ByteBuffer.allocateDirect` / `Int8Array` | none | `nativeHeap.free` on Native; GC-managed on JVM/JS (via `HeapManagedBacking` marker) |
+| `PoolOwner` | platform backing, managed by a pool | `returnToPool` lambda | push back to the Treiber stack / LIFO slot |
+| `SliceOwner` | sub-range of a parent `IoBuf` | `parent` ref | `parent.release()` |
+| `ExternalWrapOwner` | caller's pinned `ByteArray` or pre-allocated direct `ByteBuffer` | `unpin` lambda | drop the pin / external hold |
+| `RingSlotOwner` (engine-io-uring) | `ProvidedBufferRing` kernel slot | `ring`, `bufId` | return slot to the ring (`multishot recv`) |
+| `FixedBufferOwner` (engine-io-uring, future) | `io_uring_register_buffers` region | `registry`, `bufIndex` | return to the fixed-buffer registry (enables `READ_FIXED` / `WRITE_FIXED`) |
+| `NettyByteBufOwner` (engine-netty, future) | Netty pooled `ByteBuf` | `nettyBuf` ref | delegate to `nettyBuf.release()` |
+
+The interface is deliberately **plain, not sealed**: engine modules or
+downstream consumers can add their own owner variants without
+modifying keel-io (for example, a custom engine could introduce a
+`ShmOwner` for POSIX shared memory). Engines that need to distinguish
+strategies on the hot path (io_uring picking `WRITE_FIXED` vs `WRITE`)
+use a direct type check: `owner is FixedBufferOwner` gives both the
+identification and the strategy-specific state (`bufIndex`) in one
+step.
+
+### When this matters in practice
+
+Ordinary callers never notice: `allocator.allocate(size)` returns an
+`IoBuf` with the correct owner for the backing storage, and
+`buf.release()` does the right thing. Engines do not query owners on
+the common path either; only specialised paths (fixed-buffer io_uring,
+leak-tracking decorators) do.
+
+Where the taxonomy pays off:
+
+- **Slice safety**: `SliceOwner` stores only a parent ref, not a
+  `bufIndex`. A slice can therefore never be routed to `WRITE_FIXED`
+  by accident — the type check that would pick FIXED I/O simply
+  fails, and the write falls back to the regular path.
+- **Pool return path**: `PoolOwner` captures the single pool instance
+  and is reused across all allocations from that pool — one shared
+  owner per pool, so pool hits allocate no closure.
+- **Leak detection**: `TrackingAllocator` and `LeakDetectingAllocator`
+  wrap the owner in place (via the internal `PoolableIoBuf`
+  interface) so every release goes through a counting or
+  stack-recording decorator before reaching the real owner.
 
 ## Comparison with other buffer APIs
 
