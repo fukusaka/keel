@@ -162,6 +162,27 @@ buf.release()               // caller releases when done
 
 This isn't really a "third ownership model" — it's just that `read` is an inverted `write`. The caller is the sink for the bytes, and the engine is the source, so the ownership flow goes the other way.
 
+### Engine-delivered reads (advanced)
+
+Some push-model engines — NWConnection, Netty, Node.js — already have received data sitting in their own buffers, so it's wasteful to have the caller allocate a separate one just to be filled. For that path there is `OwnedSuspendSource.readOwned(): IoBuf?`:
+
+```kotlin
+val source: OwnedSuspendSource = channel.asOwnedSuspendSource()
+val buf = source.readOwned() ?: return   // null == EOF
+// The engine handed us a ready-made buffer; we own it now.
+processData(buf)
+buf.release()                              // release when done
+```
+
+The mental model stays the same: **whoever ends up holding the buffer releases it when done**. The only thing that changes from `channel.read(buf)` is *where the buffer came from*:
+
+- `channel.read(buf)` — you allocated it and lent it to the engine; you release it afterwards.
+- `readOwned()` — the engine allocated it and returned it to you; you release it afterwards.
+
+Treat `readOwned` as a buffer-returning function: receive → use → release. Concretely, it still counts as a new reference in the caller's hands, so the API classification below groups it under "New-reference APIs" alongside `allocator.allocate(...)`.
+
+`OwnedSuspendSource` is an engine-integration interface — Ktor and the codec layers don't touch it directly. First-time keel users typically only deal with `Channel.read(buf)`, so feel free to skip this section until you actually need zero-copy push-mode reads.
+
 ### API ownership at a glance
 
 **Transfer (the caller gives up the reference)**
@@ -190,6 +211,7 @@ This isn't really a "third ownership model" — it's just that `read` is an inve
 | `allocator.wrapBytes(bytes, offset, length)` | 1 (or `null` on JS) | The final consumer (the input `ByteArray` stays caller-owned) |
 | `allocator.slice(src, offset, length)` | 1 (independent of `src`) | Whoever owns the slice (`src` is tracked internally) |
 | `buf.retain()` | existing + 1, same instance | Whoever added the reference |
+| `OwnedSuspendSource.readOwned()` | 1 (or `null` on EOF) | Caller (engine transfers via return value — see "Engine-delivered reads") |
 
 ### Transport-level indices: not advanced by the engine
 

@@ -162,6 +162,27 @@ buf.release()               // 使い終わったら caller が release
 
 これは「3 番目の所有権モデル」というより、単に **`write` の反転**。caller が byte の受け手、engine が送り手になるため、所有権フローが逆向きに見えるだけ。
 
+### engine 渡しの read (advanced)
+
+NWConnection / Netty / Node.js のような push-model engine は、受信データを自分 (engine) の buffer に持っている。そのため caller 側で別 buffer を allocate して貸すのは無駄になる。こうした経路のために `OwnedSuspendSource.readOwned(): IoBuf?` が用意されている:
+
+```kotlin
+val source: OwnedSuspendSource = channel.asOwnedSuspendSource()
+val buf = source.readOwned() ?: return   // null は EOF
+// engine が出来合いの buf を渡した、以降 caller が所有
+processData(buf)
+buf.release()                              // 使い終わったら release
+```
+
+考え方は同じ: **最終的に buffer を手にした主体が release する**。`channel.read(buf)` との違いは **buffer の出所だけ**:
+
+- `channel.read(buf)` — caller が allocate して engine に貸す → 使い終わったら release
+- `readOwned()` — engine が allocate して caller に返す → 使い終わったら release
+
+`readOwned` は「buffer を return する関数」と思えば良い (受け取る → 使う → release)。実際、下の API 分類では `allocator.allocate(...)` と並んで「新しい参照を返す API」側に分類される。
+
+`OwnedSuspendSource` は engine integration 用 interface で、Ktor / codec 層からは直接見えない。初見 keel 開発者は通常 `Channel.read(buf)` しか扱わないので、zero-copy push-mode read が必要になるまでこの節はスキップして構わない。
+
 ### API 所有権サマリ
 
 **Transfer (caller は参照を手放す)**
@@ -190,6 +211,7 @@ buf.release()               // 使い終わったら caller が release
 | `allocator.wrapBytes(bytes, offset, length)` | 1 (JS は `null`) | 最終 consumer (入力 `ByteArray` は caller 所有のまま) |
 | `allocator.slice(src, offset, length)` | 1 (`src` と独立) | slice 所有者 (`src` は allocator 内部で track) |
 | `buf.retain()` | 既存 +1、同 instance | 追加参照を作った主体 |
+| `OwnedSuspendSource.readOwned()` | 1 (EOF は `null`) | caller (engine が return 経由で transfer、「engine 渡しの read」節参照) |
 
 ### transport 層で index は advance されない
 
