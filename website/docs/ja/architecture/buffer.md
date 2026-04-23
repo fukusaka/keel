@@ -372,22 +372,22 @@ engine は各 EventLoop 起動時に `allocator.createForEventLoop()` を呼び�
 
 size class 毎に Treiber stack を持ち、lock-free で pool を操作する。stack head は `AtomicReference<DirectIoBuf?>`、pool 内の連結は `IoBuf.nextLink` 経由の intrusive リンクで行う。
 
-- **allocate**: pool から CAS で pop、miss 時のみ `ByteBuffer.allocateDirect(capacity)` を新規確保。取得した buffer の deallocator に `returnToPool` を設定する
-- **release (refCount 0 到達時)**: deallocator が CAS で stack に push。pool が満杯 (`maxSlots` 超) なら push を諦めて `buf.close()` で解放
+- **allocate**: pool から CAS で pop、miss 時のみ `ByteBuffer.allocateDirect(capacity)` を新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
+- **release (refCount 0 到達時)**: `PoolOwner` が CAS で stack に push。pool が満杯 (`maxSlots` 超) なら push を諦め、backing direct buffer は JVM GC に任せる
 - **`registerPoolSize(size, maxSlots)`**: lazy registration。総メモリ予算 (`maxTotalBytes` デフォルト 251 KiB) を超える場合は `maxSlots` を自動削減。重複登録は no-op
 - **`createForEventLoop()`**: 親の size class を引き継いだ新 instance を返し、per-pool 上限は `LOCAL_POOL_SLOTS = 8`（親のデフォルト 16 から縮小）
 - **`wrapBytes`**: `ByteBuffer.wrap(bytes, offset, length)` で zero-copy wrap、`DirectIoBuf.wrapExternal` として返す。backing は caller の heap array であり release まで mutate 禁止
-- **`slice`**: `ByteBuffer.duplicate().slice()` で zero-copy、source を retain し、slice 解放時に source を release する deallocator を仕込む
+- **`slice`**: `ByteBuffer.duplicate().slice()` で zero-copy、source を retain し、slice 解放時に parent を release する `SliceOwner(source)` を仕込む
 
 ### `SlabAllocator` (Native)
 
 size class 毎に `ArrayDeque<NativeIoBuf>` を持つ LIFO pool。pool 全体の HashMap を spin-lock (`AtomicReference<Boolean>` による CAS) で保護する。
 
-- **allocate**: spin-lock 下で `removeLast()`、miss 時のみ `NativeIoBuf(capacity)` を `nativeHeap` から新規確保。deallocator に `returnToPool` を設定する
-- **release (refCount 0 到達時)**: deallocator が spin-lock 下で `addLast()`。pool が満杯なら `buf.close()`（`nativeHeap.free`）で解放
+- **allocate**: spin-lock 下で `removeLast()`、miss 時のみ `NativeIoBuf(capacity)` を `nativeHeap` から新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
+- **release (refCount 0 到達時)**: `PoolOwner` が spin-lock 下で `addLast()`。pool が満杯なら backing を `nativeHeap.free` で直接解放
 - **`registerPoolSize(size, maxSlots)`**: lazy registration。予算 (`maxTotalBytes` デフォルト 256 KiB) を超える場合は `maxSlots` を自動削減。spin-lock 下で重複チェックと挿入を atomic に実施
 - **`createForEventLoop()`**: 親の size class を引き継ぎ per-pool `LOCAL_POOL_SLOTS = 8` を適用した新 instance を返す
-- **`wrapBytes`**: `ByteArray` を pin して `CPointer` を取り、`NativeIoBuf.wrapExternal` として返す。deallocator が release 時に unpin する
+- **`wrapBytes`**: `ByteArray` を pin して `CPointer` を取り、`NativeIoBuf.wrapExternal` として返す。release 時に unpin する `ExternalWrapOwner` を仕込む
 - **`slice`**: pointer 加算による zero-copy。source を retain し、slice 解放時に source を release する
 
 ### 共通の設計方針
@@ -409,7 +409,7 @@ io_uring engine の inbound read path のみ `BufferAllocator` を経由せず�
 | 実装 | Target | backing storage | `close()` 挙動 | 外部 wrap 対応 |
 |---|---|---|---|---|
 | `DirectIoBuf` | JVM | `ByteBuffer.allocateDirect(capacity)` | no-op（GC 管理） | `wrapExternal(buffer, bytesWritten)` |
-| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>(capacity)` | `nativeHeap.free` 実行、`freed` flag で idempotent | `wrapExternal(ptr, capacity, bytesWritten, deallocator)` |
+| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>(capacity)` | `nativeHeap.free` 実行、`freed` flag で idempotent | `wrapExternal(ptr, capacity, bytesWritten, memoryOwner)` |
 | `TypedArrayIoBuf` | JS | `Int8Array(capacity)`（V8 heap） | no-op（GC 管理） | `wrapExternal(array, bytesWritten)` |
 | `RingBufferIoBuf` | io_uring engine | `ProvidedBufferRing` slot（kernel 管理） | slot を leak（`AutoCloseable` 互換用、通常 path は `release()`） | 構造そのものが wrap 専用 |
 
@@ -417,8 +417,8 @@ io_uring engine の inbound read path のみ `BufferAllocator` を経由せず�
 
 - **backing storage**: `ByteBuffer.allocateDirect(capacity)` を primary constructor で確保。`capacity` は immutable field
 - **refCount**: bare `Int refCount = 1`（非 atomic）
-- **release path**: `refCount` を decrement し 0 到達時に deallocator（設定時）または `close()` を呼ぶ。double-release は `refCount > 0` check で防御
-- **close 挙動**: `refCount = 0` をセットし、backing `ByteBuffer` は GC 任せ（実解放なし）。external wrap の場合は deallocator callback が cleanup
+- **release path**: `refCount` を decrement し 0 到達時に `memoryOwner.release(this)` を呼ぶ。double-release は `refCount > 0` check で防御
+- **close 挙動**: escape hatch。`refCount = 0` をセットし owner を呼ばない。backing `ByteBuffer` は JVM GC 任せ
 - **`writeByte` / `readByte`**: `buf.put(writerIndex++, value)` / `buf.get(readerIndex++)`、bounds check なし（hot path 薄化）
 - **`writeByteArray` / `readByteArray`**: bounds check あり、`ByteBuffer.put(src, offset, length)` / `get(dst)` 経由で bulk copy
 - **`compact` / `clear`**: `ByteBuffer.compact()` を position/limit を正しく設定して呼び出し、`clear()` は index + position/limit を全 reset
@@ -428,29 +428,29 @@ io_uring engine の inbound read path のみ `BufferAllocator` を経由せず�
 
 ### `NativeIoBuf` (Native: Linux / macOS)
 
-- **backing storage**: primary constructor で `nativeHeap.allocArray<ByteVar>(capacity)` を確保、`ownsMemory = true` を設定
+- **backing storage**: primary constructor で `nativeHeap.allocArray<ByteVar>(capacity)` を確保し、`memoryOwner` として `HeapOwner` を設定。内部 marker `HeapManagedBacking` を実装しており、owner が「backing free」を buffer 本体に委譲できる
 - **refCount**: bare `Int refCount = 1`（非 atomic）+ `freed: Boolean` flag（二重 free 防止）
-- **release path**: `refCount` decrement、0 で deallocator または `close()` 呼び出し
-- **close 挙動**: `if (!freed)` guard → `freed = true` + `refCount = 0` をセット → `ownsMemory` が true の場合のみ `nativeHeap.free(ptr.rawValue)` 実行。**4 impl 中、実メモリ解放を行うのは本 impl のみ**
+- **release path**: `refCount` decrement、0 で `memoryOwner.release(this)` 呼び出し。default の `HeapOwner` は `HeapManagedBacking.freeHeapBacking()` 経由で `nativeHeap.free(ptr.rawValue)` を実行。**4 impl 中、実メモリ解放を行うのは本 impl のみ**
+- **close 挙動**: escape hatch。`if (!freed)` guard → `freed = true` + `refCount = 0` をセット → owner をスキップし heap backing を直接 free
 - **`writeByte` / `readByte`**: `ptr[writerIndex++] = value` / `ptr[readerIndex++]`、bounds check なし
 - **`writeByteArray` / `readByteArray`**: bounds check あり、pin + `memcpy(ptr + index, src, length)` で bulk copy
 - **`compact`**: `readerIndex == 0` なら no-op、それ以外は `memmove(ptr, ptr + readerIndex, readable)`
 - **`copyTo`**: dest が `NativePointerAccess` (`unsafePointer` を持つ) であれば `memcpy` で直接転送
 - **engine accessor**: `unsafePointer: CPointer<ByteVar>` （interface member）、POSIX syscall (`read(2)` / `write(2)` / `writev(2)`) に使用
-- **`wrapExternal`**: companion factory で raw pointer + capacity + `bytesWritten` + optional deallocator を受ける。`ownsMemory = false` で初期化、`resetForReuse()` で index と `freed` flag を初期化（ptr / ownsMemory は保持）することで pool 側の再利用を可能にする
+- **`wrapExternal`**: companion factory で raw pointer + capacity + `bytesWritten` + 明示的な `memoryOwner`（pin した `ByteArray` には `ExternalWrapOwner`、parent retain の slice には `SliceOwner` 等）を受ける。`resetForReuse()` で index と `freed` flag を初期化（ptr は保持）し pool 側で再利用可能
 
 ### `TypedArrayIoBuf` (JS)
 
 - **backing storage**: `Int8Array(capacity)` を V8 heap に確保、`capacity = array.length`
 - **refCount**: bare `Int refCount = 1`（JS は single-threaded 前提）
-- **release path**: `refCount` decrement、0 で deallocator または `close()`
-- **close 挙動**: `refCount = 0` をセット、backing `Int8Array` は V8 GC 任せ（no-op）
+- **release path**: `refCount` decrement、0 で `memoryOwner.release(this)` 呼び出し
+- **close 挙動**: escape hatch。`refCount = 0` をセットし owner をスキップ。backing `Int8Array` は V8 GC 任せ
 - **`writeByte` / `readByte`**: `buf.asDynamic()[writerIndex++] = value` / `(buf.asDynamic()[readerIndex++] as Int).toByte()`。Kotlin/JS IR mode では typed array の indexing が直接 compile できないため `asDynamic()` で V8 native operation に直結
 - **`writeByteArray` / `readByteArray`**: bounds check あり、element-wise loop で `asDynamic()` 経由
 - **`compact`**: `Int8Array.copyWithin(0, readerIndex, writerIndex)` で V8 native 実装を利用
 - **`copyTo`**: `destBuf.set(buf.subarray(readerIndex, ...), dest.writerIndex)` で V8 typed-array bulk copy
 - **engine accessor**: `unsafeArray: Int8Array` （property + extension）、Node.js `net.Socket.write` 等に使用
-- **`wrapExternal`**: companion factory で pre-allocated `Int8Array` を wrap、`writerIndex = bytesWritten`。`ownsMemory` field は持たない（常に false 相当）
+- **`wrapExternal`**: companion factory で pre-allocated `Int8Array` を wrap、`writerIndex = bytesWritten`。JS heap は GC 管理のため default owner は no-op
 
 ### `RingBufferIoBuf` (io_uring engine)
 
@@ -459,8 +459,8 @@ io_uring engine の inbound read path のみ `BufferAllocator` を経由せず�
 - **backing storage**: `ProvidedBufferRing` の slot。pointer は `bufferRing.getPointer(bufId)` で算出し、コンストラクタで cache（property 毎のアクセスで再計算しない）
 - **refCount**: bare `Int refCount = 1`
 - **lifecycle**: 新規 `allocate` は存在しない。source 起動時に slot 単位で事前生成され、CQE callback で `reset()`（index と `refCount = 1` を初期化、ptr と bufferRing 設定は保持）して再利用。**hot path での object 生成ゼロ**
-- **release path**: `refCount` を 0 に decrement した時点で `onRelease(this)` callback が発火、slot が ring に返却される
-- **close 挙動**: `refCount = 0` をセットするのみ。`onRelease` は呼ばないため、slot は **意図的に leak** する（`AutoCloseable` 互換の最後の砦、通常 path は `release()` 経由）
+- **release path**: `refCount` を 0 に decrement した時点で `memoryOwner.release(this)` が実行される。default owner は `RingSlotOwner(bufferRing, bufId)` で、slot を ring に返却する
+- **close 挙動**: escape hatch。`refCount = 0` をセットし owner をスキップ。そのため slot は **意図的に leak** する（`AutoCloseable` 互換の最後の砦、通常 path は `release()` 経由）
 - **`writeByte` / `readByte` / bulk ops**: `NativeIoBuf` と同構造（`ptr[index++]` / `memcpy` / `memmove`）
 - **engine accessor**: `unsafePointer: CPointer<ByteVar>`（`NativePointerAccess` 実装）、`io_uring_prep_recv` 等の SQE 提出に使用
 - **platform-unique**: hot-path allocation が存在しないため、Fixed Buffers / MemoryOwner 基盤が整備されれば直接 zero-copy read path に接続可能
@@ -561,7 +561,7 @@ interface はあえて **sealed でない plain interface**。engine module や�
 taxonomy の実用価値:
 
 - **Slice 安全性**: `SliceOwner` は parent ref のみを持ち、`bufIndex` は保持しない。したがって slice が誤って `WRITE_FIXED` に流れることは型レベルで不可能 — FIXED I/O を選ぶ型 check が失敗し、自動的に通常 path に落ちる
-- **Pool 返却 path**: `PoolOwner` は pool instance を 1 つだけ保持し、同 pool の全 allocate で使い回される。以前の `deallocator` lambda が allocate 毎に closure allocation していたコストが消える
+- **Pool 返却 path**: `PoolOwner` は pool instance を 1 つだけ保持し、同 pool の全 allocate で使い回される — pool hit path は closure 生成なし
 - **leak detector**: `TrackingAllocator` / `LeakDetectingAllocator` は internal `PoolableIoBuf` interface 経由で owner を wrap することで、すべての release が counting / stack-recording decorator を通ってから実 owner に届く
 
 ## 他の buffer API との比較

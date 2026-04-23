@@ -11,8 +11,8 @@ import org.khronos.webgl.Int8Array
  * with Native/JVM implementations.
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
- * [Int8Array] without allocation. Use [deallocator] to handle buffer
- * recycling if needed.
+ * [Int8Array] without allocation. Pass an [IoBufMemoryOwner] if recycling
+ * is required.
  *
  * Note: [Int8Array] provides direct byte-level access without `dynamic`
  * type casts, ensuring type safety in Kotlin/JS IR mode.

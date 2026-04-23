@@ -7,7 +7,7 @@ import kotlin.native.ref.createCleaner
 /**
  * Native leak detection using [createCleaner].
  *
- * When the buffer object is garbage-collected without its deallocator being
+ * When the buffer object is garbage-collected without its memory owner being
  * invoked (i.e., release() was never called to reach refCount=0), the Cleaner
  * fires and invokes [onLeak] with the allocation site stack trace.
  *

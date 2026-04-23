@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- `io`: introduce `IoBufMemoryOwner` as `val` on `IoBuf`, consolidating the former `deallocator` / `onRelease` / `ownsMemory` release paths behind a single `memoryOwner.release(buf)` call at refcount zero (#351)
-
 ### Documentation
 
 - `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — single rule ("writes transfer, reads don't") + 3 `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md (#350)
@@ -22,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: add `IoBufMemoryOwner` as a `val` on `IoBuf` — a pluggable release-strategy interface (`HeapOwner` / `PoolOwner` / `SliceOwner` / `ExternalWrapOwner` and engine-specific variants such as `RingSlotOwner`) invoked at refcount zero. Unifies the per-buffer release dispatch across the backing taxonomy and unblocks io_uring Fixed Buffers + Netty `ByteBuf` 2-stage allocators (#351)
 - **BREAKING** (`core` / `io`): `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` now use ownership-transfer semantics (match Netty `ByteBuf`). Callers must not call `IoBuf.release()` after write — transport takes the ref and releases after flush. Use `buf.retain()` before write to keep an alive ref. `readerIndex` advance at write time also dropped; snapshot captured in `PendingWrite` (match Netty `ChannelOutboundBuffer`) (#350)
 - **BREAKING** (`native-posix` test consumers): `FakeNativeSocket` / `FakeNativeSocketOps` / `PosixRawClient` / `@InternalTestApi` extracted from `keel-native-posix` (production artifact) into a new `keel-native-posix-testing` module. Engine test modules must switch `implementation(project(":keel-native-posix"))` in test source sets to `implementation(project(":keel-native-posix-testing"))`. Import paths (`io.github.fukusaka.keel.native.posix.*`) are unchanged. Production artifact no longer carries test scaffolding; the 2 test-only C helpers (`keel_connect_inet_loopback` / `keel_set_rcvtimeo`) moved with `PosixRawClient` to a separate `posix_testing` cinterop def. Not published to Maven, not included in Dokka ([#346])
 
@@ -85,8 +82,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: `PipelinedServer` interface and `IoEngine.bindPipeline` — non-suspend pipeline server API ([#230])
 - `build`: `detekt-formatting` (ktlint wrapper) for automated Kotlin coding conventions ([#204])
 - `ci`: OpenSSL (`libssl-dev`) and AWS-LC install to CI and Dokka workflows ([#212])
-
-### Changed
 
 - `engine-epoll` / `engine-kqueue` / `engine-io-uring`: expose `nativeSocket: NativeSocket = PosixNativeSocket` engine-constructor parameter and thread it through `*Server` / `*PipelinedServerChannel` / `*IoTransport`; engines now dispatch every POSIX syscall through the injected instance instead of the `PosixNativeSocket` singleton. Production behaviour unchanged (default resolves to the singleton); tests can inject `FakeNativeSocket` to drive errno branches without a real kernel ([#332])
 - **BREAKING** (`native-posix`): `PosixSocketUtils.createServerSocket` / `createReusePortServerSocket` / `createUnixServerSocket` take a trailing `logger: Logger` parameter and route error-cleanup `close(fd)` through `closeFdSafely`. Closes the last production silent `close(fd)` inside `keel-native-posix` itself ([#331])

@@ -257,7 +257,7 @@ internal interface PoolableIoBuf : IoBuf {
      * Resets the buffer for reuse without freeing the underlying memory.
      *
      * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
-     * and [nextLink] to null. [deallocator] is preserved across reuses.
+     * and [nextLink] to null. [memoryOwner] is preserved across reuses.
      */
     fun resetForReuse()
 }
