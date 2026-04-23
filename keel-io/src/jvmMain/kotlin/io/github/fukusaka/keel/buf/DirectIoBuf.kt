@@ -184,7 +184,7 @@ class DirectIoBuf private constructor(
          * @param memoryOwner   Strategy invoked at refcount-zero.
          * @return A [DirectIoBuf] wrapping the external buffer.
          */
-        internal fun wrapExternal(
+        fun wrapExternal(
             buffer: ByteBuffer,
             bytesWritten: Int,
             memoryOwner: IoBufMemoryOwner = HeapOwner,
