@@ -2,18 +2,18 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc

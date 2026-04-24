@@ -1,14 +1,14 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
 /**

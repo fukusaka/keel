@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io_uring.IORING_OP_SEND_ZC
 import io_uring.IORING_OP_SENDMSG_ZC
+import io_uring.IORING_OP_SEND_ZC
 import io_uring.io_uring
 import io_uring.keel_get_probe_ring
 import io_uring.keel_opcode_supported

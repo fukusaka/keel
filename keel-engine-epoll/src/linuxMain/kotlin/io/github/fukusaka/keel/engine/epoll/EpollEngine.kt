@@ -6,11 +6,10 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
@@ -18,12 +17,13 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -31,12 +31,12 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import kotlin.coroutines.CoroutineContext
 import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import platform.posix.errno
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Linux epoll-based [StreamEngine] implementation with multi-threaded EventLoop.

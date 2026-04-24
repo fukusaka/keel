@@ -5,11 +5,10 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
@@ -17,6 +16,7 @@ import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job

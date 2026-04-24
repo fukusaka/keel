@@ -2,17 +2,17 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -20,13 +20,13 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.concurrent.Volatile
-import kotlin.coroutines.resumeWithException
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import kotlin.concurrent.Volatile
+import kotlin.coroutines.resumeWithException
 
 /**
  * kqueue-based [StreamServer] implementation for macOS.

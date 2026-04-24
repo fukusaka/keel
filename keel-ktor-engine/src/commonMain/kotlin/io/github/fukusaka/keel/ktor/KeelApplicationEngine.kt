@@ -14,8 +14,8 @@ import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel

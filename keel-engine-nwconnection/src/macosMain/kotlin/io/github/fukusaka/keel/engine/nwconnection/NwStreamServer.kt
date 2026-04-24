@@ -3,21 +3,22 @@ package io.github.fukusaka.keel.engine.nwconnection
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.LoggerFactory
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t
@@ -31,9 +32,8 @@ import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
-import kotlinx.cinterop.Arena
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.ptr
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * NWConnection-based [StreamServer] implementation for macOS.

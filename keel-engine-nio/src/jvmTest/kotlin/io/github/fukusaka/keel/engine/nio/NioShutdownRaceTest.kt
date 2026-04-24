@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
