@@ -68,10 +68,22 @@ public interface NativeSocket {
     public fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult
 
     /**
-     * Gather-write: writes every region in [regions] to [fd] in a
-     * single `writev(2)` call.
+     * Gather-write: writes [count] regions to [fd] in a single
+     * `writev(2)` call.
+     *
+     * The regions are described by two parallel primitive arrays
+     * (`[ptrs]` holds native addresses as `Long`; `[lens]` the byte
+     * counts). The caller pre-allocates and reuses these arrays from the
+     * EventLoop hot path to avoid per-flush allocation that the former
+     * `List<NativeRegion>` signature forced. The caller is responsible
+     * for keeping the underlying memory pinned / alive for the duration
+     * of the call.
+     *
+     * @param count number of active entries — only `ptrs[0..count-1]` /
+     *   `lens[0..count-1]` are read. Must be `>= 0` and
+     *   `<= ptrs.size`, `<= lens.size`.
      */
-    public fun writev(fd: Int, regions: List<NativeRegion>): WriteResult
+    public fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult
 
     /**
      * Accepts a connection on [serverFd] with `accept(fd, NULL, NULL)`.
@@ -128,14 +140,6 @@ public interface NativeSocket {
      */
     public fun close(fd: Int): CloseResult
 }
-
-/**
- * One base pointer + length pair for [NativeSocket.writev]. The caller
- * is responsible for keeping the underlying memory pinned / alive for
- * the duration of the call.
- */
-@OptIn(ExperimentalForeignApi::class)
-public data class NativeRegion(val ptr: CPointer<ByteVar>, val length: Int)
 
 /**
  * Outcome of [NativeSocket.read].

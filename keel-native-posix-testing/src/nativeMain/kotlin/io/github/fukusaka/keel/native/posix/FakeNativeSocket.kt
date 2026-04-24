@@ -138,7 +138,7 @@ public class FakeNativeSocket : NativeSocket {
         return writeQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
-    override fun writev(fd: Int, regions: List<NativeRegion>): WriteResult {
+    override fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult {
         writevCalls++
         return writevQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }

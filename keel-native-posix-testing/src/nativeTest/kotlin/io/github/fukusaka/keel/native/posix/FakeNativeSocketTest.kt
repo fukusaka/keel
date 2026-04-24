@@ -168,9 +168,9 @@ class FakeNativeSocketTest {
     fun `writev and send share defaultWrite but have independent queues`() {
         val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(100) }
         fake.enqueueWritev(fd = 3, WriteResult.Written(50))
-        assertEquals(WriteResult.Written(50), fake.writev(3, emptyList()))
+        assertEquals(WriteResult.Written(50), fake.writev(3, LongArray(0), IntArray(0), 0))
         // writev queue drained — falls back to defaultWrite.
-        assertEquals(WriteResult.Written(100), fake.writev(3, emptyList()))
+        assertEquals(WriteResult.Written(100), fake.writev(3, LongArray(0), IntArray(0), 0))
         // send never scripted — also falls back to defaultWrite.
         withDummyBuf { buf ->
             assertEquals(WriteResult.Written(100), fake.send(3, buf, 10, 0))
