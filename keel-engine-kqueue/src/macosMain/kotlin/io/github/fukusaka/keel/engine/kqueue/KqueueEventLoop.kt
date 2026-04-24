@@ -302,6 +302,9 @@ internal class KqueueEventLoop(
             // kevent(EV_ADD) failed — remove the stale map entry and fail the
             // caller's suspend with an exception. Without this, the continuation
             // would never resume (the registration exists but is never dispatched).
+            // TODO(v1.0 前): proper engine-level exception type. IllegalStateException
+            // is a placeholder; the design for a PosixException / EventLoopException
+            // hierarchy is deferred to a separate task.
             withRegLock { registrations.remove(key) }
             cont.resumeWithException(
                 IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
