@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.pipeline.internal.ReferenceCountUtil
 import kotlin.reflect.KClass
 
 /**
@@ -10,7 +12,7 @@ import kotlin.reflect.KClass
  *
  * **Auto-release**: when [autoRelease] is true (default), the message is
  * released after [onReadTyped] returns — unless the handler propagated it
- * to the next handler (detected via [PropagateTrackingContext]). This
+ * to the next handler (detected via an internal context wrapper). This
  * prevents use-after-free when a handler both forwards and auto-releases.
  *
  * **Pipeline type validation**: [acceptedType] is automatically set to [type],
@@ -74,4 +76,41 @@ inline fun <reified I : Any> typedHandler(
     crossinline block: (PipelineHandlerContext, I) -> Unit,
 ): TypedInboundHandler<I> = object : TypedInboundHandler<I>(I::class) {
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: I) = block(ctx, msg)
+}
+
+/**
+ * Wrapper around [PipelineHandlerContext] that detects propagation calls.
+ *
+ * Used by [TypedInboundHandler] to determine whether the handler forwarded
+ * the message to the next handler. If [propagateRead] is called, [onPropagate]
+ * fires, signaling that auto-release should be skipped (the next handler now
+ * owns the message).
+ */
+private class PropagateTrackingContext(
+    private val delegate: PipelineHandlerContext,
+    private val onPropagate: () -> Unit,
+) : PipelineHandlerContext {
+
+    override val channel: PipelinedChannel get() = delegate.channel
+    override val pipeline: Pipeline get() = delegate.pipeline
+    override val name: String get() = delegate.name
+    override val handler: PipelineHandler get() = delegate.handler
+    override val allocator: BufferAllocator get() = delegate.allocator
+
+    override fun propagateActive() = delegate.propagateActive()
+
+    override fun propagateRead(msg: Any) {
+        onPropagate()
+        delegate.propagateRead(msg)
+    }
+
+    override fun propagateReadComplete() = delegate.propagateReadComplete()
+    override fun propagateInactive() = delegate.propagateInactive()
+    override fun propagateError(cause: Throwable) = delegate.propagateError(cause)
+    override fun propagateUserEvent(event: Any) = delegate.propagateUserEvent(event)
+    override fun propagateWritabilityChanged(isWritable: Boolean) = delegate.propagateWritabilityChanged(isWritable)
+
+    override fun propagateWrite(msg: Any) = delegate.propagateWrite(msg)
+    override fun propagateFlush() = delegate.propagateFlush()
+    override fun propagateClose() = delegate.propagateClose()
 }

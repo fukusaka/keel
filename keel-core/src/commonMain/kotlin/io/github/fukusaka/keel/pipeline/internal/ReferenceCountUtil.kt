@@ -1,12 +1,12 @@
-package io.github.fukusaka.keel.pipeline
+package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.IoBuf
 
 /**
  * Utility for safe reference count management in the pipeline.
  *
- * Used by [TailHandler] and [TypedInboundHandler] to release
- * messages that implement [IoBuf] without risking double-release.
+ * Used by [TailHandler] and [io.github.fukusaka.keel.pipeline.TypedInboundHandler]
+ * to release messages that implement [IoBuf] without risking double-release.
  */
 internal object ReferenceCountUtil {
 

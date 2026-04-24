@@ -1,6 +1,9 @@
-package io.github.fukusaka.keel.pipeline
+package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.pipeline.DuplexHandler
+import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 
 /**
  * The head of the pipeline — connects inbound/outbound to the [IoTransport].
