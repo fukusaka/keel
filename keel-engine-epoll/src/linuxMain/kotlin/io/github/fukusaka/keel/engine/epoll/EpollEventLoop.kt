@@ -1,40 +1,28 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import posix_inet.keel_eventfd_create
-import posix_inet.keel_eventfd_read
-import posix_inet.keel_eventfd_write
-import kotlinx.cinterop.Arena
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.get
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.staticCFunction
-import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.asStableRef
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import kotlinx.cinterop.Arena
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.get
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
-import platform.linux.EPOLL_CTL_ADD
-import platform.linux.EPOLL_CTL_MOD
-import platform.linux.epoll_create1
-import platform.linux.epoll_ctl
-import platform.linux.epoll_event
-import platform.linux.epoll_wait
 import platform.posix.EAGAIN
 import platform.posix.EEXIST
 import platform.posix.EINTR
-import platform.posix.errno
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
@@ -99,6 +87,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollEventLoop(
     internal val logger: Logger,
+    private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
 ) : CoroutineDispatcher(), EpollSuspendRegister {
 
     /**
@@ -134,6 +123,12 @@ internal class EpollEventLoop(
     // Only accessed from the EventLoop thread (via [drainTasks]).
     private val drainBatch: MutableList<Runnable> = mutableListOf()
 
+    // Pre-allocated event carrier array reused across every [loop]
+    // iteration. Sized to [MAX_EVENTS]; each slot is a mutable [EpEvent]
+    // whose fields are overwritten by [EpollSyscallOps.waitEvents].
+    // Only accessed from the EventLoop thread.
+    private val eventBuffer: Array<EpEvent> = Array(MAX_EVENTS) { EpEvent() }
+
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<pthread_tVar>()
@@ -156,32 +151,25 @@ internal class EpollEventLoop(
     enum class Interest { READ, WRITE }
 
     init {
-        val fd = epoll_create1(0)
-        check(fd >= 0) { "epoll_create1() failed: ${errnoMessage(errno)}" }
+        val fd = syscallOps.epollCreate()
+        if (fd < 0) error("epoll_create1() failed: ${errnoMessage(-fd)}")
         epFd = fd
 
         // Create eventfd for wakeup and register with epoll.
         // eventfd is more efficient than pipe on Linux: single fd,
         // kernel-optimized for event signaling.
-        val wf = keel_eventfd_create()
+        val wf = syscallOps.eventfdCreate()
         if (wf < 0) {
-            val err = errno
             closeFdSafely(epFd, logger, "epoll init (eventfd failure)")
-            error("eventfd() failed: ${errnoMessage(err)}")
+            error("eventfd() failed: ${errnoMessage(-wf)}")
         }
         wakeupFd = wf
 
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = EPOLLIN.toUInt()
-            ev.data.fd = wakeupFd
-            val rc = epoll_ctl(epFd, EPOLL_CTL_ADD, wakeupFd, ev.ptr)
-            if (rc < 0) {
-                val err = errno
-                closeFdSafely(wakeupFd, logger, "epoll init (epoll_ctl failure)")
-                closeFdSafely(epFd, logger, "epoll init (epoll_ctl failure)")
-                error("epoll_ctl(ADD, wakeupFd) failed: ${errnoMessage(err)}")
-            }
+        val ctlErr = syscallOps.epollAdd(epFd, wakeupFd, EPOLLIN)
+        if (ctlErr != 0) {
+            closeFdSafely(wakeupFd, logger, "epoll init (epoll_ctl failure)")
+            closeFdSafely(epFd, logger, "epoll init (epoll_ctl failure)")
+            error("epoll_ctl(ADD, wakeupFd) failed: ${errnoMessage(ctlErr)}")
         }
     }
 
@@ -348,7 +336,12 @@ internal class EpollEventLoop(
      * re-evaluates pending fds and tasks.
      */
     private fun wakeup() {
-        keel_eventfd_write(wakeupFd)
+        val err = syscallOps.eventfdWakeupWrite(wakeupFd)
+        // EAGAIN: eventfd counter saturated — a wakeup is already
+        // pending in the kernel, which is exactly what we want. Benign.
+        if (err != 0 && err != EAGAIN) {
+            logger.debug { "eventfd_write() failed: ${errnoMessage(err)}" }
+        }
     }
 
     /**
@@ -356,7 +349,10 @@ internal class EpollEventLoop(
      * Called from the EventLoop thread when the eventfd fires.
      */
     private fun consumeWakeup() {
-        keel_eventfd_read(wakeupFd)
+        val err = syscallOps.eventfdWakeupDrain(wakeupFd)
+        if (err != 0) {
+            logger.debug { "eventfd_read() failed: ${errnoMessage(err)}" }
+        }
     }
 
     // --- Event loop ---
@@ -370,45 +366,43 @@ internal class EpollEventLoop(
      *    tasks are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
-    private fun loop() {
+    internal fun loop() {
         eventLoopThread = pthread_self()
-        memScoped {
-            val eventList = allocArray<epoll_event>(MAX_EVENTS)
-            while (running.value != 0) {
-                drainTasks()
+        while (running.value != 0) {
+            drainTasks()
 
-                // Non-blocking poll if tasks arrived during drainTasks(),
-                // otherwise block until events or wakeup.
-                // epoll_wait timeout: 0 = immediate, -1 = indefinite block.
-                val timeout = if (hasTasksPending()) 0 else -1
-                val n = epoll_wait(epFd, eventList, MAX_EVENTS, timeout)
-                if (n < 0) {
-                    // EINTR: interrupted by signal (e.g. debugger attach).
-                    // EAGAIN: spurious wakeup. Both are retriable.
-                    val err = errno
-                    if (err == EINTR || err == EAGAIN) continue
-                    // Fatal error — log and terminate the EventLoop thread.
-                    // Cannot throw from a pthread; logger is the only output path.
-                    logger.error { "epoll_wait() fatal error: ${errnoMessage(err)}" }
-                    break
+            // Non-blocking poll if tasks arrived during drainTasks(),
+            // otherwise block until events or wakeup.
+            // epoll_wait timeout: 0 = immediate, -1 = indefinite block.
+            val timeout = if (hasTasksPending()) 0 else EpollSyscallOps.TIMEOUT_BLOCK
+            val n = syscallOps.waitEvents(epFd, eventBuffer, timeout)
+            if (n < 0) {
+                // Negative return encodes -errno per EpollSyscallOps contract.
+                val err = -n
+                // EINTR: interrupted by signal (e.g. debugger attach).
+                // EAGAIN: spurious wakeup. Both are retriable.
+                if (err == EINTR || err == EAGAIN) continue
+                // Fatal error — log and terminate the EventLoop thread.
+                // Cannot throw from a pthread; logger is the only output path.
+                logger.error { "epoll_wait() fatal error: ${errnoMessage(err)}" }
+                break
+            }
+            for (i in 0 until n) {
+                val ev = eventBuffer[i]
+                val fd = ev.fd
+
+                if (fd == wakeupFd) {
+                    consumeWakeup()
+                    continue
                 }
-                for (i in 0 until n) {
-                    val ev = eventList[i]
-                    val fd = ev.data.fd
 
-                    if (fd == wakeupFd) {
-                        consumeWakeup()
-                        continue
-                    }
-
-                    // Process both EPOLLIN and EPOLLOUT if both are set.
-                    val evFlags = ev.events.toInt()
-                    if (evFlags and EPOLLIN != 0) {
-                        dispatchReady(fd, Interest.READ)
-                    }
-                    if (evFlags and EPOLLOUT != 0) {
-                        dispatchReady(fd, Interest.WRITE)
-                    }
+                // Process both EPOLLIN and EPOLLOUT if both are set.
+                val evFlags = ev.events
+                if (evFlags and EPOLLIN != 0) {
+                    dispatchReady(fd, Interest.READ)
+                }
+                if (evFlags and EPOLLOUT != 0) {
+                    dispatchReady(fd, Interest.WRITE)
                 }
             }
         }
@@ -521,26 +515,17 @@ internal class EpollEventLoop(
             merged to (merged != current)
         }
         if (!changed) return // same interest already registered — skip epoll_ctl
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = combined.toUInt()
-            ev.data.fd = fd
-            val addRc = epoll_ctl(epFd, EPOLL_CTL_ADD, fd, ev.ptr)
-            if (addRc < 0) {
-                val addErr = errno
-                if (addErr == EEXIST) {
-                    val modRc = epoll_ctl(epFd, EPOLL_CTL_MOD, fd, ev.ptr)
-                    if (modRc < 0) {
-                        logger.debug {
-                            "epoll_ctl(MOD, fd=$fd) fallback failed: ${errnoMessage(errno)}"
-                        }
-                    }
-                } else {
-                    // ENOSPC / EBADF / EPERM etc. — unexpected for an fd that
-                    // was just opened by the engine. Log for diagnostics.
-                    logger.debug { "epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(addErr)}" }
-                }
+        val addErr = syscallOps.epollAdd(epFd, fd, combined)
+        if (addErr == 0) return
+        if (addErr == EEXIST) {
+            val modErr = syscallOps.epollMod(epFd, fd, combined)
+            if (modErr != 0) {
+                logger.debug { "epoll_ctl(MOD, fd=$fd) fallback failed: ${errnoMessage(modErr)}" }
             }
+        } else {
+            // ENOSPC / EBADF / EPERM etc. — unexpected for an fd that
+            // was just opened by the engine. Log for diagnostics.
+            logger.debug { "epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(addErr)}" }
         }
     }
 
@@ -566,15 +551,10 @@ internal class EpollEventLoop(
             }
             updated
         }
-        memScoped {
-            val ev = alloc<epoll_event>()
-            ev.events = remaining.toUInt()
-            ev.data.fd = fd
-            val rc = epoll_ctl(epFd, EPOLL_CTL_MOD, fd, ev.ptr)
-            if (rc < 0) {
-                logger.debug {
-                    "epoll_ctl(MOD, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(errno)}"
-                }
+        val err = syscallOps.epollMod(epFd, fd, remaining)
+        if (err != 0) {
+            logger.debug {
+                "epoll_ctl(MOD, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(err)}"
             }
         }
     }
