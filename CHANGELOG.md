@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** (`native-posix` / `engine-kqueue` / `engine-epoll` internal API): `NativeSocket.writev(fd, regions: List<NativeRegion>)` is replaced by `NativeSocket.writev(fd, ptrs: LongArray, lens: IntArray, count: Int)` so gather writes can be fed from caller-owned primitive arrays. The POSIX `IoTransport` implementations now keep a per-transport `LongArray`/`IntArray` pair (initial capacity 8, 1.5x growth) and rebuild it in place from `pendingWrites` before each `writev` call, eliminating the former `.map { NativeRegion(...) }` allocation that cost ~13x vs. the primitive path on a luna micro-benchmark (#358). The `NativeRegion` data class is removed along with its sole consumer. No user-visible behaviour change; `pipeline-http-epoll` / `pipeline-http-kqueue` `/hello` throughput is unchanged (#359)
+
 ### Added
 
 - `benchmark`: Kotlin/Native `--bench=collection-alloc` micro-benchmark that measures ns/op for the collection patterns used by the EventLoop / IoTransport hot paths (ArrayList vs ArrayDeque prepend, `.map{}` vs primitive parallel-array, `HashMap<Long,V>` vs open-addressing LongObjectMap, indexed vs iterator for-loop). Supports both macosArm64 and linuxX64; invoked via the standard benchmark binary. Intended as a local development aid for validating hot-path refactors (#358)
