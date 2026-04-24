@@ -149,8 +149,8 @@ via `IoModeSelectors.eagainThreshold()`.
 |-------|------|
 | `IoUringEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `IoUringPipelinedChannel` | Unified channel: Pipeline + Coroutine + PushChannel |
-| `IoUringPipelinedServerChannel` | Pipeline-mode server (SO_REUSEPORT, multishot accept) |
-| `IoUringServer` | Coroutine-mode server (suspend-based accept) |
+| `IoUringPipelinedStreamServer` | Pipeline-mode server (SO_REUSEPORT, multishot accept) |
+| `IoUringStreamServer` | Coroutine-mode server (suspend-based accept) |
 | `IoUringIoTransport` | `IoTransport` for write/flush with adaptive mode selection |
 | `IoUringEventLoop` | Single-threaded io_uring loop + `CoroutineDispatcher` |
 | `IoUringEventLoopGroup` | Round-robin + per-worker `ProvidedBufferRing` |
@@ -168,7 +168,7 @@ via `IoModeSelectors.eagainThreshold()`.
 | Feature | Kernel | Used by |
 |---------|--------|---------|
 | io_uring basic | 5.1+ | All operations |
-| Multishot accept | 5.19+ | `IoUringServer`, `IoUringPipelinedServerChannel` |
+| Multishot accept | 5.19+ | `IoUringStreamServer`, `IoUringPipelinedStreamServer` |
 | Provided buffer ring | 5.19+ | `ProvidedBufferRing` for multishot recv |
 | Multishot recv | 6.0+ | `armRecv()` in `IoUringPipelinedChannel` |
 | SEND_ZC | 6.0+ | `IoMode.SEND_ZC` (optional, auto-detected) |

@@ -46,7 +46,7 @@ import kotlin.test.assertTrue
  *   sentinel (see `bindInet / bindUnix happy path` tests). `bindListener`
  *   is scripted to return a `socket(AF_INET, SOCK_STREAM, 0)` fd so
  *   `epoll_ctl(ADD, serverFd)` on the boss loop succeeds; the engine
- *   then reads the scripted local address and constructs `EpollServer`.
+ *   then reads the scripted local address and constructs `EpollStreamServer`.
  *   Full accept flow (client → kernel → EPOLLIN → accept) is still
  *   integration-only.
  */
@@ -382,7 +382,7 @@ class EpollEngineLifecycleSeamTest {
     // closes the fd.
 
     @Test
-    fun `bindInet happy path returns ServerChannel with scripted local address`() = runBlocking {
+    fun `bindInet happy path returns StreamServer with scripted local address`() = runBlocking {
         val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
         check(sentinelFd >= 0) { "failed to create sentinel socket" }
         val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
@@ -411,7 +411,7 @@ class EpollEngineLifecycleSeamTest {
     }
 
     @Test
-    fun `bindUnix happy path returns ServerChannel with passed address`() = runBlocking {
+    fun `bindUnix happy path returns StreamServer with passed address`() = runBlocking {
         val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
         check(sentinelFd >= 0) { "failed to create sentinel socket" }
         val addr = UnixSocketAddress("/tmp/keel-fake.sock")

@@ -14,8 +14,8 @@ import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.Server
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -301,7 +301,7 @@ public class KeelApplicationEngine(
             val engine = configuration.engine ?: defaultEngine()
             ioEngine = engine
             // Pair each server with its connector's TLS config (if any).
-            val serverEntries = mutableListOf<Pair<Server, TlsConnectorConfig?>>()
+            val serverEntries = mutableListOf<Pair<StreamServer, TlsConnectorConfig?>>()
 
             try {
                 val resolved = connectors.map { connector ->
@@ -346,7 +346,7 @@ public class KeelApplicationEngine(
      */
     private suspend fun CoroutineScope.acceptLoop(
         engine: StreamEngine,
-        server: Server,
+        server: StreamServer,
         tlsConfig: TlsConnectorConfig?,
     ) {
         val scheme = if (tlsConfig != null) "https" else "http"

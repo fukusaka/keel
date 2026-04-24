@@ -153,7 +153,7 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
      * continuation's own state machine and leaves it installed as a stale child
      * handler of the parent Job, producing a `ClassCastException` on later
      * cancel. Always wrap the resume logic in an explicit `Runnable { ... }`
-     * lambda. See [NioServer] class KDoc for the full history.
+     * lambda. See [NioStreamServer] class KDoc for the full history.
      *
      * @param key      The cached SelectionKey from [registerChannel].
      * @param ops      Interest ops to add (e.g., [SelectionKey.OP_READ]).

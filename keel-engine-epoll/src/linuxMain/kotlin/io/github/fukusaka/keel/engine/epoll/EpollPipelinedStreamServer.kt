@@ -2,19 +2,19 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
@@ -24,10 +24,10 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * EPOLLIN on the server fd. Accepted connections are distributed to
  * worker EventLoops in round-robin.
  *
- * Same architecture as [KqueuePipelinedServerChannel][io.github.fukusaka.keel.engine.kqueue.KqueuePipelinedServerChannel].
+ * Same architecture as [KqueuePipelinedStreamServer][io.github.fukusaka.keel.engine.kqueue.KqueuePipelinedStreamServer].
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollPipelinedServerChannel(
+internal class EpollPipelinedStreamServer(
     private val serverFd: Int,
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
@@ -37,7 +37,7 @@ internal class EpollPipelinedServerChannel(
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedServer {
+) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed

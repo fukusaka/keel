@@ -2,10 +2,10 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 
@@ -20,7 +20,7 @@ import java.nio.channels.ServerSocketChannel
  * [NioEventLoop.dispatch] + `channel.register()` on the worker thread,
  * because NIO Selector registration blocks if `select()` is in progress.
  */
-internal class NioPipelinedServerChannel(
+internal class NioPipelinedStreamServer(
     private val serverChannel: ServerSocketChannel,
     private val selectionKey: SelectionKey,
     private val bossLoop: NioEventLoop,
@@ -29,7 +29,7 @@ internal class NioPipelinedServerChannel(
     private val logger: Logger,
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
-) : PipelinedServer {
+) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed

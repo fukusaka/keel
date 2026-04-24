@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
@@ -13,6 +12,7 @@ import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.asPem
@@ -24,7 +24,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import io.github.fukusaka.keel.core.Channel as KeelChannel
-import io.github.fukusaka.keel.core.Server as KeelServer
+import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
 
 /**
  * Node.js-based [StreamEngine] implementation for JS.
@@ -40,7 +40,7 @@ import io.github.fukusaka.keel.core.Server as KeelServer
  * ```
  * NodeEngine (Node.js net module)
  *   |
- *   +-- bind() ---------> NodeServer (Coroutine mode: accept -> suspend I/O)
+ *   +-- bind() ---------> NodeStreamServer (Coroutine mode: accept -> suspend I/O)
  *   |                       |
  *   |                       +-- accept() --> NodePipelinedChannel
  *   |
@@ -61,12 +61,12 @@ class NodeEngine(
     private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelServer = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelStreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): KeelServer {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): KeelStreamServer {
         check(!closed) { "Engine is closed" }
         rejectAbstractOnNonLinux(address)
 
@@ -77,7 +77,7 @@ class NodeEngine(
             listenOpts.path = address.kernelPath
             listenOpts.backlog = bindConfig.backlog
             srv.listen(listenOpts) {
-                val serverChannel = NodeServer(
+                val serverChannel = NodeStreamServer(
                     srv,
                     address,
                     config.allocator,
@@ -97,7 +97,7 @@ class NodeEngine(
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelServer {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
@@ -114,7 +114,7 @@ class NodeEngine(
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = InetSocketAddress(host, assignedPort)
-                val serverChannel = NodeServer(
+                val serverChannel = NodeStreamServer(
                     srv,
                     localAddr,
                     config.allocator,
@@ -122,7 +122,7 @@ class NodeEngine(
                     channelLogger,
                 )
 
-                // Wire connection events to the ServerChannel's accept queue
+                // Wire connection events to the StreamServer's accept queue
                 srv.on("connection") { socket: dynamic ->
                     serverChannel.onConnection(socket as Socket)
                 }
@@ -151,14 +151,14 @@ class NodeEngine(
      * listen callback, which is not supported in this non-suspend context.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return A [PipelinedServer] that closes the listener when closed.
+     * @return A [PipelinedStreamServer] that closes the listener when closed.
      * @throws IllegalArgumentException if port is 0 (ephemeral port not supported).
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -167,7 +167,7 @@ class NodeEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         rejectAbstractOnNonLinux(address)
 
@@ -207,7 +207,7 @@ class NodeEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.requireIpLiteral()
@@ -403,7 +403,7 @@ class NodeEngine(
     }
 
     /**
-     * [PipelinedServer] backed by a Node.js net.Server.
+     * [PipelinedStreamServer] backed by a Node.js net.Server.
      *
      * Wraps the underlying server for lifecycle management.
      * [localAddress] is updated when the listen callback fires.
@@ -411,7 +411,7 @@ class NodeEngine(
     private class NodePipelinedServer(
         private val server: Server,
         private var localAddr: SocketAddress,
-    ) : PipelinedServer {
+    ) : PipelinedStreamServer {
         private var _active = true
 
         override val localAddress: SocketAddress get() = localAddr

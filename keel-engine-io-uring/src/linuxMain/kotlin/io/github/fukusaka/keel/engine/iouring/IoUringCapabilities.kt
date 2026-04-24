@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io_uring.IORING_OP_SEND_ZC
 import io_uring.IORING_OP_SENDMSG_ZC
+import io_uring.IORING_OP_SEND_ZC
 import io_uring.io_uring
 import io_uring.keel_get_probe_ring
 import io_uring.keel_opcode_supported
@@ -232,8 +232,8 @@ data class IoUringCapabilities(
      * must keep `fixedFiles = true` when setting `acceptDirectAlloc = true`.
      *
      * **Scope**: applies to the pipelined server path only
-     * ([IoUringPipelinedServerChannel]). The traditional Channel-mode
-     * path ([IoUringServer] / [IoUringEngine]'s connect) keeps the
+     * ([IoUringPipelinedStreamServer]). The traditional Channel-mode
+     * path ([IoUringStreamServer] / [IoUringEngine]'s connect) keeps the
      * register-from-raw-fd flow unchanged, because those paths already
      * carry suspend overhead that dominates the 1-syscall saving.
      *

@@ -20,7 +20,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * Callers who need Flow semantics can write an extension function wrapping
  * the accept loop above.
  */
-interface Server : AutoCloseable {
+interface StreamServer : AutoCloseable {
 
     /** Local address this server is bound to. */
     val localAddress: SocketAddress
@@ -42,7 +42,3 @@ interface Server : AutoCloseable {
     /** Stops listening and releases the server socket. */
     override fun close()
 }
-
-/** Backward-compatibility alias. Use [Server] for new code. */
-@Deprecated("Renamed to Server", ReplaceWith("Server"))
-typealias ServerChannel = Server

@@ -6,42 +6,41 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io_uring.io_uring_prep_connect
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.job
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.CoroutineContext
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withContext
 import platform.posix.sockaddr_in
 import platform.posix.sockaddr_in6
 import posix_socket.keel_fill_sockaddr_in6_addr
@@ -49,6 +48,7 @@ import posix_socket.keel_htonl
 import posix_socket.keel_init_sockaddr_in
 import posix_socket.keel_init_sockaddr_in6
 import posix_socket.keel_sockaddr_un_sizeof
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Linux io_uring-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -146,22 +146,22 @@ class IoUringEngine(
     /**
      * Binds a suspend-based server on [host]:[port].
      *
-     * Creates a server socket and returns an [IoUringServer] whose
-     * [accept][IoUringServer.accept] returns [IoUringPipelinedChannel] instances.
+     * Creates a server socket and returns an [IoUringStreamServer] whose
+     * [accept][IoUringStreamServer.accept] returns [IoUringPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
         try {
             logger.debug { "Bound to $address" }
-            return IoUringServer(
+            return IoUringStreamServer(
                 serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
@@ -170,7 +170,7 @@ class IoUringEngine(
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.resolveFirst(config.resolver)
@@ -179,7 +179,7 @@ class IoUringEngine(
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return IoUringServer(
+            return IoUringStreamServer(
                 serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
@@ -329,20 +329,20 @@ class IoUringEngine(
      * For each connection, [pipelineInitializer] is called to set up the
      * handler chain, then multishot recv is armed for zero-suspend I/O.
      *
-     * Unlike [bind] (which returns a suspend-based [ServerChannel]), this
+     * Unlike [bind] (which returns a suspend-based [StreamServer]), this
      * method creates a fully callback-driven server with no coroutine overhead.
      *
      * @param host Bind address (e.g., "0.0.0.0").
      * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
-     * @return A [PipelinedServer] for lifecycle management.
+     * @return A [PipelinedStreamServer] for lifecycle management.
      * @throws IllegalStateException if the engine is closed.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -351,7 +351,7 @@ class IoUringEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         // SO_REUSEPORT is not supported on AF_UNIX, so the pipeline path uses a
@@ -360,7 +360,7 @@ class IoUringEngine(
         // kernel-side connection hashing is acceptable.
         val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog, logger))
         try {
-            val server = IoUringPipelinedServerChannel(
+            val server = IoUringPipelinedStreamServer(
                 workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
@@ -376,7 +376,7 @@ class IoUringEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.requireIp()
@@ -394,7 +394,7 @@ class IoUringEngine(
             }
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
             val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
-            val server = IoUringPipelinedServerChannel(
+            val server = IoUringPipelinedStreamServer(
                 workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()

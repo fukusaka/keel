@@ -24,7 +24,7 @@ flows TAIL → HEAD. `HeadHandler` connects the pipeline to `NwIoTransport`.
 ```
 NwEngine (Network.framework)
   |
-  +-- bind() ---------> NwServer (wraps nw_listener_t; Coroutine mode)
+  +-- bind() ---------> NwStreamServer (wraps nw_listener_t; Coroutine mode)
   |                       |
   |                       +-- accept() --> NwPipelinedChannel (wraps nw_connection_t)
   |
@@ -134,7 +134,7 @@ PKCS#8-wrapped private keys are unwrapped by `Pkcs8KeyUnwrapper` before
 | `NwEngine` | `StreamEngine` implementation for macOS/Apple |
 | `NwPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Wraps `nw_connection_t` |
 | `NwIoTransport` | `IoTransport` for write/flush via `keel_nw_write_async` / `keel_nw_writev_async` |
-| `NwServer` | Coroutine-mode server: wraps `nw_listener_t`, queues connections for `accept()` |
+| `NwStreamServer` | Coroutine-mode server: wraps `nw_listener_t`, queues connections for `accept()` |
 | `NwTlsParams` | Builds `nw_parameters_t` with `SecIdentity` for listener-level TLS |
 | `CallbackContext` | Thread-safe single-resume guard for C dispatch-queue callbacks |
 

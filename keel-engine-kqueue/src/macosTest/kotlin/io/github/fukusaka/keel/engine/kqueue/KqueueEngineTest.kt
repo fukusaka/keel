@@ -1,12 +1,11 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.UnixSocketAddress
-
-import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -955,7 +954,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun `close ServerChannel cancels pending accept`() = runBlocking {
+    fun `close StreamServer cancels pending accept`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
 
@@ -1227,7 +1226,7 @@ class KqueueEngineTest {
         }
 
         // Discover bound port from server fd (use SocketUtils).
-        // bindPipeline returns AutoCloseable (KqueuePipelinedServerChannel).
+        // bindPipeline returns AutoCloseable (KqueuePipelinedStreamServer).
         // We need the port — extract from engine or use a fixed port.
         // For simplicity, use a fixed port with retry.
         server.close()

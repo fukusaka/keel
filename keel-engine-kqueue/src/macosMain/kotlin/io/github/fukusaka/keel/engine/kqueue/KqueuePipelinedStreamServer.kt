@@ -2,19 +2,19 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.PipelinedServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
@@ -25,7 +25,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * worker EventLoops in round-robin, where each creates a
  * [KqueuePipelinedChannel] and arms read callbacks.
  *
- * Unlike [KqueueServer] (suspend-based), this server channel uses
+ * Unlike [KqueueStreamServer] (suspend-based), this server channel uses
  * callback-based registration for non-suspend pipeline processing.
  *
  * ```
@@ -38,7 +38,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueuePipelinedServerChannel(
+internal class KqueuePipelinedStreamServer(
     private val serverFd: Int,
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
@@ -48,7 +48,7 @@ internal class KqueuePipelinedServerChannel(
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedServer {
+) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed

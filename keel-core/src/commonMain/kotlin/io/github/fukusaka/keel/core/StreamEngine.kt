@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.core
 
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 
 /**
  * Byte-stream I/O engine for connection-oriented transports (TCP, Unix SOCK_STREAM).
@@ -52,16 +53,16 @@ interface StreamEngine : IoEngine {
      *   are resolved via [IoEngineConfig.resolver]. [UnixSocketAddress]
      *   throws [UnsupportedOperationException] until Phase 11 PR C.
      * @param bindConfig Per-server bind configuration (backlog, etc.).
-     * @return a [Server] that accepts incoming connections.
+     * @return a [StreamServer] that accepts incoming connections.
      */
-    suspend fun bind(address: SocketAddress, bindConfig: BindConfig = BindConfig()): Server
+    suspend fun bind(address: SocketAddress, bindConfig: BindConfig = BindConfig()): StreamServer
 
     /**
      * Convenience overload: builds an [InetSocketAddress] from [host]
      * and [port]. IP literals in [host] are parsed eagerly; hostnames
      * are resolved lazily when the engine consumes the address.
      */
-    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): Server =
+    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): StreamServer =
         bind(InetSocketAddress(host, port), bindConfig)
 
     /**
@@ -88,14 +89,14 @@ interface StreamEngine : IoEngine {
      * @param config Per-server bind configuration (backlog, TLS via subclass).
      * @param pipelineInitializer Callback to configure the channel for each accepted connection.
      *        Receives the [PipelinedChannel] for pipeline handler setup.
-     * @return a [PipelinedServer] for lifecycle management.
+     * @return a [PipelinedStreamServer] for lifecycle management.
      * @throws UnsupportedOperationException if this engine does not support pipeline mode.
      */
     fun bindPipeline(
         address: SocketAddress,
         config: BindConfig = BindConfig(),
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not support pipeline mode",
         )
@@ -109,7 +110,7 @@ interface StreamEngine : IoEngine {
         port: Int,
         config: BindConfig = BindConfig(),
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = bindPipeline(InetSocketAddress(host, port), config, pipelineInitializer)
+    ): PipelinedStreamServer = bindPipeline(InetSocketAddress(host, port), config, pipelineInitializer)
 
     /**
      * Opens an outbound connection to a remote peer.

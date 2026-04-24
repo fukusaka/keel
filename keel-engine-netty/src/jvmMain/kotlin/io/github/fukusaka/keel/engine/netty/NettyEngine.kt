@@ -3,13 +3,12 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
-import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
@@ -19,6 +18,7 @@ import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
@@ -65,7 +65,7 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
  * ```
  * NettyEngine (owns NioEventLoopGroups)
  *   |
- *   +-- bind() ---------> NettyServer (Coroutine mode: accept → suspend I/O)
+ *   +-- bind() ---------> NettyStreamServer (Coroutine mode: accept → suspend I/O)
  *   |                       |
  *   |                       +-- accept() --> NettyPipelinedChannel
  *   |
@@ -112,18 +112,18 @@ class NettyEngine(
             NettyByteBufAllocator(ch.alloc())
         }
 
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
         )
 
-        val serverChannel = NettyServer.create()
+        val serverChannel = NettyStreamServer.create()
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerDomainSocketChannel::class.java)
@@ -167,16 +167,16 @@ class NettyEngine(
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
         val port = address.port
-        // Two-phase init: create NettyServer before bind so the
+        // Two-phase init: create NettyStreamServer before bind so the
         // ChannelInitializer closure can call onNewChannel(). The underlying
         // Netty server channel and local address are set via init() after
         // the bind future completes.
-        val serverChannel = NettyServer.create()
+        val serverChannel = NettyStreamServer.create()
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
@@ -342,7 +342,7 @@ class NettyEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -351,7 +351,7 @@ class NettyEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
@@ -393,7 +393,7 @@ class NettyEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.requireIpLiteral()
@@ -473,7 +473,7 @@ class NettyEngine(
     }
 
     /**
-     * [PipelinedServer] backed by a Netty server channel.
+     * [PipelinedStreamServer] backed by a Netty server channel.
      *
      * Wraps the underlying Netty channel for lifecycle management.
      * [close] blocks until the Netty channel is fully closed to ensure
@@ -482,7 +482,7 @@ class NettyEngine(
     private class NettyPipelinedServer(
         private val serverChannel: NettyNativeChannel,
         override val localAddress: SocketAddress,
-    ) : PipelinedServer {
+    ) : PipelinedStreamServer {
         @Volatile
         private var closed = false
 

@@ -1,18 +1,16 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.UnixSocketAddress
-
-import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.core.UnixSocketAddress
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlin.time.Duration.Companion.seconds
 import java.net.InetAddress
 import java.net.Socket
 import kotlin.test.Test
@@ -21,6 +19,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class NioEngineTest {
 
@@ -714,7 +713,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `close ServerChannel cancels pending accept`() = runTest {
+    fun `close StreamServer cancels pending accept`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
 

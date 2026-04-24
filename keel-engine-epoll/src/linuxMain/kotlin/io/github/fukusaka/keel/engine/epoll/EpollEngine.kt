@@ -6,11 +6,10 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
@@ -18,12 +17,13 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -31,12 +31,12 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import kotlin.coroutines.CoroutineContext
 import platform.linux.EPOLLIN
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import platform.posix.errno
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Linux epoll-based [StreamEngine] implementation with multi-threaded EventLoop.
@@ -56,7 +56,7 @@ import platform.posix.errno
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → EpollServer
+ *   |     +-- bind() → EpollStreamServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -107,17 +107,17 @@ class EpollEngine(
      * Binds a suspend-based server on [host]:[port].
      *
      * Creates a server socket, registers it with the boss EventLoop's epoll,
-     * and returns an [EpollServer] whose [accept][EpollServer.accept]
+     * and returns an [EpollStreamServer] whose [accept][EpollStreamServer.accept]
      * returns [EpollPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
@@ -132,14 +132,14 @@ class EpollEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return EpollServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return EpollStreamServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.resolveFirst(config.resolver)
@@ -159,7 +159,7 @@ class EpollEngine(
 
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return EpollServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return EpollStreamServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -258,13 +258,13 @@ class EpollEngine(
      * through [Pipeline] handlers — no coroutine suspension on the hot path.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return A [PipelinedServer] for lifecycle management.
+     * @return A [PipelinedStreamServer] for lifecycle management.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -273,14 +273,14 @@ class EpollEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog, logger)
 
         try {
             logger.debug { "Pipeline bound to $address" }
-            val serverChannel = EpollPipelinedServerChannel(
+            val serverChannel = EpollPipelinedStreamServer(
                 serverFd = serverFd,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -303,7 +303,7 @@ class EpollEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.requireIp()
@@ -313,7 +313,7 @@ class EpollEngine(
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Pipeline bound to $localAddr" }
-            val serverChannel = EpollPipelinedServerChannel(
+            val serverChannel = EpollPipelinedStreamServer(
                 serverFd = serverFd,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,

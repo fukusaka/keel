@@ -75,7 +75,7 @@ Configuration shared by all engines:
 | `StreamEngine` | `core` | TCP byte-stream engine: `bind` / `bindPipeline` / `connect` |
 | `Channel` | `core` | Bidirectional TCP channel |
 | `Server` | `core` | Coroutine-mode server: suspend-based accept loop |
-| `PipelinedServer` | `core` | Pipeline-mode server lifecycle |
+| `PipelinedStreamServer` | `core` | Pipeline-mode server lifecycle |
 | `SocketAddress` | `core` | `(host, port)` tuple |
 | `IoEngineConfig` | `core` | Engine-wide configuration |
 | `BindConfig` | `core` | Per-server bind configuration (backlog, TLS initializer) |
@@ -92,7 +92,7 @@ Configuration shared by all engines:
 
 # Package io.github.fukusaka.keel.core
 
-`IoEngine`, `StreamEngine`, `Channel`, `Server`, `PipelinedServer`,
+`IoEngine`, `StreamEngine`, `Channel`, `Server`, `PipelinedStreamServer`,
 `IoEngineConfig`, `BindConfig`, `SocketAddress` — the public API for
 binding servers and creating connections.
 

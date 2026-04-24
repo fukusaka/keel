@@ -93,8 +93,8 @@ and EVFILT_WRITE is deleted.
 |-------|------|
 | `KqueueEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `KqueuePipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
-| `KqueuePipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
-| `KqueueServer` | Coroutine-mode server (suspend-based accept) |
+| `KqueuePipelinedStreamServer` | Pipeline-mode server (callback-driven accept) |
+| `KqueueStreamServer` | Coroutine-mode server (suspend-based accept) |
 | `KqueueIoTransport` | `IoTransport` for write/flush with EVFILT_WRITE backpressure |
 | `KqueueEventLoop` | Single-threaded kqueue loop + `CoroutineDispatcher` |
 | `KqueueEventLoopGroup` | Round-robin distribution of channels across EventLoops |
