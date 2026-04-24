@@ -213,3 +213,32 @@ interface Channel : AutoCloseable {
     /** Closes both read and write sides and releases all resources. */
     override fun close()
 }
+
+/**
+ * Default [SuspendSource] implementation that delegates to [Channel.read].
+ *
+ * Used by [Channel.asSuspendSource]'s default implementation. Engines can
+ * override [Channel.asSuspendSource] to provide a specialized implementation
+ * (e.g., io_uring completion-based reads) without changing this class.
+ */
+private class SuspendChannelSource(private val channel: Channel) : SuspendSource {
+    override suspend fun read(buf: IoBuf): Int = channel.read(buf)
+
+    /** No-op: channel lifecycle is managed by the caller, not by this source. */
+    override fun close() {}
+}
+
+/**
+ * Default [SuspendSink] implementation that delegates to [Channel.write]/[Channel.flush].
+ *
+ * Used by [Channel.asSuspendSink]'s default implementation. Engines can
+ * override [Channel.asSuspendSink] to provide a specialized implementation
+ * without changing this class.
+ */
+private class SuspendChannelSink(private val channel: Channel) : SuspendSink {
+    override suspend fun write(buf: IoBuf): Int = channel.write(buf)
+    override suspend fun flush() = channel.flush()
+
+    /** No-op: channel lifecycle is managed by the caller, not by this sink. */
+    override fun close() {}
+}
