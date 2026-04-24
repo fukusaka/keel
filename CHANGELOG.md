@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `engine-kqueue`: internal `KqueueSyscallOps` seam + `PosixKqueueSyscallOps` production impl, routing all `kqueue(2)` family calls (`kqueue` / `pipe` / `kevent` submit+wait / wakeup `read`/`write`) through a semantic interface. `KqueueEventLoop` gains a constructor parameter defaulting to the production impl; the seam enables unit tests for init-time failure cleanup, `register` / `registerCallback` `kevent(EV_ADD)` failure recovery, and wakeup `write` error branches — all of which were previously only reachable via a real BSD kernel failure. `loop()` relaxed from `private` to `internal` to allow direct test-thread driving in a future main-loop seam test
+
 ### Fixed
 
 - `engine-kqueue` / `engine-epoll`: check return values on every `kevent` / `epoll_ctl` / `pthread_create` / `pipe` / `kqueue` / `eventfd` call (was swallowed in ~6 places across both engines). `register` / `registerCallback` now resume the caller with an exception instead of hanging forever on `kevent(EV_ADD)` failure; init-time failures clean up partially-allocated fds before throwing. Also eliminates the per-iteration `mutableListOf<Runnable>()` allocation in both EventLoops' `drainTasks()` hot path by reusing a field-level scratch buffer (#355)
