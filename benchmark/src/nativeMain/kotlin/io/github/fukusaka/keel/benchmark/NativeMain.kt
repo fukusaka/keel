@@ -19,6 +19,12 @@ import platform.posix.signal
  */
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
+    // Collection alloc micro-bench route: skip server entirely.
+    if (args.any { it == "--bench=collection-alloc" }) {
+        runCollectionAllocBench()
+        return
+    }
+
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
 
