@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
@@ -335,14 +335,14 @@ class IoUringEngine(
      * @param host Bind address (e.g., "0.0.0.0").
      * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
-     * @return A [PipelinedServer] for lifecycle management.
+     * @return A [PipelinedStreamServer] for lifecycle management.
      * @throws IllegalStateException if the engine is closed.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -351,7 +351,7 @@ class IoUringEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         // SO_REUSEPORT is not supported on AF_UNIX, so the pipeline path uses a
@@ -360,7 +360,7 @@ class IoUringEngine(
         // kernel-side connection hashing is acceptable.
         val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog, logger))
         try {
-            val server = IoUringPipelinedServerChannel(
+            val server = IoUringPipelinedStreamServer(
                 workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
@@ -376,7 +376,7 @@ class IoUringEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.requireIp()
@@ -394,7 +394,7 @@ class IoUringEngine(
             }
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
             val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
-            val server = IoUringPipelinedServerChannel(
+            val server = IoUringPipelinedStreamServer(
                 workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
             server.start()

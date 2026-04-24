@@ -5,7 +5,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
@@ -287,13 +287,13 @@ class NioEngine(
      * the ServerSocketChannel synchronously (Pipeline zero-coroutine principle).
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return A [PipelinedServer] for lifecycle management.
+     * @return A [PipelinedStreamServer] for lifecycle management.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -302,7 +302,7 @@ class NioEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.requireIpLiteral()
@@ -317,7 +317,7 @@ class NioEngine(
             val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
             logger.debug { "Pipeline bound to $localAddr" }
 
-            val serverPipeline = NioPipelinedServerChannel(
+            val serverPipeline = NioPipelinedStreamServer(
                 serverChannel = serverChannel,
                 selectionKey = selectionKey,
                 bossLoop = bossLoop,
@@ -339,7 +339,7 @@ class NioEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
@@ -355,7 +355,7 @@ class NioEngine(
             val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
             logger.debug { "Pipeline bound to $localAddr" }
 
-            val serverPipeline = NioPipelinedServerChannel(
+            val serverPipeline = NioPipelinedStreamServer(
                 serverChannel = serverChannel,
                 selectionKey = selectionKey,
                 bossLoop = bossLoop,

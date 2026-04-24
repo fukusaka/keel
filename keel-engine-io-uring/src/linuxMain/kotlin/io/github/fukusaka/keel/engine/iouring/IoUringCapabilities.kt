@@ -232,7 +232,7 @@ data class IoUringCapabilities(
      * must keep `fixedFiles = true` when setting `acceptDirectAlloc = true`.
      *
      * **Scope**: applies to the pipelined server path only
-     * ([IoUringPipelinedServerChannel]). The traditional Channel-mode
+     * ([IoUringPipelinedStreamServer]). The traditional Channel-mode
      * path ([IoUringStreamServer] / [IoUringEngine]'s connect) keeps the
      * register-from-raw-fd flow unchanged, because those paths already
      * carry suspend overhead that dominates the 1-syscall saving.

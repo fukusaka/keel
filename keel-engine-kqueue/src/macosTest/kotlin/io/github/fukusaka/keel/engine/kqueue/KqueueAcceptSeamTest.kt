@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 /**
  * Seam-level tests for `accept`-path branches on the kqueue engine:
  * [KqueueStreamServer.accept] (suspend-based) and
- * [KqueuePipelinedServerChannel.onAcceptable] (callback-based).
+ * [KqueuePipelinedStreamServer.onAcceptable] (callback-based).
  *
  * Complements [KqueueEngineLifecycleSeamTest] (connect + bind) by
  * exercising the third engine-state transition — accept. Both paths
@@ -222,9 +222,9 @@ class KqueueAcceptSeamTest {
         }
     }
 
-    // --- KqueuePipelinedServerChannel.onAcceptable: Failed / WouldBlock ---
+    // --- KqueuePipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
     //
-    // bindPipeline returns a KqueuePipelinedServerChannel; we cast and call
+    // bindPipeline returns a KqueuePipelinedStreamServer; we cast and call
     // the internal onAcceptable() directly to drive the accept loop branches
     // deterministically (no real event delivery). The sentinel fd is needed
     // so start() and the re-arm kevent(EV_ADD) calls succeed — the fd is
@@ -249,7 +249,7 @@ class KqueueAcceptSeamTest {
                 InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                 BindConfig(),
             ) { /* no-op initializer */ }
-            val pipelined = server as KqueuePipelinedServerChannel
+            val pipelined = server as KqueuePipelinedStreamServer
             pipelined.onAcceptable()
             assertEquals(1, fakeSocket.acceptCalls)
             // No Accepted → no setNonBlocking / address reads.
@@ -281,7 +281,7 @@ class KqueueAcceptSeamTest {
                 InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                 BindConfig(),
             ) { /* no-op */ }
-            val pipelined = server as KqueuePipelinedServerChannel
+            val pipelined = server as KqueuePipelinedStreamServer
             pipelined.onAcceptable()
             assertEquals(1, fakeSocket.acceptCalls)
             assertTrue(fakeOps.nonBlockingFds.isEmpty())

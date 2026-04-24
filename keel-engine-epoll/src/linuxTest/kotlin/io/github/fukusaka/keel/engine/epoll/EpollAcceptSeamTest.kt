@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 /**
  * Seam-level tests for `accept`-path branches on the epoll engine:
  * [EpollStreamServer.accept] (suspend-based) and
- * [EpollPipelinedServerChannel.onAcceptable] (callback-based).
+ * [EpollPipelinedStreamServer.onAcceptable] (callback-based).
  *
  * Complements [EpollEngineLifecycleSeamTest] (connect + bind) by
  * exercising the third engine-state transition — accept. Both paths
@@ -222,9 +222,9 @@ class EpollAcceptSeamTest {
         }
     }
 
-    // --- EpollPipelinedServerChannel.onAcceptable: Failed / WouldBlock ---
+    // --- EpollPipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
     //
-    // bindPipeline returns an EpollPipelinedServerChannel; we cast and call
+    // bindPipeline returns an EpollPipelinedStreamServer; we cast and call
     // the internal onAcceptable() directly to drive the accept loop branches
     // deterministically (no real event delivery). The sentinel fd is needed
     // so start() and the re-arm epoll_ctl(ADD) calls succeed — the fd is
@@ -249,7 +249,7 @@ class EpollAcceptSeamTest {
                 InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                 BindConfig(),
             ) { /* no-op initializer */ }
-            val pipelined = server as EpollPipelinedServerChannel
+            val pipelined = server as EpollPipelinedStreamServer
             pipelined.onAcceptable()
             assertEquals(1, fakeSocket.acceptCalls)
             // No Accepted → no setNonBlocking / address reads.
@@ -281,7 +281,7 @@ class EpollAcceptSeamTest {
                 InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                 BindConfig(),
             ) { /* no-op */ }
-            val pipelined = server as EpollPipelinedServerChannel
+            val pipelined = server as EpollPipelinedStreamServer
             pipelined.onAcceptable()
             assertEquals(1, fakeSocket.acceptCalls)
             assertTrue(fakeOps.nonBlockingFds.isEmpty())

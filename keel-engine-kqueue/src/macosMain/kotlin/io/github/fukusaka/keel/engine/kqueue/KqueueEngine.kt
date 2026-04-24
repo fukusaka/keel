@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
@@ -287,13 +287,13 @@ class KqueueEngine(
      * @param port Bind port.
      * @param pipelineInitializer Callback to configure the pipeline for each
      *        accepted connection (add handlers via addLast).
-     * @return A [PipelinedServer] for lifecycle management.
+     * @return A [PipelinedStreamServer] for lifecycle management.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -302,7 +302,7 @@ class KqueueEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
@@ -310,7 +310,7 @@ class KqueueEngine(
 
         try {
             logger.debug { "Pipeline bound to $address" }
-            val serverChannel = KqueuePipelinedServerChannel(
+            val serverChannel = KqueuePipelinedStreamServer(
                 serverFd = serverFd,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -333,7 +333,7 @@ class KqueueEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.requireIp()
@@ -343,7 +343,7 @@ class KqueueEngine(
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Pipeline bound to $localAddr" }
-            val serverChannel = KqueuePipelinedServerChannel(
+            val serverChannel = KqueuePipelinedStreamServer(
                 serverFd = serverFd,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,

@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
@@ -196,13 +196,13 @@ class NwEngine(
      * a configurable listen backlog; the OS manages it internally.
      *
      * @param pipelineInitializer Callback to configure the pipeline for each connection.
-     * @return A [PipelinedServer] that cancels the listener when closed.
+     * @return A [PipelinedStreamServer] that cancels the listener when closed.
      */
     override fun bindPipeline(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -211,7 +211,7 @@ class NwEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.requireIpLiteral()
@@ -295,7 +295,7 @@ class NwEngine(
     private class NwPipelinedServer(
         private val listener: nw_listener_t,
         private val localAddr: SocketAddress,
-    ) : PipelinedServer {
+    ) : PipelinedStreamServer {
         @kotlin.concurrent.Volatile
         private var closed = false
 
@@ -467,7 +467,7 @@ class NwEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
         validateUnixPath(address.path)

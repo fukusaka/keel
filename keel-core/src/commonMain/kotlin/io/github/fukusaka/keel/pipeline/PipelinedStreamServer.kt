@@ -1,10 +1,14 @@
-package io.github.fukusaka.keel.core
+package io.github.fukusaka.keel.pipeline
+
+import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.StreamServer
 
 /**
  * A server that accepts connections via Pipeline initializer callbacks.
  *
  * Created by [StreamEngine.bindPipeline]. Unlike [StreamServer] which provides
- * [StreamServer.accept] for app-driven connection handling, a [PipelinedServer]
+ * [StreamServer.accept] for app-driven connection handling, a [PipelinedStreamServer]
  * delegates connection acceptance to the engine — each accepted connection
  * is configured via the `pipelineInitializer` callback passed to
  * [StreamEngine.bindPipeline].
@@ -18,7 +22,7 @@ package io.github.fukusaka.keel.core
  * server.close()
  * ```
  */
-interface PipelinedServer : AutoCloseable {
+interface PipelinedStreamServer : AutoCloseable {
 
     /** Local address this server is bound to. */
     val localAddress: SocketAddress

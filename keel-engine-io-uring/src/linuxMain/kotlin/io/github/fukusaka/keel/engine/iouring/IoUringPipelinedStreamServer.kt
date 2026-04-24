@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
@@ -48,7 +48,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  * @param logger           Logger for pipeline error reporting.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class IoUringPipelinedServerChannel(
+internal class IoUringPipelinedStreamServer(
     private val workerGroup: IoUringEventLoopGroup,
     private val serverFds: IntArray,
     private val localAddr: SocketAddress,
@@ -58,7 +58,7 @@ internal class IoUringPipelinedServerChannel(
     private val logger: Logger,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedServer {
+) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed
@@ -166,7 +166,7 @@ internal class IoUringPipelinedServerChannel(
         // here is cheap: the EL threads are already running; each await
         // resumes as soon as the corresponding Runnable completes. Any
         // submitMultishot failure is rethrown on the calling thread so the
-        // PipelinedServer is not returned in a half-armed state.
+        // PipelinedStreamServer is not returned in a half-armed state.
         runBlocking {
             for (b in barriers) b.await()
         }

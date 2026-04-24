@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
@@ -342,7 +342,7 @@ class NettyEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer = when (address) {
+    ): PipelinedStreamServer = when (address) {
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
@@ -351,7 +351,7 @@ class NettyEngine(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
@@ -393,7 +393,7 @@ class NettyEngine(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedServer {
+    ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.requireIpLiteral()
@@ -473,7 +473,7 @@ class NettyEngine(
     }
 
     /**
-     * [PipelinedServer] backed by a Netty server channel.
+     * [PipelinedStreamServer] backed by a Netty server channel.
      *
      * Wraps the underlying Netty channel for lifecycle management.
      * [close] blocks until the Netty channel is fully closed to ensure
@@ -482,7 +482,7 @@ class NettyEngine(
     private class NettyPipelinedServer(
         private val serverChannel: NettyNativeChannel,
         override val localAddress: SocketAddress,
-    ) : PipelinedServer {
+    ) : PipelinedStreamServer {
         @Volatile
         private var closed = false
 

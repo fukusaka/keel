@@ -1,8 +1,8 @@
-package io.github.fukusaka.keel.engine.epoll
+package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.PipelinedServer
+import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
@@ -18,52 +18,69 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
- * Pipeline server channel for epoll-based connection acceptance on Linux.
+ * Pipeline server channel for kqueue-based connection acceptance.
  *
- * Uses the boss [EpollEventLoop] to listen for incoming connections via
- * EPOLLIN on the server fd. Accepted connections are distributed to
- * worker EventLoops in round-robin.
+ * Uses the boss [KqueueEventLoop] to listen for incoming connections via
+ * EVFILT_READ on the server fd. Accepted connections are distributed to
+ * worker EventLoops in round-robin, where each creates a
+ * [KqueuePipelinedChannel] and arms read callbacks.
  *
- * Same architecture as [KqueuePipelinedServerChannel][io.github.fukusaka.keel.engine.kqueue.KqueuePipelinedServerChannel].
+ * Unlike [KqueueStreamServer] (suspend-based), this server channel uses
+ * callback-based registration for non-suspend pipeline processing.
+ *
+ * ```
+ * Boss EventLoop:
+ *   kevent(EVFILT_READ on serverFd) → accept() → clientFd
+ *     → dispatch to worker EventLoop
+ *
+ * Worker EventLoop:
+ *   KqueuePipelinedChannel(clientFd) → pipelineInitializer → armRead()
+ * ```
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollPipelinedServerChannel(
+internal class KqueuePipelinedStreamServer(
     private val serverFd: Int,
-    private val bossLoop: EpollEventLoop,
-    private val workerGroup: EpollEventLoopGroup,
+    private val bossLoop: KqueueEventLoop,
+    private val workerGroup: KqueueEventLoopGroup,
     private val localAddr: SocketAddress,
     private val logger: Logger,
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedServer {
+) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed
 
     @kotlin.concurrent.Volatile
     private var closed = false
-    private var workerIndex = 0 // Single boss thread only — no atomicity needed.
+    private var workerIndex = 0
 
-    /** Starts accepting connections on the boss EventLoop. */
+    /**
+     * Starts accepting connections on the boss EventLoop.
+     *
+     * Must be called after the boss EventLoop is started. Each accepted
+     * connection is dispatched to the next worker in round-robin order.
+     */
     fun start() {
         armAccept()
     }
 
     private fun armAccept() {
         if (closed) return
-        bossLoop.registerCallback(serverFd, EpollEventLoop.Interest.READ) {
+        bossLoop.registerCallback(serverFd, KqueueEventLoop.Interest.READ) {
             onAcceptable()
         }
     }
 
     // `internal` (was `private`) so accept-branch seam tests can drive the
-    // edge-triggered accept loop directly without going through epoll
+    // edge-triggered accept loop directly without going through kqueue
     // readiness delivery. Call site in production remains the
     // `bossLoop.registerCallback` lambda armed by [armAccept].
     internal fun onAcceptable() {
         if (closed) return
+        // Accept all pending connections in a loop (edge-triggered behavior).
         while (true) {
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
@@ -76,6 +93,7 @@ internal class EpollPipelinedServerChannel(
                     return
                 }
                 is AcceptResult.Failed -> {
+                    // Transient error — log and continue accepting.
                     logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
                     armAccept()
                     return
@@ -92,9 +110,9 @@ internal class EpollPipelinedServerChannel(
         })
     }
 
-    private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, allocator: BufferAllocator) {
-        val transport = EpollIoTransport(clientFd, loop, allocator, nativeSocket)
-        val channel = EpollPipelinedChannel(transport, logger)
+    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
+        val transport = KqueueIoTransport(clientFd, loop, allocator, nativeSocket)
+        val channel = KqueuePipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)
         transport.readEnabled = true
@@ -102,7 +120,10 @@ internal class EpollPipelinedServerChannel(
 
     /**
      * Stops accepting and closes the server socket fd.
-     * Pending accept callbacks become no-ops. Idempotent.
+     *
+     * Pending accept callbacks become no-ops (closed flag check).
+     * Does NOT close worker EventLoops or existing client channels —
+     * caller (typically [KqueueEngine.close]) is responsible. Idempotent.
      */
     override fun close() {
         if (closed) return
