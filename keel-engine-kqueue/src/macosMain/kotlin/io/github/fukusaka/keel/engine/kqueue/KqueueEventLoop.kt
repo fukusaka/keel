@@ -20,11 +20,13 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.usePinned
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resumeWithException
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
@@ -128,6 +130,11 @@ internal class KqueueEventLoop(
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
     private val taskQueue = MpscQueue<Runnable>()
 
+    // Reusable scratch buffer for [drainTasks]. Kept as a field so the
+    // EventLoop hot path does not allocate a new list each iteration.
+    // Only accessed from the EventLoop thread (via [drainTasks]).
+    private val drainBatch: MutableList<Runnable> = mutableListOf()
+
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
     // Cached byte arrays to avoid per-wakeup allocation.
     // wakeup() is called once per dispatch/register, so reuse matters.
@@ -155,12 +162,16 @@ internal class KqueueEventLoop(
 
     init {
         val fd = kqueue()
-        check(fd >= 0) { "kqueue() failed" }
+        check(fd >= 0) { "kqueue() failed: ${errnoMessage(errno)}" }
         kqFd = fd
 
         // Create wakeup pipe and register the read end with kqueue
         val result = pipe(wakeupFds.refTo(0))
-        check(result == 0) { "pipe() failed" }
+        if (result != 0) {
+            val err = errno
+            closeFdSafely(kqFd, logger, "kqueue init (pipe failure)")
+            error("pipe() failed: ${errnoMessage(err)}")
+        }
         PosixNativeSocketOps.setNonBlocking(wakeupFds[0])
         PosixNativeSocketOps.setNonBlocking(wakeupFds[1])
 
@@ -170,7 +181,14 @@ internal class KqueueEventLoop(
                 kev.ptr, wakeupFds[0].convert(), EVFILT_READ.convert(),
                 EV_ADD.convert(), 0u, 0, null,
             )
-            kevent(kqFd, kev.ptr, 1, null, 0, null)
+            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
+            if (ret < 0) {
+                val err = errno
+                closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
+                closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
+                closeFdSafely(kqFd, logger, "kqueue init (kevent failure)")
+                error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(err)}")
+            }
         }
     }
 
@@ -230,7 +248,7 @@ internal class KqueueEventLoop(
      */
     fun start() {
         val ref = StableRef.create(this)
-        pthread_create(
+        val rc = pthread_create(
             threadPtr.ptr, null,
             staticCFunction { arg ->
                 val el = arg!!.asStableRef<KqueueEventLoop>().get()
@@ -240,6 +258,11 @@ internal class KqueueEventLoop(
             },
             ref.asCPointer(),
         )
+        if (rc != 0) {
+            // pthread_create returns the errno-like code directly; errno is not set.
+            ref.dispose()
+            error("pthread_create() failed: ${errnoMessage(rc)}")
+        }
     }
 
     /**
@@ -266,13 +289,27 @@ internal class KqueueEventLoop(
             registrations[key] = Registration(fd, interest, cont)
         }
 
-        memScoped {
+        val kevErr = memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
                 kev.ptr, fd.convert(), filter.convert(),
                 EV_ADD.convert(), 0u, 0, null,
             )
-            kevent(kqFd, kev.ptr, 1, null, 0, null)
+            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
+            if (ret < 0) errno else 0
+        }
+        if (kevErr != 0) {
+            // kevent(EV_ADD) failed — remove the stale map entry and fail the
+            // caller's suspend with an exception. Without this, the continuation
+            // would never resume (the registration exists but is never dispatched).
+            // TODO(v1.0 前): proper engine-level exception type. IllegalStateException
+            // is a placeholder; the design for a PosixException / EventLoopException
+            // hierarchy is deferred to a separate task.
+            withRegLock { registrations.remove(key) }
+            cont.resumeWithException(
+                IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
+            )
+            return
         }
         wakeup()
     }
@@ -307,13 +344,25 @@ internal class KqueueEventLoop(
             callbackRegistrations[key] = callback
         }
 
-        memScoped {
+        val kevErr = memScoped {
             val kev = alloc<kevent>()
             keel_ev_set(
                 kev.ptr, fd.convert(), filter.convert(),
                 EV_ADD.convert(), 0u, 0, null,
             )
-            kevent(kqFd, kev.ptr, 1, null, 0, null)
+            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
+            if (ret < 0) errno else 0
+        }
+        if (kevErr != 0) {
+            // kevent(EV_ADD) failed — remove the stale callback entry. There is
+            // no continuation to resume here, so the error is logged and the
+            // caller must handle the missing readiness notification.
+            withRegLock { callbackRegistrations.remove(key) }
+            logger.error {
+                "kevent(EV_ADD, fd=$fd, ${interest.name}) for callback failed: " +
+                    "${errnoMessage(kevErr)} — readiness callback will not fire"
+            }
+            return
         }
         wakeup()
     }
@@ -337,7 +386,15 @@ internal class KqueueEventLoop(
      */
     private fun wakeup() {
         wakeupWriteBuf.usePinned { pinned ->
-            write(wakeupFds[1], pinned.addressOf(0), 1u.convert())
+            val n = write(wakeupFds[1], pinned.addressOf(0), 1u.convert())
+            if (n < 0) {
+                val err = errno
+                // EAGAIN: pipe buffer full — a wakeup is already pending,
+                // which is exactly what we want. Benign.
+                if (err != EAGAIN) {
+                    logger.debug { "kqueue wakeup write() failed: ${errnoMessage(err)}" }
+                }
+            }
         }
     }
 
@@ -430,12 +487,11 @@ internal class KqueueEventLoop(
      */
     private fun drainTasks() {
         assertInEventLoop("KqueueEventLoop.drainTasks")
-        val batch = mutableListOf<Runnable>()
         while (true) {
-            batch.clear()
-            taskQueue.drain(batch)
-            if (batch.isEmpty()) return
-            for (task in batch) {
+            drainBatch.clear()
+            taskQueue.drain(drainBatch)
+            if (drainBatch.isEmpty()) return
+            for (task in drainBatch) {
                 task.run()
             }
         }

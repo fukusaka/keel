@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `engine-kqueue` / `engine-epoll`: check return values on every `kevent` / `epoll_ctl` / `pthread_create` / `pipe` / `kqueue` / `eventfd` call (was swallowed in ~6 places across both engines). `register` / `registerCallback` now resume the caller with an exception instead of hanging forever on `kevent(EV_ADD)` failure; init-time failures clean up partially-allocated fds before throwing. Also eliminates the per-iteration `mutableListOf<Runnable>()` allocation in both EventLoops' `drainTasks()` hot path by reusing a field-level scratch buffer (#355)
+
 ### Documentation
 
 - `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — single rule ("writes transfer, reads don't") + 3 `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md (#350)
