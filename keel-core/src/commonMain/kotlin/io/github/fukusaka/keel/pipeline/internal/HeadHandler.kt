@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.pipeline.DuplexHandler
+import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.OutboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 
 /**

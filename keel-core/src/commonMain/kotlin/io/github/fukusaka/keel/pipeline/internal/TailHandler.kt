@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.pipeline.internal
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.OutboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 
 /**
