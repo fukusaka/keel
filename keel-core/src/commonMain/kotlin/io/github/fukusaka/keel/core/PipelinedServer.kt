@@ -3,8 +3,8 @@ package io.github.fukusaka.keel.core
 /**
  * A server that accepts connections via Pipeline initializer callbacks.
  *
- * Created by [StreamEngine.bindPipeline]. Unlike [Server] which provides
- * [Server.accept] for app-driven connection handling, a [PipelinedServer]
+ * Created by [StreamEngine.bindPipeline]. Unlike [StreamServer] which provides
+ * [StreamServer.accept] for app-driven connection handling, a [PipelinedServer]
  * delegates connection acceptance to the engine — each accepted connection
  * is configured via the `pipelineInitializer` callback passed to
  * [StreamEngine.bindPipeline].

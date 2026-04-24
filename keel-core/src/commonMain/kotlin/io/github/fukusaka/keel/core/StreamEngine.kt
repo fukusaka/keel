@@ -52,16 +52,16 @@ interface StreamEngine : IoEngine {
      *   are resolved via [IoEngineConfig.resolver]. [UnixSocketAddress]
      *   throws [UnsupportedOperationException] until Phase 11 PR C.
      * @param bindConfig Per-server bind configuration (backlog, etc.).
-     * @return a [Server] that accepts incoming connections.
+     * @return a [StreamServer] that accepts incoming connections.
      */
-    suspend fun bind(address: SocketAddress, bindConfig: BindConfig = BindConfig()): Server
+    suspend fun bind(address: SocketAddress, bindConfig: BindConfig = BindConfig()): StreamServer
 
     /**
      * Convenience overload: builds an [InetSocketAddress] from [host]
      * and [port]. IP literals in [host] are parsed eagerly; hostnames
      * are resolved lazily when the engine consumes the address.
      */
-    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): Server =
+    suspend fun bind(host: String, port: Int, bindConfig: BindConfig = BindConfig()): StreamServer =
         bind(InetSocketAddress(host, port), bindConfig)
 
     /**

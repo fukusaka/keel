@@ -105,7 +105,7 @@ the hot path after the initial registration.
 | `EpollEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `EpollPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `EpollPipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
-| `EpollServer` | Coroutine-mode server (suspend-based accept) |
+| `EpollStreamServer` | Coroutine-mode server (suspend-based accept) |
 | `EpollIoTransport` | `IoTransport` for write/flush with EPOLLOUT backpressure |
 | `EpollEventLoop` | Single-threaded epoll loop + `CoroutineDispatcher` |
 | `EpollEventLoopGroup` | Round-robin distribution of channels across EventLoops |

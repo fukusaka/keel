@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 
 /**
  * Seam-level tests for `accept`-path branches on the epoll engine:
- * [EpollServer.accept] (suspend-based) and
+ * [EpollStreamServer.accept] (suspend-based) and
  * [EpollPipelinedServerChannel.onAcceptable] (callback-based).
  *
  * Complements [EpollEngineLifecycleSeamTest] (connect + bind) by
@@ -38,7 +38,7 @@ import kotlin.test.assertTrue
  * ## What this file does NOT cover
  *
  * - **`accept` `WouldBlock` suspend path (coroutine-based)** —
- *   `EpollServer.accept()`'s `WouldBlock` branch registers the server
+ *   `EpollStreamServer.accept()`'s `WouldBlock` branch registers the server
  *   fd on the boss event loop's real epoll and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `EpollEngineTest` integration tests.
@@ -71,7 +71,7 @@ class EpollAcceptSeamTest {
         return fd
     }
 
-    // --- EpollServer.accept: Failed branches ---
+    // --- EpollStreamServer.accept: Failed branches ---
 
     @Test
     fun `accept Failed ECONNABORTED throws with errno message`() = runBlocking {
@@ -137,7 +137,7 @@ class EpollAcceptSeamTest {
         }
     }
 
-    // --- EpollServer.accept: Accepted branch (happy path + setSocketOption chain) ---
+    // --- EpollStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
 
     @Test
     fun `accept Accepted returns channel with setNonBlocking plus scripted addresses`() = runBlocking {

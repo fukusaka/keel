@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 
 /**
  * Seam-level tests for `accept`-path branches on the kqueue engine:
- * [KqueueServer.accept] (suspend-based) and
+ * [KqueueStreamServer.accept] (suspend-based) and
  * [KqueuePipelinedServerChannel.onAcceptable] (callback-based).
  *
  * Complements [KqueueEngineLifecycleSeamTest] (connect + bind) by
@@ -38,7 +38,7 @@ import kotlin.test.assertTrue
  * ## What this file does NOT cover
  *
  * - **`accept` `WouldBlock` suspend path (coroutine-based)** —
- *   `KqueueServer.accept()`'s `WouldBlock` branch registers the server
+ *   `KqueueStreamServer.accept()`'s `WouldBlock` branch registers the server
  *   fd on the boss event loop's real kqueue and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `KqueueEngineTest` integration tests.
@@ -71,7 +71,7 @@ class KqueueAcceptSeamTest {
         return fd
     }
 
-    // --- KqueueServer.accept: Failed branches ---
+    // --- KqueueStreamServer.accept: Failed branches ---
 
     @Test
     fun `accept Failed ECONNABORTED throws with errno message`() = runBlocking {
@@ -137,7 +137,7 @@ class KqueueAcceptSeamTest {
         }
     }
 
-    // --- KqueueServer.accept: Accepted branch (happy path + setSocketOption chain) ---
+    // --- KqueueStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
 
     @Test
     fun `accept Accepted returns channel with setNonBlocking plus scripted addresses`() = runBlocking {

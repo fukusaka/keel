@@ -714,7 +714,7 @@ class NioEngineTest {
     }
 
     @Test
-    fun `close ServerChannel cancels pending accept`() = runTest {
+    fun `close StreamServer cancels pending accept`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
 

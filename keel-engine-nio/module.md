@@ -112,7 +112,7 @@ the overhead that motivated the split.
 | `NioEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
 | `NioPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `NioPipelinedServerChannel` | Pipeline-mode server (callback-driven accept) |
-| `NioServer` | Coroutine-mode server (suspend-based accept) |
+| `NioStreamServer` | Coroutine-mode server (suspend-based accept) |
 | `NioIoTransport` | `IoTransport` for write/flush with OP_WRITE backpressure |
 | `NioEventLoop` | Single-threaded Selector loop + `CoroutineDispatcher` |
 | `NioEventLoopGroup` | Round-robin distribution of channels across EventLoops |

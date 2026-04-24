@@ -24,7 +24,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import io.github.fukusaka.keel.core.Channel as KeelChannel
-import io.github.fukusaka.keel.core.Server as KeelServer
+import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
 
 /**
  * Node.js-based [StreamEngine] implementation for JS.
@@ -40,7 +40,7 @@ import io.github.fukusaka.keel.core.Server as KeelServer
  * ```
  * NodeEngine (Node.js net module)
  *   |
- *   +-- bind() ---------> NodeServer (Coroutine mode: accept -> suspend I/O)
+ *   +-- bind() ---------> NodeStreamServer (Coroutine mode: accept -> suspend I/O)
  *   |                       |
  *   |                       +-- accept() --> NodePipelinedChannel
  *   |
@@ -61,12 +61,12 @@ class NodeEngine(
     private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelServer = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelStreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): KeelServer {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): KeelStreamServer {
         check(!closed) { "Engine is closed" }
         rejectAbstractOnNonLinux(address)
 
@@ -77,7 +77,7 @@ class NodeEngine(
             listenOpts.path = address.kernelPath
             listenOpts.backlog = bindConfig.backlog
             srv.listen(listenOpts) {
-                val serverChannel = NodeServer(
+                val serverChannel = NodeStreamServer(
                     srv,
                     address,
                     config.allocator,
@@ -97,7 +97,7 @@ class NodeEngine(
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelServer {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): KeelStreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
@@ -114,7 +114,7 @@ class NodeEngine(
                 val addr = srv.address()
                 val assignedPort = addr.port as Int
                 val localAddr = InetSocketAddress(host, assignedPort)
-                val serverChannel = NodeServer(
+                val serverChannel = NodeStreamServer(
                     srv,
                     localAddr,
                     config.allocator,
@@ -122,7 +122,7 @@ class NodeEngine(
                     channelLogger,
                 )
 
-                // Wire connection events to the ServerChannel's accept queue
+                // Wire connection events to the StreamServer's accept queue
                 srv.on("connection") { socket: dynamic ->
                     serverChannel.onConnection(socket as Socket)
                 }

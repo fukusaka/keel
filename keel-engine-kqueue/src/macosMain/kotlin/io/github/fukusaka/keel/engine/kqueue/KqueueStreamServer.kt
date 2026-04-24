@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.native.posix.AcceptResult
@@ -29,7 +29,7 @@ import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
 
 /**
- * kqueue-based [ServerChannel] implementation for macOS.
+ * kqueue-based [StreamServer] implementation for macOS.
  *
  * Listens on [serverFd] and uses the boss [KqueueEventLoop] to wait for
  * incoming connections. Accepted channels are assigned to worker EventLoops
@@ -49,16 +49,16 @@ import platform.posix.pthread_mutex_unlock
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueueServer(
+internal class KqueueStreamServer(
     private val serverFd: Int,
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
-    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueServer"),
+    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : ServerChannel {
+) : StreamServer {
 
     // State transitions may be observed from the boss EventLoop thread
     // (accept readiness callback) and from external dispatcher threads
@@ -90,7 +90,7 @@ internal class KqueueServer(
      * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         while (true) {
             when (val result = nativeSocket.accept(serverFd)) {
@@ -120,7 +120,7 @@ internal class KqueueServer(
                             }
                         }
                         if (closedAlready) {
-                            cont.resumeWithException(CancellationException("ServerChannel closed"))
+                            cont.resumeWithException(CancellationException("StreamServer closed"))
                             return@suspendCancellableCoroutine
                         }
                         bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
@@ -159,7 +159,7 @@ internal class KqueueServer(
             pendingAcceptCont = null
             c
         }
-        cont?.resumeWithException(CancellationException("ServerChannel closed"))
+        cont?.resumeWithException(CancellationException("StreamServer closed"))
         closeFdSafely(serverFd, logger, "server close")
         pthread_mutex_destroy(mutex.ptr)
         arena.clear()

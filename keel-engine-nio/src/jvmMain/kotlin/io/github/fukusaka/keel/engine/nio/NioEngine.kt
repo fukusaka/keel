@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
@@ -54,7 +54,7 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → NioServer (cached SelectionKey)
+ *   |     +-- bind() → NioStreamServer (cached SelectionKey)
  *   |           |
  *   |           +-- accept() → registerChannel on workerLoop → NioPipelinedChannel
  *   |
@@ -91,17 +91,17 @@ class NioEngine(
      * Binds a suspend-based server on [host]:[port].
      *
      * Opens a [ServerSocketChannel] in non-blocking mode, registers it with
-     * the boss EventLoop's Selector, and returns a [NioServer] whose
-     * [accept][NioServer.accept] returns [NioPipelinedChannel] instances.
+     * the boss EventLoop's Selector, and returns a [NioStreamServer] whose
+     * [accept][NioStreamServer.accept] returns [NioPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
@@ -116,14 +116,14 @@ class NioEngine(
             val selectionKey = bossLoop.registerChannel(serverChannel)
 
             logger.debug { "Bound to $localAddr" }
-            return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            return NioStreamServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
         } catch (t: Throwable) {
             closeQuietly(serverChannel, "bindUnix cleanup")
             throw t
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
@@ -140,7 +140,7 @@ class NioEngine(
             val selectionKey = bossLoop.registerChannel(serverChannel)
 
             logger.debug { "Bound to $localAddr" }
-            return NioServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            return NioStreamServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
         } catch (t: Throwable) {
             closeQuietly(serverChannel, "bindInet cleanup")
             throw t
@@ -243,7 +243,7 @@ class NioEngine(
             // Connection in progress — suspend until OP_CONNECT fires.
             // Attach a plain Runnable (not the continuation) to avoid the
             // CancellableContinuationImpl-as-Runnable trap in
-            // NioEventLoop.processSelectedKeys — see NioServer KDoc for the
+            // NioEventLoop.processSelectedKeys — see NioStreamServer KDoc for the
             // full rationale.
             try {
                 suspendCancellableCoroutine<Unit> { cont ->

@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Regression tests for [NioServer.close] thread safety.
+ * Regression tests for [NioStreamServer.close] thread safety.
  *
  * The close() method is documented as safe to call from any thread: the
  * boss-EventLoop-side accept callback, the coroutine that issued accept(),

@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
@@ -30,7 +30,7 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
 
 /**
- * epoll-based [ServerChannel] implementation for Linux.
+ * epoll-based [StreamServer] implementation for Linux.
  *
  * Listens on [serverFd] and uses the boss [EpollEventLoop] to wait for
  * incoming connections. Accepted channels are assigned to worker EventLoops
@@ -50,16 +50,16 @@ import kotlin.coroutines.resumeWithException
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class EpollServer(
+internal class EpollStreamServer(
     private val serverFd: Int,
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollServer"),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : ServerChannel {
+) : StreamServer {
 
     // State transitions may be observed from the boss EventLoop thread
     // (epoll readiness callback) and from external dispatcher threads
@@ -84,7 +84,7 @@ internal class EpollServer(
      * and suspends until readiness is reported.
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         while (true) {
             when (val result = nativeSocket.accept(serverFd)) {
@@ -114,7 +114,7 @@ internal class EpollServer(
                             }
                         }
                         if (closedAlready) {
-                            cont.resumeWithException(CancellationException("ServerChannel closed"))
+                            cont.resumeWithException(CancellationException("StreamServer closed"))
                             return@suspendCancellableCoroutine
                         }
                         bossLoop.register(serverFd, EpollEventLoop.Interest.READ, cont)
@@ -151,7 +151,7 @@ internal class EpollServer(
             pendingAcceptCont = null
             c
         }
-        cont?.resumeWithException(CancellationException("ServerChannel closed"))
+        cont?.resumeWithException(CancellationException("StreamServer closed"))
         closeFdSafely(serverFd, logger, "server close")
         pthread_mutex_destroy(mutex.ptr)
         arena.clear()

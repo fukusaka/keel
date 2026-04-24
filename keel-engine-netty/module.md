@@ -106,7 +106,7 @@ Supported certificate sources: `TlsCertificateSource.Pem`, `TlsCertificateSource
 | `NettyPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `channelRead` to keel pipeline |
 | `NettyIoTransport` | `IoTransport` for buffered async writes via `writeAndFlush`. Always async |
 | `NettySslInstaller` | `TlsInstaller` that installs Netty `SslHandler` at the transport level |
-| `NettyServer` | Coroutine-mode server: accepts connections into a suspend queue |
+| `NettyStreamServer` | Coroutine-mode server: accepts connections into a suspend queue |
 
 # Package io.github.fukusaka.keel.engine.netty
 

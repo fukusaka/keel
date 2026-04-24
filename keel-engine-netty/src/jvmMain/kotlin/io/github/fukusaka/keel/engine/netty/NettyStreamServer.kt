@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
@@ -12,7 +12,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.netty.channel.Channel as NettyNativeChannel
 
 /**
- * Netty-based [ServerChannel] implementation for JVM.
+ * Netty-based [StreamServer] implementation for JVM.
  *
  * Wraps a Netty server channel and accepts incoming connections via
  * [suspendCancellableCoroutine]. The Netty [ChannelInitializer] (set by
@@ -38,7 +38,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  *   Netty EventLoop: initChannel(ch) --> onNewChannel(keelCh) --> resume
  * ```
  */
-internal class NettyServer private constructor() : ServerChannel {
+internal class NettyStreamServer private constructor() : StreamServer {
 
     private lateinit var serverChannel: NettyNativeChannel
     private lateinit var _localAddress: SocketAddress
@@ -90,7 +90,7 @@ internal class NettyServer private constructor() : ServerChannel {
      * race condition where channelRead fires before accept() returns.
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         // Fast path: buffered connection available
         synchronized(lock) {
@@ -131,7 +131,7 @@ internal class NettyServer private constructor() : ServerChannel {
             if (_active) {
                 _active = false
                 pendingAcceptCont?.resumeWithException(
-                    CancellationException("ServerChannel closed")
+                    CancellationException("StreamServer closed")
                 )
                 pendingAcceptCont = null
             }
@@ -143,9 +143,9 @@ internal class NettyServer private constructor() : ServerChannel {
 
     companion object {
         /**
-         * Creates an uninitialized [NettyServer]. Call [init] after
+         * Creates an uninitialized [NettyStreamServer]. Call [init] after
          * the Netty server channel is bound to complete initialization.
          */
-        fun create(): NettyServer = NettyServer()
+        fun create(): NettyStreamServer = NettyStreamServer()
     }
 }

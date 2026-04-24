@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
@@ -58,7 +58,7 @@ import platform.posix.errno
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → KqueueServer
+ *   |     +-- bind() → KqueueStreamServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -106,20 +106,20 @@ class KqueueEngine(
     }
 
     /**
-     * Binds a TCP server on [host]:[port] and returns a [ServerChannel].
+     * Binds a TCP server on [host]:[port] and returns a [StreamServer].
      *
      * Creates a server socket, registers it with the boss EventLoop's kqueue,
-     * and returns a [KqueueServer] whose [accept][ServerChannel.accept]
+     * and returns a [KqueueStreamServer] whose [accept][StreamServer.accept]
      * distributes connections to worker EventLoops in round-robin.
      *
      * @throws IllegalStateException if the engine is already closed.
      */
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
@@ -142,14 +142,14 @@ class KqueueEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return KqueueServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return KqueueStreamServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.resolveFirst(config.resolver)
@@ -176,7 +176,7 @@ class KqueueEngine(
 
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return KqueueServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return KqueueStreamServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -275,7 +275,7 @@ class KqueueEngine(
     /**
      * Binds a pipeline-based server on [host]:[port].
      *
-     * Unlike [bind] which returns a suspend-based [ServerChannel], this creates
+     * Unlike [bind] which returns a suspend-based [StreamServer], this creates
      * a callback-driven server that processes connections entirely through
      * [Pipeline] handlers — no coroutine suspension on the hot path.
      *

@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.PipelinedServer
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
@@ -146,22 +146,22 @@ class IoUringEngine(
     /**
      * Binds a suspend-based server on [host]:[port].
      *
-     * Creates a server socket and returns an [IoUringServer] whose
-     * [accept][IoUringServer.accept] returns [IoUringPipelinedChannel] instances.
+     * Creates a server socket and returns an [IoUringStreamServer] whose
+     * [accept][IoUringStreamServer.accept] returns [IoUringPipelinedChannel] instances.
      *
      * @throws IllegalStateException if the engine is closed.
      */
-    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): ServerChannel = when (address) {
+    override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
     }
 
-    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
         try {
             logger.debug { "Bound to $address" }
-            return IoUringServer(
+            return IoUringStreamServer(
                 serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
@@ -170,7 +170,7 @@ class IoUringEngine(
         }
     }
 
-    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): ServerChannel {
+    private suspend fun bindInet(address: InetSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
         val ip = address.resolveFirst(config.resolver)
@@ -179,7 +179,7 @@ class IoUringEngine(
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return IoUringServer(
+            return IoUringStreamServer(
                 serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
             )
         } catch (t: Throwable) {
@@ -329,7 +329,7 @@ class IoUringEngine(
      * For each connection, [pipelineInitializer] is called to set up the
      * handler chain, then multishot recv is armed for zero-suspend I/O.
      *
-     * Unlike [bind] (which returns a suspend-based [ServerChannel]), this
+     * Unlike [bind] (which returns a suspend-based [StreamServer]), this
      * method creates a fully callback-driven server with no coroutine overhead.
      *
      * @param host Bind address (e.g., "0.0.0.0").

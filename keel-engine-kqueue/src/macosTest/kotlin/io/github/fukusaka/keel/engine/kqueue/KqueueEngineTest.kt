@@ -955,7 +955,7 @@ class KqueueEngineTest {
     }
 
     @Test
-    fun `close ServerChannel cancels pending accept`() = runBlocking {
+    fun `close StreamServer cancels pending accept`() = runBlocking {
         val engine = KqueueEngine()
         val server = engine.bind("127.0.0.1", 0)
 

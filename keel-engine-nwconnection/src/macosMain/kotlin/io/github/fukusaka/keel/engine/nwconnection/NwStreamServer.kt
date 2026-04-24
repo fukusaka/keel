@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.LoggerFactory
@@ -36,7 +36,7 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.ptr
 
 /**
- * NWConnection-based [ServerChannel] implementation for macOS.
+ * NWConnection-based [StreamServer] implementation for macOS.
  *
  * Wraps an [nw_listener_t] and accepts incoming connections via
  * [suspendCancellableCoroutine]. The listener's new-connection handler
@@ -64,13 +64,13 @@ import kotlinx.cinterop.ptr
  * @param allocator   Passed to accepted [NwPipelinedChannel]s.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class NwServer(
+internal class NwStreamServer(
     private val listener: nw_listener_t,
     localAddress: SocketAddress,
     private val allocator: BufferAllocator,
     private val bindConfig: BindConfig,
     private val loggerFactory: LoggerFactory,
-) : ServerChannel {
+) : StreamServer {
 
     private val arena = Arena()
     private val mutex = arena.alloc<pthread_mutex_t>().apply {
@@ -121,7 +121,7 @@ internal class NwServer(
      * connection reaches the ready state.
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         // Get a connection: fast path (buffered) or slow path (suspend)
         val conn: nw_connection_t = withLock {
@@ -185,7 +185,7 @@ internal class NwServer(
             if (_active) {
                 _active = false
                 pendingAcceptCont?.resumeWithException(
-                    CancellationException("ServerChannel closed"),
+                    CancellationException("StreamServer closed"),
                 )
                 pendingAcceptCont = null
             }

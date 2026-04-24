@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -14,7 +14,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Java NIO [ServerSocketChannel]-based [ServerChannel] implementation for JVM.
+ * Java NIO [ServerSocketChannel]-based [StreamServer] implementation for JVM.
  *
  * Uses a cached [selectionKey] registered once with `interestOps=0`.
  * Each `accept()` call toggles [SelectionKey.OP_ACCEPT] via
@@ -51,15 +51,15 @@ import kotlin.coroutines.resumeWithException
  * @param workerGroup   Worker EventLoopGroup for accepted channels.
  * @param localAddress  Bind address of this server channel.
  */
-internal class NioServer(
+internal class NioStreamServer(
     private val serverChannel: ServerSocketChannel,
     private val selectionKey: SelectionKey,
     private val bossLoop: NioEventLoop,
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioServer"),
-) : ServerChannel {
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioStreamServer"),
+) : StreamServer {
 
     // State transitions (_active, pendingAcceptCont) may be observed
     // from the boss EventLoop thread (accept readiness callback) and
@@ -79,7 +79,7 @@ internal class NioServer(
      * assigned to the next worker EventLoop with a cached [SelectionKey].
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         while (true) {
             val client = serverChannel.accept()
@@ -108,7 +108,7 @@ internal class NioServer(
                     }
                 }
                 if (closedAlready) {
-                    cont.resumeWithException(CancellationException("ServerChannel closed"))
+                    cont.resumeWithException(CancellationException("StreamServer closed"))
                     return@suspendCancellableCoroutine
                 }
                 // Attach a plain Runnable (not the continuation itself) so the
@@ -149,7 +149,7 @@ internal class NioServer(
             pendingAcceptCont = null
             c
         }
-        cont?.resumeWithException(CancellationException("ServerChannel closed"))
+        cont?.resumeWithException(CancellationException("StreamServer closed"))
         selectionKey.cancel()
         serverChannel.close()
     }

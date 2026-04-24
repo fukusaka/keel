@@ -35,7 +35,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Fixed by attaching a plain `Runnable { cont.resume(Unit) }` to the selector
  * (via `setInterestCallback`) so attachments are never
- * `CancellableContinuationImpl` instances. See [NioServer] KDoc.
+ * `CancellableContinuationImpl` instances. See [NioStreamServer] KDoc.
  */
 class NioShutdownRaceTest {
 

@@ -25,7 +25,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * worker EventLoops in round-robin, where each creates a
  * [KqueuePipelinedChannel] and arms read callbacks.
  *
- * Unlike [KqueueServer] (suspend-based), this server channel uses
+ * Unlike [KqueueStreamServer] (suspend-based), this server channel uses
  * callback-based registration for non-suspend pipeline processing.
  *
  * ```

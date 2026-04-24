@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.core.ServerChannel
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.logging.Logger
@@ -27,7 +27,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * io_uring-based [ServerChannel] using multishot accept (Linux 5.19+).
+ * io_uring-based [StreamServer] using multishot accept (Linux 5.19+).
  *
  * A single `IORING_OP_ACCEPT` SQE with `IORING_ACCEPT_MULTISHOT` produces
  * multiple CQEs — one per accepted connection — eliminating the per-accept
@@ -53,7 +53,7 @@ import kotlin.coroutines.resumeWithException
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class IoUringServer(
+internal class IoUringStreamServer(
     private val serverFd: Int,
     private val bossLoop: IoUringEventLoop,
     private val workerGroup: IoUringEventLoopGroup,
@@ -61,10 +61,10 @@ internal class IoUringServer(
     private val bindConfig: BindConfig,
     private val writeModeSelector: IoModeSelector = IoModeSelectors.FALLBACK_CQE,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
-    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringServer"),
+    private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : ServerChannel {
+) : StreamServer {
 
     // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
     // observes the false set by a close() caller on another thread
@@ -93,7 +93,7 @@ internal class IoUringServer(
      * @throws IllegalStateException if the server channel is closed.
      */
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         val clientFd = if (capabilities.multishotAccept) {
             acceptMultishot()
@@ -102,7 +102,7 @@ internal class IoUringServer(
         }
 
         if (clientFd < 0) {
-            if (!_active) throw CancellationException("ServerChannel closed")
+            if (!_active) throw CancellationException("StreamServer closed")
             error("io_uring accept failed: errno=${-clientFd}")
         }
 
@@ -211,7 +211,7 @@ internal class IoUringServer(
             }
             pendingAcceptCont?.let { cont ->
                 pendingAcceptCont = null
-                cont.resumeWithException(CancellationException("ServerChannel closed"))
+                cont.resumeWithException(CancellationException("StreamServer closed"))
             }
             // Close any queued fds that haven't been accepted yet.
             while (pendingFds.isNotEmpty()) {

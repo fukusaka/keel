@@ -11,10 +11,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import io.github.fukusaka.keel.core.Server as KeelServer
+import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
 
 /**
- * Node.js `net.Server`-based [ServerChannel] implementation for JS.
+ * Node.js `net.Server`-based [StreamServer] implementation for JS.
  *
  * Wraps a Node.js [Server] and accepts incoming connections via an
  * [ArrayDeque] queue. The server's connection listener pushes each
@@ -28,13 +28,13 @@ import io.github.fukusaka.keel.core.Server as KeelServer
  * @param allocator     Passed to accepted [NodePipelinedChannel]s.
  * @param loggerFactory Logger factory for creating per-channel loggers.
  */
-internal class NodeServer(
+internal class NodeStreamServer(
     private val server: Server,
     override val localAddress: SocketAddress,
     private val allocator: BufferAllocator,
     private val bindConfig: BindConfig,
     private val channelLogger: Logger,
-) : KeelServer {
+) : KeelStreamServer {
 
     private var _active = true
     private val pendingConnections = ArrayDeque<Socket>()
@@ -54,7 +54,7 @@ internal class NodeServer(
     }
 
     override suspend fun accept(): PipelinedChannel {
-        check(_active) { "ServerChannel is closed" }
+        check(_active) { "StreamServer is closed" }
 
         val socket: Socket = if (pendingConnections.isNotEmpty()) {
             pendingConnections.removeFirst()
@@ -93,7 +93,7 @@ internal class NodeServer(
         if (_active) {
             _active = false
             pendingAcceptCont?.resumeWithException(
-                CancellationException("ServerChannel closed"),
+                CancellationException("StreamServer closed"),
             )
             pendingAcceptCont = null
             server.close()

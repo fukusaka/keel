@@ -23,7 +23,7 @@ flows TAIL → HEAD. `HeadHandler` connects the pipeline to `NodeIoTransport`.
 ```
 NodeEngine (Node.js net module)
   |
-  +-- bind() ---------> NodeServer (Coroutine mode: accept → suspend I/O)
+  +-- bind() ---------> NodeStreamServer (Coroutine mode: accept → suspend I/O)
   |                       |
   |                       +-- accept() --> NodePipelinedChannel
   |
@@ -112,7 +112,7 @@ plain `net.Server` and installs a keel `TlsHandler` per connection via
 | `NodeEngine` | `StreamEngine` implementation for JS/Node.js |
 | `NodePipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `socket.on("data")` to keel pipeline |
 | `NodeIoTransport` | `IoTransport` for write/flush via `socket.write()` |
-| `NodeServer` | Coroutine-mode server: accepts connections into a suspend queue |
+| `NodeStreamServer` | Coroutine-mode server: accepts connections into a suspend queue |
 | `Net` | `@JsModule("net")` external declarations |
 | `Tls` | `@JsModule("tls")` external declarations for listener-level TLS |
 
