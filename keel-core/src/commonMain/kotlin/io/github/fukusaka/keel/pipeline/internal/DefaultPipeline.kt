@@ -1,8 +1,16 @@
-package io.github.fukusaka.keel.pipeline
+package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.OutboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.PipelineTypeException
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 
 /**
  * Default [Pipeline] implementation using a doubly-linked list of handler contexts.
@@ -22,7 +30,7 @@ import io.github.fukusaka.keel.logging.error
  * [acceptedType]/[producedType] declarations. Validation is skipped when
  * either type is [Any] (the default).
  */
-class DefaultPipeline(
+internal class DefaultPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
     private val logger: Logger,
