@@ -1,42 +1,28 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.MpscQueue
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.get
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.refTo
-import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.usePinned
-import io.github.fukusaka.keel.buf.MpscQueue
-import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.logging.debug
-import io.github.fukusaka.keel.logging.error
+import kotlinx.cinterop.get
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resumeWithException
-import kqueue.keel_ev_set
-import platform.darwin.EV_ADD
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
-import platform.darwin.kevent
-import platform.darwin.kqueue
 import platform.posix.EAGAIN
 import platform.posix.EINTR
-import platform.posix.errno
-import platform.posix.pipe
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
@@ -48,12 +34,10 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
-import platform.posix.read
-import platform.posix.timespec
-import platform.posix.write
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
@@ -102,6 +86,7 @@ import kotlin.coroutines.resume
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueEventLoop(
     internal val logger: Logger,
+    private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
 ) : CoroutineDispatcher(), KqueueSuspendRegister {
 
     /**
@@ -135,6 +120,12 @@ internal class KqueueEventLoop(
     // Only accessed from the EventLoop thread (via [drainTasks]).
     private val drainBatch: MutableList<Runnable> = mutableListOf()
 
+    // Pre-allocated event carrier array reused across every [loop]
+    // iteration. Sized to [MAX_EVENTS]; each slot is a mutable [KqEvent]
+    // whose fields are overwritten by [KqueueSyscallOps.waitEvents].
+    // Only accessed from the EventLoop thread.
+    private val eventBuffer: Array<KqEvent> = Array(MAX_EVENTS) { KqEvent() }
+
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
     // Cached byte arrays to avoid per-wakeup allocation.
     // wakeup() is called once per dispatch/register, so reuse matters.
@@ -161,34 +152,25 @@ internal class KqueueEventLoop(
     enum class Interest { READ, WRITE }
 
     init {
-        val fd = kqueue()
-        check(fd >= 0) { "kqueue() failed: ${errnoMessage(errno)}" }
+        val fd = syscallOps.kqueueCreate()
+        if (fd < 0) error("kqueue() failed: ${errnoMessage(-fd)}")
         kqFd = fd
 
         // Create wakeup pipe and register the read end with kqueue
-        val result = pipe(wakeupFds.refTo(0))
-        if (result != 0) {
-            val err = errno
+        val pipeErr = syscallOps.makePipe(wakeupFds)
+        if (pipeErr != 0) {
             closeFdSafely(kqFd, logger, "kqueue init (pipe failure)")
-            error("pipe() failed: ${errnoMessage(err)}")
+            error("pipe() failed: ${errnoMessage(pipeErr)}")
         }
         PosixNativeSocketOps.setNonBlocking(wakeupFds[0])
         PosixNativeSocketOps.setNonBlocking(wakeupFds[1])
 
-        memScoped {
-            val kev = alloc<kevent>()
-            keel_ev_set(
-                kev.ptr, wakeupFds[0].convert(), EVFILT_READ.convert(),
-                EV_ADD.convert(), 0u, 0, null,
-            )
-            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
-            if (ret < 0) {
-                val err = errno
-                closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
-                closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
-                closeFdSafely(kqFd, logger, "kqueue init (kevent failure)")
-                error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(err)}")
-            }
+        val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
+        if (kevErr != 0) {
+            closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
+            closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
+            closeFdSafely(kqFd, logger, "kqueue init (kevent failure)")
+            error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(kevErr)}")
         }
     }
 
@@ -276,10 +258,6 @@ internal class KqueueEventLoop(
      * [wakeup] is called to interrupt `kevent()` if the EventLoop is blocked.
      */
     fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) {
-        val filter = when (interest) {
-            Interest.READ -> EVFILT_READ
-            Interest.WRITE -> EVFILT_WRITE
-        }
         val key = registrationKey(fd, interest)
 
         // Register continuation BEFORE adding to kqueue to close the race window
@@ -289,14 +267,9 @@ internal class KqueueEventLoop(
             registrations[key] = Registration(fd, interest, cont)
         }
 
-        val kevErr = memScoped {
-            val kev = alloc<kevent>()
-            keel_ev_set(
-                kev.ptr, fd.convert(), filter.convert(),
-                EV_ADD.convert(), 0u, 0, null,
-            )
-            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
-            if (ret < 0) errno else 0
+        val kevErr = when (interest) {
+            Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+            Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
             // kevent(EV_ADD) failed — remove the stale map entry and fail the
@@ -333,10 +306,6 @@ internal class KqueueEventLoop(
      * The registration is one-shot: removed after the callback fires.
      */
     fun registerCallback(fd: Int, interest: Interest, callback: () -> Unit) {
-        val filter = when (interest) {
-            Interest.READ -> EVFILT_READ
-            Interest.WRITE -> EVFILT_WRITE
-        }
         val key = registrationKey(fd, interest)
 
         // Register callback BEFORE adding to kqueue (same rationale as register()).
@@ -344,14 +313,9 @@ internal class KqueueEventLoop(
             callbackRegistrations[key] = callback
         }
 
-        val kevErr = memScoped {
-            val kev = alloc<kevent>()
-            keel_ev_set(
-                kev.ptr, fd.convert(), filter.convert(),
-                EV_ADD.convert(), 0u, 0, null,
-            )
-            val ret = kevent(kqFd, kev.ptr, 1, null, 0, null)
-            if (ret < 0) errno else 0
+        val kevErr = when (interest) {
+            Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+            Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
             // kevent(EV_ADD) failed — remove the stale callback entry. There is
@@ -385,16 +349,11 @@ internal class KqueueEventLoop(
      * pending fds and tasks.
      */
     private fun wakeup() {
-        wakeupWriteBuf.usePinned { pinned ->
-            val n = write(wakeupFds[1], pinned.addressOf(0), 1u.convert())
-            if (n < 0) {
-                val err = errno
-                // EAGAIN: pipe buffer full — a wakeup is already pending,
-                // which is exactly what we want. Benign.
-                if (err != EAGAIN) {
-                    logger.debug { "kqueue wakeup write() failed: ${errnoMessage(err)}" }
-                }
-            }
+        val err = syscallOps.wakeupWrite(wakeupFds[1], wakeupWriteBuf)
+        // EAGAIN: pipe buffer full — a wakeup is already pending, which
+        // is exactly what we want. Benign.
+        if (err != 0 && err != EAGAIN) {
+            logger.debug { "kqueue wakeup write() failed: ${errnoMessage(err)}" }
         }
     }
 
@@ -403,11 +362,9 @@ internal class KqueueEventLoop(
      * Called from the EventLoop thread when the wakeup fd fires.
      */
     private fun consumeWakeup() {
-        wakeupReadBuf.usePinned { pinned ->
-            while (true) {
-                val n = read(wakeupFds[0], pinned.addressOf(0), WAKEUP_DRAIN_SIZE.toULong().convert())
-                if (n <= 0) break // EAGAIN or error — all bytes consumed
-            }
+        val err = syscallOps.wakeupDrain(wakeupFds[0], wakeupReadBuf)
+        if (err != 0) {
+            logger.debug { "kqueue wakeup read() failed: ${errnoMessage(err)}" }
         }
     }
 
@@ -422,55 +379,49 @@ internal class KqueueEventLoop(
      *    are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
-    private fun loop() {
+    internal fun loop() {
         eventLoopThread = pthread_self()
-        memScoped {
-            val eventList = allocArray<kevent>(MAX_EVENTS)
-            val zeroTimeout = alloc<timespec>().apply {
-                tv_sec = 0
-                tv_nsec = 0
+        while (running.value != 0) {
+            drainTasks()
+
+            // Non-blocking poll if tasks arrived during drainTasks(),
+            // otherwise block until events or wakeup.
+            val timeout = if (hasTasksPending()) 0L else KqueueSyscallOps.TIMEOUT_BLOCK
+            val n = syscallOps.waitEvents(kqFd, eventBuffer, timeout)
+            if (n < 0) {
+                // Negative return encodes -errno per KqueueSyscallOps contract.
+                val err = -n
+                // EINTR: interrupted by signal (e.g. debugger attach).
+                // EAGAIN: spurious wakeup. Both are retriable.
+                if (err == EINTR || err == EAGAIN) continue
+                // Fatal error — log and terminate the EventLoop thread.
+                // Cannot throw from a pthread; logger is the only output path.
+                logger.error { "kevent() fatal error: ${errnoMessage(err)}" }
+                break
             }
-            while (running.value != 0) {
-                drainTasks()
+            for (i in 0 until n) {
+                val ev = eventBuffer[i]
+                val fd = ev.fd
 
-                // Non-blocking poll if tasks arrived during drainTasks(),
-                // otherwise block until events or wakeup.
-                val timeout = if (hasTasksPending()) zeroTimeout.ptr else null
-                val n = kevent(kqFd, null, 0, eventList, MAX_EVENTS, timeout)
-                if (n < 0) {
-                    // EINTR: interrupted by signal (e.g. debugger attach).
-                    // EAGAIN: spurious wakeup. Both are retriable.
-                    val err = errno
-                    if (err == EINTR || err == EAGAIN) continue
-                    // Fatal error — log and terminate the EventLoop thread.
-                    // Cannot throw from a pthread; logger is the only output path.
-                    logger.error { "kevent() fatal error: ${errnoMessage(err)}" }
-                    break
+                if (fd == wakeupFds[0]) {
+                    consumeWakeup()
+                    continue
                 }
-                for (i in 0 until n) {
-                    val ev = eventList[i]
-                    val fd = ev.ident.toInt()
 
-                    if (fd == wakeupFds[0]) {
-                        consumeWakeup()
-                        continue
-                    }
-
-                    val interest = when (ev.filter.toInt()) {
-                        EVFILT_READ -> Interest.READ
-                        EVFILT_WRITE -> Interest.WRITE
-                        else -> continue
-                    }
-                    val key = registrationKey(fd, interest)
-                    // Check callback registrations first (pipeline path),
-                    // then coroutine registrations (suspend path).
-                    val cb = withRegLock { callbackRegistrations.remove(key) }
-                    if (cb != null) {
-                        cb()
-                    } else {
-                        val reg = withRegLock { registrations.remove(key) }
-                        reg?.continuation?.resume(Unit)
-                    }
+                val interest = when (ev.filter) {
+                    EVFILT_READ -> Interest.READ
+                    EVFILT_WRITE -> Interest.WRITE
+                    else -> continue
+                }
+                val key = registrationKey(fd, interest)
+                // Check callback registrations first (pipeline path),
+                // then coroutine registrations (suspend path).
+                val cb = withRegLock { callbackRegistrations.remove(key) }
+                if (cb != null) {
+                    cb()
+                } else {
+                    val reg = withRegLock { registrations.remove(key) }
+                    reg?.continuation?.resume(Unit)
                 }
             }
         }
