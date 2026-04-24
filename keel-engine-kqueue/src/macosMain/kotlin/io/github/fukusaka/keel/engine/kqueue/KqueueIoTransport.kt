@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.NativeRegion
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -44,6 +43,20 @@ internal class KqueueIoTransport(
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    // Parallel primitive arrays reused across [flushGather] calls to
+    // feed [NativeSocket.writev] without per-flush heap allocation.
+    // Grown lazily (1.5x) via [ensureWritevCapacity] when pendingWrites
+    // exceeds the current capacity.
+    private var writevPtrs: LongArray = LongArray(INITIAL_WRITEV_CAPACITY)
+    private var writevLens: IntArray = IntArray(INITIAL_WRITEV_CAPACITY)
+
+    private fun ensureWritevCapacity(n: Int) {
+        if (writevPtrs.size >= n) return
+        val grown = maxOf(writevPtrs.size + (writevPtrs.size shr 1), n)
+        writevPtrs = LongArray(grown)
+        writevLens = IntArray(grown)
+    }
 
     // --- Read path ---
 
@@ -187,11 +200,16 @@ internal class KqueueIoTransport(
      * single-buffer retry on partial write or EAGAIN.
      */
     private fun flushGather(): Boolean {
-        val totalBytes = pendingWrites.sumOf { it.length }
-        val regions = pendingWrites.map { pw ->
-            NativeRegion((pw.buf.unsafePointer + pw.offset)!!, pw.length)
+        val count = pendingWrites.size
+        ensureWritevCapacity(count)
+        var totalBytes = 0
+        for (i in 0 until count) {
+            val pw = pendingWrites[i]
+            writevPtrs[i] = (pw.buf.unsafePointer + pw.offset)!!.rawValue.toLong()
+            writevLens[i] = pw.length
+            totalBytes += pw.length
         }
-        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, regions)) {
+        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, writevPtrs, writevLens, count)) {
             WriteResult.WouldBlock -> {
                 // Nothing written — register WRITE and retry all later.
                 registerWriteCallback()
@@ -269,4 +287,11 @@ internal class KqueueIoTransport(
         }
     }
 
+    private companion object {
+        /**
+         * Starting capacity of the [writevPtrs] / [writevLens] scratch
+         * arrays. Grown 1.5x on demand.
+         */
+        const val INITIAL_WRITEV_CAPACITY = 8
+    }
 }

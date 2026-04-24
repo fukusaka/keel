@@ -10,6 +10,7 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
+import kotlinx.cinterop.toCPointer
 import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
@@ -53,15 +54,15 @@ public object PosixNativeSocket : NativeSocket {
         return decodeWriteResult(n)
     }
 
-    override fun writev(fd: Int, regions: List<NativeRegion>): WriteResult = memScoped {
-        val count = regions.size
+    override fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult = memScoped {
         val bases = allocArray<CPointerVar<ByteVar>>(count)
-        val lens = allocArray<ULongVar>(count)
-        for (i in regions.indices) {
-            bases[i] = regions[i].ptr
-            lens[i] = regions[i].length.convert()
+        val nativeLens = allocArray<ULongVar>(count)
+        for (i in 0 until count) {
+            @Suppress("UNCHECKED_CAST")
+            bases[i] = ptrs[i].toCPointer<ByteVar>()
+            nativeLens[i] = lens[i].convert()
         }
-        val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
+        val n = keel_writev(fd, bases.reinterpret(), nativeLens.reinterpret(), count)
         decodeWriteResult(n)
     }
 
