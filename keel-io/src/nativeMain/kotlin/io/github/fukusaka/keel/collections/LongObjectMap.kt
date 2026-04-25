@@ -2,47 +2,43 @@ package io.github.fukusaka.keel.collections
 
 /**
  * A primitive-keyed hash map from `Long` to a non-nullable value type, using
- * open-addressing with linear probing and **backshift delete**. Designed for
- * hot-path data structures in keel's **Native engines** (kqueue / epoll fd
+ * open-addressing with linear probing and backshift delete. Designed for
+ * hot-path data structures in keel's Native engines (kqueue / epoll fd
  * registration tables, io_uring buffer index lookups) where the per-call cost
  * of `HashMap<Long, V>` is dominated by `Long` boxing.
  *
- * **Scope** — this class is in the `nativeMain` source set because (1) every
- * known consumer is a Native engine, (2) the design choices (Fibonacci hash
- * tuning, backshift delete) were validated by the `--bench=longmap-variants`
- * Kotlin/Native micro-bench only — JVM and JS targets were not measured, so
- * we do not claim multiplatform readiness, and (3) Native lets us throw
- * [OutOfMemoryError] on the capacity-overflow path, matching the K/N stdlib
- * `HashMap.ensureCapacity` precedent. If a JVM / JS consumer ever appears,
+ * ## Scope
+ *
+ * This class lives in the `nativeMain` source set because (1) every known
+ * consumer is a Native engine, (2) the design choices were validated against
+ * Kotlin/Native micro-benchmarks only — JVM and JS targets were not measured,
+ * so multiplatform readiness is not claimed, and (3) Native lets the
+ * capacity-overflow path throw [OutOfMemoryError], matching the K/N stdlib
+ * `HashMap.ensureCapacity` precedent. If a JVM or JS consumer ever appears,
  * promote with explicit cross-target benchmarks.
  *
- * ## Design choices (validated by `--bench=longmap-variants`)
+ * ## Hash function
  *
- * - **Hash**: Fibonacci multiplicative hashing
- *   `((key xor (key ushr 32)) * GOLDEN_RATIO_LONG) ushr (64 - log2(cap))`.
- *   Uses **top bits** of the multiplication result (matches K/N stdlib
- *   `HashMap.hash` idiom). Low-bit extraction (e.g. `.toInt() and mask`)
- *   leaks input pattern: page-aligned pointer keys all hash to slot 0
- *   because the low N bits of `(page-aligned * GOLDEN)` are zero.
- * - **Delete**: **backshift** (Robin-Hood-style) — on remove, scan forward
- *   and shift entries whose home slot ≤ removed index back, then `null`
- *   out the trailing slot. No tombstones. The hot read path becomes
- *   branch-free (`null` terminates probe).
- * - **Collision resolution**: linear probing — cache-friendly forward scan.
- * - **Load factor**: 0.75, 2× growth on resize.
- * - **Capacity**: always a power of two so `index = hash and (cap - 1)`
- *   avoids modulo.
+ * Fibonacci multiplicative hashing with top-bit extraction:
+ * `((key xor (key ushr 32)) * GOLDEN_RATIO_LONG) ushr (64 - log2(cap))`.
+ * Mirrors the K/N stdlib `HashMap.hash` idiom. Low-bit extraction
+ * (`.toInt() and mask`) is wrong here because the low N bits of
+ * `(page-aligned * GOLDEN)` are zero, so page-aligned pointer keys would
+ * all collide on slot 0.
  *
- * ## Performance (Kotlin/Native, `--bench=longmap-variants`)
+ * ## Delete strategy
  *
- * Micro-bench numbers (ns/op, read-dominant 9 get + 1 (rm+put), 64 entries):
+ * Backshift (Robin-Hood-style). On remove, scan forward and shift entries
+ * whose home slot ≤ removed index back, then `null` out the trailing slot.
+ * No tombstones — the hot read path becomes branch-free (`null` terminates
+ * the probe) and write-churn does not accumulate degraded probe chains.
  *
- * - macOS arm64: HashMap 41.5 → LongObjectMap **21.3** (1.95×)
- * - linuxX64 (luna): HashMap 23.8 → LongObjectMap **8.3** (2.87×)
+ * ## Storage layout
  *
- * Page-aligned pointer keys (lookup-only, 64 entries):
- * - macOS arm64: HashMap 26.2 → LongObjectMap **18.5** (1.42×)
- * - linuxX64 (luna): HashMap 13.2 → LongObjectMap **7.7** (1.71×)
+ * Linear probing on power-of-two capacity (`index = hash and (cap - 1)`
+ * avoids modulo). Load factor 0.75, 2× growth on resize. Maximum capacity
+ * is [MAX_CAPACITY] (the largest power-of-two that fits in a non-negative
+ * `Int`); exceeding it on resize throws [OutOfMemoryError].
  *
  * ## Not a `Map<K, V>` implementation
  *
@@ -68,7 +64,8 @@ package io.github.fukusaka.keel.collections
  *
  * @param V value type; must be non-nullable (`V : Any`).
  * @param initialCapacity requested initial capacity. Rounded up to the next
- *   power of two and lower-bounded by [MIN_CAPACITY].
+ *   power of two and lower-bounded by [MIN_CAPACITY], upper-bounded by
+ *   [MAX_CAPACITY].
  */
 public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
 
