@@ -3,9 +3,18 @@ package io.github.fukusaka.keel.collections
 /**
  * A primitive-keyed hash map from `Long` to a non-nullable value type, using
  * open-addressing with linear probing and **backshift delete**. Designed for
- * hot-path data structures (engine fd registration tables, io_uring buffer
- * index lookups) where the per-call cost of `HashMap<Long, V>` is dominated
- * by `Long` boxing.
+ * hot-path data structures in keel's **Native engines** (kqueue / epoll fd
+ * registration tables, io_uring buffer index lookups) where the per-call cost
+ * of `HashMap<Long, V>` is dominated by `Long` boxing.
+ *
+ * **Scope** — this class is in the `nativeMain` source set because (1) every
+ * known consumer is a Native engine, (2) the design choices (Fibonacci hash
+ * tuning, backshift delete) were validated by the `--bench=longmap-variants`
+ * Kotlin/Native micro-bench only — JVM and JS targets were not measured, so
+ * we do not claim multiplatform readiness, and (3) Native lets us throw
+ * [OutOfMemoryError] on the capacity-overflow path, matching the K/N stdlib
+ * `HashMap.ensureCapacity` precedent. If a JVM / JS consumer ever appears,
+ * promote with explicit cross-target benchmarks.
  *
  * ## Design choices (validated by `--bench=longmap-variants`)
  *
@@ -127,7 +136,7 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
     public fun put(key: Long, value: V): V? {
         if (sizeInternal * 4 >= values.size * 3) {
             if (values.size > MAX_CAPACITY / 2) {
-                // Match K/N stdlib HashMap.ensureCapacity precedent: capacity
+                // Match K/N stdlib HashMap.ensureCapacity precedent — capacity
                 // overflow surfaces as OutOfMemoryError, not ISE.
                 throw OutOfMemoryError(
                     "LongObjectMap exceeded MAX_CAPACITY ($MAX_CAPACITY) at size=$sizeInternal",
