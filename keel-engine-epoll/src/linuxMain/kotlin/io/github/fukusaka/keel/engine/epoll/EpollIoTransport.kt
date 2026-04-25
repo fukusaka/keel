@@ -40,7 +40,20 @@ internal class EpollIoTransport(
     private val eventLoop: EpollEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-) : AbstractIoTransport(allocator) {
+) : AbstractIoTransport(allocator), EpollEventLoop.FdReadyListener {
+
+    /**
+     * [EpollEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [EpollEventLoop.registerCallback] avoids per-call lambda allocation on
+     * the read re-arm fast path. Branch on [interest] is a single enum
+     * compare (negligible vs. surrounding syscall + buffer alloc).
+     */
+    override fun onReady(interest: EpollEventLoop.Interest) {
+        when (interest) {
+            EpollEventLoop.Interest.READ -> onReadable()
+            EpollEventLoop.Interest.WRITE -> onWritable()
+        }
+    }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
@@ -68,9 +81,7 @@ internal class EpollIoTransport(
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ) {
-            onReadable()
-        }
+        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ, this)
     }
 
     private fun onReadable() {
@@ -252,15 +263,18 @@ internal class EpollIoTransport(
 
     /** Registers EPOLLOUT callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
-        eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE) {
-            val done = flush()
-            if (done) {
-                flushContinuation?.let { cont ->
-                    flushContinuation = null
-                    cont.resume(Unit)
-                }
-                onFlushComplete?.invoke()
+        eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE, this)
+    }
+
+    /** EPOLLOUT callback body — invoked via [onReady] when [EpollEventLoop.Interest.WRITE] fires. */
+    private fun onWritable() {
+        val done = flush()
+        if (done) {
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.resume(Unit)
             }
+            onFlushComplete?.invoke()
         }
     }
 

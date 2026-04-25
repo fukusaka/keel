@@ -117,7 +117,7 @@ class EpollEventLoopSeamTest {
         val el = EpollEventLoop(logger, fake)
         try {
             // Trigger addOrModifyEpoll via registerCallback (fd 2000, READ).
-            el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { /* noop */ }
+            el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ -> /* noop */ }
             val ctl = fake.ctlCalls
             // init ADD (wakeup, 1001), then ADD (2000) -> EEXIST, then MOD (2000).
             assertEquals(3, ctl.size)

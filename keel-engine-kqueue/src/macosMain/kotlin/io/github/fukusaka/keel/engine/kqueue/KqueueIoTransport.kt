@@ -40,7 +40,20 @@ internal class KqueueIoTransport(
     private val eventLoop: KqueueEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-) : AbstractIoTransport(allocator) {
+) : AbstractIoTransport(allocator), KqueueEventLoop.FdReadyListener {
+
+    /**
+     * [KqueueEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [KqueueEventLoop.registerCallback] avoids per-call lambda allocation
+     * on the read re-arm fast path. Branch on [interest] is a single enum
+     * compare (negligible vs. surrounding syscall + buffer alloc).
+     */
+    override fun onReady(interest: KqueueEventLoop.Interest) {
+        when (interest) {
+            KqueueEventLoop.Interest.READ -> onReadable()
+            KqueueEventLoop.Interest.WRITE -> onWritable()
+        }
+    }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
@@ -68,9 +81,7 @@ internal class KqueueIoTransport(
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ) {
-            onReadable()
-        }
+        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ, this)
     }
 
     private fun onReadable() {
@@ -258,16 +269,19 @@ internal class KqueueIoTransport(
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     private fun registerWriteCallback() {
-        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.WRITE) {
-            // Retry flush when fd becomes writable.
-            val done = flush()
-            if (done) {
-                flushContinuation?.let { cont ->
-                    flushContinuation = null
-                    cont.resume(Unit)
-                }
-                onFlushComplete?.invoke()
+        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.WRITE, this)
+    }
+
+    /** EVFILT_WRITE callback body — invoked via [onReady] when [KqueueEventLoop.Interest.WRITE] fires. */
+    private fun onWritable() {
+        // Retry flush when fd becomes writable.
+        val done = flush()
+        if (done) {
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.resume(Unit)
             }
+            onFlushComplete?.invoke()
         }
     }
 

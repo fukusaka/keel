@@ -48,7 +48,7 @@ internal class KqueuePipelinedStreamServer(
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedStreamServer {
+) : PipelinedStreamServer, KqueueEventLoop.FdReadyListener {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed
@@ -67,11 +67,19 @@ internal class KqueuePipelinedStreamServer(
         armAccept()
     }
 
+    /**
+     * [KqueueEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [KqueueEventLoop.registerCallback] avoids per-call lambda allocation
+     * on the accept re-arm fast path. Only `READ` is registered; `WRITE` is
+     * never armed for the listening fd.
+     */
+    override fun onReady(interest: KqueueEventLoop.Interest) {
+        onAcceptable()
+    }
+
     private fun armAccept() {
         if (closed) return
-        bossLoop.registerCallback(serverFd, KqueueEventLoop.Interest.READ) {
-            onAcceptable()
-        }
+        bossLoop.registerCallback(serverFd, KqueueEventLoop.Interest.READ, this)
     }
 
     // `internal` (was `private`) so accept-branch seam tests can drive the

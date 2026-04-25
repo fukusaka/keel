@@ -110,7 +110,11 @@ internal class EpollEventLoop(
     }
     private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
-    private val callbackRegistrations = LongObjectMap<() -> Unit>()
+    // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
+    // pass `this` to [registerCallback], avoiding per-call lambda allocation
+    // on the read re-arm fast path. Mirrors the `Job : DisposableHandle`
+    // precedent from kotlinx.coroutines.
+    private val callbackRegistrations = LongObjectMap<FdReadyListener>()
     // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
     // pairs), so ADD/MOD must specify all active interest bits at once.
     private val fdEvents = mutableMapOf<Int, Int>()
@@ -150,6 +154,20 @@ internal class EpollEventLoop(
     )
 
     enum class Interest { READ, WRITE }
+
+    /**
+     * Listener for fd readiness events on the pipeline (non-suspend) path.
+     *
+     * Implemented by [io.github.fukusaka.keel.engine.epoll.EpollIoTransport]
+     * (and other consumers of [registerCallback]) so the receiver can pass
+     * `this` as the listener — eliminating the per-call lambda allocation
+     * on the read re-arm fast path. The `interest` parameter lets a single
+     * implementation dispatch read vs. write callbacks without separate
+     * sub-listener objects.
+     */
+    fun interface FdReadyListener {
+        fun onReady(interest: Interest)
+    }
 
     init {
         val fd = syscallOps.epollCreate()
@@ -292,7 +310,7 @@ internal class EpollEventLoop(
      * When `epoll_wait()` reports the fd as ready, [callback] is invoked directly
      * on the EventLoop thread. The registration is one-shot.
      */
-    fun registerCallback(fd: Int, interest: Interest, callback: () -> Unit) {
+    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
         val events = when (interest) {
             Interest.READ -> EPOLLIN
             Interest.WRITE -> EPOLLOUT
@@ -300,7 +318,7 @@ internal class EpollEventLoop(
         val key = registrationKey(fd, interest)
 
         withRegLock {
-            callbackRegistrations[key] = callback
+            callbackRegistrations[key] = listener
         }
 
         addOrModifyEpoll(fd, events)
@@ -488,7 +506,7 @@ internal class EpollEventLoop(
         if (cb != null) {
             // Pipeline path: callback re-arms synchronously (armRead inside
             // handler chain), so fdEvents stays as-is — no epoll_ctl needed.
-            cb()
+            cb.onReady(interest)
         } else {
             val reg = withRegLock { registrations.remove(key) }
             if (reg != null) {
