@@ -21,6 +21,8 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
@@ -74,6 +76,15 @@ internal class EpollStreamServer(
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
+    // Serialises concurrent [accept] callers. Without this, multiple
+    // coroutines simultaneously suspended on the same `serverFd` would
+    // overwrite each other's continuation in [bossLoop]'s `registrations`
+    // map (the map is keyed by (fd, interest) and each `register()` call
+    // replaces the previous entry — only the last continuation is ever
+    // resumed). Mirrors the kqueue fix; the same race is reachable on
+    // epoll under thread oversubscription.
+    private val acceptMutex = Mutex()
+
     override val isActive: Boolean get() = _active
 
     /**
@@ -83,7 +94,9 @@ internal class EpollStreamServer(
      * pending (EAGAIN), registers the server fd with the [EpollEventLoop]
      * and suspends until readiness is reported.
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         while (true) {

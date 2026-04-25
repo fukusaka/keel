@@ -19,6 +19,8 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
@@ -83,6 +85,12 @@ internal class IoUringStreamServer(
     private var pendingAcceptCont: CancellableContinuation<Int>? = null
     private var multishotSlot: Int = -1
 
+    // Serialises concurrent [accept] callers. Without this, two accepts
+    // can both reach the bossLoop dispatch handler with empty `pendingFds`
+    // and both assign to the single-slot [pendingAcceptCont], silently
+    // dropping the first continuation. Mirrors the kqueue / epoll fix.
+    private val acceptMutex = Mutex()
+
     /**
      * Suspends until an incoming connection arrives, then returns the channel.
      *
@@ -92,7 +100,9 @@ internal class IoUringStreamServer(
      *
      * @throws IllegalStateException if the server channel is closed.
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         val clientFd = if (capabilities.multishotAccept) {

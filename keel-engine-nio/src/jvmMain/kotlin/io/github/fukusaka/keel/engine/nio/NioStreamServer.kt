@@ -8,6 +8,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import kotlin.coroutines.resume
@@ -72,13 +74,23 @@ internal class NioStreamServer(
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
+    // Serialises concurrent [accept] callers. Without this, multiple
+    // suspended accepts overwrite each other's continuation in
+    // [pendingAcceptCont] and the boss [SelectionKey]'s attached Runnable
+    // (which is also a single slot — `key.attach(...)` replaces the
+    // previous attachment), silently dropping all but the last
+    // continuation. Mirrors the kqueue / epoll fix.
+    private val acceptMutex = Mutex()
+
     override val isActive: Boolean get() = _active
 
     /**
      * Suspends until an incoming connection arrives, then returns a [NioPipelinedChannel]
      * assigned to the next worker EventLoop with a cached [SelectionKey].
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         while (true) {

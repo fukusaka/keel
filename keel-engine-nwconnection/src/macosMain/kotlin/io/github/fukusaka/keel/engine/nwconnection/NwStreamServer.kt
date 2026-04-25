@@ -19,6 +19,8 @@ import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock as withCoroutineLock
 import nwconnection.keel_nw_start_conn_async
 import platform.Network.nw_connection_copy_endpoint
 import platform.Network.nw_connection_t
@@ -81,6 +83,15 @@ internal class NwStreamServer(
     private var _active = true
     private var _localAddress: SocketAddress = localAddress
 
+    // Serialises concurrent [accept] callers. Without this, two coroutines
+    // can both pass the empty-queue check and both assign
+    // [pendingAcceptCont], silently dropping the first continuation.
+    // The pthread [mutex] above protects the pendingConnections deque
+    // against the listener dispatch queue thread; this coroutine Mutex
+    // protects continuation assignment between accept() callers.
+    // Mirrors the kqueue / epoll fix.
+    private val acceptMutex = Mutex()
+
     override val localAddress: SocketAddress get() = _localAddress
     override val isActive: Boolean get() = _active
 
@@ -120,7 +131,9 @@ internal class NwStreamServer(
      * per-connection serial dispatch queue, suspending until the
      * connection reaches the ready state.
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withCoroutineLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         // Get a connection: fast path (buffered) or slow path (suspend)

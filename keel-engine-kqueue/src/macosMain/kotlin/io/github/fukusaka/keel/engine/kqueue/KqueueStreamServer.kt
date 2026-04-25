@@ -20,6 +20,8 @@ import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
@@ -73,6 +75,17 @@ internal class KqueueStreamServer(
     private var _active = true
     private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
+    // Serialises concurrent [accept] callers. Without this, multiple
+    // coroutines simultaneously suspended on the same `serverFd` would
+    // overwrite each other's continuation in [bossLoop]'s
+    // `registrations` map (the map is keyed by (fd, interest) and each
+    // `register()` call replaces the previous entry — only the last
+    // continuation is ever resumed). The leak manifests as `accept()`
+    // calls hanging forever under thread oversubscription, which surfaced
+    // as a 5-second `read timed out` failure in the multi-thread engine
+    // test on a 3-core CI runner.
+    private val acceptMutex = Mutex()
+
     override val isActive: Boolean get() = _active
 
     /**
@@ -89,7 +102,9 @@ internal class KqueueStreamServer(
      * @throws IllegalStateException if the server channel is already closed.
      * @throws IllegalStateException if `accept()` fails with a non-EAGAIN error.
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         while (true) {

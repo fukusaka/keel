@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import io.netty.channel.Channel as NettyNativeChannel
@@ -46,6 +48,12 @@ internal class NettyStreamServer private constructor() : StreamServer {
     private val lock = Any()
     private val pendingConnections = ArrayDeque<NettyPipelinedChannel>()
     private var pendingAcceptCont: CancellableContinuation<NettyPipelinedChannel>? = null
+
+    // Serialises concurrent [accept] callers. Without this, two coroutines
+    // suspended via [suspendCancellableCoroutine] can both pass the
+    // empty-queue check and both assign [pendingAcceptCont], silently
+    // dropping the first continuation. Mirrors the kqueue / epoll fix.
+    private val acceptMutex = Mutex()
     // @Volatile for isActive property getter read outside lock.
     @Volatile
     private var _active = true
@@ -89,7 +97,9 @@ internal class NettyStreamServer private constructor() : StreamServer {
      * (added in [NettyEngine.bind]'s ChannelInitializer) to avoid the
      * race condition where channelRead fires before accept() returns.
      */
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         // Fast path: buffered connection available

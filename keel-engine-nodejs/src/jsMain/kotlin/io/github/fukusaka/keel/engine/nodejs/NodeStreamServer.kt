@@ -9,6 +9,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
@@ -40,6 +42,13 @@ internal class NodeStreamServer(
     private val pendingConnections = ArrayDeque<Socket>()
     private var pendingAcceptCont: CancellableContinuation<Socket>? = null
 
+    // Serialises concurrent [accept] callers. JS is single-threaded, but
+    // multiple coroutines can still suspend back-to-back: each call to
+    // [suspendCancellableCoroutine] runs its block synchronously, both
+    // pass the empty-queue check and both assign [pendingAcceptCont],
+    // dropping the first continuation. Mirrors the kqueue / epoll fix.
+    private val acceptMutex = Mutex()
+
     override val isActive: Boolean get() = _active
 
     /** Called by [NodeEngine.bind] to register the connection handler. */
@@ -53,7 +62,9 @@ internal class NodeStreamServer(
         }
     }
 
-    override suspend fun accept(): PipelinedChannel {
+    override suspend fun accept(): PipelinedChannel = acceptMutex.withLock { acceptLocked() }
+
+    private suspend fun acceptLocked(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
 
         val socket: Socket = if (pendingConnections.isNotEmpty()) {
