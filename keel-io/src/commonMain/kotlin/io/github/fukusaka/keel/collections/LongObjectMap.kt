@@ -126,8 +126,12 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
      */
     public fun put(key: Long, value: V): V? {
         if (sizeInternal * 4 >= values.size * 3) {
-            check(values.size <= MAX_CAPACITY / 2) {
-                "LongObjectMap exceeded MAX_CAPACITY (2^30) at size=$sizeInternal"
+            if (values.size > MAX_CAPACITY / 2) {
+                // Match K/N stdlib HashMap.ensureCapacity precedent: capacity
+                // overflow surfaces as OutOfMemoryError, not ISE.
+                throw OutOfMemoryError(
+                    "LongObjectMap exceeded MAX_CAPACITY ($MAX_CAPACITY) at size=$sizeInternal",
+                )
             }
             resize(values.size * 2)
         }
