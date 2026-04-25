@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -49,7 +50,11 @@ internal class RegisteredBufferTable(
     private val ring get() = eventLoop.ringPtr
 
     // Native pointer rawValue (Long) → registered buffer index.
-    private val ptrToIndex = HashMap<Long, Int>(buffers.size * 2).also { map ->
+    // Uses LongObjectMap (Fibonacci top-bit hash) over HashMap<Long, Int>
+    // because page-aligned pooled-buffer pointers are exactly the case the
+    // top-bit extraction is designed to handle (low N bits are zero — naïve
+    // identity / xor-shift hash collides on slot 0).
+    private val ptrToIndex = LongObjectMap<Int>(buffers.size * 2).also { map ->
         for ((i, pair) in buffers.withIndex()) {
             val (ptr, _) = pair
             map[ptr.rawValue.toLong()] = i
@@ -87,10 +92,7 @@ internal class RegisteredBufferTable(
      * @return the buffer index (>= 0) for use with SEND_ZC_FIXED,
      *         or -1 if the pointer is not registered.
      */
-    fun indexOf(ptr: CPointer<ByteVar>): Int {
-        val key = ptr.rawValue.toLong()
-        return ptrToIndex[key] ?: -1
-    }
+    fun indexOf(ptr: CPointer<ByteVar>): Int = ptrToIndex[ptr.rawValue.toLong()] ?: -1
 
     /**
      * Unregisters all buffers from the kernel. Called on EventLoop shutdown
