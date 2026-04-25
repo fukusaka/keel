@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import kotlinx.coroutines.CancellableContinuation
@@ -41,7 +42,20 @@ import kotlin.coroutines.resume
  *   4. processSelectedKeys() — interestOps(0) + cont.resume(Unit)
  * ```
  */
-internal class NioEventLoop(name: String, private val logger: Logger) : CoroutineDispatcher() {
+internal class NioEventLoop(
+    name: String,
+    private val logger: Logger,
+    /**
+     * Per-EventLoop [BufferAllocator] instance. Co-located with the loop
+     * (rather than tracked separately in [NioEventLoopGroup]) so callers
+     * receive the allocator-loop pair as a single object — eliminating the
+     * `Pair<EventLoop, BufferAllocator>` allocation that the previous
+     * `EventLoopGroup.next()` API created on every accept. Default is
+     * [DefaultAllocator] for boss / test loops that do not perform reads
+     * and therefore never invoke the allocator.
+     */
+    val allocator: BufferAllocator = DefaultAllocator,
+) : CoroutineDispatcher() {
 
     internal val selector: Selector = Selector.open()
     private val regLock = Any()
@@ -296,20 +310,22 @@ internal class NioEventLoop(name: String, private val logger: Logger) : Coroutin
  * @param allocator Base allocator; [BufferAllocator.createForEventLoop] is called per EventLoop.
  */
 internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger, allocator: BufferAllocator) {
-    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger) }
-    private val allocators = Array(size) { allocator.createForEventLoop() }
+    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop()) }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Number of EventLoops in this group. */
     val size: Int get() = loops.size
 
-    /** Returns the EventLoop and allocator at the given [index] (direct access, no round-robin). */
-    fun at(index: Int): Pair<NioEventLoop, BufferAllocator> = loops[index] to allocators[index]
+    /** Returns the [NioEventLoop] at [index] (direct access, no round-robin). */
+    fun at(index: Int): NioEventLoop = loops[index]
 
-    /** Returns the next EventLoop and its per-EventLoop allocator in round-robin order. */
-    fun next(): Pair<NioEventLoop, BufferAllocator> {
+    /**
+     * Returns the next [NioEventLoop] in round-robin order. The
+     * per-EventLoop allocator is exposed as [NioEventLoop.allocator].
+     */
+    fun next(): NioEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
-        return loops[i] to allocators[i]
+        return loops[i]
     }
 
     /** Closes all EventLoops in this group. Blocks until each thread terminates (up to 2s each). */

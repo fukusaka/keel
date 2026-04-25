@@ -191,7 +191,7 @@ class EpollEngine(
 
         val fd = nativeSocketOps.openUnixClientSocket()
         nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
             ConnectResult.Connected -> Unit
@@ -210,7 +210,7 @@ class EpollEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = EpollIoTransport(fd, workerLoop, allocator, nativeSocket)
+        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
         return EpollPipelinedChannel(transport, logger, address, null)
     }
 
@@ -224,7 +224,7 @@ class EpollEngine(
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
             ConnectResult.Connected -> Unit
@@ -247,7 +247,7 @@ class EpollEngine(
         val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = EpollIoTransport(fd, workerLoop, allocator, nativeSocket)
+        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

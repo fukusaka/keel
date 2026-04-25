@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -67,12 +66,12 @@ internal class NioPipelinedStreamServer(
 
     private fun dispatchToWorker(client: java.nio.channels.SocketChannel) {
         val idx = workerIndex++ % workerGroup.size
-        val (workerLoop, allocator) = workerGroup.at(idx)
+        val workerLoop = workerGroup.at(idx)
         // Register on worker thread because NIO Selector.register() blocks during select().
         workerLoop.dispatch(
             kotlin.coroutines.EmptyCoroutineContext,
             Runnable {
-                onWorkerAccept(client, workerLoop, allocator)
+                onWorkerAccept(client, workerLoop)
             },
         )
     }
@@ -80,11 +79,10 @@ internal class NioPipelinedStreamServer(
     private fun onWorkerAccept(
         client: java.nio.channels.SocketChannel,
         loop: NioEventLoop,
-        allocator: BufferAllocator,
     ) {
         // Register client with worker's Selector (must be on worker thread).
         val clientKey = client.register(loop.selector, 0)
-        val transport = NioIoTransport(client, clientKey, loop, allocator)
+        val transport = NioIoTransport(client, clientKey, loop, loop.allocator)
         val channel = NioPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

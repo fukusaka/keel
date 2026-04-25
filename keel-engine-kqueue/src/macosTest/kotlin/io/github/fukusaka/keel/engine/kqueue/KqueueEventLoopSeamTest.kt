@@ -43,7 +43,7 @@ class KqueueEventLoopSeamTest {
             scriptKqueueCreateFailure(EMFILE)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            KqueueEventLoop(logger, fake)
+            KqueueEventLoop(logger, syscallOps = fake)
         }
         assertTrue(
             ex.message!!.contains("kqueue()") && ex.message!!.contains("fail"),
@@ -58,7 +58,7 @@ class KqueueEventLoopSeamTest {
             scriptMakePipeFailure(EMFILE)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            KqueueEventLoop(logger, fake)
+            KqueueEventLoop(logger, syscallOps = fake)
         }
         assertTrue(ex.message!!.contains("pipe()"))
         // No addFilter calls should have been made because pipe() failed first.
@@ -73,7 +73,7 @@ class KqueueEventLoopSeamTest {
             scriptAddFilterResult(EBADF)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            KqueueEventLoop(logger, fake)
+            KqueueEventLoop(logger, syscallOps = fake)
         }
         assertTrue(ex.message!!.contains("kevent"))
         // One addFilter call was made (for the wakeup fd) before failing.
@@ -92,7 +92,7 @@ class KqueueEventLoopSeamTest {
             scriptAddFilterResult(0) // init succeeds
             scriptAddFilterResult(ENFILE) // the register() we drive below fails
         }
-        val el = KqueueEventLoop(logger, fake)
+        val el = KqueueEventLoop(logger, syscallOps = fake)
         try {
             val ex = assertFailsWith<IllegalStateException> {
                 runBlocking { el.awaitWriteReady(fd = 5000, logger = logger) }
@@ -114,7 +114,7 @@ class KqueueEventLoopSeamTest {
             scriptMakePipeFds(readFd = 1001, writeFd = 1002)
             scriptAddFilterResult(0)
         }
-        val el = KqueueEventLoop(logger, fake)
+        val el = KqueueEventLoop(logger, syscallOps = fake)
         try {
             fake.scriptWakeupWriteResult(platform.posix.EAGAIN)
             // dispatch triggers wakeup internally; the EAGAIN must be swallowed.

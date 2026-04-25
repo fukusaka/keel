@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
@@ -87,6 +89,16 @@ import kotlin.coroutines.resumeWithException
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueEventLoop(
     internal val logger: Logger,
+    /**
+     * Per-EventLoop [BufferAllocator] instance. Co-located with the loop
+     * (rather than tracked separately in [KqueueEventLoopGroup]) so callers
+     * receive the allocator-loop pair as a single object — eliminating the
+     * `Pair<EventLoop, BufferAllocator>` allocation that the previous
+     * `EventLoopGroup.next()` API created on every accept. Default is
+     * [DefaultAllocator] for boss / test loops that do not perform reads
+     * and therefore never invoke the allocator.
+     */
+    val allocator: BufferAllocator = DefaultAllocator,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
 ) : CoroutineDispatcher(), KqueueSuspendRegister {
 

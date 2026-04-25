@@ -175,7 +175,7 @@ class NioEngine(
         val socketChannel = SocketChannel.open(StandardProtocolFamily.UNIX)
         socketChannel.configureBlocking(false)
         applySocketOptions(socketChannel, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         val connected = try {
             socketChannel.connect(UnixDomainSocketAddress.of(Path.of(address.path)))
@@ -210,7 +210,7 @@ class NioEngine(
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to $remoteAddr" }
-        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, allocator)
+        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, workerLoop.allocator)
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
@@ -225,7 +225,7 @@ class NioEngine(
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
         applySocketOptions(socketChannel, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         // Try connect first — loopback may succeed or fail immediately
         // without needing Selector registration.
@@ -268,7 +268,7 @@ class NioEngine(
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to $remoteAddr" }
-        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, allocator)
+        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, workerLoop.allocator)
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

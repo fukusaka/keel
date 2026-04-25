@@ -24,8 +24,7 @@ import kotlin.concurrent.AtomicInt
  */
 internal class KqueueEventLoopGroup(size: Int, logger: Logger, allocator: BufferAllocator) {
 
-    private val loops = Array(size) { KqueueEventLoop(logger) }
-    private val allocators = Array(size) { allocator.createForEventLoop() }
+    private val loops = Array(size) { KqueueEventLoop(logger, allocator.createForEventLoop()) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */
@@ -37,18 +36,19 @@ internal class KqueueEventLoopGroup(size: Int, logger: Logger, allocator: Buffer
     }
 
     /**
-     * Returns the next EventLoop and its per-EventLoop allocator in round-robin order.
+     * Returns the next [KqueueEventLoop] in round-robin order. The
+     * per-EventLoop allocator is exposed as [KqueueEventLoop.allocator].
      *
      * Uses atomic increment with overflow-safe masking (same as NIO).
      * Thread-safe: multiple accept threads can call this concurrently.
      */
-    fun next(): Pair<KqueueEventLoop, BufferAllocator> {
+    fun next(): KqueueEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
-        return loops[i] to allocators[i]
+        return loops[i]
     }
 
-    /** Returns the EventLoop and allocator at the given [index] (direct access, no round-robin). */
-    fun at(index: Int): Pair<KqueueEventLoop, BufferAllocator> = loops[index] to allocators[index]
+    /** Returns the [KqueueEventLoop] at [index] (direct access, no round-robin). */
+    fun at(index: Int): KqueueEventLoop = loops[index]
 
     /** Stops all EventLoop threads and releases resources. */
     fun close() {
