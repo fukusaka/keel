@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.MpscQueue
+import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -107,9 +108,9 @@ internal class EpollEventLoop(
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
-    private val registrations = mutableMapOf<Long, Registration>()
+    private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
-    private val callbackRegistrations = mutableMapOf<Long, () -> Unit>()
+    private val callbackRegistrations = LongObjectMap<() -> Unit>()
     // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
     // pairs), so ADD/MOD must specify all active interest bits at once.
     private val fdEvents = mutableMapOf<Int, Int>()
