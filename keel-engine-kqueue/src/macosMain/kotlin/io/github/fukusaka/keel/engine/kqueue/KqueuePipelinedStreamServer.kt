@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -112,14 +111,14 @@ internal class KqueuePipelinedStreamServer(
 
     private fun dispatchToWorker(clientFd: Int) {
         val idx = workerIndex++ % workerGroup.size
-        val (workerLoop, allocator) = workerGroup.at(idx)
+        val workerLoop = workerGroup.at(idx)
         workerLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-            onWorkerAccept(clientFd, workerLoop, allocator)
+            onWorkerAccept(clientFd, workerLoop)
         })
     }
 
-    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, allocator: BufferAllocator) {
-        val transport = KqueueIoTransport(clientFd, loop, allocator, nativeSocket)
+    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop) {
+        val transport = KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket)
         val channel = KqueuePipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

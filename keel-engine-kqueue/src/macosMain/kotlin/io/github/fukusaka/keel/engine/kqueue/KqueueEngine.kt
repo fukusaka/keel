@@ -212,7 +212,7 @@ class KqueueEngine(
 
         val fd = nativeSocketOps.openUnixClientSocket()
         nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
             ConnectResult.Connected -> Unit
@@ -231,7 +231,7 @@ class KqueueEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = KqueueIoTransport(fd, workerLoop, allocator, nativeSocket)
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
         return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
@@ -245,7 +245,7 @@ class KqueueEngine(
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val (workerLoop, allocator) = workerGroup.next()
+        val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
             ConnectResult.Connected -> Unit
@@ -268,7 +268,7 @@ class KqueueEngine(
         val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = KqueueIoTransport(fd, workerLoop, allocator, nativeSocket)
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

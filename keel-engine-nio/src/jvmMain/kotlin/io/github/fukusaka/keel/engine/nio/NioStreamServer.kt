@@ -88,11 +88,11 @@ internal class NioStreamServer(
                 applySocketOptions(client, bindConfig.childSocketOptions)
                 val remoteAddr = NioPipelinedChannel.toSocketAddress(client.remoteAddress)
                 val localAddr = NioPipelinedChannel.toSocketAddress(client.localAddress)
-                val (workerLoop, allocator) = workerGroup.next()
+                val workerLoop = workerGroup.next()
                 // One-time registration with the worker's Selector.
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
-                val transport = NioIoTransport(client, clientKey, workerLoop, allocator)
+                val transport = NioIoTransport(client, clientKey, workerLoop, workerLoop.allocator)
                 val channel = NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
                 bindConfig.initializeConnection(channel)
                 return channel

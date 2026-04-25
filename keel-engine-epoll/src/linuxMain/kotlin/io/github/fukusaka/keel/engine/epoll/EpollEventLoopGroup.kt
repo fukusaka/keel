@@ -21,8 +21,7 @@ import kotlin.concurrent.AtomicInt
  */
 internal class EpollEventLoopGroup(size: Int, logger: Logger, allocator: BufferAllocator) {
 
-    private val loops = Array(size) { EpollEventLoop(logger) }
-    private val allocators = Array(size) { allocator.createForEventLoop() }
+    private val loops = Array(size) { EpollEventLoop(logger, allocator.createForEventLoop()) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */
@@ -34,15 +33,16 @@ internal class EpollEventLoopGroup(size: Int, logger: Logger, allocator: BufferA
     }
 
     /**
-     * Returns the next EventLoop and its per-EventLoop allocator in round-robin order.
+     * Returns the next [EpollEventLoop] in round-robin order. The
+     * per-EventLoop allocator is exposed as [EpollEventLoop.allocator].
      */
-    fun next(): Pair<EpollEventLoop, BufferAllocator> {
+    fun next(): EpollEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
-        return loops[i] to allocators[i]
+        return loops[i]
     }
 
-    /** Returns the EventLoop and allocator at the given [index] (direct access, no round-robin). */
-    fun at(index: Int): Pair<EpollEventLoop, BufferAllocator> = loops[index] to allocators[index]
+    /** Returns the [EpollEventLoop] at [index] (direct access, no round-robin). */
+    fun at(index: Int): EpollEventLoop = loops[index]
 
     /** Stops all EventLoop threads and releases resources. */
     fun close() {

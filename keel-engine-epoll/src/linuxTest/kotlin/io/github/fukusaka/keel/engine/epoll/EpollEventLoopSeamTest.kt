@@ -43,7 +43,7 @@ class EpollEventLoopSeamTest {
             scriptEpollCreateFailure(EMFILE)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            EpollEventLoop(logger, fake)
+            EpollEventLoop(logger, syscallOps = fake)
         }
         assertTrue(
             ex.message!!.contains("epoll_create1()"),
@@ -58,7 +58,7 @@ class EpollEventLoopSeamTest {
             scriptEventfdCreateFailure(EMFILE)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            EpollEventLoop(logger, fake)
+            EpollEventLoop(logger, syscallOps = fake)
         }
         assertTrue(ex.message!!.contains("eventfd()"))
         // No epoll_ctl calls should have been made because eventfd() failed first.
@@ -73,7 +73,7 @@ class EpollEventLoopSeamTest {
             scriptAddResult(EBADF)
         }
         val ex = assertFailsWith<IllegalStateException> {
-            EpollEventLoop(logger, fake)
+            EpollEventLoop(logger, syscallOps = fake)
         }
         assertTrue(ex.message!!.contains("epoll_ctl"))
         // One ADD call was made (for the wakeup fd) before failing.
@@ -91,7 +91,7 @@ class EpollEventLoopSeamTest {
             scriptEventfdCreateFd(fd = 1001)
             scriptAddResult(0)
         }
-        val el = EpollEventLoop(logger, fake)
+        val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             fake.scriptWakeupWriteResult(EAGAIN)
             // dispatch triggers wakeup internally; EAGAIN must be swallowed.
@@ -114,7 +114,7 @@ class EpollEventLoopSeamTest {
             scriptAddResult(platform.posix.EEXIST)
             scriptModResult(0)
         }
-        val el = EpollEventLoop(logger, fake)
+        val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             // Trigger addOrModifyEpoll via registerCallback (fd 2000, READ).
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ -> /* noop */ }
