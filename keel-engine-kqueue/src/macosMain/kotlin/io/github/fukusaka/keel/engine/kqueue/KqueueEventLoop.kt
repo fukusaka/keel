@@ -83,7 +83,9 @@ import kotlin.coroutines.resumeWithException
  *      timeout = 0 if tasks pending, null otherwise
  *   3. for each ready fd:
  *        if wakeup pipe: consume byte, continue
- *        lookup registration -> remove -> continuation.resume(Unit)
+ *        lookup registration -> pop FIFO head -> continuation.resume(Unit)
+ *        (kqueue's level-triggered EV_ADD re-fires while the fd remains
+ *         readable, cascading through any remaining chain entries.)
  * ```
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -156,6 +158,15 @@ internal class KqueueEventLoop(
     /**
      * A pending I/O interest for a file descriptor.
      *
+     * Multiple [Registration]s with the same `(fd, interest)` key form a
+     * singly-linked FIFO chain via [next]. The chain head doubles as the
+     * map entry; the head's [tail] field tracks the chain tail so append
+     * is O(1) without per-key allocation. Non-head nodes ignore [tail].
+     *
+     * **Mutability**: [next] / [tail] are mutated only under the
+     * EventLoop's `regMutex`. No `@Volatile` because all access is lock-
+     * guarded.
+     *
      * @param fd The file descriptor to watch.
      * @param interest Read or write readiness.
      * @param continuation The coroutine to resume when the fd is ready.
@@ -164,7 +175,10 @@ internal class KqueueEventLoop(
         val fd: Int,
         val interest: Interest,
         val continuation: CancellableContinuation<Unit>,
-    )
+    ) {
+        internal var next: Registration? = null
+        internal var tail: Registration? = null
+    }
 
     enum class Interest { READ, WRITE }
 
@@ -281,51 +295,154 @@ internal class KqueueEventLoop(
     /**
      * Registers a file descriptor for read or write readiness notification.
      *
-     * When `kevent()` reports the fd as ready, the [cont] is resumed with
-     * [Unit] and the registration is removed (one-shot). The caller should
-     * retry the I/O operation after being resumed.
+     * When `kevent()` reports the fd as ready, the head [Registration] of
+     * the `(fd, interest)` chain is popped and its continuation is resumed
+     * with [Unit]. The caller should retry the I/O operation after being
+     * resumed.
      *
-     * The fd is added to kqueue via `EV_ADD` and recorded in [registrations].
-     * [wakeup] is called to interrupt `kevent()` if the EventLoop is blocked.
+     * Multiple coroutines may register on the same `(fd, interest)` key —
+     * they form a FIFO chain. Each kevent fire pops one waiter; kqueue's
+     * level-triggered persistent `EV_ADD` semantics naturally cascade-fire
+     * subsequent waiters while the fd remains readable. This handles the
+     * concurrent `accept()` pattern (multiple coroutines on a shared
+     * `serverFd`) without losing continuations.
+     *
+     * The fd is added to kqueue via `EV_ADD` (idempotent — adding to an
+     * already-armed filter just refreshes flags, does not duplicate).
+     * [wakeup] is called to interrupt `kevent()` if the EventLoop is
+     * blocked.
+     *
+     * @return The newly created [Registration] handle. Pass it to
+     *   [unregister] from `invokeOnCancellation` to remove only this
+     *   continuation from the chain.
      */
-    fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) {
+    fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>): Registration {
         val key = registrationKey(fd, interest)
+        val newReg = Registration(fd, interest, cont)
 
-        // Register continuation BEFORE adding to kqueue to close the race window
-        // where kevent fires before the map entry exists. The event loop checks
-        // the map under the same lock, so the continuation is always found.
-        withRegLock {
-            registrations[key] = Registration(fd, interest, cont)
-        }
+        // Append BEFORE arming the kqueue filter to close the race window
+        // where kevent fires before the map entry exists. The event loop
+        // checks the map under the same lock, so the head Registration is
+        // always found.
+        withRegLock { appendRegistration(key, newReg) }
 
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            // kevent(EV_ADD) failed — remove the stale map entry and fail the
-            // caller's suspend with an exception. Without this, the continuation
-            // would never resume (the registration exists but is never dispatched).
+            // kevent(EV_ADD) failed — remove the just-appended entry and fail
+            // the caller's suspend. Without this, the continuation would never
+            // resume (the registration exists but the filter is not armed).
             // TODO(v1.0 前): proper engine-level exception type. IllegalStateException
             // is a placeholder; the design for a PosixException / EventLoopException
             // hierarchy is deferred to a separate task.
-            withRegLock { registrations.remove(key) }
+            withRegLock { removeRegistration(key, newReg) }
             cont.resumeWithException(
                 IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
             )
-            return
+            return newReg
         }
         wakeup()
+        return newReg
     }
 
     /**
-     * Removes a pending registration for the given fd and interest.
-     * Called from [invokeOnCancellation] when a coroutine is cancelled.
+     * Removes a single [Registration] from its chain. Called from
+     * [invokeOnCancellation] when one specific waiter is cancelled.
+     * Other waiters on the same `(fd, interest)` key are unaffected.
      */
-    fun unregister(fd: Int, interest: Interest) {
+    fun unregister(reg: Registration) {
+        val key = registrationKey(reg.fd, reg.interest)
+        withRegLock { removeRegistration(key, reg) }
+    }
+
+    /**
+     * Cancels every pending [Registration] on the given `(fd, interest)`
+     * key, resuming each continuation with [cause]. Used by
+     * `StreamServer.close()` to terminate all suspended `accept()` calls
+     * in one shot. The kqueue filter is left untouched — callers that own
+     * the fd are responsible for `closeFdSafely(fd)` afterward.
+     */
+    fun cancelAll(fd: Int, interest: Interest, cause: Throwable) {
         val key = registrationKey(fd, interest)
+        val toResume = mutableListOf<Registration>()
         withRegLock {
+            var curr = registrations.remove(key)
+            while (curr != null) {
+                val next = curr.next
+                curr.next = null
+                curr.tail = null
+                toResume.add(curr)
+                curr = next
+            }
+        }
+        for (reg in toResume) reg.continuation.resumeWithException(cause)
+    }
+
+    /** Appends [reg] to the FIFO chain for [key]. Caller MUST hold [regMutex]. */
+    private fun appendRegistration(key: Long, reg: Registration) {
+        val head = registrations[key]
+        if (head == null) {
+            registrations[key] = reg
+        } else {
+            val currentTail = head.tail ?: head
+            currentTail.next = reg
+            head.tail = reg
+        }
+    }
+
+    /**
+     * Pops and returns the FIFO head from the chain for [key], or null if
+     * the chain is empty. Caller MUST hold [regMutex].
+     */
+    private fun popHeadRegistration(key: Long): Registration? {
+        val head = registrations[key] ?: return null
+        val next = head.next
+        if (next == null) {
             registrations.remove(key)
+        } else {
+            // New head inherits tail tracking: if old head pointed at `next`
+            // as the tail (chain length 2), the new head IS the tail (null);
+            // otherwise pass the existing tail pointer along.
+            next.tail = if (head.tail === next) null else head.tail
+            registrations[key] = next
+        }
+        head.next = null
+        head.tail = null
+        return head
+    }
+
+    /** Removes [reg] from the chain for [key] (search by identity). Caller MUST hold [regMutex]. */
+    private fun removeRegistration(key: Long, reg: Registration) {
+        val head = registrations[key] ?: return
+        if (head === reg) {
+            val next = head.next
+            if (next == null) {
+                registrations.remove(key)
+            } else {
+                // Transfer tail tracking to the new head: if the chain had
+                // exactly two nodes, the new head IS the tail (set null);
+                // otherwise the new head inherits the existing tail pointer.
+                next.tail = if (head.tail === next) null else head.tail
+                registrations[key] = next
+            }
+            head.next = null
+            head.tail = null
+            return
+        }
+        var prev = head
+        var curr = head.next
+        while (curr != null) {
+            if (curr === reg) {
+                prev.next = curr.next
+                // If we removed the tail, update head.tail to point at prev.
+                if (head.tail === curr) head.tail = if (prev === head) null else prev
+                curr.next = null
+                return
+            }
+            prev = curr
+            curr = curr.next
         }
     }
 
@@ -451,7 +568,7 @@ internal class KqueueEventLoop(
                 if (cb != null) {
                     cb.onReady(interest)
                 } else {
-                    val reg = withRegLock { registrations.remove(key) }
+                    val reg = withRegLock { popHeadRegistration(key) }
                     reg?.continuation?.resume(Unit)
                 }
             }
@@ -540,9 +657,9 @@ internal class KqueueEventLoop(
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
         suspendCancellableCoroutine<Unit> { cont ->
-            register(fd, Interest.WRITE, cont)
+            val reg = register(fd, Interest.WRITE, cont)
             cont.invokeOnCancellation {
-                unregister(fd, Interest.WRITE)
+                unregister(reg)
                 closeFdSafely(fd, logger, "connect cancellation")
             }
         }
