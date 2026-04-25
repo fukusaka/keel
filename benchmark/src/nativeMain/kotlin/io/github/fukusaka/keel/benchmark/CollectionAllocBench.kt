@@ -54,6 +54,8 @@ fun runCollectionAllocBench() {
     benchHashMapLongKey(size = 1024)
     benchLongObjectMap(size = 64)
     benchLongObjectMap(size = 1024)
+    benchKeelLongObjectMap(size = 64)
+    benchKeelLongObjectMap(size = 1024)
 
     // Iterator vs indexed access on ArrayList.
     benchArrayListForEachIterator(size = 64)
@@ -280,6 +282,33 @@ private fun benchLongObjectMap(size: Int) {
         blackhole += k
     }
     report("SimpleLongObjectMap put/remove size=$size", nsPerOp, "open-addressing, 0 Long box")
+}
+
+/**
+ * The actual production-grade `LongObjectMap` from `keel-io`. Adds tombstone
+ * tracking, Fibonacci hashing and resize-on-load over [SimpleLongObjectMap].
+ * Confirms the `LongObjectMap` adoption in `KqueueEventLoop` / `EpollEventLoop`
+ * keeps the speedup that the simpler bench impl reported.
+ */
+private fun benchKeelLongObjectMap(size: Int) {
+    val map = io.github.fukusaka.keel.collections.LongObjectMap<String>(initialCapacity = size * 2)
+    val keys = LongArray(size) { (it.toLong() * 1_000_003) }
+    for (k in keys) map.put(k, "v")
+
+    val mark = TimeSource.Monotonic.markNow()
+    warmup {
+        val k = keys[Random.nextInt(size)]
+        map.remove(k)
+        map.put(k, "v")
+        blackhole += k
+    }
+    val nsPerOp = trialMedian(warmupElapsed = mark.elapsedNow().toDouble(DurationUnit.SECONDS)) {
+        val k = keys[Random.nextInt(size)]
+        map.remove(k)
+        map.put(k, "v")
+        blackhole += k
+    }
+    report("keel LongObjectMap put/remove size=$size", nsPerOp, "tombstone + Fibonacci hash + resize-ready")
 }
 
 /** `for (x in list)` — allocates iterator per call on a generic List. */
