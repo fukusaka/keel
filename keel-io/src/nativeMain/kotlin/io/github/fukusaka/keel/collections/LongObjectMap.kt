@@ -1,11 +1,12 @@
 package io.github.fukusaka.keel.collections
 
 /**
- * A primitive-keyed hash map from `Long` to a non-nullable value type, using
- * open-addressing with linear probing and backshift delete. Designed for
- * hot-path data structures in keel's Native engines (kqueue / epoll fd
- * registration tables, io_uring buffer index lookups) where the per-call cost
- * of `HashMap<Long, V>` is dominated by `Long` boxing.
+ * Primitive `Long`-keyed open-addressing hash map for keel's Native engines.
+ *
+ * A drop-in replacement for `HashMap<Long, V>` on hot paths where the per-call
+ * cost is dominated by `Long` boxing — engine fd registration tables (kqueue /
+ * epoll), io_uring buffer index lookups. Keys live in a `LongArray`, never
+ * wrapped.
  *
  * ## Scope
  *
@@ -16,6 +17,12 @@ package io.github.fukusaka.keel.collections
  * capacity-overflow path throw [OutOfMemoryError], matching the K/N stdlib
  * `HashMap.ensureCapacity` precedent. If a JVM or JS consumer ever appears,
  * promote with explicit cross-target benchmarks.
+ *
+ * Module placement (`keel-io`) is provisional — `keel-io` is nominally for
+ * I/O primitives, not engine-shared infrastructure. A dedicated
+ * `keel-engine-common` module that collects this kind of cross-engine
+ * utility (alongside e.g. `MpscQueue`) is the cleaner home; deferred to a
+ * follow-up that groups the migration of all such utilities at once.
  *
  * ## Hash function
  *
