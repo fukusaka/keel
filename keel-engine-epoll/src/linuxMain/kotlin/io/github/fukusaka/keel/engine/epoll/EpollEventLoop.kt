@@ -40,6 +40,7 @@ import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
@@ -155,6 +156,15 @@ internal class EpollEventLoop(
     /**
      * A pending I/O interest for a file descriptor.
      *
+     * Multiple [Registration]s with the same `(fd, interest)` key form a
+     * singly-linked FIFO chain via [next]. The chain head doubles as the
+     * map entry; the head's [tail] field tracks the chain tail so append
+     * is O(1) without per-key allocation. Non-head nodes ignore [tail].
+     *
+     * **Mutability**: [next] / [tail] are mutated only under the
+     * EventLoop's `regMutex`. No `@Volatile` because all access is lock-
+     * guarded.
+     *
      * @param fd The file descriptor to watch.
      * @param interest Read or write readiness.
      * @param continuation The coroutine to resume when the fd is ready.
@@ -163,7 +173,10 @@ internal class EpollEventLoop(
         val fd: Int,
         val interest: Interest,
         val continuation: CancellableContinuation<Unit>,
-    )
+    ) {
+        internal var next: Registration? = null
+        internal var tail: Registration? = null
+    }
 
     enum class Interest { READ, WRITE }
 
@@ -280,39 +293,135 @@ internal class EpollEventLoop(
     /**
      * Registers a file descriptor for read or write readiness notification.
      *
-     * When `epoll_wait()` reports the fd as ready, the [cont] is resumed
-     * with [Unit] and the registration is removed (one-shot). The caller
-     * should retry the I/O operation after being resumed.
+     * When `epoll_wait()` reports the fd as ready, the head [Registration]
+     * of the `(fd, interest)` chain is popped and its continuation is
+     * resumed with [Unit]. The caller should retry the I/O operation
+     * after being resumed.
      *
-     * The fd is added to epoll via `EPOLL_CTL_ADD` and recorded in
-     * [registrations]. [wakeup] is called to interrupt `epoll_wait()`
-     * if the EventLoop is blocked.
+     * Multiple coroutines may register on the same `(fd, interest)` key —
+     * they form a FIFO chain. Each epoll_wait fire pops one waiter;
+     * epoll's level-triggered semantics naturally cascade-fire subsequent
+     * waiters while the fd remains ready. This handles the concurrent
+     * `accept()` pattern (multiple coroutines on a shared `serverFd`)
+     * without losing continuations.
+     *
+     * The fd is added to epoll via `EPOLL_CTL_ADD` (or `MOD` if already
+     * armed). [wakeup] is called to interrupt `epoll_wait()` if the
+     * EventLoop is blocked.
+     *
+     * @return The newly created [Registration] handle. Pass it to
+     *   [unregister] from `invokeOnCancellation` to remove only this
+     *   continuation from the chain.
      */
-    fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) {
+    fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>): Registration {
         val events = when (interest) {
             Interest.READ -> EPOLLIN
             Interest.WRITE -> EPOLLOUT
         }
         val key = registrationKey(fd, interest)
+        val newReg = Registration(fd, interest, cont)
 
-        // Register continuation BEFORE adding to epoll to close the race window
-        // where epoll fires before the map entry exists.
-        withRegLock {
-            registrations[key] = Registration(fd, interest, cont)
-        }
+        // Append BEFORE arming epoll to close the race window where
+        // epoll fires before the chain entry exists.
+        withRegLock { appendRegistration(key, newReg) }
 
         addOrModifyEpoll(fd, events)
         wakeup()
+        return newReg
     }
 
     /**
-     * Removes a pending registration for the given fd and interest.
-     * Called from [invokeOnCancellation] when a coroutine is cancelled.
+     * Removes a single [Registration] from its chain. Called from
+     * [invokeOnCancellation] when one specific waiter is cancelled.
+     * Other waiters on the same `(fd, interest)` key are unaffected.
      */
-    fun unregister(fd: Int, interest: Interest) {
+    fun unregister(reg: Registration) {
+        val key = registrationKey(reg.fd, reg.interest)
+        withRegLock { removeRegistration(key, reg) }
+    }
+
+    /**
+     * Cancels every pending [Registration] on the given `(fd, interest)`
+     * key, resuming each continuation with [cause]. Used by
+     * `StreamServer.close()` to terminate all suspended `accept()` calls
+     * in one shot. The epoll filter is left untouched — callers that own
+     * the fd are responsible for `closeFdSafely(fd)` afterward.
+     */
+    fun cancelAll(fd: Int, interest: Interest, cause: Throwable) {
         val key = registrationKey(fd, interest)
+        val toResume = mutableListOf<Registration>()
         withRegLock {
+            var curr = registrations.remove(key)
+            while (curr != null) {
+                val next = curr.next
+                curr.next = null
+                curr.tail = null
+                toResume.add(curr)
+                curr = next
+            }
+        }
+        for (reg in toResume) reg.continuation.resumeWithException(cause)
+    }
+
+    /** Appends [reg] to the FIFO chain for [key]. Caller MUST hold [regMutex]. */
+    private fun appendRegistration(key: Long, reg: Registration) {
+        val head = registrations[key]
+        if (head == null) {
+            registrations[key] = reg
+        } else {
+            val currentTail = head.tail ?: head
+            currentTail.next = reg
+            head.tail = reg
+        }
+    }
+
+    /**
+     * Pops and returns the FIFO head from the chain for [key], or null if
+     * the chain is empty. Caller MUST hold [regMutex].
+     */
+    private fun popHeadRegistration(key: Long): Registration? {
+        val head = registrations[key] ?: return null
+        val next = head.next
+        if (next == null) {
             registrations.remove(key)
+        } else {
+            // New head inherits tail tracking: if old head pointed at `next`
+            // as the tail (chain length 2), the new head IS the tail (null);
+            // otherwise pass the existing tail pointer along.
+            next.tail = if (head.tail === next) null else head.tail
+            registrations[key] = next
+        }
+        head.next = null
+        head.tail = null
+        return head
+    }
+
+    /** Removes [reg] from the chain for [key] (search by identity). Caller MUST hold [regMutex]. */
+    private fun removeRegistration(key: Long, reg: Registration) {
+        val head = registrations[key] ?: return
+        if (head === reg) {
+            val next = head.next
+            if (next == null) {
+                registrations.remove(key)
+            } else {
+                next.tail = if (head.tail === next) null else head.tail
+                registrations[key] = next
+            }
+            head.next = null
+            head.tail = null
+            return
+        }
+        var prev = head
+        var curr = head.next
+        while (curr != null) {
+            if (curr === reg) {
+                prev.next = curr.next
+                if (head.tail === curr) head.tail = if (prev === head) null else prev
+                curr.next = null
+                return
+            }
+            prev = curr
+            curr = curr.next
         }
     }
 
@@ -520,12 +629,27 @@ internal class EpollEventLoop(
             // handler chain), so fdEvents stays as-is — no epoll_ctl needed.
             cb.onReady(interest)
         } else {
-            val reg = withRegLock { registrations.remove(key) }
-            if (reg != null) {
-                // Suspend path: coroutine resumes asynchronously, so remove
-                // the interest from epoll to prevent busy-loop re-fire.
-                removeInterestFromEpoll(fd, interest)
-                reg.continuation.resume(Unit)
+            // Suspend path: pop one waiter from the FIFO chain. If
+            // siblings remain (concurrent `accept()` callers waiting on
+            // the same serverFd), keep the epoll filter armed so the
+            // next epoll_wait cycle cascade-fires the next sibling — the
+            // chain drains across successive iterations as the kernel
+            // listen queue (or whatever level-triggered condition holds)
+            // stays ready. Only when the chain becomes empty do we
+            // disarm to avoid busy-loop re-fire while the resumed
+            // continuation finishes its asynchronous I/O on another
+            // dispatcher.
+            // Pair<popped Registration?, chain still has waiters?>
+            val pair: Pair<Registration?, Boolean> = withRegLock {
+                val popped = popHeadRegistration(key)
+                popped to (registrations[key] != null)
+            }
+            val popped = pair.first
+            if (popped != null) {
+                if (!pair.second) {
+                    removeInterestFromEpoll(fd, interest)
+                }
+                popped.continuation.resume(Unit)
             }
         }
     }
@@ -612,9 +736,9 @@ internal class EpollEventLoop(
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
         suspendCancellableCoroutine<Unit> { cont ->
-            register(fd, Interest.WRITE, cont)
+            val reg = register(fd, Interest.WRITE, cont)
             cont.invokeOnCancellation {
-                unregister(fd, Interest.WRITE)
+                unregister(reg)
                 closeFdSafely(fd, logger, "connect cancellation")
             }
         }

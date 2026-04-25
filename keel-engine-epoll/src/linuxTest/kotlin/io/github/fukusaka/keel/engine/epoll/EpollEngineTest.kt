@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -953,6 +954,21 @@ class EpollEngineTest {
 
     // --- Multi-thread EventLoop ---
 
+    /**
+     * Verifies the multi-thread EventLoop config (`threads = 4`) handles
+     * concurrent `accept()` + Channel I/O correctly across worker EventLoops.
+     *
+     * Per-coroutine blocking POSIX syscalls (`connectRawClient` /
+     * `rawWrite` / `rawRead` / `close`) run on [Dispatchers.Default]
+     * — `runBlocking` is single-threaded on Native and would deadlock if
+     * one coroutine's blocking `rawRead` parked the only thread while
+     * another coroutine's suspended `ch.read` waited for resume on the
+     * same thread. Cross-pairing scenarios (which arise when one
+     * `accept()` hits `EAGAIN` and shifts FIFO order) require parallel
+     * forward progress in test scaffolding to be reachable; this is the
+     * focused way to verify engine correctness without entangling test
+     * scheduling with engine semantics.
+     */
     @Test
     fun `echo with multi-thread EventLoop`() = runBlocking {
         val engine = EpollEngine(IoEngineConfig(threads = 4))
@@ -961,7 +977,7 @@ class EpollEngineTest {
 
         // Multiple clients to exercise round-robin distribution
         val results = (1..8).map { i ->
-            async {
+            async(Dispatchers.Default) {
                 val clientFd = connectRawClient(port)
                 val ch = server.accept()
 

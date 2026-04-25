@@ -17,7 +17,6 @@ import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.ptr
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.pthread_mutex_destroy
@@ -60,10 +59,12 @@ internal class KqueueStreamServer(
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
 ) : StreamServer {
 
-    // State transitions may be observed from the boss EventLoop thread
-    // (accept readiness callback) and from external dispatcher threads
-    // (close() callers). Access is serialised under [mutex].
-    // @Volatile on _active lets isActive read without taking the mutex.
+    // [_active] flips false on the first close() and is checked atomically
+    // with the EventLoop register() call in accept()'s WouldBlock branch
+    // (both inside [withLock]). Without that atomicity, an accept could
+    // register with [bossLoop] after close() ran [bossLoop.cancelAll],
+    // leaving the continuation stranded in the registration chain.
+    // @Volatile on [_active] lets [isActive] read without taking the mutex.
     private val arena = Arena()
     private val mutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
@@ -71,7 +72,6 @@ internal class KqueueStreamServer(
 
     @Volatile
     private var _active = true
-    private var pendingAcceptCont: CancellableContinuation<Unit>? = null
 
     override val isActive: Boolean get() = _active
 
@@ -80,7 +80,12 @@ internal class KqueueStreamServer(
      *
      * Uses POSIX `accept()` in non-blocking mode. If no connection is
      * pending (EAGAIN), registers the server fd with the [KqueueEventLoop]
-     * and suspends until readiness is reported.
+     * and suspends until readiness is reported. The EventLoop maintains
+     * a FIFO chain of waiters per `(fd, interest)` key, so multiple
+     * coroutines may call [accept] concurrently — each gets its own
+     * registration in the chain, kqueue's level-triggered fire cascades
+     * through them as connections arrive, and POSIX `accept` is itself
+     * thread-safe (kernel disperses queued connections among callers).
      *
      * The accepted connection is assigned to the next worker EventLoop
      * in round-robin order and returned as a [KqueuePipelinedChannel]
@@ -109,29 +114,33 @@ internal class KqueueStreamServer(
                     return channel
                 }
                 AcceptResult.WouldBlock -> {
-                    // Suspend until boss EventLoop reports serverFd is readable
                     suspendCancellableCoroutine<Unit> { cont ->
-                        val closedAlready = withLock {
+                        // Atomically check _active and register: a concurrent
+                        // close() that flipped _active to false would also have
+                        // run [bossLoop.cancelAll], so registering after that
+                        // point would strand the continuation. Lock order is
+                        // StreamServer.mutex (outer) -> EventLoop.regMutex
+                        // (inner via register); close() uses the same order
+                        // (mutex briefly, then cancelAll separately) so no
+                        // deadlock is possible.
+                        val reg = withLock {
                             if (!_active) {
-                                true
+                                null
                             } else {
-                                pendingAcceptCont = cont
-                                false
+                                bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
                             }
                         }
-                        if (closedAlready) {
+                        if (reg == null) {
                             cont.resumeWithException(CancellationException("StreamServer closed"))
                             return@suspendCancellableCoroutine
                         }
-                        bossLoop.register(serverFd, KqueueEventLoop.Interest.READ, cont)
                         cont.invokeOnCancellation {
-                            withLock {
-                                if (pendingAcceptCont === cont) pendingAcceptCont = null
-                            }
-                            bossLoop.unregister(serverFd, KqueueEventLoop.Interest.READ)
+                            // Remove only this waiter from the chain; siblings
+                            // remain. If close() already ran cancelAll, this is
+                            // a no-op (reg already detached from the chain).
+                            bossLoop.unregister(reg)
                         }
                     }
-                    withLock { pendingAcceptCont = null }
                     // Loop back and retry accept.
                 }
                 is AcceptResult.Failed -> error("accept() failed: ${errnoMessage(result.errno)}")
@@ -142,24 +151,26 @@ internal class KqueueStreamServer(
     /**
      * Stops accepting and closes the server socket.
      *
-     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
-     * is suspended, it is cancelled with [CancellationException].
+     * Idempotent: subsequent calls are no-ops. Every suspended [accept]
+     * coroutine — there may be many, queued in [bossLoop]'s registration
+     * chain for this fd — is resumed with [CancellationException] via
+     * [KqueueEventLoop.cancelAll].
      *
-     * **Thread safety**: safe to call from any thread. [_active] and
-     * [pendingAcceptCont] transitions are serialised under [mutex];
-     * POSIX `close(fd)` is thread-safe per the POSIX contract, and
-     * [CancellableContinuation.resumeWithException] is thread-safe by
-     * kotlinx.coroutines contract.
+     * **Thread safety**: safe to call from any thread. The [_active] flip
+     * is serialised under [mutex]; [bossLoop.cancelAll] takes the
+     * EventLoop's own `regMutex` separately (lock order matches accept(),
+     * so no deadlock). POSIX `close(fd)` is thread-safe per the POSIX
+     * contract, and [kotlinx.coroutines.CancellableContinuation.resumeWithException]
+     * is thread-safe by kotlinx.coroutines contract.
      */
     override fun close() {
-        val cont = withLock {
+        val shouldClose = withLock {
             if (!_active) return
             _active = false
-            val c = pendingAcceptCont
-            pendingAcceptCont = null
-            c
+            true
         }
-        cont?.resumeWithException(CancellationException("StreamServer closed"))
+        if (!shouldClose) return
+        bossLoop.cancelAll(serverFd, KqueueEventLoop.Interest.READ, CancellationException("StreamServer closed"))
         closeFdSafely(serverFd, logger, "server close")
         pthread_mutex_destroy(mutex.ptr)
         arena.clear()
