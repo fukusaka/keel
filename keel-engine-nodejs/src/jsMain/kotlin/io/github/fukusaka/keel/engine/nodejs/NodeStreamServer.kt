@@ -38,15 +38,29 @@ internal class NodeStreamServer(
 
     private var _active = true
     private val pendingConnections = ArrayDeque<Socket>()
-    private var pendingAcceptCont: CancellableContinuation<Socket>? = null
+
+    // FIFO queue of suspended accept() callers waiting for the next
+    // `onConnection` push. The previous single-slot design
+    // (`pendingAcceptCont: CancellableContinuation<Socket>?`) silently
+    // overwrote earlier waiters when two `accept()` calls in a row
+    // each found `pendingConnections` empty and assigned the slot —
+    // the lost continuation never resumed and the corresponding
+    // `accept()` hung forever. JS is single-threaded so the bug
+    // requires both calls to suspend back-to-back without yielding to
+    // the event loop, but it is reachable through the public
+    // `StreamServer.accept()` path. Counterpart of the POSIX engines'
+    // chain (PR #367), the io-uring queue (PR #368), and the Netty
+    // queue (PR #369). Identity-based `ArrayDeque.remove(cont)` works
+    // because `CancellableContinuation` inherits `Object.equals`
+    // (reference identity).
+    private val pendingAcceptConts = ArrayDeque<CancellableContinuation<Socket>>()
 
     override val isActive: Boolean get() = _active
 
     /** Called by [NodeEngine.bind] to register the connection handler. */
     internal fun onConnection(socket: Socket) {
-        val cont = pendingAcceptCont
+        val cont = pendingAcceptConts.removeFirstOrNull()
         if (cont != null) {
-            pendingAcceptCont = null
             cont.resume(socket)
         } else {
             pendingConnections.addLast(socket)
@@ -60,8 +74,12 @@ internal class NodeStreamServer(
             pendingConnections.removeFirst()
         } else {
             suspendCancellableCoroutine { cont ->
-                pendingAcceptCont = cont
-                cont.invokeOnCancellation { pendingAcceptCont = null }
+                pendingAcceptConts.addLast(cont)
+                cont.invokeOnCancellation {
+                    // Identity-based remove via CancellableContinuation's
+                    // default Object.equals (reference equality).
+                    pendingAcceptConts.remove(cont)
+                }
             }
         }
 
@@ -80,22 +98,22 @@ internal class NodeStreamServer(
     /**
      * Closes the server channel and stops accepting connections.
      *
-     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
-     * is suspended, it is cancelled with [CancellationException].
+     * Idempotent: subsequent calls are no-ops. Every queued [accept]
+     * coroutine is resumed with [CancellationException].
      *
      * **Thread safety**: JS is single-threaded, so every caller runs on
      * the same Node.js event-loop thread and the `_active` /
-     * `pendingAcceptCont` reads-then-writes are atomic by construction.
+     * `pendingAcceptConts` reads-then-writes are atomic by construction.
      * No locking is needed, but the idempotent-first-call contract
      * matches the multi-threaded engines.
      */
     override fun close() {
         if (_active) {
             _active = false
-            pendingAcceptCont?.resumeWithException(
-                CancellationException("StreamServer closed"),
-            )
-            pendingAcceptCont = null
+            while (pendingAcceptConts.isNotEmpty()) {
+                pendingAcceptConts.removeFirst()
+                    .resumeWithException(CancellationException("StreamServer closed"))
+            }
             server.close()
         }
     }
