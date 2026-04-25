@@ -153,6 +153,30 @@ class LongObjectMapTest {
     }
 
     @Test
+    fun `initial capacity beyond MAX throws`() {
+        // MAX_CAPACITY is 2^30; (1 shl 30) + 1 should reject without allocating.
+        assertFailsWith<IllegalArgumentException> {
+            LongObjectMap<Int>(initialCapacity = (1 shl 30) + 1)
+        }
+    }
+
+    @Test
+    fun `containsKey distinguishes present and absent across remove`() {
+        val m = LongObjectMap<String>()
+        m.put(7L, "seven")
+        m.put(42L, "forty-two")
+        assertTrue(m.containsKey(7L))
+        assertTrue(m.containsKey(42L))
+        assertFalse(m.containsKey(8L))
+        assertFalse(m.containsKey(0L))
+        // After remove the slot is null-terminated by backshift, so containsKey
+        // must walk the probe chain correctly even after deletes.
+        m.remove(7L)
+        assertFalse(m.containsKey(7L))
+        assertTrue(m.containsKey(42L))
+    }
+
+    @Test
     fun `zero initial capacity is lower-bounded to minimum`() {
         // zero is allowed but internally rounded up to MIN_CAPACITY (8).
         val m = LongObjectMap<Int>(initialCapacity = 0)

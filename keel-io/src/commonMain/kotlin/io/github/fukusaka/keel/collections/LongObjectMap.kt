@@ -71,7 +71,9 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
     private var shift: Int
 
     init {
-        require(initialCapacity >= 0) { "initialCapacity must be non-negative: $initialCapacity" }
+        require(initialCapacity in 0..MAX_CAPACITY) {
+            "initialCapacity must be in [0, $MAX_CAPACITY]: $initialCapacity"
+        }
         val cap = nextPowerOfTwo(maxOf(initialCapacity, MIN_CAPACITY))
         keys = LongArray(cap)
         values = arrayOfNulls(cap)
@@ -98,7 +100,16 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
         }
     }
 
-    public fun containsKey(key: Long): Boolean = get(key) != null
+    public fun containsKey(key: Long): Boolean {
+        val arr = values
+        val mask = arr.size - 1
+        var i = hash(key) and mask
+        while (true) {
+            if (arr[i] == null) return false
+            if (keys[i] == key) return true
+            i = (i + 1) and mask
+        }
+    }
 
     /**
      * Operator form of [put] that discards the previous value. Enables the
@@ -115,6 +126,9 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
      */
     public fun put(key: Long, value: V): V? {
         if (sizeInternal * 4 >= values.size * 3) {
+            check(values.size <= MAX_CAPACITY / 2) {
+                "LongObjectMap exceeded MAX_CAPACITY (2^30) at size=$sizeInternal"
+            }
             resize(values.size * 2)
         }
         val arr = values
@@ -239,6 +253,9 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
     private companion object {
         const val DEFAULT_CAPACITY: Int = 16
         const val MIN_CAPACITY: Int = 8
+
+        /** Largest power-of-two capacity that fits in a non-negative `Int`. */
+        const val MAX_CAPACITY: Int = 1 shl 30
 
         /** 2^64 / φ — Fibonacci multiplicative hashing constant (golden ratio). */
         const val FIB_MULTIPLIER: Long = -0x61c8864680b583ebL
