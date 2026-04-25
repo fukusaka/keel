@@ -1,9 +1,13 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import platform.posix.EAGAIN
 import platform.posix.EBADF
+import platform.posix.EINTR
 import platform.posix.EMFILE
 import platform.posix.ENFILE
 import kotlin.test.Test
@@ -26,8 +30,9 @@ import kotlin.test.assertTrue
  *   lifecycle is exercised by every integration test that starts the
  *   engine; seam injection would add cinterop-heavy scaffolding for
  *   marginal value).
- * - **main loop `waitEvents` retry / fatal exit** — deferred to a
- *   separate test that drives `loop()` directly on the test thread.
+ * - **main loop `waitEvents` retry / fatal exit** — covered at the bottom
+ *   of this file by tests that drive `loop()` directly on the test thread
+ *   via the now-`internal` accessor.
  * - **cinterop `kevent` struct bit combinations** — integration-only.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -122,6 +127,69 @@ class KqueueEventLoopSeamTest {
             assertEquals(1, fake.wakeupWriteCalls)
         } finally {
             el.close()
+        }
+    }
+
+    // --- main loop error branch tests ---
+    //
+    // Drive `loop()` directly on the test thread (no `start()` / pthread).
+    // `loop()` exits its `while (running.value != 0)` only via a fatal
+    // `waitEvents` errno that hits the `break`, so retry-path tests append
+    // a fatal scripted result after the retriable one to terminate cleanly.
+
+    @Test
+    fun `loop retries waitEvents on EINTR then exits on fatal errno`() {
+        val errors = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptWaitFailure(EINTR)   // 1st: retriable, loop should `continue`
+            scriptWaitFailure(EBADF)   // 2nd: fatal, loop should log + break
+        }
+        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        el.loop()
+        assertEquals(2, fake.waitCalls, "EINTR should be retried, then EBADF terminates")
+        assertEquals(1, errors.size, "fatal errno should produce exactly one error log")
+        assertTrue(
+            errors.first().contains("kevent()"),
+            "error log should mention kevent(), got: ${errors.first()}",
+        )
+    }
+
+    @Test
+    fun `loop retries waitEvents on EAGAIN then exits on fatal errno`() {
+        val errors = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptWaitFailure(EAGAIN)
+            scriptWaitFailure(EBADF)
+        }
+        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        el.loop()
+        assertEquals(2, fake.waitCalls, "EAGAIN should be retried, then EBADF terminates")
+        assertEquals(1, errors.size)
+        assertTrue(errors.first().contains("kevent()"))
+    }
+
+    @Test
+    fun `loop exits immediately on fatal waitEvents errno`() {
+        val errors = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptWaitFailure(EBADF)   // fatal on first call
+        }
+        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        el.loop()
+        assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
+        assertEquals(1, errors.size)
+        assertTrue(errors.first().contains("kevent()"))
+    }
+
+    /**
+     * Logger that captures `error`-level messages into [sink]. Other levels
+     * are discarded. Used by the main-loop error-branch tests to assert
+     * the fatal-exit path emits the expected log.
+     */
+    private fun recordingLogger(sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            if (level == LogLevel.ERROR) sink.add(message.toString())
         }
     }
 }
