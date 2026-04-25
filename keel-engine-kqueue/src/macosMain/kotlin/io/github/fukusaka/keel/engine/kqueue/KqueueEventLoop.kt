@@ -110,7 +110,11 @@ internal class KqueueEventLoop(
     private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
     // Separated from coroutine registrations to avoid sealed-class overhead.
-    private val callbackRegistrations = LongObjectMap<() -> Unit>()
+    // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
+    // pass `this` to [registerCallback], avoiding per-call lambda allocation
+    // on the read re-arm fast path. Mirrors the `Job : DisposableHandle`
+    // precedent from kotlinx.coroutines.
+    private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
@@ -151,6 +155,20 @@ internal class KqueueEventLoop(
     )
 
     enum class Interest { READ, WRITE }
+
+    /**
+     * Listener for fd readiness events on the pipeline (non-suspend) path.
+     *
+     * Implemented by [io.github.fukusaka.keel.engine.kqueue.KqueueIoTransport]
+     * (and other consumers of [registerCallback]) so the receiver can pass
+     * `this` as the listener — eliminating the per-call lambda allocation
+     * on the read re-arm fast path. The `interest` parameter lets a single
+     * implementation dispatch read vs. write callbacks without separate
+     * sub-listener objects.
+     */
+    fun interface FdReadyListener {
+        fun onReady(interest: Interest)
+    }
 
     init {
         val fd = syscallOps.kqueueCreate()
@@ -306,12 +324,12 @@ internal class KqueueEventLoop(
      * reports the fd as ready, [callback] is invoked directly on the EventLoop thread.
      * The registration is one-shot: removed after the callback fires.
      */
-    fun registerCallback(fd: Int, interest: Interest, callback: () -> Unit) {
+    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
         val key = registrationKey(fd, interest)
 
         // Register callback BEFORE adding to kqueue (same rationale as register()).
         withRegLock {
-            callbackRegistrations[key] = callback
+            callbackRegistrations[key] = listener
         }
 
         val kevErr = when (interest) {
@@ -419,7 +437,7 @@ internal class KqueueEventLoop(
                 // then coroutine registrations (suspend path).
                 val cb = withRegLock { callbackRegistrations.remove(key) }
                 if (cb != null) {
-                    cb()
+                    cb.onReady(interest)
                 } else {
                     val reg = withRegLock { registrations.remove(key) }
                     reg?.continuation?.resume(Unit)
