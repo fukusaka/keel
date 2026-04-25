@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-*`: serialise concurrent `StreamServer.accept()` callers with an internal `Mutex` across all seven engines (kqueue / epoll / io-uring / nio / netty / nodejs / nwconnection). Previously two coroutines suspended on the same server fd could overwrite each other's continuation in either the EventLoop registration map (POSIX engines) or the `pendingAcceptCont` single slot (push-model engines), leaking all but the last continuation. Reproduced as `KqueueEngineTest.echo with multi-thread EventLoop` failing intermittently on a 3-core CI runner with `read timed out after 0/5 bytes (deadline expired)`; locally repros at ~10% pre-fix (#366)
 - `engine-kqueue` / `engine-epoll`: check return values on every `kevent` / `epoll_ctl` / `pthread_create` / `pipe` / `kqueue` / `eventfd` call (was swallowed in ~6 places across both engines). `register` / `registerCallback` now resume the caller with an exception instead of hanging forever on `kevent(EV_ADD)` failure; init-time failures clean up partially-allocated fds before throwing. Also eliminates the per-iteration `mutableListOf<Runnable>()` allocation in both EventLoops' `drainTasks()` hot path by reusing a field-level scratch buffer (#355)
 
 ### Documentation
