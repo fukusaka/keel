@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.MpscQueue
+import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -106,10 +107,10 @@ internal class KqueueEventLoop(
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
     }
-    private val registrations = mutableMapOf<Long, Registration>()
+    private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
     // Separated from coroutine registrations to avoid sealed-class overhead.
-    private val callbackRegistrations = mutableMapOf<Long, () -> Unit>()
+    private val callbackRegistrations = LongObjectMap<() -> Unit>()
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
