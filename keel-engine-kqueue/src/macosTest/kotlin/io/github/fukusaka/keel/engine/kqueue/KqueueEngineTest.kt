@@ -1010,6 +1010,45 @@ class KqueueEngineTest {
         engine.close()
     }
 
+    /**
+     * Regression for the pre-fix bug where multiple concurrent `accept()`
+     * coroutines all called `bossLoop.register(serverFd, READ, cont)` on
+     * the same key, overwriting each other in the `registrations` map and
+     * leaking all but the last continuation. With 32 connections the race
+     * triggers almost 100% pre-fix; passing this test 100% means the
+     * `acceptMutex` serialisation in [KqueueStreamServer] is doing its job.
+     */
+    @Test
+    fun `accept can be called concurrently from many coroutines`() = runBlocking {
+        val engine = KqueueEngine(IoEngineConfig(threads = 4))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val results = (1..32).map { i ->
+            async {
+                val clientFd = connectRawClient(port)
+                val ch = server.accept()
+                val msg = "msg-$i"
+                rawWrite(clientFd, msg)
+                val buf = DefaultAllocator.allocate(64)
+                val n = ch.read(buf)
+                assertEquals(msg.length, n)
+                ch.write(buf)
+                ch.flush()
+                val echo = rawRead(clientFd, msg.length)
+                ch.close()
+                close(clientFd)
+                echo
+            }
+        }
+        for ((i, deferred) in results.withIndex()) {
+            assertEquals("msg-${i + 1}", deferred.await())
+        }
+
+        server.close()
+        engine.close()
+    }
+
     @Test
     fun `channels are distributed across worker EventLoops`() = runBlocking {
         val engine = KqueueEngine(IoEngineConfig(threads = 4))
