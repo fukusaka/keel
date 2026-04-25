@@ -41,7 +41,7 @@ import kotlin.coroutines.resumeWithException
  *   CQE arrives without F_MORE → rearm (submit new multishot accept SQE)
  * ```
  *
- * **Threading**: All multishot state ([pendingFds], [pendingAcceptCont],
+ * **Threading**: All multishot state ([pendingFds], [pendingAcceptConts],
  * [multishotSlot]) is accessed exclusively on the [bossLoop] thread.
  * [accept] dispatches to the bossLoop when called from an external thread,
  * following the same pattern as the single-shot implementation's
@@ -79,8 +79,19 @@ internal class IoUringStreamServer(
     override val isActive: Boolean get() = _active
 
     // Multishot accept state — bossLoop thread only, no synchronisation needed.
+    //
+    // [pendingAcceptConts] holds every coroutine currently suspended in
+    // [acceptMultishot] waiting for the next CQE-delivered fd, in FIFO
+    // order. The previous single-slot design (`pendingAcceptCont:
+    // CancellableContinuation<Int>?`) silently overwrote earlier waiters
+    // when a second [accept] dispatch reached the bossLoop with
+    // [pendingFds] empty — the lost continuation was never resumed and
+    // the corresponding `accept()` call hung forever. Counterpart of the
+    // POSIX engines' register chain (PR #367); identity-based
+    // `ArrayDeque.remove(cont)` works because `CancellableContinuation`
+    // inherits `Object.equals` (reference identity).
     private val pendingFds = ArrayDeque<Int>()
-    private var pendingAcceptCont: CancellableContinuation<Int>? = null
+    private val pendingAcceptConts = ArrayDeque<CancellableContinuation<Int>>()
     private var multishotSlot: Int = -1
 
     /**
@@ -143,10 +154,12 @@ internal class IoUringStreamServer(
             if (pendingFds.isNotEmpty()) {
                 cont.resume(pendingFds.removeFirst())
             } else {
-                pendingAcceptCont = cont
+                pendingAcceptConts.addLast(cont)
                 cont.invokeOnCancellation {
                     bossLoop.dispatch(cont.context) {
-                        if (pendingAcceptCont === cont) pendingAcceptCont = null
+                        // Identity-based remove via CancellableContinuation's
+                        // default Object.equals (reference equality).
+                        pendingAcceptConts.remove(cont)
                     }
                 }
             }
@@ -170,9 +183,8 @@ internal class IoUringStreamServer(
                     return@submitMultishot
                 }
                 if (res >= 0) {
-                    val cont = pendingAcceptCont
+                    val cont = pendingAcceptConts.removeFirstOrNull()
                     if (cont != null) {
-                        pendingAcceptCont = null
                         cont.resume(res)
                     } else {
                         pendingFds.addLast(res)
@@ -193,10 +205,11 @@ internal class IoUringStreamServer(
      * transition is atomic via [closeLatch] so only the first caller
      * schedules cleanup; the cleanup block itself is dispatched onto
      * the [bossLoop] thread because every resource it touches
-     * (`multishotSlot`, `pendingAcceptCont`, `pendingFds`, and the
+     * (`multishotSlot`, `pendingAcceptConts`, `pendingFds`, and the
      * ring-scoped `cancelMultishot` / `closeFdSafely` calls) is
-     * documented as bossLoop-thread-only. Subsequent calls after the
-     * first are no-ops.
+     * documented as bossLoop-thread-only. Every queued waiter in
+     * [pendingAcceptConts] is resumed with [CancellationException].
+     * Subsequent calls after the first are no-ops.
      */
     override fun close() {
         if (!closeLatch.compareAndSet(0, 1)) return
@@ -209,9 +222,10 @@ internal class IoUringStreamServer(
                 bossLoop.cancelMultishot(multishotSlot)
                 multishotSlot = -1
             }
-            pendingAcceptCont?.let { cont ->
-                pendingAcceptCont = null
-                cont.resumeWithException(CancellationException("StreamServer closed"))
+            // Resume every queued accept waiter with cancellation.
+            while (pendingAcceptConts.isNotEmpty()) {
+                pendingAcceptConts.removeFirst()
+                    .resumeWithException(CancellationException("StreamServer closed"))
             }
             // Close any queued fds that haven't been accepted yet.
             while (pendingFds.isNotEmpty()) {

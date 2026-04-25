@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: concurrent `accept()` callers on the multishot path now queue in `pendingAcceptConts: ArrayDeque<...>` instead of overwriting a single-slot `pendingAcceptCont` (silent continuation leak fix); CQE delivery pops FIFO, `close()` resumes every queued waiter with `CancellationException` (#368)
 - **BREAKING** (`engine-kqueue` / `engine-epoll` internal API): concurrent `accept()` callers on a shared `serverFd` now form a FIFO chain in `register()` instead of overwriting each other in the registrations map (silent continuation leak fix); `unregister(fd, interest)` is replaced by `unregister(reg: Registration)` and `cancelAll(fd, interest, cause)` is added (#367)
 - `engine-kqueue` / `engine-epoll`: check return values on every `kevent` / `epoll_ctl` / `pthread_create` / `pipe` / `kqueue` / `eventfd` call (was swallowed in ~6 places across both engines). `register` / `registerCallback` now resume the caller with an exception instead of hanging forever on `kevent(EV_ADD)` failure; init-time failures clean up partially-allocated fds before throwing. Also eliminates the per-iteration `mutableListOf<Runnable>()` allocation in both EventLoops' `drainTasks()` hot path by reusing a field-level scratch buffer (#355)
 

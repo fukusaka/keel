@@ -20,6 +20,7 @@ import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
@@ -763,6 +764,57 @@ class IoUringEngineTest {
         }
 
         clientFds.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
+    /**
+     * Verifies multishot accept correctly handles concurrent `accept()`
+     * callers across worker EventLoops. Multiple coroutines suspend on
+     * the bossLoop's pending-accept queue (FIFO chain) and each gets a
+     * distinct connection delivered by a CQE.
+     *
+     * Pre-fix the single-slot `pendingAcceptCont` design overwrote
+     * sibling waiters when two `accept()` calls reached the bossLoop
+     * dispatch handler with `pendingFds` empty — the dropped continuation
+     * never resumed and the corresponding `accept()` hung. Counterpart of
+     * the POSIX engines' `echo with multi-thread EventLoop` test (PR #367).
+     *
+     * Per-coroutine blocking POSIX syscalls run on [Dispatchers.Default]
+     * so they don't deadlock with `runBlocking`'s single thread under
+     * cross-pairing.
+     */
+    @Test
+    fun `multishot accept handles concurrent accept callers`() = runBlocking {
+        val engine = IoUringEngine(IoEngineConfig(threads = 4))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val results = (1..8).map { i ->
+            async(Dispatchers.Default) {
+                val clientFd = connectRawClient(port)
+                val ch = server.accept()
+
+                val msg = "msg-$i"
+                rawWrite(clientFd, msg)
+
+                val buf = DefaultAllocator.allocate(64)
+                val n = ch.read(buf)
+                assertEquals(msg.length, n)
+
+                ch.write(buf)
+                ch.flush()
+
+                val echo = rawRead(clientFd, msg.length)
+                ch.close()
+                close(clientFd)
+                echo
+            }
+        }
+        for ((i, deferred) in results.withIndex()) {
+            assertEquals("msg-${i + 1}", deferred.await())
+        }
+
         server.close()
         engine.close()
     }
