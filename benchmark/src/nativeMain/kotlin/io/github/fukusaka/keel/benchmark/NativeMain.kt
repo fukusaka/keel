@@ -24,6 +24,10 @@ fun main(args: Array<String>) {
         runCollectionAllocBench()
         return
     }
+    if (args.any { it == "--bench=longmap-variants" }) {
+        runLongMapVariantBench()
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
