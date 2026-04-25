@@ -37,7 +37,7 @@ internal class EpollPipelinedStreamServer(
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
-) : PipelinedStreamServer {
+) : PipelinedStreamServer, EpollEventLoop.FdReadyListener {
 
     override val localAddress: SocketAddress get() = localAddr
     override val isActive: Boolean get() = !closed
@@ -51,11 +51,19 @@ internal class EpollPipelinedStreamServer(
         armAccept()
     }
 
+    /**
+     * [EpollEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [EpollEventLoop.registerCallback] avoids per-call lambda allocation on
+     * the accept re-arm fast path. Only `READ` is registered; `WRITE` is
+     * never armed for the listening fd.
+     */
+    override fun onReady(interest: EpollEventLoop.Interest) {
+        onAcceptable()
+    }
+
     private fun armAccept() {
         if (closed) return
-        bossLoop.registerCallback(serverFd, EpollEventLoop.Interest.READ) {
-            onAcceptable()
-        }
+        bossLoop.registerCallback(serverFd, EpollEventLoop.Interest.READ, this)
     }
 
     // `internal` (was `private`) so accept-branch seam tests can drive the
