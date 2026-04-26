@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.iouring.IoModeSelectors
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.runBlocking
@@ -75,7 +74,7 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         val engine = IoUringEngine(
             config = IoEngineConfig(
                 threads = threads,
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
             writeModeSelector = modeSelector,
             capabilities = caps,

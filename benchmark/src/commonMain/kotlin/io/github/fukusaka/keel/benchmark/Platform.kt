@@ -38,6 +38,13 @@ expect fun printErr(message: String)
 /** Terminate the process with the given exit code. */
 expect fun benchmarkExit(code: Int): Nothing
 
+/**
+ * Returns the value of the named environment variable, or `null` if unset
+ * or empty. Hides JVM ([System.getenv]) / Native ([platform.posix.getenv])
+ * / JS (`process.env`) differences from `commonMain` callers.
+ */
+expect fun getEnvVar(name: String): String?
+
 /** Format `"  label                value\n"` with 22-char padded label. */
 fun StringBuilder.fmtLine(label: String, value: String) {
     append("  ")

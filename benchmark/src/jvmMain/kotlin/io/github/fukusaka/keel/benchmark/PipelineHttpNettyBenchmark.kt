@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.netty.NettyEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 /**
  * Pipeline HTTP benchmark using [NettyEngine] with [HttpRequestDecoder],
@@ -24,7 +23,7 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         val engine = NettyEngine(
             config = IoEngineConfig(
                 threads = threads,
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 

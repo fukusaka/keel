@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nio.NioEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -26,7 +25,7 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
         val engine = NioEngine(
             config = IoEngineConfig(
                 threads = threads,
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 
