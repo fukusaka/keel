@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `keel-codec-http`: `PipelinedChannel.addHttp1ServerCodec(aggregateBody: Boolean = true)` extension that installs the standard HTTP/1.1 server-side codec stack on a pipeline (`encoder` + `decoder` + optional `aggregator`). Lets `:keel-ktor-engine` and the upcoming `:keel-server-http` share one install path instead of repeating the four `pipeline.addLast(...)` calls (#391)
+
+### Removed
+
+- **BREAKING** (`keel-ktor-engine`): the platform-default `StreamEngine` factory (`DefaultEngine` `expect`/`actual` returning `NioEngine` / `KqueueEngine` / `EpollEngine`) is removed; `KeelApplicationEngine.Configuration.engine` must be set explicitly (e.g. `engine = NioEngine()`). Avoids pulling every keel engine module into the adapter just to pick one at runtime; consumers depend only on the engine they actually use. `start()` throws `IllegalStateException` if `engine` is left unset (#391)
+
+### Changed
+
+- **BREAKING** (`keel-ktor-engine`): drops the per-platform engine module dependencies (`:keel-engine-nio` from `jvmMain`, `:keel-engine-kqueue` from `macosMain`, `:keel-engine-epoll` from `linuxMain`) along with the `DefaultEngine` files. The KMP target set is unchanged (jvm + linux/macos native), but the platform-specific source sets are gone — the adapter is now engine-neutral and applications wire the engine via the configuration block (#391)
+
+### Added
+
 - `keel-server`: `TlsServerInstaller` (`fun interface` for installing server-side TLS on a `PipelinedChannel`), `TlsServerConfig` (`BindConfig` subclass carrying `TlsConfig` + optional installer for HTTPS listeners), and `TlsCodecServerInstaller` (adapter that wraps a `TlsCodecFactory` for keel's `TlsHandler`-based TLS). Relocated from `:keel-tls` so server-side install plumbing lives next to the other server primitives, leaving `:keel-tls` strictly about TLS protocol primitives (#390)
 - `keel-server`: `AcceptBackoff` (sealed: `Fixed` / `Exponential`), `StreamServer.acceptLoopWithBackoff` extension, and `gracefulShutdown` two-phase helper relocated from `:keel-ktor-engine`. The accept-loop helper takes an `onAccept: (Channel) -> Unit` callback so the caller decides per-connection scope/dispatcher; the shutdown helper completes a stop-signal job, drains the accept coordinator and engine-scope handlers within a grace period, then forces cancel and always closes the engine in `finally`. Both let `:keel-ktor-engine` and the future `:keel-server-http` share the same accept/shutdown semantics (#389)
 - `keel-server`: new module — server-side primitives shared between engine adapters and HTTP-family server modules. Currently exposes `ServerConnector` (`(host, port, tls?)` descriptor for a single listen endpoint), relocated from `:keel-ktor-engine`. Lets the upcoming `:keel-server-http` (HTTP/1.1 native server) and `:keel-ktor-engine` share the same type without either side owning it. KMP target set: jvm / js / linuxX64 / linuxArm64 / macosArm64 / macosX64 (#388)
