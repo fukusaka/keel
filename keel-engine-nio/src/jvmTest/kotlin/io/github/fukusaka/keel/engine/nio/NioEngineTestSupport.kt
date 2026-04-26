@@ -20,9 +20,9 @@ import kotlin.time.Duration.Companion.seconds
  * | [NioEngineConcurrencyTest] | concurrent reads, FIFO accept queue, close race, cancellation |
  * | [NioEngineResourceTest]  | `TrackingAllocator` leak detection |
  *
- * The same six-bucket split is documented in `.claude/rules/testing.md`
- * § "テストカテゴリ"; this file (and the categorised test files below it)
- * is the concrete realisation for the NIO engine.
+ * Mirrors the same category split applied to the other engine test
+ * suites (kqueue / epoll / io_uring / nio / netty / nwconnection /
+ * nodejs). This file is the concrete realisation for the NIO engine.
  */
 
 internal val TEST_TIMEOUT = 10.seconds

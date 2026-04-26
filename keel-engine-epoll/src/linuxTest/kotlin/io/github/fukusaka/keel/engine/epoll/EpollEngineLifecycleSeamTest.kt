@@ -33,7 +33,8 @@ import kotlin.test.assertTrue
  * `connect()` `ConnectResult.Failed` / `Connected`, `bind()` fd
  * propagation, and the address-read chain after Connected.
  *
- * Per `.claude/rules/testing.md` § "二層テスト戦略".
+ * Part of the project's two-layer seam + integration testing strategy
+ * (this file covers the seam side).
  *
  * ## What this file does NOT cover
  *

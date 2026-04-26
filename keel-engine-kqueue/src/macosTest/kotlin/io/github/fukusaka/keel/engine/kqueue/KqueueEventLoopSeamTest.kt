@@ -22,7 +22,8 @@ import kotlin.test.assertTrue
  * introduced in PR #355 but were only reachable through a real BSD
  * kernel failure (not testable in integration).
  *
- * Per `.claude/rules/testing.md` § "二層テスト戦略".
+ * Part of the project's two-layer seam + integration testing strategy
+ * (this file covers the seam side).
  *
  * ## What this file does NOT cover
  *

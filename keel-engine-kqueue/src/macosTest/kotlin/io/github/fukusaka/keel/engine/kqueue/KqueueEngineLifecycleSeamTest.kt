@@ -32,7 +32,8 @@ import kotlin.test.assertTrue
  * `EpollEngineLifecycleSeamTest` — same 5-case coverage of
  * `connect` `Failed` / `Connected` for TCP and UDS.
  *
- * Per `.claude/rules/testing.md` § "二層テスト戦略".
+ * Part of the project's two-layer seam + integration testing strategy
+ * (this file covers the seam side).
  *
  * ## What this file does NOT cover
  *

@@ -33,7 +33,7 @@ import kotlin.test.assertTrue
  *
  * WouldBlock on `send()` triggers `submitAsyncSend`, which queues a
  * real SQE — that branch is left to integration coverage in
- * [IoUringEngineTest]. Per `.claude/rules/testing.md` § "二層テスト戦略".
+ * [IoUringEngineTest]. Part of the project's two-layer seam + integration testing strategy (this file covers the seam side).
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringTransportSeamTest {

@@ -23,12 +23,12 @@ import kotlin.test.assertTrue
  * Seam-level unit tests for [EpollIoTransport] driving the fake
  * [io.github.fukusaka.keel.native.posix.NativeSocket] directly.
  *
- * Per `.claude/rules/testing.md` § "二層テスト戦略", these tests
- * exhaust the errno-branch space of the synchronous code paths
- * (`shutdownOutput`, `flush` / `flushSingle` / `flushGather`) without
- * relying on a running EventLoop or kernel readiness. Paths that
- * require real readiness events (`onReadable`) remain covered by
- * [EpollEngineTest] integration tests.
+ * Part of the project's two-layer seam + integration testing strategy:
+ * these seam tests exhaust the errno-branch space of the synchronous
+ * code paths (`shutdownOutput`, `flush` / `flushSingle` / `flushGather`)
+ * without relying on a running EventLoop or kernel readiness. Paths
+ * that require real readiness events (`onReadable`) remain covered by
+ * the integration tests.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollTransportSeamTest {

@@ -26,7 +26,8 @@ import kotlin.test.assertTrue
  * through scripted [FakeNativeSocket] responses, exhausting the
  * errno-branch space without needing real kernel readiness.
  *
- * Per `.claude/rules/testing.md` § "二層テスト戦略".
+ * Part of the project's two-layer seam + integration testing strategy
+ * (this file covers the seam side).
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueTransportSeamTest {
