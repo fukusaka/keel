@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.tls
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 
 /**
@@ -25,12 +26,15 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * @param config TLS settings (certificates, trust, verify mode, ALPN, SNI).
  * @param installer TLS installer for per-connection setup, or null for engine-native TLS.
  * @param backlog TCP listen backlog (inherited from [BindConfig]).
+ * @param childSocketOptions Socket options applied to every accepted client fd
+ *   (inherited from [BindConfig]).
  */
 class TlsConnectorConfig(
     val config: TlsConfig,
     val installer: TlsInstaller? = null,
     backlog: Int = DEFAULT_BACKLOG,
-) : BindConfig(backlog) {
+    childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
+) : BindConfig(backlog, childSocketOptions) {
 
     /**
      * Installs TLS on the channel via [installer].
