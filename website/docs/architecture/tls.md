@@ -107,7 +107,7 @@ TlsConfig (certificates, trust store, ALPN, SNI)
 
 ### Per-connection TLS
 
-A `TlsCodecFactory` creates a per-connection codec that performs encryption (`protect`) and decryption (`unprotect`) using buffer-to-buffer operations. Build a `TlsConfig`, create a factory, and pass both to `TlsConnectorConfig`:
+A `TlsCodecFactory` creates a per-connection codec that performs encryption (`protect`) and decryption (`unprotect`) using buffer-to-buffer operations. Build a `TlsConfig`, create a factory, wrap it in `TlsCodecServerInstaller` (from `keel-server`), and pass both to `TlsServerConfig`:
 
 ```kotlin
 // HTTPS on kqueue, epoll, NIO, etc.
@@ -118,7 +118,7 @@ val tlsConfig = TlsConfig(
     ),
 )
 val factory: TlsCodecFactory = OpenSslCodecFactory()   // or JsseTlsCodecFactory()
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig, factory)) { channel ->
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
     // channel receives plaintext — TlsHandler in pipeline handles crypto
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
     // ...
@@ -146,11 +146,11 @@ override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
 
 ### Listener-level TLS
 
-NWConnection and Node.js negotiate TLS at the transport level. Pass `TlsConnectorConfig` with no `installer` argument (defaults to `null`) to activate this mode:
+NWConnection and Node.js negotiate TLS at the transport level. Pass `TlsServerConfig` with no `installer` argument (defaults to `null`) to activate this mode:
 
 ```kotlin
 // NWConnection or Node.js: TLS handled by OS/runtime
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig)) { channel ->
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig)) { channel ->
     // channel receives plaintext — no TlsHandler in the pipeline
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
     // ...

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.ktor.Keel
+import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.ktor.server.application.serverConfig
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
@@ -14,7 +15,7 @@ object KeelNioEngine : EngineBenchmark {
         val factory = config.tls?.let { createTlsCodecFactory(it) }
         val engine = embeddedServer(Keel, rootConfig) {
             if (factory != null) {
-                sslConnector(BenchmarkCertificates.tlsConfig(), factory) { port = config.port }
+                sslConnector(BenchmarkCertificates.tlsConfig(), TlsCodecServerInstaller(factory)) { port = config.port }
             } else {
                 connector { this.port = config.port }
             }

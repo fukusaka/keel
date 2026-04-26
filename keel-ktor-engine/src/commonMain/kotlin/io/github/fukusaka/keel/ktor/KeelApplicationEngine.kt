@@ -21,11 +21,11 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.server.AcceptBackoff
+import io.github.fukusaka.keel.server.TlsServerConfig
+import io.github.fukusaka.keel.server.TlsServerInstaller
 import io.github.fukusaka.keel.server.acceptLoopWithBackoff
 import io.github.fukusaka.keel.server.gracefulShutdown
 import io.github.fukusaka.keel.tls.TlsConfig
-import io.github.fukusaka.keel.tls.TlsConnectorConfig
-import io.github.fukusaka.keel.tls.TlsInstaller
 import io.ktor.events.Events
 import io.ktor.events.raiseCatching
 import io.ktor.server.application.Application
@@ -155,7 +155,7 @@ public class KeelApplicationEngine(
          * [connectors][BaseApplicationEngine.Configuration.connectors] list
          * by [sslConnector]. Connectors without an entry use plain HTTP.
          */
-        internal val tlsConnectors: MutableMap<EngineConnectorConfig, TlsConnectorConfig> = mutableMapOf()
+        internal val tlsConnectors: MutableMap<EngineConnectorConfig, TlsServerConfig> = mutableMapOf()
 
         /**
          * Adds an HTTPS connector with keel TLS configuration.
@@ -163,14 +163,15 @@ public class KeelApplicationEngine(
          * Uses keel's PEM-based [TlsConfig] instead of Ktor's JVM-only
          * `KeyStore`-based `sslConnector`. Works on all KMP targets.
          *
-         * `TlsCodecFactory` implements [TlsInstaller], so a codec factory
-         * can be passed directly. Engine-specific installers (e.g.,
-         * `NettySslInstaller`) install TLS at the transport level instead.
+         * Wrap a `TlsCodecFactory` in `TlsCodecServerInstaller` (in
+         * `:keel-server`) for keel's `TlsHandler`. Engine-specific
+         * installers (e.g., a Netty `SslHandler` adapter) install TLS
+         * at the transport level instead.
          *
          * ```
          * // Default: keel TlsHandler (all engines)
          * embeddedServer(Keel) {
-         *     sslConnector(tlsConfig, JsseTlsCodecFactory()) { port = 8443 }
+         *     sslConnector(tlsConfig, TlsCodecServerInstaller(JsseTlsCodecFactory())) { port = 8443 }
          * }
          *
          * // Netty SslHandler (requires :engine-netty dependency)
@@ -186,12 +187,12 @@ public class KeelApplicationEngine(
          */
         public fun sslConnector(
             tlsConfig: TlsConfig,
-            tlsInstaller: TlsInstaller,
+            tlsInstaller: TlsServerInstaller,
             builder: EngineConnectorBuilder.() -> Unit,
         ) {
             val connector = EngineConnectorBuilder(ConnectorType.HTTPS).apply(builder)
             connectors.add(connector)
-            tlsConnectors[connector] = TlsConnectorConfig(tlsConfig, tlsInstaller)
+            tlsConnectors[connector] = TlsServerConfig(tlsConfig, tlsInstaller)
         }
     }
 
@@ -255,7 +256,7 @@ public class KeelApplicationEngine(
             val engine = configuration.engine ?: defaultEngine()
             ioEngine = engine
             // Pair each server with its connector's TLS config (if any).
-            val serverEntries = mutableListOf<Pair<StreamServer, TlsConnectorConfig?>>()
+            val serverEntries = mutableListOf<Pair<StreamServer, TlsServerConfig?>>()
 
             try {
                 val resolved = connectors.map { connector ->

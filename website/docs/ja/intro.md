@@ -128,7 +128,7 @@ keel は両方を提供します:
 |---|---|
 | `keel-core` | `StreamEngine`、`Channel`、`Server`、`BindConfig`、`Logger` |
 | `keel-io` | `IoBuf`、`SuspendSource`、`SuspendSink`、`BufferAllocator` |
-| `keel-tls` | `TlsConfig`、`TlsInstaller`、証明書ユーティリティ（TLS インターフェース定義。推移的依存として自動で取り込まれる） |
+| `keel-tls` | `TlsConfig`、`TlsCodecFactory`、証明書ユーティリティ（TLS プロトコル primitives。 server-side install 配管は `keel-server` 側） |
 | `keel-native-posix` | POSIX ソケットユーティリティ（Native エンジンの内部利用） |
 
 ### エンジン（ターゲットプラットフォームごとに 1 つ選ぶ）

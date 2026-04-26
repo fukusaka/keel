@@ -13,8 +13,8 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.TlsCodecFactory
-import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.asPem
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -364,14 +364,14 @@ class NodeEngine(
     /**
      * Creates a server based on the bind configuration.
      *
-     * When [config] is a [TlsConnectorConfig] with a non-[TlsCodecFactory]
+     * When [config] is a [TlsServerConfig] with a non-[TlsCodecFactory]
      * installer, creates a `tls.createServer()` for transport-level TLS.
      * Otherwise creates a plain `net.createServer()`.
      */
     private fun createServer(config: BindConfig): Server {
         if (isListenerLevelTls(config)) {
-            val tlsConfig = config as TlsConnectorConfig
-            val certs = requireNotNull(tlsConfig.config.certificates) {
+            val tlsConfig = config as TlsServerConfig
+            val certs = requireNotNull(tlsConfig.tls.certificates) {
                 "Node.js listener-level TLS requires certificates"
             }.asPem()
             val options = js("{}")
@@ -394,12 +394,12 @@ class NodeEngine(
     /**
      * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * [TlsServerConfig] with `installer == null` means the engine should
      * handle TLS at the listener level via `tls.createServer()`. Non-null
      * installer means per-connection TLS via [initializeConnection].
      */
     private fun isListenerLevelTls(config: BindConfig): Boolean {
-        return config is TlsConnectorConfig && config.installer == null
+        return config is TlsServerConfig && config.installer == null
     }
 
     /**

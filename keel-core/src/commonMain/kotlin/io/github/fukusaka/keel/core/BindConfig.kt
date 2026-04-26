@@ -18,8 +18,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * ```
  *
  * Subclass [BindConfig] to add protocol-specific settings.
- * [TlsConnectorConfig][io.github.fukusaka.keel.tls.TlsConnectorConfig]
- * extends this class with TLS certificates and installer configuration.
+ * `TlsServerConfig` (in `:keel-server`) extends this class with TLS
+ * certificates and installer configuration.
  *
  * @param backlog TCP listen backlog. OS may cap or adjust this value.
  * @param childSocketOptions Socket options applied to every accepted

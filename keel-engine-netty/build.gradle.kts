@@ -14,6 +14,7 @@ kotlin {
         jvmMain {
             dependencies {
                 implementation(project(":keel-tls"))
+                implementation(project(":keel-server"))
                 implementation(libs.netty.all)
                 implementation(libs.kotlinx.coroutines.core)
             }

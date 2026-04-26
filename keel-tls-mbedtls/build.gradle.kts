@@ -48,6 +48,7 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(project(":keel-codec-http"))
+                implementation(project(":keel-server"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
             }

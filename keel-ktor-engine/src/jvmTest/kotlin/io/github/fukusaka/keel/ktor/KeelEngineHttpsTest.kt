@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.ktor
 
+import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
@@ -30,7 +31,7 @@ class KeelEngineHttpsTest {
         val factory = JsseTlsCodecFactory()
 
         val server = embeddedServer(Keel, configure = {
-            sslConnector(tlsConfig, factory) { port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { port = 0 }
         }) {
             routing {
                 get("/hello") { call.respondText("Hello, HTTPS!") }

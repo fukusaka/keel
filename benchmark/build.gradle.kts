@@ -44,6 +44,7 @@ kotlin {
             dependencies {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-tls"))
+                implementation(project(":keel-server"))
                 // PipelineHttpRoutes (in commonMain) uses keel-codec-http symbols
                 // so the dependency must be commonMain-wide, not per-target.
                 implementation(project(":keel-codec-http"))
