@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.ktor
 
+import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
@@ -40,6 +41,7 @@ class EngineStopLifecycleTest {
         val server = embeddedServer(Keel, port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
+        (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         // Resolve the port so startup has definitely finished.
         runBlocking { server.engine.resolvedConnectors().first().port }
@@ -53,6 +55,7 @@ class EngineStopLifecycleTest {
         val server = embeddedServer(Keel, port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
+        (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking { server.engine.resolvedConnectors().first().port }
 
@@ -73,6 +76,7 @@ class EngineStopLifecycleTest {
         val server = embeddedServer(Keel, port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
+        (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking { server.engine.resolvedConnectors().first().port }
 
@@ -98,6 +102,7 @@ class EngineStopLifecycleTest {
                 }
             }
         }
+        (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking { server.engine.resolvedConnectors().first().port }
 

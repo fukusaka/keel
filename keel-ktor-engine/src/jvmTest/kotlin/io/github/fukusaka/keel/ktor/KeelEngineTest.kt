@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.ktor
 
+import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.receiveText
@@ -397,8 +398,10 @@ class KeelEngineTest {
         block: (port: Int) -> Unit,
     ) {
         val server = embeddedServer(Keel, port = 0, module = module)
-        // Access Configuration via the engine to set keepAlive
-        (server.engine as KeelApplicationEngine).configuration.keepAlive = keepAlive
+        // Access Configuration via the engine to set engine + keepAlive
+        val cfg = (server.engine as KeelApplicationEngine).configuration
+        cfg.engine = NioEngine()
+        cfg.keepAlive = keepAlive
         server.start(wait = false)
         try {
             val port = runBlocking { server.engine.resolvedConnectors().first().port }

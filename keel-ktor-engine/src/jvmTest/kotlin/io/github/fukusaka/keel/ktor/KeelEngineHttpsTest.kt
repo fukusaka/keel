@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.ktor
 
+import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -31,6 +32,7 @@ class KeelEngineHttpsTest {
         val factory = JsseTlsCodecFactory()
 
         val server = embeddedServer(Keel, configure = {
+            engine = NioEngine()
             sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { port = 0 }
         }) {
             routing {

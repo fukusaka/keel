@@ -1,15 +1,13 @@
 package io.github.fukusaka.keel.ktor
 
-import io.github.fukusaka.keel.codec.http.HttpBodyAggregator
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpParseException
 import io.github.fukusaka.keel.codec.http.HttpRequest
-import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
-import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
+import io.github.fukusaka.keel.codec.http.addHttp1ServerCodec
 import io.github.fukusaka.keel.codec.http.writeResponseHead
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
@@ -97,8 +95,15 @@ public class KeelApplicationEngine(
      */
     public class Configuration : BaseApplicationEngine.Configuration() {
         /**
-         * Explicit [StreamEngine] instance. When null, the platform default is used
-         * (JVM: NioEngine, macOS: KqueueEngine).
+         * Required [StreamEngine] instance.
+         *
+         * The Ktor adapter does not provide a platform default — set this
+         * explicitly (e.g. `engine = NioEngine()`, `engine = EpollEngine()`,
+         * `engine = NettyEngine()`) so the adapter does not have to depend
+         * on every keel engine module just to pick one at runtime. Caller
+         * decides which engine module(s) to depend on.
+         *
+         * `start()` throws `IllegalStateException` if this is left unset.
          */
         public var engine: StreamEngine? = null
 
@@ -253,7 +258,12 @@ public class KeelApplicationEngine(
         return CoroutineScope(
             applicationProvider().parentCoroutineContext + Dispatchers.Default,
         ).launch(start = CoroutineStart.LAZY) {
-            val engine = configuration.engine ?: defaultEngine()
+            val engine = checkNotNull(configuration.engine) {
+                "KeelApplicationEngine.Configuration.engine must be set explicitly " +
+                    "(e.g. `engine = NioEngine()`). The Ktor adapter no longer ships " +
+                    "a platform default to avoid pulling every keel engine into the " +
+                    "classpath."
+            }
             ioEngine = engine
             // Pair each server with its connector's TLS config (if any).
             val serverEntries = mutableListOf<Pair<StreamServer, TlsServerConfig?>>()
@@ -346,9 +356,7 @@ public class KeelApplicationEngine(
         // HttpRequest to this suspend loop. Outbound: KeelApplicationResponse emits
         // HttpResponseHead/HttpBody/HttpBodyEnd → encoder serialises to IoBuf.
         val bridge = SuspendMessageBridge(HttpRequest::class)
-        pipelinedChannel.pipeline.addLast("encoder", HttpResponseEncoder())
-        pipelinedChannel.pipeline.addLast("decoder", HttpRequestDecoder())
-        pipelinedChannel.pipeline.addLast("aggregator", HttpBodyAggregator())
+        pipelinedChannel.addHttp1ServerCodec()
         pipelinedChannel.pipeline.addLast("bridge", bridge)
 
         // Arm the read loop. SuspendMessageBridge serves as the pipeline-
