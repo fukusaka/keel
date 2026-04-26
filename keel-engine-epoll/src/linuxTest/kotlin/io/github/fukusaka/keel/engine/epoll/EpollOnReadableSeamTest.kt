@@ -23,8 +23,8 @@ import platform.posix.write
 /**
  * Seam-level unit tests for [EpollIoTransport.onReadable] — the
  * code path that misclassified `EINTR` as a closed connection in
- * PR #321 (the canonical motivating case for the two-layer testing
- * strategy documented in `.claude/rules/testing.md`).
+ * PR #321 (the canonical motivating case for the project's two-layer
+ * seam + integration testing strategy).
  *
  * Unlike the synchronous `shutdownOutput` / `flush` branches in
  * [EpollTransportSeamTest], `onReadable` is a private method driven

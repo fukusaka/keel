@@ -16,9 +16,9 @@ import platform.posix.getpid
  * | [IoUringEngineResourceTest]  | `IoBuf` leak detection (closed channel with pending writes / echo) |
  * | [IoUringEngineUringSpecificTest] | io_uring-specific: wakeup SQE retry, ASYNC_CANCEL, multishot accept flows, round-robin EventLoop assignment, close-while-armed |
  *
- * The same six-bucket split is documented in `.claude/rules/testing.md`
- * § "テストカテゴリ"; this file (and the categorised test files below it)
- * is the concrete realisation for the io_uring engine.
+ * Mirrors the same category split applied to the other engine test
+ * suites (kqueue / epoll / io_uring / nio / netty / nwconnection /
+ * nodejs). This file is the concrete realisation for the io_uring engine.
  */
 
 // Per-operation hang-detection timeout for tests that exercise

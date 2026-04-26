@@ -17,9 +17,9 @@ import platform.posix.getpid
  * | [KqueueEngineResourceTest]  | `TrackingAllocator` leak detection + GC heap stability |
  * | [KqueueEnginePipelineTest]  | kqueue-specific pipeline / read-arm flow tests |
  *
- * The same six-bucket split is documented in `.claude/rules/testing.md`
- * § "テストカテゴリ"; this file (and the categorised test files below it)
- * is the concrete realisation for the kqueue engine.
+ * Mirrors the same category split applied to the other engine test
+ * suites (kqueue / epoll / io_uring / nio / netty / nwconnection /
+ * nodejs). This file is the concrete realisation for the kqueue engine.
  */
 
 // Per-operation hang-detection timeout for tests that exercise
