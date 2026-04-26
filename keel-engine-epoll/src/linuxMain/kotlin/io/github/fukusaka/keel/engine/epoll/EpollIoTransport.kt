@@ -183,7 +183,7 @@ internal class EpollIoTransport(
                 WriteResult.WouldBlock -> {
                     if (written > 0) partialWriteCount++
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                    pendingWrites.add(0, remainder)
+                    pendingWrites.addFirst(remainder)
                     updatePendingBytes(-written)
                     registerWriteCallback()
                     return false
