@@ -187,7 +187,7 @@ internal class KqueueIoTransport(
                     if (written > 0) partialWriteCount++
                     // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                    pendingWrites.add(0, remainder)
+                    pendingWrites.addFirst(remainder)
                     updatePendingBytes(-written)
                     registerWriteCallback()
                     return false

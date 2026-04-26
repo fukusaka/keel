@@ -106,11 +106,14 @@ abstract class AbstractIoTransport(
     /**
      * Queue of owned buffers awaiting [flush].
      *
-     * [write] appends to this list; [flush] implementations drain it
+     * [write] appends to the tail; [flush] implementations drain it
      * via platform-specific syscalls and release each buffer after
-     * successful transmission.
+     * successful transmission. Subclasses use [ArrayDeque.addFirst]
+     * to re-enqueue the partial-write remainder at the head — that
+     * is the operation [ArrayDeque] makes O(1) and `MutableList`
+     * makes O(n).
      */
-    protected val pendingWrites = mutableListOf<PendingWrite>()
+    protected val pendingWrites = ArrayDeque<PendingWrite>()
 
     /**
      * Buffers [buf] for the next [flush] call under ownership-transfer
