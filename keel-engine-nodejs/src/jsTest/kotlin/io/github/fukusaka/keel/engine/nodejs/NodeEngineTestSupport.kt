@@ -12,9 +12,8 @@ package io.github.fukusaka.keel.engine.nodejs
  * | [NodeEngineConnectTest]   | client `connect()` flows |
  * | [NodeEngineConcurrencyTest] | concurrent accept FIFO queue |
  *
- * The same six-bucket split is documented in `.claude/rules/testing.md`
- * § "テストカテゴリ"; this file (and the categorised test files below it)
- * is the concrete realisation for the Node.js engine.
+ * Mirrors the same category split applied to the other engine test
+ * suites (kqueue / epoll / io_uring / nio / netty / nwconnection).
  */
 
 private var udsSeq = 0
