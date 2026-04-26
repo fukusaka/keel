@@ -22,7 +22,7 @@ import io.netty.channel.Channel as NettyNativeChannel
  *
  * Thread safety: [onNewChannel] is called from Netty's boss EventLoop
  * thread while [accept] runs on a coroutine thread. All access to
- * [pendingConnections] and [pendingAcceptCont] is protected by [lock]
+ * [pendingConnections] and [pendingAcceptConts] is protected by [lock]
  * to prevent TOCTOU races. The lock is uncontended in practice since
  * accept is called once per new TCP connection.
  *
@@ -45,7 +45,18 @@ internal class NettyStreamServer private constructor() : StreamServer {
     private lateinit var bindConfig: BindConfig
     private val lock = Any()
     private val pendingConnections = ArrayDeque<NettyPipelinedChannel>()
-    private var pendingAcceptCont: CancellableContinuation<NettyPipelinedChannel>? = null
+
+    // FIFO queue of suspended accept() callers waiting for the next
+    // connection. The previous single-slot design (`pendingAcceptCont:
+    // CancellableContinuation<...>?`) silently overwrote earlier waiters
+    // when two concurrent `accept()` calls both passed the empty-queue
+    // check and both assigned the slot — the lost continuation never
+    // resumed and the corresponding `accept()` hung forever. Counterpart
+    // of the POSIX engines' register chain (PR #367) and the io-uring
+    // queue (PR #368); identity-based `ArrayDeque.remove(cont)` works
+    // because `CancellableContinuation` inherits `Object.equals`
+    // (reference identity).
+    private val pendingAcceptConts = ArrayDeque<CancellableContinuation<NettyPipelinedChannel>>()
     // @Volatile for isActive property getter read outside lock.
     @Volatile
     private var _active = true
@@ -65,17 +76,17 @@ internal class NettyStreamServer private constructor() : StreamServer {
 
     /**
      * Called by [NettyEngine.bind]'s ChannelInitializer when a new connection
-     * arrives. If [accept] is already waiting, resumes the coroutine directly.
-     * Otherwise, buffers the channel for the next [accept] call.
+     * arrives. If an [accept] coroutine is already waiting, resumes the
+     * head of the FIFO queue. Otherwise, buffers the channel for the next
+     * [accept] call.
      *
      * Thread safety: called from Netty's boss EventLoop thread. Protected
      * by [lock] to synchronize with [accept] on coroutine threads.
      */
     internal fun onNewChannel(ch: NettyPipelinedChannel) {
         synchronized(lock) {
-            val cont = pendingAcceptCont
+            val cont = pendingAcceptConts.removeFirstOrNull()
             if (cont != null) {
-                pendingAcceptCont = null
                 cont.resume(ch)
             } else {
                 pendingConnections.addLast(ch)
@@ -88,6 +99,10 @@ internal class NettyStreamServer private constructor() : StreamServer {
      * [NettyPipelinedChannel]. The handler is already in the Netty pipeline
      * (added in [NettyEngine.bind]'s ChannelInitializer) to avoid the
      * race condition where channelRead fires before accept() returns.
+     *
+     * Multiple coroutines may call [accept] concurrently — each gets its
+     * own slot in the FIFO queue and is resumed in arrival order as
+     * connections arrive on the boss EventLoop.
      */
     override suspend fun accept(): PipelinedChannel {
         check(_active) { "StreamServer is closed" }
@@ -107,9 +122,11 @@ internal class NettyStreamServer private constructor() : StreamServer {
                 if (pendingConnections.isNotEmpty()) {
                     cont.resume(pendingConnections.removeFirst())
                 } else {
-                    pendingAcceptCont = cont
+                    pendingAcceptConts.addLast(cont)
                     cont.invokeOnCancellation {
-                        synchronized(lock) { pendingAcceptCont = null }
+                        // Identity-based remove via CancellableContinuation's
+                        // default Object.equals (reference equality).
+                        synchronized(lock) { pendingAcceptConts.remove(cont) }
                     }
                 }
             }
@@ -119,8 +136,8 @@ internal class NettyStreamServer private constructor() : StreamServer {
     /**
      * Closes the server channel and stops accepting connections.
      *
-     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
-     * is suspended, it is cancelled with [CancellationException].
+     * Idempotent: subsequent calls are no-ops. Every queued [accept]
+     * coroutine is resumed with [CancellationException].
      *
      * **Thread safety**: uses [synchronized] on [lock] because [close]
      * may be called from any thread while [onNewChannel] runs on the
@@ -130,10 +147,10 @@ internal class NettyStreamServer private constructor() : StreamServer {
         synchronized(lock) {
             if (_active) {
                 _active = false
-                pendingAcceptCont?.resumeWithException(
-                    CancellationException("StreamServer closed")
-                )
-                pendingAcceptCont = null
+                while (pendingAcceptConts.isNotEmpty()) {
+                    pendingAcceptConts.removeFirst()
+                        .resumeWithException(CancellationException("StreamServer closed"))
+                }
             }
         }
         if (::serverChannel.isInitialized) {

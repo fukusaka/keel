@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -566,6 +567,59 @@ class NettyEngineTest {
 
         channels.forEach { it.close() }
         clients.forEach { it.close() }
+        server.close()
+        engine.close()
+    }
+
+    /**
+     * Regression for the pre-fix bug where multiple concurrent
+     * `accept()` callers on a `NettyStreamServer` overwrote each other
+     * in `pendingAcceptCont` (single-slot). Fix moves the field to
+     * `pendingAcceptConts: ArrayDeque<...>` (PR #369), so each suspended
+     * caller gets its own slot in FIFO order.
+     *
+     * Each per-coroutine pipeline runs on [Dispatchers.Default] so
+     * blocking POSIX `Socket` scaffolding doesn't park `runBlocking`'s
+     * single thread when accept FIFO order shifts under load.
+     */
+    @Test
+    fun multipleConcurrentAcceptsAreFifoQueued() = runTest {
+        val engine = NettyEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val results = (1..8).map { i ->
+            async(Dispatchers.Default) {
+                val client = connectRawClient(port)
+                val ch = server.accept()
+
+                val msg = "msg-$i"
+                client.getOutputStream().write(msg.toByteArray())
+                client.getOutputStream().flush()
+
+                val buf = DefaultAllocator.allocate(64)
+                val n = ch.read(buf)
+                assertEquals(msg.length, n)
+
+                ch.write(buf)
+                ch.flush()
+
+                val echoBytes = ByteArray(msg.length)
+                var read = 0
+                while (read < msg.length) {
+                    val r = client.getInputStream().read(echoBytes, read, msg.length - read)
+                    if (r < 0) break
+                    read += r
+                }
+                ch.close()
+                client.close()
+                String(echoBytes, 0, read)
+            }
+        }
+        for ((i, deferred) in results.withIndex()) {
+            assertEquals("msg-${i + 1}", deferred.await())
+        }
+
         server.close()
         engine.close()
     }
