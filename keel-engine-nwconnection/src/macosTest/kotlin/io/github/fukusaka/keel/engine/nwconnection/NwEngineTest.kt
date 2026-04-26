@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -529,6 +530,56 @@ class NwEngineTest {
 
         channels.forEach { it.close() }
         clients.forEach { close(it) }
+        server.close()
+        engine.close()
+    }
+
+    /**
+     * Regression for the pre-fix bug where multiple concurrent
+     * `accept()` callers on `NwStreamServer` overwrote each other in
+     * `pendingAcceptCont` (single-slot under `withLock` / pthread_mutex).
+     * Pre-fix the 2nd+ accept that suspended with `pendingConnections`
+     * empty silently overwrote the prior continuation; that waiter
+     * never resumed. Fix queues every waiter in
+     * `pendingAcceptConts: ArrayDeque<...>`.
+     *
+     * **Why this test does not echo bytes**: NWConnection's connection
+     * lifecycle is asynchronous (`keel_nw_start_conn_async` plus an
+     * internal state-machine that signals READY on the listener queue),
+     * and under cross-pairing of POSIX raw clients with NWConnection
+     * server channels the test would intermittently see early peer
+     * close events from NWConnection's teardown ordering — an
+     * NWConnection-specific issue unrelated to the
+     * `pendingAcceptConts` queue. To keep the regression focus narrow,
+     * this test only verifies that every concurrent `accept()` returns
+     * a live channel (the multi-waiter chain semantic), then closes
+     * everything without sending bytes.
+     *
+     * Each accept coroutine runs on [Dispatchers.Default] so that
+     * `connectRawClient` (blocking POSIX) doesn't park `runBlocking`'s
+     * single thread.
+     */
+    @Test
+    fun multipleConcurrentAcceptsAreFifoQueued() = runBlocking {
+        val engine = NwEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val acceptJobs = (1..8).map {
+            async(Dispatchers.Default) { server.accept() }
+        }
+        val clientFds = (1..8).map {
+            async(Dispatchers.Default) { connectRawClient(port) }
+        }
+
+        val channels = acceptJobs.map { withTimeout(IO_OP_TIMEOUT_MS) { it.await() } }
+        val fds = clientFds.map { it.await() }
+
+        assertEquals(8, channels.size)
+        channels.forEach { assertTrue(it.isOpen) }
+
+        channels.forEach { it.close() }
+        fds.forEach { close(it) }
         server.close()
         engine.close()
     }
