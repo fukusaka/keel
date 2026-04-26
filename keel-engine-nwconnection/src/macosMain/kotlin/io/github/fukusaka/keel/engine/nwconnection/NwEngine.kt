@@ -16,9 +16,9 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
 import io.github.fukusaka.keel.tls.TlsCodecFactory
-import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.asDer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -219,7 +219,7 @@ class NwEngine(
         val portStr = if (port == 0) "0" else port.toString()
         val listenerLevelTls = isListenerLevelTls(config)
         val params = if (listenerLevelTls) {
-            createTlsParams(config as TlsConnectorConfig, config.childSocketOptions)
+            createTlsParams(config as TlsServerConfig, config.childSocketOptions)
         } else {
             createTcpParams(config.childSocketOptions)
         }
@@ -575,25 +575,25 @@ class NwEngine(
     /**
      * Detects if the config requests engine-native (listener-level) TLS.
      *
-     * [TlsConnectorConfig] with `installer == null` means the engine should
+     * [TlsServerConfig] with `installer == null` means the engine should
      * handle TLS at the listener level. Non-null installer means per-connection
      * TLS via [initializeConnection].
      */
     private fun isListenerLevelTls(config: BindConfig): Boolean {
-        return config is TlsConnectorConfig && config.installer == null
+        return config is TlsServerConfig && config.installer == null
     }
 
     /**
-     * Creates TLS-enabled NWConnection parameters from [TlsConnectorConfig].
+     * Creates TLS-enabled NWConnection parameters from [TlsServerConfig].
      *
      * Converts certificates to DER, unwraps PKCS#8 if needed, and delegates
      * to [NwTlsParams.createTlsParameters] for SecIdentity creation.
      */
     private fun createTlsParams(
-        tlsConfig: TlsConnectorConfig,
+        tlsConfig: TlsServerConfig,
         socketOptions: SocketOptions,
     ): platform.Network.nw_parameters_t {
-        val certs = requireNotNull(tlsConfig.config.certificates) {
+        val certs = requireNotNull(tlsConfig.tls.certificates) {
             "NWConnection listener-level TLS requires certificates"
         }.asDer()
         val keyDer = certs.privateKey

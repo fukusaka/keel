@@ -114,7 +114,7 @@ times (ready → cancelled) or after coroutine cancellation.
 
 ## TLS Integration
 
-`NwEngine` supports listener-level TLS (`TlsConnectorConfig` with `installer = null`):
+`NwEngine` supports listener-level TLS (`TlsServerConfig` with `installer = null`):
 `NwTlsParams.createTlsParameters` builds `nw_parameters_t` with `SecIdentity`
 created from the DER-encoded certificate and private key. Connections arrive already
 decrypted — no keel `TlsHandler` is needed:
