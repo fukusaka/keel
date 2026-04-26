@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nio`: concurrent `accept()` callers on `NioStreamServer` now queue in `pendingAcceptConts: ArrayDeque<...>` and the SelectionKey holds a single shared `resumeAllRunnable` that resumes every queued waiter on `OP_ACCEPT` fire. Previously the design lost continuations on every level — a single `pendingAcceptCont` slot AND a per-waiter Runnable bound via `key.attach` (silent continuation leak fix) (#372)
 - `engine-nwconnection`: concurrent `accept()` callers on `NwStreamServer` now queue in `pendingAcceptConts: ArrayDeque<...>` instead of overwriting a single-slot `pendingAcceptCont` (silent continuation leak fix); `onNewConnection` from the listener's dispatch queue pops FIFO, `close()` resumes every queued waiter with `CancellationException` (#371)
 - `engine-nodejs`: concurrent `accept()` callers on `NodeStreamServer` now queue in `pendingAcceptConts: ArrayDeque<...>` instead of overwriting a single-slot `pendingAcceptCont` (silent continuation leak fix); `onConnection` from Node.js `net.Server` pops FIFO, `close()` resumes every queued waiter with `CancellationException` (#370)
 - `engine-netty`: concurrent `accept()` callers on `NettyStreamServer` now queue in `pendingAcceptConts: ArrayDeque<...>` instead of overwriting a single-slot `pendingAcceptCont` (silent continuation leak fix); `onNewChannel` from Netty's boss EventLoop pops FIFO, `close()` resumes every queued waiter with `CancellationException` (#369)

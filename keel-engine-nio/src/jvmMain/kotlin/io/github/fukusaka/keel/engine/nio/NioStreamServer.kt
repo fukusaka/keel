@@ -26,7 +26,7 @@ import kotlin.coroutines.resumeWithException
  *
  * ```
  * accept() flow:
- *   bossLoop.setInterestCallback(key, OP_ACCEPT, Runnable) → select() → resume
+ *   bossLoop.setInterestCallback(key, OP_ACCEPT, resumeAllRunnable) → select() → resume
  *   ServerSocketChannel.accept() → client SocketChannel
  *   workerLoop.registerChannel(client) → cached SelectionKey
  *   → NioPipelinedChannel(client, key, transport, workerLoop, ...)
@@ -45,6 +45,16 @@ import kotlin.coroutines.resumeWithException
  * and routes through `CancellableContinuationImpl.resume`'s CAS state machine
  * instead.
  *
+ * **Multi-waiter accept**: multiple coroutines may call [accept] concurrently —
+ * each enqueues into [pendingAcceptConts] (FIFO) and the shared
+ * [resumeAllRunnable] attached to [selectionKey] resumes the entire queue when
+ * `OP_ACCEPT` fires. POSIX `accept()` is thread-safe; the resumed waiters race
+ * for connections via their own retry loop, and any waiter that observes
+ * `EAGAIN` re-enters the slow path and re-arms the interest callback. Previously
+ * the design held a single `pendingAcceptCont` slot AND attached a fresh
+ * `cont`-bound Runnable per waiter; concurrent callers overwrote both,
+ * silently leaking continuations.
+ *
  * @param serverChannel The listening ServerSocketChannel (non-blocking).
  * @param selectionKey  Cached SelectionKey registered with the boss Selector.
  * @param bossLoop      EventLoop for accept readiness notification.
@@ -61,7 +71,7 @@ internal class NioStreamServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioStreamServer"),
 ) : StreamServer {
 
-    // State transitions (_active, pendingAcceptCont) may be observed
+    // State transitions (_active, pendingAcceptConts) may be observed
     // from the boss EventLoop thread (accept readiness callback) and
     // from arbitrary coroutine dispatcher threads (accept() / close()
     // callers), so all reads/writes go through synchronized(lock).
@@ -70,7 +80,48 @@ internal class NioStreamServer(
 
     @Volatile
     private var _active = true
-    private var pendingAcceptCont: CancellableContinuation<Unit>? = null
+
+    // FIFO queue of suspended accept() callers. The previous single-slot
+    // design (`pendingAcceptCont: CancellableContinuation<Unit>?`) plus
+    // a per-waiter Runnable bound to the SelectionKey via `key.attach`
+    // silently lost continuations on every level: two concurrent
+    // `accept()` calls overwrote each other in `pendingAcceptCont` AND
+    // overwrote each other's Runnable on the SelectionKey. Counterpart
+    // of the POSIX engines' chain (PR #367), the io-uring queue
+    // (PR #368), the Netty queue (PR #369), the Node.js queue (PR #370),
+    // and the NWConnection queue (PR #371). Identity-based
+    // `ArrayDeque.remove(cont)` works because `CancellableContinuation`
+    // inherits `Object.equals` (reference identity).
+    private val pendingAcceptConts = ArrayDeque<CancellableContinuation<Unit>>()
+
+    /**
+     * Single shared [Runnable] attached to [selectionKey] when waiters
+     * are queued. On `OP_ACCEPT` fire, [NioEventLoop.processSelectedKeys]
+     * clears the attachment and runs this — we resume every queued
+     * waiter so they all race to retry `accept()`. POSIX `accept()` is
+     * thread-safe; the kernel disperses queued connections to whichever
+     * waiter's syscall lands first, and waiters that observe `EAGAIN`
+     * re-enter the slow path and re-arm the interest callback for the
+     * next fire.
+     *
+     * Resume-all (vs resume-one + re-arm) is intentional: accept is
+     * control-plane (per-TCP-setup, low rate), so the brief
+     * "thundering herd" cost is dominated by the syscall serialisation
+     * in the kernel anyway, and it avoids a recursive
+     * `setInterestCallback` call chain inside the EventLoop callback.
+     */
+    private val resumeAllRunnable = Runnable {
+        val toResume = synchronized(lock) {
+            if (pendingAcceptConts.isEmpty()) {
+                emptyList()
+            } else {
+                val list = pendingAcceptConts.toList()
+                pendingAcceptConts.clear()
+                list
+            }
+        }
+        for (cont in toResume) cont.resume(Unit)
+    }
 
     override val isActive: Boolean get() = _active
 
@@ -103,7 +154,7 @@ internal class NioStreamServer(
                     if (!_active) {
                         true
                     } else {
-                        pendingAcceptCont = cont
+                        pendingAcceptConts.addLast(cont)
                         false
                     }
                 }
@@ -111,45 +162,48 @@ internal class NioStreamServer(
                     cont.resumeWithException(CancellationException("StreamServer closed"))
                     return@suspendCancellableCoroutine
                 }
-                // Attach a plain Runnable (not the continuation itself) so the
-                // selector never sees a CancellableContinuationImpl — see the
-                // class-level KDoc for the rationale.
-                bossLoop.setInterestCallback(selectionKey, SelectionKey.OP_ACCEPT) {
-                    cont.resume(Unit)
-                }
+                // Re-arm OP_ACCEPT with the shared resumeAll Runnable.
+                // Multiple concurrent accept callers all call this; the
+                // attachment is the same instance so `key.attach` is
+                // effectively idempotent. interestOps OR with OP_ACCEPT
+                // is also idempotent.
+                bossLoop.setInterestCallback(selectionKey, SelectionKey.OP_ACCEPT, resumeAllRunnable)
                 cont.invokeOnCancellation {
-                    synchronized(lock) {
-                        if (pendingAcceptCont === cont) pendingAcceptCont = null
-                    }
-                    bossLoop.removeInterest(selectionKey, SelectionKey.OP_ACCEPT)
+                    // Identity-based remove via CancellableContinuation's
+                    // default Object.equals (reference equality). Do not
+                    // call removeInterest here — siblings may still be
+                    // queued. The Runnable handles an empty queue
+                    // gracefully (no-op) so leaving the interest armed is
+                    // safe.
+                    synchronized(lock) { pendingAcceptConts.remove(cont) }
                 }
             }
-            synchronized(lock) {
-                pendingAcceptCont = null
-            }
+            // Loop back and retry accept().
         }
     }
 
     /**
      * Closes the server channel and stops accepting connections.
      *
-     * Idempotent: subsequent calls are no-ops. If an [accept] coroutine
-     * is suspended, it is cancelled with [CancellationException].
+     * Idempotent: subsequent calls are no-ops. Every queued [accept]
+     * coroutine is resumed with [CancellationException].
      *
      * **Thread safety**: safe to call from any thread. [_active] /
-     * [pendingAcceptCont] transitions are serialised under [lock];
+     * [pendingAcceptConts] transitions are serialised under [lock];
      * [SelectionKey.cancel] and [ServerSocketChannel.close] are
      * thread-safe per JDK `java.nio.channels` contract.
      */
     override fun close() {
-        val cont = synchronized(lock) {
+        val toCancel = synchronized(lock) {
             if (!_active) return
             _active = false
-            val c = pendingAcceptCont
-            pendingAcceptCont = null
-            c
+            val list = pendingAcceptConts.toList()
+            pendingAcceptConts.clear()
+            list
         }
-        cont?.resumeWithException(CancellationException("StreamServer closed"))
+        for (cont in toCancel) {
+            cont.resumeWithException(CancellationException("StreamServer closed"))
+        }
         selectionKey.cancel()
         serverChannel.close()
     }
