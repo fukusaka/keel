@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
-import io.github.fukusaka.keel.ktor.Keel
+import io.github.fukusaka.keel.server.ktor.Keel
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.ktor.server.application.serverConfig
 import io.ktor.server.engine.connector

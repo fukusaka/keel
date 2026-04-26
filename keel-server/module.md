@@ -25,7 +25,7 @@ Exposes:
   TLS; engine-specific installers (e.g. a Netty `SslHandler` adapter) replace it for
   transport-level TLS.
 
-The Ktor adapter (`:keel-ktor-engine`) and the upcoming HTTP/1.1 native server
+The Ktor adapter (`:keel-server-ktor`) and the upcoming HTTP/1.1 native server
 (`:keel-server-http`) both consume these primitives so neither side has to own them.
 
 # Package io.github.fukusaka.keel.server

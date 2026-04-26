@@ -1,4 +1,4 @@
-# Module keel-ktor-engine
+# Module keel-server-ktor
 
 Ktor server engine adapter — bridges keel `StreamEngine` to Ktor's `ApplicationEngine`.
 
@@ -129,7 +129,7 @@ HTTP and HTTPS connectors can coexist on different ports.
 endpoint) lives in `:keel-server` so engine adapters and future
 HTTP-family servers can share the type without either side owning it.
 
-# Package io.github.fukusaka.keel.ktor
+# Package io.github.fukusaka.keel.server.ktor
 
 `Keel` (factory object), `KeelApplicationEngine`, `KeelApplicationEngine.Configuration`,
 and Ktor integration types (`KeelApplicationRequest`, `KeelApplicationResponse`,

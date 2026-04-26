@@ -9,7 +9,7 @@ kotlin {
         jvmMain {
             dependencies {
                 implementation(project(":keel-core"))
-                implementation(project(":keel-ktor-engine"))
+                implementation(project(":keel-server-ktor"))
                 implementation(project(":keel-engine-nio"))
                 implementation(libs.ktor.server.core)
             }

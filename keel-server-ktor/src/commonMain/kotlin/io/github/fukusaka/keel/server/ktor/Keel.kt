@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.ktor
+package io.github.fukusaka.keel.server.ktor
 
 import io.ktor.events.Events
 import io.ktor.server.application.Application

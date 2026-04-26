@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.ktor
+package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders

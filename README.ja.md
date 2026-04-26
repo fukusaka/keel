@@ -71,7 +71,7 @@ keel/
 ├── keel-tls-nodejs/           # JS (Node.js tls, -Ptls ビルド)
 ├── keel-codec-http/           # HTTP/1.1 パーサー／ライター (RFC 7230/7231)
 ├── keel-codec-websocket/      # WebSocket フレーミング (RFC 6455)
-└── keel-ktor-engine/          # Ktor サーバーエンジンアダプタ
+└── keel-server-ktor/          # Ktor サーバーエンジンアダプタ
 ```
 
 ---
@@ -137,7 +137,7 @@ repositories {
 
 dependencies {
     // Ktor + keel サーバーエンジン
-    implementation("io.github.fukusaka.keel:keel-ktor-engine:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
     implementation("io.ktor:ktor-server-core:3.4.1")
 
     // 低レベル I/O（Ktor なし）
@@ -257,7 +257,7 @@ Pipeline API、wrk 4t/100c/10s、3 回計測中央値:
 | **native:pipeline-http-nwconnection** | **25K** | — |
 | **native:pipeline-http-nodejs** | **7K** | — |
 
-Ktor Coroutine モード（`keel-ktor-engine`）、Linux Ryzen 9:
+Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 
 | Server | `/large` Req/sec | 備考 |
 |---|---:|---|

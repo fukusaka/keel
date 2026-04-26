@@ -90,7 +90,7 @@ OP_WRITE is deregistered.
 
 ## Pipeline Dispatcher
 
-`ioDispatcher` is the NIO `NioEventLoop` Selector thread. The `keel-ktor-engine`
+`ioDispatcher` is the NIO `NioEventLoop` Selector thread. The `keel-server-ktor`
 Ktor pipeline runs on `Configuration.applicationDispatcher`, which defaults to
 the channel's `ioDispatcher`, so I/O read, HTTP parse, Ktor handler, and response
 encode all run on a single EL thread with no per-request cross-thread dispatch.

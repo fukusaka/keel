@@ -33,7 +33,7 @@ IoEngine  (config + close)
 |---|---|
 | **keel** | トランスポート I/O エンジン — epoll / kqueue / io_uring / NWConnection / NIO / Netty / Node.js を単一の KMP インターフェースで統一 |
 | **Netty** | JVM 専用 I/O フレームワーク — `keel-engine-netty` が JVM 上でこれに委譲。Native では keel が完全に置き換える |
-| **Ktor** | Web フレームワーク — ルーティング・プラグイン・シリアライゼーション。`keel-ktor-engine` が keel を Ktor の I/O バックエンドとして接続。Ktor 標準の CIO エンジンは Native ターゲットで TLS 非対応 — keel がこのギャップを埋めます |
+| **Ktor** | Web フレームワーク — ルーティング・プラグイン・シリアライゼーション。`keel-server-ktor` が keel を Ktor の I/O バックエンドとして接続。Ktor 標準の CIO エンジンは Native ターゲットで TLS 非対応 — keel がこのギャップを埋めます |
 
 ## 2 つの I/O モード
 
@@ -133,4 +133,4 @@ keel の TLS には 2 つの統合モードがあります:
 - **I/O エンジン** — `keel-engine-*` Gradle 依存関係によるコンパイル時選択
 - **TLS バックエンド** — `keel-tls-*` 依存関係の選択（Netty・NWConnection・Node.js はエンジン内蔵 TLS を使用）
 - **バッファアロケータ** — `BufferAllocator` をエンジン構築時に `IoEngineConfig` 経由で注入。本番では `SlabAllocator`（Native）と `PooledDirectAllocator`（JVM）を使用し、バッファのライフサイクル問題のデバッグ時は `TrackingAllocator` や `LeakDetectingAllocator` に差し替えられます
-- **ロガー** — `LoggerFactory` を `IoEngineConfig.loggerFactory` 経由で注入。デフォルトは no-op。開発用には `PrintLogger`、`keel-ktor-engine` 使用時は `KtorLoggerAdapter` で Ktor の Logger にブリッジできます
+- **ロガー** — `LoggerFactory` を `IoEngineConfig.loggerFactory` 経由で注入。デフォルトは no-op。開発用には `PrintLogger`、`keel-server-ktor` 使用時は `KtorLoggerAdapter` で Ktor の Logger にブリッジできます

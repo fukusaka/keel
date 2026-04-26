@@ -11,7 +11,7 @@ import kotlinx.io.readLine
  * This file provides eager (blocking) and suspend parsing functions that
  * read from a [Source] or [BufferedSuspendSource]. They are the low-level
  * API for callers that work directly with kotlinx-io streams (e.g.
- * [KeelApplicationEngine][io.github.fukusaka.keel.ktor.KeelApplicationEngine]'s
+ * [KeelApplicationEngine][io.github.fukusaka.keel.server.ktor.KeelApplicationEngine]'s
  * `respondBadRequest` fallback, unit tests, and CLI tools).
  *
  * **Pipeline-based server code should use [HttpRequestDecoder] instead.**

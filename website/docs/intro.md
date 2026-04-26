@@ -12,7 +12,7 @@ keel is a Kotlin Multiplatform network I/O engine library. It wraps platform-nat
 |---|---|
 | What is keel? | A KMP library that provides a unified `StreamEngine` interface for socket I/O across Linux (epoll, io_uring), macOS (kqueue, NWConnection), JVM (NIO, Netty), and JS (Node.js). |
 | Does keel run on Kotlin/Native? | Yes. keel was built for Kotlin/Native first — epoll, kqueue, io_uring, and NWConnection are all native engines with no JVM dependency. |
-| Can keel be used as a Ktor backend? | Yes. `keel-ktor-engine` plugs keel into Ktor as a server engine. You write Ktor routes; keel moves the bytes. |
+| Can keel be used as a Ktor backend? | Yes. `keel-server-ktor` plugs keel into Ktor as a server engine. You write Ktor routes; keel moves the bytes. |
 | Is keel a web framework? | No. keel is a transport layer — it moves bytes on sockets. Use [Ktor](https://ktor.io) on top for routing, request parsing, and HTTP semantics. |
 | Does keel replace Netty? | No. On JVM, `keel-engine-netty` uses Netty as its I/O backend. On Kotlin/Native, Netty does not run at all — keel calls OS syscalls directly. keel and Netty operate at different abstraction levels. |
 
@@ -50,13 +50,13 @@ cd keel && ./gradlew publishToMavenLocal
 repositories { mavenLocal() }
 
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-ktor-engine:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
     implementation("io.ktor:ktor-server-core:3.4.1")
 }
 ```
 
 ```kotlin
-import io.github.fukusaka.keel.ktor.Keel
+import io.github.fukusaka.keel.server.ktor.Keel
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.response.*
@@ -73,7 +73,7 @@ fun main() {
 }
 ```
 
-Which engine runs depends on which `keel-engine-*` dependency is on the classpath at compile time. `keel-ktor-engine` uses the engine module present in each target's dependency set. See the [Engine Selection Guide](./architecture/engine-guide.md) for how to configure each target.
+Which engine runs depends on which `keel-engine-*` dependency is on the classpath at compile time. `keel-server-ktor` uses the engine module present in each target's dependency set. See the [Engine Selection Guide](./architecture/engine-guide.md) for how to configure each target.
 
 ### Pipeline mode (without Ktor)
 
@@ -111,10 +111,10 @@ keel provides both:
 | Model | Non-blocking sequential | Push / event-driven |
 | API | `suspend fun read() / write()` | `Pipeline` handler chain |
 | Concurrency unit | One coroutine per connection | Callbacks on EventLoop thread |
-| How to use | `keel-ktor-engine` or `engine.bind()` | `engine.bindPipeline(...)` |
+| How to use | `keel-server-ktor` or `engine.bind()` | `engine.bindPipeline(...)` |
 | Best for | Application servers with Ktor | High-throughput custom protocol servers |
 
-**Coroutine mode** is what you get when using `keel-ktor-engine`. It integrates with all Ktor plugins and is the right choice for most applications.
+**Coroutine mode** is what you get when using `keel-server-ktor`. It integrates with all Ktor plugins and is the right choice for most applications.
 
 **Pipeline mode** follows the push model. keel-core provides `Pipeline` — a Netty-inspired handler chain that all engines implement. You configure it via `engine.bindPipeline()`, placing decoders, routers, and encoders as handlers. I/O callbacks run on the engine's EventLoop thread without coroutine context switches.
 
@@ -160,7 +160,7 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 
 | Module | What it provides |
 |---|---|
-| `keel-ktor-engine` | Ktor server engine adapter |
+| `keel-server-ktor` | Ktor server engine adapter |
 | `keel-codec-http` | HTTP/1.1 parser / writer (RFC 7230/7231) |
 | `keel-codec-websocket` | WebSocket framing (RFC 6455) |
 

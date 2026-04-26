@@ -1,18 +1,18 @@
 # Coroutine Mode
 
-Coroutine mode is keel's suspend-based I/O API. Each accepted connection is handled as a `Channel` object with `suspend fun read()`, `write()`, and `flush()`. This model fits naturally into Kotlin coroutines and is the basis for Ktor integration via `keel-ktor-engine`.
+Coroutine mode is keel's suspend-based I/O API. Each accepted connection is handled as a `Channel` object with `suspend fun read()`, `write()`, and `flush()`. This model fits naturally into Kotlin coroutines and is the basis for Ktor integration via `keel-server-ktor`.
 
 ## When to use Coroutine mode
 
 | Situation | Recommendation |
 |---|---|
-| Building a Ktor application | Use `keel-ktor-engine` — Coroutine mode is wired automatically |
+| Building a Ktor application | Use `keel-server-ktor` — Coroutine mode is wired automatically |
 | Writing a custom coroutine-based server | Use `engine.bind()` + `server.accept()` directly |
 | Maximum throughput with custom protocol | Consider [Pipeline mode](./pipeline.md) instead |
 
 ## Ktor integration
 
-`keel-ktor-engine` manages the entire Coroutine mode lifecycle internally. You do not call `engine.bind()` or `server.accept()` yourself — Ktor's `embeddedServer` call and the Ktor engine do this:
+`keel-server-ktor` manages the entire Coroutine mode lifecycle internally. You do not call `engine.bind()` or `server.accept()` yourself — Ktor's `embeddedServer` call and the Ktor engine do this:
 
 ```kotlin
 embeddedServer(Keel, port = 8080) {
@@ -24,7 +24,7 @@ embeddedServer(Keel, port = 8080) {
 }.start(wait = true)
 ```
 
-Internally, `keel-ktor-engine` calls `engine.bind()`, loops on `server.accept()`, and bridges each accepted `Channel` to Ktor's `ApplicationCall` pipeline using `channel.asBufferedSuspendSource()` and `channel.asSuspendSink()`.
+Internally, `keel-server-ktor` calls `engine.bind()`, loops on `server.accept()`, and bridges each accepted `Channel` to Ktor's `ApplicationCall` pipeline using `channel.asBufferedSuspendSource()` and `channel.asSuspendSink()`.
 
 ## How Coroutine mode works
 
@@ -123,7 +123,7 @@ channel.flush()  // sends headers + body together when possible
 
 When `server.accept()` or `channel.read()` suspends, the calling coroutine releases its thread and the EventLoop is free to handle other connections. When I/O can proceed, the EventLoop resumes the coroutine on `channel.ioDispatcher`.
 
-`keel-ktor-engine` launches the connection handler on `ioDispatcher` so that I/O reads, request parsing, the Ktor pipeline, and response encoding all run on the same thread. The Ktor pipeline itself runs on `KeelApplicationEngine.Configuration.applicationDispatcher`: when null (the default) it collapses to `ioDispatcher`, so the internal `withContext(applicationDispatcher)` wrapper around the Ktor pipeline is a no-op (same dispatcher, elided by the coroutine runtime) — zero per-request context switches. Setting `applicationDispatcher = Dispatchers.Default` explicitly offloads the pipeline onto a work-stealing pool at the cost of one hop per request, useful when handlers routinely perform blocking work.
+`keel-server-ktor` launches the connection handler on `ioDispatcher` so that I/O reads, request parsing, the Ktor pipeline, and response encoding all run on the same thread. The Ktor pipeline itself runs on `KeelApplicationEngine.Configuration.applicationDispatcher`: when null (the default) it collapses to `ioDispatcher`, so the internal `withContext(applicationDispatcher)` wrapper around the Ktor pipeline is a no-op (same dispatcher, elided by the coroutine runtime) — zero per-request context switches. Setting `applicationDispatcher = Dispatchers.Default` explicitly offloads the pipeline onto a work-stealing pool at the cost of one hop per request, useful when handlers routinely perform blocking work.
 
 When writing custom server code and launching additional coroutines that perform I/O on the same channel, use `ioDispatcher` to keep them on the correct thread:
 

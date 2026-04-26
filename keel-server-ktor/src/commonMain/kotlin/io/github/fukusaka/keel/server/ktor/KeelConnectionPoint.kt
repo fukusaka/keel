@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.ktor
+package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress

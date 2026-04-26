@@ -12,7 +12,7 @@ keel は Kotlin Multiplatform ネットワーク I/O エンジンライブラリ
 |---|---|
 | keel とは何か？ | Linux（epoll、io_uring）、macOS（kqueue、NWConnection）、JVM（NIO、Netty）、JS（Node.js）にまたがるソケット I/O のための統一 `StreamEngine` インターフェースを提供する KMP ライブラリ。 |
 | keel は Kotlin/Native で動作するか？ | Yes。keel は Kotlin/Native を最初のターゲットとして設計されており、epoll・kqueue・io_uring・NWConnection はすべて JVM 依存なしのネイティブエンジンです。 |
-| keel は Ktor のバックエンドとして使えるか？ | Yes。`keel-ktor-engine` が keel を Ktor のサーバーエンジンとして接続します。Ktor でルートを書き、keel がバイトを運びます。 |
+| keel は Ktor のバックエンドとして使えるか？ | Yes。`keel-server-ktor` が keel を Ktor のサーバーエンジンとして接続します。Ktor でルートを書き、keel がバイトを運びます。 |
 | keel は Web フレームワーク？ | No。keel はトランスポート層 — ソケット上のバイト転送を担います。ルーティング・リクエスト解析・HTTP セマンティクスには [Ktor](https://ktor.io) を上位に載せます。 |
 | keel は Netty の代替？ | No。JVM では `keel-engine-netty` が I/O バックエンドとして Netty を使用します。Kotlin/Native では Netty 自体が動作しないため、keel が OS システムコールを直接呼び出します。keel と Netty は異なる抽象レイヤーに位置します。 |
 
@@ -50,13 +50,13 @@ cd keel && ./gradlew publishToMavenLocal
 repositories { mavenLocal() }
 
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-ktor-engine:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
     implementation("io.ktor:ktor-server-core:3.4.1")
 }
 ```
 
 ```kotlin
-import io.github.fukusaka.keel.ktor.Keel
+import io.github.fukusaka.keel.server.ktor.Keel
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.response.*
@@ -73,7 +73,7 @@ fun main() {
 }
 ```
 
-どのエンジンが動くかは、コンパイル時にクラスパスにある `keel-engine-*` 依存関係によって決まります。`keel-ktor-engine` は各ターゲットの依存関係セットにあるエンジンモジュールを使用します。各ターゲットの設定方法については[エンジン選択ガイド](./architecture/engine-guide.md)を参照してください。
+どのエンジンが動くかは、コンパイル時にクラスパスにある `keel-engine-*` 依存関係によって決まります。`keel-server-ktor` は各ターゲットの依存関係セットにあるエンジンモジュールを使用します。各ターゲットの設定方法については[エンジン選択ガイド](./architecture/engine-guide.md)を参照してください。
 
 ### Pipeline モード（Ktor なし）
 
@@ -111,10 +111,10 @@ keel は両方を提供します:
 | モデル | ノンブロッキング逐次 | Push / イベント駆動 |
 | API | `suspend fun read() / write()` | `Pipeline` ハンドラチェーン |
 | 並行処理単位 | 接続ごとに 1 コルーチン | EventLoop スレッドのコールバック |
-| 使用方法 | `keel-ktor-engine` または `engine.bind()` | `engine.bindPipeline(...)` |
+| 使用方法 | `keel-server-ktor` または `engine.bind()` | `engine.bindPipeline(...)` |
 | 最適な用途 | Ktor を使ったアプリケーションサーバー | 高スループットのカスタムプロトコルサーバー |
 
-**Coroutine モード**は `keel-ktor-engine` を使用した場合に得られるモードです。全 Ktor プラグインと統合できるため、ほとんどのアプリケーションに適しています。
+**Coroutine モード**は `keel-server-ktor` を使用した場合に得られるモードです。全 Ktor プラグインと統合できるため、ほとんどのアプリケーションに適しています。
 
 **Pipeline モード**は Push モデルに従います。keel-core が `Pipeline` — Netty にインスパイアされたハンドラチェーン — を提供し、全エンジンがこれを実装しています。`engine.bindPipeline()` でデコーダ・ルータ・エンコーダをハンドラとして設定します。I/O コールバックはコルーチンのコンテキストスイッチなしにエンジンの EventLoop スレッド上で動作します。
 
@@ -160,7 +160,7 @@ keel は両方を提供します:
 
 | モジュール | 提供するもの |
 |---|---|
-| `keel-ktor-engine` | Ktor サーバーエンジンアダプタ |
+| `keel-server-ktor` | Ktor サーバーエンジンアダプタ |
 | `keel-codec-http` | HTTP/1.1 パーサー / ライター（RFC 7230/7231） |
 | `keel-codec-websocket` | WebSocket フレーミング（RFC 6455） |
 
