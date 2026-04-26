@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsInstaller
@@ -59,23 +61,58 @@ fun registerTlsInstallerProvider(provider: (String) -> TlsInstaller) {
 fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsConnectorConfig, AutoCloseable?> {
     val backend = requireNotNull(config.tls) { "--tls is required for TLS" }
     val tlsConfig = BenchmarkCertificates.tlsConfig()
+    val childOpts = childSocketOptions(config)
     return when (val installerName = config.tlsInstaller) {
         "keel" -> {
             val factory = createTlsCodecFactory(backend)
-            TlsConnectorConfig(tlsConfig, factory) to factory
+            TlsConnectorConfig(tlsConfig, factory, childSocketOptions = childOpts) to factory
         }
         "nwconnection", "node" -> {
             // Engine-native TLS: installer = null, engine handles TLS at listener level
-            TlsConnectorConfig(tlsConfig) to null
+            TlsConnectorConfig(tlsConfig, childSocketOptions = childOpts) to null
         }
         else -> {
             val provider = tlsInstallerProvider
                 ?: error("No TLS installer provider registered for '$installerName'")
             val installer = provider(installerName)
-            TlsConnectorConfig(tlsConfig, installer) to null
+            TlsConnectorConfig(tlsConfig, installer, childSocketOptions = childOpts) to null
         }
     }
 }
+
+/**
+ * Builds a [SocketOptions] for accepted-client fds from the benchmark
+ * config's parsed `--send-buffer` / `--receive-buffer` / `--tcp-nodelay`
+ * CLI knobs. `null` fields fall through as the engine default.
+ *
+ * Used by both [createTlsBindConfig] (TLS path) and [bindConfigFor]
+ * (non-TLS path) so a benchmark scenario like
+ * `--send-buffer=4096 --tls=jsse` reaches `setsockopt(SO_SNDBUF)` on
+ * every accepted child socket regardless of TLS.
+ */
+fun childSocketOptions(config: BenchmarkConfig): SocketOptions = SocketOptions(
+    tcpNoDelay = config.socket.tcpNoDelay,
+    sendBufferSize = config.socket.sendBuffer,
+    receiveBufferSize = config.socket.receiveBuffer,
+)
+
+/**
+ * Returns the [BindConfig] that the keel POSIX engine benchmarks should
+ * pass to `bindPipeline` / `bind`, paired with an [AutoCloseable] for
+ * the TLS factory lifecycle (or `null` for non-TLS).
+ *
+ * Centralises the TLS-vs-plain branching so each engine benchmark
+ * stays a one-liner instead of repeating the
+ * `if (config.tls != null) createTlsBindConfig(...) else BindConfig(...)`
+ * conditional. Both branches now propagate `--send-buffer` /
+ * `--receive-buffer` / `--tcp-nodelay` into `BindConfig.childSocketOptions`.
+ */
+fun bindConfigFor(config: BenchmarkConfig): Pair<BindConfig, AutoCloseable?> =
+    if (config.tls != null) {
+        createTlsBindConfig(config)
+    } else {
+        BindConfig(childSocketOptions = childSocketOptions(config)) to null
+    }
 
 fun validateTlsBackend(config: BenchmarkConfig) {
     val backend = config.tls ?: return

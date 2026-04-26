@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.benchmark
 
-import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nwconnection.NwEngine
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
@@ -27,11 +26,11 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
             ),
         )
 
-        val (tlsBindConfig, tlsCloseable) = if (config.tls != null) createTlsBindConfig(config) else (BindConfig() to null)
+        val (bindConfig, tlsCloseable) = bindConfigFor(config)
 
         // NwEngine.bindPipeline() is suspend (listener startup is async).
         val server = runBlocking {
-            engine.bindPipeline("0.0.0.0", config.port, config = tlsBindConfig) { channel ->
+            engine.bindPipeline("0.0.0.0", config.port, config = bindConfig) { channel ->
                 installPipelineHttpHandlers(channel.pipeline)
             }
         }
