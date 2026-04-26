@@ -109,11 +109,14 @@ HTTP and HTTPS connectors can coexist on different ports.
 | `Keel` | `ApplicationEngineFactory` object — use with `embeddedServer(Keel)` |
 | `KeelApplicationEngine` | `BaseApplicationEngine` implementation |
 | `KeelApplicationEngine.Configuration` | Engine settings: `engine`, `keepAlive`, `acceptBackoff`, `sslConnector()` |
-| `ServerConnector` | `(host, port, tls?)` descriptor for a single listen endpoint |
 | `KtorLoggerAdapter` | Bridges Ktor's `Logger` to keel's `LoggerFactory` |
+
+`ServerConnector` (the `(host, port, tls?)` descriptor for a listen
+endpoint) lives in `:keel-server` so engine adapters and future
+HTTP-family servers can share the type without either side owning it.
 
 # Package io.github.fukusaka.keel.ktor
 
 `Keel` (factory object), `KeelApplicationEngine`, `KeelApplicationEngine.Configuration`,
-`ServerConnector`, and Ktor integration types (`KeelApplicationRequest`, `KeelApplicationResponse`,
+and Ktor integration types (`KeelApplicationRequest`, `KeelApplicationResponse`,
 `KeelApplicationCall`, `KeelHeaders`).

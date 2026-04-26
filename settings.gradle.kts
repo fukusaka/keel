@@ -29,6 +29,7 @@ include(
     ":keel-codec-websocket",
     ":keel-tls",
     ":keel-tls-jsse",
+    ":keel-server",
     ":keel-ktor-engine",
     ":detekt-rules",
 )

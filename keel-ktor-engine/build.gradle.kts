@@ -31,6 +31,7 @@ kotlin {
             dependencies {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-tls"))
+                implementation(project(":keel-server"))
                 implementation(project(":keel-codec-http"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.kotlinx.coroutines.core)
