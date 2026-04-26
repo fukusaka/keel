@@ -30,7 +30,7 @@ include(
     ":keel-tls",
     ":keel-tls-jsse",
     ":keel-server",
-    ":keel-ktor-engine",
+    ":keel-server-ktor",
     ":detekt-rules",
 )
 
@@ -39,7 +39,7 @@ include(
 // hosts, and Kotlin/Native does not support cinterop cross-compilation.
 // Including them on non-Linux hosts causes `./gradlew assemble` and any
 // task that cascades through compileLinuxMainKotlinMetadata to fail.
-// Consumers (:keel-ktor-engine, :benchmark) host-gate their dependency
+// Consumers (:keel-server-ktor, :benchmark) host-gate their dependency
 // on these modules symmetrically so references only trigger when the
 // current host can actually build them.
 if (isLinuxHost) {

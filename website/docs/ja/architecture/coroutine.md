@@ -1,18 +1,18 @@
 # Coroutine モード
 
-Coroutine モードは keel の suspend ベース I/O API です。Accept した接続は `Channel` オブジェクトとして扱われ、`suspend fun read()`・`write()`・`flush()` を持ちます。このモデルは Kotlin コルーチンと自然に統合でき、`keel-ktor-engine` を通じた Ktor 連携の基盤となっています。
+Coroutine モードは keel の suspend ベース I/O API です。Accept した接続は `Channel` オブジェクトとして扱われ、`suspend fun read()`・`write()`・`flush()` を持ちます。このモデルは Kotlin コルーチンと自然に統合でき、`keel-server-ktor` を通じた Ktor 連携の基盤となっています。
 
 ## Coroutine モードを使う場面
 
 | 状況 | 推奨 |
 |---|---|
-| Ktor アプリケーションを構築する | `keel-ktor-engine` を使用 — Coroutine モードは自動的に配線される |
+| Ktor アプリケーションを構築する | `keel-server-ktor` を使用 — Coroutine モードは自動的に配線される |
 | コルーチンベースのカスタムサーバーを書く | `engine.bind()` + `server.accept()` を直接使用する |
 | カスタムプロトコルで最大スループットが必要 | [Pipeline モード](./pipeline.md)を検討する |
 
 ## Ktor 統合
 
-`keel-ktor-engine` は Coroutine モードのライフサイクル全体を内部で管理します。`engine.bind()` や `server.accept()` を自分で呼び出す必要はありません — Ktor の `embeddedServer` 呼び出しと Ktor エンジンが処理します:
+`keel-server-ktor` は Coroutine モードのライフサイクル全体を内部で管理します。`engine.bind()` や `server.accept()` を自分で呼び出す必要はありません — Ktor の `embeddedServer` 呼び出しと Ktor エンジンが処理します:
 
 ```kotlin
 embeddedServer(Keel, port = 8080) {
@@ -24,7 +24,7 @@ embeddedServer(Keel, port = 8080) {
 }.start(wait = true)
 ```
 
-内部的には、`keel-ktor-engine` が `engine.bind()` を呼び出し、`server.accept()` をループし、`channel.asBufferedSuspendSource()` と `channel.asSuspendSink()` を使って Accept した各 `Channel` を Ktor の `ApplicationCall` パイプラインに橋渡しします。
+内部的には、`keel-server-ktor` が `engine.bind()` を呼び出し、`server.accept()` をループし、`channel.asBufferedSuspendSource()` と `channel.asSuspendSink()` を使って Accept した各 `Channel` を Ktor の `ApplicationCall` パイプラインに橋渡しします。
 
 ## Coroutine モードの仕組み
 
@@ -123,7 +123,7 @@ channel.flush()  // 可能な場合はヘッダとボディを 1 回の OS 呼�
 
 `server.accept()` や `channel.read()` が suspend すると、呼び出し元コルーチンはスレッドを手放し、EventLoop は他の接続の I/O を処理できます。I/O が進行可能になると、EventLoop は `channel.ioDispatcher` でコルーチンを再開します。
 
-`keel-ktor-engine` は接続ハンドラを `ioDispatcher` で起動し、I/O 読み取り・リクエストパース・Ktor パイプライン・レスポンス符号化をすべて同一スレッド上で実行します。Ktor パイプライン自体は `KeelApplicationEngine.Configuration.applicationDispatcher` で実行され、null（デフォルト）の場合は `ioDispatcher` に collapse するため、パイプラインを囲む内部 `withContext(applicationDispatcher)` は no-op（同一ディスパッチャなのでコルーチンランタイムが省略）となり、リクエストごとのスレッド切り替えコストはゼロです。ブロッキング処理を多用するハンドラを抱えるデプロイでは `applicationDispatcher = Dispatchers.Default` を明示設定して work-stealing pool に offload することも可能です（リクエストごとに 1 回の hop コスト）。
+`keel-server-ktor` は接続ハンドラを `ioDispatcher` で起動し、I/O 読み取り・リクエストパース・Ktor パイプライン・レスポンス符号化をすべて同一スレッド上で実行します。Ktor パイプライン自体は `KeelApplicationEngine.Configuration.applicationDispatcher` で実行され、null（デフォルト）の場合は `ioDispatcher` に collapse するため、パイプラインを囲む内部 `withContext(applicationDispatcher)` は no-op（同一ディスパッチャなのでコルーチンランタイムが省略）となり、リクエストごとのスレッド切り替えコストはゼロです。ブロッキング処理を多用するハンドラを抱えるデプロイでは `applicationDispatcher = Dispatchers.Default` を明示設定して work-stealing pool に offload することも可能です（リクエストごとに 1 回の hop コスト）。
 
 カスタムサーバーコードで同じチャネルの I/O を行う追加コルーチンを起動する場合は `ioDispatcher` を使ってください:
 

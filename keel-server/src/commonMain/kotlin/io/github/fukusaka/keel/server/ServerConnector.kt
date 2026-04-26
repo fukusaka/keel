@@ -6,7 +6,7 @@ package io.github.fukusaka.keel.server
  * Each connector represents a single (host, port) binding with optional
  * TLS. Multiple connectors enable HTTP + HTTPS on different ports.
  *
- * Lives in `:keel-server` so engine adapters (`:keel-ktor-engine`) and
+ * Lives in `:keel-server` so engine adapters (`:keel-server-ktor`) and
  * future HTTP-family servers (`:keel-server-http`) share the same shape
  * without either side owning the type.
  *

@@ -474,14 +474,14 @@ io_uring engine の inbound read path のみ `BufferAllocator` を経由せず�
 
 ## 大規模 payload の最適化
 
-本節は `keel-ktor-engine` で大規模 response を送信する際に発生する性能問題と、その自動解消機構を説明する。通常の Ktor handler 実装では意識不要だが、挙動を理解しておくと benchmark 結果の解釈や、大規模 file / streaming body の送信設計に有益である。
+本節は `keel-server-ktor` で大規模 response を送信する際に発生する性能問題と、その自動解消機構を説明する。通常の Ktor handler 実装では意識不要だが、挙動を理解しておくと benchmark 結果の解釈や、大規模 file / streaming body の送信設計に有益である。
 
 ### 背景: `BufferedSuspendSink` の役割
 
 Ktor application が response を書く経路は以下である。
 
 1. Handler が `call.respondBytes(byteArray)` または `call.respondOutputStream { ... }` を呼ぶ
-2. Ktor の write path が `keel-ktor-engine` の transport adapter に到達する
+2. Ktor の write path が `keel-server-ktor` の transport adapter に到達する
 3. adapter は `BufferedSuspendSink` を経由して engine の transport に書き込む
 
 `BufferedSuspendSink` は内部に 8 KiB の scratch buffer を持ち、小さな書き込みを集約してから transport に forward する。これは kotlinx-io の `BufferedSink` と同種の最適化で、多数の小さな `Channel.write` 呼び出しを避けるのが目的である。

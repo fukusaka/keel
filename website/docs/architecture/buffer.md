@@ -473,14 +473,14 @@ This implementation is qualitatively different from the other three. It is a **w
 
 ## Large-payload optimization
 
-This section describes a performance problem that arises when sending large responses via `keel-ktor-engine` and the automatic mechanism that resolves it. Ordinary Ktor handlers need not think about this, but understanding the behaviour helps when interpreting benchmark results or designing large-file / streaming-body paths.
+This section describes a performance problem that arises when sending large responses via `keel-server-ktor` and the automatic mechanism that resolves it. Ordinary Ktor handlers need not think about this, but understanding the behaviour helps when interpreting benchmark results or designing large-file / streaming-body paths.
 
 ### Background: role of `BufferedSuspendSink`
 
 The write path for a Ktor application response looks like:
 
 1. The handler calls `call.respondBytes(byteArray)` or `call.respondOutputStream { ... }`.
-2. Ktor's write path reaches the `keel-ktor-engine` transport adapter.
+2. Ktor's write path reaches the `keel-server-ktor` transport adapter.
 3. The adapter writes through `BufferedSuspendSink` to the engine's transport.
 
 `BufferedSuspendSink` internally holds an 8 KiB scratch buffer to coalesce small writes before forwarding to the transport. This is the same class of optimization as kotlinx-io's `BufferedSink`, designed to avoid many small `Channel.write` invocations.

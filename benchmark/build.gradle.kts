@@ -15,7 +15,7 @@ kotlin {
         binaries.executable()
     }
     // Native benchmark targets are host-gated: their transitive dependencies
-    // (keel-ktor-engine → keel-engine-kqueue / keel-engine-epoll) require
+    // (keel-server-ktor → keel-engine-kqueue / keel-engine-epoll) require
     // host-specific cinterop toolchains. Declaring a Linux target on a macOS
     // host (or vice versa) causes Gradle variant resolution to fail when
     // Dokka / metadata compile pulls in the classpath (no matching variant
@@ -56,7 +56,7 @@ kotlin {
         val commonForKtorServerMain by creating {
             dependsOn(commonMain.get())
             dependencies {
-                implementation(project(":keel-ktor-engine"))
+                implementation(project(":keel-server-ktor"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.ktor.server.cio)
             }

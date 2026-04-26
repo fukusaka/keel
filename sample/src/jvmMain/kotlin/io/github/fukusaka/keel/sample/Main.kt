@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.sample
 
 import io.github.fukusaka.keel.engine.nio.NioEngine
-import io.github.fukusaka.keel.ktor.Keel
+import io.github.fukusaka.keel.server.ktor.Keel
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.response.*

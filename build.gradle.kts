@@ -91,7 +91,7 @@ dependencies {
     dokka(project(":keel-codec-http"))
     dokka(project(":keel-codec-websocket"))
     dokka(project(":keel-server"))
-    dokka(project(":keel-ktor-engine"))
+    dokka(project(":keel-server-ktor"))
 }
 
 // Suppress per-module Dokka URL output; show only the aggregated root URL.

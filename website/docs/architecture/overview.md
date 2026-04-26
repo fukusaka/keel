@@ -33,7 +33,7 @@ IoEngine  (config + close)
 |---|---|
 | **keel** | Transport I/O engine — drives epoll / kqueue / io_uring / NWConnection / NIO / Netty / Node.js from a single KMP interface |
 | **Netty** | JVM-only I/O framework — `keel-engine-netty` delegates to it on JVM; on Native, keel replaces it entirely |
-| **Ktor** | Web framework — routing, plugins, serialization. `keel-ktor-engine` plugs keel in as Ktor's I/O backend. Ktor's built-in CIO engine lacks TLS support on Native targets — keel fills this gap |
+| **Ktor** | Web framework — routing, plugins, serialization. `keel-server-ktor` plugs keel in as Ktor's I/O backend. Ktor's built-in CIO engine lacks TLS support on Native targets — keel fills this gap |
 
 ## Two I/O Modes
 
@@ -133,4 +133,4 @@ keel's major components are all swappable without changing application code. Dif
 - **I/O engine** — compile-time selection via `keel-engine-*` Gradle dependency
 - **TLS backend** — optional `keel-tls-*` dependency (or engine built-in TLS for Netty, NWConnection, Node.js)
 - **Buffer allocator** — `BufferAllocator` injected at engine construction via `IoEngineConfig`. `SlabAllocator` (Native) and `PooledDirectAllocator` (JVM) are used in production; `TrackingAllocator` and `LeakDetectingAllocator` can be swapped in to debug buffer lifecycle issues
-- **Logger** — `LoggerFactory` injected via `IoEngineConfig.loggerFactory`. Defaults to no-op; `PrintLogger` is available for development, and `KtorLoggerAdapter` bridges to Ktor's logger when using `keel-ktor-engine`
+- **Logger** — `LoggerFactory` injected via `IoEngineConfig.loggerFactory`. Defaults to no-op; `PrintLogger` is available for development, and `KtorLoggerAdapter` bridges to Ktor's logger when using `keel-server-ktor`
