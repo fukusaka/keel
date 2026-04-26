@@ -30,17 +30,31 @@ embeddedServer(Keel) {
 
 ## Engine Selection
 
-`Configuration.engine` specifies the `StreamEngine` to use. When null,
-the platform default is chosen automatically:
+`Configuration.engine` is required — set it explicitly to the
+`StreamEngine` your application wants to drive the I/O loop with. The
+adapter does not ship a platform default so it does not have to depend
+on every keel engine module just to pick one at runtime; the caller
+decides which engine module(s) to depend on.
 
-| Platform | Default engine |
-|----------|----------------|
-| JVM | `NioEngine` |
-| macOS | `KqueueEngine` |
-| Linux | `EpollEngine` |
-| Node.js | `NodeEngine` |
+| Engine | Module |
+|--------|--------|
+| `NioEngine` | `keel-engine-nio` |
+| `NettyEngine` | `keel-engine-netty` |
+| `KqueueEngine` | `keel-engine-kqueue` (macOS host only) |
+| `EpollEngine` | `keel-engine-epoll` (Linux host only) |
+| `IoUringEngine` | `keel-engine-io-uring` (Linux host only) |
+| `NwEngine` | `keel-engine-nwconnection` (macOS host only) |
 
-Explicit override: `engine = NettyEngine(IoEngineConfig())`.
+Example:
+
+```kotlin
+embeddedServer(Keel) {
+    engine = NioEngine()
+    connector { port = 8080 }
+}
+```
+
+Leaving `engine` unset throws `IllegalStateException` from `start()`.
 
 ## HTTP Pipeline Codec
 
