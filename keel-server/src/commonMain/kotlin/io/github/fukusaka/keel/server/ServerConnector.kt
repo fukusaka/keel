@@ -1,7 +1,5 @@
 package io.github.fukusaka.keel.server
 
-import io.github.fukusaka.keel.tls.TlsConnectorConfig
-
 /**
  * Server connector configuration describing a listening endpoint.
  *
@@ -19,5 +17,5 @@ import io.github.fukusaka.keel.tls.TlsConnectorConfig
 data class ServerConnector(
     val host: String = "0.0.0.0",
     val port: Int = 0,
-    val tls: TlsConnectorConfig? = null,
+    val tls: TlsServerConfig? = null,
 )

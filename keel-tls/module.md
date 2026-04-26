@@ -78,18 +78,21 @@ internal accumulate buffer. On the next `onRead`, the new data is appended and d
 **Handshake completion**: fires `TlsHandshakeComplete` user event through the pipeline once
 `codec.isHandshakeComplete` becomes true. Downstream handlers can listen via `onUserEvent`.
 
-## TlsCodecFactory and TlsInstaller
+## TlsCodecFactory and Server-side Install
 
-`TlsCodecFactory` creates `TlsCodec` instances and also implements `TlsInstaller`:
+`TlsCodecFactory` creates `TlsCodec` instances. To install keel's `TlsHandler` on a server
+pipeline, wrap the factory in `TlsCodecServerInstaller` (in `:keel-server`) and pass it as
+the `installer` of `TlsServerConfig`:
 
 ```
-TlsCodecFactory.install(channel, config)
-  → createServerCodec(config)
+TlsCodecServerInstaller(factory).install(channel, config)
+  → factory.createServerCodec(config)
   → channel.pipeline.addFirst("tls", TlsHandler(codec))
 ```
 
-`TlsInstaller` is a `fun interface` for engine-specific TLS. `NettySslInstaller` (JVM + Netty)
-overrides the default `install()` to put Netty's `SslHandler` at the Netty transport level instead.
+`TlsServerInstaller` (in `:keel-server`) is a `fun interface` for engine-specific TLS.
+A Netty `SslHandler` adapter installs Netty's TLS at the Netty transport level instead of
+keel's `TlsHandler`.
 
 ## TLS Configuration
 
@@ -103,8 +106,8 @@ overrides the default `install()` to put Netty's `SslHandler` at the Netty trans
 | `alpnProtocols` | `List<String>?` | ALPN preference list (e.g. `["h2", "http/1.1"]`) |
 | `serverName` | `String?` | SNI hostname for client mode |
 
-`TlsConnectorConfig` extends `BindConfig` and wraps `TlsConfig` + `TlsInstaller?`:
-- `installer = non-null` — per-connection TLS via `TlsInstaller.install()`
+`TlsServerConfig` (in `:keel-server`) extends `BindConfig` and wraps `TlsConfig` + `TlsServerInstaller?`:
+- `installer = non-null` — per-connection TLS via `TlsServerInstaller.install()`
 - `installer = null` — engine-native TLS (NWConnection / Node.js listener-level TLS)
 
 ## Certificate Sources
@@ -131,11 +134,9 @@ overrides the default `install()` to put Netty's `SslHandler` at the Netty trans
 | Type | Role |
 |------|------|
 | `TlsCodec` | Buffer-to-buffer TLS record protection (`protect` / `unprotect`) |
-| `TlsCodecFactory` | Creates `TlsCodec` instances; implements `TlsInstaller` |
-| `TlsInstaller` | `fun interface` — installs TLS on a `PipelinedChannel` |
+| `TlsCodecFactory` | Creates `TlsCodec` instances |
 | `TlsHandler` | `DuplexHandler` — applies `TlsCodec` to the pipeline |
 | `TlsConfig` | TLS connection settings (cert, trust, ALPN, SNI, verify mode) |
-| `TlsConnectorConfig` | Extends `BindConfig`; carries `TlsConfig` + `TlsInstaller?` |
 | `TlsCertificateSource` | Sealed interface: `Pem`, `Der`, `KeyStoreFile`, `SystemKeychain` |
 | `TlsTrustSource` | Sealed interface: `SystemDefault`, `Pem`, `InsecureTrustAll` |
 | `TlsVerifyMode` | Enum: `NONE`, `PEER`, `REQUIRED` |
@@ -149,7 +150,8 @@ overrides the default `install()` to put Netty's `SslHandler` at the Netty trans
 
 # Package io.github.fukusaka.keel.tls
 
-Core TLS interfaces and types: `TlsCodec`, `TlsCodecFactory`, `TlsInstaller`, `TlsHandler`,
-`TlsConfig`, `TlsConnectorConfig`, `TlsCertificateSource`, `TlsTrustSource`, `TlsVerifyMode`,
+Core TLS interfaces and types: `TlsCodec`, `TlsCodecFactory`, `TlsHandler`,
+`TlsConfig`, `TlsCertificateSource`, `TlsTrustSource`, `TlsVerifyMode`,
 `TlsResult`, `TlsCodecResult`, `TlsException`, `TlsErrorCategory`, `TlsHandshakeComplete`,
-`Pkcs8KeyUnwrapper`, `PemDerConverter`.
+`Pkcs8KeyUnwrapper`, `PemDerConverter`. Server-side install plumbing
+(`TlsServerInstaller`, `TlsServerConfig`, `TlsCodecServerInstaller`) lives in `:keel-server`.

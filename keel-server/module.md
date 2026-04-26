@@ -14,14 +14,19 @@ Exposes:
 - `gracefulShutdown` — two-phase shutdown helper. Signals stop, waits for the accept
   coordinator and engine-scope handlers to drain within a grace period, then forces
   cancellation if the deadline is exceeded, and always closes the engine in `finally`.
+- `TlsServerInstaller` — `fun interface` that installs server-side TLS on a
+  `PipelinedChannel`. Set on `TlsServerConfig.installer`; `null` activates engine-native
+  listener-level TLS (NWConnection / Node.js).
+- `TlsServerConfig` — `BindConfig` subclass carrying `TlsConfig` plus an optional
+  `TlsServerInstaller`. Pass directly to `engine.bindPipeline(...)` / `engine.bind(...)`
+  for HTTPS connectors.
+- `TlsCodecServerInstaller(factory)` — adapter that turns a `TlsCodecFactory` (from
+  `:keel-tls`) into a `TlsServerInstaller`. Default choice for keel's `TlsHandler`-based
+  TLS; engine-specific installers (e.g. a Netty `SslHandler` adapter) replace it for
+  transport-level TLS.
 
 The Ktor adapter (`:keel-ktor-engine`) and the upcoming HTTP/1.1 native server
 (`:keel-server-http`) both consume these primitives so neither side has to own them.
-
-`TlsConnectorConfig` and `TlsInstaller` currently live in `:keel-tls` and continue to be
-imported from there. A follow-up will move them into this module so server-binding TLS
-types live next to the other server primitives, leaving `:keel-tls` strictly about TLS
-protocol primitives.
 
 # Package io.github.fukusaka.keel.server
 
@@ -32,3 +37,9 @@ protocol primitives.
 `acceptLoopWithBackoff` — `StreamServer` extension implementing the accept loop.
 
 `gracefulShutdown` — server graceful shutdown helper.
+
+`TlsServerInstaller` — pipeline-level TLS installer interface.
+
+`TlsServerConfig` — `BindConfig` subclass for HTTPS listeners.
+
+`TlsCodecServerInstaller` — adapter from `TlsCodecFactory` to `TlsServerInstaller`.
