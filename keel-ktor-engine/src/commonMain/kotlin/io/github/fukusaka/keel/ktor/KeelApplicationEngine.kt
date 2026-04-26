@@ -20,6 +20,9 @@ import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
+import io.github.fukusaka.keel.server.AcceptBackoff
+import io.github.fukusaka.keel.server.acceptLoopWithBackoff
+import io.github.fukusaka.keel.server.gracefulShutdown
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 import io.github.fukusaka.keel.tls.TlsInstaller
@@ -44,13 +47,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.ContinuationInterceptor
 
 /**
@@ -195,33 +195,6 @@ public class KeelApplicationEngine(
         }
     }
 
-    /**
-     * Accept error backoff strategy.
-     *
-     * Controls how long the accept loop waits after a failed `accept()`.
-     * Prevents CPU spin when accept fails repeatedly (e.g. EMFILE).
-     */
-    public sealed class AcceptBackoff {
-        /**
-         * Fixed delay between retries.
-         *
-         * @param delayMs delay in milliseconds (default: 100ms)
-         */
-        public data class Fixed(val delayMs: Long = 100L) : AcceptBackoff()
-
-        /**
-         * Exponential backoff: doubles delay on each consecutive failure,
-         * resets to [initialMs] on success.
-         *
-         * @param initialMs initial delay in milliseconds (default: 100ms)
-         * @param maxMs maximum delay in milliseconds (default: 1000ms)
-         */
-        public data class Exponential(
-            val initialMs: Long = 100L,
-            val maxMs: Long = 1000L,
-        ) : AcceptBackoff()
-    }
-
     // Ktor pipeline runs on the channel's EventLoop dispatcher (same as
     // Netty's model). All processing — codec, routing, response write —
     // stays on the EventLoop thread, eliminating context switches.
@@ -257,31 +230,12 @@ public class KeelApplicationEngine(
     override fun start(wait: Boolean): ApplicationEngine = runBlocking { startSuspend(wait) }
 
     override suspend fun stopSuspend(gracePeriodMillis: Long, timeoutMillis: Long) {
-        try {
+        val engine = ioEngine
+        if (engine == null) {
             stopRequest.complete()
-            // Grace phase: wait for the server job (bind/accept coordinator)
-            // to finish, then let in-flight connection handlers drain. The
-            // handlers are children of [ioEngine] (not of [serverJob]), so
-            // [serverJob.join] alone would return before they complete.
-            val result = withTimeoutOrNull(gracePeriodMillis) {
-                serverJob.join()
-                ioEngine?.coroutineContext?.job?.children?.toList()?.forEach { it.join() }
-                true
-            }
-            if (result == null) {
-                serverJob.cancel()
-                withTimeoutOrNull(timeoutMillis - gracePeriodMillis) {
-                    serverJob.join()
-                }
-            }
-        } finally {
-            // [IoEngine.close] cancels every child coroutine launched on
-            // the engine scope and joins their completion before tearing
-            // the dispatcher threads down. This closes the structured-
-            // concurrency contract at the engine boundary even if the
-            // grace timeout was hit above.
-            ioEngine?.close()
+            return
         }
+        gracefulShutdown(serverJob, stopRequest, engine, gracePeriodMillis, timeoutMillis)
     }
 
     override fun stop(gracePeriodMillis: Long, timeoutMillis: Long): Unit = runBlocking {
@@ -322,7 +276,23 @@ public class KeelApplicationEngine(
             startupJob.complete(Unit)
 
             serverEntries.forEach { (server, tlsConfig) ->
-                launch { acceptLoop(engine, server, tlsConfig) }
+                val scheme = if (tlsConfig != null) "https" else "http"
+                launch {
+                    server.acceptLoopWithBackoff(configuration.acceptBackoff, logger) { channel ->
+                        // Launch on the engine scope (not on this accept loop)
+                        // so handlers are children of the engine's SupervisorJob.
+                        // [IoEngine.close] cancels and joins them on shutdown,
+                        // and [stopSuspend]'s grace phase can wait for them
+                        // explicitly via `engine.coroutineContext.job.children`.
+                        //
+                        // Dispatcher is the channel's EventLoop so read/parse,
+                        // HTTP codec, and the Ktor application pipeline all run
+                        // on the I/O thread without cross-thread dispatch.
+                        engine.launch(channel.ioDispatcher) {
+                            handleConnection(channel, scheme)
+                        }
+                    }
+                }
             }
 
             stopRequest.join()
@@ -331,68 +301,6 @@ public class KeelApplicationEngine(
             // Engine shutdown moved to [stopSuspend]'s finally, so the
             // engine outlives this job and in-flight handlers launched
             // on its scope can be joined during the grace period.
-        }
-    }
-
-    /**
-     * Accepts connections in a loop with configurable error backoff.
-     *
-     * On accept failure (e.g. EMFILE — too many open files), the loop
-     * pauses according to [Configuration.acceptBackoff] to prevent
-     * CPU spin. The delay resets on a successful accept (exponential
-     * backoff mode).
-     *
-     * @param tlsConfig TLS configuration for this connector, or null for plain HTTP.
-     */
-    private suspend fun CoroutineScope.acceptLoop(
-        engine: StreamEngine,
-        server: StreamServer,
-        tlsConfig: TlsConnectorConfig?,
-    ) {
-        val scheme = if (tlsConfig != null) "https" else "http"
-        var currentDelayMs = when (val b = configuration.acceptBackoff) {
-            is AcceptBackoff.Fixed -> b.delayMs
-            is AcceptBackoff.Exponential -> b.initialMs
-        }
-
-        while (server.isActive && isActive) {
-            try {
-                val channel = server.accept()
-                // Reset backoff on successful accept
-                currentDelayMs = when (val b = configuration.acceptBackoff) {
-                    is AcceptBackoff.Fixed -> b.delayMs
-                    is AcceptBackoff.Exponential -> b.initialMs
-                }
-
-                // Launch on the engine scope (not on this accept loop)
-                // so handlers are children of the engine's SupervisorJob.
-                // [IoEngine.close] cancels and joins them on shutdown,
-                // and [stopSuspend]'s grace phase can wait for them
-                // explicitly via `engine.coroutineContext.job.children`.
-                //
-                // Dispatcher is the channel's EventLoop so read/parse,
-                // HTTP codec, and the Ktor application pipeline all run
-                // on the I/O thread without cross-thread dispatch. Every
-                // engine aligns ioDispatcher with its native EventLoop
-                // primitive (epoll / kqueue / io_uring pthread, Selector
-                // thread, Netty EventLoop, GCD dispatch queue, or JS
-                // event loop).
-                engine.launch(channel.ioDispatcher) {
-                    handleConnection(channel, scheme)
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                if (!server.isActive || !isActive) break
-                // Backoff before retrying to prevent CPU spin on
-                // persistent errors (e.g. EMFILE, fd exhaustion).
-                logger.error(e) { "Accept failed, retrying in ${currentDelayMs}ms" }
-                delay(currentDelayMs)
-                // Advance exponential backoff
-                if (configuration.acceptBackoff is AcceptBackoff.Exponential) {
-                    val exp = configuration.acceptBackoff as AcceptBackoff.Exponential
-                    currentDelayMs = (currentDelayMs * 2).coerceAtMost(exp.maxMs)
-                }
-            }
         }
     }
 
