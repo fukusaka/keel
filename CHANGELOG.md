@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- `engine-nodejs`: split the 591-line `NodeEngineTest` into 4 focused files (`NodeEngineLifecycleTest` / `NodeEngineReadWriteTest` / `NodeEngineConnectTest` / `NodeEngineConcurrencyTest`) plus a shared `NodeEngineTestSupport` for helpers + constants, matching the `.claude/rules/testing.md` category split. 25 tests preserved (#380)
 - `engine-nwconnection`: split the 918-line `NwEngineTest` into 5 focused files (`NwEngineLifecycleTest` / `NwEngineReadWriteTest` / `NwEngineConnectTest` / `NwEngineConcurrencyTest` / `NwEngineResourceTest`) plus a shared `NwEngineTestSupport` for helpers + constants, matching the `.claude/rules/testing.md` category split. 34 tests preserved (#379)
 - `engine-netty`: split the 955-line `NettyEngineTest` into 5 focused files (`NettyEngineLifecycleTest` / `NettyEngineReadWriteTest` / `NettyEngineConnectTest` / `NettyEngineConcurrencyTest` / `NettyEngineResourceTest`) plus a shared `NettyEngineTestSupport` for helpers + constants, matching the `.claude/rules/testing.md` category split. 36 tests preserved (#378)
 - `engine-nio`: split the 1086-line `NioEngineTest` into 5 focused files (`NioEngineLifecycleTest` / `NioEngineReadWriteTest` / `NioEngineConnectTest` / `NioEngineConcurrencyTest` / `NioEngineResourceTest`) plus a shared `NioEngineTestSupport` for helpers + constants, matching the `.claude/rules/testing.md` category split. 40 tests preserved (#377)
