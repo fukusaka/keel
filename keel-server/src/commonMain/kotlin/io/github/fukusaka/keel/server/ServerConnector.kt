@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.ktor
+package io.github.fukusaka.keel.server
 
 import io.github.fukusaka.keel.tls.TlsConnectorConfig
 
@@ -8,9 +8,9 @@ import io.github.fukusaka.keel.tls.TlsConnectorConfig
  * Each connector represents a single (host, port) binding with optional
  * TLS. Multiple connectors enable HTTP + HTTPS on different ports.
  *
- * Currently placed in `:ktor-engine` as a temporary location. Will be
- * moved to a shared module (`:server-core` or similar) when the
- * `:server` module is created.
+ * Lives in `:keel-server` so engine adapters (`:keel-ktor-engine`) and
+ * future HTTP-family servers (`:keel-server-http`) share the same shape
+ * without either side owning the type.
  *
  * @param host Bind address (e.g. "0.0.0.0" for all interfaces).
  * @param port Port number. 0 lets the OS assign an ephemeral port.
