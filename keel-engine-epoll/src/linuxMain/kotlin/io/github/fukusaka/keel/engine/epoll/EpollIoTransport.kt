@@ -133,6 +133,7 @@ internal class EpollIoTransport(
 
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+        flushCount++
         if (pendingWrites.size == 1) {
             return flushSingle(pendingWrites.removeFirst())
         }
@@ -164,6 +165,7 @@ internal class EpollIoTransport(
         pendingBytes = 0
         eventLoop.cleanupFd(fd)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
+        logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }
 
     /**
@@ -179,6 +181,7 @@ internal class EpollIoTransport(
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
+                    if (written > 0) partialWriteCount++
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
                     pendingWrites.add(0, remainder)
                     updatePendingBytes(-written)
@@ -240,6 +243,7 @@ internal class EpollIoTransport(
             return true
         }
 
+        partialWriteCount++
         val remaining = mutableListOf<PendingWrite>()
         var consumed = 0
         for (pw in pendingWrites) {
