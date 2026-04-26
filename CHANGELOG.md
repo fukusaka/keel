@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **BREAKING** (`keel-ktor-engine`): drops the per-platform engine module dependencies (`:keel-engine-nio` from `jvmMain`, `:keel-engine-kqueue` from `macosMain`, `:keel-engine-epoll` from `linuxMain`) along with the `DefaultEngine` files. The KMP target set is unchanged (jvm + linux/macos native), but the platform-specific source sets are gone — the adapter is now engine-neutral and applications wire the engine via the configuration block (#391)
+- `sample`: the bundled hello-world server now sets `engine = NioEngine()` and uses the `embeddedServer(Keel, configure = { ... })` form to follow the new explicit-engine contract. `:sample` adds direct `:keel-core` + `:keel-engine-nio` dependencies. Application code that previously copied the sample template needs the same migration (#391)
 
 ### Added
 
