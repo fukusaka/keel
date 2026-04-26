@@ -46,7 +46,7 @@ import kotlin.coroutines.resumeWithException
  *
  * **Thread safety**: [onNewConnection] is called from the listener's
  * dispatch queue while [accept] runs on a coroutine thread. All access
- * to [pendingConnections] and [pendingAcceptCont] is protected by
+ * to [pendingConnections] and [pendingAcceptConts] is protected by
  * [mutex] (pthread_mutex_t). Kotlin/Native lacks JVM's `synchronized`;
  * coroutine `Mutex` cannot be used from the dispatch callback.
  *
@@ -77,7 +77,19 @@ internal class NwStreamServer(
         pthread_mutex_init(ptr, null)
     }
     private val pendingConnections = ArrayDeque<nw_connection_t>()
-    private var pendingAcceptCont: CancellableContinuation<nw_connection_t>? = null
+
+    // FIFO queue of suspended accept() callers. The previous single-slot
+    // design (`pendingAcceptCont: CancellableContinuation<...>?`)
+    // silently overwrote earlier waiters when two `accept()` calls both
+    // passed the empty-`pendingConnections` check inside [withLock] and
+    // both assigned the slot — the lost continuation never resumed and
+    // the corresponding `accept()` hung forever. Counterpart of the
+    // POSIX engines' chain (PR #367), the io-uring queue (PR #368), the
+    // Netty queue (PR #369), and the Node.js queue (PR #370).
+    // Identity-based `ArrayDeque.remove(cont)` works because
+    // `CancellableContinuation` inherits `Object.equals`
+    // (reference identity).
+    private val pendingAcceptConts = ArrayDeque<CancellableContinuation<nw_connection_t>>()
     private var _active = true
     private var _localAddress: SocketAddress = localAddress
 
@@ -102,9 +114,8 @@ internal class NwStreamServer(
      */
     internal fun onNewConnection(conn: nw_connection_t) {
         withLock {
-            val cont = pendingAcceptCont
+            val cont = pendingAcceptConts.removeFirstOrNull()
             if (cont != null) {
-                pendingAcceptCont = null
                 cont.resume(conn)
             } else {
                 pendingConnections.addLast(conn)
@@ -134,9 +145,11 @@ internal class NwStreamServer(
                 if (pendingConnections.isNotEmpty()) {
                     cont.resume(pendingConnections.removeFirst())
                 } else {
-                    pendingAcceptCont = cont
+                    pendingAcceptConts.addLast(cont)
                     cont.invokeOnCancellation {
-                        withLock { pendingAcceptCont = null }
+                        // Identity-based remove via CancellableContinuation's
+                        // default Object.equals (reference equality).
+                        withLock { pendingAcceptConts.remove(cont) }
                     }
                 }
             }
@@ -184,10 +197,10 @@ internal class NwStreamServer(
         withLock {
             if (_active) {
                 _active = false
-                pendingAcceptCont?.resumeWithException(
-                    CancellationException("StreamServer closed"),
-                )
-                pendingAcceptCont = null
+                while (pendingAcceptConts.isNotEmpty()) {
+                    pendingAcceptConts.removeFirst()
+                        .resumeWithException(CancellationException("StreamServer closed"))
+                }
             }
         }
         nw_listener_cancel(listener)
