@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nodejs.NodeEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -23,7 +22,7 @@ object PipelineHttpNodejsBenchmark : EngineBenchmark {
     override fun start(config: BenchmarkConfig): () -> Unit {
         val engine = NodeEngine(
             config = IoEngineConfig(
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 

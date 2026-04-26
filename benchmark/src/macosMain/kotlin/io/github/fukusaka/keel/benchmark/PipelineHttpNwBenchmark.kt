@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.nwconnection.NwEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -22,7 +21,7 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
     override fun start(config: BenchmarkConfig): () -> Unit {
         val engine = NwEngine(
             config = IoEngineConfig(
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 

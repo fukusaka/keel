@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.kqueue.KqueueEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 /**
  * Pipeline HTTP benchmark using [KqueueEngine] with [HttpRequestDecoder],
@@ -24,7 +23,7 @@ object PipelineHttpKqueueBenchmark : EngineBenchmark {
         val engine = KqueueEngine(
             config = IoEngineConfig(
                 threads = threads,
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 

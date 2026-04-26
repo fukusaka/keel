@@ -12,6 +12,10 @@ actual fun printErr(message: String) {
 /** Terminate the native process via [kotlin.system.exitProcess]. */
 actual fun benchmarkExit(code: Int): Nothing = kotlin.system.exitProcess(code)
 
+/** Read [name] from the native environment via [platform.posix.getenv]; return `null` for unset / empty. */
+@OptIn(ExperimentalForeignApi::class)
+actual fun getEnvVar(name: String): String? = getenv(name)?.toKString()?.takeIf { it.isNotEmpty() }
+
 /** Number of available CPU cores via [Platform.getAvailableProcessors]. */
 @OptIn(ExperimentalNativeApi::class)
 actual fun availableProcessors(): Int = Platform.getAvailableProcessors()

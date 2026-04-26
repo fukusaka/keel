@@ -8,6 +8,9 @@ actual fun printErr(message: String) {
 /** Terminate the JVM process via [kotlin.system.exitProcess]. */
 actual fun benchmarkExit(code: Int): Nothing = kotlin.system.exitProcess(code)
 
+/** Read [name] from the JVM environment via [System.getenv]; return `null` for unset / empty. */
+actual fun getEnvVar(name: String): String? = System.getenv(name)?.takeIf { it.isNotEmpty() }
+
 /** Number of available CPU cores via [Runtime.availableProcessors]. */
 actual fun availableProcessors(): Int = Runtime.getRuntime().availableProcessors()
 

@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.epoll.EpollEngine
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 /**
  * Pipeline HTTP benchmark using [EpollEngine] with [HttpRequestDecoder],
@@ -23,7 +22,7 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
         val engine = EpollEngine(
             config = IoEngineConfig(
                 threads = threads,
-                loggerFactory = NoopLoggerFactory,
+                loggerFactory = benchmarkLoggerFactory(),
             ),
         )
 

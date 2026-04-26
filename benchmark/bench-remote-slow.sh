@@ -146,21 +146,34 @@ EXIT_CODE=$?
 #
 # bench-remote.sh writes server stdout to /tmp/bench-remote-${NAME}.log
 # on the server. AbstractIoTransport.logTransportStatsOnClose emits one
-# line per closed transport at debug level. If KEEL_LOG_LEVEL=debug is
-# enabled in the benchmark binary, scrape an aggregated view here.
+# line per closed transport at debug level. If KEEL_BENCH_LOG_LEVEL=debug
+# is set on the server (forwarded via BENCH_SERVER_ENV), scrape an
+# aggregated view here.
+#
+# Implemented as a single ssh that runs the whole grep + sum + ratio
+# pipeline server-side. Single-shot output keeps the parsing trivial
+# (no `grep -c` returning a different exit code on empty matches, no
+# stale `|| echo 0` doubling the line count).
 LOG_PATH="/tmp/bench-remote-${NAME}.log"
-TRANSPORT_LINES=$(ssh -n "$REMOTE_HOST" "grep -c 'transport stats:' ${LOG_PATH} 2>/dev/null || echo 0")
-if [ "$TRANSPORT_LINES" -gt 0 ]; then
-    PARTIAL_TOTAL=$(ssh -n "$REMOTE_HOST" "grep 'transport stats:' ${LOG_PATH} | awk -F'partial=' '{print \$2}' | awk '{print \$1}' | paste -sd+ - | bc")
-    FLUSH_TOTAL=$(ssh -n "$REMOTE_HOST" "grep 'transport stats:' ${LOG_PATH} | awk -F'flush=' '{print \$2}' | awk '{print \$1}' | paste -sd+ - | bc")
-    if [ -n "$FLUSH_TOTAL" ] && [ "$FLUSH_TOTAL" != "0" ]; then
-        RATIO_PCT=$(awk "BEGIN { printf \"%.2f\", $PARTIAL_TOTAL * 100.0 / $FLUSH_TOTAL }")
-        echo "[bench-remote-slow] transport stats: ${TRANSPORT_LINES} closed transports, flush=${FLUSH_TOTAL} partial=${PARTIAL_TOTAL} ratio=${RATIO_PCT}%" >&2
-    else
-        echo "[bench-remote-slow] transport stats: ${TRANSPORT_LINES} closed transports, no flush activity (counter not reached)" >&2
-    fi
+STATS_OUT=$(ssh -n "$REMOTE_HOST" "awk -F'partial=' '
+    /transport stats:/ {
+        n++;
+        partial += \$2 + 0;
+        match(\$0, /flush=[0-9]+/);
+        if (RSTART > 0) flush += substr(\$0, RSTART + 6, RLENGTH - 6) + 0;
+    }
+    END {
+        if (n == 0) { print \"none\"; }
+        else if (flush == 0) { printf \"%d closed, no flush activity\\n\", n; }
+        else {
+            ratio = partial * 100.0 / flush;
+            printf \"%d closed, flush=%d partial=%d ratio=%.2f%%\\n\", n, flush, partial, ratio;
+        }
+    }' ${LOG_PATH} 2>/dev/null || echo none")
+if [ "$STATS_OUT" = "none" ]; then
+    echo "[bench-remote-slow] no transport stats lines in ${LOG_PATH} on ${REMOTE_HOST} — debug logging may be disabled (set BENCH_SERVER_ENV=KEEL_BENCH_LOG_LEVEL=debug)" >&2
 else
-    echo "[bench-remote-slow] no transport stats lines in ${LOG_PATH} — debug logging may be disabled (try KEEL_LOG_LEVEL=debug)" >&2
+    echo "[bench-remote-slow] transport stats: ${STATS_OUT}" >&2
 fi
 
 exit $EXIT_CODE
