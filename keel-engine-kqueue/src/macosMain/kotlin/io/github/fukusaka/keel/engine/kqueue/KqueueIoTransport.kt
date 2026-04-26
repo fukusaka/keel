@@ -136,7 +136,7 @@ internal class KqueueIoTransport(
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
-
+        flushCount++
         if (pendingWrites.size == 1) {
             return flushSingle(pendingWrites.removeFirst())
         }
@@ -168,6 +168,7 @@ internal class KqueueIoTransport(
         pendingWrites.clear()
         pendingBytes = 0
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
+        logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }
 
     // --- Single-buffer flush ---
@@ -183,6 +184,7 @@ internal class KqueueIoTransport(
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
+                    if (written > 0) partialWriteCount++
                     // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
                     pendingWrites.add(0, remainder)
@@ -245,6 +247,7 @@ internal class KqueueIoTransport(
         }
 
         // Partial writev: release fully-written buffers, adjust the split buffer.
+        partialWriteCount++
         val remaining = mutableListOf<PendingWrite>()
         var consumed = 0
         for (pw in pendingWrites) {

@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import kotlin.concurrent.Volatile
 
 /**
@@ -161,6 +163,65 @@ abstract class AbstractIoTransport(
         } else if (!writable && pendingBytes < IoTransport.DEFAULT_LOW_WATER_MARK) {
             writable = true
             onWritabilityChanged?.invoke(true)
+        }
+    }
+
+    // --- Slow-path instrumentation (single-thread invariant; non-atomic) ---
+    //
+    // Counters incremented by subclass flush implementations to make
+    // partial-write firing rate observable from the outside. Used by the
+    // project's slow-path benchmark scenarios (real-network, congestion-
+    // injected) to verify that an A/B run actually exercises the
+    // partial-write path that the optimisation under evaluation targets,
+    // rather than silently testing the fast path on loopback.
+    //
+    // Touched only from the owning EventLoop thread (or the engine-local
+    // serial dispatch queue), matching the same invariant as
+    // `pendingBytes` / `pendingWrites` / `teardownStarted`. Plain `Long`
+    // suffices — no atomic / volatile required.
+    //
+    // Subclasses MUST increment [flushCount] for every flush call (gather
+    // or single, regardless of outcome) and [partialWriteCount] for every
+    // observed partial write (i.e. `writtenBytes < totalBytes` after a
+    // successful `write`/`writev` syscall). Failed / WouldBlock outcomes
+    // do not count as partial writes.
+
+    /**
+     * Total `flush` syscall invocations on this transport. Includes both
+     * single-buffer and gather paths regardless of outcome (success, partial,
+     * WouldBlock, Failed). Stays at zero on read-only transports.
+     */
+    protected var flushCount: Long = 0
+
+    /**
+     * Number of `flush` invocations that observed a partial write
+     * (`writtenBytes < totalBytes` from a successful `write`/`writev`).
+     * The ratio `partialWriteCount / flushCount` is the empirical
+     * partial-write firing rate for this transport's lifetime.
+     */
+    protected var partialWriteCount: Long = 0
+
+    /**
+     * Logs the slow-path instrumentation counters on transport teardown.
+     * Subclass [close] implementations call this from inside the
+     * EventLoop-thread teardown body (after the resource is fully
+     * released) so the counts reflect the entire transport lifetime.
+     *
+     * Emitted at debug level — no overhead in production where debug
+     * logging is disabled.
+     */
+    protected fun logTransportStatsOnClose(logger: Logger, fdLabel: String) {
+        if (flushCount == 0L) return
+        // Ratio expressed as basis points (1/10000) to avoid `String.format`
+        // dependency on the K/N commonMain target. Consumers (bench scripts,
+        // analysis tools) divide by 100.0 for the human-readable percentage.
+        val ratioBp = if (partialWriteCount > 0L) {
+            (partialWriteCount * 10_000L / flushCount).toInt()
+        } else {
+            0
+        }
+        logger.debug {
+            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp"
         }
     }
 
