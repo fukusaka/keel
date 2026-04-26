@@ -247,21 +247,26 @@ internal class KqueueIoTransport(
         }
 
         // Partial writev: release fully-written buffers, adjust the split buffer.
+        // Drain fully-written entries from the head of the deque, mutate
+        // the partially-written entry in place at the head, leave the rest.
+        // Eliminates the per-partial-write `mutableListOf<PendingWrite>()`
+        // + Iterator allocations that the old rebuild-and-replace path
+        // required, and reduces the `PendingWrite` allocations to one
+        // (only the partial entry — trailing untouched entries stay as-is).
         partialWriteCount++
-        val remaining = mutableListOf<PendingWrite>()
         var consumed = 0
-        for (pw in pendingWrites) {
+        while (pendingWrites.isNotEmpty()) {
+            val pw = pendingWrites.first()
             if (consumed + pw.length <= writtenBytes) {
                 consumed += pw.length
                 pw.buf.release()
+                pendingWrites.removeFirst()
             } else {
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                remaining.add(PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten))
-                consumed += pw.length
+                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                break
             }
         }
-        pendingWrites.clear()
-        pendingWrites.addAll(remaining)
         updatePendingBytes(-writtenBytes)
         registerWriteCallback()
         return false
