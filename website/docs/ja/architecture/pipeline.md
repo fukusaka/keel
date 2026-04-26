@@ -186,16 +186,16 @@ engine.bindPipeline(host, port, BindConfig(backlog = 512)) { ... }
 
 // HTTPS: keel TlsHandler を接続ごとにインストール
 // factory は TlsCodecFactory（例: OpenSslCodecFactory, JsseTlsCodecFactory）
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig, factory)) { ... }
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { ... }
 
 // HTTPS: エンジンネイティブ TLS（NWConnection / Node.js のみ）
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig)) { ... }
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig)) { ... }
 
 // HTTPS: Netty SslHandler + カスタムバックログ
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig, NettySslInstaller(), backlog = 256)) { ... }
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig, NettySslInstaller(), backlog = 256)) { ... }
 ```
 
-`TlsConnectorConfig` は `BindConfig` を継承し `backlog` パラメータを持ちます。`tlsConfig` の構築方法と `factory` の選択については [TLS](./tls.md) を参照してください。
+`TlsServerConfig`（`keel-server`）は `BindConfig` を継承し `backlog` パラメータを持ちます。`tlsConfig` の構築方法と `factory` の選択については [TLS](./tls.md) を参照してください。
 
 ## PipelinedChannel
 

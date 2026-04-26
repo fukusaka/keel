@@ -128,7 +128,7 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 |---|---|
 | `keel-core` | `StreamEngine`, `Channel`, `Server`, `BindConfig`, `Logger` |
 | `keel-io` | `IoBuf`, `SuspendSource`, `SuspendSink`, `BufferAllocator` |
-| `keel-tls` | `TlsConfig`, `TlsInstaller`, certificate utilities (TLS interface definitions; pulled in transitively) |
+| `keel-tls` | `TlsConfig`, `TlsCodecFactory`, certificate utilities (TLS protocol primitives; server-side install plumbing lives in `keel-server`) |
 | `keel-native-posix` | Shared POSIX socket utilities (internal use by Native engines) |
 
 ### Engines (select one per target platform)

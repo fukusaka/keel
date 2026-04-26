@@ -63,7 +63,7 @@ keel/
 ├── keel-engine-netty/         # JVM (Netty 4.2 委譲)
 ├── keel-engine-nodejs/        # JS (Node.js net/tls)
 ├── keel-engine-nwconnection/  # macosArm64, macosX64 (Network.framework)
-├── keel-tls/                  # TlsConfig / TlsInstaller / PemDerConverter / Pkcs8KeyUnwrapper
+├── keel-tls/                  # TlsConfig / TlsCodecFactory / PemDerConverter / Pkcs8KeyUnwrapper
 ├── keel-tls-jsse/             # JVM (JSSE / JDK SSLContext)
 ├── keel-tls-openssl/          # Native (OpenSSL cinterop, -Ptls ビルド)
 ├── keel-tls-mbedtls/          # Native (Mbed TLS cinterop, -Ptls ビルド)

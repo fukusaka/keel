@@ -107,7 +107,7 @@ TlsConfig（証明書・トラストストア・ALPN・SNI）
 
 ### 接続ごとの TLS
 
-`TlsCodecFactory` は接続ごとのコーデックを生成し、バッファ対バッファの操作で暗号化（`protect`）と復号（`unprotect`）を実行します。`TlsConfig` を構築し、ファクトリを生成し、両方を `TlsConnectorConfig` に渡します:
+`TlsCodecFactory` は接続ごとのコーデックを生成し、バッファ対バッファの操作で暗号化（`protect`）と復号（`unprotect`）を実行します。`TlsConfig` を構築し、ファクトリを生成し、 `TlsCodecServerInstaller`（`keel-server`）でラップして `TlsServerConfig` に渡します:
 
 ```kotlin
 // kqueue、epoll、NIO 等での HTTPS
@@ -118,7 +118,7 @@ val tlsConfig = TlsConfig(
     ),
 )
 val factory: TlsCodecFactory = OpenSslCodecFactory()   // または JsseTlsCodecFactory()
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig, factory)) { channel ->
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
     // channel は平文を受け取る — パイプライン内の TlsHandler が暗号処理を担う
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
     // ...
@@ -146,11 +146,11 @@ override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
 
 ### リスナーレベル TLS
 
-NWConnection と Node.js はトランスポートレベルで TLS をネゴシエーションします。`installer` 引数なし（デフォルトで `null`）で `TlsConnectorConfig` を渡すことでこのモードが有効になります:
+NWConnection と Node.js はトランスポートレベルで TLS をネゴシエーションします。`installer` 引数なし（デフォルトで `null`）で `TlsServerConfig` を渡すことでこのモードが有効になります:
 
 ```kotlin
 // NWConnection または Node.js: OS/ランタイムが TLS を処理
-engine.bindPipeline(host, port, TlsConnectorConfig(tlsConfig)) { channel ->
+engine.bindPipeline(host, port, TlsServerConfig(tlsConfig)) { channel ->
     // channel は平文を受け取る — パイプラインに TlsHandler なし
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
     // ...
