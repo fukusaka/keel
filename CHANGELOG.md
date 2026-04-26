@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- `engine-epoll`: split the 1302-line `EpollEngineTest` into 5 focused files (`EpollEngineLifecycleTest` / `EpollEngineReadWriteTest` / `EpollEngineConnectTest` / `EpollEngineConcurrencyTest` / `EpollEngineResourceTest`) plus a shared `EpollEngineTestSupport` for helpers + constants, matching the `.claude/rules/testing.md` category split. No test logic changes; all 48 tests preserved (#373)
 - `core` / `io` / `website`: rewrite buffer ownership docs to the unified transfer model — single rule ("writes transfer, reads don't") + 3 `retain()` scenarios. Updates `buffer.md` (EN + JA), `IoBuf` / `Channel` / `IoTransport` / `SuspendSink` KDocs, and `keel-io` / `keel-core` module.md (#350)
 - `core` / `io` / `website`: document `Channel.write(buf)` / `IoTransport.write(buf)` as retain-on-input (caller must still `release()`), not transfer; aligns `buffer.md` (EN + JA), KDocs, and `module.md` (#349)
 - `website` (architecture): rewrite `buffer.md` (EN + JA) for first-time readers — ownership rules, thread-safety contract, per-platform implementation details, 6-way buffer API comparison, 5 factual-error fixes ([#348])
