@@ -105,7 +105,7 @@ Supported certificate sources: `TlsCertificateSource.Pem`, `TlsCertificateSource
 | `NettyEngine` | `StreamEngine` implementation. Creates boss + worker `NioEventLoopGroup` |
 | `NettyPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `channelRead` to keel pipeline |
 | `NettyIoTransport` | `IoTransport` for buffered async writes via `writeAndFlush`. Always async |
-| `NettySslInstaller` | `TlsInstaller` that installs Netty `SslHandler` at the transport level |
+| `NettySslInstaller` | `TlsServerInstaller` (in `:keel-server`) that installs Netty `SslHandler` at the transport level |
 | `NettyStreamServer` | Coroutine-mode server: accepts connections into a suspend queue |
 
 # Package io.github.fukusaka.keel.engine.netty

@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.server.TlsServerInstaller
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
-import io.github.fukusaka.keel.tls.TlsInstaller
 import io.github.fukusaka.keel.tls.asPem
 import io.netty.handler.ssl.SslContext
 import io.netty.handler.ssl.SslContextBuilder
@@ -12,7 +12,7 @@ import java.security.KeyStore
 import javax.net.ssl.KeyManagerFactory
 
 /**
- * [TlsInstaller] that uses Netty's native [SslHandler][io.netty.handler.ssl.SslHandler]
+ * [TlsServerInstaller] that uses Netty's native [SslHandler][io.netty.handler.ssl.SslHandler]
  * instead of keel's [TlsHandler][io.github.fukusaka.keel.tls.TlsHandler].
  *
  * Installs Netty's `SslHandler` in the Netty pipeline (before the keel
@@ -30,13 +30,11 @@ import javax.net.ssl.KeyManagerFactory
  * ```
  * embeddedServer(Keel) {
  *     engine = NettyEngine(IoEngineConfig())
- *     sslConnector(tlsConfig, JsseTlsCodecFactory(), NettySslInstaller()) {
- *         port = 8443
- *     }
+ *     sslConnector(tlsConfig, NettySslInstaller()) { port = 8443 }
  * }
  * ```
  */
-class NettySslInstaller : TlsInstaller {
+class NettySslInstaller : TlsServerInstaller {
 
     override fun install(channel: PipelinedChannel, config: TlsConfig) {
         require(channel is NettyPipelinedChannel) {
