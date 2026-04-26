@@ -2,9 +2,10 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
+import io.github.fukusaka.keel.server.TlsCodecServerInstaller
+import io.github.fukusaka.keel.server.TlsServerConfig
+import io.github.fukusaka.keel.server.TlsServerInstaller
 import io.github.fukusaka.keel.tls.TlsCodecFactory
-import io.github.fukusaka.keel.tls.TlsConnectorConfig
-import io.github.fukusaka.keel.tls.TlsInstaller
 
 /**
  * Pluggable factory provider for TLS benchmarking.
@@ -42,40 +43,41 @@ fun createTlsCodecFactory(backend: String): TlsCodecFactory {
  *
  * Call this immediately after [BenchmarkConfig.parse] in main().
  */
-private var tlsInstallerProvider: ((String) -> TlsInstaller)? = null
+private var tlsInstallerProvider: ((String) -> TlsServerInstaller)? = null
 
 /** Register a platform-specific TLS installer provider for engine-native TLS. */
-fun registerTlsInstallerProvider(provider: (String) -> TlsInstaller) {
+fun registerTlsInstallerProvider(provider: (String) -> TlsServerInstaller) {
     tlsInstallerProvider = provider
 }
 
 /**
- * Create a [TlsConnectorConfig] based on the `--tls-installer` option.
+ * Create a [TlsServerConfig] based on the `--tls-installer` option.
  *
- * - `"keel"` (default): uses the [TlsCodecFactory] as the [TlsInstaller] (keel TlsHandler).
+ * - `"keel"` (default): wraps the [TlsCodecFactory] in [TlsCodecServerInstaller]
+ *   for keel's `TlsHandler`.
  * - `"netty"` etc.: uses an engine-specific installer from the registered provider.
  *
  * @param config Benchmark configuration with `tls` and `tlsInstaller` fields.
- * @return A [TlsConnectorConfig] and an optional [AutoCloseable] to release (factory lifecycle).
+ * @return A [TlsServerConfig] and an optional [AutoCloseable] to release (factory lifecycle).
  */
-fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsConnectorConfig, AutoCloseable?> {
+fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsServerConfig, AutoCloseable?> {
     val backend = requireNotNull(config.tls) { "--tls is required for TLS" }
     val tlsConfig = BenchmarkCertificates.tlsConfig()
     val childOpts = childSocketOptions(config)
     return when (val installerName = config.tlsInstaller) {
         "keel" -> {
             val factory = createTlsCodecFactory(backend)
-            TlsConnectorConfig(tlsConfig, factory, childSocketOptions = childOpts) to factory
+            TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory), childSocketOptions = childOpts) to factory
         }
         "nwconnection", "node" -> {
             // Engine-native TLS: installer = null, engine handles TLS at listener level
-            TlsConnectorConfig(tlsConfig, childSocketOptions = childOpts) to null
+            TlsServerConfig(tlsConfig, childSocketOptions = childOpts) to null
         }
         else -> {
             val provider = tlsInstallerProvider
                 ?: error("No TLS installer provider registered for '$installerName'")
             val installer = provider(installerName)
-            TlsConnectorConfig(tlsConfig, installer, childSocketOptions = childOpts) to null
+            TlsServerConfig(tlsConfig, installer, childSocketOptions = childOpts) to null
         }
     }
 }
