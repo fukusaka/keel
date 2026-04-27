@@ -114,8 +114,12 @@ for run in $(seq 1 "$RUNS"); do
     RESULT=$(wrk -t"${WRK_THREADS}" -c"${WRK_CONNS}" -d"${WRK_DURATION}" --latency "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" 2>&1)
 
     RPS=$(echo "$RESULT" | grep "Requests/sec" | awk '{print $2}')
-    P50=$(echo "$RESULT" | grep "50%" | awk '{print $2}')
-    P99=$(echo "$RESULT" | grep "99%" | awk '{print $2}')
+    # Latency Distribution rows look like `   50%    1.20ms`. Anchor on the
+    # full shape (whitespace + `50%` + whitespace) so we don't misread the
+    # Thread Stats `Req/Sec ... 50.99%` (column-4 +/- Stdev band) as a
+    # percentile and put `14.11k` into P50/P99.
+    P50=$(echo "$RESULT" | awk '/^[[:space:]]+50%[[:space:]]/ {print $2; exit}')
+    P99=$(echo "$RESULT" | awk '/^[[:space:]]+99%[[:space:]]/ {print $2; exit}')
     ALL_RPS+=("$RPS")
 
     if [ -n "$RPS" ] && awk "BEGIN {exit !($RPS > $BEST_RPS)}" 2>/dev/null; then

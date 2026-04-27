@@ -167,8 +167,10 @@ run_bench() {
     fi
 
     local lat50 lat99 errors
-    lat50=$(echo "$best_result" | grep "50%" | awk '{print $2}')
-    lat99=$(echo "$best_result" | grep "99%" | awk '{print $2}')
+    # Anchor on `^   50%   ` shape; otherwise wrk's `Req/Sec ... 50.99%`
+    # +/- Stdev band can be misread as a percentile.
+    lat50=$(echo "$best_result" | awk '/^[[:space:]]+50%[[:space:]]/ {print $2; exit}')
+    lat99=$(echo "$best_result" | awk '/^[[:space:]]+99%[[:space:]]/ {print $2; exit}')
     errors=$(echo "$best_result" | grep "Socket errors" | head -1)
 
     if [ "$RUNS" -gt 1 ]; then
