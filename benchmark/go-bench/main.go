@@ -195,7 +195,7 @@ func (c *Config) display() string {
 	}
 
 	b.WriteString("=== Benchmark Configuration ===\n")
-	f("server:", "go-hello")
+	f("server:", "go-bench")
 	f("port:", strconv.Itoa(c.Port))
 	f("profile:", c.Profile)
 	f("cpu-cores:", strconv.Itoa(cpu))
@@ -236,7 +236,7 @@ func (c *Config) display() string {
 	f("threads:", threadsDisplay)
 	b.WriteString("\n")
 
-	b.WriteString("--- Engine-Specific (go-hello) ---\n")
+	b.WriteString("--- Engine-Specific (go-bench) ---\n")
 	f("(all via socket options)", "")
 
 	return b.String()
