@@ -10,6 +10,7 @@
 # scenario:
 #   upload   POST /upload-stream  (request-body streaming throughput)
 #   sse      GET  /sse-stream     (response-body streaming throughput)
+#   ws-echo  GET  /ws-echo        (WebSocket echo throughput)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS           Number of runs; median is reported (default: 1)
@@ -21,6 +22,8 @@
 #   BENCH_PAYLOAD_KB     upload.js payload size KB (default: 64)
 #   BENCH_SSE_COUNT      sse.js frame count        (default: 100)
 #   BENCH_SSE_SIZE       sse.js per-frame bytes    (default: 1024)
+#   BENCH_WS_PAYLOAD     ws-echo.js msg size bytes (default: 256)
+#   BENCH_WS_PING_PONGS  msgs per VU before close  (default: unlimited until duration)
 #
 # Example:
 #   ./benchmark/bench-stream-one.sh ktor-keel-nio upload \
@@ -34,18 +37,26 @@ NAME="${1:?Usage: bench-stream-one.sh <name> <scenario> <command> [args...]}"
 SCENARIO="${2:?Usage: bench-stream-one.sh <name> <scenario> <command> [args...]}"
 shift 2
 
-# Map scenario name to k6 script + endpoint hint (for readiness probe).
+# Map scenario name to k6 script + endpoint hint (for readiness probe) +
+# parser kind (HTTP req metrics vs WebSocket session/msg metrics).
 case "$SCENARIO" in
     upload)
         SCRIPT="benchmark/k6/upload.js"
         READY_ENDPOINT="/hello"
+        PARSER="http"
         ;;
     sse)
         SCRIPT="benchmark/k6/sse.js"
         READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
+    ws-echo)
+        SCRIPT="benchmark/k6/ws-echo.js"
+        READY_ENDPOINT="/hello"
+        PARSER="ws"
         ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo)" >&2
         exit 1
         ;;
 esac
@@ -107,14 +118,30 @@ median() {
 
 parse_k6_output() {
     local out="$1"
+    local kind="$2"
+    local rps_metric duration_metric
+    case "$kind" in
+        ws)
+            # WebSocket bench: count echoed messages received/sec; latency
+            # comes from the per-frame round-trip metric ws_session_duration
+            # captures the connect + first message hop, but ws_msg_received
+            # rate is the throughput signal we want.
+            rps_metric="ws_msgs_received"
+            duration_metric="ws_session_duration"
+            ;;
+        *)
+            rps_metric="http_reqs"
+            duration_metric="http_req_duration"
+            ;;
+    esac
     local rps p50 p99
-    rps=$(printf '%s' "$out" | awk '/^[[:space:]]*http_reqs/ {
+    rps=$(printf '%s' "$out" | awk -v m="$rps_metric" '$0 ~ "^[[:space:]]*"m {
         for (i = NF; i > 0; i--) if ($i ~ /\/s$/) { sub(/\/s$/, "", $i); print $i; exit }
     }')
-    p50=$(printf '%s' "$out" | awk '/^[[:space:]]*http_req_duration/ {
+    p50=$(printf '%s' "$out" | awk -v m="$duration_metric" '$0 ~ "^[[:space:]]*"m {
         for (i = 1; i <= NF; i++) if ($i ~ /^p\(50\)=/) { sub(/^p\(50\)=/, "", $i); print $i; exit }
     }')
-    p99=$(printf '%s' "$out" | awk '/^[[:space:]]*http_req_duration/ {
+    p99=$(printf '%s' "$out" | awk -v m="$duration_metric" '$0 ~ "^[[:space:]]*"m {
         for (i = 1; i <= NF; i++) if ($i ~ /^p\(99\)=/) { sub(/^p\(99\)=/, "", $i); print $i; exit }
     }')
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
@@ -161,11 +188,13 @@ for run in $(seq 1 "$RUNS"); do
         VUS="$K6_VUS" DURATION="$K6_DURATION" \
         PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
         COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
+        PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
+        PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
         k6 run --quiet --no-color \
             --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
             "$SCRIPT" 2>&1
     )
-    PARSED=$(parse_k6_output "$K6_OUT")
+    PARSED=$(parse_k6_output "$K6_OUT" "$PARSER")
     RPS=$(echo "$PARSED" | cut -d'|' -f1)
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)
