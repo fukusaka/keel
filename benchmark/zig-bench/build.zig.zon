@@ -1,7 +1,7 @@
 .{
-    .name = .zig_hello,
+    .name = .zig_bench,
     .version = "0.1.0",
-    .fingerprint = 0xfdb7fa766b03210,
+    .fingerprint = 0x5f133a04c3872999,
     .paths = .{
         "build.zig",
         "build.zig.zon",

@@ -115,7 +115,7 @@ const Config = struct {
         const p = std.debug.print;
 
         p("=== Benchmark Configuration ===\n", .{});
-        p("  {s:<22} {s}\n", .{ "server:", "zig-hello" });
+        p("  {s:<22} {s}\n", .{ "server:", "zig-bench" });
         p("  {s:<22} {d}\n", .{ "port:", self.port });
         p("  {s:<22} {s}\n", .{ "profile:", self.profile });
         p("  {s:<22} {d}\n", .{ "cpu-cores:", cpu });
@@ -138,7 +138,7 @@ const Config = struct {
         }
         p("\n", .{});
 
-        p("--- Engine-Specific (zig-hello) ---\n", .{});
+        p("--- Engine-Specific (zig-bench) ---\n", .{});
         if (self.read_buffer) |v| p("  {s:<22} {d}\n", .{ "read-buffer:", v }) else p("  {s:<22} 8192 (default)\n", .{"read-buffer:"});
         if (self.write_buffer) |v| p("  {s:<22} {d}\n", .{ "write-buffer:", v }) else p("  {s:<22} 8192 (default)\n", .{"write-buffer:"});
     }
@@ -342,7 +342,7 @@ fn handleSseStream(req: *http.Server.Request, target: []const u8, keep_alive: bo
 /// sends a fragmented message, `readSmallMessage` errors out and we
 /// close the connection cleanly with a 1003 (`unsupported data`) close
 /// frame so the client sees a deterministic failure instead of hanging.
-/// Fragmented bench coverage for zig-hello is therefore N/A until
+/// Fragmented bench coverage for zig-bench is therefore N/A until
 /// upstream std.http grows a streaming-message API.
 fn handleWsEcho(req: *http.Server.Request) !void {
     const upgrade = req.upgradeRequested();
