@@ -165,12 +165,14 @@ for run in $(seq 1 "$RUNS"); do
     fi
     PID=$!
 
+    # Validate HTTP status, not just TCP connect (5xx would otherwise pass).
     READY=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
-        if curl -sk -o /dev/null "http://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null; then
-            READY=true
-            break
-        fi
+        STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null) || STATUS=000
+        case "$STATUS" in
+            2??|3??) READY=true; break ;;
+        esac
         sleep 0.5
     done
 

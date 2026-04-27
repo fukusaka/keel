@@ -89,13 +89,16 @@ for run in $(seq 1 "$RUNS"); do
     fi
     PID=$!
 
-    # Wait for server to be ready
+    # Wait for server to be ready. Validate HTTP status, not just TCP
+    # connect — without `-w '%{http_code}'` curl returns 0 even on 5xx
+    # responses, so a half-broken engine would still be marked ready.
     READY=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
-        if curl -sk -o /dev/null "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null; then
-            READY=true
-            break
-        fi
+        STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
+            "${SCHEME}://127.0.0.1:${PORT}${ENDPOINT}" 2>/dev/null) || STATUS=000
+        case "$STATUS" in
+            2??|3??) READY=true; break ;;
+        esac
         sleep 0.5
     done
 

@@ -90,12 +90,16 @@ run_bench() {
         fi
         local pid=$!
 
+        # Validate HTTP status, not just TCP connect — see bench-one.sh
+        # for the rationale (5xx responses would otherwise pass).
         local ready=false
         for _ in $(seq 1 "$READY_TIMEOUT"); do
-            if curl -sk -o /dev/null "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null; then
-                ready=true
-                break
-            fi
+            local status
+            status=$(curl -sk -o /dev/null -w '%{http_code}' \
+                "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null) || status=000
+            case "$status" in
+                2??|3??) ready=true; break ;;
+            esac
             sleep 0.3
         done
 
