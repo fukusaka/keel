@@ -23,6 +23,10 @@ kotlin {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-tls"))
                 implementation(project(":keel-server"))
+                // `api` because :keel-server-ktor-base exposes the
+                // `KeelApplicationEngine` + `Configuration` types that
+                // consumers of `embeddedServer(Keel)` reference directly.
+                api(project(":keel-server-ktor-base"))
                 implementation(project(":keel-codec-http"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.kotlinx.coroutines.core)
