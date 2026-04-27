@@ -374,7 +374,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: add `Channel.coroutineDispatcher` for engine-specific EventLoop dispatcher (default: `Dispatchers.Default`)
 - `core`: add `kotlinx-coroutines-core` as `api` dependency in commonMain
 - All engines: delete `ChannelSource`/`ChannelSink` and remove `asSource()`/`asSink()` from `Channel` interface
-- `core`: remove kotlinx-io dependency — kotlinx-io is now confined to codec layer only (design.md §4.8)
+- `core`: remove kotlinx-io dependency — kotlinx-io is now confined to the codec layer
 
 ## [0.1.0] - 2026-03-22
 
