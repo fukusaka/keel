@@ -192,8 +192,8 @@ AMD Ryzen 9 9950X3D（16 コア / 32 スレッド）、192 GB RAM、Ubuntu 24.04
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| rust-hello | 1,319K | 39us | 110us |
-| zig-hello | 1,133K | 42us | 108us |
+| rust-bench | 1,319K | 39us | 110us |
+| zig-bench | 1,133K | 42us | 108us |
 | jvm:netty-raw | 877K | 59us | 166us |
 | **native:pipeline-http-epoll** | **870K** | **58us** | **174us** |
 | **native:pipeline-http-io-uring** | **860K** | **59us** | **170us** |
@@ -203,8 +203,8 @@ AMD Ryzen 9 9950X3D（16 コア / 32 スレッド）、192 GB RAM、Ubuntu 24.04
 | **jvm:ktor-keel-netty** | **677K** | **99us** | **2.88ms** |
 | **native:ktor-keel-epoll** | **589K** | **99us** | **1.93ms** |
 | **jvm:ktor-keel-nio** | **540K** | **106us** | **2.24ms** |
-| go-hello | 536K | 102us | 1.02ms |
-| swift-hello | 527K | 146us | 473us |
+| go-bench | 536K | 102us | 1.02ms |
+| swift-bench | 527K | 146us | 473us |
 | jvm:vertx | 354K | 275us | 301us |
 | **native:pipeline-http-nodejs** | **151K** | **560us** | **1.67ms** |
 | jvm:ktor-cio | 146K | 572us | 4.40ms |
@@ -216,18 +216,18 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| rust-hello | 161K | 583us | 0.88ms |
+| rust-bench | 161K | 583us | 0.88ms |
 | **native:pipeline-http-kqueue** | **154K** | **380us** | **4.38ms** |
 | jvm:spring | 150K | 598us | 1.91ms |
 | **jvm:pipeline-http-nio** | **146K** | **410us** | **11.80ms** |
-| go-hello | 141K | 521us | 2.14ms |
+| go-bench | 141K | 521us | 2.14ms |
 | jvm:netty-raw | 139K | 684us | 0.91ms |
-| zig-hello | 136K | 690us | 0.93ms |
+| zig-bench | 136K | 690us | 0.93ms |
 | jvm:ktor-netty | 132K | 499us | 6.18ms |
 | **jvm:ktor-keel-nio** | **128K** | **410us** | **11.80ms** |
 | jvm:vertx | 112K | 0.86ms | 1.75ms |
 | **native:ktor-keel-kqueue** | **108K** | **588us** | **9.47ms** |
-| swift-hello | 98K | 651us | 23.56ms |
+| swift-bench | 98K | 651us | 23.56ms |
 | **jvm:ktor-keel-netty** | **94K** | **487us** | **41.21ms** |
 | **native:pipeline-http-nodejs** | **71K** | **1.43ms** | **2.32ms** |
 | jvm:ktor-cio | 64K | 1.02ms | 18.20ms |

@@ -38,12 +38,12 @@ Output artifacts:
 
 | Server | Build command | Binary path |
 |--------|---------------|-------------|
-| `rust-hello` | `cd benchmark/rust-hello && cargo build --release` | `target/release/rust-hello` |
-| `go-hello` | `cd benchmark/go-hello && go build -o go-hello` | `go-hello` |
-| `swift-hello` | `cd benchmark/swift-hello && swift build -c release` | `.build/release/swift-hello` |
-| `zig-hello` | `cd benchmark/zig-hello && zig build -Doptimize=ReleaseFast` | `zig-out/bin/zig-hello` |
+| `rust-bench` | `cd benchmark/rust-bench && cargo build --release` | `target/release/rust-bench` |
+| `go-bench` | `cd benchmark/go-bench && go build -o go-bench` | `go-bench` |
+| `swift-bench` | `cd benchmark/swift-bench && swift build -c release` | `.build/release/swift-bench` |
+| `zig-bench` | `cd benchmark/zig-bench && zig build -Doptimize=ReleaseFast` | `zig-out/bin/zig-bench` |
 
-`swift-hello` is macOS only (requires SwiftNIO + Network.framework).
+`swift-bench` is macOS only (requires SwiftNIO + Network.framework).
 
 ## Usage
 
@@ -155,13 +155,13 @@ Non-Kotlin standalone servers included in `bench-all.sh` for cross-language comp
 
 | Server | Language | Framework | I/O Model | Platforms |
 |--------|----------|-----------|-----------|-----------|
-| `rust-hello` | Rust | Axum 0.8 + Tokio | Async (work-stealing) | macOS, Linux |
-| `go-hello` | Go | Gin | Goroutines | macOS, Linux |
-| `swift-hello` | Swift | Hummingbird 2 + SwiftNIO | Async (EventLoop) | macOS only |
-| `zig-hello` | Zig | std.http.Server | Thread-per-connection | macOS, Linux |
+| `rust-bench` | Rust | Axum 0.8 + Tokio | Async (work-stealing) | macOS, Linux |
+| `go-bench` | Go | Gin | Goroutines | macOS, Linux |
+| `swift-bench` | Swift | Hummingbird 2 + SwiftNIO | Async (EventLoop) | macOS only |
+| `zig-bench` | Zig | std.http.Server | Thread-per-connection | macOS, Linux |
 
 Each accepts the same `--key=value` CLI format for `--port`, `--threads`, `--tcp-nodelay`, etc.
-Source lives under `benchmark/rust-hello/`, `benchmark/go-hello/`, `benchmark/swift-hello/`, `benchmark/zig-hello/`.
+Source lives under `benchmark/rust-bench/`, `benchmark/go-bench/`, `benchmark/swift-bench/`, `benchmark/zig-bench/`.
 
 ## Configuration
 
