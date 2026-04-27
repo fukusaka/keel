@@ -213,10 +213,10 @@ build_engine_list() {
 
     # Phase 2: Native servers
     for pair in \
-        "rust-hello:benchmark/rust-hello/target/release/rust-hello" \
-        "go-hello:benchmark/go-hello/go-hello" \
-        "swift-hello:benchmark/swift-hello/.build/release/swift-hello" \
-        "zig-hello:benchmark/zig-hello/zig-out/bin/zig-hello"; do
+        "rust-bench:benchmark/rust-bench/target/release/rust-bench" \
+        "go-bench:benchmark/go-bench/go-bench" \
+        "swift-bench:benchmark/swift-bench/.build/release/swift-bench" \
+        "zig-bench:benchmark/zig-bench/zig-out/bin/zig-bench"; do
         local ename="${pair%%:*}"
         local ebin="${pair#*:}"
         if [ -f "$ebin" ]; then

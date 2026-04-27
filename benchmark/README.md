@@ -39,14 +39,14 @@ HTTP throughput benchmark comparing keel against mainstream server engines acros
 |---|---|---|---|
 | `pipeline-http-nodejs` | keel + NodeEngine | Pipeline | Async (Node.js event loop) |
 
-### Phase 2 Native (standalone binaries)
+### Cross-language reference servers (standalone binaries)
 
 | Server | Language | Framework | I/O Model |
 |---|---|---|---|
-| `rust-hello` | Rust | Axum 0.8 + tokio | Async (work-stealing) |
-| `go-hello` | Go | Gin | Goroutines |
-| `swift-hello` | Swift | Hummingbird 2 + SwiftNIO | Async (EventLoop) |
-| `zig-hello` | Zig | std.http.Server | Thread-per-connection |
+| `rust-bench` | Rust | Axum 0.8 + tokio | Async (work-stealing) |
+| `go-bench` | Go | Gin | Goroutines |
+| `swift-bench` | Swift | Hummingbird 2 + SwiftNIO | Async (EventLoop) |
+| `zig-bench` | Zig | std.http.Server | Thread-per-connection |
 
 ## Quick Start
 
@@ -105,10 +105,10 @@ BENCH_RUNS=3 BENCH_SHUFFLE=true BENCH_ENDPOINT=/large ./benchmark/bench-all.sh
 | `netty-raw` | o | o | Netty SslContext |
 | `spring` | o | o | Spring SSL properties |
 | `vertx` | o | o | Vert.x PemKeyCert |
-| `rust-hello` | o | o | rustls |
-| `go-hello` | o | o | Go crypto/tls |
-| `swift-hello` | o | o | SwiftNIO SSL |
-| `zig-hello` | o | — \*3 | |
+| `rust-bench` | o | o | rustls |
+| `go-bench` | o | o | Go crypto/tls |
+| `swift-bench` | o | o | SwiftNIO SSL |
+| `zig-bench` | o | — \*3 | |
 
 \*3 Zig std.http.Server does not support TLS.
 
@@ -160,7 +160,7 @@ BENCH_SCHEME=https ./benchmark/bench-all.sh
 | `bench-one.sh` | Single engine benchmark (loopback, wrk on the same host) |
 | `bench-remote.sh` | Single engine benchmark with server on one ssh host and wrk on another — measures over a real NIC link |
 | `bench-keel.sh` | keel engines only (keel-* + ktor-cio) |
-| `bench-all.sh` | All engines (Phase 2 Native + Kotlin/Native + JVM) |
+| `bench-all.sh` | All engines (cross-language reference servers + Kotlin/Native + JVM) |
 | `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
 
@@ -301,9 +301,9 @@ o = applied. \* = accepted and displayed in show-config but not applied by frame
 
 | Argument | Server | Description |
 |---|---|---|
-| `--tokio-blocking-threads=N` | rust-hello | Tokio max blocking threads |
-| `--read-buffer=N` | zig-hello | HTTP read buffer size (default: 8192) |
-| `--write-buffer=N` | zig-hello | HTTP write buffer size (default: 8192) |
+| `--tokio-blocking-threads=N` | rust-bench | Tokio max blocking threads |
+| `--read-buffer=N` | zig-bench | HTTP read buffer size (default: 8192) |
+| `--write-buffer=N` | zig-bench | HTTP write buffer size (default: 8192) |
 
 ## Build
 
@@ -316,16 +316,16 @@ o = applied. \* = accepted and displayed in show-config but not applied by frame
 ./gradlew -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64 :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs
 ```
 
-### Phase 2 Native
+### Cross-language reference servers
 
 | Server | Build | Binary |
 |---|---|---|
-| rust-hello | `cd benchmark/rust-hello && cargo build --release` | `target/release/rust-hello` |
-| go-hello | `cd benchmark/go-hello && go build -o go-hello` | `go-hello` |
-| swift-hello | `cd benchmark/swift-hello && swift build -c release` | `.build/release/swift-hello` |
-| zig-hello | `cd benchmark/zig-hello && zig build -Doptimize=ReleaseFast` | `zig-out/bin/zig-hello` |
+| rust-bench | `cd benchmark/rust-bench && cargo build --release` | `target/release/rust-bench` |
+| go-bench | `cd benchmark/go-bench && go build -o go-bench` | `go-bench` |
+| swift-bench | `cd benchmark/swift-bench && swift build -c release` | `.build/release/swift-bench` |
+| zig-bench | `cd benchmark/zig-bench && zig build -Doptimize=ReleaseFast` | `zig-out/bin/zig-bench` |
 
-swift-hello is macOS only (requires SwiftNIO + Network.framework).
+swift-bench is macOS only (requires SwiftNIO + Network.framework).
 
 ## Module Structure
 
@@ -380,8 +380,8 @@ benchmark/
 │   ├── JsMain.kt                    # Node.js entry point
 │   ├── Platform.js.kt               # JS platform actual
 │   └── PipelineHttpNodejsBenchmark.kt # Node.js pipeline benchmark
-├── rust-hello/                      # Rust Axum (Phase 2)
-├── go-hello/                        # Go Gin (Phase 2)
-├── swift-hello/                     # Swift Hummingbird (Phase 2, macOS only)
-└── zig-hello/                       # Zig std.http.Server (Phase 2)
+├── rust-bench/                      # Rust Axum (Phase 2)
+├── go-bench/                        # Go Gin (Phase 2)
+├── swift-bench/                     # Swift Hummingbird (Phase 2, macOS only)
+└── zig-bench/                       # Zig std.http.Server (Phase 2)
 ```

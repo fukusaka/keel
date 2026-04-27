@@ -30,13 +30,13 @@ benchmark/results/
 benchmark/results-summary/
 
 # Benchmark native server build artifacts
-benchmark/rust-hello/target/
-benchmark/rust-hello/Cargo.lock
-benchmark/go-hello/go-hello
-benchmark/go-hello/go.sum
-benchmark/swift-hello/.build/
-benchmark/zig-hello/zig-out/
-benchmark/zig-hello/.zig-cache/
+benchmark/rust-bench/target/
+benchmark/rust-bench/Cargo.lock
+benchmark/go-bench/go-bench
+benchmark/go-bench/go.sum
+benchmark/swift-bench/.build/
+benchmark/zig-bench/zig-out/
+benchmark/zig-bench/.zig-cache/
 benchmark/wsbench/wsbench
 benchmark/wsbench/go.sum
 

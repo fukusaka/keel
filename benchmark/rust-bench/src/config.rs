@@ -173,7 +173,7 @@ impl Config {
         };
 
         out.push_str("=== Benchmark Configuration ===\n");
-        out.push_str(&fmt("server:", "rust-hello"));
+        out.push_str(&fmt("server:", "rust-bench"));
         out.push_str(&fmt("port:", &self.port.to_string()));
         out.push_str(&fmt("profile:", &self.profile));
         out.push_str(&fmt("cpu-cores:", &cpu.to_string()));
@@ -229,7 +229,7 @@ impl Config {
         }
         out.push('\n');
 
-        out.push_str("--- Engine-Specific (rust-hello) ---\n");
+        out.push_str("--- Engine-Specific (rust-bench) ---\n");
         let default_blocking = 512; // tokio default max_blocking_threads
         out.push_str(&fmt(
             "tokio-blocking-threads:",
