@@ -276,10 +276,10 @@ fn handleUploadStream(
 ) !void {
     var body_buf: [8192]u8 = undefined;
     const body_reader = req.readerExpectContinue(&body_buf) catch return;
-    const received = body_reader.discardRemaining() catch |err| switch (err) {
-        error.EndOfStream => unreachable, // discardRemaining returns N, never EOS error
-        error.ReadFailed => return,
-    };
+    // discardRemaining catches EndOfStream internally and returns the
+    // total bytes discarded, but ShortError is declared to include
+    // EndOfStream + ReadFailed; treat any error as "abandon this request".
+    const received = body_reader.discardRemaining() catch return;
 
     var count_buf: [32]u8 = undefined;
     const count_str = try std.fmt.bufPrint(&count_buf, "{d}", .{received});
