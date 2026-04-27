@@ -20,12 +20,20 @@
 //   SIZE        bytes of payload per frame (default: 1024)
 //   VUS         concurrent virtual users (default: 50)
 //   DURATION    bench duration (default: 15s)
+//   CONNECTION_CLOSE  when "true", every request carries `Connection: close`
+//                     so the TCP socket is torn down after each SSE stream
+//                     completes. Default off (HTTP/1.1 keep-alive reuses
+//                     one socket per VU). Used by
+//                     `bench-keepalive-compare.sh` for A/B testing.
 
 import http from 'k6/http';
 import { check } from 'k6';
 
 const COUNT = Number(__ENV.COUNT || 100);
 const SIZE = Number(__ENV.SIZE || 1024);
+
+const CONNECTION_CLOSE = String(__ENV.CONNECTION_CLOSE || '').toLowerCase() === 'true';
+const HEADERS = CONNECTION_CLOSE ? { 'Connection': 'close' } : {};
 
 export const options = {
     vus: Number(__ENV.VUS || 50),
@@ -34,7 +42,7 @@ export const options = {
 
 export default function () {
     const url = `http://${__ENV.HOST}:${__ENV.PORT}/sse-stream?count=${COUNT}&size=${SIZE}`;
-    const res = http.get(url);
+    const res = http.get(url, { headers: HEADERS });
     check(res, {
         'status 200': (r) => r.status === 200,
         'body size matches': (r) => {

@@ -55,6 +55,16 @@
 #                            (default: 4096)
 #   BENCH_WS_FRAG_COUNT     ws-fragment.go frame count per message
 #                            (default: 4)
+#   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
+#                            to upload.js / sse.js so every HTTP request
+#                            carries `Connection: close` and the TCP socket
+#                            is torn down per request. Default off (HTTP/1.1
+#                            keep-alive). Used by
+#                            `bench-keepalive-compare.sh` to A/B-test how
+#                            much of the throughput comes from connection
+#                            reuse vs the per-request handler path.
+#                            Has no effect on WS scenarios (the upgrade
+#                            owns the connection lifecycle).
 #
 # Example:
 #   ./benchmark/bench-stream-one.sh ktor-keel-nio upload \
@@ -332,6 +342,7 @@ for run in $(seq 1 "$RUNS"); do
             CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
             WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
             PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
+            CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
             k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1

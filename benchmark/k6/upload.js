@@ -29,6 +29,13 @@
 //                   with existing summary tables)
 //   VUS             concurrent virtual users (default: 50)
 //   DURATION        bench duration (default: 15s)
+//   CONNECTION_CLOSE  when "true", every request carries `Connection: close`
+//                     so k6 + the server tear the TCP connection down after
+//                     each round-trip. Default off (HTTP/1.1 keep-alive
+//                     reuses one socket per VU). Used by
+//                     `bench-keepalive-compare.sh` to A/B-test how much of
+//                     the throughput comes from connection reuse vs the
+//                     per-request handler path.
 
 import http from 'k6/http';
 import { check } from 'k6';
@@ -41,6 +48,11 @@ const PAYLOAD_KB = Number(__ENV.PAYLOAD_KB || 64);
 const PAYLOAD_LEN = UPLOAD_BYTES > 0 ? UPLOAD_BYTES : PAYLOAD_KB * 1024;
 const PAYLOAD = 'x'.repeat(PAYLOAD_LEN);
 
+const CONNECTION_CLOSE = String(__ENV.CONNECTION_CLOSE || '').toLowerCase() === 'true';
+const HEADERS = CONNECTION_CLOSE
+    ? { 'Content-Type': 'application/octet-stream', 'Connection': 'close' }
+    : { 'Content-Type': 'application/octet-stream' };
+
 export const options = {
     vus: Number(__ENV.VUS || 50),
     duration: __ENV.DURATION || '15s',
@@ -48,9 +60,7 @@ export const options = {
 
 export default function () {
     const url = `http://${__ENV.HOST}:${__ENV.PORT}/upload-stream`;
-    const res = http.post(url, PAYLOAD, {
-        headers: { 'Content-Type': 'application/octet-stream' },
-    });
+    const res = http.post(url, PAYLOAD, { headers: HEADERS });
     check(res, {
         'status 200': (r) => r.status === 200,
         'echo size correct': (r) => Number(r.headers['X-Bytes-Received'] || 0) === PAYLOAD.length,
