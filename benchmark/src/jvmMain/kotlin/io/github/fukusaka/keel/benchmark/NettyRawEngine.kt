@@ -18,6 +18,10 @@ import io.netty.handler.codec.http.HttpObjectAggregator
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.codec.http.HttpServerCodec
 import io.netty.handler.codec.http.HttpVersion
+import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame
+import io.netty.handler.codec.http.websocketx.TextWebSocketFrame
+import io.netty.handler.codec.http.websocketx.WebSocketFrame
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler
 import io.netty.handler.ssl.SslContextBuilder
 
 /**
@@ -79,6 +83,11 @@ object NettyRawEngine : EngineBenchmark {
                     ch.pipeline().addLast(
                         HttpServerCodec(),
                         HttpObjectAggregator(maxContent),
+                        // WebSocketServerProtocolHandler intercepts the upgrade
+                        // for /ws-echo, attaches the framing codec, and lets
+                        // non-WS HTTP requests pass through to BenchmarkHandler.
+                        WebSocketServerProtocolHandler("/ws-echo"),
+                        WebSocketEchoHandler(),
                         BenchmarkHandler(config.connectionClose),
                     )
                 }
@@ -128,43 +137,137 @@ object NettyRawEngine : EngineBenchmark {
 }
 
 /**
- * Minimal HTTP handler that responds to /hello and /large.
+ * Minimal HTTP handler that responds to:
+ *   - GET /hello, GET /large (static payloads)
+ *   - POST /upload-stream (drains request body, replies with byte count)
+ *   - GET /sse-stream?count=N&size=M (chunked SSE-style response stream)
  */
 private class BenchmarkHandler(
     private val connectionClose: Boolean,
 ) : SimpleChannelInboundHandler<FullHttpRequest>() {
 
+    @Suppress("ReturnCount")
     override fun channelRead0(ctx: ChannelHandlerContext, request: FullHttpRequest) {
-        val (content, contentType) = when (request.uri()) {
-            "/hello" -> nettyRawHelloPayload.retainedDuplicate() to "text/plain"
-            "/large" -> nettyRawLargePayload.retainedDuplicate() to "text/plain"
-            else -> {
-                val response = DefaultFullHttpResponse(
-                    HttpVersion.HTTP_1_1,
-                    HttpResponseStatus.NOT_FOUND,
-                    Unpooled.copiedBuffer("Not Found", Charsets.UTF_8),
-                )
-                response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
-                response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
-                if (connectionClose) response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE)
-                ctx.writeAndFlush(response)
-                if (connectionClose) ctx.close()
-                return
-            }
-        }
+        // Path without query string for matching.
+        val rawUri = request.uri()
+        val pathEnd = rawUri.indexOf('?').takeIf { it >= 0 } ?: rawUri.length
+        val path = rawUri.substring(0, pathEnd)
 
+        when (path) {
+            "/hello" -> respondStatic(ctx, nettyRawHelloPayload.retainedDuplicate(), "text/plain")
+            "/large" -> respondStatic(ctx, nettyRawLargePayload.retainedDuplicate(), "text/plain")
+            "/upload-stream" -> respondUploadAck(ctx, request)
+            "/sse-stream" -> respondSseStream(ctx, rawUri.substring(pathEnd))
+            else -> respondNotFound(ctx)
+        }
+    }
+
+    private fun respondStatic(
+        ctx: ChannelHandlerContext,
+        content: io.netty.buffer.ByteBuf,
+        contentType: String,
+    ) {
         val response = DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, content)
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType)
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        applyConnectionHeader(response)
+        val future = ctx.writeAndFlush(response)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
+    }
+
+    private fun respondUploadAck(ctx: ChannelHandlerContext, request: FullHttpRequest) {
+        // HttpObjectAggregator already accumulated the body — match the
+        // aggregate-style accounting other engine handlers use.
+        val received = request.content().readableBytes()
+        val response = DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.OK,
+            Unpooled.wrappedBuffer(nettyRawUploadAckBytes),
+        )
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        response.headers().set("X-Bytes-Received", received.toString())
+        applyConnectionHeader(response)
+        val future = ctx.writeAndFlush(response)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
+    }
+
+    private fun respondSseStream(ctx: ChannelHandlerContext, query: String) {
+        val count = parseQueryInt(query, "count") ?: SSE_DEFAULT_COUNT
+        val size = parseQueryInt(query, "size") ?: SSE_DEFAULT_SIZE
+        val frame = "data: ${"x".repeat(size)}\n\n".toByteArray()
+        // Send response head with Transfer-Encoding: chunked, then write
+        // raw frame buffers. Netty serializes each write as one HTTP
+        // chunk because we send a HttpResponse without Content-Length.
+        val head = io.netty.handler.codec.http.DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
+        head.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream")
+        head.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED)
+        applyConnectionHeader(head)
+        ctx.write(head)
+        repeat(count) {
+            ctx.write(io.netty.handler.codec.http.DefaultHttpContent(Unpooled.wrappedBuffer(frame)))
+        }
+        val future = ctx.writeAndFlush(io.netty.handler.codec.http.LastHttpContent.EMPTY_LAST_CONTENT)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
+    }
+
+    private fun respondNotFound(ctx: ChannelHandlerContext) {
+        val response = DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.NOT_FOUND,
+            Unpooled.copiedBuffer("Not Found", Charsets.UTF_8),
+        )
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        if (connectionClose) response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE)
+        ctx.writeAndFlush(response)
+        if (connectionClose) ctx.close()
+    }
+
+    private fun applyConnectionHeader(response: io.netty.handler.codec.http.HttpResponse) {
         if (connectionClose) {
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE)
         } else {
             response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE)
         }
+    }
 
-        val future = ctx.writeAndFlush(response)
-        if (connectionClose) {
-            future.addListener(ChannelFutureListener.CLOSE)
+    private fun parseQueryInt(query: String, name: String): Int? {
+        if (query.isEmpty()) return null
+        val q = if (query.startsWith("?")) query.substring(1) else query
+        for (pair in q.splitToSequence('&')) {
+            val eq = pair.indexOf('=')
+            if (eq <= 0) continue
+            if (pair.substring(0, eq) == name) return pair.substring(eq + 1).toIntOrNull()
+        }
+        return null
+    }
+
+    override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
+        ctx.close()
+    }
+
+    private companion object {
+        const val SSE_DEFAULT_COUNT = 100
+        const val SSE_DEFAULT_SIZE = 1024
+    }
+}
+
+private val nettyRawUploadAckBytes = "ok".toByteArray()
+
+/**
+ * Echoes WebSocket text / binary frames back to the client.
+ *
+ * Sits in the pipeline after [WebSocketServerProtocolHandler], which
+ * handles the HTTP upgrade and frame framing, so this handler only
+ * sees fully-decoded [WebSocketFrame]s.
+ */
+private class WebSocketEchoHandler : SimpleChannelInboundHandler<WebSocketFrame>() {
+    override fun channelRead0(ctx: ChannelHandlerContext, frame: WebSocketFrame) {
+        when (frame) {
+            is TextWebSocketFrame -> ctx.writeAndFlush(TextWebSocketFrame(frame.text()))
+            is BinaryWebSocketFrame -> ctx.writeAndFlush(BinaryWebSocketFrame(frame.content().retainedDuplicate()))
+            else -> Unit // Close, Ping, Pong, Continuation handled by Netty defaults
         }
     }
 
