@@ -45,7 +45,13 @@ data class NettyRawEngineConfig(
     override fun toString(): String = maxContentLength?.let { "maxContentLength=$it" } ?: ""
 }
 
-private const val DEFAULT_MAX_CONTENT_LENGTH = 65536
+// Bench harness routinely posts MB-scale bodies (`/upload-stream`
+// 10 MB / 100 MB heap-pressure variants) — 64 KB blocks them with 413.
+// Default to 100 MB so common bench scenarios go through; the
+// per-VU heap cost of aggregation is the point of those benches and
+// is observed in JFR / GC log, not capped by this knob. Override via
+// `--max-content-length=N` if a smaller limit is needed.
+private const val DEFAULT_MAX_CONTENT_LENGTH = 100 * 1024 * 1024
 
 private val nettyRawHelloPayload = Unpooled.unreleasableBuffer(
     Unpooled.wrappedBuffer("Hello, World!".toByteArray())
