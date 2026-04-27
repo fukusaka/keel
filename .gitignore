@@ -34,7 +34,7 @@ benchmark/rust-bench/target/
 benchmark/rust-bench/Cargo.lock
 benchmark/go-bench/go-bench
 benchmark/go-bench/go.sum
-benchmark/swift-hello/.build/
+benchmark/swift-bench/.build/
 benchmark/zig-hello/zig-out/
 benchmark/zig-hello/.zig-cache/
 benchmark/wsbench/wsbench

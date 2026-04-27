@@ -120,7 +120,7 @@ struct BenchConfig {
         }
 
         print("=== Benchmark Configuration ===")
-        fmt("server:", "swift-hello")
+        fmt("server:", "swift-bench")
         fmt("port:", "\(port)")
         fmt("profile:", profile)
         fmt("cpu-cores:", "\(cpu)")
@@ -177,7 +177,7 @@ struct BenchConfig {
         }
         print()
 
-        print("--- Engine-Specific (swift-hello) ---")
+        print("--- Engine-Specific (swift-bench) ---")
         fmt("(backlog/reuseAddress via Hummingbird)", "")
     }
 }
