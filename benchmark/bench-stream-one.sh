@@ -13,8 +13,15 @@
 #   ws-echo  GET  /ws-echo        (WebSocket echo throughput)
 #
 # Environment variables (HTTP-level):
-#   BENCH_RUNS           Number of runs; median is reported (default: 1)
-#   BENCH_COOLDOWN       Seconds between runs (default: 2)
+#   BENCH_RUNS                    Number of runs; median is reported (default: 1)
+#   BENCH_COOLDOWN                Seconds between runs (default: 2)
+#   BENCH_K6_SUCCESS_THRESHOLD    Minimum checks_succeeded percentage to accept
+#                                 a run as valid (default: 95). Lower values
+#                                 are reported as `checks=NN.NN%` instead of
+#                                 a phantom RPS number — protects against
+#                                 servers that respond fast but corruptly
+#                                 (e.g. a chunked-encoder bug that fails
+#                                 99.98% of SSE body-size checks).
 #
 # Environment variables forwarded to k6 (script-specific defaults apply):
 #   BENCH_K6_VUS         k6 virtual users          (default: 50)
@@ -147,6 +154,18 @@ parse_k6_output() {
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
+# Extract the success rate from k6's `checks_succeeded` line:
+#   checks_succeeded...: 99.97% 1234567 out of 1234999
+# Used to flag corrupt benchmarks (e.g. SSE bodies that fail body-size
+# validation under HTTP keep-alive bugs) so the harness can mark them
+# FAILED instead of reporting throughput numbers built on failed responses.
+extract_success_rate() {
+    local out="$1"
+    printf '%s' "$out" | awk '/^[[:space:]]*checks_succeeded/ {
+        for (i = 1; i <= NF; i++) if ($i ~ /%$/) { sub(/%$/, "", $i); print $i; exit }
+    }'
+}
+
 # --- Run ---
 
 ALL_RPS=()
@@ -200,9 +219,31 @@ for run in $(seq 1 "$RUNS"); do
     RPS=$(echo "$PARSED" | cut -d'|' -f1)
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)
+
+    # Validate success rate. k6's `http_reqs` / `ws_msgs_received` count
+    # everything including failed responses, so a server that returns
+    # 99% errors at 50K/s would otherwise look like "50K RPS". If checks
+    # are present and below the threshold, treat the run as failed and
+    # surface the failure ratio in the latency columns so it isn't
+    # silently dropped from the summary table.
+    SUCCESS_RATE=$(extract_success_rate "$K6_OUT")
+    THRESHOLD="${BENCH_K6_SUCCESS_THRESHOLD:-95}"
+    INVALID=false
+    if [ -n "$SUCCESS_RATE" ] && awk "BEGIN {exit !($SUCCESS_RATE < $THRESHOLD)}" 2>/dev/null; then
+        INVALID=true
+        RPS=""
+        P50="checks=${SUCCESS_RATE}%"
+        P99="-"
+    fi
+
     ALL_RPS+=("$RPS")
 
-    if [ -n "$RPS" ] && awk "BEGIN {exit !($RPS > $BEST_RPS)}" 2>/dev/null; then
+    if [ "$INVALID" = true ]; then
+        # Failure marker wins over any prior run's RPS so the operator
+        # sees the corruption at a glance.
+        BEST_P50="$P50"
+        BEST_P99="$P99"
+    elif [ -n "$RPS" ] && awk "BEGIN {exit !($RPS > $BEST_RPS)}" 2>/dev/null; then
         BEST_RPS="$RPS"
         BEST_P50="$P50"
         BEST_P99="$P99"
