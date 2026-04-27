@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.ktor.Keel
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.ktor.server.application.serverConfig
@@ -19,6 +20,7 @@ object KeelNioEngine : EngineBenchmark {
             } else {
                 connector { this.port = config.port }
             }
+            this.engine = NioEngine()
         }.start(wait = false)
         return {
             factory?.close()

@@ -101,13 +101,16 @@ run_bench() {
         fi
         local pid=$!
 
-        # Wait for server to be ready
+        # Wait for server to be ready. Validate HTTP status, not just
+        # TCP connect — see bench-one.sh for the rationale.
         local ready=false
         for _ in $(seq 1 "$READY_TIMEOUT"); do
-            if curl -sk -o /dev/null "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null; then
-                ready=true
-                break
-            fi
+            local status
+            status=$(curl -sk -o /dev/null -w '%{http_code}' \
+                "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null) || status=000
+            case "$status" in
+                2??|3??) ready=true; break ;;
+            esac
             sleep 0.3
         done
 
@@ -167,8 +170,10 @@ run_bench() {
     fi
 
     local lat50 lat99 errors
-    lat50=$(echo "$best_result" | grep "50%" | awk '{print $2}')
-    lat99=$(echo "$best_result" | grep "99%" | awk '{print $2}')
+    # Anchor on `^   50%   ` shape; otherwise wrk's `Req/Sec ... 50.99%`
+    # +/- Stdev band can be misread as a percentile.
+    lat50=$(echo "$best_result" | awk '/^[[:space:]]+50%[[:space:]]/ {print $2; exit}')
+    lat99=$(echo "$best_result" | awk '/^[[:space:]]+99%[[:space:]]/ {print $2; exit}')
     errors=$(echo "$best_result" | grep "Socket errors" | head -1)
 
     if [ "$RUNS" -gt 1 ]; then

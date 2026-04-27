@@ -30,6 +30,33 @@ open class SpringBenchmarkApp {
                 .contentType(MediaType.TEXT_PLAIN)
                 .bodyValue(springLargePayloadBytes)
         }
+        POST("/upload-stream") { req ->
+            // Stream the request body via DataBuffer chunks, count bytes,
+            // release each buffer (Reactor's standard streaming pattern —
+            // no whole-body aggregation in framework code).
+            val countMono = req.bodyToFlux(org.springframework.core.io.buffer.DataBuffer::class.java)
+                .map { buf ->
+                    val n = buf.readableByteCount().toLong()
+                    org.springframework.core.io.buffer.DataBufferUtils.release(buf)
+                    n
+                }
+                .reduce(0L) { acc, n -> acc + n }
+            countMono.flatMap { received ->
+                ServerResponse.ok()
+                    .contentType(MediaType.TEXT_PLAIN)
+                    .header("X-Bytes-Received", received.toString())
+                    .bodyValue(springUploadAckBytes)
+            }
+        }
+        GET("/sse-stream") { req ->
+            val count = req.queryParam("count").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_COUNT)
+            val size = req.queryParam("size").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_SIZE)
+            val payload = "data: ${"x".repeat(size)}\n\n"
+            val flux = reactor.core.publisher.Flux.range(0, count).map { payload }
+            ServerResponse.ok()
+                .contentType(MediaType.parseMediaType("text/event-stream"))
+                .body(flux, String::class.java)
+        }
     }
 
     /** Add Connection: close header to all responses when enabled. */
@@ -40,10 +67,44 @@ open class SpringBenchmarkApp {
         }
         chain.filter(exchange)
     }
+
+    /** WebSocket echo handler at /ws-echo. */
+    @Bean
+    open fun wsEchoHandler(): org.springframework.web.reactive.socket.WebSocketHandler =
+        org.springframework.web.reactive.socket.WebSocketHandler { session ->
+            // Echo every inbound message back as the same type. Reactor's
+            // streaming pattern: receive() flux → map → send() back.
+            val outFlux = session.receive().map { message ->
+                when (message.type) {
+                    org.springframework.web.reactive.socket.WebSocketMessage.Type.TEXT ->
+                        session.textMessage(message.payloadAsText)
+                    org.springframework.web.reactive.socket.WebSocketMessage.Type.BINARY ->
+                        session.binaryMessage { it.wrap(message.payload.asByteBuffer()) }
+                    else -> message
+                }
+            }
+            session.send(outFlux)
+        }
+
+    /** Mapping for [wsEchoHandler] at `/ws-echo`. */
+    @Bean
+    open fun wsHandlerMapping(
+        wsEchoHandler: org.springframework.web.reactive.socket.WebSocketHandler,
+    ): org.springframework.web.reactive.handler.SimpleUrlHandlerMapping =
+        org.springframework.web.reactive.handler.SimpleUrlHandlerMapping(
+            mapOf("/ws-echo" to wsEchoHandler),
+            -1,
+        )
+
+    /** WebSocket handler adapter — wires WebSocket upgrade to handler mapping. */
+    @Bean
+    open fun wsHandlerAdapter(): org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter =
+        org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter()
 }
 
 private val springHelloPayload = "Hello, World!".toByteArray()
 private val springLargePayloadBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
+private val springUploadAckBytes = "ok".toByteArray()
 
 /** Spring Boot WebFlux / Reactor Netty settings. */
 data class SpringEngineConfig(

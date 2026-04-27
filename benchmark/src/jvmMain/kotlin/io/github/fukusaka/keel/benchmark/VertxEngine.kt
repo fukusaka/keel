@@ -46,6 +46,7 @@ object VertxEngine : EngineBenchmark {
 
     private val helloBytes = "Hello, World!".toByteArray()
     private val largeBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
+    private val uploadAckBytes = "ok".toByteArray()
 
     override fun start(config: BenchmarkConfig): () -> Unit {
         val s = config.socket
@@ -65,6 +66,36 @@ object VertxEngine : EngineBenchmark {
             val response = ctx.response().putHeader("Content-Type", "text/plain")
             if (config.connectionClose) response.putHeader("Connection", "close")
             response.end(io.vertx.core.buffer.Buffer.buffer(largeBytes))
+        }
+
+        router.post("/upload-stream").handler { ctx ->
+            // Stream the request body via Vert.x's per-chunk handler — no
+            // memory aggregation. Counts bytes, replies after `endHandler`
+            // with `X-Bytes-Received` matching the client's payload size.
+            var received = 0L
+            val req = ctx.request()
+            req.handler { chunk -> received += chunk.length() }
+            req.endHandler {
+                val response = ctx.response().putHeader("Content-Type", "text/plain")
+                if (config.connectionClose) response.putHeader("Connection", "close")
+                response.putHeader("X-Bytes-Received", received.toString())
+                response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
+            }
+            req.exceptionHandler { ctx.fail(it) }
+        }
+
+        router.get("/sse-stream").handler { ctx ->
+            val count = ctx.request().getParam("count")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
+            val size = ctx.request().getParam("size")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
+            val frame = io.vertx.core.buffer.Buffer.buffer("data: ${"x".repeat(size)}\n\n")
+            val response = ctx.response()
+                .putHeader("Content-Type", "text/event-stream")
+                .setChunked(true)
+            if (config.connectionClose) response.putHeader("Connection", "close")
+            for (i in 0 until count) {
+                response.write(frame)
+            }
+            response.end()
         }
 
         val v = config.engineConfig as? VertxEngineConfig ?: VertxEngineConfig()
@@ -94,8 +125,26 @@ object VertxEngine : EngineBenchmark {
         }
 
         val latch = CountDownLatch(1)
-        vertx.createHttpServer(serverOptions)
+        val httpServer = vertx.createHttpServer(serverOptions)
             .requestHandler(router)
+            // WebSocket echo: bind at server level so the upgrade is handled
+            // before the route dispatcher runs. Each frame is echoed back as
+            // text or binary based on its own frame type, no aggregation.
+            .webSocketHandler { ws ->
+                if (ws.path() == "/ws-echo") {
+                    ws.frameHandler { frame ->
+                        when {
+                            frame.isText -> ws.writeFinalTextFrame(frame.textData())
+                            frame.isBinary -> ws.writeFinalBinaryFrame(frame.binaryData())
+                            else -> Unit
+                        }
+                    }
+                    ws.exceptionHandler { ws.close() }
+                } else {
+                    ws.close()
+                }
+            }
+        httpServer
             .listen()
             .onSuccess { server ->
                 println("Vert.x server started on port ${server.actualPort()}")

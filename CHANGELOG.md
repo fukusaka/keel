@@ -16,7 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: streaming HTTP endpoints `POST /upload-stream` (drain request body, reply with byte count) and `GET /sse-stream?count=N&size=M` (chunked SSE frames) on every engine — Ktor route block, raw keel pipeline, `NettyRawEngine`, `SpringEngine`, `VertxEngine` — for benchmarking request-body / response-body streaming paths independently of `/hello` + `/large` (#394)
+- `benchmark`: WebSocket echo endpoint `GET /ws-echo` on every engine. Pattern B (`ktor-keel-*`) rejects the upgrade until `respondUpgrade` support lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today (#394)
+- `benchmark`: k6 scenarios `benchmark/k6/{upload,sse,ws-echo}.js` + `bench-stream-one.sh` helper (mirrors `bench-one.sh`'s `<name>|<rps>|<p50>|<p99>` row format but invokes k6 instead of wrk). WebSocket RTT uses the built-in `ws_ping` Trend (Go-side ns precision) populated via interleaved `socket.ping()` (#394)
+- `benchmark`: `bench-stream-one.sh` `BENCH_K6_SUCCESS_THRESHOLD` env (default 95) flags corrupt benchmark runs as `engine||checks=NN.NN%|-` instead of reporting phantom RPS when responses fail body-size checks. Raw k6 output now persists under `benchmark/results/{host}/` mirroring the wrk convention (#394)
 - `keel-server-ktor-base`: new module — codec-agnostic skeleton for keel's Ktor adapters. Owns `KeelApplicationEngine` (Ktor `BaseApplicationEngine` impl), `Configuration` (engine / keepAlive / acceptBackoff / applicationDispatcher / sslConnector), `KtorConnectionHandler` (per-connection handler interface), `KeelConnectionPoint`, and `KtorLoggerAdapter` / `KtorLoggerFactory`. Sibling codec modules inject the connection handler at factory time so the engine class is shared across codec variants (#393)
+
+### Fixed
+
+- `benchmark`: `KeelKqueueEngine` / `KeelNioEngine` benchmark wrappers now set `this.engine = …` (`KqueueEngine()` / `NioEngine()`) — without it `--engine=ktor-keel-kqueue` and `--engine=ktor-keel-nio` crashed the benchmark binary with `IllegalStateException: KeelApplicationEngine.Configuration.engine must be set explicitly` since the explicit-engine contract landed (#394)
+- `benchmark`: `bench-{one,keel,all}.sh` wrk percentile parser now anchors on `^\s+50%\s` / `^\s+99%\s` instead of substring `grep "50%"` / `grep "99%"` so the Thread Stats `Req/Sec ... 50.99%` `+/- Stdev` band can no longer be misread as a percentile row (was putting `14.11k` into P50 / P99 for high-variance runs) (#394)
+- `benchmark`: `bench-{one,keel,all,stream-one}.sh` READY check validates HTTP status (`curl -w '%{http_code}'` matched against `2xx` / `3xx`) instead of just TCP connect — half-broken engines that reply 5xx no longer pass readiness and collect garbage benchmarks (#394)
+- `benchmark`: `bench-{one,stream-one}.sh` teardown sends SIGTERM to the entire process group via `kill -TERM -- "-$PID"` (when `setsid` is available) instead of just `$PID`, so JVM helper threads / native subprocess forks don't survive teardown and hold the bench port across runs (#394)
 
 ### Changed
 
