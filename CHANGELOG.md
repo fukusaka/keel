@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: new streaming HTTP endpoints `POST /upload-stream` (drains the request body via the engine's read channel, replies with the byte count) and `GET /sse-stream?count=N&size=M` (emits N SSE-style frames of M bytes via chunked Transfer-Encoding) on both the Ktor `BenchmarkModule` and the raw `PipelineHttpRoutes` (raw pipeline equivalent). Lets the engine's request-body / response-body streaming paths be benchmarked independently of the existing `/hello` + `/large` baseline (#394)
+- `benchmark`: k6 scenarios `benchmark/k6/upload.js` and `benchmark/k6/sse.js` driving the new streaming endpoints, plus `bench-stream-one.sh` helper that mirrors `bench-one.sh`'s contract (start server, run client, parse output, emit `<name>|<rps>|<p50>|<p99>` row) but invokes k6 instead of wrk. README under `benchmark/k6/` documents install + run. WebSocket scenario will land alongside Pattern B `respondUpgrade` support in a follow-up (#394)
 - `keel-server-ktor-base`: new module — codec-agnostic skeleton for keel's Ktor adapters. Owns `KeelApplicationEngine` (Ktor `BaseApplicationEngine` impl), `Configuration` (engine / keepAlive / acceptBackoff / applicationDispatcher / sslConnector), `KtorConnectionHandler` (per-connection handler interface), `KeelConnectionPoint`, and `KtorLoggerAdapter` / `KtorLoggerFactory`. Sibling codec modules inject the connection handler at factory time so the engine class is shared across codec variants (#393)
 
 ### Changed
