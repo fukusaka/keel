@@ -120,9 +120,9 @@ suspend fun InetSocketAddress.resolveAll(
 /**
  * Resolves this address and returns the first usable [IpAddress].
  *
- * Phase 11 A-2 semantics: bind uses first, connect uses first
- * (sequential fallback over multiple candidates is deferred to a
- * follow-up PR).
+ * Current semantics: bind uses the first candidate, connect uses
+ * the first candidate (sequential fallback over multiple candidates
+ * is deferred to a follow-up).
  */
 /**
  * Non-suspending variant for synchronous callers (e.g. pipeline-mode

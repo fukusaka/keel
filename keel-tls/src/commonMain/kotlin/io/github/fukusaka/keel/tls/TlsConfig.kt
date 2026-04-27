@@ -12,7 +12,7 @@ package io.github.fukusaka.keel.tls
  *
  * A single [TlsConfig] can be shared by multiple [TlsCodec] instances.
  *
- * **Phase 9 scope**: server certificate + trust anchors + verification mode +
+ * **Current scope**: server certificate + trust anchors + verification mode +
  * ALPN + SNI. mTLS (client auth), session resumption, and 0-RTT are deferred.
  */
 data class TlsConfig(

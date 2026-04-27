@@ -26,7 +26,8 @@ import kotlin.coroutines.resume
  * at creation (via [registerChannel]) with `interestOps=0`. Subsequent I/O
  * operations use [setInterest] to toggle interest ops without re-registering.
  * This avoids the per-read JNI overhead of `channel.register()` and
- * `key.cancel()` that caused the Phase (a) → Phase 5b regression.
+ * `key.cancel()` that caused the regression observed when first migrating
+ * from blocking SocketChannel to non-blocking + Selector EventLoop.
  *
  * **CoroutineDispatcher integration**: By extending [CoroutineDispatcher],
  * coroutines launched on this EventLoop execute entirely on the EventLoop

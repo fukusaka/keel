@@ -129,7 +129,7 @@ class MbedTlsCodec internal constructor(
         get() = mbedtls_ssl_get_alpn_protocol(ssl.ptr)?.toKString()
 
     override val peerCertificates: List<ByteArray>
-        get() = emptyList() // Phase 9b: peer cert extraction deferred.
+        get() = emptyList() // Peer cert extraction is deferred.
 
     override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
         // Set recv pointer to ciphertext IoBuf.

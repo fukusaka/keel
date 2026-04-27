@@ -32,9 +32,10 @@ import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
  * Addresses are passed as [SocketAddress]. IP literal hosts are
  * consumed directly; hostnames (`Host.Name`) are resolved at call time
  * via [IoEngineConfig.resolver]. Native engines currently support only
- * IP literals and reject hostnames (Phase 11 PR B will add
- * `getaddrinfo`). [UnixSocketAddress] is not yet supported by any
- * engine and throws [UnsupportedOperationException] until Phase 11 PR C.
+ * IP literals and reject hostnames (a future change will add
+ * `getaddrinfo`-based resolution). [UnixSocketAddress] is not yet
+ * supported by any engine and throws [UnsupportedOperationException]
+ * until a future change adds the support.
  *
  * Convenience overloads accepting `host: String, port: Int` are
  * provided as default interface members so existing call sites
@@ -51,7 +52,8 @@ interface StreamEngine : IoEngine {
      *
      * @param address Bind endpoint. For [InetSocketAddress], hostnames
      *   are resolved via [IoEngineConfig.resolver]. [UnixSocketAddress]
-     *   throws [UnsupportedOperationException] until Phase 11 PR C.
+     *   throws [UnsupportedOperationException] until a future change
+     *   adds the support.
      * @param bindConfig Per-server bind configuration (backlog, etc.).
      * @return a [StreamServer] that accepts incoming connections.
      */

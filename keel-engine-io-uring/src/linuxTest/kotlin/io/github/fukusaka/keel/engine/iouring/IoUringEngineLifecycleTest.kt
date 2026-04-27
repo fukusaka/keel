@@ -94,9 +94,9 @@ class IoUringEngineLifecycleTest {
     fun `connect to invalid host address throws`() = runBlocking {
         val engine = IoUringEngine()
 
-        // Native SystemDnsResolver (Phase 11 PR B) wraps getaddrinfo;
-        // an unresolvable hostname surfaces as a RuntimeException
-        // carrying the gai_strerror message.
+        // Native SystemDnsResolver wraps getaddrinfo; an unresolvable
+        // hostname surfaces as a RuntimeException carrying the
+        // gai_strerror message.
         assertFailsWith<RuntimeException> {
             engine.connect("not.a.valid.invalid", 80)
         }

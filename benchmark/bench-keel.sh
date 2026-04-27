@@ -3,8 +3,8 @@
 #
 # Usage: ./benchmark/bench-keel.sh [profile]
 #
-# Runs only keel-related engines, skipping Phase 2 native servers
-# and non-keel JVM servers (spring, vertx, netty-raw).
+# Runs only keel-related engines, skipping cross-language reference
+# servers and non-keel JVM servers (spring, vertx, netty-raw).
 #
 # Supports the same environment variables as bench-all.sh:
 #   BENCH_ENDPOINT, BENCH_RUNS, BENCH_SHUFFLE, BENCH_COOLDOWN,

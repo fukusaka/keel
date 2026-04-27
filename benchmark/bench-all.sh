@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark all servers: Phase 2 native + Kotlin/Native + JVM
+# Benchmark all servers: cross-language reference + Kotlin/Native + JVM
 #
 # Usage: ./benchmark/bench-all.sh [profile]
 #   profile: default (default), tuned, keel-equiv-0.1
@@ -211,7 +211,7 @@ build_engine_list() {
         PROFILE_ARGS="--profile=${PROFILE}"
     fi
 
-    # Phase 2: Native servers
+    # Cross-language reference servers
     for pair in \
         "rust-bench:benchmark/rust-bench/target/release/rust-bench" \
         "go-bench:benchmark/go-bench/go-bench" \

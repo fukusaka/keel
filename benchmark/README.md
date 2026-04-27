@@ -380,8 +380,8 @@ benchmark/
 │   ├── JsMain.kt                    # Node.js entry point
 │   ├── Platform.js.kt               # JS platform actual
 │   └── PipelineHttpNodejsBenchmark.kt # Node.js pipeline benchmark
-├── rust-bench/                      # Rust Axum (Phase 2)
-├── go-bench/                        # Go Gin (Phase 2)
-├── swift-bench/                     # Swift Hummingbird (Phase 2, macOS only)
-└── zig-bench/                       # Zig std.http.Server (Phase 2)
+├── rust-bench/                      # Rust Axum reference server
+├── go-bench/                        # Go Gin reference server
+├── swift-bench/                     # Swift Hummingbird reference server (macOS only)
+└── zig-bench/                       # Zig std.http reference server
 ```
