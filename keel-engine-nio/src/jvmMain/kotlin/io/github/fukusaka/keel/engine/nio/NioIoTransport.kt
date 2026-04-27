@@ -36,11 +36,11 @@ import kotlin.coroutines.resume
  * [SocketChannel.read] / [SocketChannel.write]. An earlier `appDispatcher`
  * override to `Dispatchers.Default` was motivated by a historical
  * measurement on Ubuntu loopback in which EL dispatch regressed
- * `ktor-keel-nio` by -37%; the regression no longer reproduces in Phase 11
- * (513k → 562k req/s, +9.5% at 4t/100c/10s) because the Phase 10
- * PipelinedChannel / HttpWriter rewrite and `NioEventLoop.dispatch`'s
- * `inEventLoop` wakeup-skip optimisation together remove the overhead that
- * motivated the override.
+ * `ktor-keel-nio` by -37%. The regression no longer reproduces
+ * (513k → 562k req/s, +9.5% at 4t/100c/10s) once the PipelinedChannel +
+ * HttpWriter redesign and `NioEventLoop.dispatch`'s `inEventLoop`
+ * wakeup-skip optimisation together removed the overhead that motivated
+ * the override.
  */
 internal class NioIoTransport(
     internal val socketChannel: SocketChannel,

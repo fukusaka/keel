@@ -100,10 +100,10 @@ with `applicationDispatcher = Dispatchers.Default` to offload the pipeline onto 
 separate pool at the cost of one hop per request. An earlier override inside the
 NIO transport itself (`appDispatcher = Dispatchers.Default`) was motivated by a
 historical measurement where EL dispatch regressed ktor-keel-nio by -37% on
-Ubuntu loopback; the regression no longer reproduces in Phase 11 (+9.5%
-improvement instead), because the Phase 10 PipelinedChannel / HttpWriter rewrite
-together with `NioEventLoop.dispatch`'s `inEventLoop`-based wakeup skip remove
-the overhead that motivated the split.
+Ubuntu loopback. The regression no longer reproduces (+9.5% improvement
+instead) once the PipelinedChannel + HttpWriter redesign together with
+`NioEventLoop.dispatch`'s `inEventLoop`-based wakeup skip removed the overhead
+that motivated the split.
 
 ## Key Classes
 
