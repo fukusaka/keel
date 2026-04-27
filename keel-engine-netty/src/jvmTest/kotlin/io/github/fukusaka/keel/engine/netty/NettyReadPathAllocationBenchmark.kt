@@ -14,7 +14,7 @@ import kotlin.test.Test
  * Measures per-iteration JVM allocation for the two channelRead paths.
  *
  * - **A (baseline)**: `allocator.allocate(cap) + getBytes(ByteBuf → ByteBuffer)`
- * - **B (phase 2)**: `wrapExternal(nioBuffer) + NettyByteBufOwner`
+ * - **B (zero-copy wrap)**: `wrapExternal(nioBuffer) + NettyByteBufOwner`
  *
  * Uses `com.sun.management.ThreadMXBean.getThreadAllocatedBytes` to
  * count current-thread allocation deltas. Excludes the initial warmup

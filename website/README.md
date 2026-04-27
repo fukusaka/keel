@@ -22,7 +22,7 @@ website/
 └── src/pages/index.tsx       # Landing page
 ```
 
-Tutorials and How-to guides will be added after Phase 5b (when async IoEngine is ready).
+Tutorials and How-to guides will be added once the async IoEngine work lands.
 
 ## Documentation Tools
 

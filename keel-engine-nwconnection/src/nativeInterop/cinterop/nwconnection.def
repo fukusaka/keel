@@ -247,7 +247,7 @@ typedef void (*keel_nw_start_callback)(int result, void *ctx);
  * a pre-allocated buffer. The kernel delivers data as dispatch_data_t,
  * so a memcpy into NativeBuf is unavoidable. Measured cost: ~0.1-0.4 us
  * for small packets, ~1-2 us for 64 KB. Zero-copy wrapping is deferred
- * to Phase 6+ (requires NativeBuf MemoryOwner abstraction).
+ * to a future change (requires the NativeBuf MemoryOwner abstraction).
  *
  * @param conn     NWConnection to read from.
  * @param buf      Destination buffer.

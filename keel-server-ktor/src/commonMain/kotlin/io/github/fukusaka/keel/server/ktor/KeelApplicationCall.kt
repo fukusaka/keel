@@ -19,7 +19,7 @@ import kotlin.coroutines.CoroutineContext
  * so that Ktor's [RequestConnectionPoint][io.ktor.http.RequestConnectionPoint] reports
  * the correct protocol and default port.
  */
-@Suppress("LongParameterList") // scheme added for HTTPS; refactoring to a context object is Phase 10.
+@Suppress("LongParameterList") // scheme added for HTTPS; refactoring to a context object is deferred.
 internal class KeelApplicationCall(
     application: Application,
     head: HttpRequestHead,

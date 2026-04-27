@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `benchmark`: cross-language reference servers (`rust-bench` axum, `go-bench` gin + `gorilla/websocket`, `swift-bench` Hummingbird + `HummingbirdWebSocket`, `zig-bench` Zig 0.15+ std.http with built-in `respondWebSocket`) gain `/upload-stream` + `/sse-stream` + `/ws-echo` so the streaming + WebSocket bench tables include every non-keel reference column (#395, renamed in #398)
 - `benchmark`: streaming HTTP endpoints `POST /upload-stream` (drain request body, reply with byte count) and `GET /sse-stream?count=N&size=M` (chunked SSE frames) on every engine — Ktor route block, raw keel pipeline, `NettyRawEngine`, `SpringEngine`, `VertxEngine` — for benchmarking request-body / response-body streaming paths independently of `/hello` + `/large` (#394)
-- `benchmark`: WebSocket echo endpoint `GET /ws-echo` on every engine. Pattern B (`ktor-keel-*`) rejects the upgrade until `respondUpgrade` support lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today (#394)
+- `benchmark`: WebSocket echo endpoint `GET /ws-echo` on every engine. The `:keel-server-ktor` adapter (`ktor-keel-*`) rejects the upgrade until `respondUpgrade` support lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today (#394)
 - `benchmark`: k6 scenarios `benchmark/k6/{upload,sse,ws-echo}.js` + `bench-stream-one.sh` helper (mirrors `bench-one.sh`'s `<name>|<rps>|<p50>|<p99>` row format but invokes k6 instead of wrk). WebSocket RTT uses the built-in `ws_ping` Trend (Go-side ns precision) populated via interleaved `socket.ping()` (#394)
 - `benchmark`: `bench-stream-one.sh` `BENCH_K6_SUCCESS_THRESHOLD` env (default 95) flags corrupt benchmark runs as `engine||checks=NN.NN%|-` instead of reporting phantom RPS when responses fail body-size checks. Raw k6 output now persists under `benchmark/results/{host}/` mirroring the wrk convention (#394)
 - `keel-server-ktor-base`: new module — codec-agnostic skeleton for keel's Ktor adapters. Owns `KeelApplicationEngine` (Ktor `BaseApplicationEngine` impl), `Configuration` (engine / keepAlive / acceptBackoff / applicationDispatcher / sslConnector), `KtorConnectionHandler` (per-connection handler interface), `KeelConnectionPoint`, and `KtorLoggerAdapter` / `KtorLoggerFactory`. Sibling codec modules inject the connection handler at factory time so the engine class is shared across codec variants (#393)
@@ -89,7 +89,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **BREAKING** (`core` / `engine-*` / `ktor-engine`): rename `Server` → `StreamServer` and move `PipelinedServer` → `io.github.fukusaka.keel.pipeline.PipelinedStreamServer`; drop the `ServerChannel` deprecated alias kept since PR #197. Engine implementations follow: `{Kqueue,Epoll,IoUring,Nio,Netty,Node,Nw}Server` → `{…}StreamServer`, and `{Kqueue,Epoll,IoUring,Nio}PipelinedServerChannel` → `{…}PipelinedStreamServer` (Channel suffix dropped — servers are not Channels). Makes the transport family explicit and leaves room for a future `DatagramEngine` sibling (#354)
 - `core`: reorganize pipeline internals — move `HeadHandler` / `TailHandler` / `DefaultPipeline` / `ReferenceCountUtil` into `io.github.fukusaka.keel.pipeline.internal` subpackage (with `DefaultPipeline` tightened from accidental-public to `internal`), nest `PropagateTrackingContext` into `TypedInboundHandler.kt` and `SuspendChannelSink` / `SuspendChannelSource` into `Channel.kt` as file-private helpers. Package structure now makes the public / internal boundary explicit (#353)
-- `engine-netty`: route inbound + outbound buffers through Netty's own pooled `ByteBufAllocator` (MemoryOwner Phase 2). `channelRead` wraps the incoming `ByteBuf` via `DirectIoBuf.wrapExternal` + `NettyByteBufOwner` (composite buffers fall back to copy); allocator returns `NettyByteBufIoBuf` so `flush()` hands the underlying `ByteBuf` to `writeAndFlush` via `retainedSlice`, eliminating `Unpooled.wrappedBuffer(duplicate())` per pending write. On a 32-core Linux loopback, `pipeline-http-netty` reaches 2.48M req/s at 4t/200c/16wt (matches `netty-raw`; +103% vs. `ktor-netty`), p99 latency 240 ms → 165 µs; GC pause drops ~180× (4.9 s → 27 ms per 30 s window) (#352)
+- `engine-netty`: route inbound + outbound buffers through Netty's own pooled `ByteBufAllocator`. `channelRead` wraps the incoming `ByteBuf` via `DirectIoBuf.wrapExternal` + `NettyByteBufOwner` (composite buffers fall back to copy); allocator returns `NettyByteBufIoBuf` so `flush()` hands the underlying `ByteBuf` to `writeAndFlush` via `retainedSlice`, eliminating `Unpooled.wrappedBuffer(duplicate())` per pending write. On a 32-core Linux loopback, `pipeline-http-netty` reaches 2.48M req/s at 4t/200c/16wt (matches `netty-raw`; +103% vs. `ktor-netty`), p99 latency 240 ms → 165 µs; GC pause drops ~180× (4.9 s → 27 ms per 30 s window) (#352)
 - `io`: add `IoBufMemoryOwner` as a `val` on `IoBuf` — a pluggable release-strategy interface (`HeapOwner` / `PoolOwner` / `SliceOwner` / `ExternalWrapOwner` and engine-specific variants such as `RingSlotOwner`) invoked at refcount zero. Unifies the per-buffer release dispatch across the backing taxonomy and unblocks io_uring Fixed Buffers + Netty `ByteBuf` 2-stage allocators (#351)
 - **BREAKING** (`core` / `io`): `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` now use ownership-transfer semantics (match Netty `ByteBuf`). Callers must not call `IoBuf.release()` after write — transport takes the ref and releases after flush. Use `buf.retain()` before write to keep an alive ref. `readerIndex` advance at write time also dropped; snapshot captured in `PendingWrite` (match Netty `ChannelOutboundBuffer`) (#350)
 - **BREAKING** (`native-posix` test consumers): `FakeNativeSocket` / `FakeNativeSocketOps` / `PosixRawClient` / `@InternalTestApi` extracted from `keel-native-posix` (production artifact) into a new `keel-native-posix-testing` module. Engine test modules must switch `implementation(project(":keel-native-posix"))` in test source sets to `implementation(project(":keel-native-posix-testing"))`. Import paths (`io.github.fukusaka.keel.native.posix.*`) are unchanged. Production artifact no longer carries test scaffolding; the 2 test-only C helpers (`keel_connect_inet_loopback` / `keel_set_rcvtimeo`) moved with `PosixRawClient` to a separate `posix_testing` cinterop def. Not published to Maven, not included in Dokka ([#346])
@@ -349,13 +349,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-nio`: cache SelectionKey and use `interestOps()` toggle instead of per-read `channel.register()` + `key.cancel()` — eliminates JNI re-registration overhead (2.4K → 121K req/s on macOS)
 - Rename GitHub organization from `keel-kt` to `fukusaka` — the dedicated org was premature at this stage
 - Update copyright holder from `The keel-kt Authors` to `fukusaka`
-- `engine-netty`: replace blocking `LinkedBlockingQueue` I/O with `suspendCancellableCoroutine` + Netty listener callbacks (Phase 5b async)
+- `engine-netty`: replace blocking `LinkedBlockingQueue` I/O with `suspendCancellableCoroutine` + Netty listener callbacks
 - `engine-netty`: enable `autoRead=false` for pull-model semantics and TCP backpressure
-- `engine-kqueue`: replace blocking kevent wait with async EventLoop + `suspendCancellableCoroutine` (Phase 5b async)
+- `engine-kqueue`: replace blocking kevent wait with async EventLoop + `suspendCancellableCoroutine`
 - `engine-kqueue`: add `KqueueEventLoop` with pipe wakeup and pthread-based event loop thread
-- `engine-epoll`: replace blocking epoll_wait with async EventLoop + `suspendCancellableCoroutine` (Phase 5b async)
+- `engine-epoll`: replace blocking epoll_wait with async EventLoop + `suspendCancellableCoroutine`
 - `engine-epoll`: add `EpollEventLoop` with eventfd wakeup and pthread-based event loop thread
-- `engine-nwconnection`: replace blocking `dispatch_semaphore_wait` with async C wrappers + `suspendCancellableCoroutine` (Phase 5b async)
+- `engine-nwconnection`: replace blocking `dispatch_semaphore_wait` with async C wrappers + `suspendCancellableCoroutine`
 - `engine-nwconnection`: replace `keel_nw_read`/`keel_nw_write`/`keel_nw_start_conn` with callback-based async versions
 - `ktor-engine`: add HTTP/1.1 keep-alive support with configurable `keepAlive` setting (default: true)
 - `codec-http`: add `isKeepAlive()` to `HttpRequestHead` for HTTP/1.1 Connection header semantics
@@ -367,7 +367,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: add suspend overloads for `parseRequestHead`/`writeResponseHead` using `BufferedSuspendSource`/`BufferedSuspendSink`
 - `codec-http`: add `HttpHeaders.entries()` for suspend-compatible iteration
 - `ktor-engine`: switch from `asSource()`/`asSink()` to `asSuspendSource()`/`asSuspendSink()` — eliminates `runBlocking` from I/O path
-- `engine-nio`: replace blocking SocketChannel with non-blocking mode + Selector EventLoop (Phase 5b async)
+- `engine-nio`: replace blocking SocketChannel with non-blocking mode + Selector EventLoop
 - `engine-nio`: add `NioEventLoop` with Selector.wakeup and dedicated thread
 - `engine-nio`: add `NioEventLoopGroup` for boss/worker model with round-robin channel assignment
 - `engine-nio`: remove `ChannelSource`/`ChannelSink` — first engine fully migrated to `SuspendSource`/`SuspendSink`
@@ -420,7 +420,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `ktor-engine`: add linuxX64 and linuxArm64 targets with EpollEngine as default
 - `benchmark`: 3 profiles (default/tuned/keel-equiv-0.1) with per-engine tuning, CLI override for all socket and engine-specific options, and `--show-config` display
-- `benchmark`: Phase 2 native servers (Rust Axum, Go Gin, Swift Hummingbird, Zig std.http) with CLI config, profiles, and `--show-config`
+- `benchmark`: cross-language reference servers (Rust Axum, Go Gin, Swift Hummingbird, Zig std.http) with CLI config, profiles, and `--show-config`
 - `benchmark`: HTTP throughput benchmark module comparing keel engines against Ktor CIO, Ktor Netty, Spring Boot WebFlux, and Vert.x
 - `sample`: Minimal Ktor + keel hello world demo server
 - `scripts/bench-run.sh`: Automated wrk benchmark runner for all engines

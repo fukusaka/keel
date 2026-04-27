@@ -57,7 +57,7 @@ class JsseHttpsEchoTest {
 
         val (exitCode, output) = curlHttps(port, "/hello")
 
-        // Cleanup — `engine.close()` became `suspend` in Phase 11 (#291), hence runBlocking.
+        // Cleanup — `engine.close()` became `suspend` in #291, hence runBlocking.
         server.close()
         factory.close()
         engine.close()

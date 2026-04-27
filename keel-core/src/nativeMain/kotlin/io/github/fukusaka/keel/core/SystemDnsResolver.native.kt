@@ -37,8 +37,9 @@ import platform.posix.sockaddr_in6
  * `withContext(Dispatchers.Default)`. `Dispatchers.IO` is `internal`
  * on Native in kotlinx-coroutines 1.10, so the well-sized Default pool
  * is used instead; for production workloads wrap this resolver with
- * [CachingDnsResolver] (Phase 11 PR D) so the blocking path is rarely
- * hit. IP literals short-circuit the blocking path entirely:
+ * [CachingDnsResolver] (added in a follow-up change) so the blocking
+ * path is rarely hit. IP literals short-circuit the blocking path
+ * entirely:
  * [IpAddress.parseOrNull] is tried first and, on success, the result
  * is returned without dispatching.
  *

@@ -24,9 +24,9 @@ import kotlin.test.assertTrue
  * configured grace period, even when child coroutines (keep-alive
  * connections, in-flight handlers) are suspended on engine dispatchers.
  *
- * Before the Phase 1 `IoEngine` CoroutineScope migration, `engine.close()`
- * tore down the dispatcher eagerly while children were still suspended on
- * it. Cancel resumes were then dispatched to a dead dispatcher and never
+ * Before the `IoEngine` CoroutineScope migration, `engine.close()` tore
+ * down the dispatcher eagerly while children were still suspended on it.
+ * Cancel resumes were then dispatched to a dead dispatcher and never
  * fired, `serverJob.join()` never completed, and `stop()` waited out the
  * full timeout.
  *
