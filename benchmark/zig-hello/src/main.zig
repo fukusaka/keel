@@ -1,5 +1,10 @@
 // Minimal Zig HTTP server for benchmarking using std.http.Server.
-// Endpoints: GET /hello (13 bytes), GET /large (100KB)
+// Endpoints:
+//   GET  /hello                       (13 bytes)
+//   GET  /large                       (100KB)
+//   POST /upload-stream               (drains body, replies with byte count)
+//   GET  /sse-stream?count=N&size=M   (chunked SSE frames)
+//   WS   /ws-echo                     (echo every frame back)
 //
 // CLI: --port=8080 --profile=default|tuned|keel-equiv-0.1
 //      --show-config --connection-close=true
@@ -13,6 +18,11 @@ const http = std.http;
 const posix = std.posix;
 
 const large_payload: []const u8 = "x" ** 102_400;
+const upload_ack: []const u8 = "ok";
+const sse_default_count: usize = 100;
+const sse_default_size: usize = 1024;
+const sse_max_size: usize = 65_536;
+const ws_max_message_bytes: usize = 65_536;
 
 const Config = struct {
     port: u16 = 8080,
@@ -236,8 +246,122 @@ fn handleConnection(conn: net.Server.Connection, read_buf_size: usize, write_buf
             req.respond("Hello, World!", .{ .keep_alive = keep_alive }) catch return;
         } else if (std.mem.eql(u8, target, "/large")) {
             req.respond(large_payload, .{ .keep_alive = keep_alive }) catch return;
+        } else if (std.mem.eql(u8, target, "/upload-stream")) {
+            handleUploadStream(&req, keep_alive) catch return;
+        } else if (pathOnly(target).len > 0 and std.mem.eql(u8, pathOnly(target), "/sse-stream")) {
+            handleSseStream(&req, target, keep_alive) catch return;
+        } else if (std.mem.eql(u8, target, "/ws-echo")) {
+            handleWsEcho(&req) catch {};
+            return;
         } else {
             req.respond("Not Found", .{ .status = .not_found, .keep_alive = keep_alive }) catch return;
+        }
+    }
+}
+
+/// Returns the path portion of a request target (everything before the
+/// optional `?`), so `/sse-stream?count=10` matches the `/sse-stream` route.
+fn pathOnly(target: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, target, '?')) |q| return target[0..q];
+    return target;
+}
+
+/// Drains the request body via std.http's body reader (no aggregation),
+/// replies with the byte count in `X-Bytes-Received`. `discardRemaining`
+/// returns the total bytes discarded so we don't need to manage a drain
+/// buffer manually.
+fn handleUploadStream(
+    req: *http.Server.Request,
+    keep_alive: bool,
+) !void {
+    var body_buf: [8192]u8 = undefined;
+    const body_reader = req.readerExpectContinue(&body_buf) catch return;
+    const received = body_reader.discardRemaining() catch |err| switch (err) {
+        error.EndOfStream => unreachable, // discardRemaining returns N, never EOS error
+        error.ReadFailed => return,
+    };
+
+    var count_buf: [32]u8 = undefined;
+    const count_str = try std.fmt.bufPrint(&count_buf, "{d}", .{received});
+    const headers = [_]http.Header{
+        .{ .name = "X-Bytes-Received", .value = count_str },
+    };
+    try req.respond(upload_ack, .{ .keep_alive = keep_alive, .extra_headers = &headers });
+}
+
+/// Emits N SSE frames of M bytes each via chunked Transfer-Encoding,
+/// using `respondStreaming` so the body writer handles framing.
+fn handleSseStream(
+    req: *http.Server.Request,
+    target: []const u8,
+    keep_alive: bool,
+) !void {
+    var count = sse_default_count;
+    var size = sse_default_size;
+    if (std.mem.indexOfScalar(u8, target, '?')) |q| {
+        var it = std.mem.splitScalar(u8, target[q + 1 ..], '&');
+        while (it.next()) |pair| {
+            const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+            const key = pair[0..eq];
+            const value = pair[eq + 1 ..];
+            if (std.mem.eql(u8, key, "count")) {
+                count = std.fmt.parseInt(usize, value, 10) catch sse_default_count;
+            } else if (std.mem.eql(u8, key, "size")) {
+                size = std.fmt.parseInt(usize, value, 10) catch sse_default_size;
+            }
+        }
+    }
+    if (size > sse_max_size) size = sse_max_size;
+
+    const stream_buf_len: usize = 16 * 1024;
+    var stream_buf: [stream_buf_len]u8 = undefined;
+    var body = req.respondStreaming(&stream_buf, .{
+        .respond_options = .{
+            .keep_alive = keep_alive,
+            .extra_headers = &[_]http.Header{
+                .{ .name = "content-type", .value = "text/event-stream" },
+            },
+        },
+    }) catch return;
+
+    // BodyWriter.writer is a field (not a method). splatBytesAll repeats
+    // the byte sequence N times — used for the SSE frame's `x...` payload
+    // so we don't have to allocate a per-frame buffer of `size` bytes.
+    const out = &body.writer;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        try out.writeAll("data: ");
+        try out.splatBytesAll("x", size);
+        try out.writeAll("\n\n");
+    }
+    try body.end();
+}
+
+/// WebSocket echo handler. Uses Zig 0.15+ std.http.Server.WebSocket — the
+/// HTTP/1.1 Upgrade is performed in-place via `respondWebSocket` and each
+/// inbound text / binary message is reflected back.
+fn handleWsEcho(req: *http.Server.Request) !void {
+    const upgrade = req.upgradeRequested();
+    const key = switch (upgrade) {
+        .websocket => |k| k orelse return error.MissingWebSocketKey,
+        else => return error.NotUpgradeRequest,
+    };
+    var ws = try req.respondWebSocket(.{ .key = key });
+
+    while (true) {
+        const msg = ws.readSmallMessage() catch |err| switch (err) {
+            error.ConnectionClose => return,
+            else => return,
+        };
+        switch (msg.opcode) {
+            .text, .binary => {
+                ws.writeMessage(msg.data, msg.opcode) catch return;
+            },
+            .ping => {
+                // Reply with a pong carrying the same payload, per RFC 6455.
+                ws.writeMessage(msg.data, .pong) catch return;
+            },
+            else => {},
         }
     }
 }
