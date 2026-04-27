@@ -8,9 +8,14 @@
 # Usage: ./benchmark/bench-stream-one.sh <name> <scenario> <command> [args...]
 #
 # scenario:
-#   upload   POST /upload-stream  (request-body streaming throughput)
-#   sse      GET  /sse-stream     (response-body streaming throughput)
-#   ws-echo  GET  /ws-echo        (WebSocket echo throughput)
+#   upload     POST /upload-stream  (request-body streaming throughput)
+#   sse        GET  /sse-stream     (response-body streaming throughput)
+#   ws-echo    GET  /ws-echo        (WebSocket echo throughput, small frames)
+#   ws-large   GET  /ws-echo        (single-VU large-frame round-trip throughput
+#                                    via ws-large.js, default 1 MB binary
+#                                    payload — exercises the server's ability
+#                                    to deliver a single message bigger than
+#                                    the kernel send buffer)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS                    Number of runs; median is reported (default: 1)
@@ -24,13 +29,19 @@
 #                                 99.98% of SSE body-size checks).
 #
 # Environment variables forwarded to k6 (script-specific defaults apply):
-#   BENCH_K6_VUS         k6 virtual users          (default: 50)
-#   BENCH_K6_DURATION    k6 bench duration         (default: 15s)
-#   BENCH_PAYLOAD_KB     upload.js payload size KB (default: 64)
-#   BENCH_SSE_COUNT      sse.js frame count        (default: 100)
-#   BENCH_SSE_SIZE       sse.js per-frame bytes    (default: 1024)
-#   BENCH_WS_PAYLOAD     ws-echo.js msg size bytes (default: 256)
-#   BENCH_WS_PING_PONGS  msgs per VU before close  (default: unlimited until duration)
+#   BENCH_K6_VUS            k6 virtual users          (default: 50)
+#   BENCH_K6_DURATION       k6 bench duration         (default: 15s)
+#   BENCH_PAYLOAD_KB        upload.js payload size KB (default: 64)
+#   BENCH_SSE_COUNT         sse.js frame count        (default: 100)
+#   BENCH_SSE_SIZE          sse.js per-frame bytes    (default: 1024)
+#   BENCH_WS_PAYLOAD        ws-echo.js msg size bytes (default: 256)
+#   BENCH_WS_PING_PONGS     msgs per VU before close  (default: unlimited until duration)
+#   BENCH_WS_TYPE           ws-echo.js payload type   (text | binary, default: text)
+#   BENCH_WS_CLOSE_HANDSHAKE ws-echo.js initiate WS close handshake at end of
+#                            session instead of TCP close (true | false,
+#                            default: false)
+#   BENCH_WS_LARGE_BYTES    ws-large.js single-message payload bytes
+#                            (default: 1048576 = 1 MB)
 #
 # Example:
 #   ./benchmark/bench-stream-one.sh ktor-keel-nio upload \
@@ -62,8 +73,13 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="ws"
         ;;
+    ws-large)
+        SCRIPT="benchmark/k6/ws-large.js"
+        READY_ENDPOINT="/hello"
+        PARSER="ws"
+        ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo|ws-large)" >&2
         exit 1
         ;;
 esac
@@ -132,21 +148,32 @@ median() {
 # We extract: rps from http_reqs, p50 / p99 from http_req_duration.
 # Latency strings keep the unit suffix (ms / us) so consumers can format.
 
+extract_metric_pct() {
+    local out="$1" metric="$2" pct="$3"
+    # awk -v with single-backslash `\(` collapses to a regex group, not a
+    # literal paren. Use a bracket expression `[(]` / `[)]` instead so the
+    # parens are unambiguously literal regardless of awk -v escaping rules.
+    printf '%s' "$out" | awk -v m="$metric" -v p="^p[(]${pct}[)]=" '$0 ~ "^[[:space:]]*"m {
+        for (i = 1; i <= NF; i++) if ($i ~ p) { sub(p, "", $i); print $i; exit }
+    }'
+}
+
 parse_k6_output() {
     local out="$1"
     local kind="$2"
-    local rps_metric duration_metric
+    local rps_metric duration_metric duration_metric_fallback=""
     case "$kind" in
         ws)
             # WebSocket bench: count echoed messages received/sec.
-            # Latency uses k6's built-in `ws_ping` Trend, populated by
-            # `socket.ping()` calls from ws-echo.js — the timestamps are
-            # captured in Go (`time.Now()`), giving **ns precision**
-            # without an xk6 extension. The data-frame echo also feeds
-            # the JS-side `ws_msg_rtt_ms` Trend (ms precision) for
-            # sanity checking but ws_ping is what we surface.
+            # Latency: prefer k6's built-in `ws_ping` Trend (Go-side ns
+            # precision, populated by `socket.ping()` in ws-echo.js)
+            # when present; ws-large.js doesn't ping (it's measuring
+            # large-message round-trip, not control-frame RTT) so the
+            # parser falls back to the JS-side `ws_msg_rtt_ms` Trend
+            # which is fine for >1 ms RTTs.
             rps_metric="ws_msgs_received"
             duration_metric="ws_ping"
+            duration_metric_fallback="ws_msg_rtt_ms"
             ;;
         *)
             rps_metric="http_reqs"
@@ -157,12 +184,12 @@ parse_k6_output() {
     rps=$(printf '%s' "$out" | awk -v m="$rps_metric" '$0 ~ "^[[:space:]]*"m {
         for (i = NF; i > 0; i--) if ($i ~ /\/s$/) { sub(/\/s$/, "", $i); print $i; exit }
     }')
-    p50=$(printf '%s' "$out" | awk -v m="$duration_metric" '$0 ~ "^[[:space:]]*"m {
-        for (i = 1; i <= NF; i++) if ($i ~ /^p\(50\)=/) { sub(/^p\(50\)=/, "", $i); print $i; exit }
-    }')
-    p99=$(printf '%s' "$out" | awk -v m="$duration_metric" '$0 ~ "^[[:space:]]*"m {
-        for (i = 1; i <= NF; i++) if ($i ~ /^p\(99\)=/) { sub(/^p\(99\)=/, "", $i); print $i; exit }
-    }')
+    p50=$(extract_metric_pct "$out" "$duration_metric" "50")
+    p99=$(extract_metric_pct "$out" "$duration_metric" "99")
+    if [ -z "$p50" ] && [ -n "$duration_metric_fallback" ]; then
+        p50=$(extract_metric_pct "$out" "$duration_metric_fallback" "50")
+        p99=$(extract_metric_pct "$out" "$duration_metric_fallback" "99")
+    fi
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
@@ -234,6 +261,9 @@ for run in $(seq 1 "$RUNS"); do
         PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
         COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
         PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
+        PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
+        CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
+        WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
         PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
         k6 run --quiet --no-color \
             --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
