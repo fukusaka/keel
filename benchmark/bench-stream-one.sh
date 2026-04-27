@@ -8,14 +8,20 @@
 # Usage: ./benchmark/bench-stream-one.sh <name> <scenario> <command> [args...]
 #
 # scenario:
-#   upload     POST /upload-stream  (request-body streaming throughput)
-#   sse        GET  /sse-stream     (response-body streaming throughput)
-#   ws-echo    GET  /ws-echo        (WebSocket echo throughput, small frames)
-#   ws-large   GET  /ws-echo        (single-VU large-frame round-trip throughput
-#                                    via ws-large.js, default 1 MB binary
-#                                    payload — exercises the server's ability
-#                                    to deliver a single message bigger than
-#                                    the kernel send buffer)
+#   upload        POST /upload-stream  (request-body streaming throughput)
+#   sse           GET  /sse-stream     (response-body streaming throughput)
+#   ws-echo       GET  /ws-echo        (WebSocket echo throughput, small frames)
+#   ws-large      GET  /ws-echo        (single-VU large-frame round-trip throughput
+#                                       via ws-large.js, default 1 MB binary
+#                                       payload — exercises the server's ability
+#                                       to deliver a single message bigger than
+#                                       the kernel send buffer)
+#   ws-fragment   GET  /ws-echo        (RFC 6455 fragmented-frame send + reassembly
+#                                       echo bench via the custom Go client at
+#                                       benchmark/wsbench/. k6 cannot construct
+#                                       fragmented frames, so this scenario
+#                                       requires the wsbench binary to exist —
+#                                       build with `cd benchmark/wsbench && go build`)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS                    Number of runs; median is reported (default: 1)
@@ -42,6 +48,10 @@
 #                            default: false)
 #   BENCH_WS_LARGE_BYTES    ws-large.js single-message payload bytes
 #                            (default: 1048576 = 1 MB)
+#   BENCH_WS_FRAG_BYTES     ws-fragment.go single-message payload bytes
+#                            (default: 4096)
+#   BENCH_WS_FRAG_COUNT     ws-fragment.go frame count per message
+#                            (default: 4)
 #
 # Example:
 #   ./benchmark/bench-stream-one.sh ktor-keel-nio upload \
@@ -78,8 +88,17 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="ws"
         ;;
+    ws-fragment)
+        # The Go-based wsbench client constructs RFC 6455 fragmented
+        # frames (k6's k6/ws cannot). It already emits the
+        # `<name>|<rps>|<p50>|<p99>` row format directly so the k6
+        # parser path is bypassed.
+        SCRIPT="benchmark/wsbench/wsbench"
+        READY_ENDPOINT="/hello"
+        PARSER="wsbench"
+        ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo|ws-large)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo|ws-large|ws-fragment)" >&2
         exit 1
         ;;
 esac
@@ -107,7 +126,15 @@ for arg in "$@"; do
     esac
 done
 
-if ! command -v k6 >/dev/null 2>&1; then
+if [ "$PARSER" = "wsbench" ]; then
+    # Custom Go client; require pre-built binary to keep this script
+    # ecosystem-free at runtime (matches the rust-hello / go-hello /
+    # swift-hello / zig-hello convention).
+    if [ ! -x "$SCRIPT" ]; then
+        echo "wsbench binary not built (cd benchmark/wsbench && go build)" >&2
+        exit 1
+    fi
+elif ! command -v k6 >/dev/null 2>&1; then
     echo "k6 not installed (see benchmark/k6/README.md)" >&2
     exit 1
 fi
@@ -254,30 +281,53 @@ for run in $(seq 1 "$RUNS"); do
         exit 1
     fi
 
-    # k6 with p50/p99 enabled in the summary trend stats.
-    K6_OUT=$(
-        HOST=127.0.0.1 PORT="$PORT" \
-        VUS="$K6_VUS" DURATION="$K6_DURATION" \
-        PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
-        COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
-        PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
-        PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
-        CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
-        WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
-        PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
-        k6 run --quiet --no-color \
-            --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
-            "$SCRIPT" 2>&1
-    )
-
-    # Persist raw k6 output for post-mortem audit, mirroring the wrk
-    # raw-output convention. File name encodes engine, scenario, VUs,
-    # duration, and timestamp so multiple runs don't collide.
     SAFE_NAME=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')
     RAW_FILE="${RESULTS_DIR}/${SAFE_NAME}-${SCENARIO}-${K6_VUS}vu-${K6_DURATION}-${TIMESTAMP}-run${run}.txt"
-    printf '%s\n' "$K6_OUT" > "$RAW_FILE"
 
-    PARSED=$(parse_k6_output "$K6_OUT" "$PARSER")
+    if [ "$PARSER" = "wsbench" ]; then
+        # Custom Go client. Already emits the canonical
+        # `<name>|<rps>|<p50>|<p99>` row, so no parsing needed —
+        # capture stdout straight as the bench output.
+        K6_OUT=$(
+            "$SCRIPT" \
+                -name="$NAME" \
+                -scenario=fragment-recv \
+                -host=127.0.0.1 \
+                -port="$PORT" \
+                -vus="$K6_VUS" \
+                -duration="$K6_DURATION" \
+                -bytes="${BENCH_WS_FRAG_BYTES:-4096}" \
+                -fragments="${BENCH_WS_FRAG_COUNT:-4}" \
+                2>&1
+        )
+        printf '%s\n' "$K6_OUT" > "$RAW_FILE"
+        # The wsbench output line is already in the right shape; pull
+        # only the line starting with the engine name.
+        ROW=$(printf '%s' "$K6_OUT" | grep -E "^${SAFE_NAME}\|" | tail -1)
+        if [ -z "$ROW" ]; then
+            PARSED="||"
+        else
+            PARSED=$(printf '%s' "$ROW" | cut -d'|' -f2-)
+        fi
+    else
+        # k6 with p50/p99 enabled in the summary trend stats.
+        K6_OUT=$(
+            HOST=127.0.0.1 PORT="$PORT" \
+            VUS="$K6_VUS" DURATION="$K6_DURATION" \
+            PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
+            COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
+            PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
+            PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
+            CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
+            WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
+            PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
+            k6 run --quiet --no-color \
+                --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
+                "$SCRIPT" 2>&1
+        )
+        printf '%s\n' "$K6_OUT" > "$RAW_FILE"
+        PARSED=$(parse_k6_output "$K6_OUT" "$PARSER")
+    fi
     RPS=$(echo "$PARSED" | cut -d'|' -f1)
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)

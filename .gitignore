@@ -37,6 +37,8 @@ benchmark/go-hello/go.sum
 benchmark/swift-hello/.build/
 benchmark/zig-hello/zig-out/
 benchmark/zig-hello/.zig-cache/
+benchmark/wsbench/wsbench
+benchmark/wsbench/go.sum
 
 # Claude Code session data
 .claude/
