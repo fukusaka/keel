@@ -99,8 +99,8 @@ User handlers are expected to be non-blocking; blocking I/O must be wrapped in
 with `applicationDispatcher = Dispatchers.Default` to offload the pipeline onto a
 separate pool at the cost of one hop per request. An earlier override inside the
 NIO transport itself (`appDispatcher = Dispatchers.Default`) was motivated by a
-historical measurement (design.md §17) where EL dispatch regressed ktor-keel-nio
-by -37% on luna.local; the regression no longer reproduces in Phase 11 (+9.5%
+historical measurement where EL dispatch regressed ktor-keel-nio by -37% on
+Ubuntu loopback; the regression no longer reproduces in Phase 11 (+9.5%
 improvement instead), because the Phase 10 PipelinedChannel / HttpWriter rewrite
 together with `NioEventLoop.dispatch`'s `inEventLoop`-based wakeup skip remove
 the overhead that motivated the split.
