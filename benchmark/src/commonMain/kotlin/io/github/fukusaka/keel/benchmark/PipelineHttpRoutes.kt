@@ -165,8 +165,8 @@ private class BenchmarkRoutingHandler : InboundHandler {
 
     private fun emitSseStream(ctx: PipelineHandlerContext, head: HttpRequestHead) {
         val params = head.queryString.orEmpty()
-        val count = parseQueryInt(params, "count") ?: SSE_DEFAULT_COUNT
-        val size = parseQueryInt(params, "size") ?: SSE_DEFAULT_SIZE
+        val count = parseBenchmarkQueryInt(params, "count") ?: BENCHMARK_SSE_DEFAULT_COUNT
+        val size = parseBenchmarkQueryInt(params, "size") ?: BENCHMARK_SSE_DEFAULT_SIZE
         ctx.propagateWrite(
             HttpResponseHead(
                 status = HttpStatus.OK,
@@ -189,23 +189,4 @@ private class BenchmarkRoutingHandler : InboundHandler {
         currentPath = null
     }
 
-    private fun parseQueryInt(query: String, name: String): Int? {
-        if (query.isEmpty()) return null
-        for (pair in query.splitToSequence('&')) {
-            val eq = pair.indexOf('=')
-            if (eq <= 0) continue
-            if (pair.substring(0, eq) == name) {
-                return pair.substring(eq + 1).toIntOrNull()
-            }
-        }
-        return null
-    }
-
-    private companion object {
-        /** Default SSE frame count for `/sse-stream` (override via `?count=N`). */
-        const val SSE_DEFAULT_COUNT = 100
-
-        /** Default SSE frame payload size in bytes for `/sse-stream` (override via `?size=M`). */
-        const val SSE_DEFAULT_SIZE = 1024
-    }
 }

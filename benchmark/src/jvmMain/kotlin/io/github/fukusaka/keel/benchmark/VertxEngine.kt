@@ -47,8 +47,6 @@ object VertxEngine : EngineBenchmark {
     private val helloBytes = "Hello, World!".toByteArray()
     private val largeBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
     private val uploadAckBytes = "ok".toByteArray()
-    private const val SSE_DEFAULT_COUNT = 100
-    private const val SSE_DEFAULT_SIZE = 1024
 
     override fun start(config: BenchmarkConfig): () -> Unit {
         val s = config.socket
@@ -87,8 +85,8 @@ object VertxEngine : EngineBenchmark {
         }
 
         router.get("/sse-stream").handler { ctx ->
-            val count = ctx.request().getParam("count")?.toIntOrNull() ?: SSE_DEFAULT_COUNT
-            val size = ctx.request().getParam("size")?.toIntOrNull() ?: SSE_DEFAULT_SIZE
+            val count = ctx.request().getParam("count")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
+            val size = ctx.request().getParam("size")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
             val frame = io.vertx.core.buffer.Buffer.buffer("data: ${"x".repeat(size)}\n\n")
             val response = ctx.response()
                 .putHeader("Content-Type", "text/event-stream")

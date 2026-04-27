@@ -49,8 +49,8 @@ open class SpringBenchmarkApp {
             }
         }
         GET("/sse-stream") { req ->
-            val count = req.queryParam("count").map { it.toInt() }.orElse(SSE_DEFAULT_COUNT)
-            val size = req.queryParam("size").map { it.toInt() }.orElse(SSE_DEFAULT_SIZE)
+            val count = req.queryParam("count").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_COUNT)
+            val size = req.queryParam("size").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_SIZE)
             val payload = "data: ${"x".repeat(size)}\n\n"
             val flux = reactor.core.publisher.Flux.range(0, count).map { payload }
             ServerResponse.ok()
@@ -105,8 +105,6 @@ open class SpringBenchmarkApp {
 private val springHelloPayload = "Hello, World!".toByteArray()
 private val springLargePayloadBytes = "x".repeat(LARGE_PAYLOAD_SIZE).toByteArray()
 private val springUploadAckBytes = "ok".toByteArray()
-private const val SSE_DEFAULT_COUNT = 100
-private const val SSE_DEFAULT_SIZE = 1024
 
 /** Spring Boot WebFlux / Reactor Netty settings. */
 data class SpringEngineConfig(

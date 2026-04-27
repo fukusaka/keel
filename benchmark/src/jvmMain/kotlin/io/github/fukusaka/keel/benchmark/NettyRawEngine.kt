@@ -193,8 +193,8 @@ private class BenchmarkHandler(
     }
 
     private fun respondSseStream(ctx: ChannelHandlerContext, query: String) {
-        val count = parseQueryInt(query, "count") ?: SSE_DEFAULT_COUNT
-        val size = parseQueryInt(query, "size") ?: SSE_DEFAULT_SIZE
+        val count = parseBenchmarkQueryInt(query, "count") ?: BENCHMARK_SSE_DEFAULT_COUNT
+        val size = parseBenchmarkQueryInt(query, "size") ?: BENCHMARK_SSE_DEFAULT_SIZE
         val frame = "data: ${"x".repeat(size)}\n\n".toByteArray()
         // Send response head with Transfer-Encoding: chunked, then write
         // raw frame buffers. Netty serializes each write as one HTTP
@@ -232,24 +232,8 @@ private class BenchmarkHandler(
         }
     }
 
-    private fun parseQueryInt(query: String, name: String): Int? {
-        if (query.isEmpty()) return null
-        val q = if (query.startsWith("?")) query.substring(1) else query
-        for (pair in q.splitToSequence('&')) {
-            val eq = pair.indexOf('=')
-            if (eq <= 0) continue
-            if (pair.substring(0, eq) == name) return pair.substring(eq + 1).toIntOrNull()
-        }
-        return null
-    }
-
     override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
         ctx.close()
-    }
-
-    private companion object {
-        const val SSE_DEFAULT_COUNT = 100
-        const val SSE_DEFAULT_SIZE = 1024
     }
 }
 

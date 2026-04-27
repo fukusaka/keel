@@ -71,8 +71,8 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
             call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
         }
         get("/sse-stream") {
-            val count = call.request.queryParameters["count"]?.toIntOrNull() ?: SSE_DEFAULT_COUNT
-            val size = call.request.queryParameters["size"]?.toIntOrNull() ?: SSE_DEFAULT_SIZE
+            val count = call.request.queryParameters["count"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
+            val size = call.request.queryParameters["size"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
             val payload = sseFramePayload(size)
             call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                 repeat(count) {
@@ -105,12 +105,6 @@ private val largePayloadBytes = largePayload.encodeToByteArray()
 
 /** Reply body for `/upload-stream` — short ack, the meaningful work is the inbound discard. */
 private val uploadAckBytes = "ok".encodeToByteArray()
-
-/** Default SSE frame count for `/sse-stream` (override via `?count=N`). */
-private const val SSE_DEFAULT_COUNT = 100
-
-/** Default SSE frame payload size in bytes for `/sse-stream` (override via `?size=M`). */
-private const val SSE_DEFAULT_SIZE = 1024
 
 /**
  * Builds an SSE frame with `M` bytes of payload, prefixed by `data: ` and
