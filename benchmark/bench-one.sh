@@ -81,13 +81,26 @@ for run in $(seq 1 "$RUNS"); do
     kill_port "$PORT"
     sleep 1
 
-    # Start server
+    # Start server. setsid makes the child a session leader so its PID
+    # is also the PGID — letting `kill_server` send signals to the
+    # whole process group so grandchildren (helper threads, JVM forks)
+    # don't leak and hold the bench port across runs.
+    USED_SETSID=false
     if command -v setsid >/dev/null 2>&1; then
         setsid "$@" >/dev/null 2>&1 &
+        USED_SETSID=true
     else
         "$@" >/dev/null 2>&1 &
     fi
     PID=$!
+
+    kill_server() {
+        if [ "$USED_SETSID" = true ]; then
+            kill -TERM -- "-$PID" 2>/dev/null || true
+        else
+            kill "$PID" 2>/dev/null || true
+        fi
+    }
 
     # Wait for server to be ready. Validate HTTP status, not just TCP
     # connect — without `-w '%{http_code}'` curl returns 0 even on 5xx
@@ -105,7 +118,7 @@ for run in $(seq 1 "$RUNS"); do
     if [ "$READY" = false ]; then
         echo "$NAME|FAILED|-|-"
         kill_port "$PORT"
-        kill "$PID" 2>/dev/null || true
+        kill_server
         wait "$PID" 2>/dev/null || true
         exit 1
     fi
@@ -133,7 +146,7 @@ for run in $(seq 1 "$RUNS"); do
 
     # Stop server
     kill_port "$PORT"
-    kill "$PID" 2>/dev/null || true
+    kill_server
     wait "$PID" 2>/dev/null || true
 
     # Cooldown between runs

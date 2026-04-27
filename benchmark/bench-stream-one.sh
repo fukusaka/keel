@@ -186,12 +186,24 @@ for run in $(seq 1 "$RUNS"); do
     kill_port "$PORT"
     sleep 1
 
+    # See bench-one.sh for the rationale: setsid lets us kill the entire
+    # process group so JVM helper threads / native forks don't leak.
+    USED_SETSID=false
     if command -v setsid >/dev/null 2>&1; then
         setsid "$@" >/dev/null 2>&1 &
+        USED_SETSID=true
     else
         "$@" >/dev/null 2>&1 &
     fi
     PID=$!
+
+    kill_server() {
+        if [ "$USED_SETSID" = true ]; then
+            kill -TERM -- "-$PID" 2>/dev/null || true
+        else
+            kill "$PID" 2>/dev/null || true
+        fi
+    }
 
     # Validate HTTP status, not just TCP connect (5xx would otherwise pass).
     READY=false
@@ -207,7 +219,7 @@ for run in $(seq 1 "$RUNS"); do
     if [ "$READY" = false ]; then
         echo "$NAME|FAILED|-|-"
         kill_port "$PORT"
-        kill "$PID" 2>/dev/null || true
+        kill_server
         wait "$PID" 2>/dev/null || true
         exit 1
     fi
@@ -267,7 +279,7 @@ for run in $(seq 1 "$RUNS"); do
     fi
 
     kill_port "$PORT"
-    kill "$PID" 2>/dev/null || true
+    kill_server
     wait "$PID" 2>/dev/null || true
 
     if [ "$run" -lt "$RUNS" ]; then
