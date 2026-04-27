@@ -38,6 +38,9 @@
 #   BENCH_K6_VUS            k6 virtual users          (default: 50)
 #   BENCH_K6_DURATION       k6 bench duration         (default: 15s)
 #   BENCH_PAYLOAD_KB        upload.js payload size KB (default: 64)
+#   BENCH_UPLOAD_BYTES      upload.js payload size bytes (overrides
+#                            BENCH_PAYLOAD_KB if set; accepts MB-scale,
+#                            e.g. 10485760 = 10 MB)
 #   BENCH_SSE_COUNT         sse.js frame count        (default: 100)
 #   BENCH_SSE_SIZE          sse.js per-frame bytes    (default: 1024)
 #   BENCH_WS_PAYLOAD        ws-echo.js msg size bytes (default: 256)
@@ -220,14 +223,21 @@ parse_k6_output() {
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
-# Extract the success rate from k6's `checks_succeeded` line:
-#   checks_succeeded...: 99.97% 1234567 out of 1234999
-# Used to flag corrupt benchmarks (e.g. SSE bodies that fail body-size
-# validation under HTTP keep-alive bugs) so the harness can mark them
-# FAILED instead of reporting throughput numbers built on failed responses.
+# Extract the success rate from k6's checks output. k6 emits two formats
+# depending on version:
+#   v1.x:  `checks_succeeded...: 99.97% 1234567 out of 1234999`
+#          (paired with a separate `checks_failed` line)
+#   v0.x:  `checks.....................: 99.97%   1234567 out of 1234999`
+#          (single combined line)
+# Both expose the success percentage as the first %-token on the line, so
+# we match `checks` or `checks_succeeded` and grab the first %-suffixed
+# field. Used to flag corrupt benchmarks (e.g. SSE bodies that fail body-
+# size validation under HTTP keep-alive bugs) so the harness can mark
+# them FAILED instead of reporting throughput numbers built on failed
+# responses.
 extract_success_rate() {
     local out="$1"
-    printf '%s' "$out" | awk '/^[[:space:]]*checks_succeeded/ {
+    printf '%s' "$out" | awk '/^[[:space:]]*checks(_succeeded)?[[:space:].]*:/ {
         for (i = 1; i <= NF; i++) if ($i ~ /%$/) { sub(/%$/, "", $i); print $i; exit }
     }'
 }
@@ -315,6 +325,7 @@ for run in $(seq 1 "$RUNS"); do
             HOST=127.0.0.1 PORT="$PORT" \
             VUS="$K6_VUS" DURATION="$K6_DURATION" \
             PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
+            UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \
             COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
             PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
             PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \

@@ -16,18 +16,30 @@
 // k6 reports msg/s + latency only.
 //
 // Required env:
-//   HOST       target host (e.g. 127.0.0.1)
-//   PORT       target port
-//   PAYLOAD_KB payload size in KB (default: 64)
+//   HOST            target host (e.g. 127.0.0.1)
+//   PORT            target port
 // Optional env:
-//   VUS        concurrent virtual users (default: 50)
-//   DURATION   bench duration (default: 15s)
+//   UPLOAD_BYTES    payload size in bytes (overrides PAYLOAD_KB if set;
+//                   accepts MB-scale values for `/upload-stream` heap-pressure
+//                   bench, e.g. UPLOAD_BYTES=10485760 for 10 MB).
+//                   Distinct from ws-echo.js's PAYLOAD_BYTES so the
+//                   bench-stream-one.sh harness can forward both at once
+//                   without an env-var name collision.
+//   PAYLOAD_KB      payload size in KB (default: 64; preserved for back-compat
+//                   with existing summary tables)
+//   VUS             concurrent virtual users (default: 50)
+//   DURATION        bench duration (default: 15s)
 
 import http from 'k6/http';
 import { check } from 'k6';
 
+// Resolve payload size: UPLOAD_BYTES wins when set, otherwise convert
+// PAYLOAD_KB. Allocate the payload string once at module load — k6 shares
+// it across all VU iterations so memory cost is one copy total.
+const UPLOAD_BYTES = Number(__ENV.UPLOAD_BYTES || 0);
 const PAYLOAD_KB = Number(__ENV.PAYLOAD_KB || 64);
-const PAYLOAD = 'x'.repeat(PAYLOAD_KB * 1024);
+const PAYLOAD_LEN = UPLOAD_BYTES > 0 ? UPLOAD_BYTES : PAYLOAD_KB * 1024;
+const PAYLOAD = 'x'.repeat(PAYLOAD_LEN);
 
 export const options = {
     vus: Number(__ENV.VUS || 50),
