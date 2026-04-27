@@ -128,17 +128,17 @@ object VertxEngine : EngineBenchmark {
         val httpServer = vertx.createHttpServer(serverOptions)
             .requestHandler(router)
             // WebSocket echo: bind at server level so the upgrade is handled
-            // before the route dispatcher runs. Each frame is echoed back as
-            // text or binary based on its own frame type, no aggregation.
+            // before the route dispatcher runs. Use Vert.x's
+            // textMessageHandler / binaryMessageHandler — these auto-reassemble
+            // RFC 6455 fragmented messages (text fin=0 → continuation × N →
+            // continuation fin=1) into a complete message before invoking the
+            // handler. The lower-level frameHandler exposes individual frames
+            // including continuations, which would force per-engine fragment
+            // reassembly logic for the bench.
             .webSocketHandler { ws ->
                 if (ws.path() == "/ws-echo") {
-                    ws.frameHandler { frame ->
-                        when {
-                            frame.isText -> ws.writeFinalTextFrame(frame.textData())
-                            frame.isBinary -> ws.writeFinalBinaryFrame(frame.binaryData())
-                            else -> Unit
-                        }
-                    }
+                    ws.textMessageHandler { msg -> ws.writeFinalTextFrame(msg) }
+                    ws.binaryMessageHandler { buf -> ws.writeFinalBinaryFrame(buf) }
                     ws.exceptionHandler { ws.close() }
                 } else {
                     ws.close()
