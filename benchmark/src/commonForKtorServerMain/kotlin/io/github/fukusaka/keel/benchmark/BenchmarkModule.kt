@@ -4,14 +4,20 @@ import io.ktor.http.ContentType
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
+import io.ktor.server.application.install
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
 import io.ktor.utils.io.discard
 import io.ktor.utils.io.writeFully
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readBytes
+import io.ktor.websocket.readText
 
 /**
  * Shared Ktor routing module for benchmark servers.
@@ -38,6 +44,14 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
             call.response.headers.append("Connection", "close")
         }
     }
+    // WebSockets plugin install: required for `webSocket("/ws-echo") { ... }`.
+    // Engines that support `respondUpgrade` (Ktor CIO, Ktor Netty, Pattern B
+    // after Step 1, Pattern C after Step 3) handle the upgrade. Engines that
+    // throw `UnsupportedOperationException` from `respondUpgrade` (current
+    // Pattern B) reject the upgrade at handshake time — k6 ws-echo scenario
+    // reports those as connection errors and the benchmark just shows zero
+    // throughput for that engine, which is the expected behaviour pre-Step 1.
+    install(WebSockets)
     routing {
         get("/hello") {
             call.respondBytes(helloPayloadBytes, ContentType.Text.Plain)
@@ -64,6 +78,18 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
                 repeat(count) {
                     writeFully(payload)
                     flush()
+                }
+            }
+        }
+        webSocket("/ws-echo") {
+            // Echo every binary / text frame the client sends back to it. k6's
+            // ws-echo scenario opens a connection, sends a fixed-size message,
+            // waits for the echo, and counts round-trips per second.
+            for (frame in incoming) {
+                when (frame) {
+                    is Frame.Text -> send(Frame.Text(frame.readText()))
+                    is Frame.Binary -> send(Frame.Binary(true, frame.readBytes()))
+                    else -> Unit
                 }
             }
         }
