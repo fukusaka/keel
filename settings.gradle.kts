@@ -30,6 +30,7 @@ include(
     ":keel-tls",
     ":keel-tls-jsse",
     ":keel-server",
+    ":keel-server-ktor-base",
     ":keel-server-ktor",
     ":detekt-rules",
 )

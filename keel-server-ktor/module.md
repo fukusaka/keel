@@ -1,9 +1,18 @@
 # Module keel-server-ktor
 
-Ktor server engine adapter — bridges keel `StreamEngine` to Ktor's `ApplicationEngine`.
+Ktor server engine adapter — bridges keel `StreamEngine` to Ktor's `ApplicationEngine`,
+using keel's `:keel-codec-http` codec stack (`HttpRequestDecoder` / `HttpResponseEncoder`
+/ `HttpBodyAggregator`) for the HTTP/1.1 wire format.
 
-Use `embeddedServer(Keel)` to run any Ktor application on keel's native-speed I/O engines
-(kqueue, epoll, io_uring, NIO, Netty, NWConnection, Node.js) with a single dependency change.
+Combines the codec-agnostic skeleton from `:keel-server-ktor-base` (`KeelApplicationEngine`,
+`Configuration`, accept loop, shutdown) with `KeelCodecConnectionHandler` (per-connection
+HTTP handling using keel codec). Use `embeddedServer(Keel)` to run any Ktor application
+on keel's native-speed I/O engines (kqueue, epoll, io_uring, NIO, Netty, NWConnection)
+with a single dependency change.
+
+For Ktor users who want Ktor's own `ktor-http-cio` HTTP parser instead, the sibling
+module `:keel-server-ktor-cio` provides a `KeelCio` factory wired with
+`KtorCioConnectionHandler`.
 
 ## Usage
 
