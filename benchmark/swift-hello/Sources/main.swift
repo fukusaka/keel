@@ -1,5 +1,10 @@
 // Minimal Swift Hummingbird 2 HTTP server for benchmarking.
-// Endpoints: GET /hello (13 bytes), GET /large (100KB)
+// Endpoints:
+//   GET  /hello                       (13 bytes)
+//   GET  /large                       (100KB)
+//   POST /upload-stream               (drains body, replies with byte count)
+//   GET  /sse-stream?count=N&size=M   (chunked SSE frames)
+//   WS   /ws-echo                     (echo every frame back)
 //
 // CLI: --port=8080 --profile=default|tuned|keel-equiv-0.1
 //      --show-config --connection-close=true
@@ -9,10 +14,14 @@
 //      (tcp-nodelay/send-buffer/receive-buffer accepted but not applied; managed by SwiftNIO)
 
 import Foundation
+import HTTPTypes
 import Hummingbird
 import HummingbirdTLS
+import HummingbirdWebSocket
+import HummingbirdWSCompression
 import NIOCore
 import NIOPosix
+import WSCore
 #if canImport(Darwin)
 import Darwin.C
 #elseif canImport(Glibc)
@@ -21,6 +30,10 @@ import Glibc
 
 let helloPayloadBytes: [UInt8] = Array("Hello, World!".utf8)
 let largePayloadBytes: [UInt8] = Array(String(repeating: "x", count: 102_400).utf8)
+let uploadAckBytes: [UInt8] = Array("ok".utf8)
+
+let sseDefaultCount = 100
+let sseDefaultSize = 1024
 
 // MARK: - Configuration
 
@@ -202,6 +215,28 @@ func detectOsSocketDefaults() -> OsSocketDefaults {
     return OsSocketDefaults(sendBuffer: Int(sndbuf), receiveBuffer: Int(rcvbuf))
 }
 
+// MARK: - WebSocket echo handler
+
+@Sendable
+func wsEchoHandler(
+    inbound: WebSocketInboundStream,
+    outbound: WebSocketOutboundWriter,
+    _: HTTP1WebSocketUpgradeChannel.Context
+) async throws {
+    for try await frame in inbound {
+        switch frame.opcode {
+        case .text:
+            try await outbound.write(.text(String(buffer: frame.data)))
+        case .binary:
+            try await outbound.write(.binary(frame.data))
+        case .continuation:
+            // Continuation frames are surfaced for non-final fragments;
+            // keep echoing them as binary so the wire format round-trips.
+            try await outbound.write(.binary(frame.data))
+        }
+    }
+}
+
 // MARK: - Connection Close Middleware
 
 struct ConnectionCloseMiddleware<Context: RequestContext>: RouterMiddleware {
@@ -231,6 +266,34 @@ if config.showConfig {
     router.get("/large") { _, _ in
         Response(status: .ok, headers: [.contentType: "text/plain"], body: .init(byteBuffer: ByteBuffer(bytes: largePayloadBytes)))
     }
+    // POST /upload-stream — drain Hummingbird's RequestBody async sequence
+    // (no aggregation), reply with the byte count in X-Bytes-Received.
+    router.post("/upload-stream") { request, _ in
+        var received = 0
+        for try await buffer in request.body {
+            received += buffer.readableBytes
+        }
+        var headers = HTTPFields()
+        headers[.contentType] = "text/plain"
+        headers[HTTPField.Name("X-Bytes-Received")!] = "\(received)"
+        return Response(status: .ok, headers: headers, body: .init(byteBuffer: ByteBuffer(bytes: uploadAckBytes)))
+    }
+    // GET /sse-stream?count=N&size=M — emit N SSE frames of M bytes each
+    // via a streamed ResponseBody. Defaults match the rest of the engines.
+    router.get("/sse-stream") { request, _ in
+        let count = request.uri.queryParameters["count"].flatMap { Int($0) } ?? sseDefaultCount
+        let size = request.uri.queryParameters["size"].flatMap { Int($0) } ?? sseDefaultSize
+        let payload = ByteBuffer(string: "data: \(String(repeating: "x", count: size))\n\n")
+        var headers = HTTPFields()
+        headers[.contentType] = "text/event-stream"
+        let body = ResponseBody { writer in
+            for _ in 0..<count {
+                try await writer.write(payload)
+            }
+            try await writer.finish(nil)
+        }
+        return Response(status: .ok, headers: headers, body: body)
+    }
 
     let eventLoopGroup: any EventLoopGroup
     if let threads = config.threads {
@@ -245,6 +308,11 @@ if config.showConfig {
         reuseAddress: config.reuseAddress ?? true
     )
 
+    // /ws-echo upgrade is wired at the server (HTTP/1.1 Upgrade) layer so
+    // Hummingbird can intercept the handshake before the route dispatcher
+    // runs. The handler echoes every text / binary frame back to the
+    // client, mirroring the Spring / Vertx / Netty handlers and the
+    // k6 ws-echo.js scenario.
     let app: Application<RouterResponder<BasicRequestContext>>
     if config.tls {
         let cert = try NIOSSLCertificate.fromPEMFile(config.tlsCert)
@@ -256,13 +324,23 @@ if config.showConfig {
         tlsConfig.applicationProtocols = ["http/1.1"]
         app = Application(
             router: router,
-            server: try .tls(tlsConfiguration: tlsConfig),
+            server: try .tls(
+                .http1WebSocketUpgrade { request, _, _ in
+                    guard request.path == "/ws-echo" else { return .dontUpgrade }
+                    return .upgrade(HTTPFields(), wsEchoHandler)
+                },
+                tlsConfiguration: tlsConfig
+            ),
             configuration: appConfig,
             eventLoopGroupProvider: .shared(eventLoopGroup)
         )
     } else {
         app = Application(
             router: router,
+            server: .http1WebSocketUpgrade { request, _, _ in
+                guard request.path == "/ws-echo" else { return .dontUpgrade }
+                return .upgrade(HTTPFields(), wsEchoHandler)
+            },
             configuration: appConfig,
             eventLoopGroupProvider: .shared(eventLoopGroup)
         )

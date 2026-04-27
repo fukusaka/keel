@@ -1,5 +1,10 @@
 // Minimal Go Gin HTTP server for benchmarking.
-// Endpoints: GET /hello (13 bytes), GET /large (100KB)
+// Endpoints:
+//   GET  /hello                       (13 bytes)
+//   GET  /large                       (100KB)
+//   POST /upload-stream               (drains body, replies with byte count)
+//   GET  /sse-stream?count=N&size=M   (chunked SSE frames)
+//   WS   /ws-echo                     (echo every frame back)
 //
 // CLI: --port=8080 --profile=default|tuned|keel-equiv-0.1
 //      --show-config --connection-close=true
@@ -13,7 +18,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"strconv"
@@ -21,7 +28,17 @@ import (
 	"syscall"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
+
+const sseDefaultCount = 100
+const sseDefaultSize = 1024
+
+var wsUpgrader = websocket.Upgrader{
+	// Bench traffic is loopback; allow any origin so the k6 client can
+	// upgrade without a same-origin check.
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 const defaultTlsCertPath = "benchmark/certs/server.crt"
 const defaultTlsKeyPath = "benchmark/certs/server.key"
@@ -268,6 +285,61 @@ func main() {
 	})
 	r.GET("/large", func(c *gin.Context) {
 		c.Data(200, "text/plain", largePayloadBytes)
+	})
+
+	// POST /upload-stream — drain Request.Body chunk-by-chunk via
+	// io.Copy(io.Discard, ...) (no aggregation), reply with byte count.
+	r.POST("/upload-stream", func(c *gin.Context) {
+		received, err := io.Copy(io.Discard, c.Request.Body)
+		if err != nil {
+			c.AbortWithStatus(500)
+			return
+		}
+		c.Header("X-Bytes-Received", strconv.FormatInt(received, 10))
+		c.Data(200, "text/plain", []byte("ok"))
+	})
+
+	// GET /sse-stream?count=N&size=M — emit N SSE frames of M bytes each
+	// via gin's chunked Stream() helper. Defaults match the rest of the
+	// engines (100 frames x 1024 bytes).
+	r.GET("/sse-stream", func(c *gin.Context) {
+		count, _ := strconv.Atoi(c.Query("count"))
+		if count <= 0 {
+			count = sseDefaultCount
+		}
+		size, _ := strconv.Atoi(c.Query("size"))
+		if size <= 0 {
+			size = sseDefaultSize
+		}
+		payload := []byte("data: " + strings.Repeat("x", size) + "\n\n")
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Stream(func(w io.Writer) bool {
+			if count <= 0 {
+				return false
+			}
+			count--
+			_, err := w.Write(payload)
+			return err == nil && count > 0
+		})
+	})
+
+	// WS /ws-echo — upgrade and echo every frame back, mirroring the
+	// k6 ws-echo.js scenario and the Spring / Vertx / Netty handlers.
+	r.GET("/ws-echo", func(c *gin.Context) {
+		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(messageType, payload); err != nil {
+				return
+			}
+		}
 	})
 
 	// Create listener with socket options

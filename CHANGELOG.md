@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: Phase 2 Native reference servers (`rust-hello` axum, `go-hello` gin + `gorilla/websocket`, `swift-hello` Hummingbird + `HummingbirdWebSocket`, `zig-hello` Zig 0.15+ std.http with built-in `respondWebSocket`) gain `/upload-stream` + `/sse-stream` + `/ws-echo` so the streaming + WebSocket bench tables include every non-keel reference column (#395)
 - `benchmark`: streaming HTTP endpoints `POST /upload-stream` (drain request body, reply with byte count) and `GET /sse-stream?count=N&size=M` (chunked SSE frames) on every engine — Ktor route block, raw keel pipeline, `NettyRawEngine`, `SpringEngine`, `VertxEngine` — for benchmarking request-body / response-body streaming paths independently of `/hello` + `/large` (#394)
 - `benchmark`: WebSocket echo endpoint `GET /ws-echo` on every engine. Pattern B (`ktor-keel-*`) rejects the upgrade until `respondUpgrade` support lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today (#394)
 - `benchmark`: k6 scenarios `benchmark/k6/{upload,sse,ws-echo}.js` + `bench-stream-one.sh` helper (mirrors `bench-one.sh`'s `<name>|<rps>|<p50>|<p99>` row format but invokes k6 instead of wrk). WebSocket RTT uses the built-in `ws_ping` Trend (Go-side ns precision) populated via interleaved `socket.ping()` (#394)
