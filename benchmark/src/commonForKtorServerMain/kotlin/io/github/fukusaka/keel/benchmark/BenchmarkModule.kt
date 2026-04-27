@@ -1,11 +1,14 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.ktor.http.ContentType
+import io.ktor.http.content.PartData
+import io.ktor.http.content.forEachPart
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.request.receiveChannel
+import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.routing.get
@@ -31,6 +34,10 @@ import io.ktor.websocket.readText
  * - `POST /upload-stream` — discards request body, replies 200 + size header
  *   (used to measure streaming-upload throughput on the engine's request-body
  *   read path)
+ * - `POST /multipart-upload` — parses the incoming `multipart/form-data`,
+ *   counts parts + total payload bytes, replies 200 with both as response
+ *   headers. Exposes the framework's multipart-parser cost on top of the
+ *   raw drain that `/upload-stream` measures.
  * - `GET /sse-stream?count=N&size=M` — emits N chunks of M bytes via
  *   chunked Transfer-Encoding (used to measure server-to-client streaming
  *   throughput on the engine's response-body write path)
@@ -68,6 +75,30 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
             // GC logs collected during the bench run.
             val received = call.receiveChannel().discard()
             call.response.headers.append("X-Bytes-Received", received.toString())
+            call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+        }
+        post("/multipart-upload") {
+            // Multipart upload: framework parses parts, counts bytes per part.
+            // The bench script (k6/multipart.js) sends a fixed-shape payload
+            // (PARTS parts of PART_BYTES bytes each) so the per-iteration
+            // parse cost is the only thing engines differ on.
+            var partCount = 0
+            var totalBytes = 0L
+            val parts = call.receiveMultipart()
+            parts.forEachPart { part ->
+                if (part is PartData.FileItem) {
+                    // Drain the file part's channel via the engine's read
+                    // channel directly. `discard()` returns the byte count
+                    // without ever materialising a ByteArray, so the bench
+                    // measures the parser's drain throughput rather than
+                    // allocator pressure.
+                    totalBytes += part.provider().discard()
+                }
+                partCount++
+                part.dispose()
+            }
+            call.response.headers.append("X-Parts-Received", partCount.toString())
+            call.response.headers.append("X-Bytes-Received", totalBytes.toString())
             call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
         }
         get("/sse-stream") {

@@ -48,6 +48,34 @@ open class SpringBenchmarkApp {
                     .bodyValue(springUploadAckBytes)
             }
         }
+        POST("/multipart-upload") { req ->
+            // Multipart upload: WebFlux's `MultiValueMap<String, Part>` parser
+            // surfaces parts as Reactor `Part` objects with their own
+            // `content()` Flux<DataBuffer>. Drain each part's flux to a byte
+            // count (release buffers as we go), accumulate per-request totals.
+            req.body(org.springframework.web.reactive.function.BodyExtractors.toMultipartData())
+                .flatMap { partsMap ->
+                    val partsFlux = reactor.core.publisher.Flux.fromIterable(partsMap.toSingleValueMap().values)
+                    val totalsMono = partsFlux
+                        .flatMap { part ->
+                            part.content().map { buf ->
+                                val n = buf.readableByteCount().toLong()
+                                org.springframework.core.io.buffer.DataBufferUtils.release(buf)
+                                n
+                            }.reduce(0L) { acc, n -> acc + n }
+                        }
+                        .collectList()
+                    totalsMono.flatMap { perPart ->
+                        val parts = perPart.size
+                        val total = perPart.sum()
+                        ServerResponse.ok()
+                            .contentType(MediaType.TEXT_PLAIN)
+                            .header("X-Parts-Received", parts.toString())
+                            .header("X-Bytes-Received", total.toString())
+                            .bodyValue(springUploadAckBytes)
+                    }
+                }
+        }
         GET("/sse-stream") { req ->
             val count = req.queryParam("count").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_COUNT)
             val size = req.queryParam("size").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_SIZE)
