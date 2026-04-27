@@ -40,5 +40,9 @@ benchmark/zig-bench/.zig-cache/
 benchmark/wsbench/wsbench
 benchmark/wsbench/go.sum
 
+# Vertx BodyHandler creates a temp upload dir under cwd when running
+# bench-stream-one.sh multipart against the vertx engine.
+file-uploads/
+
 # Claude Code session data
 .claude/
