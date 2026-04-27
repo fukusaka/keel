@@ -30,8 +30,8 @@ benchmark/results/
 benchmark/results-summary/
 
 # Benchmark native server build artifacts
-benchmark/rust-hello/target/
-benchmark/rust-hello/Cargo.lock
+benchmark/rust-bench/target/
+benchmark/rust-bench/Cargo.lock
 benchmark/go-hello/go-hello
 benchmark/go-hello/go.sum
 benchmark/swift-hello/.build/
