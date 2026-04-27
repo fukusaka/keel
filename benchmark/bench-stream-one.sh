@@ -223,14 +223,21 @@ parse_k6_output() {
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
-# Extract the success rate from k6's `checks_succeeded` line:
-#   checks_succeeded...: 99.97% 1234567 out of 1234999
-# Used to flag corrupt benchmarks (e.g. SSE bodies that fail body-size
-# validation under HTTP keep-alive bugs) so the harness can mark them
-# FAILED instead of reporting throughput numbers built on failed responses.
+# Extract the success rate from k6's checks output. k6 emits two formats
+# depending on version:
+#   v1.x:  `checks_succeeded...: 99.97% 1234567 out of 1234999`
+#          (paired with a separate `checks_failed` line)
+#   v0.x:  `checks.....................: 99.97%   1234567 out of 1234999`
+#          (single combined line)
+# Both expose the success percentage as the first %-token on the line, so
+# we match `checks` or `checks_succeeded` and grab the first %-suffixed
+# field. Used to flag corrupt benchmarks (e.g. SSE bodies that fail body-
+# size validation under HTTP keep-alive bugs) so the harness can mark
+# them FAILED instead of reporting throughput numbers built on failed
+# responses.
 extract_success_rate() {
     local out="$1"
-    printf '%s' "$out" | awk '/^[[:space:]]*checks_succeeded/ {
+    printf '%s' "$out" | awk '/^[[:space:]]*checks(_succeeded)?[[:space:].]*:/ {
         for (i = 1; i <= NF; i++) if ($i ~ /%$/) { sub(/%$/, "", $i); print $i; exit }
     }'
 }
