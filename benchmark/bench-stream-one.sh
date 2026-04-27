@@ -75,6 +75,15 @@ READY_TIMEOUT=60
 K6_VUS=${BENCH_K6_VUS:-50}
 K6_DURATION=${BENCH_K6_DURATION:-15s}
 
+# Save raw k6 output alongside wrk results so summaries can be recreated
+# from log evidence rather than re-running everything. Mirrors the
+# directory layout used by `bench-keel.sh` / `bench-all.sh`.
+RESULTS_BASE="benchmark/results"
+HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
+RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+mkdir -p "$RESULTS_DIR"
+
 # Extract --port=N from args if present
 for arg in "$@"; do
     case "$arg" in
@@ -215,6 +224,14 @@ for run in $(seq 1 "$RUNS"); do
             --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
             "$SCRIPT" 2>&1
     )
+
+    # Persist raw k6 output for post-mortem audit, mirroring the wrk
+    # raw-output convention. File name encodes engine, scenario, VUs,
+    # duration, and timestamp so multiple runs don't collide.
+    SAFE_NAME=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')
+    RAW_FILE="${RESULTS_DIR}/${SAFE_NAME}-${SCENARIO}-${K6_VUS}vu-${K6_DURATION}-${TIMESTAMP}-run${run}.txt"
+    printf '%s\n' "$K6_OUT" > "$RAW_FILE"
+
     PARSED=$(parse_k6_output "$K6_OUT" "$PARSER")
     RPS=$(echo "$PARSED" | cut -d'|' -f1)
     P50=$(echo "$PARSED" | cut -d'|' -f2)
