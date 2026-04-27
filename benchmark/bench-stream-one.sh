@@ -131,8 +131,8 @@ done
 
 if [ "$PARSER" = "wsbench" ]; then
     # Custom Go client; require pre-built binary to keep this script
-    # ecosystem-free at runtime (matches the rust-hello / go-hello /
-    # swift-hello / zig-hello convention).
+    # ecosystem-free at runtime (matches the rust-bench / go-bench /
+    # swift-bench / zig-bench convention).
     if [ ! -x "$SCRIPT" ]; then
         echo "wsbench binary not built (cd benchmark/wsbench && go build)" >&2
         exit 1

@@ -13,7 +13,7 @@
 #   BENCH_SCHEME         http or https (default: http)
 #
 # Example:
-#   ./benchmark/bench-one.sh rust-hello benchmark/rust-hello/target/release/rust-hello --port=18090
+#   ./benchmark/bench-one.sh rust-bench benchmark/rust-bench/target/release/rust-bench --port=18090
 #   BENCH_ENDPOINT=/large BENCH_RUNS=3 ./benchmark/bench-one.sh ktor-keel-epoll ./benchmark.kexe --engine=ktor-keel-epoll --port=18090
 
 set -uo pipefail
