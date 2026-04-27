@@ -24,7 +24,7 @@ sudo apt-get install k6
 |---|---|---|
 | `upload.js` | `POST /upload-stream` | request-body streaming throughput (RPS / latency); engine heap pressure visible via JFR + GC log |
 | `sse.js` | `GET /sse-stream?count=N&size=M` | response-body streaming throughput (RPS / latency); engine write-path throughput |
-| `ws-echo.js` | `WebSocket /ws-echo` | echo round-trip msgs/sec + p50/p99 latency. Pattern B (`ktor-keel-*`) engines fail at upgrade until Pattern B `respondUpgrade` lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today |
+| `ws-echo.js` | `WebSocket /ws-echo` | echo throughput (`ws_msgs_received`/sec) + control-frame RTT (`ws_ping`, **ns precision** Go-side `time.Now()`) populated by interleaved `socket.ping()` every `PING_INTERVAL` (default 32) echo messages. JS-side data-frame `ws_msg_rtt_ms` is also recorded (ms precision) for cross-check. Pattern B (`ktor-keel-*`) engines fail at upgrade until Pattern B `respondUpgrade` lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today |
 
 ## Run
 
@@ -54,7 +54,7 @@ COUNT=500 SIZE=4096 VUS=50 DURATION=30s \
     HOST=127.0.0.1 PORT=18090 \
     k6 run benchmark/k6/sse.js
 
-PAYLOAD_BYTES=1024 VUS=100 DURATION=30s \
+PAYLOAD_BYTES=1024 VUS=100 DURATION=30s PING_INTERVAL=64 \
     HOST=127.0.0.1 PORT=18090 \
     k6 run benchmark/k6/ws-echo.js
 ```

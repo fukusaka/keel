@@ -138,12 +138,15 @@ parse_k6_output() {
     local rps_metric duration_metric
     case "$kind" in
         ws)
-            # WebSocket bench: count echoed messages received/sec; latency
-            # comes from the per-frame round-trip metric ws_session_duration
-            # captures the connect + first message hop, but ws_msg_received
-            # rate is the throughput signal we want.
+            # WebSocket bench: count echoed messages received/sec.
+            # Latency uses k6's built-in `ws_ping` Trend, populated by
+            # `socket.ping()` calls from ws-echo.js — the timestamps are
+            # captured in Go (`time.Now()`), giving **ns precision**
+            # without an xk6 extension. The data-frame echo also feeds
+            # the JS-side `ws_msg_rtt_ms` Trend (ms precision) for
+            # sanity checking but ws_ping is what we surface.
             rps_metric="ws_msgs_received"
-            duration_metric="ws_session_duration"
+            duration_metric="ws_ping"
             ;;
         *)
             rps_metric="http_reqs"
