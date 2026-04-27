@@ -1,5 +1,10 @@
 // Minimal Rust Axum HTTP server for benchmarking.
-// Endpoints: GET /hello (13 bytes), GET /large (100KB)
+// Endpoints:
+//   GET  /hello         (13 bytes)
+//   GET  /large         (100KB)
+//   POST /upload-stream (drains request body, replies with byte count)
+//   GET  /sse-stream?count=N&size=M (chunked SSE frames)
+//   WS   /ws-echo       (echo every frame back)
 //
 // CLI: --port=8080 --profile=default|tuned|keel-equiv-0.1
 //      --show-config --connection-close=true
@@ -8,8 +13,19 @@
 //      --tokio-blocking-threads=N
 //      --tls --tls-cert=PATH --tls-key=PATH
 
-use axum::{middleware, routing::get, Router};
+use axum::{
+    body::Body,
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query},
+    http::{HeaderMap, HeaderValue},
+    middleware,
+    response::{IntoResponse, Response, Sse, sse::Event},
+    routing::{get, post},
+    Router,
+};
 use axum_server::tls_rustls::RustlsConfig;
+use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::LazyLock;
 use std::net::SocketAddr;
 
@@ -18,12 +34,75 @@ use config::Config;
 
 static LARGE_PAYLOAD: LazyLock<String> = LazyLock::new(|| "x".repeat(102_400));
 
+const SSE_DEFAULT_COUNT: usize = 100;
+const SSE_DEFAULT_SIZE: usize = 1024;
+
 async fn hello() -> &'static str {
     "Hello, World!"
 }
 
 async fn large() -> &'static str {
     &LARGE_PAYLOAD
+}
+
+// POST /upload-stream — drain the request body chunk-by-chunk via the
+// Body data stream (no aggregation), reply with the byte count in the
+// X-Bytes-Received header. Mirrors the keel / Spring / Vertx route.
+async fn upload_stream(body: Body) -> impl IntoResponse {
+    let mut received: u64 = 0u64;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => received += bytes.len() as u64,
+            Err(_) => break,
+        }
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "X-Bytes-Received",
+        HeaderValue::from_str(&received.to_string()).unwrap(),
+    );
+    (headers, "ok")
+}
+
+// GET /sse-stream?count=N&size=M — emit N SSE frames of M bytes each via
+// chunked Transfer-Encoding. count / size default to 100 / 1024.
+async fn sse_stream(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let count = params
+        .get("count")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(SSE_DEFAULT_COUNT);
+    let size = params
+        .get("size")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(SSE_DEFAULT_SIZE);
+    let payload = "x".repeat(size);
+    let stream = futures_util::stream::iter((0..count).map(move |_| {
+        Ok::<_, Infallible>(Event::default().data(payload.clone()))
+    }));
+    Sse::new(stream)
+}
+
+// WebSocket /ws-echo — echo every message back. Matches the k6 ws-echo.js
+// scenario and the corresponding Spring / Vertx / Netty handlers.
+async fn ws_echo(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_ws_echo)
+}
+
+async fn handle_ws_echo(socket: WebSocket) {
+    let (mut sender, mut receiver) = socket.split();
+    while let Some(Ok(msg)) = receiver.next().await {
+        let echo = match msg {
+            Message::Text(t) => Message::Text(t),
+            Message::Binary(b) => Message::Binary(b),
+            // Pong is implicit in axum's ping handling; close ends the loop.
+            Message::Close(_) => break,
+            other => other,
+        };
+        if sender.send(echo).await.is_err() {
+            break;
+        }
+    }
 }
 
 async fn connection_close_middleware(
@@ -60,7 +139,10 @@ fn main() {
     rt.block_on(async move {
         let app = Router::new()
             .route("/hello", get(hello))
-            .route("/large", get(large));
+            .route("/large", get(large))
+            .route("/upload-stream", post(upload_stream))
+            .route("/sse-stream", get(sse_stream))
+            .route("/ws-echo", get(ws_echo));
 
         let app = if config.connection_close {
             app.layer(middleware::from_fn(connection_close_middleware))
