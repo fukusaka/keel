@@ -217,22 +217,47 @@ func detectOsSocketDefaults() -> OsSocketDefaults {
 
 // MARK: - WebSocket echo handler
 
+// Hummingbird's `WebSocketInboundStream` surfaces every frame
+// individually — including continuation frames for fragmented messages
+// (RFC 6455 §5.4). To echo a logical message correctly we have to
+// reassemble the payload across `text` / `binary` (`fin=false`) +
+// `continuation` (`fin=false` × N) + `continuation` (`fin=true`)
+// boundaries before writing the echo as a single frame. Frameworks
+// that auto-reassemble (axum, gorilla, Ktor, Spring WebFlux) hide this
+// from the application; Hummingbird leaves it to us.
 @Sendable
 func wsEchoHandler(
     inbound: WebSocketInboundStream,
     outbound: WebSocketOutboundWriter,
     _: HTTP1WebSocketUpgradeChannel.Context
 ) async throws {
+    var pending: ByteBuffer? = nil
+    var pendingOpcode: WebSocketDataFrame.Opcode? = nil
     for try await frame in inbound {
-        switch frame.opcode {
-        case .text:
-            try await outbound.write(.text(String(buffer: frame.data)))
-        case .binary:
-            try await outbound.write(.binary(frame.data))
-        case .continuation:
-            // Continuation frames are surfaced for non-final fragments;
-            // keep echoing them as binary so the wire format round-trips.
-            try await outbound.write(.binary(frame.data))
+        if pending == nil {
+            // Start of a new logical message. text/binary opens it;
+            // a stray continuation here is a protocol error but we
+            // tolerate it by treating the data as binary.
+            pending = frame.data
+            pendingOpcode = frame.opcode == .continuation ? .binary : frame.opcode
+        } else {
+            // Append fragment payload onto the pending buffer.
+            pending!.writeImmutableBuffer(frame.data)
+        }
+        if frame.fin {
+            let payload = pending!
+            let opcode = pendingOpcode ?? .binary
+            pending = nil
+            pendingOpcode = nil
+            switch opcode {
+            case .text:
+                try await outbound.write(.text(String(buffer: payload)))
+            case .binary:
+                try await outbound.write(.binary(payload))
+            case .continuation:
+                // Unreachable — pendingOpcode is normalised above.
+                try await outbound.write(.binary(payload))
+            }
         }
     }
 }

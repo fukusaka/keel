@@ -332,6 +332,18 @@ fn handleSseStream(req: *http.Server.Request, target: []const u8, keep_alive: bo
 /// WebSocket echo handler. Uses Zig 0.15+ std.http.Server.WebSocket — the
 /// HTTP/1.1 Upgrade is performed in-place via `respondWebSocket` and each
 /// inbound text / binary message is reflected back.
+///
+/// **Fragmentation limitation**: Zig 0.16 std.http's `readSmallMessage`
+/// explicitly returns `error.UnexpectedOpCode` for `continuation` frames
+/// and `error.MessageOversize` for any non-final (`fin=false`) frame.
+/// std.http does not yet expose a fragment-aware read API, so this
+/// handler can only echo single-frame WebSocket messages. When the
+/// client (e.g. `benchmark/wsbench/wsbench -scenario=fragment-recv`)
+/// sends a fragmented message, `readSmallMessage` errors out and we
+/// close the connection cleanly with a 1003 (`unsupported data`) close
+/// frame so the client sees a deterministic failure instead of hanging.
+/// Fragmented bench coverage for zig-hello is therefore N/A until
+/// upstream std.http grows a streaming-message API.
 fn handleWsEcho(req: *http.Server.Request) !void {
     const upgrade = req.upgradeRequested();
     const key = switch (upgrade) {
@@ -349,6 +361,13 @@ fn handleWsEcho(req: *http.Server.Request) !void {
     while (true) {
         const msg = ws.readSmallMessage() catch |err| switch (err) {
             error.ConnectionClose => return,
+            error.UnexpectedOpCode, error.MessageOversize => {
+                // Fragmented or oversize message — std.http can't
+                // handle it. Send a 1003 (`unsupported data`) close
+                // frame so the client doesn't hang, then bail.
+                writeCloseFrame(&ws, 1003) catch {};
+                return;
+            },
             else => return,
         };
         switch (msg.opcode) {
@@ -362,4 +381,13 @@ fn handleWsEcho(req: *http.Server.Request) !void {
             else => {},
         }
     }
+}
+
+/// Writes a WebSocket close frame (opcode 0x8) carrying the given
+/// status code. Used to terminate the connection when std.http surfaces
+/// an error that prevents normal echo (fragment / oversize).
+fn writeCloseFrame(ws: *http.Server.WebSocket, code: u16) !void {
+    var payload: [2]u8 = .{ @intCast(code >> 8), @intCast(code & 0xFF) };
+    ws.writeMessage(&payload, .connection_close) catch {};
+    ws.output.flush() catch {};
 }
