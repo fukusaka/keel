@@ -57,6 +57,12 @@
 #                            (default: 4)
 #   BENCH_MULTIPART_PARTS   multipart.js part count   (default: 5)
 #   BENCH_MULTIPART_PART_BYTES  multipart.js per-part bytes (default: 4096)
+#   BENCH_METHODS           method-mix.js comma-list of HTTP methods to
+#                            rotate (default: GET,POST,PUT,DELETE,PATCH,OPTIONS;
+#                            HEAD excluded by default — pipeline-http does not
+#                            auto-strip body for HEAD responses)
+#   BENCH_PATH_ID_RANGE     path-param.js modulus for the path id
+#                            (default: 100; set to 1 to disable rotation)
 #   BENCH_SLOW_INTERVAL_MS  slow-upload.js per-iteration sleep ms
 #                            (default: 100, 0 = behave like upload.js)
 #   BENCH_WS_BURST_PINGS     ws-slow-consumer.js up-front burst size
@@ -111,6 +117,16 @@ case "$SCENARIO" in
         ;;
     multipart)
         SCRIPT="benchmark/k6/multipart.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
+    method-mix)
+        SCRIPT="benchmark/k6/method-mix.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
+    path-param)
+        SCRIPT="benchmark/k6/path-param.js"
         READY_ENDPOINT="/hello"
         PARSER="http"
         ;;
@@ -382,6 +398,8 @@ for run in $(seq 1 "$RUNS"); do
             UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \
             COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
             PARTS="${BENCH_MULTIPART_PARTS:-5}" PART_BYTES="${BENCH_MULTIPART_PART_BYTES:-4096}" \
+            METHODS="${BENCH_METHODS:-GET,POST,PUT,DELETE,PATCH,OPTIONS}" \
+            ID_RANGE="${BENCH_PATH_ID_RANGE:-100}" \
             SLOW_INTERVAL_MS="${BENCH_SLOW_INTERVAL_MS:-100}" \
             BURST_PINGS="${BENCH_WS_BURST_PINGS:-16}" \
             CONSUME_DELAY_MS="${BENCH_WS_CONSUME_DELAY_MS:-50}" \

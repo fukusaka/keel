@@ -81,6 +81,8 @@ private class BenchmarkRoutingHandler : InboundHandler {
     // small (<60 bytes), so we keep the last (boundaryLen - 1) bytes from
     // the previous chunk to catch boundary occurrences that span chunks.
     private var multipartCarry: ByteArray = EMPTY_BYTE_ARRAY
+    private var methodEchoMethod: String? = null
+    private var itemEchoId: String? = null
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
@@ -89,6 +91,8 @@ private class BenchmarkRoutingHandler : InboundHandler {
                 echoStreaming = false
                 uploadStreaming = false
                 uploadBytes = 0L
+                methodEchoMethod = null
+                itemEchoId = null
                 when {
                     msg.path == "/echo" -> {
                         // Start streaming response immediately with chunked encoding.
@@ -122,6 +126,17 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         multipartStreaming = true
                         multipartParts = 0
                         multipartCarry = EMPTY_BYTE_ARRAY
+                    }
+                    msg.path == "/method-echo" -> {
+                        // Echo on BodyEnd (not here) so /method-echo + /items/{id}
+                        // share the existing emitResponse path with /hello + /large.
+                        // Stash the method on the handler so emitResponse can read it.
+                        methodEchoMethod = msg.method.name
+                    }
+                    msg.path?.startsWith("/items/") == true -> {
+                        // Same pattern as /method-echo: stash the parsed id and let
+                        // emitResponse run on HttpBodyEnd.
+                        itemEchoId = msg.path!!.substring("/items/".length)
                     }
                     msg.path?.startsWith("/sse-stream") == true -> {
                         emitSseStream(ctx, msg)
@@ -181,12 +196,20 @@ private class BenchmarkRoutingHandler : InboundHandler {
     }
 
     private fun emitResponse(ctx: PipelineHandlerContext) {
-        val response = when (currentPath) {
-            "/hello" -> PipelineHttpResponses.hello
-            "/large" -> PipelineHttpResponses.large
+        val response = when {
+            currentPath == "/hello" -> PipelineHttpResponses.hello
+            currentPath == "/large" -> PipelineHttpResponses.large
+            methodEchoMethod != null -> HttpResponse.ok("ok", contentType = "text/plain").apply {
+                headers.add("X-Echo-Method", methodEchoMethod!!)
+            }
+            itemEchoId != null -> HttpResponse.ok("ok", contentType = "text/plain").apply {
+                headers.add("X-Item-Id", itemEchoId!!)
+            }
             else -> HttpResponse.notFound()
         }
         currentPath = null
+        methodEchoMethod = null
+        itemEchoId = null
         ctx.propagateWrite(response)
         ctx.propagateFlush()
     }

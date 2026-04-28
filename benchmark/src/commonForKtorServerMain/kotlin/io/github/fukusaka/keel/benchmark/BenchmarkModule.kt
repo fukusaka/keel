@@ -11,8 +11,15 @@ import io.ktor.server.request.receiveChannel
 import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.request.httpMethod
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.head
+import io.ktor.server.routing.options
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -99,6 +106,54 @@ fun Application.benchmarkModule(connectionClose: Boolean = false) {
             }
             call.response.headers.append("X-Parts-Received", partCount.toString())
             call.response.headers.append("X-Bytes-Received", totalBytes.toString())
+            call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+        }
+        // Method-mix endpoint: any of GET/POST/PUT/DELETE/PATCH/HEAD on
+        // /method-echo replies 200 with `X-Echo-Method` echoing the request
+        // method. Used by `bench-stream-one.sh method-mix` to surface the
+        // engine's per-method routing dispatch cost.
+        route("/method-echo") {
+            // Inline the response so each method block has its own
+            // `RoutingContext` receiver — Ktor's per-method DSL does not
+            // hand back a shared handler the way some routers do.
+            get {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            post {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            put {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            delete {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            patch {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            head {
+                // HEAD: no body, but Ktor still sets headers + status from
+                // respondBytes (it strips the body itself).
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+            options {
+                call.response.headers.append("X-Echo-Method", call.request.httpMethod.value)
+                call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
+            }
+        }
+        // Path-parameter endpoint: GET /items/{id} replies 200 with
+        // `X-Item-Id` echoing the parsed id. Used by
+        // `bench-stream-one.sh path-param` to surface the engine's
+        // path-parameter routing dispatch cost.
+        get("/items/{id}") {
+            val id = call.parameters["id"] ?: ""
+            call.response.headers.append("X-Item-Id", id)
             call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
         }
         get("/sse-stream") {

@@ -164,9 +164,42 @@ private class BenchmarkHandler(
             "/large" -> respondStatic(ctx, nettyRawLargePayload.retainedDuplicate(), "text/plain")
             "/upload-stream" -> respondUploadAck(ctx, request)
             "/multipart-upload" -> respondMultipartAck(ctx, request)
+            "/method-echo" -> respondMethodEcho(ctx, request)
             "/sse-stream" -> respondSseStream(ctx, rawUri.substring(pathEnd))
-            else -> respondNotFound(ctx)
+            else -> if (path.startsWith("/items/")) {
+                respondItemEcho(ctx, path.substring("/items/".length))
+            } else {
+                respondNotFound(ctx)
+            }
         }
+    }
+
+    private fun respondMethodEcho(ctx: ChannelHandlerContext, request: FullHttpRequest) {
+        val response = DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.OK,
+            Unpooled.wrappedBuffer(nettyRawUploadAckBytes),
+        )
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        response.headers().set("X-Echo-Method", request.method().name())
+        applyConnectionHeader(response)
+        val future = ctx.writeAndFlush(response)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
+    }
+
+    private fun respondItemEcho(ctx: ChannelHandlerContext, id: String) {
+        val response = DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.OK,
+            Unpooled.wrappedBuffer(nettyRawUploadAckBytes),
+        )
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        response.headers().set("X-Item-Id", id)
+        applyConnectionHeader(response)
+        val future = ctx.writeAndFlush(response)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
     }
 
     private fun respondStatic(

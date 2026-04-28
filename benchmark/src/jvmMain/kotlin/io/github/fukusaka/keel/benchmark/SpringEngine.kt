@@ -76,6 +76,30 @@ open class SpringBenchmarkApp {
                     }
                 }
         }
+        // Method-mix endpoint: any of GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS
+        // on /method-echo replies 200 with X-Echo-Method.
+        listOf("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS").forEach { method ->
+            add(
+                org.springframework.web.reactive.function.server.RouterFunctions.route(
+                    org.springframework.web.reactive.function.server.RequestPredicates.method(
+                        org.springframework.http.HttpMethod.valueOf(method),
+                    ).and(org.springframework.web.reactive.function.server.RequestPredicates.path("/method-echo")),
+                ) { req ->
+                    ServerResponse.ok()
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .header("X-Echo-Method", req.method().name())
+                        .bodyValue(springUploadAckBytes)
+                },
+            )
+        }
+        // Path-parameter endpoint: GET /items/{id} replies 200 with X-Item-Id.
+        GET("/items/{id}") { req ->
+            val id = req.pathVariable("id")
+            ServerResponse.ok()
+                .contentType(MediaType.TEXT_PLAIN)
+                .header("X-Item-Id", id)
+                .bodyValue(springUploadAckBytes)
+        }
         GET("/sse-stream") { req ->
             val count = req.queryParam("count").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_COUNT)
             val size = req.queryParam("size").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_SIZE)
