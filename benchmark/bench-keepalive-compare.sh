@@ -41,7 +41,7 @@ SCENARIO="${2:?Usage: bench-keepalive-compare.sh <name> <scenario> <command> [ar
 shift 2
 
 case "$SCENARIO" in
-    upload|sse) ;;
+    upload|sse|multipart) ;;
     ws-echo|ws-large|ws-fragment)
         echo "error: $SCENARIO owns its connection lifecycle; keep-alive vs close A/B is meaningless." >&2
         echo "       Use bench-stream-one.sh directly for WS scenarios." >&2
@@ -49,7 +49,7 @@ case "$SCENARIO" in
         ;;
     *)
         echo "error: unsupported scenario '$SCENARIO'." >&2
-        echo "       Supported: upload, sse." >&2
+        echo "       Supported: upload, sse, multipart." >&2
         exit 2
         ;;
 esac

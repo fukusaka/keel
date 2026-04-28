@@ -163,6 +163,7 @@ private class BenchmarkHandler(
             "/hello" -> respondStatic(ctx, nettyRawHelloPayload.retainedDuplicate(), "text/plain")
             "/large" -> respondStatic(ctx, nettyRawLargePayload.retainedDuplicate(), "text/plain")
             "/upload-stream" -> respondUploadAck(ctx, request)
+            "/multipart-upload" -> respondMultipartAck(ctx, request)
             "/sse-stream" -> respondSseStream(ctx, rawUri.substring(pathEnd))
             else -> respondNotFound(ctx)
         }
@@ -193,6 +194,42 @@ private class BenchmarkHandler(
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
         response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
         response.headers().set("X-Bytes-Received", received.toString())
+        applyConnectionHeader(response)
+        val future = ctx.writeAndFlush(response)
+        if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
+    }
+
+    private fun respondMultipartAck(ctx: ChannelHandlerContext, request: FullHttpRequest) {
+        // Netty has a built-in multipart decoder; use it so the bench
+        // measures Netty's reference parser cost rather than a hand-rolled
+        // boundary-split. The request is already aggregated by
+        // HttpObjectAggregator (matches the upstream pattern), so the
+        // decoder gets the full body up front.
+        val decoder = io.netty.handler.codec.http.multipart.HttpPostRequestDecoder(request)
+        var partCount = 0
+        var totalBytes = 0L
+        try {
+            while (decoder.hasNext()) {
+                val part = decoder.next()
+                if (part is io.netty.handler.codec.http.multipart.FileUpload) {
+                    totalBytes += part.length()
+                }
+                partCount++
+            }
+        } catch (_: io.netty.handler.codec.http.multipart.HttpPostRequestDecoder.EndOfDataDecoderException) {
+            // Reached end of parts.
+        } finally {
+            decoder.destroy()
+        }
+        val response = DefaultFullHttpResponse(
+            HttpVersion.HTTP_1_1,
+            HttpResponseStatus.OK,
+            Unpooled.wrappedBuffer(nettyRawUploadAckBytes),
+        )
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().readableBytes())
+        response.headers().set("X-Parts-Received", partCount.toString())
+        response.headers().set("X-Bytes-Received", totalBytes.toString())
         applyConnectionHeader(response)
         val future = ctx.writeAndFlush(response)
         if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)

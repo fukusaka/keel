@@ -54,6 +54,13 @@ fun installPipelineHttpHandlers(pipeline: Pipeline) {
  * - `/echo`  — accumulates request body chunks and echoes them back
  * - `/upload-stream` — discards request body chunks, replies 200 + size header
  *   (request-body streaming throughput / heap-impact bench)
+ * - `/multipart-upload` — streams the request body, scans each chunk for the
+ *   bench scenario's known boundary marker (`--KeelBenchBoundaryV1`), counts
+ *   the parts, replies 200 + count + size headers. No framework multipart
+ *   parser; the boundary scan is the cheapest possible "parse" so the
+ *   bench number is the wire-side baseline against which framework parsers
+ *   (Spring / Vertx / Netty / Ktor) can be compared in `bench-stream-one.sh
+ *   multipart`.
  * - `/sse-stream?count=N&size=M` — emits N chunks of M bytes via chunked
  *   Transfer-Encoding (response-body streaming throughput bench)
  * - others   — 404 Not Found
@@ -67,6 +74,13 @@ private class BenchmarkRoutingHandler : InboundHandler {
     private var echoStreaming: Boolean = false
     private var uploadStreaming: Boolean = false
     private var uploadBytes: Long = 0L
+    private var multipartStreaming: Boolean = false
+    private var multipartParts: Int = 0
+    // 1-byte carry buffer for boundary scanning across chunk boundaries.
+    // Boundary length is constant (BENCHMARK_MULTIPART_BOUNDARY.size) and
+    // small (<60 bytes), so we keep the last (boundaryLen - 1) bytes from
+    // the previous chunk to catch boundary occurrences that span chunks.
+    private var multipartCarry: ByteArray = EMPTY_BYTE_ARRAY
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
@@ -97,6 +111,18 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         // released as they arrive.
                         uploadStreaming = true
                     }
+                    msg.path == "/multipart-upload" -> {
+                        // Streaming multipart: count bytes (same accounting as
+                        // upload-stream) AND scan each chunk for the bench
+                        // scenario's known boundary marker so X-Parts-Received
+                        // is real. The boundary scan is the cheapest possible
+                        // "parse" — it has no header parse and no per-part
+                        // allocation, so the bench number is the wire-side
+                        // baseline that framework parsers can be compared to.
+                        multipartStreaming = true
+                        multipartParts = 0
+                        multipartCarry = EMPTY_BYTE_ARRAY
+                    }
                     msg.path?.startsWith("/sse-stream") == true -> {
                         emitSseStream(ctx, msg)
                     }
@@ -118,6 +144,14 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         emitUploadAck(ctx)
                         uploadStreaming = false
                     }
+                    multipartStreaming -> {
+                        if (msg.content.readableBytes > 0) {
+                            uploadBytes += msg.content.readableBytes
+                            scanMultipartChunk(msg.content)
+                        }
+                        emitMultipartAck(ctx)
+                        multipartStreaming = false
+                    }
                     else -> emitResponse(ctx)
                 }
                 msg.content.release()
@@ -134,6 +168,10 @@ private class BenchmarkRoutingHandler : InboundHandler {
                     }
                     uploadStreaming -> {
                         uploadBytes += msg.content.readableBytes
+                    }
+                    multipartStreaming -> {
+                        uploadBytes += msg.content.readableBytes
+                        scanMultipartChunk(msg.content)
                     }
                 }
                 msg.content.release()
@@ -161,6 +199,74 @@ private class BenchmarkRoutingHandler : InboundHandler {
         )
         ctx.propagateFlush()
         currentPath = null
+    }
+
+    private fun emitMultipartAck(ctx: PipelineHandlerContext) {
+        // The k6 body has (parts + 1) boundary marker occurrences: one
+        // before each part plus the trailing `--boundary--`. Subtract 1
+        // so X-Parts-Received matches the client's PARTS env. Clamp to
+        // 0 in case the body was empty or malformed (defensive).
+        val reportedParts = (multipartParts - 1).coerceAtLeast(0)
+        ctx.propagateWrite(
+            HttpResponse.ok("ok", contentType = "text/plain").apply {
+                headers.add("X-Parts-Received", reportedParts.toString())
+                headers.add("X-Bytes-Received", uploadBytes.toString())
+            },
+        )
+        ctx.propagateFlush()
+        currentPath = null
+    }
+
+    /**
+     * Counts occurrences of the bench scenario's known boundary marker
+     * across this chunk plus any carry from the previous chunk. The k6
+     * `multipart.js` builds the body with `--KeelBenchBoundaryV1` as the
+     * boundary; counting opening boundaries (one per part) plus the
+     * trailing closing boundary `--KeelBenchBoundaryV1--` matches the
+     * `parts + 1` total. We subtract 1 in [emitMultipartAck] (well, here
+     * before reporting) so `X-Parts-Received` matches the client's
+     * `PARTS` env.
+     *
+     * The carry buffer holds the last `(boundary.size - 1)` bytes from
+     * the previous chunk so a boundary that straddles a chunk boundary
+     * is still detected. For the bench's typical chunk sizes (single-
+     * chunk multipart bodies of a few KB) the carry rarely matters but
+     * keeps the scanner correct under arbitrary chunking.
+     */
+    private fun scanMultipartChunk(content: io.github.fukusaka.keel.buf.IoBuf) {
+        val n = content.readableBytes
+        if (n == 0) return
+        val boundary = BENCHMARK_MULTIPART_BOUNDARY
+        val combinedSize = multipartCarry.size + n
+        val combined = ByteArray(combinedSize)
+        // Copy carry then chunk into one contiguous scratch.
+        if (multipartCarry.isNotEmpty()) {
+            multipartCarry.copyInto(combined, 0)
+        }
+        for (i in 0 until n) {
+            combined[multipartCarry.size + i] = content.getByte(content.readerIndex + i)
+        }
+        // Sliding-window match.
+        var i = 0
+        while (i <= combinedSize - boundary.size) {
+            var k = 0
+            while (k < boundary.size && combined[i + k] == boundary[k]) k++
+            if (k == boundary.size) {
+                multipartParts++
+                // Subtract 1 at end if we counted the trailing `--boundary--`
+                // (see emitMultipartAck logic).
+                i += boundary.size
+            } else {
+                i++
+            }
+        }
+        // Carry the tail (boundary.size - 1) bytes for the next chunk.
+        val carryLen = minOf(boundary.size - 1, combinedSize)
+        multipartCarry = if (carryLen == 0) {
+            EMPTY_BYTE_ARRAY
+        } else {
+            combined.copyOfRange(combinedSize - carryLen, combinedSize)
+        }
     }
 
     private fun emitSseStream(ctx: PipelineHandlerContext, head: HttpRequestHead) {

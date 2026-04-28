@@ -84,6 +84,22 @@ object VertxEngine : EngineBenchmark {
             req.exceptionHandler { ctx.fail(it) }
         }
 
+        // Multipart parsing requires Vert.x's BodyHandler — register only on
+        // this route so the rest of the bench surface keeps the streaming
+        // pattern (BodyHandler buffers the request body).
+        router.post("/multipart-upload")
+            .handler(io.vertx.ext.web.handler.BodyHandler.create())
+            .handler { ctx ->
+                val uploads = ctx.fileUploads()
+                val partCount = uploads.size
+                val totalBytes = uploads.sumOf { it.size() }
+                val response = ctx.response().putHeader("Content-Type", "text/plain")
+                if (config.connectionClose) response.putHeader("Connection", "close")
+                response.putHeader("X-Parts-Received", partCount.toString())
+                response.putHeader("X-Bytes-Received", totalBytes.toString())
+                response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
+            }
+
         router.get("/sse-stream").handler { ctx ->
             val count = ctx.request().getParam("count")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
             val size = ctx.request().getParam("size")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE

@@ -55,6 +55,8 @@
 #                            (default: 4096)
 #   BENCH_WS_FRAG_COUNT     ws-fragment.go frame count per message
 #                            (default: 4)
+#   BENCH_MULTIPART_PARTS   multipart.js part count   (default: 5)
+#   BENCH_MULTIPART_PART_BYTES  multipart.js per-part bytes (default: 4096)
 #   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
 #                            to upload.js / sse.js so every HTTP request
 #                            carries `Connection: close` and the TCP socket
@@ -88,6 +90,11 @@ case "$SCENARIO" in
         ;;
     sse)
         SCRIPT="benchmark/k6/sse.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
+    multipart)
+        SCRIPT="benchmark/k6/multipart.js"
         READY_ENDPOINT="/hello"
         PARSER="http"
         ;;
@@ -337,6 +344,7 @@ for run in $(seq 1 "$RUNS"); do
             PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
             UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \
             COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
+            PARTS="${BENCH_MULTIPART_PARTS:-5}" PART_BYTES="${BENCH_MULTIPART_PART_BYTES:-4096}" \
             PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
             PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
             CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
