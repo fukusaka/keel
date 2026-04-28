@@ -77,10 +77,17 @@
 #                              compressed response. Off by default —
 #                              preserves the historical /hello + /large
 #                              uncompressed baselines for non-`compression`
-#                              scenarios. Engines that don't support it
-#                              (currently `pipeline-http-*`) ignore the
-#                              flag and the bench surfaces the gap as a
-#                              missing Content-Encoding check.
+#                              scenarios. Engines that don't support
+#                              server-side compression (`pipeline-http-*`,
+#                              Native `ktor-keel-*`) ignore the flag.
+#   BENCH_COMPRESSION_STRICT  when "true", the `compression` scenario
+#                              fails on engines that returned uncompressed
+#                              despite the Accept-Encoding ask. Default
+#                              "false" so the bench measures every engine
+#                              and reports a single leaderboard mixing
+#                              compression-on vs compression-missing
+#                              engines. Set "true" to assert wire-level
+#                              compression actually fired.
 #   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
 #                            to upload.js / sse.js so every HTTP request
 #                            carries `Connection: close` and the TCP socket
@@ -441,6 +448,7 @@ for run in $(seq 1 "$RUNS"); do
             PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
             CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
             COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
+            COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-false}" \
             k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1

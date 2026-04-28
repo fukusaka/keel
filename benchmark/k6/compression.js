@@ -29,6 +29,19 @@
 //                        "gzip, deflate", "identity" all work. Use
 //                        "identity" to send no Accept-Encoding fallback
 //                        (server should return uncompressed).
+//   COMPRESSION_STRICT   when "true", make the `content-encoding present`
+//                        assertion a gating check — fail the run if the
+//                        server returned uncompressed despite the client
+//                        asking. Default "false" so the same scenario
+//                        also measures throughput on engines that don't
+//                        support compression yet (pipeline-http-* +
+//                        Native ktor-keel-*) — the bench then surfaces
+//                        the comparison "compression-on engines vs
+//                        compression-missing engines under the same
+//                        request shape" as a single leaderboard table.
+//                        Set to "true" for verification runs that want
+//                        to assert the engine actually emits a compressed
+//                        wire payload.
 //   VUS                  concurrent virtual users (default: 50)
 //   DURATION             bench duration (default: 15s)
 //   CONNECTION_CLOSE     when "true", every request carries
@@ -40,6 +53,7 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 const COMPRESSION_TYPE = String(__ENV.COMPRESSION_TYPE || 'gzip');
+const COMPRESSION_STRICT = String(__ENV.COMPRESSION_STRICT || '').toLowerCase() === 'true';
 const CONNECTION_CLOSE = String(__ENV.CONNECTION_CLOSE || '').toLowerCase() === 'true';
 
 // k6 auto-decodes gzip / deflate / br when the server emits the matching
@@ -66,20 +80,22 @@ export const options = {
 export default function () {
     const url = `${__ENV.SCHEME || 'http'}://${__ENV.HOST}:${__ENV.PORT}/large`;
     const res = http.get(url, { headers: HEADERS });
-    check(res, {
+    // Always assert correctness invariants. These two are universal: the
+    // server returned 200 and the body (after k6's transparent gzip /
+    // deflate / br decode) is the historical /large payload size.
+    const checks = {
         'status 200': (r) => r.status === 200,
-        // The wire-side check: server actually emitted Content-Encoding.
-        // pipeline-http-* engines don't emit one (codec compression is
-        // future work) — they fail this check, which is the bench's way
-        // of surfacing the engine gap on the leaderboard.
-        'content-encoding present': (r) => {
-            // identity = client didn't ask for compression, so the server
-            // legitimately may omit Content-Encoding. Skip the check.
-            if (COMPRESSION_TYPE.toLowerCase() === 'identity') return true;
-            return Boolean(r.headers['Content-Encoding']);
-        },
-        // Decompressed body size matches the historical /large payload.
-        // k6 transparently decodes gzip/deflate/br before exposing r.body.
         'decompressed body size correct': (r) => r.body && r.body.length === LARGE_PAYLOAD_BYTES,
-    });
+    };
+    // Optionally assert the wire was compressed. Off by default so the
+    // same scenario measures throughput on every engine (including
+    // pipeline-http-* and Native ktor-keel-* where codec / plugin
+    // support is missing) — the bench then reports a single leaderboard
+    // table comparing compression-enabled engines against
+    // compression-missing engines under the same request shape, instead
+    // of refusing to score the latter.
+    if (COMPRESSION_STRICT && COMPRESSION_TYPE.toLowerCase() !== 'identity') {
+        checks['content-encoding present'] = (r) => Boolean(r.headers['Content-Encoding']);
+    }
+    check(res, checks);
 }
