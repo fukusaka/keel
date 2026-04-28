@@ -259,37 +259,19 @@ private class BenchmarkRoutingHandler : InboundHandler {
     private fun scanMultipartChunk(content: io.github.fukusaka.keel.buf.IoBuf) {
         val n = content.readableBytes
         if (n == 0) return
-        val boundary = BENCHMARK_MULTIPART_BOUNDARY
-        val combinedSize = multipartCarry.size + n
-        val combined = ByteArray(combinedSize)
-        // Copy carry then chunk into one contiguous scratch.
-        if (multipartCarry.isNotEmpty()) {
-            multipartCarry.copyInto(combined, 0)
-        }
+        // Copy IoBuf bytes into a ByteArray, then delegate to the pure
+        // helper (testable in isolation, see BenchmarkRouteSupportTest).
+        val chunk = ByteArray(n)
         for (i in 0 until n) {
-            combined[multipartCarry.size + i] = content.getByte(content.readerIndex + i)
+            chunk[i] = content.getByte(content.readerIndex + i)
         }
-        // Sliding-window match.
-        var i = 0
-        while (i <= combinedSize - boundary.size) {
-            var k = 0
-            while (k < boundary.size && combined[i + k] == boundary[k]) k++
-            if (k == boundary.size) {
-                multipartParts++
-                // Subtract 1 at end if we counted the trailing `--boundary--`
-                // (see emitMultipartAck logic).
-                i += boundary.size
-            } else {
-                i++
-            }
-        }
-        // Carry the tail (boundary.size - 1) bytes for the next chunk.
-        val carryLen = minOf(boundary.size - 1, combinedSize)
-        multipartCarry = if (carryLen == 0) {
-            EMPTY_BYTE_ARRAY
-        } else {
-            combined.copyOfRange(combinedSize - carryLen, combinedSize)
-        }
+        val result = scanMultipartBoundaries(
+            carry = multipartCarry,
+            chunk = chunk,
+            boundary = BENCHMARK_MULTIPART_BOUNDARY,
+        )
+        multipartParts += result.count
+        multipartCarry = result.carry
     }
 
     private fun emitSseStream(ctx: PipelineHandlerContext, head: HttpRequestHead) {

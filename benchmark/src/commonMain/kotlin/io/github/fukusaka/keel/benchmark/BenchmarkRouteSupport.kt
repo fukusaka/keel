@@ -50,3 +50,73 @@ internal fun parseBenchmarkQueryInt(query: String?, name: String): Int? {
     }
     return null
 }
+
+/**
+ * Result of a single chunk scan in [scanMultipartBoundaries].
+ *
+ * @property count number of complete boundary marker occurrences found in
+ *   `carry + chunk`. Boundaries that opened in this combined buffer but
+ *   could not be fully matched (less than `boundary.size` bytes available)
+ *   are not counted — they will be retried on the next chunk via [carry].
+ * @property carry the trailing `(boundary.size - 1)` bytes (or fewer if the
+ *   combined buffer was shorter), to be prepended to the next chunk so a
+ *   boundary that straddles a chunk boundary is still detected.
+ */
+internal data class MultipartScanResult(val count: Int, val carry: ByteArray) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MultipartScanResult) return false
+        return count == other.count && carry.contentEquals(other.carry)
+    }
+
+    override fun hashCode(): Int = 31 * count + carry.contentHashCode()
+}
+
+/**
+ * Pure boundary-scan core extracted from `BenchmarkRoutingHandler.scanMultipartChunk`.
+ *
+ * Combines `carry + chunk`, counts non-overlapping occurrences of [boundary]
+ * via a simple sliding-window match, and returns the combined buffer's tail
+ * `(boundary.size - 1)` bytes as the next-chunk carry. Suitable for unit
+ * testing because it has no dependency on `IoBuf` or pipeline state — the
+ * pipeline handler copies IoBuf bytes into a `ByteArray` before delegating
+ * here.
+ *
+ * Used to defend the chunk-spanning correctness: a boundary that starts
+ * near the end of one chunk and continues into the next must still be
+ * counted exactly once.
+ */
+internal fun scanMultipartBoundaries(
+    carry: ByteArray,
+    chunk: ByteArray,
+    boundary: ByteArray,
+): MultipartScanResult {
+    if (chunk.isEmpty() && carry.isEmpty()) {
+        return MultipartScanResult(count = 0, carry = EMPTY_BYTE_ARRAY)
+    }
+    val combinedSize = carry.size + chunk.size
+    val combined = ByteArray(combinedSize)
+    if (carry.isNotEmpty()) carry.copyInto(combined, 0)
+    if (chunk.isNotEmpty()) chunk.copyInto(combined, carry.size)
+
+    var count = 0
+    var i = 0
+    while (i <= combinedSize - boundary.size) {
+        var k = 0
+        while (k < boundary.size && combined[i + k] == boundary[k]) k++
+        if (k == boundary.size) {
+            count++
+            i += boundary.size
+        } else {
+            i++
+        }
+    }
+
+    val carryLen = minOf(boundary.size - 1, combinedSize)
+    val newCarry = if (carryLen == 0) {
+        EMPTY_BYTE_ARRAY
+    } else {
+        combined.copyOfRange(combinedSize - carryLen, combinedSize)
+    }
+    return MultipartScanResult(count, newCarry)
+}

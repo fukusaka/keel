@@ -51,6 +51,11 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
+        commonTest {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
 
         // Ktor Server dependencies — shared by JVM and Native, but not JS.
         val commonForKtorServerMain by creating {
