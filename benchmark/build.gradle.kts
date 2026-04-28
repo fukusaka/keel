@@ -74,6 +74,10 @@ kotlin {
                 implementation(project(":keel-engine-nio"))
                 implementation(project(":keel-engine-netty"))
                 implementation(libs.ktor.server.netty)
+                // ktor-server-compression: JVM-only artefact (no Native publication).
+                // Used by BenchmarkCompression.jvm.kt's actual install hook for the
+                // `compression` bench scenario; Native adapters get a no-op actual.
+                implementation(libs.ktor.server.compression)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
             }

@@ -29,7 +29,7 @@ object KtorNettyEngine : EngineBenchmark {
         val netty = config.engineConfig as? KtorNettyEngineConfig ?: KtorNettyEngineConfig()
         val s = config.socket
         val rootConfig = serverConfig {
-            module { benchmarkModule(config.connectionClose) }
+            module { benchmarkModule(config.connectionClose, config.compression) }
         }
         val engine = embeddedServer(KtorNetty, rootConfig) {
             if (config.tls != null) {
