@@ -45,7 +45,19 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 class HttpResponseEncoder : OutboundHandler {
 
-    private enum class StreamingMode { NONE, FIXED, CHUNKED }
+    /**
+     * The four legal streaming states for a response head.
+     *
+     * - [NONE]: no head sent yet (initial / between responses).
+     * - [FIXED]: Content-Length declared; body bytes are forwarded unchanged.
+     * - [CHUNKED]: Transfer-Encoding: chunked; body bytes get hex framing.
+     * - [BODYLESS]: head was a 1xx informational, 204 No Content, or 304
+     *   Not Modified status — RFC 9112 §6 forbids a message body. The
+     *   encoder emits the head, then accepts a single terminating
+     *   [HttpBodyEnd] as a no-op (used by upstream code paths like the
+     *   protocol-upgrade handshake which always emit `HEAD + END`).
+     */
+    private enum class StreamingMode { NONE, FIXED, CHUNKED, BODYLESS }
 
     private var streamingMode: StreamingMode = StreamingMode.NONE
     private var remainingContentLength: Long = 0L
@@ -110,7 +122,19 @@ class HttpResponseEncoder : OutboundHandler {
         check(!(chunked && cl != null)) {
             "HttpResponseHead has both Transfer-Encoding: chunked and Content-Length"
         }
+        // RFC 9112 §6: 1xx (Informational), 204 (No Content), and 304
+        // (Not Modified) responses MUST NOT carry a message body. The
+        // protocol-upgrade flow (101 Switching Protocols) is the
+        // motivating case — `:keel-server-ktor`'s `respondUpgrade`
+        // sends `HEAD + HttpBodyEnd.EMPTY` and then hijacks the
+        // connection, so requiring Content-Length / chunked here
+        // would block the WebSocket handshake. For these statuses the
+        // encoder emits the head and stays in [BODYLESS] until
+        // [HttpBodyEnd] terminates the message — any non-empty
+        // [HttpBody] is a contract violation.
+        val bodyless = isBodylessStatus(head.status.code)
         streamingMode = when {
+            bodyless -> StreamingMode.BODYLESS
             chunked -> StreamingMode.CHUNKED
             cl != null -> StreamingMode.FIXED
             else -> error(
@@ -134,12 +158,45 @@ class HttpResponseEncoder : OutboundHandler {
             }
             StreamingMode.FIXED -> encodeContentFixed(ctx, content, last)
             StreamingMode.CHUNKED -> encodeContentChunked(ctx, content, last)
+            StreamingMode.BODYLESS -> encodeContentBodyless(ctx, content, last)
         }
         if (last) {
             streamingMode = StreamingMode.NONE
             remainingContentLength = 0L
         }
     }
+
+    /**
+     * Bodyless terminator handler. The head was already emitted in
+     * [encodeHeadAndStartStreaming]; the only legal follow-up is an
+     * empty [HttpBodyEnd]. Any [HttpBody] with bytes — or a non-final
+     * message — is a contract violation (RFC 9112 §6).
+     */
+    @Suppress("UnusedParameter")
+    private fun encodeContentBodyless(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
+        // ctx + last unused: BODYLESS doesn't propagate to the next
+        // handler (no body bytes / chunked terminator to emit) and
+        // streaming-state reset already runs in `encodeContentMsg`'s
+        // shared epilogue. Buffer is released here so callers don't
+        // leak a zero-byte IoBuf that still holds a refcount.
+        val size = content.content.readableBytes
+        if (size > 0) {
+            content.content.release()
+            error(
+                "HttpBody with $size bytes received for a bodyless status response; " +
+                    "RFC 9112 §6 forbids a message body for 1xx / 204 / 304",
+            )
+        }
+        content.content.release()
+    }
+
+    /**
+     * RFC 9112 §6: 1xx (Informational) / 204 (No Content) / 304
+     * (Not Modified) responses MUST NOT include a message body and
+     * MUST NOT carry Content-Length. Returns true for any of those.
+     */
+    private fun isBodylessStatus(code: Int): Boolean =
+        code in 100..199 || code == 204 || code == 304
 
     private fun encodeContentFixed(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val size = content.content.readableBytes
