@@ -12,7 +12,7 @@ object KeelIoUringEngine : EngineBenchmark {
 
     override fun start(config: BenchmarkConfig): () -> Unit {
         val rootConfig = serverConfig {
-            module { benchmarkModule(config.connectionClose) }
+            module { benchmarkModule(config.connectionClose, config.compression) }
         }
         val factory = config.tls?.let { createTlsCodecFactory(it) }
         val engine = embeddedServer(Keel, rootConfig) {

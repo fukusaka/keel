@@ -154,7 +154,14 @@ object VertxEngine : EngineBenchmark {
         v.maxHeaderSize?.let { serverOptions.setMaxHeaderSize(it) }
         v.maxInitialLineLength?.let { serverOptions.setMaxInitialLineLength(it) }
         v.decoderInitialBufferSize?.let { serverOptions.setDecoderInitialBufferSize(it) }
-        v.compressionSupported?.let { serverOptions.setCompressionSupported(it) }
+        // Top-level --compression overrides the engine-specific knob: setting
+        // it true at the BenchmarkConfig layer is the bench harness's "all
+        // engines on" signal, while engine-specific config keeps a finer
+        // dial for tuning runs (different compression levels, etc.).
+        when {
+            config.compression -> serverOptions.setCompressionSupported(true)
+            v.compressionSupported != null -> serverOptions.setCompressionSupported(v.compressionSupported)
+        }
         v.compressionLevel?.let { serverOptions.setCompressionLevel(it) }
         v.idleTimeout?.let { serverOptions.setIdleTimeout(it) }
         if (config.tls != null) {

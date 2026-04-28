@@ -40,6 +40,26 @@ data class BenchmarkConfig(
     val connectionClose: Boolean = false,
     val tls: String? = null,
     val tlsInstaller: String = "keel",
+    /**
+     * When true, enable HTTP response compression (gzip / deflate) on the
+     * server. Off by default — preserves existing baseline benchmarks for
+     * `/hello`, `/large`, `/upload-stream` etc. that historically ran
+     * uncompressed. The k6 client opts in via `Accept-Encoding` (see
+     * `benchmark/k6/compression.js`); when this flag is false the server
+     * returns the body uncompressed even if the client requests an encoding.
+     *
+     * Engine support:
+     * - Ktor adapters (ktor-cio, ktor-netty, ktor-keel-*): install
+     *   `Compression { gzip(); deflate() }` in `benchmarkModule`.
+     * - `vertx`: maps to `HttpServerOptions.setCompressionSupported(true)`.
+     * - `netty-raw`: adds `HttpContentCompressor` to the pipeline.
+     * - `spring`: sets `server.compression.enabled=true` plus mime-type list.
+     * - `pipeline-http-*`: not supported — `/keel-codec-http` does not yet
+     *   emit a compressed body. The bench surfaces this as a missing
+     *   `Content-Encoding` header (k6 check fails) so the gap is visible
+     *   on the leaderboard rather than silent.
+     */
+    val compression: Boolean = false,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -60,6 +80,7 @@ data class BenchmarkConfig(
                     "port" -> config = config.copy(port = value.toInt())
                     "profile" -> config = config.copy(profile = value)
                     "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
+                    "compression" -> config = config.copy(compression = value.toBooleanStrict())
                     "tls" -> config = config.copy(tls = value)
                     "tls-installer" -> config = config.copy(tlsInstaller = value)
                     // Socket options
@@ -125,6 +146,7 @@ data class BenchmarkConfig(
         append("engine=$engine, port=$port, profile=$profile")
         if (tls != null) append(", tls=$tls, tls-installer=$tlsInstaller")
         if (connectionClose) append(", connection=close")
+        if (compression) append(", compression=on")
         socket.appendTo(this)
         if (engineConfig !is EngineConfig.None) append(", $engineConfig")
     }
@@ -147,6 +169,7 @@ data class BenchmarkConfig(
         } else {
             fmtLine("connection-close:", "$connectionClose")
         }
+        fmtLine("compression:", if (compression) "enabled (gzip / deflate)" else "disabled")
         appendLine()
         socket.displayTo(this, engine)
         appendLine()

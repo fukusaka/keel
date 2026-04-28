@@ -51,13 +51,21 @@ import io.ktor.websocket.readText
  *
  * @param connectionClose if true, add `Connection: close` header to force
  *   per-request TCP connections (used by keel-equiv profile)
+ * @param compression if true, install Ktor's [Compression] plugin so
+ *   responses are compressed when the client sends `Accept-Encoding`
+ *   (gzip / deflate). Off by default — preserves the existing
+ *   uncompressed `/hello` and `/large` baselines for non-compression
+ *   scenarios. The `compression.js` k6 scenario opts in via
+ *   `BENCH_COMPRESSION_ENABLE=true` (forwarded as `--compression=true`
+ *   by `bench-stream-one.sh`).
  */
-fun Application.benchmarkModule(connectionClose: Boolean = false) {
+fun Application.benchmarkModule(connectionClose: Boolean = false, compression: Boolean = false) {
     if (connectionClose) {
         intercept(ApplicationCallPipeline.Plugins) {
             call.response.headers.append("Connection", "close")
         }
     }
+    installBenchmarkCompression(compression)
     // WebSockets plugin install: required for `webSocket("/ws-echo") { ... }`.
     // Engines that support `respondUpgrade` (Ktor CIO, Ktor Netty, Pattern B
     // after Step 1, Pattern C after Step 3) handle the upgrade. Engines that

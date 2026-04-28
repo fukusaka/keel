@@ -69,6 +69,25 @@
 #                            (default: 16)
 #   BENCH_WS_CONSUME_DELAY_MS  ws-slow-consumer.js per-echo sleep ms
 #                            (default: 50)
+#   BENCH_COMPRESSION_TYPE  compression.js Accept-Encoding header value
+#                            (default: "gzip"; "br" / "deflate" / "identity"
+#                            also accepted; sent verbatim to the wire)
+#   BENCH_COMPRESSION_ENABLE  when "true", append `--compression=true` to the
+#                              server start command so the engine emits a
+#                              compressed response. Off by default —
+#                              preserves the historical /hello + /large
+#                              uncompressed baselines for non-`compression`
+#                              scenarios. Engines that don't support
+#                              server-side compression (`pipeline-http-*`,
+#                              Native `ktor-keel-*`) ignore the flag.
+#   BENCH_COMPRESSION_STRICT  when "true", the `compression` scenario
+#                              fails on engines that returned uncompressed
+#                              despite the Accept-Encoding ask. Default
+#                              "false" so the bench measures every engine
+#                              and reports a single leaderboard mixing
+#                              compression-on vs compression-missing
+#                              engines. Set "true" to assert wire-level
+#                              compression actually fired.
 #   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
 #                            to upload.js / sse.js so every HTTP request
 #                            carries `Connection: close` and the TCP socket
@@ -130,6 +149,16 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="http"
         ;;
+    compression)
+        # Reuses /large under Accept-Encoding so the wire payload comes
+        # straight from the engine's response-compression path. Server-side
+        # compression is opt-in via `BENCH_COMPRESSION_ENABLE=true`
+        # (forwarded as `--compression=true` to the server start command —
+        # see bench-stream-one.sh's CMD assembly below).
+        SCRIPT="benchmark/k6/compression.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
     slow-upload)
         SCRIPT="benchmark/k6/slow-upload.js"
         READY_ENDPOINT="/hello"
@@ -160,7 +189,7 @@ case "$SCENARIO" in
         PARSER="wsbench"
         ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|ws-echo|ws-large|ws-fragment)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment)" >&2
         exit 1
         ;;
 esac
@@ -196,6 +225,15 @@ for arg in "$@"; do
         --port=*) PORT="${arg#--port=}" ;;
     esac
 done
+
+# When compression enabled, append `--compression=true` to the server
+# launch command. The benchmark CLI parser ignores duplicates, so this
+# is safe even if the caller already passed --compression=... — last
+# wins per BenchmarkConfig.parse() semantics.
+COMPRESSION_ENABLE="${BENCH_COMPRESSION_ENABLE:-false}"
+if [ "$COMPRESSION_ENABLE" = "true" ]; then
+    set -- "$@" --compression=true
+fi
 
 if [ "$PARSER" = "wsbench" ]; then
     # Custom Go client; require pre-built binary to keep this script
@@ -409,6 +447,8 @@ for run in $(seq 1 "$RUNS"); do
             WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
             PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
             CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
+            COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
+            COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-false}" \
             k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1

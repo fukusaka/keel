@@ -24,7 +24,7 @@ object CioEngine : EngineBenchmark {
     override fun start(config: BenchmarkConfig): () -> Unit {
         val cio = config.engineConfig as? CioEngineConfig ?: CioEngineConfig()
         val rootConfig = serverConfig {
-            module { benchmarkModule(config.connectionClose) }
+            module { benchmarkModule(config.connectionClose, config.compression) }
         }
         require(config.tls == null) { "Ktor CIO does not support HTTPS. Use ktor-netty or keel engines instead." }
         val engine = embeddedServer(CIO, rootConfig) {

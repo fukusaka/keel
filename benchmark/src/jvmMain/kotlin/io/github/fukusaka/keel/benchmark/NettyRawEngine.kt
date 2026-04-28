@@ -14,6 +14,7 @@ import io.netty.handler.codec.http.DefaultFullHttpResponse
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.HttpHeaderNames
 import io.netty.handler.codec.http.HttpHeaderValues
+import io.netty.handler.codec.http.HttpContentCompressor
 import io.netty.handler.codec.http.HttpObjectAggregator
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.handler.codec.http.HttpServerCodec
@@ -86,8 +87,17 @@ object NettyRawEngine : EngineBenchmark {
 
                 override fun initChannel(ch: SocketChannel) {
                     sslCtx?.let { ch.pipeline().addLast(it.newHandler(ch.alloc())) }
+                    ch.pipeline().addLast(HttpServerCodec())
+                    if (config.compression) {
+                        // HttpContentCompressor must come BEFORE the aggregator
+                        // (operates on outbound HttpResponse / HttpContent
+                        // events). It negotiates Accept-Encoding per request
+                        // and falls through uncompressed when the client doesn't
+                        // ask, so other bench scenarios remain bit-identical to
+                        // the pre-compression baseline.
+                        ch.pipeline().addLast(HttpContentCompressor())
+                    }
                     ch.pipeline().addLast(
-                        HttpServerCodec(),
                         HttpObjectAggregator(maxContent),
                         // WebSocketServerProtocolHandler intercepts the upgrade
                         // for /ws-echo, attaches the framing codec, and lets
