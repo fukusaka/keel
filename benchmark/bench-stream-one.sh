@@ -88,6 +88,28 @@
 #                              compression-on vs compression-missing
 #                              engines. Set "true" to assert wire-level
 #                              compression actually fired.
+#   BENCH_JFR                 when "true" and the engine command is a JVM
+#                              run (the first arg is `java` or ends in `/java`),
+#                              prepend `-XX:StartFlightRecording=settings=…,
+#                              filename=…,dumponexit=true` so a `.jfr` file is
+#                              written alongside the raw bench output. The
+#                              recording covers the full JVM lifetime (server
+#                              startup + k6 load + cooldown), making it the
+#                              right tool for hot-path / heap allocation /
+#                              lock contention analysis after the run.
+#                              No-op (with stderr warning) for Native bench
+#                              binaries — Kotlin/Native has no JFR equivalent.
+#   BENCH_JFR_SETTINGS        JFR profile preset, passed through verbatim
+#                              as `settings=…`. Default "profile" (richer
+#                              method sampling than the built-in "default").
+#                              Set to a path for a custom .jfc file.
+#   BENCH_GC_LOG              when "true" and the engine command is a JVM
+#                              run, prepend `-Xlog:gc*:file=…:tags,uptime,
+#                              time,level` so a `.gc.log` is written
+#                              alongside the bench output. Useful for
+#                              cross-engine GC pressure comparison
+#                              (request-body aggregator vs streaming etc.).
+#                              No-op for Native bench binaries.
 #   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
 #                            to upload.js / sse.js so every HTTP request
 #                            carries `Connection: close` and the TCP socket
@@ -233,6 +255,41 @@ done
 COMPRESSION_ENABLE="${BENCH_COMPRESSION_ENABLE:-false}"
 if [ "$COMPRESSION_ENABLE" = "true" ]; then
     set -- "$@" --compression=true
+fi
+
+# JFR + GC observability injection. Detect JVM command (first arg is
+# `java` or ends in `/java`); for non-JVM commands (Native `.kexe`),
+# emit a warning and continue without flags. The Native warning is
+# stderr-only so the bench's stdout row format stays clean.
+SAFE_NAME=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')
+JFR_REQUESTED="${BENCH_JFR:-false}"
+GC_LOG_REQUESTED="${BENCH_GC_LOG:-false}"
+JFR_FILE=""
+GC_LOG_FILE=""
+if [ "$JFR_REQUESTED" = "true" ] || [ "$GC_LOG_REQUESTED" = "true" ]; then
+    CMD_FIRST="$1"
+    CMD_FIRST_BASENAME="${CMD_FIRST##*/}"
+    if [ "$CMD_FIRST" = "java" ] || [ "$CMD_FIRST_BASENAME" = "java" ]; then
+        JVM_OPTS=()
+        if [ "$JFR_REQUESTED" = "true" ]; then
+            JFR_FILE="${RESULTS_DIR}/${SAFE_NAME}-${SCENARIO}-${TIMESTAMP}.jfr"
+            JFR_SETTINGS="${BENCH_JFR_SETTINGS:-profile}"
+            # `dumponexit=true` writes the .jfr only when the JVM exits;
+            # combined with the harness's SIGTERM teardown after the k6
+            # run, this captures the full bench lifetime.
+            JVM_OPTS+=("-XX:StartFlightRecording=settings=${JFR_SETTINGS},filename=${JFR_FILE},dumponexit=true")
+        fi
+        if [ "$GC_LOG_REQUESTED" = "true" ]; then
+            GC_LOG_FILE="${RESULTS_DIR}/${SAFE_NAME}-${SCENARIO}-${TIMESTAMP}.gc.log"
+            JVM_OPTS+=("-Xlog:gc*:file=${GC_LOG_FILE}:tags,uptime,time,level")
+        fi
+        # Inject JVM_OPTS between $1 (java) and $2... (-cp / class / args).
+        # `set --` rebuilds the positional params so the eventual
+        # `setsid "$@"` call below picks them up unchanged.
+        set -- "$1" "${JVM_OPTS[@]}" "${@:2}"
+    else
+        printf 'warning: BENCH_JFR / BENCH_GC_LOG requested but command "%s" is not a JVM run; skipping\n' "$CMD_FIRST" >&2
+    fi
 fi
 
 if [ "$PARSER" = "wsbench" ]; then
@@ -397,7 +454,8 @@ for run in $(seq 1 "$RUNS"); do
         exit 1
     fi
 
-    SAFE_NAME=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')
+    # SAFE_NAME is computed once near the top of the run setup (alongside
+    # JFR / GC log filename derivation); reuse it here for raw output.
     RAW_FILE="${RESULTS_DIR}/${SAFE_NAME}-${SCENARIO}-${K6_VUS}vu-${K6_DURATION}-${TIMESTAMP}-run${run}.txt"
 
     if [ "$PARSER" = "wsbench" ]; then
@@ -503,4 +561,22 @@ if [ "$RUNS" -gt 1 ]; then
     echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]"
 else
     echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99"
+fi
+
+# Surface JFR / GC log paths so the operator knows where the artefacts
+# went (stderr keeps the bench's stdout pipe clean for downstream
+# parsing into summary tables).
+if [ -n "$JFR_FILE" ]; then
+    if [ -f "$JFR_FILE" ]; then
+        printf 'jfr: %s\n' "$JFR_FILE" >&2
+    else
+        printf 'warning: JFR file not produced (expected %s) — check JVM version supports `-XX:StartFlightRecording`\n' "$JFR_FILE" >&2
+    fi
+fi
+if [ -n "$GC_LOG_FILE" ]; then
+    if [ -f "$GC_LOG_FILE" ]; then
+        printf 'gc-log: %s\n' "$GC_LOG_FILE" >&2
+    else
+        printf 'warning: GC log not produced (expected %s)\n' "$GC_LOG_FILE" >&2
+    fi
 fi
