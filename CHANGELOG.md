@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: opt-in JFR + GC log capture for JVM bench runs via `BENCH_JFR=true` and `BENCH_GC_LOG=true` env knobs on `bench-stream-one.sh`. Detects `java`-as-arg-0 and prepends `-XX:StartFlightRecording=settings=…,filename=…,dumponexit=true` and `-Xlog:gc*:file=…:tags,uptime,time,level`; artefacts land alongside the existing raw bench output (#408)
 - `benchmark`: HTTP response compression bench — `compression.js` k6 scenario sends `Accept-Encoding` to `/large`, opt-in via `BENCH_COMPRESSION_ENABLE=true`. Server side wired through Ktor adapters (gzip + deflate, JVM only via expect/actual; Native gets a no-op), Vertx, Netty raw, and Spring. The default mode measures every engine (compression-on vs compression-missing on a single leaderboard); `BENCH_COMPRESSION_STRICT=true` flips the Content-Encoding assertion to gating for verification runs (#407)
 - `keel-codec-http`: `PipelinedChannel.addHttp1ServerCodec(aggregateBody: Boolean = true)` extension that installs the standard HTTP/1.1 server-side codec stack on a pipeline (`encoder` + `decoder` + optional `aggregator`). Lets `:keel-ktor-engine` and the upcoming `:keel-server-http` share one install path instead of repeating the four `pipeline.addLast(...)` calls (#391)
 
