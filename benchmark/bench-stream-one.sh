@@ -73,6 +73,16 @@
 #                            reuse vs the per-request handler path.
 #                            Has no effect on WS scenarios (the upgrade
 #                            owns the connection lifecycle).
+#   BENCH_SCHEME            "http" or "https" (default: http). Forwarded
+#                            to k6 scripts as `SCHEME=...` (HTTP scenarios)
+#                            and `WS_SCHEME=ws|wss` (WS scenarios). The
+#                            harness's READY check uses the same scheme.
+#                            HTTPS requires the server to be started with
+#                            `--tls=jsse|openssl|mbedtls|awslc` (engine
+#                            command-line flag); the bench cert is the
+#                            shared self-signed one from
+#                            `BenchmarkCertificates`, so k6 also runs with
+#                            `insecureSkipTLSVerify: true`.
 #
 # Example:
 #   ./benchmark/bench-stream-one.sh ktor-keel-nio upload \
@@ -145,6 +155,15 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 READY_TIMEOUT=60
 K6_VUS=${BENCH_K6_VUS:-50}
 K6_DURATION=${BENCH_K6_DURATION:-15s}
+SCHEME=${BENCH_SCHEME:-http}
+case "$SCHEME" in
+    http)  WS_SCHEME=ws  ;;
+    https) WS_SCHEME=wss ;;
+    *)
+        echo "error: BENCH_SCHEME must be 'http' or 'https' (got '$SCHEME')." >&2
+        exit 2
+        ;;
+esac
 
 # Save raw k6 output alongside wrk results so summaries can be recreated
 # from log evidence rather than re-running everything. Mirrors the
@@ -309,7 +328,7 @@ for run in $(seq 1 "$RUNS"); do
     READY=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
         STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
-            "http://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null) || STATUS=000
+            "${SCHEME}://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null) || STATUS=000
         case "$STATUS" in
             2??|3??) READY=true; break ;;
         esac
@@ -335,6 +354,7 @@ for run in $(seq 1 "$RUNS"); do
             "$SCRIPT" \
                 -name="$NAME" \
                 -scenario=fragment-recv \
+                -scheme="$WS_SCHEME" \
                 -host=127.0.0.1 \
                 -port="$PORT" \
                 -vus="$K6_VUS" \
@@ -356,6 +376,7 @@ for run in $(seq 1 "$RUNS"); do
         # k6 with p50/p99 enabled in the summary trend stats.
         K6_OUT=$(
             HOST=127.0.0.1 PORT="$PORT" \
+            SCHEME="$SCHEME" WS_SCHEME="$WS_SCHEME" \
             VUS="$K6_VUS" DURATION="$K6_DURATION" \
             PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
             UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \

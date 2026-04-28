@@ -46,10 +46,12 @@ const rttMs = new Trend('ws_msg_rtt_ms', true);
 export const options = {
     vus: Number(__ENV.VUS || 4),
     duration: __ENV.DURATION || '15s',
+    // Bench TLS uses a self-signed cert; skip cert verification.
+    insecureSkipTLSVerify: true,
 };
 
 export default function () {
-    const url = `ws://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
+    const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
     const expectedLen = WS_LARGE_BYTES;
     const res = ws.connect(url, {}, function (socket) {
         let sendTs = 0;

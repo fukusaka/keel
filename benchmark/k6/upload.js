@@ -56,10 +56,12 @@ const HEADERS = CONNECTION_CLOSE
 export const options = {
     vus: Number(__ENV.VUS || 50),
     duration: __ENV.DURATION || '15s',
+    // Bench TLS uses a self-signed cert; skip cert verification.
+    insecureSkipTLSVerify: true,
 };
 
 export default function () {
-    const url = `http://${__ENV.HOST}:${__ENV.PORT}/upload-stream`;
+    const url = `${__ENV.SCHEME || 'http'}://${__ENV.HOST}:${__ENV.PORT}/upload-stream`;
     const res = http.post(url, PAYLOAD, { headers: HEADERS });
     check(res, {
         'status 200': (r) => r.status === 200,
