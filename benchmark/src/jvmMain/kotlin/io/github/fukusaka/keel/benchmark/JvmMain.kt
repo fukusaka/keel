@@ -8,6 +8,7 @@ package io.github.fukusaka.keel.benchmark
  *   --port=8080
  *   --profile=default|tuned|keel-equiv-0.1
  *   --connection-close=true       Force Connection: close
+ *   --compression=true            Enable HTTP response compression (gzip / deflate)
  *   --tcp-nodelay=true            TCP_NODELAY
  *   --reuse-address=true          SO_REUSEADDR
  *   --backlog=1024                SO_BACKLOG
