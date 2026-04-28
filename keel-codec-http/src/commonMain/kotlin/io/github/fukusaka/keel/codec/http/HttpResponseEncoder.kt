@@ -45,7 +45,18 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 class HttpResponseEncoder : OutboundHandler {
 
-    private enum class StreamingMode { NONE, FIXED, CHUNKED }
+    /**
+     * The four legal streaming states for a response head.
+     *
+     * - [NONE]: no head sent yet (initial / between responses).
+     * - [FIXED]: Content-Length declared; body bytes are forwarded unchanged.
+     * - [CHUNKED]: Transfer-Encoding: chunked; body bytes get hex framing.
+     * - [BODYLESS]: head was a 1xx informational, 204 No Content, or 304
+     *   Not Modified status — RFC 9112 §6 forbids a message body. The
+     *   encoder emits the head and then accepts a single terminating
+     *   [HttpBodyEnd] as a no-op.
+     */
+    private enum class StreamingMode { NONE, FIXED, CHUNKED, BODYLESS }
 
     private var streamingMode: StreamingMode = StreamingMode.NONE
     private var remainingContentLength: Long = 0L
@@ -110,7 +121,18 @@ class HttpResponseEncoder : OutboundHandler {
         check(!(chunked && cl != null)) {
             "HttpResponseHead has both Transfer-Encoding: chunked and Content-Length"
         }
+        // RFC 9112 §6: 1xx (Informational), 204 (No Content), and 304
+        // (Not Modified) responses MUST NOT carry a message body and
+        // need neither Content-Length nor Transfer-Encoding. For these
+        // statuses the encoder emits the head and stays in BODYLESS
+        // until HttpBodyEnd terminates the message — any non-empty
+        // HttpBody is a contract violation. The 101 Switching
+        // Protocols handshake is the canonical case: the upgrade
+        // handler emits head + empty terminator and then hijacks the
+        // connection.
+        val bodyless = isBodylessStatus(head.status.code)
         streamingMode = when {
+            bodyless -> StreamingMode.BODYLESS
             chunked -> StreamingMode.CHUNKED
             cl != null -> StreamingMode.FIXED
             else -> error(
@@ -134,12 +156,39 @@ class HttpResponseEncoder : OutboundHandler {
             }
             StreamingMode.FIXED -> encodeContentFixed(ctx, content, last)
             StreamingMode.CHUNKED -> encodeContentChunked(ctx, content, last)
+            StreamingMode.BODYLESS -> encodeContentBodyless(content)
         }
         if (last) {
             streamingMode = StreamingMode.NONE
             remainingContentLength = 0L
         }
     }
+
+    /**
+     * Bodyless terminator handler. The head was already emitted in
+     * [encodeHeadAndStartStreaming]; the only legal follow-up is an
+     * empty [HttpBodyEnd]. A non-empty [HttpBody] is a contract
+     * violation (RFC 9112 §6) and is rejected after releasing the
+     * buffer to avoid leaking a refcount.
+     */
+    private fun encodeContentBodyless(content: HttpBody) {
+        val size = content.content.readableBytes
+        content.content.release()
+        if (size > 0) {
+            error(
+                "HttpBody with $size bytes received for a bodyless status response; " +
+                    "RFC 9112 §6 forbids a message body for 1xx / 204 / 304",
+            )
+        }
+    }
+
+    /**
+     * RFC 9112 §6: 1xx (Informational) / 204 (No Content) / 304
+     * (Not Modified) responses MUST NOT include a message body and
+     * MUST NOT carry Content-Length. Returns true for any of those.
+     */
+    private fun isBodylessStatus(code: Int): Boolean =
+        code in 100..199 || code == 204 || code == 304
 
     private fun encodeContentFixed(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val size = content.content.readableBytes

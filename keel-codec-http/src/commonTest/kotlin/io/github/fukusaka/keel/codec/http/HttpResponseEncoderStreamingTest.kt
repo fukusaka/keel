@@ -175,6 +175,172 @@ class HttpResponseEncoderStreamingTest {
         assertEquals("0\r\nChecksum: abc123\r\n\r\n", terminator)
     }
 
+    // --- BODYLESS streaming path (RFC 9112 §6: 1xx / 204 / 304) ---
+    //
+    // The 101 Switching Protocols handshake is the motivating case:
+    // the response has no body and declares neither Content-Length
+    // nor Transfer-Encoding. Before the BODYLESS state was added,
+    // the encoder rejected such heads with "HttpResponseHead must
+    // declare either Content-Length or Transfer-Encoding: chunked",
+    // which silently blocked any upgrade flow going through the
+    // streaming path. 204 No Content and 304 Not Modified hit the
+    // same constraint.
+
+    @Test
+    fun `bodyless 101 Switching Protocols head writes head with no body`() {
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(101),
+            headers = HttpHeaders.of(
+                "Upgrade" to "websocket",
+                "Connection" to "Upgrade",
+                "Sec-WebSocket-Accept" to "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+            ),
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        // Only the head reached the transport — no zero-byte body
+        // chunk and no chunked terminator.
+        assertEquals(1, transport.written.size)
+        val text = transport.written[0].readString()
+        assertTrue(text.startsWith("HTTP/1.1 101 Switching Protocols\r\n"))
+        assertTrue(text.contains("Upgrade: websocket\r\n"))
+        assertTrue(text.contains("Connection: Upgrade\r\n"))
+        assertTrue(text.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"))
+        assertTrue(text.endsWith("\r\n\r\n"))
+    }
+
+    @Test
+    fun `bodyless 100 Continue head accepted without Content-Length or chunked`() {
+        // 100 Continue is the canonical 1xx informational response.
+        // Ktor doesn't currently emit one through this path, but
+        // any future RFC 9110 §15.2 / §15.3 use case (Expect:
+        // 100-continue, Early Hints, Processing) goes through here.
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(100),
+            headers = HttpHeaders.EMPTY,
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        assertEquals(1, transport.written.size)
+        val text = transport.written[0].readString()
+        assertEquals("HTTP/1.1 100 Continue\r\n\r\n", text)
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `bodyless 204 No Content head accepted without Content-Length`() {
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(204),
+            headers = HttpHeaders.EMPTY,
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        assertEquals(1, transport.written.size)
+        val text = transport.written[0].readString()
+        assertEquals("HTTP/1.1 204 No Content\r\n\r\n", text)
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `bodyless 304 Not Modified head accepted without Content-Length`() {
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(304),
+            headers = HttpHeaders.of("ETag" to "\"deadbeef\""),
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        assertEquals(1, transport.written.size)
+        val text = transport.written[0].readString()
+        assertTrue(text.startsWith("HTTP/1.1 304 Not Modified\r\n"))
+        assertTrue(text.contains("ETag: \"deadbeef\"\r\n"))
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `bodyless head followed by non-empty HttpBody propagates error`() {
+        // RFC 9112 §6 forbids a body for 1xx / 204 / 304. Sending
+        // bytes after a bodyless head is a contract violation —
+        // the encoder must release the buffer (no leak) and surface
+        // the error rather than silently corrupt the wire.
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(101),
+            headers = HttpHeaders.EMPTY,
+        )
+        pipeline.writeFromTail(head)
+        // Single head write to the transport so far.
+        assertEquals(1, transport.written.size)
+
+        pipeline.writeFromTail(HttpBody(bufOf("body forbidden")))
+
+        // Body wasn't propagated to the transport.
+        assertEquals(1, transport.written.size)
+        // Error surfaced through the pipeline.
+        assertEquals(1, errorCollector.errors.size)
+        val msg = errorCollector.errors[0].message ?: ""
+        assertTrue(msg.contains("bodyless"), "expected bodyless violation message; got: $msg")
+    }
+
+    @Test
+    fun `bodyless head with Content-Length still routes to BODYLESS mode`() {
+        // A caller might accidentally attach Content-Length to a 304
+        // (e.g. cached from the original 200 response). RFC 9112 §6
+        // says the field MUST NOT be present, but the encoder's
+        // job is to emit something parseable rather than crash —
+        // BODYLESS mode wins, and the status code defines whether a
+        // body is expected. The Content-Length header itself is
+        // serialised because the headers come from the caller; we
+        // don't strip them.
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus(304),
+            headers = HttpHeaders.of("Content-Length" to "10"),
+        )
+        pipeline.writeFromTail(head)
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        // Only the head reached the wire — no body, no error.
+        assertEquals(1, transport.written.size)
+        assertTrue(errorCollector.errors.isEmpty())
+        val text = transport.written[0].readString()
+        assertTrue(text.startsWith("HTTP/1.1 304 Not Modified\r\n"))
+    }
+
+    @Test
+    fun `bodyless head followed by another head emits both heads back-to-back`() {
+        // Verify the encoder cleanly resets state after BODYLESS
+        // terminates so a follow-up response on the same connection
+        // (HTTP keep-alive) works normally.
+        val pipeline = createEncoderPipeline()
+        // First: 204 bodyless.
+        pipeline.writeFromTail(HttpResponseHead(HttpStatus(204), headers = HttpHeaders.EMPTY))
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+        // Second: a regular 200 with Content-Length.
+        pipeline.writeFromTail(
+            HttpResponseHead(HttpStatus.OK, headers = HttpHeaders.of("Content-Length" to "5")),
+        )
+        pipeline.writeFromTail(HttpBody(bufOf("hello")))
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        // 1: 204 head, 2: 200 head, 3: 5-byte body.
+        assertEquals(3, transport.written.size)
+        val first = transport.written[0].readString()
+        val second = transport.written[1].readString()
+        val third = transport.written[2].readString()
+        assertEquals("HTTP/1.1 204 No Content\r\n\r\n", first)
+        assertTrue(second.startsWith("HTTP/1.1 200 OK\r\n"))
+        assertEquals("hello", third)
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
     /** Initiates an outbound write from the tail toward HEAD (through HttpResponseEncoder). */
     private fun Pipeline.writeFromTail(msg: Any) {
         requestWrite(msg)
