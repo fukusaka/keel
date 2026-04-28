@@ -57,6 +57,12 @@
 #                            (default: 4)
 #   BENCH_MULTIPART_PARTS   multipart.js part count   (default: 5)
 #   BENCH_MULTIPART_PART_BYTES  multipart.js per-part bytes (default: 4096)
+#   BENCH_SLOW_INTERVAL_MS  slow-upload.js per-iteration sleep ms
+#                            (default: 100, 0 = behave like upload.js)
+#   BENCH_WS_BURST_PINGS     ws-slow-consumer.js up-front burst size
+#                            (default: 16)
+#   BENCH_WS_CONSUME_DELAY_MS  ws-slow-consumer.js per-echo sleep ms
+#                            (default: 50)
 #   BENCH_HTTP_CONNECTION_CLOSE   when "true", forward `CONNECTION_CLOSE=true`
 #                            to upload.js / sse.js so every HTTP request
 #                            carries `Connection: close` and the TCP socket
@@ -97,6 +103,16 @@ case "$SCENARIO" in
         SCRIPT="benchmark/k6/multipart.js"
         READY_ENDPOINT="/hello"
         PARSER="http"
+        ;;
+    slow-upload)
+        SCRIPT="benchmark/k6/slow-upload.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
+    ws-slow-consumer)
+        SCRIPT="benchmark/k6/ws-slow-consumer.js"
+        READY_ENDPOINT="/hello"
+        PARSER="ws"
         ;;
     ws-echo)
         SCRIPT="benchmark/k6/ws-echo.js"
@@ -345,6 +361,9 @@ for run in $(seq 1 "$RUNS"); do
             UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \
             COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
             PARTS="${BENCH_MULTIPART_PARTS:-5}" PART_BYTES="${BENCH_MULTIPART_PART_BYTES:-4096}" \
+            SLOW_INTERVAL_MS="${BENCH_SLOW_INTERVAL_MS:-100}" \
+            BURST_PINGS="${BENCH_WS_BURST_PINGS:-16}" \
+            CONSUME_DELAY_MS="${BENCH_WS_CONSUME_DELAY_MS:-50}" \
             PAYLOAD_BYTES="${BENCH_WS_PAYLOAD:-256}" \
             PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
             CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
