@@ -100,6 +100,32 @@ object VertxEngine : EngineBenchmark {
                 response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
             }
 
+        // Method-mix endpoint: register one handler per supported method.
+        listOf(
+            io.vertx.core.http.HttpMethod.GET,
+            io.vertx.core.http.HttpMethod.POST,
+            io.vertx.core.http.HttpMethod.PUT,
+            io.vertx.core.http.HttpMethod.DELETE,
+            io.vertx.core.http.HttpMethod.PATCH,
+            io.vertx.core.http.HttpMethod.HEAD,
+            io.vertx.core.http.HttpMethod.OPTIONS,
+        ).forEach { method ->
+            router.route(method, "/method-echo").handler { ctx ->
+                val response = ctx.response().putHeader("Content-Type", "text/plain")
+                if (config.connectionClose) response.putHeader("Connection", "close")
+                response.putHeader("X-Echo-Method", ctx.request().method().name())
+                response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
+            }
+        }
+        // Path-parameter endpoint: GET /items/:id replies with X-Item-Id.
+        router.get("/items/:id").handler { ctx ->
+            val id = ctx.pathParam("id")
+            val response = ctx.response().putHeader("Content-Type", "text/plain")
+            if (config.connectionClose) response.putHeader("Connection", "close")
+            response.putHeader("X-Item-Id", id)
+            response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
+        }
+
         router.get("/sse-stream").handler { ctx ->
             val count = ctx.request().getParam("count")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
             val size = ctx.request().getParam("size")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
