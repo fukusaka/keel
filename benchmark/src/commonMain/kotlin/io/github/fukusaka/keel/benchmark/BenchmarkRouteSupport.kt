@@ -16,6 +16,20 @@ internal const val BENCHMARK_SSE_DEFAULT_COUNT = 100
 internal const val BENCHMARK_SSE_DEFAULT_SIZE = 1024
 
 /**
+ * Multipart boundary marker used by `benchmark/k6/multipart.js`. Hard-coded
+ * by the bench scenario so the keel pipeline-http handler can scan inbound
+ * chunks for it without parsing `Content-Type` headers — the goal is to
+ * surface the cheapest possible "parse" cost on the Pattern C-style direct
+ * pipeline so it can be compared against framework parsers (Ktor / Spring /
+ * Vertx / Netty) on the same wire shape. The bytes are `"--KeelBenchBoundaryV1"`
+ * (the `--` prefix that opens every part, not the boundary literal alone).
+ */
+internal val BENCHMARK_MULTIPART_BOUNDARY: ByteArray = "--KeelBenchBoundaryV1".encodeToByteArray()
+
+/** Reused empty `ByteArray` so the multipart scanner can null-out its carry buffer without an alloc. */
+internal val EMPTY_BYTE_ARRAY: ByteArray = ByteArray(0)
+
+/**
  * Extracts an integer query parameter from a `key=value&...` query string.
  *
  * Accepts both leading-? and bare forms (e.g. `?count=10` or `count=10&size=1024`).
