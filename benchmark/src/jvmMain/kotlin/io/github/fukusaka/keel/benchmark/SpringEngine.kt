@@ -207,6 +207,19 @@ object SpringEngine : EngineBenchmark {
             props["server.netty.idle-timeout"] = "0s"
             System.setProperty("benchmark.connection-close", "true")
         }
+        if (config.compression) {
+            // Spring Boot's `server.compression.*` properties wire through to
+            // Reactor Netty's `HttpServer.compress(...)` configuration so the
+            // negotiation happens server-side per request. The mime list
+            // covers /hello (text/plain), /large (text/plain) and
+            // /sse-stream (text/event-stream) — bench scenarios that this
+            // PR exercises against compression. Other bench responses
+            // (`ok` ack from /upload-stream, etc.) are below the
+            // min-response-size threshold and stay uncompressed regardless.
+            props["server.compression.enabled"] = "true"
+            props["server.compression.mime-types"] = "text/plain,text/event-stream"
+            props["server.compression.min-response-size"] = "1KB"
+        }
         // Common socket -> Spring properties
         config.socket.threads?.let {
             props["reactor.netty.ioWorkerCount"] = it.toString()
