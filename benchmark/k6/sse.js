@@ -38,10 +38,12 @@ const HEADERS = CONNECTION_CLOSE ? { 'Connection': 'close' } : {};
 export const options = {
     vus: Number(__ENV.VUS || 50),
     duration: __ENV.DURATION || '15s',
+    // Bench TLS uses a self-signed cert; skip cert verification.
+    insecureSkipTLSVerify: true,
 };
 
 export default function () {
-    const url = `http://${__ENV.HOST}:${__ENV.PORT}/sse-stream?count=${COUNT}&size=${SIZE}`;
+    const url = `${__ENV.SCHEME || 'http'}://${__ENV.HOST}:${__ENV.PORT}/sse-stream?count=${COUNT}&size=${SIZE}`;
     const res = http.get(url, { headers: HEADERS });
     check(res, {
         'status 200': (r) => r.status === 200,

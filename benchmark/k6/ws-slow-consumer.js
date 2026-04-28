@@ -55,10 +55,12 @@ const rttTrend = new Trend('ws_msg_rtt_ms', true);
 export const options = {
     vus: Number(__ENV.VUS || 4),
     duration: __ENV.DURATION || '5s',
+    // Bench TLS uses a self-signed cert; skip cert verification.
+    insecureSkipTLSVerify: true,
 };
 
 export default function () {
-    const url = `ws://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
+    const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
     const sendTimes = []; // index by burst position so RTT can be paired with the matching echo
     let pingsSent = 0;
     let echoesReceived = 0;

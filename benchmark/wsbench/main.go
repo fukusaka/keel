@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/url"
@@ -57,6 +58,7 @@ func main() {
 		duration  = flag.Duration("duration", 15*time.Second, "bench wall-clock duration")
 		bytes     = flag.Int("bytes", 4096, "single-message size in bytes (split across fragments for fragment-recv)")
 		fragments = flag.Int("fragments", 4, "number of frames the message is split into (fragment-recv)")
+		scheme    = flag.String("scheme", "ws", "WebSocket URL scheme: 'ws' or 'wss'. When 'wss', the dialer skips TLS cert verification (bench cert is self-signed).")
 	)
 	flag.Parse()
 
@@ -69,7 +71,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	u := url.URL{Scheme: "ws", Host: fmt.Sprintf("%s:%d", *host, *port), Path: *path}
+	switch *scheme {
+	case "ws", "wss":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown scheme %q (expected ws|wss)\n", *scheme)
+		os.Exit(1)
+	}
+	u := url.URL{Scheme: *scheme, Host: fmt.Sprintf("%s:%d", *host, *port), Path: *path}
+	// Skip TLS cert verification for wss because the bench cert is the
+	// self-signed one shared by every engine; this matches k6's
+	// `insecureSkipTLSVerify: true` in the script options.
+	if *scheme == "wss" {
+		websocket.DefaultDialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
 
 	switch *scenario {
 	case "fragment-recv":
