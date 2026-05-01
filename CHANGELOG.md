@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `keel-server-ktor-cio`: ktor-cio inbound now flows through a direct `KtorCioInboundBridge` `InboundHandler` (Pattern B `SuspendMessageBridge` shape, specialised for `IoBuf`) instead of the previous `BufferedSuspendSource(SuspendBridgeHandler)` chain, shortening connection-close propagation from 4 cross-context hops to 2 (#419)
+- `keel-server-ktor-cio`: ktor-cio inbound now flows through a direct `KtorCioInboundBridge` `InboundHandler` (`SuspendMessageBridge` shape from `:keel-codec-http` / `:keel-server-ktor`, specialised for `IoBuf`) instead of the previous `BufferedSuspendSource(SuspendBridgeHandler)` chain, shortening connection-close propagation from 4 cross-context hops to 2 (#419)
+- `keel-server-ktor-cio`: serialise `parseRequest` on Kotlin/Native to dodge the ktor-http-cio `HeadersDataPool` non-reentrant `SynchronizedObject` lock contention (`HeaderParseSerializer`, no-op on JVM); turns 30 % accept-burst failure rate into 0 % and lifts steady-state `/hello` throughput from ≈ 14 k to ≈ 43 k RPS on macOS M1 (#419)
 - `ktor-engine`: request body is now streamed via `HttpBody` / `HttpBodyEnd` pipeline messages into a per-request `ByteChannel` pump, eliminating the full-body `ByteArray` peak allocation for large uploads; `ByteChannel`'s internal buffer (~1 MB) is the new working-memory ceiling (#414)
 
 ### Added
