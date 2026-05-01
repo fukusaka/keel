@@ -9,10 +9,10 @@ import io.ktor.server.engine.ApplicationEngineFactory
 /**
  * [ApplicationEngineFactory] for the Ktor adapter using
  * [ktor-http-cio's][io.ktor.http.cio] HTTP parser instead of keel's own
- * codec stack (Pattern C).
+ * codec stack.
  *
  * For Ktor users wanting keel's `:keel-codec-http` parser, use the
- * `Keel` factory from `:keel-server-ktor` (Pattern B).
+ * `Keel` factory from `:keel-server-ktor`.
  *
  * Usage:
  * ```
@@ -28,8 +28,8 @@ import io.ktor.server.engine.ApplicationEngineFactory
  *
  * The factory exists so the keel transport stack (kqueue / epoll / io_uring /
  * NIO / Netty / NWConnection / Node.js) can be paired with Ktor's own HTTP
- * parser for benchmarking and feature-parity validation against the Pattern B
- * adapter.
+ * parser for benchmarking and feature-parity validation against the
+ * `:keel-server-ktor` adapter.
  */
 public object KeelCio : ApplicationEngineFactory<KeelApplicationEngine, KeelApplicationEngine.Configuration> {
 

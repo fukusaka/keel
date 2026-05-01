@@ -7,7 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 
 /**
  * [KtorConnectionHandler] backed by [ktor-http-cio's][io.ktor.http.cio]
- * `parseRequest` / `parseHttpBody` (Pattern C).
+ * `parseRequest` / `parseHttpBody`.
  *
  * Replaces keel's `:keel-codec-http` HTTP/1.1 codec with Ktor's own CIO parser
  * — the keel transport stack still drives the network I/O (kqueue / epoll /
@@ -25,8 +25,8 @@ import kotlinx.coroutines.CoroutineScope
  *    [KeelCioApplicationCall], dispatches via `engine.pipeline.execute(call)`,
  *    then drains the request body before reading the next request.
  *
- * **Status**: stub for Pattern C MVP scaffolding (PR introducing the
- * `:keel-server-ktor-cio` module).  The connection handler implementation —
+ * **Status**: stub for the MVP scaffolding PR introducing the
+ * `:keel-server-ktor-cio` module.  The connection handler implementation —
  * byte-channel pumps, [io.ktor.http.cio.parseRequest] / [io.ktor.http.cio.parseHttpBody]
  * integration, and the [KeelCioApplicationCall] / Request / Response triple —
  * lands in a follow-up PR.

@@ -2,7 +2,7 @@
 
 Ktor server engine adapter — bridges keel `StreamEngine` to Ktor's `ApplicationEngine`,
 using [`ktor-http-cio`'s][io.ktor.http.cio] HTTP parser (`parseRequest` / `parseHttpBody`)
-in place of keel's own `:keel-codec-http` codec stack (Pattern C).
+in place of keel's own `:keel-codec-http` codec stack.
 
 Combines the codec-agnostic skeleton from `:keel-server-ktor-base` (`KeelApplicationEngine`,
 accept loop, shutdown) with `KtorCioConnectionHandler` (per-connection HTTP handling using
@@ -14,7 +14,7 @@ provides the `Keel` factory wired with `KeelCodecConnectionHandler`.
 
 ## Status
 
-Pattern C MVP — module skeleton + `KeelCio` factory only.  The connection handler
+MVP scaffolding — module skeleton + `KeelCio` factory only.  The connection handler
 implementation (byte-channel pumps + `parseRequest` / `parseHttpBody` integration +
 `KeelCioApplicationCall` / Request / Response triple) lands in a follow-up PR.
 Calling `KtorCioConnectionHandler.handle` currently throws.
