@@ -16,11 +16,15 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(libs.kotlinx.io.core)
+                api(project(":keel-io"))
+                api(project(":keel-core"))
             }
         }
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
     }
