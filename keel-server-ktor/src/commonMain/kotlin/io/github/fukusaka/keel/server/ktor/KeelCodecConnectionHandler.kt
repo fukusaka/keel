@@ -13,6 +13,9 @@ import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
+import io.github.fukusaka.keel.server.ktor.websocket.WsRoutesAttributeKey
+import io.github.fukusaka.keel.server.ktor.websocket.isWebSocketUpgrade
+import io.github.fukusaka.keel.server.ktor.websocket.runWebSocketUpgrade
 import io.ktor.util.pipeline.execute
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.CancellationException
@@ -90,6 +93,22 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
                     break
                 }
                 val request = result.getOrThrow()
+
+                // WebSocket upgrade interception: bypass the Ktor
+                // application pipeline when the request matches a
+                // path registered via `Application.keelWebSocket(...)`.
+                // The handler runs to completion on the connection,
+                // hijacking the codec stack — once it returns the
+                // connection has emitted a CLOSE handshake and we
+                // exit the keep-alive loop unconditionally.
+                if (request.isWebSocketUpgrade()) {
+                    val routes = engine.application().attributes.getOrNull(WsRoutesAttributeKey)
+                    val handler = routes?.lookup(request.uri)
+                    if (handler != null) {
+                        runWebSocketUpgrade(channel, request, scope, handler)
+                        break
+                    }
+                }
 
                 val keepAlive = serverKeepAlive && request.isKeepAlive
 
