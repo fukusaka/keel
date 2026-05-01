@@ -7,7 +7,7 @@ import io.ktor.server.application.serverConfig
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 
-/** keel + NIO transport + ktor-http-cio parser (Pattern C). */
+/** keel + NIO transport + ktor-http-cio parser (via :keel-server-ktor-cio). */
 object KeelCioNioEngine : EngineBenchmark {
     override fun start(config: BenchmarkConfig): () -> Unit {
         val rootConfig = serverConfig {

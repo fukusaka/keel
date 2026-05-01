@@ -7,7 +7,7 @@ import io.ktor.server.application.serverConfig
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 
-/** keel + KqueueEngine transport + ktor-http-cio parser (Pattern C, macOS). */
+/** keel + KqueueEngine transport + ktor-http-cio parser (via :keel-server-ktor-cio, macOS). */
 object KeelCioKqueueEngine : EngineBenchmark {
 
     override fun start(config: BenchmarkConfig): () -> Unit {

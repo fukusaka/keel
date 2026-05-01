@@ -7,7 +7,7 @@ import io.ktor.server.application.serverConfig
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 
-/** keel + EpollEngine transport + ktor-http-cio parser (Pattern C, Linux). */
+/** keel + EpollEngine transport + ktor-http-cio parser (via :keel-server-ktor-cio, Linux). */
 object KeelCioEpollEngine : EngineBenchmark {
 
     override fun start(config: BenchmarkConfig): () -> Unit {
