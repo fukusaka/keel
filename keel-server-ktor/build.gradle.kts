@@ -28,6 +28,10 @@ kotlin {
                 // consumers of `embeddedServer(Keel)` reference directly.
                 api(project(":keel-server-ktor-base"))
                 implementation(project(":keel-codec-http"))
+                // `api` because the WebSocket DSL (`keelWebSocket`) takes a
+                // `WsSession` whose methods expose `WsFrame` / `WsCloseCode`
+                // from `:keel-codec-websocket` — consumers see those types.
+                api(project(":keel-codec-websocket"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.kotlinx.coroutines.core)
             }
