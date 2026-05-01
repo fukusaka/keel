@@ -1,35 +1,70 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.ktor.KeelApplicationEngine
 import io.github.fukusaka.keel.server.ktor.KtorConnectionHandler
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpProtocolVersion
+import io.ktor.http.cio.ConnectionOptions
+import io.ktor.http.cio.expectHttpBody
+import io.ktor.http.cio.parseHttpBody
+import io.ktor.http.cio.parseRequest
+import io.ktor.util.pipeline.execute
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.close
+import io.ktor.utils.io.discard
+import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.ContinuationInterceptor
 
 /**
  * [KtorConnectionHandler] backed by [ktor-http-cio's][io.ktor.http.cio]
  * `parseRequest` / `parseHttpBody`.
  *
- * Replaces keel's `:keel-codec-http` HTTP/1.1 codec with Ktor's own CIO parser
- * — the keel transport stack still drives the network I/O (kqueue / epoll /
- * io_uring / NIO / Netty / NWConnection / Node.js), but the parsing /
- * serialisation layer is supplied by `ktor-http-cio`.
- *
  * **Architecture**:
- * 1. Two coroutine pumps bridge keel's [PipelinedChannel] to a pair of Ktor
- *    [ByteChannel][io.ktor.utils.io.ByteChannel]s — one per direction.
- * 2. The inbound pump reads bytes from `channel.asBufferedSuspendSource()`
- *    and writes them to a Ktor `ByteChannel` that `parseRequest` reads from.
- * 3. The outbound pump reads bytes from a Ktor `ByteChannel` (written by the
- *    response writer) and forwards them to `channel.write` + `flush`.
- * 4. The keep-alive loop calls `parseRequest(input)` per request, builds a
- *    [KeelCioApplicationCall], dispatches via `engine.pipeline.execute(call)`,
- *    then drains the request body before reading the next request.
  *
- * **Status**: stub for the MVP scaffolding PR introducing the
- * `:keel-server-ktor-cio` module.  The connection handler implementation —
- * byte-channel pumps, [io.ktor.http.cio.parseRequest] / [io.ktor.http.cio.parseHttpBody]
- * integration, and the [KeelCioApplicationCall] / Request / Response triple —
- * lands in a follow-up PR.
+ * ```
+ *                    inputPump
+ * keel transport ────────────────► Ktor ByteChannel ────► parseRequest
+ *                                                              │
+ *                                                              ▼
+ *                                                       application pipeline
+ *                                                              │
+ *                                                              ▼
+ *                                                  KeelCioApplicationResponse
+ *                                                              │
+ *                                                              ▼
+ *                  outputPump            Ktor ByteChannel ◄────┘
+ * keel transport ◄────────────────
+ * ```
+ *
+ * Two coroutine pumps bridge keel's [PipelinedChannel] to a pair of Ktor
+ * [ByteChannel]s — one per direction.  The keep-alive loop reads
+ * [parseRequest] from the input channel, builds a [KeelCioApplicationCall]
+ * with a body sub-channel decoded by [parseHttpBody], dispatches via
+ * `engine.pipeline.execute(call)`, then drains any unread body before
+ * reading the next request.
+ *
+ * **Concurrency**:
+ *
+ * - Inbound pump runs on the channel's `ioDispatcher` so reads never cross-thread
+ * - Outbound pump runs on the channel's `ioDispatcher` for the same reason
+ * - The keep-alive loop runs on the configured `applicationDispatcher`
+ *   (defaults to `ioDispatcher`)
+ *
+ * Pumps are launched on [scope] so they're children of the engine's
+ * SupervisorJob — they get cancelled cleanly when the connection closes.
  */
 internal class KtorCioConnectionHandler : KtorConnectionHandler {
 
@@ -39,11 +74,221 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         engine: KeelApplicationEngine,
         scope: CoroutineScope,
     ) {
-        runCatching { channel.close() }
-        error(
-            "KtorCioConnectionHandler is not yet implemented. The :keel-server-ktor-cio MVP " +
-                "introduces the module skeleton + KeelCio factory; the byte-channel pumps " +
-                "and ktor-http-cio request/response wiring will land in a follow-up PR.",
-        )
+        // Arm the read loop.
+        withContext(channel.ioDispatcher) {
+            channel.readEnabled = true
+        }
+
+        // Two ByteChannels bridge keel ↔ Ktor.  autoFlush=true so individual
+        // writeFully / writeStringUtf8 calls become observable to the reader
+        // immediately (parseRequest, response writer).
+        val input = ByteChannel(autoFlush = true)
+        val output = ByteChannel(autoFlush = true)
+
+        val inputPump = scope.launch(channel.ioDispatcher) {
+            pumpChannelToInput(channel, input, engine.logger)
+        }
+        val outputPump = scope.launch(channel.ioDispatcher) {
+            pumpOutputToChannel(output, channel, engine.logger)
+        }
+
+        try {
+            keepAliveLoop(channel, scheme, engine, scope, input, output)
+        } catch (e: Exception) {
+            if (e !is CancellationException) {
+                engine.logger.error(e) { "ktor-cio connection failed" }
+            }
+            if (e is CancellationException) throw e
+        } finally {
+            // Drain output then close it so the outputPump exits cleanly.
+            runCatching { output.flushAndClose() }
+            // Cancel the input pump if still running — keep-alive may have
+            // exited mid-request (e.g. on connection close from the peer).
+            inputPump.cancel()
+            outputPump.join()
+            runCatching { channel.close() }
+        }
+    }
+
+    @Suppress("LongParameterList")
+    private suspend fun keepAliveLoop(
+        channel: PipelinedChannel,
+        scheme: String,
+        engine: KeelApplicationEngine,
+        scope: CoroutineScope,
+        input: ByteReadChannel,
+        output: ByteWriteChannel,
+    ) {
+        val configuration = engine.configuration
+        val serverKeepAlive = configuration.keepAlive
+
+        while (channel.isActive && !input.isClosedForRead) {
+            val request = parseRequest(input) ?: break
+
+            val length = request.headers[HttpHeaders.ContentLength]?.parseDecLong() ?: -1L
+            val transferEncoding = request.headers[HttpHeaders.TransferEncoding]
+            val connectionOptions = ConnectionOptions.parse(request.headers[HttpHeaders.Connection])
+            val expectsBody = expectHttpBody(request)
+
+            val keepAlive = serverKeepAlive && computeKeepAlive(request.version, connectionOptions)
+
+            val bodyChannel: ByteReadChannel = if (expectsBody) {
+                val pipe = ByteChannel(autoFlush = true)
+                val pumpJob = parseBodyJob(
+                    scope = scope,
+                    version = request.version,
+                    length = length,
+                    transferEncoding = transferEncoding,
+                    connectionOptions = connectionOptions,
+                    input = input,
+                    output = pipe,
+                )
+                pumpJob.invokeOnCompletion { pipe.close() }
+                pipe
+            } else {
+                ByteReadChannel.Empty
+            }
+
+            val call = KeelCioApplicationCall(
+                application = engine.application(),
+                cioRequest = request,
+                requestBody = bodyChannel,
+                output = output,
+                localAddress = channel.localAddress,
+                remoteAddress = channel.remoteAddress,
+                scope = scope,
+                coroutineContext = scope.coroutineContext,
+                keepAlive = keepAlive,
+                scheme = scheme,
+            )
+
+            try {
+                val appCtx = configuration.applicationDispatcher ?: channel.ioDispatcher
+                if (appCtx !== scope.coroutineContext[ContinuationInterceptor]) {
+                    withContext(appCtx) { engine.pipeline.execute(call) }
+                } else {
+                    engine.pipeline.execute(call)
+                }
+            } finally {
+                request.release()
+                runCatching { bodyChannel.discard() }
+                output.flush()
+            }
+
+            if (!keepAlive) break
+        }
+    }
+
+    private fun parseBodyJob(
+        scope: CoroutineScope,
+        version: CharSequence,
+        length: Long,
+        transferEncoding: CharSequence?,
+        connectionOptions: ConnectionOptions?,
+        input: ByteReadChannel,
+        output: ByteWriteChannel,
+    ): Job = scope.launch {
+        try {
+            parseHttpBody(
+                HttpProtocolVersion.parse(version),
+                length,
+                transferEncoding,
+                connectionOptions,
+                input,
+                output,
+            )
+        } catch (e: Exception) {
+            output.cancel(e)
+            if (e is CancellationException) throw e
+        }
+    }
+
+    /**
+     * Computes whether the connection should remain open after this response.
+     * RFC 7230 §6.3: HTTP/1.1 defaults to keep-alive unless `Connection: close`;
+     * HTTP/1.0 defaults to close unless `Connection: keep-alive`.
+     */
+    private fun computeKeepAlive(version: CharSequence, options: ConnectionOptions?): Boolean {
+        if (options?.close == true) return false
+        return when {
+            version.contentEquals("HTTP/1.1", ignoreCase = true) -> true
+            version.contentEquals("HTTP/1.0", ignoreCase = true) -> options?.keepAlive == true
+            else -> false
+        }
+    }
+
+    /**
+     * Reads bytes from the keel transport via [PipelinedChannel.asBufferedSuspendSource]
+     * and forwards them to [output].  Closes [output] on EOF or error so
+     * downstream parsers (parseRequest) observe the close.
+     */
+    private suspend fun pumpChannelToInput(
+        channel: PipelinedChannel,
+        output: ByteWriteChannel,
+        logger: Logger,
+    ) {
+        val source = channel.asBufferedSuspendSource()
+        val buf = ByteArray(PUMP_BUFFER_SIZE)
+        try {
+            while (!output.isClosedForWrite) {
+                val n = source.readAtMostTo(buf, 0, buf.size)
+                if (n <= 0) break
+                output.writeFully(buf, 0, n)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            logger.debug { "ktor-cio inbound pump terminated by I/O error: ${e::class.simpleName}: ${e.message}" }
+            output.cancel(e)
+        } finally {
+            output.flushAndClose()
+            runCatching { source.close() }
+        }
+    }
+
+    /**
+     * Reads bytes from [input] (the response writer's side) and forwards them
+     * to the keel transport via the channel's pipeline (no codec installed —
+     * bytes flow straight through to the underlying socket).
+     */
+    private suspend fun pumpOutputToChannel(
+        input: ByteReadChannel,
+        channel: PipelinedChannel,
+        logger: Logger,
+    ) {
+        val buf = ByteArray(PUMP_BUFFER_SIZE)
+        try {
+            while (!input.isClosedForRead) {
+                val n = input.readAvailable(buf)
+                if (n == -1) break
+                if (n > 0) {
+                    val ioBuf = channel.allocator.allocate(n)
+                    ioBuf.writeByteArray(buf, 0, n)
+                    channel.pipeline.requestWrite(ioBuf)
+                    channel.pipeline.requestFlush()
+                }
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            // Connection write failure usually means the peer already closed.
+            // Log at DEBUG so operators can diagnose unexpected disconnects
+            // without making routine peer-close noise visible at INFO+.
+            // Rethrowing would mask the original cause from the keep-alive loop.
+            logger.debug { "ktor-cio outbound pump terminated by I/O error: ${e::class.simpleName}: ${e.message}" }
+        }
+    }
+
+    private fun CharSequence.parseDecLong(): Long? {
+        var result = 0L
+        for (i in 0 until length) {
+            val c = this[i]
+            if (c !in '0'..'9') return null
+            result = result * BASE_TEN + (c - '0')
+        }
+        return result
+    }
+
+    private companion object {
+        private const val PUMP_BUFFER_SIZE = 8192
+        private const val BASE_TEN = 10
     }
 }
