@@ -93,6 +93,7 @@ dependencies {
     dokka(project(":keel-server"))
     dokka(project(":keel-server-ktor-base"))
     dokka(project(":keel-server-ktor"))
+    dokka(project(":keel-server-ktor-cio"))
 }
 
 // Suppress per-module Dokka URL output; show only the aggregated root URL.
