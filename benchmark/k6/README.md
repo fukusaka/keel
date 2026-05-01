@@ -24,7 +24,7 @@ sudo apt-get install k6
 |---|---|---|
 | `upload.js` | `POST /upload-stream` | request-body streaming throughput (RPS / latency); engine heap pressure visible via JFR + GC log |
 | `sse.js` | `GET /sse-stream?count=N&size=M` | response-body streaming throughput (RPS / latency); engine write-path throughput |
-| `ws-echo.js` | `WebSocket /ws-echo` | echo throughput (`ws_msgs_received`/sec) + control-frame RTT (`ws_ping`, **ns precision** Go-side `time.Now()`) populated by interleaved `socket.ping()` every `PING_INTERVAL` (default 32) echo messages. JS-side data-frame `ws_msg_rtt_ms` is also recorded (ms precision) for cross-check. Pattern B (`ktor-keel-*`) engines fail at upgrade until Pattern B `respondUpgrade` lands; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today |
+| `ws-echo.js` | `WebSocket /ws-echo` | echo throughput (`ws_msgs_received`/sec) + control-frame RTT (`ws_ping`, **ns precision** Go-side `time.Now()`) populated by interleaved `socket.ping()` every `PING_INTERVAL` (default 32) echo messages. JS-side data-frame `ws_msg_rtt_ms` is also recorded (ms precision) for cross-check. The `ktor-keel-*` engines (keel + `:keel-codec-http` Ktor adapter) fail at upgrade until `respondUpgrade` support lands in `:keel-server-ktor`; non-keel engines (`ktor-cio` / `ktor-netty` / `netty-raw` / `spring` / `vertx`) work today |
 
 ## Run
 

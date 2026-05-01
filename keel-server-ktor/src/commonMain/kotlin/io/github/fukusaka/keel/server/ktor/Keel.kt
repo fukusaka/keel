@@ -9,10 +9,10 @@ import io.ktor.server.engine.ApplicationEngineFactory
  * [ApplicationEngineFactory] for the Ktor adapter using keel's
  * [HttpRequestDecoder][io.github.fukusaka.keel.codec.http.HttpRequestDecoder]
  * / [HttpResponseEncoder][io.github.fukusaka.keel.codec.http.HttpResponseEncoder]
- * codec stack from `:keel-codec-http` (Pattern B).
+ * codec stack from `:keel-codec-http`.
  *
  * For Ktor users wanting Ktor's own `ktor-http-cio` HTTP parser instead,
- * use the `KeelCio` factory from `:keel-server-ktor-cio` (Pattern C).
+ * use the `KeelCio` factory from `:keel-server-ktor-cio`.
  *
  * Usage:
  * ```
