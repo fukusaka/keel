@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `ktor-engine`: request body is now streamed via `HttpBody` / `HttpBodyEnd` pipeline messages into a per-request `ByteChannel` pump, eliminating the full-body `ByteArray` peak allocation for large uploads; `ByteChannel`'s internal buffer (~1 MB) is the new working-memory ceiling (#414)
+
 ### Added
 
 - `benchmark`: `/ws-echo` WebSocket echo endpoint on `pipeline-http-*` engines (kqueue / epoll / io_uring / NIO / Netty). Performs the RFC 6455 handshake inside the EventLoop pipeline without coroutines: swaps the HTTP codec for `WsFrameDecoder` + `WsFrameEncoder` after sending `101 Switching Protocols`, then echoes each frame back (mask stripped, PING→PONG, CLOSE→CLOSE) (#413)

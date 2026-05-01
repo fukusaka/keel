@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.server.ktor.websocket
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
-import io.github.fukusaka.keel.codec.http.HttpRequest
+import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
@@ -20,12 +20,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Returns true if [request] looks like a valid RFC 6455 §4.1 client
+ * Returns true if [this] looks like a valid RFC 6455 §4.1 client
  * handshake — `Upgrade: websocket`, `Connection: Upgrade`, valid 16-byte
  * `Sec-WebSocket-Key`, and `Sec-WebSocket-Version: 13`. Header matching
  * is case-insensitive and tolerant of comma-separated `Connection` values.
  */
-internal fun HttpRequest.isWebSocketUpgrade(): Boolean {
+internal fun HttpRequestHead.isWebSocketUpgrade(): Boolean {
     if (!headers[HttpHeaderName.UPGRADE].equalsIgnoreCase("websocket")) return false
     val connection = headers[HttpHeaderName.CONNECTION] ?: return false
     if (!connection.split(',').any { it.trim().equalsIgnoreCase("upgrade") }) return false
@@ -61,21 +61,21 @@ private fun String?.equalsIgnoreCase(other: String): Boolean =
  *    [KeelCodecConnectionHandler][io.github.fukusaka.keel.server.ktor.KeelCodecConnectionHandler].
  *
  * The pre-condition for entering this function is
- * [HttpRequest.isWebSocketUpgrade] = true.
+ * [HttpRequestHead.isWebSocketUpgrade] = true.
  */
 internal suspend fun runWebSocketUpgrade(
     channel: PipelinedChannel,
-    request: HttpRequest,
+    head: HttpRequestHead,
     scope: CoroutineScope,
     handler: WsHandler,
 ) {
-    val clientKey = request.headers["Sec-WebSocket-Key"]
+    val clientKey = head.headers["Sec-WebSocket-Key"]
         ?: error("Sec-WebSocket-Key missing — caller must validate via isWebSocketUpgrade()")
     val acceptKey = computeAcceptKey(clientKey)
 
     // (1) 101 head + bodyless terminator routed through the existing
     // HttpResponseEncoder (BODYLESS streaming mode added in #411).
-    val head = HttpResponseHead(
+    val responseHead = HttpResponseHead(
         status = HttpStatus(101),
         version = HttpVersion.HTTP_1_1,
         headers = HttpHeaders.of(
@@ -85,7 +85,7 @@ internal suspend fun runWebSocketUpgrade(
         ),
     )
     withContext(channel.ioDispatcher) {
-        channel.pipeline.requestWrite(head)
+        channel.pipeline.requestWrite(responseHead)
         channel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
         channel.pipeline.requestFlush()
     }
