@@ -30,6 +30,22 @@ import io.ktor.server.engine.ApplicationEngineFactory
  * NIO / Netty / NWConnection / Node.js) can be paired with Ktor's own HTTP
  * parser for benchmarking and feature-parity validation against the
  * `:keel-server-ktor` adapter.
+ *
+ * **Kotlin/Native parser serialisation**: ktor-http-cio's `HeadersDataPool`
+ * holds a non-reentrant `SynchronizedObject` lock around `clearInstance`,
+ * which on Kotlin/Native (`pthread_mutex`) collapses under multi-worker
+ * accept bursts and starves the parser to ≈ 0 RPS.  This adapter therefore
+ * serialises every `parseRequest` call through a process-wide mutex on
+ * Native targets — see [HeaderParseSerializer] for evidence and
+ * trade-offs.  The JVM is unaffected (`synchronized` is reentrant +
+ * JIT-optimised) and runs the parser concurrently as before.
+ *
+ * The serialisation caps Native single-host parser throughput at the
+ * single-core parse rate (≈ 43 k RPS for `/hello` on macOS M1, since
+ * `parseHttpBody` and I/O still parallelise).  For higher throughput on
+ * Native, prefer the keel-native HTTP codec via the `pipeline-http-*`
+ * engines (`addHttp1ServerCodec`) which parses on the I/O thread
+ * without ktor's pool lock and reaches > 150 k RPS.
  */
 public object KeelCio : ApplicationEngineFactory<KeelApplicationEngine, KeelApplicationEngine.Configuration> {
 
