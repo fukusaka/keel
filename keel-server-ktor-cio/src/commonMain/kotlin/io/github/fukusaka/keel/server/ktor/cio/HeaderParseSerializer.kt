@@ -41,9 +41,9 @@ package io.github.fukusaka.keel.server.ktor.cio
  * this beats `threads=1` because the parser is fast (~µs) and the
  * remaining work runs concurrently.  If you need higher per-host
  * throughput than ≈ 43 k RPS and can drop ktor-http-cio's parser, the
- * keel-native HTTP codec (`pipeline-http-*` / Pattern A) parses on the
- * I/O thread without this lock and reaches > 150 k RPS on the same
- * hardware.
+ * keel-native HTTP codec (`pipeline-http-*` engines via
+ * `addHttp1ServerCodec` from `:keel-codec-http`) parses on the I/O thread
+ * without this lock and reaches > 150 k RPS on the same hardware.
  *
  * **Upstream**: tracked at the ktor issue tracker — link to be added when
  * filed.  When the upstream `HeadersDataPool` is reworked to release the

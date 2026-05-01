@@ -53,11 +53,11 @@ import kotlin.coroutines.ContinuationInterceptor
  * Inbound: a [KtorCioInboundBridge] handler consumes [IoBuf]
  * from the pipeline directly into a coroutine [kotlinx.coroutines.channels.Channel];
  * the input pump drains it into a Ktor `ByteChannel` for `parseRequest`.
- * This is the same shape as Pattern B's
- * [io.github.fukusaka.keel.pipeline.SuspendMessageBridge] (typed-message
- * variant), shortening close propagation from the prior 4-hop indirect
- * chain (`SuspendBridgeHandler` → `BufferedSuspendSource` → `ByteChannel`)
- * to 2 hops (handler → bridge channel close).
+ * This mirrors the [io.github.fukusaka.keel.pipeline.SuspendMessageBridge]
+ * shape used by `:keel-codec-http` and `:keel-server-ktor`, shortening
+ * close propagation from the prior 4-hop indirect chain
+ * (`SuspendBridgeHandler` → `BufferedSuspendSource` → `ByteChannel`) to
+ * 2 hops (handler → bridge channel close).
  *
  * The keep-alive loop reads [parseRequest] from the input channel, builds a
  * [KeelCioApplicationCall] with a body sub-channel decoded by [parseHttpBody],

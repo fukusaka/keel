@@ -12,15 +12,15 @@ import kotlin.reflect.KClass
  * [Channel][kotlinx.coroutines.channels.Channel], ownership transferred to
  * the receiver.
  *
- * Pattern C structural alignment with Pattern B
- * ([io.github.fukusaka.keel.pipeline.SuspendMessageBridge]): replaces the
- * indirect `BufferedSuspendSource(SuspendBridgeHandler)` chain previously
- * used by [KtorCioConnectionHandler].  The chain shortened the close
- * propagation path from 4 hops (notifyInactive → SuspendBridgeHandler →
+ * Mirrors the [io.github.fukusaka.keel.pipeline.SuspendMessageBridge] shape
+ * used by `:keel-codec-http` and `:keel-server-ktor`, replacing the indirect
+ * `BufferedSuspendSource(SuspendBridgeHandler)` chain previously used by
+ * [KtorCioConnectionHandler].  The chain shortened the close propagation
+ * path from 4 hops (notifyInactive → SuspendBridgeHandler →
  * BufferedSuspendSource → ByteChannel) to 2 hops (notifyInactive → bridge
  * Channel close), eliminating cross-context dispatch latency that surfaced
- * as Pattern C accept-burst close-propagation starvation under
- * single-thread-per-engine dispatchers.
+ * as accept-burst close-propagation starvation under single-thread-per-
+ * engine dispatchers.
  *
  * **Ownership**: every [IoBuf] delivered via [receiveCatching] is owned by
  * the receiver and MUST be released with [IoBuf.release].  Buffers that
