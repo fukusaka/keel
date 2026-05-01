@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: `ktor-cio-keel-{nio,kqueue,epoll,io-uring}` engines wire the new `:keel-server-ktor-cio` adapter into the bench harness for 3-way comparison (`pipeline-http-*` / `ktor-keel-*` / `ktor-cio-keel-*`). Native targets (kqueue / epoll) currently report intermittent 0 RPS — JVM is stable; investigation deferred (#417)
 - `keel-server-ktor-cio`: connection handler implementation — `KtorCioConnectionHandler` bridges keel transport to `ktor-http-cio` via two byte-channel pumps (inbound from `asBufferedSuspendSource`, outbound to `pipeline.requestWrite`). Ships `KeelCioApplicationCall` / `Request` / `Response` triple writing HTTP/1.1 wire-format directly to a `ByteWriteChannel` (Content-Length-delimited or chunked-encoded). 6 JVM integration tests (#416)
 - `keel-server-ktor-cio`: new module — Ktor adapter using `ktor-http-cio`'s parser instead of `:keel-codec-http`, ships the `KeelCio` `ApplicationEngineFactory`. Per-connection handler is a scaffolding stub; the implementation lands in follow-up PRs (#415)
 - `benchmark`: `/ws-echo` WebSocket echo endpoint on `pipeline-http-*` engines (kqueue / epoll / io_uring / NIO / Netty). Performs the RFC 6455 handshake inside the EventLoop pipeline without coroutines: swaps the HTTP codec for `WsFrameDecoder` + `WsFrameEncoder` after sending `101 Switching Protocols`, then echoes each frame back (mask stripped, PING→PONG, CLOSE→CLOSE) (#413)
