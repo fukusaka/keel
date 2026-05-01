@@ -177,6 +177,6 @@ data class BenchmarkConfig(
     }
 }
 
-/** Check if an engine is a keel engine (always enforces Connection: close in Phase (a)). */
+/** Check if an engine is a keel engine (the synchronous-I/O era enforces Connection: close). */
 fun isKeelEngine(engine: String): Boolean =
     engine.startsWith("keel-")

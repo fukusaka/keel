@@ -23,7 +23,7 @@ actual fun availableProcessors(): Int = Platform.getAvailableProcessors()
 /** Dispatchers.IO parallelism — hardcoded to 64 to match the JVM default (no system property on Native). */
 actual fun ioParallelism(): Int = 64
 
-/** Shared socket defaults for keel Native engines (no tunable options in Phase (a)). */
+/** Shared socket defaults for keel Native engines (no tunable options exposed yet). */
 internal fun keelSocketDefaults(os: OsSocketDefaults): SocketConfig.SocketDefaults {
     val ioP = ioParallelism()
     return SocketConfig.SocketDefaults(
