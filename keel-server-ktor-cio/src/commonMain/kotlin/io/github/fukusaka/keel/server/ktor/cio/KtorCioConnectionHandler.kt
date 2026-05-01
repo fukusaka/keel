@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.ktor.KeelApplicationEngine
@@ -84,10 +86,10 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         val output = ByteChannel(autoFlush = true)
 
         val inputPump = scope.launch(channel.ioDispatcher) {
-            pumpChannelToInput(channel, input)
+            pumpChannelToInput(channel, input, engine.logger)
         }
         val outputPump = scope.launch(channel.ioDispatcher) {
-            pumpOutputToChannel(output, channel)
+            pumpOutputToChannel(output, channel, engine.logger)
         }
 
         try {
@@ -220,7 +222,11 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
      * and forwards them to [output].  Closes [output] on EOF or error so
      * downstream parsers (parseRequest) observe the close.
      */
-    private suspend fun pumpChannelToInput(channel: PipelinedChannel, output: ByteWriteChannel) {
+    private suspend fun pumpChannelToInput(
+        channel: PipelinedChannel,
+        output: ByteWriteChannel,
+        logger: Logger,
+    ) {
         val source = channel.asBufferedSuspendSource()
         val buf = ByteArray(PUMP_BUFFER_SIZE)
         try {
@@ -230,8 +236,9 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                 output.writeFully(buf, 0, n)
             }
         } catch (e: Exception) {
-            output.cancel(e)
             if (e is CancellationException) throw e
+            logger.debug { "ktor-cio inbound pump terminated by I/O error: ${e::class.simpleName}: ${e.message}" }
+            output.cancel(e)
         } finally {
             output.flushAndClose()
             runCatching { source.close() }
@@ -243,7 +250,11 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
      * to the keel transport via the channel's pipeline (no codec installed —
      * bytes flow straight through to the underlying socket).
      */
-    private suspend fun pumpOutputToChannel(input: ByteReadChannel, channel: PipelinedChannel) {
+    private suspend fun pumpOutputToChannel(
+        input: ByteReadChannel,
+        channel: PipelinedChannel,
+        logger: Logger,
+    ) {
         val buf = ByteArray(PUMP_BUFFER_SIZE)
         try {
             while (!input.isClosedForRead) {
@@ -258,9 +269,11 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
-            // Best-effort: connection write failure usually means the peer
-            // already closed.  Logging is cheap; rethrowing would mask the
-            // original cause from the keep-alive loop.
+            // Connection write failure usually means the peer already closed.
+            // Log at DEBUG so operators can diagnose unexpected disconnects
+            // without making routine peer-close noise visible at INFO+.
+            // Rethrowing would mask the original cause from the keep-alive loop.
+            logger.debug { "ktor-cio outbound pump terminated by I/O error: ${e::class.simpleName}: ${e.message}" }
         }
     }
 
