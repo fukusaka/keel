@@ -12,7 +12,7 @@ website/
 ├── docs/
 │   ├── intro.md              # Getting Started
 │   ├── architecture/
-│   │   ├── overview.md       # Layer architecture & design philosophy (public design.md)
+│   │   ├── overview.md       # Layer architecture & design philosophy
 │   │   ├── engine-guide.md   # Engine selection guide
 │   │   └── buffer.md         # NativeBuf / BufferAllocator
 │   ├── codecs/
