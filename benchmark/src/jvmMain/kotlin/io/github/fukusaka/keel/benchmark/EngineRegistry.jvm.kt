@@ -6,6 +6,7 @@ actual fun defaultEngine(): String = "ktor-keel-nio"
 /** JVM engine registry: keel, pipeline, Ktor, Netty raw, Spring, Vert.x variants. */
 actual fun engineRegistry(): Map<String, EngineBenchmark> = mapOf(
     "ktor-keel-nio" to KeelNioEngine,
+    "ktor-cio-keel-nio" to KeelCioNioEngine,
     "pipeline-http-nio" to PipelineHttpNioBenchmark,
     "ktor-keel-netty" to KeelNettyEngine,
     "pipeline-http-netty" to PipelineHttpNettyBenchmark,

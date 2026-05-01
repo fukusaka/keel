@@ -6,6 +6,7 @@ actual fun defaultEngine(): String = "ktor-keel-kqueue"
 /** macOS engine registry: kqueue, NWConnection, pipeline HTTP variants, and Ktor CIO. */
 actual fun engineRegistry(): Map<String, EngineBenchmark> = mapOf(
     "ktor-keel-kqueue" to KeelKqueueEngine,
+    "ktor-cio-keel-kqueue" to KeelCioKqueueEngine,
     "pipeline-http-kqueue" to PipelineHttpKqueueBenchmark,
     "ktor-keel-nwconnection" to KeelNwConnectionEngine,
     "pipeline-http-nwconnection" to PipelineHttpNwBenchmark,

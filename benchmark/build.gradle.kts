@@ -64,6 +64,7 @@ kotlin {
             dependsOn(commonMain.get())
             dependencies {
                 implementation(project(":keel-server-ktor"))
+                implementation(project(":keel-server-ktor-cio"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.ktor.server.cio)
                 implementation(libs.ktor.server.websockets)
