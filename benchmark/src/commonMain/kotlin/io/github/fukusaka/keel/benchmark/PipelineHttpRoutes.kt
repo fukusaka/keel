@@ -10,9 +10,16 @@ import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.codec.http.HttpVersion
+import io.github.fukusaka.keel.codec.websocket.WsFrame
+import io.github.fukusaka.keel.codec.websocket.WsFrameDecoder
+import io.github.fukusaka.keel.codec.websocket.WsFrameEncoder
+import io.github.fukusaka.keel.codec.websocket.WsOpcode
+import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
+import io.github.fukusaka.keel.codec.websocket.validateClientKey
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 
 /**
  * Pre-built responses shared across all pipeline-http benchmark servers.
@@ -63,6 +70,9 @@ fun installPipelineHttpHandlers(pipeline: Pipeline) {
  *   multipart`.
  * - `/sse-stream?count=N&size=M` — emits N chunks of M bytes via chunked
  *   Transfer-Encoding (response-body streaming throughput bench)
+ * - `/ws-echo` — WebSocket (RFC 6455) echo server; swaps the pipeline codec
+ *   from HTTP to WS frames after the handshake and echoes each received frame
+ *   back (masking stripped per RFC 6455 §5.3).
  * - others   — 404 Not Found
  *
  * Instantiated per-connection because [currentPath] / [echoStreaming] /
@@ -84,6 +94,11 @@ private class BenchmarkRoutingHandler : InboundHandler {
     private var methodEchoMethod: String? = null
     private var itemEchoId: String? = null
 
+    // WebSocket state — active only after a successful /ws-echo upgrade.
+    private var wsUpgradePending: Boolean = false
+    private var wsClientKey: String? = null
+    private var wsEchoMode: Boolean = false
+
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> {
@@ -93,6 +108,15 @@ private class BenchmarkRoutingHandler : InboundHandler {
                 uploadBytes = 0L
                 methodEchoMethod = null
                 itemEchoId = null
+                // WS upgrade: stash the client key and defer the handshake to
+                // HttpBodyEnd (the request body is empty for GET/upgrade
+                // requests but the decoder still emits HttpBodyEnd to close
+                // the message).
+                if (msg.path == "/ws-echo" && msg.isWebSocketUpgrade()) {
+                    wsUpgradePending = true
+                    wsClientKey = msg.headers["Sec-WebSocket-Key"]
+                    return
+                }
                 when {
                     msg.path == "/echo" -> {
                         // Start streaming response immediately with chunked encoding.
@@ -133,18 +157,47 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         // Stash the method on the handler so emitResponse can read it.
                         methodEchoMethod = msg.method.name
                     }
-                    msg.path?.startsWith("/items/") == true -> {
+                    msg.path.startsWith("/items/") -> {
                         // Same pattern as /method-echo: stash the parsed id and let
                         // emitResponse run on HttpBodyEnd.
-                        itemEchoId = msg.path!!.substring("/items/".length)
+                        itemEchoId = msg.path.substring("/items/".length)
                     }
-                    msg.path?.startsWith("/sse-stream") == true -> {
+                    msg.path.startsWith("/sse-stream") -> {
                         emitSseStream(ctx, msg)
                     }
                 }
             }
             is HttpBodyEnd -> {
                 when {
+                    wsUpgradePending -> {
+                        // Perform the RFC 6455 §4.2.2 server handshake inline.
+                        // The HTTP encoder is still installed so we can write
+                        // the 101 head through the normal pipeline path.
+                        val acceptKey = computeAcceptKey(wsClientKey!!)
+                        ctx.propagateWrite(
+                            HttpResponseHead(
+                                status = HttpStatus(101),
+                                version = HttpVersion.HTTP_1_1,
+                                headers = HttpHeaders.of(
+                                    HttpHeaderName.UPGRADE to "websocket",
+                                    HttpHeaderName.CONNECTION to "Upgrade",
+                                    "Sec-WebSocket-Accept" to acceptKey,
+                                ),
+                            ),
+                        )
+                        ctx.propagateWrite(HttpBodyEnd.EMPTY)
+                        ctx.propagateFlush()
+                        // Swap the codec: remove HTTP handlers, insert WS codec
+                        // before this handler so the pipeline becomes:
+                        //   HEAD ↔ ws-encoder ↔ ws-decoder ↔ routing ↔ TAIL
+                        ctx.channel.pipeline.remove("decoder")
+                        ctx.channel.pipeline.remove("encoder")
+                        ctx.channel.pipeline.addBefore(ctx.name, "ws-encoder", WsFrameEncoder())
+                        ctx.channel.pipeline.addBefore(ctx.name, "ws-decoder", WsFrameDecoder())
+                        wsUpgradePending = false
+                        wsClientKey = null
+                        wsEchoMode = true
+                    }
                     echoStreaming -> {
                         if (msg.content.readableBytes > 0) {
                             msg.content.retain()
@@ -170,6 +223,36 @@ private class BenchmarkRoutingHandler : InboundHandler {
                     else -> emitResponse(ctx)
                 }
                 msg.content.release()
+            }
+            is WsFrame -> {
+                if (wsEchoMode) {
+                    when (msg.opcode) {
+                        WsOpcode.PING -> {
+                            // RFC 6455 §5.5.3: respond to PING with PONG; server
+                            // frames must not be masked (§5.3).
+                            ctx.propagateWrite(WsFrame.pong(msg.payload))
+                            ctx.propagateFlush()
+                        }
+                        WsOpcode.PONG -> Unit // unsolicited PONG — discard
+                        WsOpcode.CLOSE -> {
+                            // RFC 6455 §5.5.1: echo the CLOSE frame back with the
+                            // same code and reason, then stop accepting frames.
+                            ctx.propagateWrite(
+                                WsFrame(fin = true, opcode = WsOpcode.CLOSE, payload = msg.payload),
+                            )
+                            ctx.propagateFlush()
+                            wsEchoMode = false
+                        }
+                        else -> {
+                            // TEXT / BINARY / CONTINUATION: echo back.
+                            // RFC 6455 §5.3 forbids the server from masking;
+                            // strip the client mask key before sending.
+                            val outgoing = if (msg.maskKey != null) msg.copy(maskKey = null) else msg
+                            ctx.propagateWrite(outgoing)
+                            ctx.propagateFlush()
+                        }
+                    }
+                }
             }
             is HttpBody -> {
                 when {
@@ -300,4 +383,22 @@ private class BenchmarkRoutingHandler : InboundHandler {
         currentPath = null
     }
 
+}
+
+private fun String?.equalsIgnoreCase(other: String): Boolean =
+    this != null && this.equals(other, ignoreCase = true)
+
+/**
+ * Returns true when [this] request head carries valid RFC 6455 §4.1
+ * WebSocket upgrade markers: `Upgrade: websocket`, `Connection: Upgrade`
+ * (comma-tolerant, case-insensitive), `Sec-WebSocket-Version: 13`, and a
+ * well-formed 16-byte `Sec-WebSocket-Key`.
+ */
+private fun HttpRequestHead.isWebSocketUpgrade(): Boolean {
+    if (!headers[HttpHeaderName.UPGRADE].equalsIgnoreCase("websocket")) return false
+    val connection = headers[HttpHeaderName.CONNECTION] ?: return false
+    if (!connection.split(',').any { it.trim().equalsIgnoreCase("upgrade") }) return false
+    if (headers["Sec-WebSocket-Version"] != "13") return false
+    val key = headers["Sec-WebSocket-Key"] ?: return false
+    return validateClientKey(key)
 }
