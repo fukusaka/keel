@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -23,6 +24,7 @@ import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,26 +37,32 @@ import kotlin.coroutines.ContinuationInterceptor
  * **Architecture**:
  *
  * ```
- *                    inputPump
- * keel transport ────────────────► Ktor ByteChannel ────► parseRequest
- *                                                              │
- *                                                              ▼
- *                                                       application pipeline
- *                                                              │
- *                                                              ▼
- *                                                  KeelCioApplicationResponse
- *                                                              │
- *                                                              ▼
- *                  outputPump            Ktor ByteChannel ◄────┘
- * keel transport ◄────────────────
+ *                  KtorCioInboundBridge      inputPump
+ * keel transport ──────────────────────────────────────► Ktor ByteChannel ────► parseRequest
+ *   (pipeline.notifyRead → InboundHandler →                                           │
+ *    Channel<IoBuf> → receiveCatching)                                                ▼
+ *                                                                            application pipeline
+ *                                                                                     │
+ *                                                                                     ▼
+ *                                                                         KeelCioApplicationResponse
+ *                                                                                     │
+ *                  outputPump                              Ktor ByteChannel  ◄────────┘
+ * keel transport ◄────────────────────
  * ```
  *
- * Two coroutine pumps bridge keel's [PipelinedChannel] to a pair of Ktor
- * [ByteChannel]s — one per direction.  The keep-alive loop reads
- * [parseRequest] from the input channel, builds a [KeelCioApplicationCall]
- * with a body sub-channel decoded by [parseHttpBody], dispatches via
- * `engine.pipeline.execute(call)`, then drains any unread body before
- * reading the next request.
+ * Inbound: a [KtorCioInboundBridge] handler consumes [IoBuf]
+ * from the pipeline directly into a coroutine [kotlinx.coroutines.channels.Channel];
+ * the input pump drains it into a Ktor `ByteChannel` for `parseRequest`.
+ * This is the same shape as Pattern B's
+ * [io.github.fukusaka.keel.pipeline.SuspendMessageBridge] (typed-message
+ * variant), shortening close propagation from the prior 4-hop indirect
+ * chain (`SuspendBridgeHandler` → `BufferedSuspendSource` → `ByteChannel`)
+ * to 2 hops (handler → bridge channel close).
+ *
+ * The keep-alive loop reads [parseRequest] from the input channel, builds a
+ * [KeelCioApplicationCall] with a body sub-channel decoded by [parseHttpBody],
+ * dispatches via `engine.pipeline.execute(call)`, then drains any unread body
+ * before reading the next request.
  *
  * **Concurrency**:
  *
@@ -74,8 +82,12 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         engine: KeelApplicationEngine,
         scope: CoroutineScope,
     ) {
-        // Arm the read loop.
+        // Install the inbound bridge as the terminal handler before arming
+        // the read loop.  Both must happen on the EventLoop thread so the
+        // first onRead callback sees the bridge installed.
+        val bridge = KtorCioInboundBridge()
         withContext(channel.ioDispatcher) {
+            channel.pipeline.addLast(INBOUND_BRIDGE_NAME, bridge)
             channel.readEnabled = true
         }
 
@@ -86,7 +98,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         val output = ByteChannel(autoFlush = true)
 
         val inputPump = scope.launch(channel.ioDispatcher) {
-            pumpChannelToInput(channel, input, engine.logger)
+            pumpBridgeToInput(bridge, input, engine.logger)
         }
         val outputPump = scope.launch(channel.ioDispatcher) {
             pumpOutputToChannel(output, channel, engine.logger)
@@ -106,6 +118,9 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
             // exited mid-request (e.g. on connection close from the peer).
             inputPump.cancel()
             outputPump.join()
+            // Release any IoBufs left in the bridge queue before the
+            // pipeline tears down.
+            bridge.close()
             runCatching { channel.close() }
         }
     }
@@ -218,22 +233,44 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
     }
 
     /**
-     * Reads bytes from the keel transport via [PipelinedChannel.asBufferedSuspendSource]
-     * and forwards them to [output].  Closes [output] on EOF or error so
-     * downstream parsers (parseRequest) observe the close.
+     * Forwards [IoBuf]s arriving on [bridge]
+     * directly into [output] (a Ktor `ByteChannel`).  Each buffer is copied
+     * into a reusable [ByteArray] and released back to the engine before
+     * the next receive — there is no internal buffering on top of the
+     * bridge channel.
+     *
+     * Close propagation: bridge closure (peer EOF, pipeline `onError`, or
+     * explicit [KtorCioInboundBridge.close]) returns a closed
+     * [ChannelResult]; we forward the cause (if any) to [output] via
+     * `cancel`, otherwise close cleanly so `parseRequest` observes EOF.
      */
-    private suspend fun pumpChannelToInput(
-        channel: PipelinedChannel,
+    private suspend fun pumpBridgeToInput(
+        bridge: KtorCioInboundBridge,
         output: ByteWriteChannel,
         logger: Logger,
     ) {
-        val source = channel.asBufferedSuspendSource()
-        val buf = ByteArray(PUMP_BUFFER_SIZE)
+        val tmp = ByteArray(PUMP_BUFFER_SIZE)
         try {
             while (!output.isClosedForWrite) {
-                val n = source.readAtMostTo(buf, 0, buf.size)
-                if (n <= 0) break
-                output.writeFully(buf, 0, n)
+                val received: ChannelResult<IoBuf> = bridge.receiveCatching()
+                if (received.isClosed) {
+                    val cause = received.exceptionOrNull()
+                    if (cause != null && cause !is CancellationException) {
+                        output.cancel(cause)
+                        return
+                    }
+                    break
+                }
+                val buf = received.getOrThrow()
+                try {
+                    while (buf.readableBytes > 0) {
+                        val n = minOf(buf.readableBytes, tmp.size)
+                        buf.readByteArray(tmp, 0, n)
+                        output.writeFully(tmp, 0, n)
+                    }
+                } finally {
+                    buf.release()
+                }
             }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -241,7 +278,6 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
             output.cancel(e)
         } finally {
             output.flushAndClose()
-            runCatching { source.close() }
         }
     }
 
@@ -290,5 +326,6 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
     private companion object {
         private const val PUMP_BUFFER_SIZE = 8192
         private const val BASE_TEN = 10
+        private const val INBOUND_BRIDGE_NAME = "__ktor_cio_inbound__"
     }
 }
