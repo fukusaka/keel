@@ -2,7 +2,8 @@ package io.github.fukusaka.keel.server.ktor.websocket
 
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
-import io.github.fukusaka.keel.codec.http.HttpRequest
+import io.github.fukusaka.keel.codec.http.HttpRequestHead
+import io.github.fukusaka.keel.codec.http.HttpVersion
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -14,13 +15,13 @@ class WsUpgradeDetectionTest {
         connection: String? = "Upgrade",
         version: String? = "13",
         key: String? = VALID_KEY,
-    ): HttpRequest {
+    ): HttpRequestHead {
         val headers = HttpHeaders()
         if (upgrade != null) headers["Upgrade"] = upgrade
         if (connection != null) headers["Connection"] = connection
         if (version != null) headers["Sec-WebSocket-Version"] = version
         if (key != null) headers["Sec-WebSocket-Key"] = key
-        return HttpRequest(method = HttpMethod.GET, uri = "/echo", headers = headers)
+        return HttpRequestHead(method = HttpMethod.GET, uri = "/echo", version = HttpVersion.HTTP_1_1, headers = headers)
     }
 
     @Test
