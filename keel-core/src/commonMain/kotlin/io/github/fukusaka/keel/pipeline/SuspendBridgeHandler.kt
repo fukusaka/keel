@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
 /**
@@ -98,15 +99,20 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      *
      * @return number of bytes read, or -1 on EOF (peer closed / notifyInactive).
      */
-    suspend fun read(buf: IoBuf): Int {
-        // Wait for data or EOF.
+    suspend fun read(buf: IoBuf): Int = withContext(ctx.channel.highPriorityIoDispatcher) {
+        // Wait for data or EOF on the high-priority dispatcher so the resume
+        // from [onInactive] / `cont.resume(Unit)` lands in the channel's
+        // HIGH queue, ahead of NORMAL data tasks (e.g. accept-burst handlers).
+        // For engines that haven't implemented separate priority queues,
+        // `highPriorityIoDispatcher` aliases `ioDispatcher` (passthrough), so
+        // `withContext` is a no-op fast path with no extra dispatch overhead.
         while (readQueue.isEmpty() && !eof) {
             suspendCancellableCoroutine { cont ->
                 readCont = cont
                 cont.invokeOnCancellation { readCont = null }
             }
         }
-        if (readQueue.isEmpty()) return -1 // EOF
+        if (readQueue.isEmpty()) return@withContext -1 // EOF
 
         val received = readQueue.removeFirst()
         val n = minOf(received.readableBytes, buf.writableBytes)
@@ -118,7 +124,7 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         } else {
             received.release()
         }
-        return n
+        n
     }
 
     // --- OwnedSuspendSource: zero-copy read from queue ---
@@ -131,15 +137,16 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      *
      * @return An [IoBuf] with readable data, or `null` on EOF.
      */
-    override suspend fun readOwned(): IoBuf? {
+    override suspend fun readOwned(): IoBuf? = withContext(ctx.channel.highPriorityIoDispatcher) {
+        // Same priority-dispatch rationale as [read] above.
         while (readQueue.isEmpty() && !eof) {
             suspendCancellableCoroutine { cont ->
                 readCont = cont
                 cont.invokeOnCancellation { readCont = null }
             }
         }
-        if (readQueue.isEmpty()) return null // EOF
-        return readQueue.removeFirst()
+        if (readQueue.isEmpty()) return@withContext null // EOF
+        readQueue.removeFirst()
     }
 
     /** No-op: resources are released in [onInactive] and [handlerRemoved]. */
