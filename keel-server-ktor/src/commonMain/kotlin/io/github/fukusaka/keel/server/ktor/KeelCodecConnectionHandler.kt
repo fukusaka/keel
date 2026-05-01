@@ -134,9 +134,13 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
                     scheme = scheme,
                 )
 
-                // Run the Ktor pipeline then drain any unread request body so
-                // the pump can reach HttpBodyEnd and the bridge is ready for the
-                // next request head.
+                // Run the Ktor pipeline on the configured application dispatcher,
+                // then drain any unread request body so the pump can reach
+                // HttpBodyEnd and the bridge is ready for the next head.
+                // null applicationDispatcher means channel.ioDispatcher (EventLoop
+                // thread); the ReferenceEquals short-circuit avoids a withContext hop
+                // when we are already on the target dispatcher — the common case after
+                // receiveCatching() resumed us on the EventLoop thread.
                 try {
                     val appCtx = configuration.applicationDispatcher ?: channel.ioDispatcher
                     if (appCtx !== scope.coroutineContext[ContinuationInterceptor]) {
