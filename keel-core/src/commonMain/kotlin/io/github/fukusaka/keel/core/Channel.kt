@@ -150,6 +150,30 @@ interface Channel : AutoCloseable {
      */
     val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Default
 
+    /**
+     * The high-priority [CoroutineDispatcher] for lifecycle-event continuations
+     * (close propagation, error fan-out) on this channel.
+     *
+     * Engines that implement priority queueing route blocks dispatched here
+     * ahead of [ioDispatcher] tasks within the same EventLoop thread.  This
+     * prevents lifecycle starvation: when a peer closes a connection while
+     * the EventLoop is busy with data work (parse / response / accept-burst),
+     * the close-propagation chain (notifyInactive → bridge.onInactive →
+     * cont.resume → handler exit) executes ahead of newly-queued data tasks
+     * so handler scopes free up promptly and the event loop's task queue
+     * doesn't accumulate stuck handlers.
+     *
+     * Default: returns [ioDispatcher] — passthrough behaviour for engines
+     * that haven't implemented separate priority queues yet.  Callers that
+     * dispatch lifecycle continuations through this property still work
+     * correctly on those engines, just without the priority benefit.
+     *
+     * **Thread**: must dispatch onto the same thread as [ioDispatcher].
+     * Implementations MUST NOT route to a different thread; only the queue
+     * priority differs.
+     */
+    val highPriorityIoDispatcher: CoroutineDispatcher get() = ioDispatcher
+
     // --- Flush strategy ---
 
     /**
