@@ -24,6 +24,7 @@ kotlin {
                 implementation(project(":keel-tls"))
                 implementation(project(":keel-server"))
                 implementation(libs.ktor.server.core)
+                implementation(libs.ktor.http.cio)
                 implementation(libs.kotlinx.coroutines.core)
             }
         }

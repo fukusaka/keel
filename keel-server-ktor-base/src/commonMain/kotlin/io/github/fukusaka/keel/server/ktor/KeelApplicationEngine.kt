@@ -15,6 +15,7 @@ import io.ktor.events.Events
 import io.ktor.events.raiseCatching
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationEnvironment
+import io.ktor.server.application.ApplicationStarting
 import io.ktor.server.application.ServerReady
 import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.BaseApplicationEngine
@@ -164,6 +165,14 @@ public class KeelApplicationEngine(
     private var ioEngine: StreamEngine? = null
 
     init {
+        // Subscribe BEFORE initServerJob() calls applicationProvider(), which fires
+        // ApplicationStarting. BaseApplicationEngine.init already subscribed Ktor's
+        // installDefaultTransformations (JVM-only multipart), so our subscription
+        // comes second — the multipart transformer runs after Ktor's and is a no-op
+        // on JVM (subject will already be MultiPartData, not ByteReadChannel).
+        monitor.subscribe(ApplicationStarting) {
+            it.receivePipeline.installMultipartTransform()
+        }
         serverJob = initServerJob()
         serverJob.invokeOnCompletion { cause ->
             cause?.let { stopRequest.completeExceptionally(it) }
