@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-netty`: `ktor-keel-netty` upload endpoints no longer return 0 bytes for all request body sizes; an inbound buffer copy had a miscounted offset that caused an exception collapsing the connection before the body was consumed (#426)
 - `keel-server-ktor-base`: `call.receiveMultipart()` on Native keel engines (kqueue / epoll / io_uring / NWConnection) no longer returns HTTP 415; a `CIOMultipartDataBase`-backed `ApplicationReceivePipeline` interceptor fills the gap left by Ktor's JVM-only `defaultPlatformTransformations` (#425)
 - `tls`, `engine-netty`: HTTPS on `ktor-keel-netty` (JSSE) no longer fails immediately; the TLS handshake now completes where it previously crashed due to a buffer-type mismatch between the JSSE codec and the Netty buffer allocator (#424)
 - `keel-codec-http`: `HttpResponseEncoder` now suppresses the response body for HEAD requests (RFC 9110 §9.3.2); status line and headers (including `Content-Length` / `Transfer-Encoding`) are forwarded unchanged (#423)
