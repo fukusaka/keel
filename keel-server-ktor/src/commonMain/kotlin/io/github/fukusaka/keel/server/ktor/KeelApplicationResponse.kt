@@ -109,6 +109,12 @@ internal class KeelApplicationResponse(
             }
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
             pipelinedChannel.pipeline.requestFlush()
+            // Await async write callback before returning so that a subsequent
+            // channel.close() does not cancel in-flight sends. Engines with
+            // synchronous flush (POSIX write(2)) return immediately; engines
+            // with asynchronous send (NWConnection nw_connection_send) suspend
+            // until the transport's write callback fires.
+            pipelinedChannel.awaitFlushComplete()
         }
     }
 
@@ -118,6 +124,7 @@ internal class KeelApplicationResponse(
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
             pipelinedChannel.pipeline.requestFlush()
+            pipelinedChannel.awaitFlushComplete()
         }
     }
 
