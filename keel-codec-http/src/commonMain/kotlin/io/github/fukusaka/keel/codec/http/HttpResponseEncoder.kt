@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.codec.http
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.tryWrapBytes
-import io.github.fukusaka.keel.pipeline.OutboundHandler
+import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 /**
  * Pipeline handler that encodes HTTP response messages into [IoBuf] for transmission.
@@ -39,14 +39,22 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * (CHUNKED mode). FIXED mode passes body [IoBuf]s through unchanged;
  * CHUNKED mode wraps each [HttpBody] in hex-size framing.
  *
+ * **HEAD method body suppression**: the encoder implements [DuplexHandler]
+ * and intercepts inbound [HttpRequestHead] messages to track the current
+ * request method. When the method is HEAD, response body bytes are
+ * suppressed per RFC 9110 §9.3.2 — the status line and headers are emitted
+ * unchanged (including `Content-Length` or `Transfer-Encoding`), but no
+ * body follows. [addHttp1ServerCodec] installs the encoder after the
+ * decoder so inbound [HttpRequestHead] messages flow through.
+ *
  * **Pass-through**: messages that are not [HttpResponse], [HttpResponseHead],
  * [HttpBody], or [HttpBodyEnd] (e.g. a raw [IoBuf] written by the
  * application handler) are forwarded without modification.
  */
-class HttpResponseEncoder : OutboundHandler {
+class HttpResponseEncoder : DuplexHandler {
 
     /**
-     * The four legal streaming states for a response head.
+     * The five legal streaming states for a response head.
      *
      * - [NONE]: no head sent yet (initial / between responses).
      * - [FIXED]: Content-Length declared; body bytes are forwarded unchanged.
@@ -54,12 +62,23 @@ class HttpResponseEncoder : OutboundHandler {
      * - [BODYLESS]: head was a 1xx informational, 204 No Content, or 304
      *   Not Modified status — RFC 9112 §6 forbids a message body. The
      *   encoder emits the head and then accepts a single terminating
-     *   [HttpBodyEnd] as a no-op.
+     *   [HttpBodyEnd] as a no-op; a non-empty [HttpBody] is a contract error.
+     * - [HEAD_BODYLESS]: response to a HEAD request — body bytes are silently
+     *   released (the application may write them without knowing the method).
+     *   No terminator is emitted for chunked encoding. Headers (including
+     *   Content-Length / Transfer-Encoding) are sent as-is per RFC 9110 §9.3.2.
      */
-    private enum class StreamingMode { NONE, FIXED, CHUNKED, BODYLESS }
+    private enum class StreamingMode { NONE, FIXED, CHUNKED, BODYLESS, HEAD_BODYLESS }
 
     private var streamingMode: StreamingMode = StreamingMode.NONE
     private var remainingContentLength: Long = 0L
+
+    // Inbound request methods captured from HttpRequestHead messages. One
+    // entry per request, in arrival order. Popped when the matching response
+    // head is about to be encoded. Empty queue means no method context (the
+    // encoder is used standalone or added before the decoder) — treated as
+    // non-HEAD.
+    private val pendingMethods = ArrayDeque<HttpMethod>()
 
     // Per-encoder scratch buffer for chunk framing. Hex header (max 10B)
     // and CRLF suffix (2B) are written at successive offsets so that
@@ -67,6 +86,11 @@ class HttpResponseEncoder : OutboundHandler {
     // Reset to offset 0 when the chunked response ends.
     private val chunkFramingScratch = ByteArray(CHUNK_FRAMING_SCRATCH_SIZE)
     private var chunkFramingOffset = 0
+
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        if (msg is HttpRequestHead) pendingMethods.addLast(msg.method)
+        ctx.propagateRead(msg)
+    }
 
     override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
@@ -81,8 +105,21 @@ class HttpResponseEncoder : OutboundHandler {
     private fun encodeAndPropagate(ctx: PipelineHandlerContext, response: HttpResponse) {
         val allocator = ctx.allocator
         val reasonPhrase = response.status.reasonPhrase()
-        val body = response.body
+        val isHead = pendingMethods.removeFirstOrNull() == HttpMethod.HEAD
 
+        // RFC 9110 §9.3.2: HEAD response MUST NOT include a message body.
+        // Emit only the head (status line + headers); suppress body bytes.
+        if (isHead) {
+            ctx.propagateWrite(
+                allocator.allocate(calculateHeadSize(response, reasonPhrase)).also {
+                    writeStatusLine(response.version, response.status.code, reasonPhrase, it)
+                    writeHeaders(response.headers, it)
+                },
+            )
+            return
+        }
+
+        val body = response.body
         // Fast path: body is large enough to justify zero-copy wrap and the
         // platform supports it (JVM). Emit head and body as two separate
         // buffers so the body bytes never enter the allocator's pool.
@@ -121,6 +158,20 @@ class HttpResponseEncoder : OutboundHandler {
         check(!(chunked && cl != null)) {
             "HttpResponseHead has both Transfer-Encoding: chunked and Content-Length"
         }
+        // RFC 9110 §9.3.2: HEAD response MUST NOT include a message body.
+        // Enter HEAD_BODYLESS regardless of Content-Length / Transfer-Encoding;
+        // headers are forwarded unchanged so the client can cache the metadata.
+        val isHead = pendingMethods.removeFirstOrNull() == HttpMethod.HEAD
+        if (isHead) {
+            streamingMode = StreamingMode.HEAD_BODYLESS
+            remainingContentLength = 0L
+            val reasonPhrase = head.status.reasonPhrase()
+            val headBuf = ctx.allocator.allocate(calculateStreamingHeadSize(head, reasonPhrase))
+            writeStatusLine(head.version, head.status.code, reasonPhrase, headBuf)
+            writeHeaders(head.headers, headBuf)
+            ctx.propagateWrite(headBuf)
+            return
+        }
         // RFC 9112 §6: 1xx (Informational), 204 (No Content), and 304
         // (Not Modified) responses MUST NOT carry a message body and
         // need neither Content-Length nor Transfer-Encoding. For these
@@ -157,6 +208,7 @@ class HttpResponseEncoder : OutboundHandler {
             StreamingMode.FIXED -> encodeContentFixed(ctx, content, last)
             StreamingMode.CHUNKED -> encodeContentChunked(ctx, content, last)
             StreamingMode.BODYLESS -> encodeContentBodyless(content)
+            StreamingMode.HEAD_BODYLESS -> content.content.release()
         }
         if (last) {
             streamingMode = StreamingMode.NONE
