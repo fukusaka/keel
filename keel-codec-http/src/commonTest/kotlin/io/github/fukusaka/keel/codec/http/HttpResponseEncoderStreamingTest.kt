@@ -159,6 +159,38 @@ class HttpResponseEncoderStreamingTest {
     }
 
     @Test
+    fun `chunked SSE-style stream of 100 small frames produces a terminator`() {
+        // Regression test for the chunkFramingScratch overflow: each chunk
+        // consumed ~5 bytes of the 256-byte scratch buffer (e.g. "5\r\n"
+        // header + "\r\n" suffix for a 5-byte payload), so 52 frames in
+        // the previous implementation overran scratch and crashed during
+        // the next write to scratch.  SSE benches (k6 sse.js, default
+        // count=100) reproducibly hit this; the connection died before
+        // emitting "0\r\n\r\n", so HTTP/1.1 keep-alive could not re-use
+        // the socket and 99.97 % of follow-up requests failed.
+        val pipeline = createEncoderPipeline()
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.writeFromTail(head)
+        val frameCount = 100
+        repeat(frameCount) {
+            pipeline.writeFromTail(HttpBody(bufOf("hello")))
+        }
+        pipeline.writeFromTail(HttpBodyEnd.EMPTY)
+
+        // No errors should reach the inbound pipeline.
+        assertEquals(emptyList(), errorCollector.errors)
+        // Concatenate every transport write before reading (readString
+        // consumes the IoBuf), then assert the terminator is the very
+        // last byte sequence and that every chunk round-tripped.
+        val wire = transport.written.joinToString("") { it.readString() }
+        assertTrue(wire.endsWith("0\r\n\r\n"), "expected terminator at end of wire output")
+        assertEquals(frameCount, "5\r\nhello\r\n".toRegex().findAll(wire).count())
+    }
+
+    @Test
     fun `chunked with trailers writes final 0 CRLF trailers CRLF`() {
         val pipeline = createEncoderPipeline()
         val head = HttpResponseHead(

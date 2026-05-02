@@ -236,11 +236,20 @@ class HttpResponseEncoder : OutboundHandler {
      * Writes "{hex-size}\r\n" into the scratch buffer and returns an IoBuf
      * view. Each call advances [chunkFramingOffset] so multiple pending
      * views don't overlap.
+     *
+     * When the scratch buffer has insufficient room for the worst-case
+     * hex+CRLF emission, the chunk header is written directly into a
+     * freshly allocated [IoBuf] instead. The scratch contents and
+     * [chunkFramingOffset] are left untouched so that earlier scratch-backed
+     * views still in flight at the transport keep their bytes — resetting
+     * mid-response would corrupt them.
      */
     private fun emitChunkFraming(ctx: PipelineHandlerContext, size: Int): IoBuf {
+        if (chunkFramingOffset + CHUNK_HEADER_MAX_BYTES > chunkFramingScratch.size) {
+            return allocateChunkFraming(ctx, size)
+        }
         val start = chunkFramingOffset
         var off = start
-        // Write hex digits.
         if (size == 0) {
             chunkFramingScratch[off++] = '0'.code.toByte()
         } else {
@@ -255,31 +264,61 @@ class HttpResponseEncoder : OutboundHandler {
         chunkFramingScratch[off++] = LF
         val len = off - start
         chunkFramingOffset = off
-        return wrapScratchOrAllocate(ctx, start, len)
+        return wrapScratch(ctx, start, len)
     }
 
-    /** Writes "\r\n" (chunk data suffix) into the scratch buffer. */
+    /**
+     * Writes "\r\n" (chunk data suffix) into the scratch buffer.
+     *
+     * Falls back to a freshly allocated [IoBuf] when scratch is exhausted;
+     * see [emitChunkFraming] for the rationale on not resetting [chunkFramingOffset].
+     */
     private fun emitCrlfFromScratch(ctx: PipelineHandlerContext): IoBuf {
+        if (chunkFramingOffset + CRLF_SIZE > chunkFramingScratch.size) {
+            val buf = ctx.allocator.allocate(CRLF_SIZE)
+            buf.writeByte(CR)
+            buf.writeByte(LF)
+            return buf
+        }
         val start = chunkFramingOffset
         chunkFramingScratch[start] = CR
         chunkFramingScratch[start + 1] = LF
         chunkFramingOffset = start + CRLF_SIZE
-        return wrapScratchOrAllocate(ctx, start, CRLF_SIZE)
+        return wrapScratch(ctx, start, CRLF_SIZE)
     }
 
-    private fun wrapScratchOrAllocate(ctx: PipelineHandlerContext, offset: Int, length: Int): IoBuf {
-        // If scratch is exhausted, fall back to allocate + copy.
-        if (offset + length > chunkFramingScratch.size) {
-            chunkFramingOffset = 0 // reset for next batch
-            val buf = ctx.allocator.allocate(length)
-            buf.writeByteArray(chunkFramingScratch, offset - length, length)
-            return buf
-        }
+    /**
+     * Wraps `chunkFramingScratch[offset, offset+length)` as an IoBuf view.
+     * Caller has already verified the range is in-bounds.
+     */
+    private fun wrapScratch(ctx: PipelineHandlerContext, offset: Int, length: Int): IoBuf {
         val wrapped = ctx.allocator.wrapBytes(chunkFramingScratch, offset, length)
         if (wrapped != null) return wrapped
         // Platform doesn't support wrapBytes (JS) — allocate + copy.
         val buf = ctx.allocator.allocate(length)
         buf.writeByteArray(chunkFramingScratch, offset, length)
+        return buf
+    }
+
+    /**
+     * Slow path: scratch exhausted within a single chunked response.
+     * Allocates an exact-sized [IoBuf] and writes "{hex-size}\r\n" directly.
+     */
+    private fun allocateChunkFraming(ctx: PipelineHandlerContext, size: Int): IoBuf {
+        val hexLen = if (size == 0) 1 else (HEX_DIGITS_INT - size.countLeadingZeroBits() / 4)
+        val buf = ctx.allocator.allocate(hexLen + CRLF_SIZE)
+        if (size == 0) {
+            buf.writeByte('0'.code.toByte())
+        } else {
+            val shift = (HEX_DIGITS_INT - 1 - size.countLeadingZeroBits() / 4) * 4
+            var s = shift
+            while (s >= 0) {
+                buf.writeByte(HEX_CHARS[(size ushr s) and 0xF])
+                s -= 4
+            }
+        }
+        buf.writeByte(CR)
+        buf.writeByte(LF)
         return buf
     }
 
@@ -413,6 +452,14 @@ class HttpResponseEncoder : OutboundHandler {
 
         /** Number of hex digits for Int (32-bit). */
         private const val HEX_DIGITS_INT = 8
+
+        /**
+         * Worst-case bytes a single [emitChunkFraming] writes to scratch:
+         * 8 hex digits (Int.MAX_VALUE) + CRLF. Used as the pre-write
+         * capacity check at the start of every emission so the slow-path
+         * triggers before any out-of-bounds write into scratch.
+         */
+        private const val CHUNK_HEADER_MAX_BYTES = HEX_DIGITS_INT + CRLF_SIZE
 
         /** Size of the "0\r\n" terminator prefix. */
         private const val ZERO_CHUNK_SIZE = 3
