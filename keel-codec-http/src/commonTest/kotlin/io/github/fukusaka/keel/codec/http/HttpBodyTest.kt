@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.EmptyIoBuf
+import io.github.fukusaka.keel.buf.Releasable
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -96,18 +97,10 @@ class HttpBodyTest {
     }
 
     @Test
-    fun `HttpBody close delegates to content release`() {
-        val buf = DefaultAllocator.allocate(8)
-        buf.writeByte(0x42)
-        val body = HttpBody(buf)
-        body.close()
-    }
-
-    @Test
-    fun `HttpBody is AutoCloseable`() {
+    fun `HttpBody is Releasable`() {
         val buf = DefaultAllocator.allocate(4)
         val body = HttpBody(buf)
-        assertIs<AutoCloseable>(body)
-        body.close()
+        assertIs<Releasable>(body)
+        body.release()
     }
 }

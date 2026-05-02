@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.Releasable
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -11,8 +12,6 @@ class ReferenceCountUtilTest {
         val buf = DefaultAllocator.allocate(8)
         buf.writeByte(0x42)
         ReferenceCountUtil.safeRelease(buf)
-        // After release the refcount is 0 — a second release must throw.
-        // We verify indirectly: no exception from safeRelease above.
     }
 
     @Test
@@ -23,17 +22,21 @@ class ReferenceCountUtilTest {
     }
 
     @Test
-    fun `safeRelease calls close on AutoCloseable`() {
-        var closed = false
-        val closeable = AutoCloseable { closed = true }
-        ReferenceCountUtil.safeRelease(closeable)
-        assertTrue(closed, "expected close() to be called on AutoCloseable")
+    fun `safeRelease calls release on Releasable`() {
+        var released = false
+        val releasable = object : Releasable {
+            override fun release(): Boolean { released = true; return true }
+        }
+        ReferenceCountUtil.safeRelease(releasable)
+        assertTrue(released, "expected release() to be called on Releasable")
     }
 
     @Test
-    fun `safeRelease swallows IllegalStateException from AutoCloseable close`() {
-        val closeable = AutoCloseable { throw IllegalStateException("already closed") }
-        ReferenceCountUtil.safeRelease(closeable) // must not throw
+    fun `safeRelease swallows IllegalStateException from Releasable release`() {
+        val releasable = object : Releasable {
+            override fun release(): Boolean = throw IllegalStateException("already released")
+        }
+        ReferenceCountUtil.safeRelease(releasable) // must not throw
     }
 
     @Test
