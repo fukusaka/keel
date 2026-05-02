@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-netty`, `io`: JSSE TLS handshake on Netty engine channels no longer fails with `ClassCastException`; `IoBuf.unsafeBuffer` now resolves the backing `ByteBuffer` via `NioByteBufferBacking` instead of hard-casting to `DirectIoBuf`, so allocations from `NettyByteBufAllocator` work correctly with `JsseTlsCodec` (#424)
 - `keel-codec-http`: `HttpResponseEncoder` now suppresses the response body for HEAD requests (RFC 9110 §9.3.2); status line and headers (including `Content-Length` / `Transfer-Encoding`) are forwarded unchanged (#423)
 - `keel-codec-http`: `HttpResponseEncoder` chunked streaming no longer crashes (`ArrayIndexOutOfBoundsException`) once a response exceeds ~50 chunks; the 256-byte per-encoder scratch was written without a pre-emit bounds check, so long SSE / chunked streams overran it and broke HTTP/1.1 keep-alive on the connection (#422)
 - `keel-codec-http`: `HttpResponseEncoder` accepts RFC-9112-bodyless responses (1xx / 204 / 304) without requiring `Content-Length` or `Transfer-Encoding: chunked`. A new internal `BODYLESS` streaming state emits the head and treats a single terminating `HttpBodyEnd` as a no-op; a non-empty `HttpBody` after a bodyless head is rejected as a contract violation. Unblocks 101 Switching Protocols handshakes and other no-body responses going through the streaming encoder (#411)
