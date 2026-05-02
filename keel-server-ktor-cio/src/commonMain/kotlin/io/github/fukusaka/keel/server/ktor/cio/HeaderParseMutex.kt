@@ -1,54 +1,42 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
 /**
- * Serialises calls to ktor-http-cio's `parseRequest` / `parseHttpBody` so
- * concurrent header-parse calls do not contend on
- * [ktor-utils-io](https://github.com/ktorio/ktor/tree/main/ktor-io)'s
- * shared `HeadersDataPool` lock.
+ * Serialises calls to ktor-http-cio's `parseRequest` so concurrent
+ * header-parse calls do not contend on ktor's shared `HeadersDataPool`.
  *
- * **Why this exists**: On Kotlin/Native, ktor-http-cio's `parseHeaders`
- * calls `HeadersDataPool.borrow()`, which acquires a `SynchronizedObject`
- * lock and, while holding it, invokes `clearInstance(item)`.  The
- * `HeadersData.release()` path called from `clearInstance` re-enters
- * `HeadersDataPool.recycle()` / `borrow()` against the same lock.
+ * **Why this exists**: On Kotlin/Native with multi-worker engines (e.g.
+ * kqueue, which spawns one EventLoop thread per CPU core), multiple threads
+ * can call `parseRequest` simultaneously.  ktor-http-cio's `parseHeaders`
+ * calls `HeadersDataPool.borrow()`, which acquires an internal lock and,
+ * while holding it, invokes `clearInstance(item)`.  The `HeadersData.release()`
+ * path called from `clearInstance` re-enters `HeadersDataPool.recycle()`
+ * against the same lock — a pathological interaction under concurrent
+ * multi-thread access that collapses throughput to ≈ 0 RPS.
  *
- * On the JVM `synchronized` is reentrant and biased / JIT-optimised, so
- * the recursive acquisition is essentially free even under heavy
- * concurrency.  On Native the lock is a non-biased `pthread_mutex` and
- * many parallel callers (e.g. one I/O worker per CPU core) contend
- * pathologically — a 100-connection accept burst can collapse to ≈ 0
- * RPS for the entire 10 s benchmark window.
+ * On the JVM `synchronized` is reentrant and JIT-optimised, so concurrent
+ * access is safe.  JVM uses a no-op pass-through.
  *
- * Empirically (macOS M1, `KqueueEngine` default workers ≈ 12 cores,
- * wrk 4t/100c/10s, 20 iterations, accept-burst protocol):
+ * **Platform policy**:
+ * - **JVM**: no-op pass-through (see `HeaderParseMutex.jvm.kt`)
+ * - **Linux** (epoll, io_uring): no-op pass-through (see `HeaderParseMutex.linux.kt`).
+ *   keel's Linux engines run all connections on a single EventLoop pthread,
+ *   so concurrent pool access is impossible.  A process-wide mutex would
+ *   serialize all connections at the parse step — O(N × parseTime) latency
+ *   with N concurrent connections.
+ * - **Apple** (kqueue, NWConnection): process-wide [kotlinx.coroutines.sync.Mutex]
+ *   (see `HeaderParseMutex.apple.kt`).  kqueue spawns one EventLoop worker
+ *   per CPU core; the mutex prevents concurrent pool access across workers.
+ *
+ * Empirically (macOS M1, kqueue ≈ 8 workers, wrk 4t/100c/10s):
  *
  * | Configuration                                | failures (0 RPS) | median RPS | p99      |
  * | ---                                          | ---              | ---        | ---      |
  * | parallel parsers (no serialisation)          | 6 / 20           | ≈ 14 500   | ≈ 11 ms  |
  * | single worker (`threads=1`)                  | 0 / 20           | ≈ 36 000   | ≈ 5.3 ms |
- * | parallel I/O + serialised parser (this class)| 0 / 20           | ≈ 43 400   | ≈ 2.8 ms |
+ * | parallel I/O + serialised parser (Apple impl)| 0 / 20           | ≈ 43 400   | ≈ 2.8 ms |
  *
- * Native applies a process-wide [kotlinx.coroutines.sync.Mutex] around
- * every `parseRequest` invocation in this adapter; `parseHttpBody` is
- * intentionally not serialised because body decoding is per-connection
- * (no shared pool) and may run for unbounded durations on streaming
- * uploads.  JVM uses a no-op pass-through (`synchronized` is reentrant
- * + JIT-optimised).  See [KtorCioConnectionHandler] for the call site.
- *
- * **Trade-off**: serialised parsing caps single-host parser throughput
- * at the single-core parse rate, but I/O work (accepts, reads, writes,
- * body parsing) still parallelises across all workers.  In practice
- * this beats `threads=1` because the parser is fast (~µs) and the
- * remaining work runs concurrently.  If you need higher per-host
- * throughput than ≈ 43 k RPS and can drop ktor-http-cio's parser, the
- * keel-native HTTP codec (`pipeline-http-*` engines via
- * `addHttp1ServerCodec` from `:keel-codec-http`) parses on the I/O thread
- * without this lock and reaches > 150 k RPS on the same hardware.
- *
- * **Upstream**: tracked at the ktor issue tracker — link to be added when
- * filed.  When the upstream `HeadersDataPool` is reworked to release the
- * lock around `clearInstance`, this class can become a no-op on every
- * platform and eventually be deleted.
+ * **Upstream**: when `HeadersDataPool` is reworked to release its lock around
+ * `clearInstance`, this class can become a no-op on all platforms.
  */
 internal expect class HeaderParseMutex() {
     /** Runs [block] under the platform-specific serialisation policy. */
