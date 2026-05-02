@@ -55,6 +55,31 @@ kill_port() {
     kill -9 $pids 2>/dev/null || true        # SIGKILL fallback
 }
 
+# wait_port_free: poll until no process holds the port, or timeout.
+# On macOS, server-side TIME_WAIT sockets can block a new bind() for up to
+# 60 s when SO_REUSEADDR is not set. After kill_port+wait, check with lsof
+# (which shows TIME_WAIT sockets on macOS via open files) before declaring
+# the port free. Linux fuser is used on Linux for the same check.
+wait_port_free() {
+    local port="$1"
+    local max_wait="${2:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        local busy=false
+        if [ "$(uname)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
+            fuser "$port"/tcp >/dev/null 2>&1 && busy=true
+        elif command -v lsof >/dev/null 2>&1; then
+            lsof -ti :"$port" >/dev/null 2>&1 && busy=true
+        else
+            return 0  # can't check — assume free
+        fi
+        [ "$busy" = false ] && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf "  [warn] port %d still busy after %ds — proceeding anyway\n" "$port" "$max_wait" >&2
+}
+
 # --- Extract Req/sec from wrk output ---
 
 extract_rps() {
@@ -83,6 +108,12 @@ run_bench() {
     local engine_port="$PORT"
 
     for run in $(seq 1 "$RUNS"); do
+        # Defensive cleanup: kill any process still holding the port from a
+        # previous run or a partially-terminated engine. On macOS, server-side
+        # sockets can linger if SO_REUSEADDR is not set, blocking a new bind.
+        kill_port "$engine_port"
+        wait_port_free "$engine_port"
+
         if command -v setsid >/dev/null 2>&1; then
             setsid "${cmd[@]}" >/dev/null 2>&1 &
         else
@@ -129,6 +160,7 @@ run_bench() {
         kill_port "$engine_port"
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
+        wait_port_free "$engine_port"
 
         if [ "$run" -lt "$RUNS" ]; then
             sleep "$COOLDOWN"

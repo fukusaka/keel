@@ -60,6 +60,31 @@ kill_port() {
     kill -9 $pids 2>/dev/null || true        # SIGKILL fallback
 }
 
+# wait_port_free: poll until no process holds the port, or timeout.
+# On macOS, server-side TIME_WAIT sockets can block a new bind() for up to
+# 60 s when SO_REUSEADDR is not set. After kill_port+wait, check with lsof
+# (which shows TIME_WAIT sockets on macOS via open files) before declaring
+# the port free. Linux fuser is used on Linux for the same check.
+wait_port_free() {
+    local port="$1"
+    local max_wait="${2:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        local busy=false
+        if [ "$(uname)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
+            fuser "$port"/tcp >/dev/null 2>&1 && busy=true
+        elif command -v lsof >/dev/null 2>&1; then
+            lsof -ti :"$port" >/dev/null 2>&1 && busy=true
+        else
+            return 0  # can't check — assume free
+        fi
+        [ "$busy" = false ] && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf "  [warn] port %d still busy after %ds — proceeding anyway\n" "$port" "$max_wait" >&2
+}
+
 # --- Compute median of space-separated numbers ---
 
 median() {
@@ -77,9 +102,12 @@ BEST_P50=""
 BEST_P99=""
 
 for run in $(seq 1 "$RUNS"); do
-    # Kill any existing process on the port
+    # Kill any process holding the port and wait until it is confirmed free.
+    # Replaces the former unconditional sleep 1: wait_port_free polls lsof/fuser
+    # instead of guessing a safe delay, which avoids READY timeout on macOS
+    # when a previous engine's server-side socket lingers in TIME_WAIT.
     kill_port "$PORT"
-    sleep 1
+    wait_port_free "$PORT"
 
     # Start server. setsid makes the child a session leader so its PID
     # is also the PGID — letting `kill_server` send signals to the
@@ -148,6 +176,7 @@ for run in $(seq 1 "$RUNS"); do
     kill_port "$PORT"
     kill_server
     wait "$PID" 2>/dev/null || true
+    wait_port_free "$PORT"
 
     # Cooldown between runs
     if [ "$run" -lt "$RUNS" ]; then
