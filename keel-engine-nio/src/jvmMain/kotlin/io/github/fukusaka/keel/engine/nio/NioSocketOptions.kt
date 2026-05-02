@@ -29,8 +29,16 @@ import java.nio.channels.SocketChannel
 internal fun applySocketOptions(channel: SocketChannel, options: SocketOptions) {
     if (options.isEmpty) return
     val supported = channel.supportedOptions()
-    options.tcpNoDelay?.let { if (StandardSocketOptions.TCP_NODELAY in supported) channel.setOption(StandardSocketOptions.TCP_NODELAY, it) }
-    options.keepAlive?.let { if (StandardSocketOptions.SO_KEEPALIVE in supported) channel.setOption(StandardSocketOptions.SO_KEEPALIVE, it) }
-    options.receiveBufferSize?.let { if (StandardSocketOptions.SO_RCVBUF in supported) channel.setOption(StandardSocketOptions.SO_RCVBUF, it) }
-    options.sendBufferSize?.let { if (StandardSocketOptions.SO_SNDBUF in supported) channel.setOption(StandardSocketOptions.SO_SNDBUF, it) }
+    options.tcpNoDelay?.let {
+        if (StandardSocketOptions.TCP_NODELAY in supported) channel.setOption(StandardSocketOptions.TCP_NODELAY, it)
+    }
+    options.keepAlive?.let {
+        if (StandardSocketOptions.SO_KEEPALIVE in supported) channel.setOption(StandardSocketOptions.SO_KEEPALIVE, it)
+    }
+    options.receiveBufferSize?.let {
+        if (StandardSocketOptions.SO_RCVBUF in supported) channel.setOption(StandardSocketOptions.SO_RCVBUF, it)
+    }
+    options.sendBufferSize?.let {
+        if (StandardSocketOptions.SO_SNDBUF in supported) channel.setOption(StandardSocketOptions.SO_SNDBUF, it)
+    }
 }
