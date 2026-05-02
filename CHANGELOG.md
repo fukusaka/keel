@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `keel-server-ktor`: `KeelApplicationEngine.Configuration.socketOptions` forwards `SocketOptions` to every accepted connection; set `SocketOptions(tcpNoDelay = true)` to disable Nagle's algorithm for chunked or streaming response workloads (#431)
 - `benchmark`: `ktor-cio-keel-{nio,kqueue,epoll,io-uring}` engines wire the new `:keel-server-ktor-cio` adapter into the bench harness for 3-way comparison (`pipeline-http-*` / `ktor-keel-*` / `ktor-cio-keel-*`). Native targets (kqueue / epoll) currently report intermittent 0 RPS — JVM is stable; investigation deferred (#417)
 - `keel-server-ktor-cio`: connection handler implementation — `KtorCioConnectionHandler` bridges keel transport to `ktor-http-cio` via two byte-channel pumps (inbound from `asBufferedSuspendSource`, outbound to `pipeline.requestWrite`). Ships `KeelCioApplicationCall` / `Request` / `Response` triple writing HTTP/1.1 wire-format directly to a `ByteWriteChannel` (Content-Length-delimited or chunked-encoded). 6 JVM integration tests (#416)
 - `keel-server-ktor-cio`: new module — Ktor adapter using `ktor-http-cio`'s parser instead of `:keel-codec-http`, ships the `KeelCio` `ApplicationEngineFactory`. Per-connection handler is a scaffolding stub; the implementation lands in follow-up PRs (#415)
