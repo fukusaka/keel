@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.server.ktor.cio.KeelCio
@@ -21,6 +22,7 @@ object KeelCioNioEngine : EngineBenchmark {
                 connector { this.port = config.port }
             }
             this.engine = NioEngine()
+            socketOptions = SocketOptions(tcpNoDelay = true)
         }.start(wait = false)
         return {
             factory?.close()
@@ -31,7 +33,7 @@ object KeelCioNioEngine : EngineBenchmark {
     override fun socketDefaults(os: OsSocketDefaults): SocketConfig.SocketDefaults {
         val ioP = ioParallelism()
         return SocketConfig.SocketDefaults(
-            tcpNoDelay = "(not configurable, OS: ${os.tcpNoDelay})",
+            tcpNoDelay = "true (SocketOptions.tcpNoDelay, OS: ${os.tcpNoDelay})",
             reuseAddress = "(not configurable, OS: ${os.reuseAddress})",
             backlog = "(not configurable, OS: ${os.backlog}, estimated)",
             sendBuffer = "(not configurable, OS: ${os.sendBuffer} bytes)",
