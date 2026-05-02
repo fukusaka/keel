@@ -37,12 +37,15 @@ internal class NettyByteBufAllocator(
         // Fallback path: allocate + copy (keel's codec layer doesn't exercise
         // slice on the Netty write path). Returning a Netty-backed copy keeps
         // the invariant that allocator returns NettyByteBufIoBuf.
-        require(offset + length <= source.readableBytes + source.readerIndex) {
-            "slice range out of bounds"
-        }
+        //
+        // [offset] is an absolute index into [source] (same semantics as
+        // getByte). Callers pass buf.readerIndex directly, so do NOT add
+        // source.readerIndex here — that would double-count the offset and
+        // produce an out-of-bounds read on the underlying ByteBuf/ByteBuffer.
+        require(offset + length <= source.writerIndex) { "slice range out of bounds" }
         val buf = allocate(length)
         val tmp = ByteArray(length)
-        for (i in 0 until length) tmp[i] = source.getByte(source.readerIndex + offset + i)
+        for (i in 0 until length) tmp[i] = source.getByte(offset + i)
         buf.writeByteArray(tmp, 0, length)
         return buf
     }
