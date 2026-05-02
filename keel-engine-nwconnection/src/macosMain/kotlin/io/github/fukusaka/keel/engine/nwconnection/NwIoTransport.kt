@@ -20,6 +20,7 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.staticCFunction
+import kotlinx.coroutines.CompletableDeferred
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
@@ -155,16 +156,45 @@ internal class NwIoTransport(
     // --- Write path ---
 
     /**
+     * Deferred completed by [flushCallback] when the NWConnection write
+     * callback fires. Set in [flush] before dispatching the write;
+     * cleared in [awaitPendingFlush] after the await returns.
+     *
+     * Touched only from connQueue (flush runs on connQueue, the callback
+     * fires on connQueue, and awaitPendingFlush suspends on connQueue),
+     * so no volatile/atomic is required.
+     */
+    private var pendingFlushCompletion: CompletableDeferred<Unit>? = null
+
+    /**
+     * Suspends until the in-flight [keel_nw_write_async] callback fires.
+     *
+     * Suspending releases connQueue so the write-completion callback
+     * (which also runs on connQueue) can execute and complete
+     * [pendingFlushCompletion]. Once resumed, the write is confirmed
+     * delivered to the network layer and [close] can safely cancel the
+     * connection without discarding the data.
+     */
+    override suspend fun awaitPendingFlush() {
+        pendingFlushCompletion?.await()
+        pendingFlushCompletion = null
+    }
+
+    /**
      * Sends all pending writes via NWConnection.
      *
      * NWConnection's `nw_connection_send` accepts data without EAGAIN —
      * flow control is handled internally by the framework. The write callback
-     * releases buffers and invokes [onFlushComplete].
+     * releases buffers, completes [pendingFlushCompletion] so that
+     * [awaitPendingFlush] can resume, and invokes [onFlushComplete].
      *
      * @return always `false` because NWConnection writes are asynchronous.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+
+        val completion = CompletableDeferred<Unit>()
+        pendingFlushCompletion = completion
 
         // Transfer ownership to FlushContext for release in callback.
         val writes = ArrayList(pendingWrites)
@@ -175,7 +205,7 @@ internal class NwIoTransport(
         if (writes.size == 1) {
             val pw = writes[0]
             val ptr = (pw.buf.unsafePointer + pw.offset)!!
-            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete) { delta ->
+            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
                 transport.updatePendingBytes(delta)
             })
             keel_nw_write_async(conn, ptr, pw.length.toUInt(), flushCallback, ref.asCPointer())
@@ -187,7 +217,7 @@ internal class NwIoTransport(
                     bufs[i] = (writes[i].buf.unsafePointer + writes[i].offset)!!.reinterpret()
                     lens[i] = writes[i].length.toUInt()
                 }
-                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete) { delta ->
+                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
                     transport.updatePendingBytes(delta)
                 })
                 keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
@@ -254,6 +284,7 @@ internal class NwIoTransport(
         val writes: List<PendingWrite>,
         val totalBytes: Int,
         val onComplete: (() -> Unit)?,
+        val completion: CompletableDeferred<Unit>,
         val onPendingBytesUpdate: (Int) -> Unit,
     )
 
@@ -273,10 +304,13 @@ internal class NwIoTransport(
         private val flushCallback = staticCFunction { error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
             val ref = checkNotNull(ctx) { "flush callback ctx is null" }.asStableRef<FlushContext>()
             val flushCtx = ref.get()
+            ref.dispose()
             for (pw in flushCtx.writes) pw.buf.release()
             flushCtx.onPendingBytesUpdate(-flushCtx.totalBytes)
-            flushCtx.onComplete?.invoke()
-            ref.dispose()
+            // Resume any awaitPendingFlush() waiter before invoking onComplete
+            // so that the waiter can observe a fully-settled write state.
+            flushCtx.completion.complete(Unit)
+            flushCtx.onComplete?.invoke() ?: Unit
         }
     }
 }
