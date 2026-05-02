@@ -59,7 +59,7 @@ package io.github.fukusaka.keel.buf
  * @see BufferAllocator for creating IoBuf instances
  * @see BufSlice for zero-copy read-only views into IoBuf regions
  */
-interface IoBuf {
+interface IoBuf : Releasable {
     /** Buffer capacity in bytes. */
     val capacity: Int
 
@@ -204,7 +204,7 @@ interface IoBuf {
      *
      * @throws IllegalStateException if the buffer has already been fully released.
      */
-    fun release(): Boolean
+    override fun release(): Boolean
 
     /**
      * Teardown escape hatch: forces the reference count to zero without
