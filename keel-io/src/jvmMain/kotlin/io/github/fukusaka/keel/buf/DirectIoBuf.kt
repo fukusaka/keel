@@ -28,7 +28,7 @@ class DirectIoBuf private constructor(
     private val buf: ByteBuffer,
     override val capacity: Int,
     override var memoryOwner: IoBufMemoryOwner,
-) : IoBuf, PoolableIoBuf, HeapManagedBacking {
+) : IoBuf, PoolableIoBuf, HeapManagedBacking, NioByteBufferBacking {
 
     /**
      * Creates a heap-owned [DirectIoBuf]. The backing direct
@@ -49,6 +49,9 @@ class DirectIoBuf private constructor(
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     val unsafeBuffer: ByteBuffer get() = buf
+
+    override val unsafeNioByteBuffer: ByteBuffer get() = buf
+
     private var refCount = 1
     override var nextLink: IoBuf? = null
 
@@ -206,11 +209,13 @@ class DirectIoBuf private constructor(
 /**
  * Extension property for engine-layer zero-copy I/O.
  *
- * Exposes the direct [ByteBuffer] from a [DirectIoBuf].
- * Engine modules use this to pass buffer memory directly to NIO SocketChannel.
+ * Exposes the underlying [ByteBuffer] from any [IoBuf] that implements
+ * [NioByteBufferBacking] ([DirectIoBuf] for NIO, [io.github.fukusaka.keel.engine.netty.NettyByteBufIoBuf]
+ * for Netty). The buffer covers the full [IoBuf.capacity] range; callers
+ * must set [ByteBuffer.position] and [ByteBuffer.limit] before use.
  */
 val IoBuf.unsafeBuffer: ByteBuffer
-    get() = (this as DirectIoBuf).unsafeBuffer
+    get() = (this as NioByteBufferBacking).unsafeNioByteBuffer
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = DirectIoBuf(capacity)

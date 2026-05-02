@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufMemoryOwner
+import io.github.fukusaka.keel.buf.NioByteBufferBacking
 import io.netty.buffer.ByteBuf
+import java.nio.ByteBuffer
 
 /**
  * [IoBuf] implementation backed directly by a Netty [ByteBuf].
@@ -32,7 +34,7 @@ import io.netty.buffer.ByteBuf
  */
 internal class NettyByteBufIoBuf(
     internal val byteBuf: ByteBuf,
-) : IoBuf {
+) : IoBuf, NioByteBufferBacking {
 
     override val capacity: Int get() = byteBuf.capacity()
 
@@ -41,6 +43,29 @@ internal class NettyByteBufIoBuf(
 
     override val readableBytes: Int get() = writerIndex - readerIndex
     override val writableBytes: Int get() = capacity - writerIndex
+
+    /**
+     * Writable [ByteBuffer] view over the full capacity range [0, capacity).
+     *
+     * Cached once at construction to avoid per-record allocation on the TLS hot
+     * path ([io.github.fukusaka.keel.tls.jsse.JsseTlsCodec] calls this on
+     * every [javax.net.ssl.SSLEngine.wrap] / [javax.net.ssl.SSLEngine.unwrap]).
+     * The slice shares the same off-heap memory as the underlying [ByteBuf], so
+     * bytes written by SSLEngine are immediately visible via [byteBuf] accessor
+     * methods used by the flush path in [NettyIoTransport]. Callers must set
+     * [ByteBuffer.position] and [ByteBuffer.limit] before each use.
+     *
+     * **Capacity**: the view is fixed to [0, capacity) as determined at construction.
+     * The underlying [ByteBuf] is never resized after allocation, so the range
+     * remains valid for the lifetime of this object.
+     *
+     * **Lifetime**: valid only while this [IoBuf]'s keel refcount is greater than
+     * zero. Once [release] drops the refcount to zero, [NettyByteBufOwner] releases
+     * the underlying [ByteBuf] back to the Netty pool and the off-heap memory may
+     * be reused for a different allocation. Accessing this [ByteBuffer] after
+     * [release] is a use-after-free.
+     */
+    override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(0, capacity)
 
     private var refCount: Int = 1
 
