@@ -51,6 +51,7 @@ class DirectIoBuf private constructor(
     val unsafeBuffer: ByteBuffer get() = buf
 
     override val unsafeNioByteBuffer: ByteBuffer get() = buf
+
     private var refCount = 1
     override var nextLink: IoBuf? = null
 
