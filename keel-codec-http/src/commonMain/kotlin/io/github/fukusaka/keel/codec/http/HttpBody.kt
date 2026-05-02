@@ -27,7 +27,7 @@ open class HttpBody(
     fun release(): Boolean = content.release()
 
     /** Delegates to [release]; satisfies [AutoCloseable] for pipeline cleanup. */
-    override fun close() { content.release() }
+    override fun close() { release() }
 
     override fun toString(): String = "HttpBody(${content.readableBytes} bytes)"
 }
