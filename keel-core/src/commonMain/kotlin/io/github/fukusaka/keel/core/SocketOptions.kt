@@ -69,12 +69,11 @@ public data class SocketOptions(
         /**
          * Keel default: `TCP_NODELAY` enabled, all other options unset.
          *
-         * Mirrors the default used by Netty, OkHttp, Go's `net/http`,
-         * and SwiftNIO. HTTP and RPC workloads consistently benefit from
-         * disabling Nagle — sequential small writes stall 40 ms per
-         * response on Linux when a delayed-ACK client is on the other
-         * end. Set [tcpNoDelay] `= false` explicitly to re-enable Nagle
-         * for workloads where batching outweighs latency.
+         * HTTP and RPC workloads consistently benefit from disabling Nagle —
+         * sequential small writes stall 40 ms per response on Linux when a
+         * delayed-ACK client is on the other end. Set [tcpNoDelay] `= false`
+         * explicitly to re-enable Nagle for workloads where batching outweighs
+         * latency.
          */
         public val DEFAULT: SocketOptions = SocketOptions(tcpNoDelay = true)
     }
