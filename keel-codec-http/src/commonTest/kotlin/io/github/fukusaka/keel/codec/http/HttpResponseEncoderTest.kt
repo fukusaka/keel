@@ -262,4 +262,94 @@ class HttpResponseEncoderTest {
         pipeline.requestWrite(HttpResponse.ok("small"))
         assertEquals(1, transport.written.size)
     }
+
+    // --- HEAD method body suppression (RFC 9110 §9.3.2) ---
+
+    private fun headRequest(uri: String = "/") = HttpRequestHead(
+        method = HttpMethod.HEAD,
+        uri = uri,
+        version = HttpVersion.HTTP_1_1,
+        headers = HttpHeaders.of("Host" to "localhost"),
+    )
+
+    @Test
+    fun `HEAD legacy response suppresses body but preserves headers`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.notifyRead(headRequest())
+        pipeline.requestWrite(
+            HttpResponse(
+                status = HttpStatus.OK,
+                headers = HttpHeaders.of("Content-Length" to "5"),
+                body = "hello".encodeToByteArray(),
+            ),
+        )
+
+        assertEquals(1, transport.written.size, "exactly one write expected (head only)")
+        val wire = transport.written[0].readString()
+        assertTrue(wire.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $wire")
+        assertTrue(wire.contains("Content-Length: 5"), "Content-Length header must be present: $wire")
+        assertTrue(wire.endsWith("\r\n\r\n"), "wire must end with header-terminating CRLF: $wire")
+        assertTrue(!wire.contains("hello"), "body must not appear in HEAD response: $wire")
+    }
+
+    @Test
+    fun `HEAD streaming response with chunked encoding suppresses body and terminator`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.notifyRead(headRequest())
+        pipeline.requestWrite(
+            HttpResponseHead(
+                status = HttpStatus.OK,
+                headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+            ),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("hello")))
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        // Only the response head should be written (no chunk frames, no terminator).
+        val wire = transport.written.joinToString("") { it.readString() }
+        assertTrue(wire.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $wire")
+        assertTrue(wire.contains("Transfer-Encoding: chunked"), "TE header: $wire")
+        assertTrue(wire.endsWith("\r\n\r\n"), "wire must end after headers: $wire")
+        assertTrue(!wire.contains("hello"), "body must not appear in HEAD response: $wire")
+        assertTrue(!wire.contains("0\r\n\r\n"), "chunked terminator must not appear in HEAD response: $wire")
+    }
+
+    @Test
+    fun `GET response after HEAD still includes body`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // HEAD first — body suppressed.
+        pipeline.notifyRead(headRequest())
+        pipeline.requestWrite(
+            HttpResponse(
+                status = HttpStatus.OK,
+                headers = HttpHeaders.of("Content-Length" to "5"),
+                body = "hello".encodeToByteArray(),
+            ),
+        )
+        val headWire = transport.written.joinToString("") { it.readString() }
+        assertTrue(!headWire.contains("hello"), "HEAD body suppressed: $headWire")
+        transport.written.forEach { it.release() }
+        transport.written.clear()
+
+        // GET next — body must appear.
+        pipeline.notifyRead(
+            HttpRequestHead(HttpMethod.GET, "/", headers = HttpHeaders.of("Host" to "localhost")),
+        )
+        pipeline.requestWrite(
+            HttpResponse(
+                status = HttpStatus.OK,
+                headers = HttpHeaders.of("Content-Length" to "5"),
+                body = "hello".encodeToByteArray(),
+            ),
+        )
+        val getWire = transport.written.joinToString("") { it.readString() }
+        assertTrue(getWire.contains("hello"), "GET body present: $getWire")
+    }
+
+    private fun bufOf(text: String): IoBuf {
+        val bytes = text.encodeToByteArray()
+        val buf = DefaultAllocator.allocate(bytes.size)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
 }
