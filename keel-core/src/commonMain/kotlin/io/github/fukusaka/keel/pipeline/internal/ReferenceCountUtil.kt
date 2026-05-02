@@ -1,22 +1,18 @@
 package io.github.fukusaka.keel.pipeline.internal
 
-import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.Releasable
 
 /**
  * Utility for safe reference count management in the pipeline.
  *
  * Used by [TailHandler] and [io.github.fukusaka.keel.pipeline.TypedInboundHandler]
- * to release messages that implement [IoBuf] without risking double-release,
- * and by [DefaultPipeline] to reclaim [AutoCloseable] message wrappers (such as
- * `HttpBody`) that own an [IoBuf] but are not themselves [IoBuf] instances.
+ * to release messages that implement [Releasable] (raw [io.github.fukusaka.keel.buf.IoBuf]
+ * buffers and [Releasable] wrappers such as `HttpBody`) without risking double-release.
  */
 internal object ReferenceCountUtil {
 
     /**
-     * Releases [msg] if it carries an owned resource.
-     *
-     * - If [msg] is an [IoBuf], calls [IoBuf.release].
-     * - If [msg] is an [AutoCloseable] (but not an [IoBuf]), calls [AutoCloseable.close].
+     * Releases [msg] if it implements [Releasable].
      *
      * Safe to call even if the resource has already been released —
      * catches [IllegalStateException] from double-release. Silently ignored
@@ -24,9 +20,8 @@ internal object ReferenceCountUtil {
      * be fixed in the handler itself.
      */
     fun safeRelease(msg: Any) {
-        when (msg) {
-            is IoBuf -> try { msg.release() } catch (_: IllegalStateException) {}
-            is AutoCloseable -> try { msg.close() } catch (_: IllegalStateException) {}
+        if (msg is Releasable) {
+            try { msg.release() } catch (_: IllegalStateException) {}
         }
     }
 }
