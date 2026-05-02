@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.engine.nio.NioEngine
-import io.ktor.http.content.PartData
 import io.ktor.http.content.forEachPart
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
