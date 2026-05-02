@@ -89,6 +89,11 @@ internal class KeelApplicationResponse(
             } finally {
                 pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
                 pipelinedChannel.pipeline.requestFlush()
+                // Await write callback before the coroutine completes so that
+                // a close() dispatched after join() cannot cancel the in-flight
+                // nw_connection_send that carries HttpBodyEnd (same race as
+                // respondFromBytes — see awaitPendingFlush KDoc).
+                pipelinedChannel.awaitFlushComplete()
             }
         }
         return bodyChannel
