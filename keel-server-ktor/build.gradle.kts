@@ -44,10 +44,12 @@ kotlin {
         }
         jvmTest {
             dependencies {
-                // Pin :keel-engine-nio for the Ktor adapter's HTTP/HTTPS test
-                // suite — the adapter itself is engine-neutral, but tests
-                // need a concrete `StreamEngine` to run against.
+                // Pin :keel-engine-nio and :keel-engine-netty for the Ktor
+                // adapter's HTTP/HTTPS test suite — the adapter itself is
+                // engine-neutral, but tests need concrete `StreamEngine`
+                // instances to run against.
                 implementation(project(":keel-engine-nio"))
+                implementation(project(":keel-engine-netty"))
                 implementation(project(":keel-tls-jsse"))
             }
         }
