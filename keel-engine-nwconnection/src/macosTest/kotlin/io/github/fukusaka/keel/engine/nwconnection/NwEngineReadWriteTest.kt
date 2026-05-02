@@ -339,4 +339,51 @@ class NwEngineReadWriteTest {
         }
     }
 
+    @Test
+    fun streamingMultiChunkFlushesWithCloseDeliversAll() = runBlocking {
+        // Regression: responseChannel() streaming path did not call awaitFlushComplete()
+        // in the finally block after the last requestFlush(). Multiple chunks are each
+        // flushed inline on connQueue; after the final flush the coroutine completes,
+        // join() resumes, and close() dispatches nw_connection_cancel() — which can
+        // race with the in-flight nw_connection_send for the last chunk and drop it.
+        //
+        // The fix: responseChannel() now calls awaitFlushComplete() in the finally block
+        // so that close() is only called after the write callback confirms delivery.
+        // This test validates the multi-chunk streaming + close pattern at the transport
+        // layer that responseChannel() relies on.
+        repeat(10) { iteration ->
+            val engine = NwEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+
+            val chunks = listOf("chunk1", "chunk2", "final")
+            val expected = chunks.joinToString("")
+
+            // Simulate responseChannel() streaming: each chunk is written and flushed
+            // separately on connQueue. awaitFlushComplete() after each flush confirms
+            // delivery before the next write, matching the natural suspension from
+            // bodyChannel.readAvailable() in the production loop. The finally-block
+            // flush (last chunk here) must also await before close() is called.
+            withContext(ch.ioDispatcher) {
+                for (chunk in chunks) {
+                    val buf = DefaultAllocator.allocate(chunk.length)
+                    for (b in chunk.encodeToByteArray()) buf.writeByte(b)
+                    ch.write(buf)
+                    ch.requestFlush()
+                    ch.awaitFlushComplete()
+                }
+            }
+            ch.close()
+
+            val received = PosixRawClient.rawReadUpTo(clientFd, expected.length)
+            assertEquals(expected, received, "iteration $iteration: data lost in multi-chunk streaming flush+close")
+
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
 }
