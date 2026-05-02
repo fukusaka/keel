@@ -130,6 +130,7 @@ class NettyEngine(
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
                     ch.config().isAutoRead = false
+                    // Deliver all inbound bytes before signalling read-closed on TCP FIN.
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
@@ -371,6 +372,7 @@ class NettyEngine(
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
                     ch.config().isAutoRead = false
+                    // Deliver all inbound bytes before signalling read-closed on TCP FIN.
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
@@ -414,6 +416,7 @@ class NettyEngine(
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
                     ch.config().isAutoRead = false
+                    // Deliver all inbound bytes before signalling read-closed on TCP FIN.
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
