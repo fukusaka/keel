@@ -76,12 +76,11 @@ potential-bugs:
     active: false
 
 # detekt-formatting (ktlint wrapper)
-# See .claude/rules/kotlin-formatting.md for full policy.
 formatting:
   # Kotlin coding conventions: "avoid horizontal alignment of any kind"
   NoMultipleSpaces:
     active: true
-  # Kotlin coding conventions compliance — see .claude/rules/kotlin-formatting.md
+  # Kotlin coding conventions compliance.
   TrailingCommaOnCallSite:
     active: true
     useTrailingCommaOnCallSite: true

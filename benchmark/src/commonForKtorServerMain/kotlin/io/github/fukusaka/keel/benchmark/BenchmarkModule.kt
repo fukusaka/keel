@@ -67,12 +67,13 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
     }
     installBenchmarkCompression(compression)
     // WebSockets plugin install: required for `webSocket("/ws-echo") { ... }`.
-    // Engines that support `respondUpgrade` (Ktor CIO, Ktor Netty, Pattern B
-    // after Step 1, Pattern C after Step 3) handle the upgrade. Engines that
-    // throw `UnsupportedOperationException` from `respondUpgrade` (current
-    // Pattern B) reject the upgrade at handshake time — k6 ws-echo scenario
-    // reports those as connection errors and the benchmark just shows zero
-    // throughput for that engine, which is the expected behaviour pre-Step 1.
+    // Engines that support `respondUpgrade` (Ktor CIO, Ktor Netty, the
+    // `:keel-server-ktor-cio` adapter) handle the upgrade. Engines that
+    // throw `UnsupportedOperationException` from `respondUpgrade` (the
+    // current `:keel-server-ktor` adapter) reject the upgrade at handshake
+    // time — k6 ws-echo scenario reports those as connection errors and the
+    // benchmark just shows zero throughput for that engine, which is the
+    // expected behaviour until `respondUpgrade` lands in `:keel-server-ktor`.
     install(WebSockets)
     routing {
         get("/hello") {
@@ -84,10 +85,11 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
         post("/upload-stream") {
             // Streaming upload: discard incoming body chunks via the engine's
             // read channel, reply with the byte count. Engines that aggregate
-            // the body (current Pattern B) hold the entire payload in memory;
-            // engines that stream (Pattern C, future Pattern B refactor) drain
-            // chunks as they arrive. Heap-impact differences show up in JFR /
-            // GC logs collected during the bench run.
+            // the body in memory hold the entire payload before the handler
+            // runs; engines that stream the body chunks (`:keel-server-ktor-cio`
+            // today, future refactor of `:keel-server-ktor`) drain chunks as
+            // they arrive. Heap-impact differences show up in JFR / GC logs
+            // collected during the bench run.
             val received = call.receiveChannel().discard()
             call.response.headers.append("X-Bytes-Received", received.toString())
             call.respondBytes(uploadAckBytes, ContentType.Text.Plain)

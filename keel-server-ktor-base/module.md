@@ -7,9 +7,9 @@ backoff, two-phase graceful shutdown, TLS connector configuration — and delega
 HTTP handling to a [KtorConnectionHandler] supplied by a sibling codec module:
 
 - `:keel-server-ktor` injects `KeelCodecConnectionHandler`, which uses keel's
-  `addHttp1ServerCodec()` from `:keel-codec-http` (Pattern B).
-- `:keel-server-ktor-cio` (future) injects `KtorCioConnectionHandler`, which uses
-  `ktor-http-cio`'s `parseRequest` (Pattern C).
+  `addHttp1ServerCodec()` from `:keel-codec-http`.
+- `:keel-server-ktor-cio` injects `KtorCioConnectionHandler`, which uses
+  `ktor-http-cio`'s `parseRequest`.
 
 Both factories produce instances of the same `KeelApplicationEngine` class — only the
 connection handler differs. This keeps the Ktor lifecycle wiring single-source while letting

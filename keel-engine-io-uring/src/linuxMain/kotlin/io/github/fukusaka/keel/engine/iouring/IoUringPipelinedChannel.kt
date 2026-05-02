@@ -24,7 +24,9 @@ internal class IoUringPipelinedChannel(
      * Returns a push-model [OwnedSuspendSource] backed by multishot recv with provided buffers.
      *
      * **Note**: this bypasses the Pipeline and is incompatible with Pipeline handlers
-     * (TLS, HTTP). Retained for future evaluation; see design.md for context.
+     * (TLS, HTTP). Retained for future evaluation as a zero-copy fast path for
+     * raw-socket consumers; the Pipeline-mode read path remains the supported way to
+     * drive most workloads.
      *
      * @throws IllegalStateException if provided buffer ring is not available.
      */

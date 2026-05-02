@@ -16,7 +16,7 @@ import io.netty.buffer.ByteBuf
  *
  * **Thread safety**: [ByteBuf.release] is thread-safe (atomic CAS), but
  * the wrapped `IoBuf` has non-atomic refcount semantics and must be
- * confined to the owning EventLoop. See `design.md` §4.7.
+ * confined to the owning EventLoop.
  */
 internal class NettyByteBufOwner(private val byteBuf: ByteBuf) : IoBufMemoryOwner {
     override fun release(buf: IoBuf) {

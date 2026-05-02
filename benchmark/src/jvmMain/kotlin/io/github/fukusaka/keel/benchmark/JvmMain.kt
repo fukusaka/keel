@@ -24,8 +24,8 @@ package io.github.fukusaka.keel.benchmark
  * Profiles:
  *   default          — each engine's out-of-box settings
  *   tuned            — maximum performance (TCP_NODELAY, higher backlog)
- *   keel-equiv-0.1   — match keel 0.1.x Phase (a): Connection: close, sync I/O
- *   keel-equiv-0.2   — match keel 0.2.x Phase (b): keep-alive, async I/O (future)
+ *   keel-equiv-0.1   — match keel 0.1.x behaviour: Connection: close, sync I/O
+ *   keel-equiv-0.2   — match keel 0.2.x behaviour: keep-alive, async I/O (future)
  *
  * Registers a JVM shutdown hook for graceful server shutdown on SIGTERM/SIGINT.
  */
