@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `keel-io`, `keel-codec-http`, `keel-core`: introduce `Releasable` interface (`keel-io`); `IoBuf` extends it and `HttpBody` implements it, replacing the interim `AutoCloseable`; `ReferenceCountUtil.safeRelease` now uses a single `is Releasable` check — previously the pipeline's error-cleanup path leaked the owned `IoBuf` because `HttpBody` (a wrapper) was not recognised as releasable (#429)
 - `engine-nwconnection`, `server-ktor`: `ktor-keel-nwconnection` close-per-request and streaming responses no longer drop data; `NwIoTransport.awaitPendingFlush()` now suspends until `nw_connection_send` callback fires, and `respondFromBytes` / `respondNoContent` / `responseChannel` all await flush completion before returning so `close()` cannot cancel in-flight sends (#427)
 - `engine-netty`: `ktor-keel-netty` upload endpoints no longer return 0 bytes for all request body sizes; an inbound buffer copy had a miscounted offset that caused an exception collapsing the connection before the body was consumed (#426)
 - `keel-server-ktor-base`: `call.receiveMultipart()` on Native keel engines (kqueue / epoll / io_uring / NWConnection) no longer returns HTTP 415; a `CIOMultipartDataBase`-backed `ApplicationReceivePipeline` interceptor fills the gap left by Ktor's JVM-only `defaultPlatformTransformations` (#425)
