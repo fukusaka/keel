@@ -20,6 +20,10 @@ interface NioByteBufferBacking {
      * [IoBuf.capacity] range. Position and limit are unspecified —
      * the caller must configure them before each use.
      *
+     * **Capacity**: the view covers [0, capacity) fixed at construction.
+     * Implementations do not resize the backing buffer after allocation, so
+     * the range remains stable for the lifetime of the [IoBuf].
+     *
      * **Lifetime**: valid only while the owning [IoBuf]'s refcount is greater
      * than zero. Accessing this buffer after the [IoBuf] is released is
      * undefined behaviour (use-after-free for off-heap implementations).

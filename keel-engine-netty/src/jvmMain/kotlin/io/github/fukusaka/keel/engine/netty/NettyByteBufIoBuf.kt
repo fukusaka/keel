@@ -55,6 +55,10 @@ internal class NettyByteBufIoBuf(
      * methods used by the flush path in [NettyIoTransport]. Callers must set
      * [ByteBuffer.position] and [ByteBuffer.limit] before each use.
      *
+     * **Capacity**: the view is fixed to [0, capacity) as determined at construction.
+     * The underlying [ByteBuf] is never resized after allocation, so the range
+     * remains valid for the lifetime of this object.
+     *
      * **Lifetime**: valid only while this [IoBuf]'s keel refcount is greater than
      * zero. Once [release] drops the refcount to zero, [NettyByteBufOwner] releases
      * the underlying [ByteBuf] back to the Netty pool and the off-heap memory may
