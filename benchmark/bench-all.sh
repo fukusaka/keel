@@ -64,6 +64,31 @@ kill_port() {
     kill -9 $pids 2>/dev/null || true        # SIGKILL fallback
 }
 
+# wait_port_free: poll until no process holds the port, or timeout.
+# On macOS, server-side TIME_WAIT sockets can block a new bind() for up to
+# 60 s when SO_REUSEADDR is not set. After kill_port+wait, check with lsof
+# (which shows TIME_WAIT sockets on macOS via open files) before declaring
+# the port free. Linux fuser is used on Linux for the same check.
+wait_port_free() {
+    local port="$1"
+    local max_wait="${2:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        local busy=false
+        if [ "$(uname)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
+            fuser "$port"/tcp >/dev/null 2>&1 && busy=true
+        elif command -v lsof >/dev/null 2>&1; then
+            lsof -ti :"$port" >/dev/null 2>&1 && busy=true
+        else
+            return 0  # can't check — assume free
+        fi
+        [ "$busy" = false ] && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    printf "  [warn] port %d still busy after %ds — proceeding anyway\n" "$port" "$max_wait" >&2
+}
+
 # --- Extract Req/sec from wrk output ---
 
 extract_rps() {
@@ -93,6 +118,12 @@ run_bench() {
     local engine_port="$PORT"
 
     for run in $(seq 1 "$RUNS"); do
+        # Defensive cleanup: kill any process still holding the port from a
+        # previous run or a partially-terminated engine. On macOS, server-side
+        # sockets can linger if SO_REUSEADDR is not set, blocking a new bind.
+        kill_port "$engine_port"
+        wait_port_free "$engine_port"
+
         # Start server
         if command -v setsid >/dev/null 2>&1; then
             setsid "${cmd[@]}" >/dev/null 2>&1 &
@@ -144,6 +175,7 @@ run_bench() {
         kill_port "$engine_port"
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
+        wait_port_free "$engine_port"
 
         # Cooldown between runs of same engine
         if [ "$run" -lt "$RUNS" ]; then
@@ -234,14 +266,14 @@ build_engine_list() {
             NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
         fi
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-keel-kqueue pipeline-http-kqueue ktor-keel-nwconnection pipeline-http-nwconnection ktor-cio; do
+            for engine in ktor-keel-kqueue pipeline-http-kqueue ktor-cio-keel-kqueue ktor-keel-nwconnection pipeline-http-nwconnection ktor-cio; do
                 engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
             done
         fi
     elif [ "$(uname)" = "Linux" ]; then
         NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-keel-epoll pipeline-http-epoll ktor-keel-io-uring pipeline-http-io-uring raw-io-uring ktor-cio; do
+            for engine in ktor-keel-epoll pipeline-http-epoll ktor-cio-keel-epoll ktor-keel-io-uring pipeline-http-io-uring ktor-cio-keel-io-uring raw-io-uring ktor-cio; do
                 engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
             done
         fi
@@ -250,7 +282,7 @@ build_engine_list() {
     # JVM servers
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
-        for engine in ktor-keel-nio pipeline-http-nio ktor-keel-netty pipeline-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
+        for engine in ktor-keel-nio pipeline-http-nio ktor-cio-keel-nio ktor-keel-netty pipeline-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
             engines+=("jvm-engine:jvm:${engine}")
         done
     fi
