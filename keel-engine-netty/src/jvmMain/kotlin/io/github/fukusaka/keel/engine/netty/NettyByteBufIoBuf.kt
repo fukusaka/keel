@@ -47,14 +47,15 @@ internal class NettyByteBufIoBuf(
     /**
      * Writable [ByteBuffer] view over the full capacity range [0, capacity).
      *
-     * Used by JSSE [io.github.fukusaka.keel.tls.jsse.JsseTlsCodec] to pass
-     * backing memory directly to [javax.net.ssl.SSLEngine.wrap] /
-     * [javax.net.ssl.SSLEngine.unwrap]. For direct Netty buffers the slice
-     * shares the same off-heap memory as the underlying [ByteBuf], so bytes
-     * written by SSLEngine are immediately visible via [byteBuf] accessor
-     * methods (used by the flush path in [NettyIoTransport]).
+     * Cached once at construction to avoid per-record allocation on the TLS hot
+     * path ([io.github.fukusaka.keel.tls.jsse.JsseTlsCodec] calls this on
+     * every [javax.net.ssl.SSLEngine.wrap] / [javax.net.ssl.SSLEngine.unwrap]).
+     * The slice shares the same off-heap memory as the underlying [ByteBuf], so
+     * bytes written by SSLEngine are immediately visible via [byteBuf] accessor
+     * methods used by the flush path in [NettyIoTransport]. Callers must set
+     * [ByteBuffer.position] and [ByteBuffer.limit] before each use.
      */
-    override val unsafeNioByteBuffer: ByteBuffer get() = byteBuf.nioBuffer(0, capacity)
+    override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(0, capacity)
 
     private var refCount: Int = 1
 
