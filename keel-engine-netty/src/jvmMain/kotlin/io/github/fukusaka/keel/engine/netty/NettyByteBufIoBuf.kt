@@ -54,6 +54,12 @@ internal class NettyByteBufIoBuf(
      * bytes written by SSLEngine are immediately visible via [byteBuf] accessor
      * methods used by the flush path in [NettyIoTransport]. Callers must set
      * [ByteBuffer.position] and [ByteBuffer.limit] before each use.
+     *
+     * **Lifetime**: valid only while this [IoBuf]'s keel refcount is greater than
+     * zero. Once [release] drops the refcount to zero, [NettyByteBufOwner] releases
+     * the underlying [ByteBuf] back to the Netty pool and the off-heap memory may
+     * be reused for a different allocation. Accessing this [ByteBuffer] after
+     * [release] is a use-after-free.
      */
     override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(0, capacity)
 

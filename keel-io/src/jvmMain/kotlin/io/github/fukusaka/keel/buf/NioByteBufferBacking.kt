@@ -19,6 +19,10 @@ interface NioByteBufferBacking {
      * A writable [ByteBuffer] whose backing store covers the full
      * [IoBuf.capacity] range. Position and limit are unspecified —
      * the caller must configure them before each use.
+     *
+     * **Lifetime**: valid only while the owning [IoBuf]'s refcount is greater
+     * than zero. Accessing this buffer after the [IoBuf] is released is
+     * undefined behaviour (use-after-free for off-heap implementations).
      */
     val unsafeNioByteBuffer: ByteBuffer
 }
