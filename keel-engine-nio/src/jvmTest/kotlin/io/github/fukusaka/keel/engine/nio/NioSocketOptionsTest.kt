@@ -99,17 +99,15 @@ class NioSocketOptionsTest {
     }
 
     @Test
-    fun `connect without ConnectConfig leaves kernel defaults`() = runTest {
+    fun `connect without ConnectConfig applies SocketOptions DEFAULT with TCP_NODELAY enabled`() = runTest {
         val engine = NioEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
         try {
             val client = engine.connect(InetSocketAddress("127.0.0.1", port))
             val transport = (client as NioPipelinedChannel).transport as NioIoTransport
-            // Kernel defaults vary by OS — only assert we didn't crash / options
-            // are readable. The earlier test proves non-default values take effect;
-            // this one just asserts the short-circuit path doesn't error.
-            transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY)
+            // SocketOptions.DEFAULT sets tcpNoDelay = true; verify it reaches the channel.
+            assertEquals(true, transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY))
             client.close()
         } finally {
             server.close()
