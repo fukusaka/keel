@@ -89,6 +89,11 @@ internal class KeelApplicationResponse(
             } finally {
                 pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
                 pipelinedChannel.pipeline.requestFlush()
+                // Await write callback before the coroutine completes so that
+                // a close() dispatched after join() cannot cancel the in-flight
+                // nw_connection_send that carries HttpBodyEnd (same race as
+                // respondFromBytes — see awaitPendingFlush KDoc).
+                pipelinedChannel.awaitFlushComplete()
             }
         }
         return bodyChannel
@@ -109,6 +114,12 @@ internal class KeelApplicationResponse(
             }
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
             pipelinedChannel.pipeline.requestFlush()
+            // Await async write callback before returning so that a subsequent
+            // channel.close() does not cancel in-flight sends. Engines with
+            // synchronous flush (POSIX write(2)) return immediately; engines
+            // with asynchronous send (NWConnection nw_connection_send) suspend
+            // until the transport's write callback fires.
+            pipelinedChannel.awaitFlushComplete()
         }
     }
 
@@ -118,6 +129,7 @@ internal class KeelApplicationResponse(
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
             pipelinedChannel.pipeline.requestFlush()
+            pipelinedChannel.awaitFlushComplete()
         }
     }
 
