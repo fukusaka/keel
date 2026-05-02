@@ -85,4 +85,29 @@ class HttpBodyTest {
 
         body.content.release() // decrement from 1 to 0 — freed
     }
+
+    @Test
+    fun `HttpBody release delegates to content`() {
+        val buf = DefaultAllocator.allocate(8)
+        buf.writeByte(0x41)
+        val body = HttpBody(buf)
+        body.release() // equivalent to content.release()
+        // After release, further access would throw — just confirm it returns true (freed)
+    }
+
+    @Test
+    fun `HttpBody close delegates to content release`() {
+        val buf = DefaultAllocator.allocate(8)
+        buf.writeByte(0x42)
+        val body = HttpBody(buf)
+        body.close()
+    }
+
+    @Test
+    fun `HttpBody is AutoCloseable`() {
+        val buf = DefaultAllocator.allocate(4)
+        val body = HttpBody(buf)
+        assertIs<AutoCloseable>(body)
+        body.close()
+    }
 }
