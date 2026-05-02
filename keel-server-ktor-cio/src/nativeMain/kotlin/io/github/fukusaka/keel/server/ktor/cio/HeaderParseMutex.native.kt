@@ -18,6 +18,6 @@ import kotlinx.coroutines.sync.withLock
  */
 private val sharedMutex = Mutex()
 
-internal actual class HeaderParseSerializer actual constructor() {
+internal actual class HeaderParseMutex actual constructor() {
     actual suspend fun <T> withLock(block: suspend () -> T): T = sharedMutex.withLock { block() }
 }

@@ -36,7 +36,7 @@ import io.ktor.server.engine.ApplicationEngineFactory
  * which on Kotlin/Native (`pthread_mutex`) collapses under multi-worker
  * accept bursts and starves the parser to ≈ 0 RPS.  This adapter therefore
  * serialises every `parseRequest` call through a process-wide mutex on
- * Native targets — see [HeaderParseSerializer] for evidence and
+ * Native targets — see [HeaderParseMutex] for evidence and
  * trade-offs.  The JVM is unaffected (`synchronized` is reentrant +
  * JIT-optimised) and runs the parser concurrently as before.
  *

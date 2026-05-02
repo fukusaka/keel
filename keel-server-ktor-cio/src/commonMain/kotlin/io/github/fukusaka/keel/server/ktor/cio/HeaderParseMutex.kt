@@ -50,7 +50,7 @@ package io.github.fukusaka.keel.server.ktor.cio
  * lock around `clearInstance`, this class can become a no-op on every
  * platform and eventually be deleted.
  */
-internal expect class HeaderParseSerializer() {
+internal expect class HeaderParseMutex() {
     /** Runs [block] under the platform-specific serialisation policy. */
     suspend fun <T> withLock(block: suspend () -> T): T
 }
