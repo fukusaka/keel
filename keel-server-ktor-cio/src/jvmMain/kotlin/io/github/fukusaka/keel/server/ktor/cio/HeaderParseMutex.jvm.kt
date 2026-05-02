@@ -5,6 +5,6 @@ package io.github.fukusaka.keel.server.ktor.cio
  * is reentrant and JIT-optimised on the JVM, so concurrent header-parse
  * calls do not exhibit the contention storm seen on Kotlin/Native.
  */
-internal actual class HeaderParseSerializer actual constructor() {
+internal actual class HeaderParseMutex actual constructor() {
     actual suspend fun <T> withLock(block: suspend () -> T): T = block()
 }

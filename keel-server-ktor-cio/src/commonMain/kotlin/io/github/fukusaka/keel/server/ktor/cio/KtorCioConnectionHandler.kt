@@ -75,10 +75,10 @@ import kotlin.coroutines.ContinuationInterceptor
  * SupervisorJob — they get cancelled cleanly when the connection closes.
  *
  * **Native parser serialisation**: every call to ktor-http-cio's
- * `parseRequest` is wrapped in [HeaderParseSerializer] to avoid a
+ * `parseRequest` is wrapped in [HeaderParseMutex] to avoid a
  * Kotlin/Native lock contention storm in `HeadersDataPool` when many
  * concurrent connections parse headers simultaneously.  See
- * [HeaderParseSerializer] for evidence and [KeelCio] for the documented
+ * [HeaderParseMutex] for evidence and [KeelCio] for the documented
  * trade-off.  `parseHttpBody` is intentionally *not* serialised — body
  * decoding is per-connection (no shared pool contention) and may run for
  * unbounded durations on streaming uploads.
@@ -89,12 +89,12 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
      * Serialises every `parseRequest` / `parseHttpBody` call so concurrent
      * header parsing on Kotlin/Native does not pathologically contend on
      * the shared `HeadersDataPool` lock inside ktor-http-cio.  See
-     * [HeaderParseSerializer] for the empirical evidence and the JVM /
+     * [HeaderParseMutex] for the empirical evidence and the JVM /
      * Native split (no-op on JVM, process-wide [kotlinx.coroutines.sync.Mutex]
      * on Native).  The mutex is coroutine-level, so suspension does not
      * block the I/O thread.
      */
-    private val parserSerializer = HeaderParseSerializer()
+    private val parserMutex = HeaderParseMutex()
 
     override suspend fun handle(
         channel: PipelinedChannel,
@@ -158,7 +158,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         val serverKeepAlive = configuration.keepAlive
 
         while (channel.isActive && !input.isClosedForRead) {
-            val request = parserSerializer.withLock { parseRequest(input) } ?: break
+            val request = parserMutex.withLock { parseRequest(input) } ?: break
 
             val length = request.headers[HttpHeaders.ContentLength]?.parseDecLong() ?: -1L
             val transferEncoding = request.headers[HttpHeaders.TransferEncoding]
@@ -224,7 +224,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         output: ByteWriteChannel,
     ): Job = scope.launch {
         try {
-            // parseHttpBody intentionally NOT wrapped in [parserSerializer]:
+            // parseHttpBody intentionally NOT wrapped in [parserMutex]:
             // body decoding is per-connection (no shared `HeadersDataPool`
             // contention) and the duration is unbounded for streaming
             // uploads — holding a process-wide mutex over a long body
