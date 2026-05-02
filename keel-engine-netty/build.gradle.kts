@@ -24,6 +24,7 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+                implementation(project(":keel-codec-http"))
             }
         }
     }
