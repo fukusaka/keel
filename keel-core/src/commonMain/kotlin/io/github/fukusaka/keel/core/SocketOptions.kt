@@ -20,7 +20,9 @@ package io.github.fukusaka.keel.core
  * ## Semantics
  *
  * - [tcpNoDelay]: `TCP_NODELAY`. Disables Nagle's algorithm.
- *   Recommended `true` for latency-sensitive protocols (HTTP, RPC).
+ *   `true` by default ([DEFAULT]) — most HTTP / RPC workloads benefit
+ *   from immediate sends. Set `false` to re-enable Nagle for bulk
+ *   streaming workloads where batching outweighs latency.
  * - [keepAlive]: `SO_KEEPALIVE`. Enables TCP keepalive probes so
  *   dead connections are detected without application-level heart
  *   beats. Default probe interval is OS-specific (typically hours).
@@ -64,8 +66,16 @@ public data class SocketOptions(
             sendBufferSize == null
 
     public companion object {
-        /** No options set — engines skip the setsockopt pass. */
-        public val DEFAULT: SocketOptions = SocketOptions()
+        /**
+         * Keel default: `TCP_NODELAY` enabled, all other options unset.
+         *
+         * HTTP and RPC workloads consistently benefit from disabling Nagle —
+         * sequential small writes stall 40 ms per response on Linux when a
+         * delayed-ACK client is on the other end. Set [tcpNoDelay] `= false`
+         * explicitly to re-enable Nagle for workloads where batching outweighs
+         * latency.
+         */
+        public val DEFAULT: SocketOptions = SocketOptions(tcpNoDelay = true)
     }
 }
 

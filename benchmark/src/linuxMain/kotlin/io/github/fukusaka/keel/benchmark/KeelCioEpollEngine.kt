@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.engine.epoll.EpollEngine
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.server.ktor.cio.KeelCio
@@ -22,6 +23,7 @@ object KeelCioEpollEngine : EngineBenchmark {
                 connector { this.port = config.port }
             }
             this.engine = EpollEngine()
+            socketOptions = SocketOptions(tcpNoDelay = true)
         }.start(wait = false)
         return {
             factory?.close()

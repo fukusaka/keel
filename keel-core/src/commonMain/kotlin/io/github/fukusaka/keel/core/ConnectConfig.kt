@@ -20,13 +20,13 @@ package io.github.fukusaka.keel.core
  * transfer.
  *
  * @param socketOptions Socket options applied to the client fd.
- *   Default: no options set ([SocketOptions.DEFAULT]).
+ *   Default: [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled).
  */
 public open class ConnectConfig(
     public val socketOptions: SocketOptions = SocketOptions.DEFAULT,
 ) {
     public companion object {
-        /** Default config — no socket options applied. */
+        /** Default config — [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled). */
         public val DEFAULT: ConnectConfig = ConnectConfig()
     }
 }

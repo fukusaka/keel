@@ -80,14 +80,14 @@
 #                              scenarios. Engines that don't support
 #                              server-side compression (`pipeline-http-*`,
 #                              Native `ktor-keel-*`) ignore the flag.
-#   BENCH_COMPRESSION_STRICT  when "true", the `compression` scenario
-#                              fails on engines that returned uncompressed
-#                              despite the Accept-Encoding ask. Default
-#                              "false" so the bench measures every engine
-#                              and reports a single leaderboard mixing
-#                              compression-on vs compression-missing
-#                              engines. Set "true" to assert wire-level
-#                              compression actually fired.
+#   BENCH_COMPRESSION_STRICT  when "false", the `compression` scenario
+#                              also scores engines that returned uncompressed
+#                              responses (Content-Encoding absent) — useful
+#                              for a single leaderboard mixing compression-on
+#                              vs compression-missing engines. Default "true":
+#                              engines that do not compress FAIL the run so
+#                              the leaderboard is not polluted with /large
+#                              throughput masquerading as compression numbers.
 #   BENCH_JFR                 when "true" and the engine command is a JVM
 #                              run (the first arg is `java` or ends in `/java`),
 #                              prepend `-XX:StartFlightRecording=settings=…,
@@ -506,7 +506,7 @@ for run in $(seq 1 "$RUNS"); do
             PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
             CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
             COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
-            COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-false}" \
+            COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-true}" \
             k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1

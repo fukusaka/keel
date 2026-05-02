@@ -333,7 +333,7 @@ class EpollEngineLifecycleSeamTest {
     }
 
     @Test
-    fun `connect without ConnectConfig skips setSocketOption entirely`() = runBlocking {
+    fun `connect without ConnectConfig applies SocketOptions DEFAULT with TCP_NODELAY enabled`() = runBlocking {
         val fakeOps = FakeNativeSocketOps().apply {
             enqueueOpenClientSocket(701)
             enqueueConnect(fd = 701, ConnectResult.Connected)
@@ -343,8 +343,7 @@ class EpollEngineLifecycleSeamTest {
         val engine = newEngine(fakeOps = fakeOps)
         try {
             engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)).close()
-            assertEquals(0, fakeOps.setSocketOptionCalls)
-            assertTrue(fakeOps.appliedOptions.isEmpty())
+            assertEquals(listOf(701 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
         } finally {
             engine.close()
         }

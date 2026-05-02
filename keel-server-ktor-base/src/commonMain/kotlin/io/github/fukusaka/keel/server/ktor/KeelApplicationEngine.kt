@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -117,6 +118,16 @@ public class KeelApplicationEngine(
         public var applicationDispatcher: CoroutineDispatcher? = null
 
         /**
+         * Socket options applied to every accepted client connection.
+         *
+         * Defaults to [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled).
+         * Set `SocketOptions(tcpNoDelay = false)` to re-enable Nagle's
+         * algorithm for bulk streaming workloads where batching
+         * outweighs per-write latency.
+         */
+        public var socketOptions: SocketOptions = SocketOptions.DEFAULT
+
+        /**
          * TLS configuration per connector. Keyed by [EngineConnectorConfig]
          * added via [sslConnector].
          */
@@ -225,10 +236,20 @@ public class KeelApplicationEngine(
             // Pair each server with its connector's TLS config (if any).
             val serverEntries = mutableListOf<Pair<StreamServer, TlsServerConfig?>>()
 
+            val childOpts = configuration.socketOptions
             try {
                 val resolved = connectors.map { connector ->
                     val tlsConfig = tlsConnectors[connector]
-                    val bindConfig = tlsConfig ?: BindConfig()
+                    val bindConfig = if (tlsConfig != null) {
+                        TlsServerConfig(
+                            tls = tlsConfig.tls,
+                            installer = tlsConfig.installer,
+                            backlog = tlsConfig.backlog,
+                            childSocketOptions = childOpts,
+                        )
+                    } else {
+                        BindConfig(childSocketOptions = childOpts)
+                    }
                     val server = engine.bind(InetSocketAddress(connector.host, connector.port), bindConfig)
                     serverEntries.add(server to tlsConfig)
                     connector.withPort((server.localAddress as InetSocketAddress).port)

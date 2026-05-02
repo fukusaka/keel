@@ -19,11 +19,26 @@ import java.nio.channels.SocketChannel
  *
  * Short-circuits when [SocketOptions.isEmpty] to avoid per-connection
  * overhead when no options are configured.
+ *
+ * Each option is guarded by [SocketChannel.supportedOptions] so that
+ * protocol-specific options (e.g. `TCP_NODELAY`) are silently skipped
+ * on Unix Domain Socket channels, matching the POSIX behaviour where
+ * `setsockopt(IPPROTO_TCP, TCP_NODELAY)` on an AF_UNIX fd returns
+ * `ENOPROTOOPT` and is ignored.
  */
 internal fun applySocketOptions(channel: SocketChannel, options: SocketOptions) {
     if (options.isEmpty) return
-    options.tcpNoDelay?.let { channel.setOption(StandardSocketOptions.TCP_NODELAY, it) }
-    options.keepAlive?.let { channel.setOption(StandardSocketOptions.SO_KEEPALIVE, it) }
-    options.receiveBufferSize?.let { channel.setOption(StandardSocketOptions.SO_RCVBUF, it) }
-    options.sendBufferSize?.let { channel.setOption(StandardSocketOptions.SO_SNDBUF, it) }
+    val supported = channel.supportedOptions()
+    options.tcpNoDelay?.let {
+        if (StandardSocketOptions.TCP_NODELAY in supported) channel.setOption(StandardSocketOptions.TCP_NODELAY, it)
+    }
+    options.keepAlive?.let {
+        if (StandardSocketOptions.SO_KEEPALIVE in supported) channel.setOption(StandardSocketOptions.SO_KEEPALIVE, it)
+    }
+    options.receiveBufferSize?.let {
+        if (StandardSocketOptions.SO_RCVBUF in supported) channel.setOption(StandardSocketOptions.SO_RCVBUF, it)
+    }
+    options.sendBufferSize?.let {
+        if (StandardSocketOptions.SO_SNDBUF in supported) channel.setOption(StandardSocketOptions.SO_SNDBUF, it)
+    }
 }

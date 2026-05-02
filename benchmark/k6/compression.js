@@ -53,7 +53,11 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 const COMPRESSION_TYPE = String(__ENV.COMPRESSION_TYPE || 'gzip');
-const COMPRESSION_STRICT = String(__ENV.COMPRESSION_STRICT || '').toLowerCase() === 'true';
+// Default true: engines that don't emit Content-Encoding FAIL the run so
+// the leaderboard isn't polluted with /large throughput masquerading as
+// compression numbers. Set BENCH_COMPRESSION_STRICT=false (via bench-stream-one.sh)
+// or COMPRESSION_STRICT=false directly to run a mixed comparison leaderboard.
+const COMPRESSION_STRICT = String(__ENV.COMPRESSION_STRICT ?? 'true').toLowerCase() !== 'false';
 const CONNECTION_CLOSE = String(__ENV.CONNECTION_CLOSE || '').toLowerCase() === 'true';
 
 // k6 auto-decodes gzip / deflate / br when the server emits the matching
