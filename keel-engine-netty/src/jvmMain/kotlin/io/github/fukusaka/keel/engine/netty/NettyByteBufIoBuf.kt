@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufMemoryOwner
+import io.github.fukusaka.keel.buf.NioByteBufferBacking
 import io.netty.buffer.ByteBuf
+import java.nio.ByteBuffer
 
 /**
  * [IoBuf] implementation backed directly by a Netty [ByteBuf].
@@ -32,7 +34,7 @@ import io.netty.buffer.ByteBuf
  */
 internal class NettyByteBufIoBuf(
     internal val byteBuf: ByteBuf,
-) : IoBuf {
+) : IoBuf, NioByteBufferBacking {
 
     override val capacity: Int get() = byteBuf.capacity()
 
@@ -41,6 +43,18 @@ internal class NettyByteBufIoBuf(
 
     override val readableBytes: Int get() = writerIndex - readerIndex
     override val writableBytes: Int get() = capacity - writerIndex
+
+    /**
+     * Writable [ByteBuffer] view over the full capacity range [0, capacity).
+     *
+     * Used by JSSE [io.github.fukusaka.keel.tls.jsse.JsseTlsCodec] to pass
+     * backing memory directly to [javax.net.ssl.SSLEngine.wrap] /
+     * [javax.net.ssl.SSLEngine.unwrap]. For direct Netty buffers the slice
+     * shares the same off-heap memory as the underlying [ByteBuf], so bytes
+     * written by SSLEngine are immediately visible via [byteBuf] accessor
+     * methods (used by the flush path in [NettyIoTransport]).
+     */
+    override val unsafeNioByteBuffer: ByteBuffer get() = byteBuf.nioBuffer(0, capacity)
 
     private var refCount: Int = 1
 
