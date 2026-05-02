@@ -28,7 +28,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   `SO_REUSEPORT`) are kernel invariants and NOT configurable here —
  *   they are set unconditionally by
  *   [io.github.fukusaka.keel.native.posix.NativeSocketOps.bindListener].
- *   Default: no options set.
+ *   Default: [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled).
  */
 open class BindConfig(
     val backlog: Int = DEFAULT_BACKLOG,

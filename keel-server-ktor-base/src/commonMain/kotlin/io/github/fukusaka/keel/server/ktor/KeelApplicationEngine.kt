@@ -120,11 +120,10 @@ public class KeelApplicationEngine(
         /**
          * Socket options applied to every accepted client connection.
          *
-         * Defaults to [SocketOptions.DEFAULT] (no overrides). Set
-         * `SocketOptions(tcpNoDelay = true)` to disable Nagle's algorithm,
-         * which improves throughput for chunked or streaming response
-         * workloads: without `TCP_NODELAY`, each small write may be held
-         * until the remote ACK arrives (Linux delayed ACK timer ≈ 40 ms).
+         * Defaults to [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled).
+         * Set `SocketOptions(tcpNoDelay = false)` to re-enable Nagle's
+         * algorithm for bulk streaming workloads where batching
+         * outweighs per-write latency.
          */
         public var socketOptions: SocketOptions = SocketOptions.DEFAULT
 
