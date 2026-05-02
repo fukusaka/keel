@@ -13,7 +13,7 @@ package io.github.fukusaka.keel.server.ktor.cio
  * cause all connections to queue behind each other at the header-parse step.
  * With N connections that all arrive at `parseRequest` simultaneously, the
  * average wait grows as O(N × parseTime) — empirically measured as ~2865 µs
- * per request at 50 VUs vs ~40 µs actual parse time (K12).
+ * per request at 50 VUs vs ~40 µs actual parse time.
  *
  * Without the mutex, connections on the same EventLoop can interleave freely
  * at coroutine suspension points inside `parseRequest`, each making
