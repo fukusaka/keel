@@ -14,6 +14,7 @@ import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.EventLoop
+import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
 import kotlin.coroutines.resume
@@ -76,6 +77,17 @@ internal class NettyIoTransport(
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
 
     // --- Read path ---
+
+    // Guarded by EventLoop thread — both channelInactive and userEventTriggered
+    // run there, so a plain var suffices.
+    private var readClosedFired = false
+
+    private fun fireReadClosed() {
+        if (!readClosedFired) {
+            readClosedFired = true
+            onReadClosed?.invoke()
+        }
+    }
 
     override var readEnabled: Boolean = false
         set(value) {
@@ -156,11 +168,24 @@ internal class NettyIoTransport(
         }
 
         override fun channelInactive(ctx: ChannelHandlerContext) {
-            onReadClosed?.invoke()
+            fireReadClosed()
+        }
+
+        /**
+         * Fires read-closed when the inbound half of a half-closed connection
+         * has been fully drained. With [ChannelOption.ALLOW_HALF_CLOSURE] = true
+         * on server channels, the peer's TCP FIN triggers
+         * [ChannelInputShutdownReadComplete] (after all buffered data has been
+         * delivered via [channelRead]) instead of [channelInactive], so body
+         * bytes are not lost before the bridge pump can consume them.
+         */
+        override fun userEventTriggered(ctx: ChannelHandlerContext, evt: Any) {
+            if (evt is ChannelInputShutdownReadComplete) fireReadClosed()
+            ctx.fireUserEventTriggered(evt)
         }
 
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-            onReadClosed?.invoke()
+            fireReadClosed()
             ctx.close()
         }
     }
