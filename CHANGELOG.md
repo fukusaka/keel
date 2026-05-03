@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `keel-server-ktor-cio`: `KtorCioConnectionHandler` now awaits transport flush completion before closing the connection; chunked SSE streams on `ktor-cio-keel-epoll` / `ktor-cio-keel-io-uring` no longer drop the `0\r\n\r\n` terminator under high concurrency, fixing the k6 gracefulStop stall seen at 50 VUs (#440)
+- `keel-server-ktor-cio`: `KtorCioConnectionHandler` now awaits transport flush completion before closing the connection, preventing chunked-stream terminator loss under high concurrency on epoll / io-uring engines (#439)
 - `benchmark`: `wsbench` WebSocket fragment client now sets `TCP_NODELAY` on its outgoing connections; `bench-stream-one.sh`'s `bindConfigFor`/`childSocketOptions` now defaults `tcpNoDelay` to `true` (matching `SocketOptions.DEFAULT`) so POSIX engines (epoll/io-uring) no longer stall ~40 ms per echo round-trip due to Nagle+delayed-ACK interaction (#438)
 - `keel-core`: `TypedInboundHandler` auto-release now correctly releases the original input when a transforming handler propagates a different output object (e.g. `WsFrameDecoder` propagating `WsFrame` after consuming `IoBuf`); the previous identity-blind check leaked the source Netty `ByteBuf` indefinitely, causing OOM under sustained WebSocket load (#437)
 - `benchmark`: `pipeline-http-*` SSE responses (`/sse-stream`) no longer send a spurious second response on `HttpBodyEnd`, fixing HTTP/1.1 keep-alive reuse after every SSE stream (#435)
