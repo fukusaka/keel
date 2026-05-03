@@ -85,7 +85,9 @@ fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsServerConfig, AutoClos
 /**
  * Builds a [SocketOptions] for accepted-client fds from the benchmark
  * config's parsed `--send-buffer` / `--receive-buffer` / `--tcp-nodelay`
- * CLI knobs. `null` fields fall through as the engine default.
+ * CLI knobs. `tcpNoDelay` defaults to `true` (matching [SocketOptions.DEFAULT])
+ * so keel engines behave consistently regardless of whether the flag is
+ * explicitly passed. Other fields default to `null` (engine default).
  *
  * Used by both [createTlsBindConfig] (TLS path) and [bindConfigFor]
  * (non-TLS path) so a benchmark scenario like
@@ -93,7 +95,11 @@ fun createTlsBindConfig(config: BenchmarkConfig): Pair<TlsServerConfig, AutoClos
  * every accepted child socket regardless of TLS.
  */
 fun childSocketOptions(config: BenchmarkConfig): SocketOptions = SocketOptions(
-    tcpNoDelay = config.socket.tcpNoDelay,
+    // Default true to match SocketOptions.DEFAULT: HTTP workloads consistently
+    // benefit from disabling Nagle. Without this, sequential small writes
+    // (e.g. one propagateFlush() per WS frame echo) stall ~40 ms per round
+    // trip on Linux when a delayed-ACK peer is on the other end.
+    tcpNoDelay = config.socket.tcpNoDelay ?: true,
     sendBufferSize = config.socket.sendBuffer,
     receiveBufferSize = config.socket.receiveBuffer,
 )
