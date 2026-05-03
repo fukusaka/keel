@@ -33,9 +33,12 @@ import kotlinx.coroutines.launch
  * - [respondNoContent]: emit `Content-Length: 0`
  * - [responseChannel] (streaming): emit `Transfer-Encoding: chunked` + a pump
  *   that reads the returned channel and writes chunked frames
+ * - [respondUpgrade]: write the status line + headers, then hand the raw
+ *   [ByteReadChannel] / [ByteWriteChannel] pair to the upgrade handler
  */
 internal class KeelCioApplicationResponse(
     call: KeelCioApplicationCall,
+    private val rawInput: ByteReadChannel,
     private val output: ByteWriteChannel,
     private val scope: CoroutineScope,
     private val keepAlive: Boolean,
@@ -45,6 +48,14 @@ internal class KeelCioApplicationResponse(
     private var statusCode: HttpStatusCode = HttpStatusCode.OK
     private val headersBuilder = HeadersBuilder()
     private var responseBodyJob: Job? = null
+
+    /**
+     * Set by [respondUpgrade] when a protocol upgrade (e.g. WebSocket) is performed.
+     * [KtorCioConnectionHandler] joins this job after [respondOutgoingContent] returns
+     * to let the upgrade session run to completion before tearing down the connection.
+     */
+    internal var upgradeJob: Job? = null
+        private set
 
     override val headers: ResponseHeaders = object : ResponseHeaders() {
         override fun engineAppendHeader(name: String, value: String) {
@@ -109,8 +120,23 @@ internal class KeelCioApplicationResponse(
         return bodyChannel
     }
 
+    /**
+     * Performs a protocol upgrade (e.g. WebSocket) by writing the `101 Switching Protocols`
+     * status line + headers and then handing the raw [ByteReadChannel] / [ByteWriteChannel]
+     * pair directly to [upgrade].
+     *
+     * The job returned by [OutgoingContent.ProtocolUpgrade.upgrade] is stored in
+     * [upgradeJob]; [KtorCioConnectionHandler] joins it after [respondOutgoingContent]
+     * returns so the upgrade session runs until the peer closes the connection.
+     * The underlying output channel and the keep-alive loop are shared with the upgrade
+     * session — no additional pump or channel conversion is needed because
+     * [KtorCioConnectionHandler] already bridges the keel transport ↔ Ktor
+     * [ByteReadChannel] / [ByteWriteChannel] pair.
+     */
     override suspend fun respondUpgrade(upgrade: OutgoingContent.ProtocolUpgrade) {
-        throw UnsupportedOperationException("Protocol upgrade is not yet supported by KeelCio")
+        writeStatusAndHeaders()
+        output.flush()
+        upgradeJob = upgrade.upgrade(rawInput, output, scope.coroutineContext, scope.coroutineContext)
     }
 
     override suspend fun respondOutgoingContent(content: OutgoingContent) {

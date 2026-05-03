@@ -5,10 +5,17 @@ import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.ktor.websocket.keelWebSocket
 import io.ktor.server.application.Application
+import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import io.ktor.websocket.readText
 import kotlinx.coroutines.runBlocking
 import java.net.HttpURLConnection
 import java.net.URI
@@ -61,6 +68,136 @@ class KeelWebSocketTest {
 
             assertEquals(1, recorder.binaries.size)
             assertTrue(payload.contentEquals(recorder.binaries[0]))
+        }
+    }
+
+    // --- Standard Ktor WebSocket plugin (respondUpgrade path) ---
+
+    @Test
+    fun standardWsServerInitiatedMessage() {
+        // Simpler test: server sends a message immediately after upgrade.
+        withKeelServer({
+            install(WebSockets)
+            routing {
+                webSocket("/ws") {
+                    send(Frame.Text("from-server"))
+                    close(CloseReason(CloseReason.Codes.NORMAL, "done"))
+                }
+            }
+        }) { port ->
+            val recorder = WsRecorder()
+            openWebSocket(port, "/ws", recorder)
+            recorder.awaitClosed(5)
+            assertEquals(listOf("from-server"), recorder.texts)
+        }
+    }
+
+    @Test
+    fun standardWsEchoText() {
+        // Server echoes each message; client waits for both echoes before
+        // sending CLOSE so the server's CLOSE response never races ahead.
+        withKeelServer({
+            install(WebSockets)
+            routing {
+                webSocket("/ws") {
+                    for (frame in incoming) {
+                        if (frame is Frame.Text) send(Frame.Text(frame.readText()))
+                    }
+                }
+            }
+        }) { port ->
+            val texts = mutableListOf<String>()
+            val gotTwo = CompletableFuture<List<String>>()
+            val pendingText = StringBuilder()
+            val ws = openWebSocket(port, "/ws", object : WebSocket.Listener {
+                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                    pendingText.append(data)
+                    if (last) {
+                        texts += pendingText.toString()
+                        pendingText.clear()
+                        if (texts.size == 2) gotTwo.complete(texts.toList())
+                    }
+                    return null
+                }
+            })
+            ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
+            ws.sendText("world", true).get(5, TimeUnit.SECONDS)
+            // Wait for both echoes before sending CLOSE.
+            val received = gotTwo.get(5, TimeUnit.SECONDS)
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+
+            assertEquals(listOf("hello", "world"), received)
+        }
+    }
+
+    @Test
+    fun standardWsEchoBinary() {
+        withKeelServer({
+            install(WebSockets)
+            routing {
+                webSocket("/ws-bin") {
+                    for (frame in incoming) {
+                        if (frame is Frame.Binary) send(Frame.Binary(true, frame.data))
+                    }
+                }
+            }
+        }) { port ->
+            val payload = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
+            val gotEcho = CompletableFuture<ByteArray>()
+            val ws = openWebSocket(port, "/ws-bin", object : WebSocket.Listener {
+                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+                    if (last) {
+                        val bytes = ByteArray(data.remaining())
+                        data.get(bytes)
+                        gotEcho.complete(bytes)
+                    }
+                    return null
+                }
+            })
+            ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
+            val received = gotEcho.get(5, TimeUnit.SECONDS)
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+
+            assertTrue(payload.contentEquals(received))
+        }
+    }
+
+    @Test
+    fun standardWsCoexistsWithHttp() {
+        withKeelServer({
+            install(WebSockets)
+            routing {
+                webSocket("/ws") {
+                    for (frame in incoming) {
+                        if (frame is Frame.Text) send(Frame.Text(frame.readText()))
+                    }
+                }
+                get("/health") { call.respondText("OK") }
+            }
+        }) { port ->
+            // HTTP side still works.
+            val conn = URI("http://127.0.0.1:$port/health").toURL().openConnection() as HttpURLConnection
+            assertEquals(200, conn.responseCode)
+            assertEquals("OK", conn.inputStream.bufferedReader().readText())
+            conn.disconnect()
+
+            // WS side still works.
+            val gotEcho = CompletableFuture<String>()
+            val pendingText = StringBuilder()
+            val ws = openWebSocket(port, "/ws", object : WebSocket.Listener {
+                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                    pendingText.append(data)
+                    if (last) { gotEcho.complete(pendingText.toString()); pendingText.clear() }
+                    return null
+                }
+            })
+            ws.sendText("ping", true).get(5, TimeUnit.SECONDS)
+            val received = gotEcho.get(5, TimeUnit.SECONDS)
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+            assertEquals("ping", received)
         }
     }
 

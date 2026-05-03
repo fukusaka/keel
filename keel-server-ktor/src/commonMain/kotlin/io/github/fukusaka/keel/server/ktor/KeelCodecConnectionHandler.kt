@@ -124,47 +124,7 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
                 }
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive
-
-                // Stream body chunks into a ByteChannel via a concurrent pump.
-                // The pump owns bridge reads until it processes HttpBodyEnd; the
-                // main loop must not call bridge.receiveCatching() until pumpJob
-                // has completed.
-                val bodyPipe = ByteChannel(autoFlush = true)
-                val pumpJob = scope.launch { pumpBodyIntoChannel(bridge, bodyPipe) }
-
-                val call = KeelApplicationCall(
-                    application = engine.application(),
-                    head = head,
-                    localAddress = channel.localAddress,
-                    remoteAddress = channel.remoteAddress,
-                    requestBody = bodyPipe,
-                    pipelinedChannel = channel,
-                    scope = scope,
-                    coroutineContext = scope.coroutineContext,
-                    keepAlive = keepAlive,
-                    scheme = scheme,
-                )
-
-                // Run the Ktor pipeline on the configured application dispatcher,
-                // then drain any unread request body so the pump can reach
-                // HttpBodyEnd and the bridge is ready for the next head.
-                // null applicationDispatcher means channel.ioDispatcher (EventLoop
-                // thread); the ReferenceEquals short-circuit avoids a withContext hop
-                // when we are already on the target dispatcher — the common case after
-                // receiveCatching() resumed us on the EventLoop thread.
-                try {
-                    val appCtx = configuration.applicationDispatcher ?: channel.ioDispatcher
-                    if (appCtx !== scope.coroutineContext[ContinuationInterceptor]) {
-                        withContext(appCtx) { engine.pipeline.execute(call) }
-                    } else {
-                        engine.pipeline.execute(call)
-                    }
-                } finally {
-                    runCatching { bodyPipe.discard() }
-                    pumpJob.join()
-                }
-
-                if (!keepAlive) break
+                if (!processRequest(head, bridge, channel, engine, scope, scheme, keepAlive)) break
             }
         } catch (e: Exception) {
             if (e !is CancellationException) {
@@ -173,6 +133,66 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
         } finally {
             runCatching { channel.close() }
         }
+    }
+
+    /**
+     * Executes one HTTP request cycle: streams the body, runs the Ktor pipeline, and waits
+     * for any upgrade session to complete. Returns `true` if the keep-alive loop should
+     * continue with the next request, or `false` if the connection should be closed.
+     *
+     * Extracted from [handle] to keep that function's cyclomatic complexity under the project
+     * threshold — the `appCtx` dispatcher branch, the upgrade-job join, and the keep-alive
+     * termination check all live here rather than inline in the loop.
+     */
+    private suspend fun processRequest(
+        head: HttpRequestHead,
+        bridge: SuspendMessageBridge<HttpMessage>,
+        channel: PipelinedChannel,
+        engine: KeelApplicationEngine,
+        scope: CoroutineScope,
+        scheme: String,
+        keepAlive: Boolean,
+    ): Boolean {
+        val bodyPipe = ByteChannel(autoFlush = true)
+        val pumpJob = scope.launch { pumpBodyIntoChannel(bridge, bodyPipe) }
+        val call = KeelApplicationCall(
+            application = engine.application(),
+            head = head,
+            localAddress = channel.localAddress,
+            remoteAddress = channel.remoteAddress,
+            requestBody = bodyPipe,
+            pipelinedChannel = channel,
+            scope = scope,
+            coroutineContext = scope.coroutineContext,
+            keepAlive = keepAlive,
+            scheme = scheme,
+        )
+        // Run the Ktor pipeline on the configured application dispatcher, then drain
+        // any unread request body so the pump can reach HttpBodyEnd and the bridge is
+        // ready for the next head. A null applicationDispatcher means channel.ioDispatcher
+        // (EventLoop thread); the ReferenceEquals short-circuit avoids a withContext hop
+        // when we are already on the target dispatcher — the common case after
+        // receiveCatching() resumed us on the EventLoop thread.
+        try {
+            val appCtx = engine.configuration.applicationDispatcher ?: channel.ioDispatcher
+            if (appCtx !== scope.coroutineContext[ContinuationInterceptor]) {
+                withContext(appCtx) { engine.pipeline.execute(call) }
+            } else {
+                engine.pipeline.execute(call)
+            }
+        } finally {
+            runCatching { bodyPipe.discard() }
+            pumpJob.join()
+        }
+        // A protocol upgrade (e.g. WebSocket via respondUpgrade) was performed: the codec
+        // was swapped and the upgrade session is running. Join it to keep the connection
+        // alive until the peer closes, then signal the loop to exit.
+        val upgradeJob = call.response.upgradeJob
+        if (upgradeJob != null) {
+            upgradeJob.join()
+            return false
+        }
+        return keepAlive
     }
 
     /**
