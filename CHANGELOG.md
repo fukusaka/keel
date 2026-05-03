@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `keel-server-ktor`, `keel-server-ktor-cio`: `respondUpgrade` now works — Ktor's standard `webSocket { }` DSL (which calls `respondUpgrade` internally) is fully functional on both adapters; K2 swaps the HTTP codec for a raw byte bridge after sending `101`, K1 delegates directly to the raw channels ktor-http-cio already owns (#436)
 - `keel-server-ktor`: `KeelApplicationEngine.Configuration.socketOptions` forwards `SocketOptions` to every accepted connection; defaults to `SocketOptions.DEFAULT` (`TCP_NODELAY` enabled); pass `SocketOptions(tcpNoDelay = false)` to re-enable Nagle for bulk streaming workloads (#431)
 - `benchmark`: `ktor-cio-keel-{nio,kqueue,epoll,io-uring}` engines wire the new `:keel-server-ktor-cio` adapter into the bench harness for 3-way comparison (`pipeline-http-*` / `ktor-keel-*` / `ktor-cio-keel-*`). Native targets (kqueue / epoll) currently report intermittent 0 RPS — JVM is stable; investigation deferred (#417)
 - `keel-server-ktor-cio`: connection handler implementation — `KtorCioConnectionHandler` bridges keel transport to `ktor-http-cio` via two byte-channel pumps (inbound from `asBufferedSuspendSource`, outbound to `pipeline.requestWrite`). Ships `KeelCioApplicationCall` / `Request` / `Response` triple writing HTTP/1.1 wire-format directly to a `ByteWriteChannel` (Content-Length-delimited or chunked-encoded). 6 JVM integration tests (#416)
