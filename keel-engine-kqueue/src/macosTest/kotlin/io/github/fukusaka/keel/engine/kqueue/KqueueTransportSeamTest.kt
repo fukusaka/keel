@@ -6,6 +6,10 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
@@ -264,5 +268,54 @@ class KqueueTransportSeamTest {
         assertTrue(transport.flush())
         assertEquals(1, fake.writevCalls)
         fake.assertAllConsumed()
+    }
+
+    // --- awaitPendingFlush / teardown cancellation (K20 regression) ---
+
+    /**
+     * Regression test for K20: `teardownOnEventLoop` must cancel
+     * any coroutine suspended in `awaitPendingFlush`.
+     *
+     * See `EpollTransportSeamTest` for the full rationale; this is the
+     * macOS / kqueue counterpart exercising `KqueueIoTransport`.
+     */
+    @Test
+    fun `awaitPendingFlush is cancelled when transport is torn down`() = runBlocking {
+        eventLoop.start()
+
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.WouldBlock)
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()
+
+        var caughtCancellation = false
+        val awaitJob = launch {
+            try {
+                transport.awaitPendingFlush()
+            } catch (_: CancellationException) {
+                caughtCancellation = true
+            }
+        }
+
+        withTimeout(2000) {
+            transport.close()
+            awaitJob.join()
+        }
+
+        assertTrue(caughtCancellation, "awaitPendingFlush must be cancelled on close")
+    }
+
+    @Test
+    fun `awaitPendingFlush returns immediately when pending queue is empty`() = runBlocking {
+        val fake = FakeNativeSocket()
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
     }
 }
