@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `benchmark`: `wsbench` WebSocket fragment client now sets `TCP_NODELAY` on its outgoing connections; `bench-stream-one.sh`'s `bindConfigFor`/`childSocketOptions` now defaults `tcpNoDelay` to `true` (matching `SocketOptions.DEFAULT`) so POSIX engines (epoll/io-uring) no longer stall ~40 ms per echo round-trip due to Nagle+delayed-ACK interaction (#438)
 - `keel-core`: `TypedInboundHandler` auto-release now correctly releases the original input when a transforming handler propagates a different output object (e.g. `WsFrameDecoder` propagating `WsFrame` after consuming `IoBuf`); the previous identity-blind check leaked the source Netty `ByteBuf` indefinitely, causing OOM under sustained WebSocket load (#437)
 - `benchmark`: `pipeline-http-*` SSE responses (`/sse-stream`) no longer send a spurious second response on `HttpBodyEnd`, fixing HTTP/1.1 keep-alive reuse after every SSE stream (#435)
 - `native-posix`: `PosixNativeSocketOps` now checks the return values of `setsockopt(2)` (logged as warnings), `fcntl(F_GETFL/F_SETFL)` in `setNonBlocking`, `getsockopt(SO_ERROR)` in `getSocketError`, and `getsockname`/`getpeername` in `getLocalAddress`/`getRemoteAddress`; previously these could fail silently, leaving the fd in blocking mode or returning garbage addresses (#433)
