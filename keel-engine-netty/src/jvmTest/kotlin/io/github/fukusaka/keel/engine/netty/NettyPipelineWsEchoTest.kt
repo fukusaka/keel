@@ -26,13 +26,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Regression test for K4: pipeline-http-netty WebSocket echo hangs with 2+ concurrent VUs.
+ * Regression test for K4: pipeline-http-netty WebSocket echo crashes with SIGKILL (OOM)
+ * under sustained load, reporting 0 complete iterations and 0 req/s in the benchmark.
  *
- * Red-Green TDD: this test was written before the fix. It should hang (timeout) on the
- * buggy implementation and pass after the fix.
+ * The root cause was [TypedInboundHandler] leaking the [IoBuf] input whenever a
+ * transforming handler (such as [WsFrameDecoder]) propagated a different output object.
+ * Each inbound WebSocket frame left its Netty [ByteBuf] permanently unreleased; the pool
+ * exhausted under 50-VU load and macOS sent SIGKILL.
  *
- * The test mirrors the WS upgrade + echo logic in `BenchmarkRoutingHandler` but runs it
- * inline without the full benchmark module to isolate the hang to the pipeline layer.
+ * These tests exercise the WS upgrade + echo path using [NettyEngine.bindPipeline] with an
+ * inline [WsEchoHandler] that mirrors [BenchmarkRoutingHandler]'s logic — without the full
+ * benchmark module. A few connections and frames are enough to verify correctness; pool
+ * exhaustion requires sustained high-throughput load that is outside unit-test scope.
  */
 class NettyPipelineWsEchoTest {
 
@@ -157,10 +162,10 @@ class NettyPipelineWsEchoTest {
 
     /**
      * K4 regression: 2 concurrent VUs each send a text frame and wait for the echo.
-     *
-     * With the bug (IoBuf not released after WsFrameDecoder → Netty ByteBuf pool
-     * leak / potential read stall), one or both connections may never receive the
-     * echo. The 10-second test timeout detects the hang.
+     * Verifies that the WS upgrade + echo path functions correctly for multiple
+     * simultaneous connections — the scenario that exposed the K4 OOM crash in the
+     * benchmark. Unit-test scale (2 frames) does not exhaust the Netty pool; the
+     * full-scale pool exhaustion requires sustained 50-VU benchmark load.
      */
     @Test
     fun `ws-echo two concurrent connections both receive echoes`() = runTest {
