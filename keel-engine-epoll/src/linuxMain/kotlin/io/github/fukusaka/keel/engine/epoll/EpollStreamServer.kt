@@ -57,7 +57,7 @@ internal class EpollStreamServer(
     private val bindConfig: BindConfig,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("EpollStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : StreamServer {
 
     // [_active] flips false on the first close() and is checked atomically

@@ -47,6 +47,14 @@ internal interface KqueueSyscallOps {
     fun makePipe(fds: IntArray): Int
 
     /**
+     * Sets [fd] to non-blocking mode via `fcntl(F_GETFL)` + `fcntl(F_SETFL, O_NONBLOCK)`.
+     *
+     * Throws [IllegalStateException] if either `fcntl` call fails — a non-blocking
+     * fd is a pre-condition for the EventLoop and a failure here is not recoverable.
+     */
+    fun setNonBlocking(fd: Int)
+
+    /**
      * Registers [fd] with [kqFd] for read-readiness (`EV_ADD` +
      * `EVFILT_READ`). Re-registering the same fd is idempotent.
      *

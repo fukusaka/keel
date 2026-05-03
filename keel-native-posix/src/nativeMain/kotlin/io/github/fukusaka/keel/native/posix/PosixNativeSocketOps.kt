@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -80,15 +81,14 @@ import posix_socket.keel_sockaddr_un_copy_path
  * `keel_init_sockaddr_in6`, `keel_fill_sockaddr_in6_addr`,
  * `keel_extract_sockaddr_in6_addr`, `keel_sockaddr_family`) for reliable
  * cross-platform binding.
+ *
+ * @param logger Used for warning-level log messages emitted when
+ *   [setSocketOption] (`setsockopt(2)`) fails. Failures are logged and
+ *   swallowed — socket-option application is best-effort and never
+ *   fails the surrounding bind / connect / accept flow.
  */
 @OptIn(ExperimentalForeignApi::class)
-object PosixNativeSocketOps : NativeSocketOps {
-
-    private const val INET_ADDRSTRLEN = 16
-
-    // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
-    // both; excess bytes past the platform limit are simply never written.
-    private const val UNIX_SUN_PATH_BUF = 108
+public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps {
 
     /**
      * Opens a non-blocking TCP listener fd:
@@ -100,7 +100,6 @@ object PosixNativeSocketOps : NativeSocketOps {
         address: IpAddress,
         port: Int,
         backlog: Int,
-        logger: Logger,
         reusePort: Boolean,
     ): Int {
         val family = familyOf(address)
@@ -109,13 +108,9 @@ object PosixNativeSocketOps : NativeSocketOps {
 
         try {
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
-            // intArrayOf(1).usePinned workaround: IntVar.value assignment
-            // fails on some Kotlin/Native versions.
-            intArrayOf(1).usePinned { pinned ->
-                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                if (reusePort) {
-                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                }
+            setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1)
+            if (reusePort) {
+                setsockoptInt(fd, SOL_SOCKET, SO_REUSEPORT, 1)
             }
 
             setNonBlocking(fd)
@@ -149,7 +144,7 @@ object PosixNativeSocketOps : NativeSocketOps {
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
             val context = if (reusePort) "bindListener(reusePort) cleanup" else "bindListener cleanup"
-            closeFdSafely(fd, logger, context)
+            closeFdSafely(fd, context)
             throw e
         }
 
@@ -203,7 +198,7 @@ object PosixNativeSocketOps : NativeSocketOps {
         // IntArray.usePinned workaround: IntVar.value / socklen_tVar.value
         // assignment fails on some Kotlin/Native versions.
         val errBuf = intArrayOf(0)
-        errBuf.usePinned { errPinned ->
+        val rc = errBuf.usePinned { errPinned ->
             uintArrayOf(sizeOf<IntVar>().toUInt()).usePinned { lenPinned ->
                 getsockopt(
                     fd, SOL_SOCKET, SO_ERROR,
@@ -212,6 +207,7 @@ object PosixNativeSocketOps : NativeSocketOps {
                 )
             }
         }
+        check(rc == 0) { "getsockopt(SO_ERROR) failed: ${errnoMessage(errno)}" }
         return errBuf[0]
     }
 
@@ -219,9 +215,10 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun getLocalAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
-        lenArr.usePinned { len ->
+        val rc = lenArr.usePinned { len ->
             getsockname(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
+        check(rc == 0) { "getsockname() failed: ${errnoMessage(errno)}" }
         storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
@@ -229,25 +226,34 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
-        lenArr.usePinned { len ->
+        val rc = lenArr.usePinned { len ->
             getpeername(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
+        check(rc == 0) { "getpeername() failed: ${errnoMessage(errno)}" }
         storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
-    /** Sets O_NONBLOCK on [fd] via `fcntl`. */
+    /**
+     * Sets `O_NONBLOCK` on [fd] via `fcntl(2)`.
+     *
+     * Both the `F_GETFL` and `F_SETFL` calls are checked with [check].
+     * Failure to set non-blocking mode is fatal for the EventLoop model —
+     * a blocking fd would cause any subsequent `read` / `write` / `accept`
+     * inside the EventLoop thread to block indefinitely.
+     */
     override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
-        fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(flags >= 0) { "fcntl(F_GETFL) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(rc == 0) { "fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(errno)}" }
     }
 
     /**
      * Applies a [SocketOption] to [fd] via `setsockopt(2)`. See
      * [NativeSocketOps.setSocketOption] for the overall contract.
      *
-     * Failures are swallowed (kernel returned non-zero). Callers
-     * have no recovery path — failures here indicate a misuse
-     * (wrong `optlen`) or environmental issue that doesn't affect
+     * Failures are logged via the constructor-provided logger and
+     * swallowed — option application is best-effort and does not fail
      * the surrounding connect / bind / accept flow.
      */
     override fun setSocketOption(fd: Int, option: SocketOption) {
@@ -272,10 +278,17 @@ object PosixNativeSocketOps : NativeSocketOps {
      * `IntArray.usePinned` workaround pattern (see [getSocketError])
      * because `IntVar.value` assignment is unreliable on some
      * Kotlin/Native versions.
+     *
+     * Failures are logged via the constructor-provided logger and
+     * swallowed — the caller (bind / connect / accept flow) has no
+     * recovery path for a best-effort socket option.
      */
     private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int) {
-        intArrayOf(value).usePinned { pinned ->
+        val rc = intArrayOf(value).usePinned { pinned ->
             setsockopt(fd, level, optname, pinned.addressOf(0), sizeOf<IntVar>().convert())
+        }
+        if (rc != 0) {
+            logger.warn { "setsockopt(fd=$fd, level=$level, optname=$optname, value=$value) failed: ${errnoMessage(errno)}" }
         }
     }
 
@@ -368,7 +381,6 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
-        logger: Logger,
     ): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
@@ -394,7 +406,7 @@ object PosixNativeSocketOps : NativeSocketOps {
             val listenRc = listen(fd, backlog)
             check(listenRc == 0) { "listen(AF_UNIX) failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            closeFdSafely(fd, logger, "bindUnixListener cleanup")
+            closeFdSafely(fd, "bindUnixListener cleanup")
             throw e
         }
         return fd
@@ -443,6 +455,17 @@ object PosixNativeSocketOps : NativeSocketOps {
             if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
             else ConnectResult.Failed(err)
         }
+    }
+
+    private fun closeFdSafely(fd: Int, context: String) =
+        closeFdSafely(fd, logger, context)
+
+    companion object {
+        private const val INET_ADDRSTRLEN = 16
+
+        // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
+        // both; excess bytes past the platform limit are simply never written.
+        private const val UNIX_SUN_PATH_BUF = 108
     }
 }
 

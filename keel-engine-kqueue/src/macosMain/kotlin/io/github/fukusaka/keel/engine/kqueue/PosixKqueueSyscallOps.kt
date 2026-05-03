@@ -16,8 +16,13 @@ import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.kevent
 import platform.darwin.kqueue
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import platform.posix.EAGAIN
+import platform.posix.F_GETFL
+import platform.posix.F_SETFL
+import platform.posix.O_NONBLOCK
 import platform.posix.errno
+import platform.posix.fcntl
 import platform.posix.pipe
 import platform.posix.read
 import platform.posix.timespec
@@ -45,6 +50,13 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
     override fun makePipe(fds: IntArray): Int {
         val rc = pipe(fds.refTo(0))
         return if (rc != 0) errno else 0
+    }
+
+    override fun setNonBlocking(fd: Int) {
+        val flags = fcntl(fd, F_GETFL, 0)
+        check(flags >= 0) { "fcntl(F_GETFL) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(rc == 0) { "fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(errno)}" }
     }
 
     override fun addReadFilter(kqFd: Int, fd: Int): Int =

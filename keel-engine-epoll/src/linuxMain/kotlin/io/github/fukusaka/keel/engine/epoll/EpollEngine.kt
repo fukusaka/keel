@@ -87,13 +87,14 @@ import kotlin.coroutines.CoroutineContext
 class EpollEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    nativeSocketOps: NativeSocketOps? = null,
     private val suspendRegisterOverride: EpollSuspendRegister? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("EpollEngine")
+    private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
     private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"), config.allocator)
     private var closed = false
@@ -120,7 +121,7 @@ class EpollEngine(
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         try {
             memScoped {
@@ -144,7 +145,7 @@ class EpollEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         try {
             // Register server fd with the boss EventLoop's epoll so that
@@ -276,7 +277,7 @@ class EpollEngine(
     ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
 
-        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -308,7 +309,7 @@ class EpollEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog)
 
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)

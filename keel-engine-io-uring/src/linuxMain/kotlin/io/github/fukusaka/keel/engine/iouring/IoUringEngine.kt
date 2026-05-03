@@ -96,12 +96,13 @@ class IoUringEngine(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    nativeSocketOps: NativeSocketOps? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
+    private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val resolvedCapabilities: IoUringCapabilities
     private val bossLoop: IoUringEventLoop
     private val workerGroup: IoUringEventLoopGroup
@@ -158,7 +159,7 @@ class IoUringEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
-        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
         try {
             logger.debug { "Bound to $address" }
             return IoUringStreamServer(
@@ -175,7 +176,7 @@ class IoUringEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
@@ -358,7 +359,7 @@ class IoUringEngine(
         // single server fd. Only one worker receives accept readiness — UDS
         // workloads are typically low-fanout (IPC / sidecars) so the loss of
         // kernel-side connection hashing is acceptable.
-        val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog, logger))
+        val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog))
         try {
             val server = IoUringPipelinedStreamServer(
                 workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
@@ -389,7 +390,7 @@ class IoUringEngine(
         var createdCount = 0
         try {
             for (i in serverFds.indices) {
-                serverFds[i] = nativeSocketOps.bindListener(ip, port, config.backlog, logger, reusePort = true)
+                serverFds[i] = nativeSocketOps.bindListener(ip, port, config.backlog, reusePort = true)
                 createdCount = i + 1
             }
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.

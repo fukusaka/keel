@@ -17,6 +17,10 @@ import io.github.fukusaka.keel.core.SocketOptions
  * the order declared in [SocketOptions] (tcpNoDelay → keepAlive →
  * receiveBufferSize → sendBufferSize). Tests relying on
  * [FakeNativeSocketOps.appliedOptions] can assert this sequence.
+ *
+ * Any `setsockopt(2)` failure is logged and swallowed by the
+ * [NativeSocketOps] implementation — option application is best-effort
+ * and does not fail the surrounding bind / connect / accept flow.
  */
 public fun NativeSocketOps.applySocketOptions(fd: Int, options: SocketOptions) {
     if (options.isEmpty) return

@@ -56,7 +56,7 @@ internal class KqueueStreamServer(
     private val bindConfig: BindConfig,
     private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : StreamServer {
 
     // [_active] flips false on the first close() and is checked atomically

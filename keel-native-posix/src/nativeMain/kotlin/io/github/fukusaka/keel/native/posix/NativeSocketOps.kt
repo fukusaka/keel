@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
-import io.github.fukusaka.keel.logging.Logger
 
 /**
  * Cold-path seam for POSIX socket lifecycle syscalls.
@@ -77,8 +76,8 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * ## Testability
  *
- * Engine classes accept a [NativeSocketOps] parameter (defaulting to
- * [PosixNativeSocketOps]). Unit tests can inject a fake implementation
+ * Engine classes accept a [NativeSocketOps] parameter (defaulting to a
+ * [PosixNativeSocketOps] instance). Unit tests can inject a fake implementation
  * to drive the engine through specific branches —
  * [ConnectResult.Failed] (ECONNREFUSED), `bind` failure (EADDRINUSE),
  * `SO_ERROR` non-zero after suspend — without touching a real
@@ -97,17 +96,12 @@ public interface NativeSocketOps {
      * kernel-side load balancing across multiple sockets bound to the
      * same address.
      *
-     * @param logger Used by the error-cleanup branch to route
-     *   `close(fd)` through [closeFdSafely], so a `close(2)` failure
-     *   during the unwind of a `bind` / `listen` error does not
-     *   silently leak the fd.
      * @return The listener fd.
      */
     public fun bindListener(
         address: IpAddress,
         port: Int,
         backlog: Int,
-        logger: Logger,
         reusePort: Boolean = false,
     ): Int
 
@@ -153,11 +147,10 @@ public interface NativeSocketOps {
      *
      * Each [SocketOption] variant maps to a specific
      * `(level, optname, optval)` triple in the production impl
-     * ([PosixNativeSocketOps.setSocketOption]). Failures are logged
-     * and swallowed — option application is best-effort and does
-     * not fail the surrounding bind / connect / accept flow
-     * (matches the convention of Netty `ChannelOption` and Java
-     * `Socket.setTcpNoDelay`).
+     * ([PosixNativeSocketOps.setSocketOption]). Failures are logged and
+     * swallowed — option application is best-effort and does not fail
+     * the surrounding bind / connect / accept flow (matches the
+     * convention of Netty `ChannelOption` and Java `Socket.setTcpNoDelay`).
      */
     public fun setSocketOption(fd: Int, option: SocketOption)
 
@@ -168,14 +161,10 @@ public interface NativeSocketOps {
      * `SO_REUSEADDR` is NOT applied because it has no meaningful effect
      * for filesystem sockets and is not supported for abstract sockets.
      *
-     * @param logger Used by the error-cleanup branch to route
-     *   `close(fd)` through [closeFdSafely] (same contract as
-     *   [bindListener]).
      */
     public fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
-        logger: Logger,
     ): Int
 
     /**

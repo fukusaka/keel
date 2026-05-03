@@ -47,6 +47,13 @@ internal class FakeKqueueSyscallOps(
         makePipeResults.addLast(PipeResult.Failed(errno))
     }
 
+    var setNonBlockingCalls: Int = 0
+        private set
+
+    override fun setNonBlocking(fd: Int) {
+        setNonBlockingCalls++
+    }
+
     override fun makePipe(fds: IntArray): Int {
         val r = if (makePipeResults.isEmpty()) {
             PipeResult.Ok(nextFakeFd++, nextFakeFd++)

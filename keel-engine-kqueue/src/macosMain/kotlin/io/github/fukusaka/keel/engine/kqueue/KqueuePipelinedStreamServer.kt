@@ -46,7 +46,7 @@ internal class KqueuePipelinedStreamServer(
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : PipelinedStreamServer, KqueueEventLoop.FdReadyListener {
 
     override val localAddress: SocketAddress get() = localAddr

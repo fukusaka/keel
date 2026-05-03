@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
-import io.github.fukusaka.keel.logging.Logger
 
 /**
  * Test-only in-memory [NativeSocketOps] implementation.
@@ -163,7 +162,6 @@ public class FakeNativeSocketOps : NativeSocketOps {
         address: IpAddress,
         port: Int,
         backlog: Int,
-        logger: Logger,
         reusePort: Boolean,
     ): Int {
         if (reusePort) {
@@ -209,7 +207,7 @@ public class FakeNativeSocketOps : NativeSocketOps {
         _appliedOptions.add(fd to option)
     }
 
-    override fun bindUnixListener(address: UnixSocketAddress, backlog: Int, logger: Logger): Int {
+    override fun bindUnixListener(address: UnixSocketAddress, backlog: Int): Int {
         bindUnixListenerCalls++
         return allocateFd(bindUnixListenerQueue)
     }
