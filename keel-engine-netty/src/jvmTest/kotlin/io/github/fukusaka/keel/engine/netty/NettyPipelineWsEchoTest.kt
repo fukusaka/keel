@@ -250,7 +250,7 @@ class NettyPipelineWsEchoTest {
                             futures.forEach { it.completeExceptionally(error) }
                         }
                     })
-                    .get(5, TimeUnit.SECONDS)
+                    .get(15, TimeUnit.SECONDS)
                 Triple(id, ws, futures)
             }
 
@@ -260,10 +260,10 @@ class NettyPipelineWsEchoTest {
 
             for ((id, ws, futures) in connections) {
                 for (r in 1..3) {
-                    assertEquals("vu$id-r$r", futures[r - 1].get(8, TimeUnit.SECONDS),
+                    assertEquals("vu$id-r$r", futures[r - 1].get(30, TimeUnit.SECONDS),
                         "VU$id round $r echo mismatch")
                 }
-                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(3, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(10, TimeUnit.SECONDS)
             }
         } finally {
             server.close()

@@ -163,6 +163,11 @@ internal class EpollIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
+        // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel()
+        }
         eventLoop.cleanupFd(fd)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")

@@ -814,6 +814,11 @@ internal class IoUringIoTransport(
         pendingWrites.clear()
         pendingBytes = 0
         asyncPendingFlushBytes = 0
+        // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel()
+        }
         if (fixedFileIndex >= 0) fixedFileRegistry?.unregister(fixedFileIndex)
         // Direct-allocated slots: unregister() above issues
         // register_files_update(slot, -1) which closes the kernel-held fd.

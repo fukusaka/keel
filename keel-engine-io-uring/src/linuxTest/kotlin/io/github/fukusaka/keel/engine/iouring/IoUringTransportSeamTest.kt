@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
@@ -197,5 +199,27 @@ class IoUringTransportSeamTest {
 
         assertTrue(transport.flush())
         assertEquals(1, readClosedFired, "send()==0 must still tear down the connection")
+    }
+
+    // --- awaitPendingFlush (K20 regression) ---
+
+    /**
+     * `awaitPendingFlush` returns immediately when no async flush is in flight
+     * (`asyncFlushPending == false`). This is the common case after a
+     * synchronous `send()` completes or when the queue is empty.
+     *
+     * The teardown-cancellation path (`asyncFlushPending == true`) requires a
+     * real io_uring ring to trigger `submitAsyncSend`; that path is covered by
+     * the integration tests in `IoModeTest` and `IoUringEngineReadWriteTest`.
+     */
+    @Test
+    fun `awaitPendingFlush returns immediately when no async flush is pending`() = runBlocking {
+        val fake = FakeNativeSocket()
+        val transport = newTransport(fake)
+
+        // No writes — asyncFlushPending is false; must not suspend.
+        withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
     }
 }

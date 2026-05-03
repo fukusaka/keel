@@ -6,6 +6,10 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
@@ -307,5 +311,70 @@ class EpollTransportSeamTest {
         assertTrue(transport.flush())
         assertEquals(1, fake.writevCalls)
         fake.assertAllConsumed()
+    }
+
+    // --- awaitPendingFlush / teardown cancellation (K20 regression) ---
+
+    /**
+     * Regression test for K20: `teardownOnEventLoop` must cancel
+     * any coroutine suspended in `awaitPendingFlush` so the caller
+     * does not hang indefinitely.
+     *
+     * Before the fix, `teardownOnEventLoop` cleared `pendingWrites` but
+     * never touched `flushContinuation`, leaving `awaitPendingFlush`
+     * suspended forever. The fix cancels the continuation so the
+     * caller receives `CancellationException` and can proceed.
+     *
+     * The EventLoop is started (pthread) so the dispatched
+     * `teardownOnEventLoop` task is actually executed when
+     * `transport.close()` is called from outside the EventLoop thread.
+     */
+    @Test
+    fun `awaitPendingFlush is cancelled when transport is torn down`() = runBlocking {
+        // Start the EventLoop pthread so dispatched tasks run.
+        eventLoop.start()
+
+        val fake = FakeNativeSocket().apply {
+            // EAGAIN on the first write — flush returns false, awaitPendingFlush suspends.
+            enqueueWrite(fd, WriteResult.WouldBlock)
+        }
+        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()  // returns false (WouldBlock), EPOLLOUT pending
+
+        // Start awaitPendingFlush in a background coroutine; it must be
+        // unblocked (via CancellationException) when the transport closes.
+        var caughtCancellation = false
+        val awaitJob = launch {
+            try {
+                transport.awaitPendingFlush()
+            } catch (_: CancellationException) {
+                caughtCancellation = true
+            }
+        }
+
+        // Close the transport from outside the EventLoop thread; transport.close()
+        // dispatches teardownOnEventLoop() to the EventLoop. The EventLoop thread
+        // picks it up, cancels flushContinuation, and awaitJob completes.
+        // withTimeout guards the test against an infinite hang (the pre-fix bug).
+        withTimeout(2000) {
+            transport.close()
+            awaitJob.join()
+        }
+
+        assertTrue(caughtCancellation, "awaitPendingFlush must be cancelled on close")
+    }
+
+    @Test
+    fun `awaitPendingFlush returns immediately when pending queue is empty`() = runBlocking {
+        val fake = FakeNativeSocket()
+        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        // No writes enqueued — pendingWrites is empty, must return without suspending.
+        withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
     }
 }
