@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -38,6 +39,11 @@ class PipelineHttpRoutesTest {
 
     private val transport = CapturingTransport()
     private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+
+    @AfterTest
+    fun tearDown() {
+        channel.close()
+    }
 
     private fun createPipeline(): Pipeline {
         val pipeline = channel.pipeline
