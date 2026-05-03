@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `keel-core`: `TypedInboundHandler` auto-release now correctly releases the original input when a transforming handler propagates a different output object (e.g. `WsFrameDecoder` propagating `WsFrame` after consuming `IoBuf`); the previous identity-blind check leaked the source Netty `ByteBuf` indefinitely, causing OOM under sustained WebSocket load (#423)
+- `keel-core`: `TypedInboundHandler` auto-release now correctly releases the original input when a transforming handler propagates a different output object (e.g. `WsFrameDecoder` propagating `WsFrame` after consuming `IoBuf`); the previous identity-blind check leaked the source Netty `ByteBuf` indefinitely, causing OOM under sustained WebSocket load (#437)
 - `benchmark`: `pipeline-http-*` SSE responses (`/sse-stream`) no longer send a spurious second response on `HttpBodyEnd`, fixing HTTP/1.1 keep-alive reuse after every SSE stream (#435)
 - `native-posix`: `PosixNativeSocketOps` now checks the return values of `setsockopt(2)` (logged as warnings), `fcntl(F_GETFL/F_SETFL)` in `setNonBlocking`, `getsockopt(SO_ERROR)` in `getSocketError`, and `getsockname`/`getpeername` in `getLocalAddress`/`getRemoteAddress`; previously these could fail silently, leaving the fd in blocking mode or returning garbage addresses (#433)
 - `keel-server-ktor-cio`: `HeaderParseMutex` is now a no-op on Linux (epoll / io_uring), where the single-threaded EventLoop makes concurrent `HeadersDataPool` access impossible; previously the process-wide mutex serialised all 50 VU connections at the header-parse step, collapsing multipart throughput from ~52 k req/s (JVM) to 42 req/s on Native Linux (#432)
