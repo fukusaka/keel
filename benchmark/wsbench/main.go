@@ -37,6 +37,8 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -78,18 +80,41 @@ func main() {
 		os.Exit(1)
 	}
 	u := url.URL{Scheme: *scheme, Host: fmt.Sprintf("%s:%d", *host, *port), Path: *path}
+
+	// TCP_NODELAY is required for fragment-recv correctness: wsbench writes
+	// each fragment as a separate Write() to the underlying TCP connection.
+	// Without TCP_NODELAY, Linux's Nagle algorithm delays frames 2..N until
+	// the previous frame is ACK'd (~40 ms delayed-ACK timer), collapsing
+	// throughput to ~2 K msg/s regardless of server speed. With TCP_NODELAY
+	// all fragments are flushed immediately, so the server receives the
+	// complete fragmented message in one RTT and the bench measures server
+	// reassembly throughput rather than Nagle delay.
+	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 45 * time.Second,
+		NetDial: func(network, addr string) (net.Conn, error) {
+			conn, err := net.Dial(network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if tc, ok := conn.(*net.TCPConn); ok {
+				_ = tc.SetNoDelay(true)
+			}
+			return conn, nil
+		},
+	}
 	// Skip TLS cert verification for wss because the bench cert is the
 	// self-signed one shared by every engine; this matches k6's
 	// `insecureSkipTLSVerify: true` in the script options.
 	if *scheme == "wss" {
-		websocket.DefaultDialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
 	switch *scenario {
 	case "fragment-recv":
-		runFragmentRecv(*name, u.String(), *vus, *duration, *bytes, *fragments)
+		runFragmentRecv(*name, u.String(), dialer, *vus, *duration, *bytes, *fragments)
 	case "fragment-send":
-		runFragmentSend(*name, u.String(), *vus, *duration, *bytes)
+		runFragmentSend(*name, u.String(), dialer, *vus, *duration, *bytes)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown scenario %q (expected fragment-recv|fragment-send)\n", *scenario)
 		os.Exit(1)
@@ -99,7 +124,7 @@ func main() {
 // runFragmentRecv: each VU repeatedly sends one fragmented message
 // (split into `fragments` frames) and waits for the server to echo
 // back a single coalesced message.
-func runFragmentRecv(name, urlStr string, vus int, duration time.Duration, totalBytes, fragments int) {
+func runFragmentRecv(name, urlStr string, dialer *websocket.Dialer, vus int, duration time.Duration, totalBytes, fragments int) {
 	stats := newStatsAggregator()
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
@@ -111,7 +136,7 @@ func runFragmentRecv(name, urlStr string, vus int, duration time.Duration, total
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conn, _, err := websocket.DefaultDialer.DialContext(ctx, urlStr, nil)
+			conn, _, err := dialer.DialContext(ctx, urlStr, nil)
 			if err != nil {
 				return
 			}
@@ -141,7 +166,7 @@ func runFragmentRecv(name, urlStr string, vus int, duration time.Duration, total
 // fragment-emit path. (If the server doesn't fragment its echo, this
 // scenario behaves identically to a vanilla ws-echo — the bench label
 // just signals that fragmentation is acceptable on the receive side.)
-func runFragmentSend(name, urlStr string, vus int, duration time.Duration, totalBytes int) {
+func runFragmentSend(name, urlStr string, dialer *websocket.Dialer, vus int, duration time.Duration, totalBytes int) {
 	stats := newStatsAggregator()
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
@@ -156,7 +181,7 @@ func runFragmentSend(name, urlStr string, vus int, duration time.Duration, total
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			conn, _, err := websocket.DefaultDialer.DialContext(ctx, urlStr, nil)
+			conn, _, err := dialer.DialContext(ctx, urlStr, nil)
 			if err != nil {
 				return
 			}
