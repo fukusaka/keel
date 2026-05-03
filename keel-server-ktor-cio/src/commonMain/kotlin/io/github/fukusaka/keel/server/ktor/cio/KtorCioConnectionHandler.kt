@@ -188,6 +188,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                 application = engine.application(),
                 cioRequest = request,
                 requestBody = bodyChannel,
+                rawInput = input,
                 output = output,
                 localAddress = channel.localAddress,
                 remoteAddress = channel.remoteAddress,
@@ -208,6 +209,15 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                 request.release()
                 runCatching { bodyChannel.discard() }
                 output.flush()
+            }
+
+            // A protocol upgrade (e.g. WebSocket) was performed: the upgrade session
+            // now owns the raw input/output channels. Join the session job to keep
+            // the connection alive until the peer closes, then exit the keep-alive loop.
+            val upgradeJob = call.response.upgradeJob
+            if (upgradeJob != null) {
+                upgradeJob.join()
+                break
             }
 
             if (!keepAlive) break
