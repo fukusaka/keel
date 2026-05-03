@@ -211,7 +211,7 @@ class KqueueEngine(
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -244,7 +244,7 @@ class KqueueEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {

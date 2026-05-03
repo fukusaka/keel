@@ -208,7 +208,7 @@ class IoUringEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -259,7 +259,7 @@ class IoUringEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)

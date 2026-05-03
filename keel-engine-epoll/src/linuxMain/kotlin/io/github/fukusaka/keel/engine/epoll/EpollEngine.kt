@@ -190,7 +190,7 @@ class EpollEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -223,7 +223,7 @@ class EpollEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
+        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {

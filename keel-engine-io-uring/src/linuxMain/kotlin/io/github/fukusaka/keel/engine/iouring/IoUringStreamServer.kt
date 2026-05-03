@@ -119,7 +119,7 @@ internal class IoUringStreamServer(
 
         try {
             nativeSocketOps.setNonBlocking(clientFd)
-            nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
+            nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions, logger)
             val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
             val localAddr = nativeSocketOps.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()

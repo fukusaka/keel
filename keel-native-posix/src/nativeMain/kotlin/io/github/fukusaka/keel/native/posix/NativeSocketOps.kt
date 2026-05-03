@@ -153,13 +153,13 @@ public interface NativeSocketOps {
      *
      * Each [SocketOption] variant maps to a specific
      * `(level, optname, optval)` triple in the production impl
-     * ([PosixNativeSocketOps.setSocketOption]). Failures are logged
-     * and swallowed — option application is best-effort and does
+     * ([PosixNativeSocketOps.setSocketOption]). Failures are logged via
+     * [logger] and swallowed — option application is best-effort and does
      * not fail the surrounding bind / connect / accept flow
      * (matches the convention of Netty `ChannelOption` and Java
      * `Socket.setTcpNoDelay`).
      */
-    public fun setSocketOption(fd: Int, option: SocketOption)
+    public fun setSocketOption(fd: Int, option: SocketOption, logger: Logger)
 
     /**
      * Opens a non-blocking `AF_UNIX` / `SOCK_STREAM` listener fd:

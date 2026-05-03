@@ -102,7 +102,7 @@ internal class KqueueStreamServer(
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
                     nativeSocketOps.setNonBlocking(clientFd)
-                    nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
+                    nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions, logger)
                     val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
                     val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val workerLoop = workerGroup.next()

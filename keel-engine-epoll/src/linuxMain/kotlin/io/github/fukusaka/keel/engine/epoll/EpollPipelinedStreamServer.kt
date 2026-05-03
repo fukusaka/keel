@@ -75,7 +75,7 @@ internal class EpollPipelinedStreamServer(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     nativeSocketOps.setNonBlocking(result.fd)
-                    nativeSocketOps.applySocketOptions(result.fd, config.childSocketOptions)
+                    nativeSocketOps.applySocketOptions(result.fd, config.childSocketOptions, logger)
                     dispatchToWorker(result.fd)
                 }
                 AcceptResult.WouldBlock -> {

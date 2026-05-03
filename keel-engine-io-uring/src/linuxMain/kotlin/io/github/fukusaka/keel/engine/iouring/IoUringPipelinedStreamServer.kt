@@ -211,7 +211,7 @@ internal class IoUringPipelinedStreamServer(
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
-            nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions)
+            nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions, logger)
             IoUringIoTransport(
                 fd = acceptRes,
                 eventLoop = loop,

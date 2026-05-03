@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -111,11 +112,9 @@ object PosixNativeSocketOps : NativeSocketOps {
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
             // intArrayOf(1).usePinned workaround: IntVar.value assignment
             // fails on some Kotlin/Native versions.
-            intArrayOf(1).usePinned { pinned ->
-                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                if (reusePort) {
-                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, pinned.addressOf(0), sizeOf<IntVar>().convert())
-                }
+            setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1, logger)
+            if (reusePort) {
+                setsockoptInt(fd, SOL_SOCKET, SO_REUSEPORT, 1, logger)
             }
 
             setNonBlocking(fd)
@@ -245,24 +244,23 @@ object PosixNativeSocketOps : NativeSocketOps {
      * Applies a [SocketOption] to [fd] via `setsockopt(2)`. See
      * [NativeSocketOps.setSocketOption] for the overall contract.
      *
-     * Failures are swallowed (kernel returned non-zero). Callers
-     * have no recovery path — failures here indicate a misuse
-     * (wrong `optlen`) or environmental issue that doesn't affect
-     * the surrounding connect / bind / accept flow.
+     * Failures are logged via [logger] and swallowed — option
+     * application is best-effort and does not fail the surrounding
+     * connect / bind / accept flow.
      */
-    override fun setSocketOption(fd: Int, option: SocketOption) {
+    override fun setSocketOption(fd: Int, option: SocketOption, logger: Logger) {
         when (option) {
             is SocketOption.TcpNoDelay -> setsockoptInt(
-                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0,
+                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0, logger,
             )
             is SocketOption.KeepAlive -> setsockoptInt(
-                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0,
+                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0, logger,
             )
             is SocketOption.ReceiveBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_RCVBUF, option.bytes,
+                fd, SOL_SOCKET, SO_RCVBUF, option.bytes, logger,
             )
             is SocketOption.SendBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_SNDBUF, option.bytes,
+                fd, SOL_SOCKET, SO_SNDBUF, option.bytes, logger,
             )
         }
     }
@@ -272,10 +270,17 @@ object PosixNativeSocketOps : NativeSocketOps {
      * `IntArray.usePinned` workaround pattern (see [getSocketError])
      * because `IntVar.value` assignment is unreliable on some
      * Kotlin/Native versions.
+     *
+     * Failures are logged via [logger] and swallowed — the caller
+     * (bind / connect / accept flow) has no recovery path for a
+     * best-effort socket option.
      */
-    private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int) {
-        intArrayOf(value).usePinned { pinned ->
+    private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int, logger: Logger) {
+        val rc = intArrayOf(value).usePinned { pinned ->
             setsockopt(fd, level, optname, pinned.addressOf(0), sizeOf<IntVar>().convert())
+        }
+        if (rc != 0) {
+            logger.warn { "setsockopt(fd=$fd, level=$level, optname=$optname, value=$value) failed: ${errnoMessage(errno)}" }
         }
     }
 
