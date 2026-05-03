@@ -100,7 +100,6 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         address: IpAddress,
         port: Int,
         backlog: Int,
-        logger: Logger,
         reusePort: Boolean,
     ): Int {
         val family = familyOf(address)
@@ -382,7 +381,6 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
-        logger: Logger,
     ): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }

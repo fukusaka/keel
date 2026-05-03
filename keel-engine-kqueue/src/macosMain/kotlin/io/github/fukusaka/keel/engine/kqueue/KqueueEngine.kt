@@ -124,7 +124,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         try {
             memScoped {
@@ -155,7 +155,7 @@ class KqueueEngine(
 
         val ip = address.resolveFirst(config.resolver)
         val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         try {
             // Register server fd with the boss EventLoop's kqueue so that
@@ -307,7 +307,7 @@ class KqueueEngine(
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
-        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog)
 
         try {
             logger.debug { "Pipeline bound to $address" }
@@ -339,7 +339,7 @@ class KqueueEngine(
 
         val ip = address.requireIp()
         val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog, logger)
+        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog)
 
         try {
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)

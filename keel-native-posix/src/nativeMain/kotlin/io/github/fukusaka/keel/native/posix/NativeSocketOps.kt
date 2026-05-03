@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
-import io.github.fukusaka.keel.logging.Logger
 
 /**
  * Cold-path seam for POSIX socket lifecycle syscalls.
@@ -97,17 +96,12 @@ public interface NativeSocketOps {
      * kernel-side load balancing across multiple sockets bound to the
      * same address.
      *
-     * @param logger Used by the error-cleanup branch to route
-     *   `close(fd)` through [closeFdSafely], so a `close(2)` failure
-     *   during the unwind of a `bind` / `listen` error does not
-     *   silently leak the fd.
      * @return The listener fd.
      */
     public fun bindListener(
         address: IpAddress,
         port: Int,
         backlog: Int,
-        logger: Logger,
         reusePort: Boolean = false,
     ): Int
 
@@ -167,14 +161,10 @@ public interface NativeSocketOps {
      * `SO_REUSEADDR` is NOT applied because it has no meaningful effect
      * for filesystem sockets and is not supported for abstract sockets.
      *
-     * @param logger Used by the error-cleanup branch to route
-     *   `close(fd)` through [closeFdSafely] (same contract as
-     *   [bindListener]).
      */
     public fun bindUnixListener(
         address: UnixSocketAddress,
         backlog: Int,
-        logger: Logger,
     ): Int
 
     /**
