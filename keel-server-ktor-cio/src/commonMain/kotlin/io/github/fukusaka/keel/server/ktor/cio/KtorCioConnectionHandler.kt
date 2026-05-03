@@ -224,11 +224,6 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         output: ByteWriteChannel,
     ): Job = scope.launch {
         try {
-            // parseHttpBody intentionally NOT wrapped in [parserMutex]:
-            // body decoding is per-connection (no shared `HeadersDataPool`
-            // contention) and the duration is unbounded for streaming
-            // uploads — holding a process-wide mutex over a long body
-            // would head-of-line block every other connection's parser.
             parseHttpBody(
                 HttpProtocolVersion.parse(version),
                 length,
