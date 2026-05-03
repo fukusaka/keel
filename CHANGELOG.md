@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `benchmark`: `pipeline-http-*` SSE responses (`/sse-stream`) no longer send a spurious second response on `HttpBodyEnd`, fixing HTTP/1.1 keep-alive reuse after every SSE stream (#435)
 - `native-posix`: `PosixNativeSocketOps` now checks the return values of `setsockopt(2)` (logged as warnings), `fcntl(F_GETFL/F_SETFL)` in `setNonBlocking`, `getsockopt(SO_ERROR)` in `getSocketError`, and `getsockname`/`getpeername` in `getLocalAddress`/`getRemoteAddress`; previously these could fail silently, leaving the fd in blocking mode or returning garbage addresses (#433)
 - `keel-server-ktor-cio`: `HeaderParseMutex` is now a no-op on Linux (epoll / io_uring), where the single-threaded EventLoop makes concurrent `HeadersDataPool` access impossible; previously the process-wide mutex serialised all 50 VU connections at the header-parse step, collapsing multipart throughput from ~52 k req/s (JVM) to 42 req/s on Native Linux (#432)
 - `benchmark`: `bench-{one,keel,all}.sh` now poll via `lsof` / `fuser` after killing each server to confirm the port is released before starting the next engine, eliminating the READY timeout seen on macOS when server-side TIME_WAIT sockets blocked a new `bind()` in multi-engine serial runs (#430)

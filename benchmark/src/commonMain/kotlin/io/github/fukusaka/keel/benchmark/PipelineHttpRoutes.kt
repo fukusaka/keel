@@ -91,6 +91,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
     // small (<60 bytes), so we keep the last (boundaryLen - 1) bytes from
     // the previous chunk to catch boundary occurrences that span chunks.
     private var multipartCarry: ByteArray = EMPTY_BYTE_ARRAY
+    private var sseStreaming: Boolean = false
     private var methodEchoMethod: String? = null
     private var itemEchoId: String? = null
 
@@ -164,6 +165,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
                     }
                     msg.path.startsWith("/sse-stream") -> {
                         emitSseStream(ctx, msg)
+                        sseStreaming = true
                     }
                 }
             }
@@ -219,6 +221,14 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         }
                         emitMultipartAck(ctx)
                         multipartStreaming = false
+                    }
+                    sseStreaming -> {
+                        // SSE response was already emitted on HttpRequestHead; the
+                        // GET body is empty so HttpBodyEnd just closes the request
+                        // message. Do NOT send a second response — that would be an
+                        // HTTP/1.1 keep-alive violation (unsolicited response).
+                        sseStreaming = false
+                        currentPath = null
                     }
                     else -> emitResponse(ctx)
                 }
@@ -380,7 +390,6 @@ private class BenchmarkRoutingHandler : InboundHandler {
         }
         ctx.propagateWrite(HttpBodyEnd.EMPTY)
         ctx.propagateFlush()
-        currentPath = null
     }
 
 }
