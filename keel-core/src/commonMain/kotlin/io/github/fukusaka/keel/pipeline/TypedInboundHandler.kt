@@ -11,9 +11,12 @@ import kotlin.reflect.KClass
  * messages are propagated to the next handler unchanged.
  *
  * **Auto-release**: when [autoRelease] is true (default), the message is
- * released after [onReadTyped] returns — unless the handler propagated it
- * to the next handler (detected via an internal context wrapper). This
- * prevents use-after-free when a handler both forwards and auto-releases.
+ * released after [onReadTyped] returns — unless the handler propagated the
+ * EXACT SAME object to the next handler (identity check, not equality).
+ * A transforming handler (e.g. [IoBuf] → [WsFrame]) propagates a different
+ * object; the original input is still auto-released. This prevents both
+ * use-after-free (when the original is forwarded) and memory leaks (when a
+ * transformed replacement is forwarded instead).
  *
  * **Pipeline type validation**: [acceptedType] is automatically set to [type],
  * enabling construction-time type chain validation.
@@ -37,12 +40,19 @@ abstract class TypedInboundHandler<I : Any>(
         if (type.isInstance(msg)) {
             @Suppress("UNCHECKED_CAST")
             val castedMsg = msg as I
-            var propagated = false
-            val trackingCtx = PropagateTrackingContext(ctx) { propagated = true }
+            // Track whether the ORIGINAL message object was forwarded.
+            // A handler that transforms the input (e.g. IoBuf → WsFrame) sets
+            // propagated=true by propagating the new object, not the original,
+            // so we must compare identity rather than just checking that any
+            // propagateRead call happened.
+            var originalPropagated = false
+            val trackingCtx = PropagateTrackingContext(ctx) { propagatedMsg ->
+                if (propagatedMsg === castedMsg) originalPropagated = true
+            }
             try {
                 onReadTyped(trackingCtx, castedMsg)
             } finally {
-                if (autoRelease && !propagated) {
+                if (autoRelease && !originalPropagated) {
                     ReferenceCountUtil.safeRelease(msg)
                 }
             }
@@ -55,7 +65,11 @@ abstract class TypedInboundHandler<I : Any>(
      * Called when a message of type [I] is received.
      *
      * If [autoRelease] is true, the message is released after this method
-     * returns (unless propagated via [PipelineHandlerContext.propagateRead]).
+     * returns — unless this EXACT message object was propagated via
+     * [PipelineHandlerContext.propagateRead]. Transforming handlers that
+     * produce a different output object and propagate that instead must
+     * NOT retain the original [msg] after this method returns; the
+     * auto-release mechanism will free it.
      */
     abstract fun onReadTyped(ctx: PipelineHandlerContext, msg: I)
 }
@@ -82,13 +96,15 @@ inline fun <reified I : Any> typedHandler(
  * Wrapper around [PipelineHandlerContext] that detects propagation calls.
  *
  * Used by [TypedInboundHandler] to determine whether the handler forwarded
- * the message to the next handler. If [propagateRead] is called, [onPropagate]
- * fires, signaling that auto-release should be skipped (the next handler now
- * owns the message).
+ * the ORIGINAL input message to the next handler. [onPropagate] receives the
+ * message object passed to [propagateRead] so the caller can compare identity
+ * against the original — a handler that transforms its input (e.g.
+ * [IoBuf] → [WsFrame]) propagates a different object and the original must
+ * still be auto-released.
  */
 private class PropagateTrackingContext(
     private val delegate: PipelineHandlerContext,
-    private val onPropagate: () -> Unit,
+    private val onPropagate: (Any) -> Unit,
 ) : PipelineHandlerContext {
 
     override val channel: PipelinedChannel get() = delegate.channel
@@ -100,7 +116,7 @@ private class PropagateTrackingContext(
     override fun propagateActive() = delegate.propagateActive()
 
     override fun propagateRead(msg: Any) {
-        onPropagate()
+        onPropagate(msg)
         delegate.propagateRead(msg)
     }
 
