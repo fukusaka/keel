@@ -110,8 +110,6 @@ object PosixNativeSocketOps : NativeSocketOps {
 
         try {
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
-            // intArrayOf(1).usePinned workaround: IntVar.value assignment
-            // fails on some Kotlin/Native versions.
             setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1, logger)
             if (reusePort) {
                 setsockoptInt(fd, SOL_SOCKET, SO_REUSEPORT, 1, logger)
