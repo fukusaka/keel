@@ -167,6 +167,11 @@ internal class KqueueIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
+        // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel()
+        }
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }

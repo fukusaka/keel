@@ -138,6 +138,12 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
             // exited mid-request (e.g. on connection close from the peer).
             inputPump.cancel()
             outputPump.join()
+            // Wait for the transport to drain any writes that stalled on EAGAIN
+            // before pumpOutputToChannel exited. Without this, teardownOnEventLoop
+            // releases pendingWrites before EPOLLOUT fires, sending a partial
+            // response and leaving the peer (e.g. k6) stalled on the missing
+            // chunked terminator.
+            runCatching { channel.awaitFlushComplete() }
             // Release any IoBufs left in the bridge queue before the
             // pipeline tears down.
             bridge.close()
