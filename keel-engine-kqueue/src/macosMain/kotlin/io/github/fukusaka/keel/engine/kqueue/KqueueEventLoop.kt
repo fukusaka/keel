@@ -7,7 +7,6 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
-import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -207,8 +206,8 @@ internal class KqueueEventLoop(
             closeFdSafely(kqFd, logger, "kqueue init (pipe failure)")
             error("pipe() failed: ${errnoMessage(pipeErr)}")
         }
-        PosixNativeSocketOps.setNonBlocking(wakeupFds[0])
-        PosixNativeSocketOps.setNonBlocking(wakeupFds[1])
+        syscallOps.setNonBlocking(wakeupFds[0])
+        syscallOps.setNonBlocking(wakeupFds[1])
 
         val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
         if (kevErr != 0) {

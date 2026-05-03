@@ -16,6 +16,7 @@ import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.kevent
 import platform.darwin.kqueue
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import platform.posix.EAGAIN
 import platform.posix.errno
 import platform.posix.pipe
@@ -46,6 +47,8 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         val rc = pipe(fds.refTo(0))
         return if (rc != 0) errno else 0
     }
+
+    override fun setNonBlocking(fd: Int) = PosixNativeSocketOps.setNonBlocking(fd)
 
     override fun addReadFilter(kqFd: Int, fd: Int): Int =
         submitEventAdd(kqFd, fd, EVFILT_READ)

@@ -200,7 +200,7 @@ object PosixNativeSocketOps : NativeSocketOps {
         // IntArray.usePinned workaround: IntVar.value / socklen_tVar.value
         // assignment fails on some Kotlin/Native versions.
         val errBuf = intArrayOf(0)
-        errBuf.usePinned { errPinned ->
+        val rc = errBuf.usePinned { errPinned ->
             uintArrayOf(sizeOf<IntVar>().toUInt()).usePinned { lenPinned ->
                 getsockopt(
                     fd, SOL_SOCKET, SO_ERROR,
@@ -209,6 +209,7 @@ object PosixNativeSocketOps : NativeSocketOps {
                 )
             }
         }
+        check(rc == 0) { "getsockopt(SO_ERROR) failed: ${errnoMessage(errno)}" }
         return errBuf[0]
     }
 
@@ -216,9 +217,10 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun getLocalAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
-        lenArr.usePinned { len ->
+        val rc = lenArr.usePinned { len ->
             getsockname(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
+        check(rc == 0) { "getsockname() failed: ${errnoMessage(errno)}" }
         storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
@@ -226,16 +228,26 @@ object PosixNativeSocketOps : NativeSocketOps {
     override fun getRemoteAddress(fd: Int): SocketAddress = memScoped {
         val storage = alloc<sockaddr_storage>()
         val lenArr = uintArrayOf(sizeOf<sockaddr_storage>().toUInt())
-        lenArr.usePinned { len ->
+        val rc = lenArr.usePinned { len ->
             getpeername(fd, storage.ptr.reinterpret(), len.addressOf(0).reinterpret())
         }
+        check(rc == 0) { "getpeername() failed: ${errnoMessage(errno)}" }
         storageToSocketAddress(storage, lenArr[0].toInt())
     }
 
-    /** Sets O_NONBLOCK on [fd] via `fcntl`. */
+    /**
+     * Sets `O_NONBLOCK` on [fd] via `fcntl(2)`.
+     *
+     * Both the `F_GETFL` and `F_SETFL` calls are checked with [check].
+     * Failure to set non-blocking mode is fatal for the EventLoop model —
+     * a blocking fd would cause any subsequent `read` / `write` / `accept`
+     * inside the EventLoop thread to block indefinitely.
+     */
     override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
-        fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(flags >= 0) { "fcntl(F_GETFL) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(rc == 0) { "fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(errno)}" }
     }
 
     /**
