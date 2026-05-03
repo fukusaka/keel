@@ -46,6 +46,8 @@ kotlin {
                 // adapter itself is engine-neutral, but tests need a concrete
                 // `StreamEngine` to run against.
                 implementation(project(":keel-engine-nio"))
+                // Standard Ktor WebSocket plugin for respondUpgrade tests.
+                implementation(libs.ktor.server.websockets)
             }
         }
     }
