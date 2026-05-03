@@ -144,7 +144,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
             val context = if (reusePort) "bindListener(reusePort) cleanup" else "bindListener cleanup"
-            closeFdSafely(fd, logger, context)
+            closeFdSafely(fd, context)
             throw e
         }
 
@@ -406,7 +406,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
             val listenRc = listen(fd, backlog)
             check(listenRc == 0) { "listen(AF_UNIX) failed: ${errnoMessage(errno)}" }
         } catch (e: Throwable) {
-            closeFdSafely(fd, logger, "bindUnixListener cleanup")
+            closeFdSafely(fd, "bindUnixListener cleanup")
             throw e
         }
         return fd
@@ -456,6 +456,9 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
             else ConnectResult.Failed(err)
         }
     }
+
+    private fun closeFdSafely(fd: Int, context: String) =
+        closeFdSafely(fd, logger, context)
 
     companion object {
         private const val INET_ADDRSTRLEN = 16
