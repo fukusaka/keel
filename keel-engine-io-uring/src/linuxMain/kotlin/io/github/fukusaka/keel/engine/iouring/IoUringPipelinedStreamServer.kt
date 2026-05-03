@@ -57,7 +57,7 @@ internal class IoUringPipelinedStreamServer(
     private val capabilities: IoUringCapabilities,
     private val logger: Logger,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -211,7 +211,7 @@ internal class IoUringPipelinedStreamServer(
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
-            nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions, logger)
+            nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions)
             IoUringIoTransport(
                 fd = acceptRes,
                 eventLoop = loop,

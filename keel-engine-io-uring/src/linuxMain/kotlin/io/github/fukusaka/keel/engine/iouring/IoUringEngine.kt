@@ -96,12 +96,13 @@ class IoUringEngine(
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
     capabilities: IoUringCapabilities? = null,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    nativeSocketOps: NativeSocketOps? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("IoUringEngine")
+    private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val resolvedCapabilities: IoUringCapabilities
     private val bossLoop: IoUringEventLoop
     private val workerGroup: IoUringEventLoopGroup
@@ -208,7 +209,7 @@ class IoUringEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)
@@ -259,7 +260,7 @@ class IoUringEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val wi = workerGroup.nextIndex()
         val workerLoop = workerGroup.loopAt(wi)
         val allocator = workerGroup.allocatorAt(wi)

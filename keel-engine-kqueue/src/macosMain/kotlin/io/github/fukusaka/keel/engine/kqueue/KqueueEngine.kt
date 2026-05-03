@@ -89,13 +89,14 @@ import kotlin.coroutines.CoroutineContext
 class KqueueEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    nativeSocketOps: NativeSocketOps? = null,
     private val suspendRegisterOverride: KqueueSuspendRegister? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("KqueueEngine")
+    private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
     private val workerGroup = KqueueEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("KqueueEventLoop"), config.allocator)
     private var closed = false
@@ -211,7 +212,7 @@ class KqueueEngine(
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -244,7 +245,7 @@ class KqueueEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {

@@ -81,15 +81,14 @@ import posix_socket.keel_sockaddr_un_copy_path
  * `keel_init_sockaddr_in6`, `keel_fill_sockaddr_in6_addr`,
  * `keel_extract_sockaddr_in6_addr`, `keel_sockaddr_family`) for reliable
  * cross-platform binding.
+ *
+ * @param logger Used for warning-level log messages emitted when
+ *   [setSocketOption] (`setsockopt(2)`) fails. Failures are logged and
+ *   swallowed — socket-option application is best-effort and never
+ *   fails the surrounding bind / connect / accept flow.
  */
 @OptIn(ExperimentalForeignApi::class)
-object PosixNativeSocketOps : NativeSocketOps {
-
-    private const val INET_ADDRSTRLEN = 16
-
-    // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
-    // both; excess bytes past the platform limit are simply never written.
-    private const val UNIX_SUN_PATH_BUF = 108
+public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps {
 
     /**
      * Opens a non-blocking TCP listener fd:
@@ -110,9 +109,9 @@ object PosixNativeSocketOps : NativeSocketOps {
 
         try {
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
-            setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1, logger)
+            setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1)
             if (reusePort) {
-                setsockoptInt(fd, SOL_SOCKET, SO_REUSEPORT, 1, logger)
+                setsockoptInt(fd, SOL_SOCKET, SO_REUSEPORT, 1)
             }
 
             setNonBlocking(fd)
@@ -254,23 +253,23 @@ object PosixNativeSocketOps : NativeSocketOps {
      * Applies a [SocketOption] to [fd] via `setsockopt(2)`. See
      * [NativeSocketOps.setSocketOption] for the overall contract.
      *
-     * Failures are logged via [logger] and swallowed — option
-     * application is best-effort and does not fail the surrounding
-     * connect / bind / accept flow.
+     * Failures are logged via the constructor-provided logger and
+     * swallowed — option application is best-effort and does not fail
+     * the surrounding connect / bind / accept flow.
      */
-    override fun setSocketOption(fd: Int, option: SocketOption, logger: Logger) {
+    override fun setSocketOption(fd: Int, option: SocketOption) {
         when (option) {
             is SocketOption.TcpNoDelay -> setsockoptInt(
-                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0, logger,
+                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0,
             )
             is SocketOption.KeepAlive -> setsockoptInt(
-                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0, logger,
+                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0,
             )
             is SocketOption.ReceiveBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_RCVBUF, option.bytes, logger,
+                fd, SOL_SOCKET, SO_RCVBUF, option.bytes,
             )
             is SocketOption.SendBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_SNDBUF, option.bytes, logger,
+                fd, SOL_SOCKET, SO_SNDBUF, option.bytes,
             )
         }
     }
@@ -281,11 +280,11 @@ object PosixNativeSocketOps : NativeSocketOps {
      * because `IntVar.value` assignment is unreliable on some
      * Kotlin/Native versions.
      *
-     * Failures are logged via [logger] and swallowed — the caller
-     * (bind / connect / accept flow) has no recovery path for a
-     * best-effort socket option.
+     * Failures are logged via the constructor-provided logger and
+     * swallowed — the caller (bind / connect / accept flow) has no
+     * recovery path for a best-effort socket option.
      */
-    private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int, logger: Logger) {
+    private fun setsockoptInt(fd: Int, level: Int, optname: Int, value: Int) {
         val rc = intArrayOf(value).usePinned { pinned ->
             setsockopt(fd, level, optname, pinned.addressOf(0), sizeOf<IntVar>().convert())
         }
@@ -458,6 +457,14 @@ object PosixNativeSocketOps : NativeSocketOps {
             if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
             else ConnectResult.Failed(err)
         }
+    }
+
+    companion object {
+        private const val INET_ADDRSTRLEN = 16
+
+        // sockaddr_un.sun_path capacity varies (104 macOS / 108 Linux). 108 covers
+        // both; excess bytes past the platform limit are simply never written.
+        private const val UNIX_SUN_PATH_BUF = 108
     }
 }
 

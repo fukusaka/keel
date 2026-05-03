@@ -204,7 +204,7 @@ public class FakeNativeSocketOps : NativeSocketOps {
         _nonBlockingFds.add(fd)
     }
 
-    override fun setSocketOption(fd: Int, option: SocketOption, logger: Logger) {
+    override fun setSocketOption(fd: Int, option: SocketOption) {
         setSocketOptionCalls++
         _appliedOptions.add(fd to option)
     }

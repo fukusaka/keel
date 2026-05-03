@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.SocketOptions
-import io.github.fukusaka.keel.logging.Logger
 
 /**
  * Applies every non-null property of [options] to [fd] via
@@ -19,14 +18,14 @@ import io.github.fukusaka.keel.logging.Logger
  * receiveBufferSize → sendBufferSize). Tests relying on
  * [FakeNativeSocketOps.appliedOptions] can assert this sequence.
  *
- * [logger] is forwarded to [NativeSocketOps.setSocketOption] so that
- * any `setsockopt(2)` failure is emitted as a warning rather than
- * silently discarded.
+ * Any `setsockopt(2)` failure is logged and swallowed by the
+ * [NativeSocketOps] implementation — option application is best-effort
+ * and does not fail the surrounding bind / connect / accept flow.
  */
-public fun NativeSocketOps.applySocketOptions(fd: Int, options: SocketOptions, logger: Logger) {
+public fun NativeSocketOps.applySocketOptions(fd: Int, options: SocketOptions) {
     if (options.isEmpty) return
-    options.tcpNoDelay?.let { setSocketOption(fd, SocketOption.TcpNoDelay(it), logger) }
-    options.keepAlive?.let { setSocketOption(fd, SocketOption.KeepAlive(it), logger) }
-    options.receiveBufferSize?.let { setSocketOption(fd, SocketOption.ReceiveBufferSize(it), logger) }
-    options.sendBufferSize?.let { setSocketOption(fd, SocketOption.SendBufferSize(it), logger) }
+    options.tcpNoDelay?.let { setSocketOption(fd, SocketOption.TcpNoDelay(it)) }
+    options.keepAlive?.let { setSocketOption(fd, SocketOption.KeepAlive(it)) }
+    options.receiveBufferSize?.let { setSocketOption(fd, SocketOption.ReceiveBufferSize(it)) }
+    options.sendBufferSize?.let { setSocketOption(fd, SocketOption.SendBufferSize(it)) }
 }

@@ -63,7 +63,7 @@ internal class IoUringStreamServer(
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : StreamServer {
 
     // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
@@ -119,7 +119,7 @@ internal class IoUringStreamServer(
 
         try {
             nativeSocketOps.setNonBlocking(clientFd)
-            nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions, logger)
+            nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
             val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
             val localAddr = nativeSocketOps.getLocalAddress(clientFd)
             val wi = workerGroup.nextIndex()

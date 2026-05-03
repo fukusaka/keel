@@ -87,13 +87,14 @@ import kotlin.coroutines.CoroutineContext
 class EpollEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
-    private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps,
+    nativeSocketOps: NativeSocketOps? = null,
     private val suspendRegisterOverride: EpollSuspendRegister? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("EpollEngine")
+    private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
     private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"), config.allocator)
     private var closed = false
@@ -190,7 +191,7 @@ class EpollEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
@@ -223,7 +224,7 @@ class EpollEngine(
 
     private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions, logger)
+        nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
 
         when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
