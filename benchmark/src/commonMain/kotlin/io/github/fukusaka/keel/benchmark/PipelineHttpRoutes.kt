@@ -387,6 +387,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
             val buf = ctx.channel.allocator.allocate(payload.size)
             buf.writeByteArray(payload, 0, payload.size)
             ctx.propagateWrite(HttpBody(buf))
+            ctx.propagateFlush()
         }
         ctx.propagateWrite(HttpBodyEnd.EMPTY)
         ctx.propagateFlush()
