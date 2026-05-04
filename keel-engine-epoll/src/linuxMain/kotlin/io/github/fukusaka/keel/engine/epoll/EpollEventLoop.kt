@@ -716,9 +716,10 @@ internal class EpollEventLoop(
     /**
      * Removes a specific interest (EPOLLIN or EPOLLOUT) from the epoll registration for [fd].
      *
-     * Called only from the suspend path in [dispatchReady] to prevent level-triggered
-     * busy-loop when the coroutine has not yet re-registered. Pipeline callbacks
-     * skip this because they re-arm synchronously before returning to epoll_wait.
+     * Called from [dispatchReady] on both the pipeline path (when a WRITE callback
+     * does not re-register, indicating flush success) and the suspend path (when the
+     * registration chain empties). Prevents level-triggered busy-loops by removing
+     * the interest until the caller arms again.
      */
     private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
         val removeBit = when (interest) {
