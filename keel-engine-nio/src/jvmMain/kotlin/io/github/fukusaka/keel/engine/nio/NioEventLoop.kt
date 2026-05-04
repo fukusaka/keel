@@ -149,6 +149,40 @@ internal class NioEventLoop(
     // --- Interest ops (fast path, no JNI re-register) ---
 
     /**
+     * Per-[SelectionKey] callback container — one slot per interest op so a
+     * single key can be armed for `OP_READ` and `OP_WRITE` simultaneously
+     * without one registration silently overwriting the other.
+     *
+     * The previous design called `key.attach(callback)` directly, which only
+     * holds a single value. When the second op was armed (concurrent read
+     * loop + back-pressured write retry, or read while a flush continuation
+     * was registered) the earlier callback was dropped. The lost callback
+     * caused [NioIoTransport]'s `onReadable` to never observe the peer FIN
+     * that follows a WebSocket close handshake on macOS, deadlocking the
+     * upgrade session (K23). `OP_ACCEPT` and `OP_CONNECT` get their own
+     * slots too — they never overlap with `OP_READ` / `OP_WRITE` on the same
+     * key in practice, but having a dedicated slot keeps
+     * [processSelectedKeys] uniform and avoids re-introducing the
+     * single-attachment pitfall the next time someone wires up a new op.
+     *
+     * Stays a plain mutable holder (not a `CancellableContinuation`): see
+     * the design invariant on [setInterestCallback].
+     */
+    internal class KeyCallbacks {
+        @JvmField
+        var readCallback: Runnable? = null
+
+        @JvmField
+        var writeCallback: Runnable? = null
+
+        @JvmField
+        var acceptCallback: Runnable? = null
+
+        @JvmField
+        var connectCallback: Runnable? = null
+    }
+
+    /**
      * Sets interest ops with a callback for readiness notification.
      *
      * This is the fast path called on every `read()` / `accept()` / `connect()`.
@@ -156,26 +190,32 @@ internal class NioEventLoop(
      * does NOT call `channel.register()` (JNI). The Selector is woken up to
      * re-evaluate the updated interest set.
      *
-     * [callback] is invoked directly on the EventLoop thread when the channel
-     * is ready. One-shot: the attachment is cleared after fire via
-     * [clearInterest].
+     * [callback] is stored in the per-op slot of the key's [KeyCallbacks]
+     * attachment (created on first call) and invoked one-shot on the
+     * EventLoop thread when the channel becomes ready. Multiple ops armed
+     * on the same key keep independent callbacks.
      *
-     * **Design invariant**: attachments MUST be plain [Runnable] instances,
+     * **Design invariant**: callbacks MUST be plain [Runnable] instances,
      * never a [CancellableContinuation]. `CancellableContinuationImpl`
      * transitively implements `Runnable` (via `DispatchedTask → scheduling.Task`),
-     * so attaching a continuation directly would make [processSelectedKeys]
-     * invoke `DispatchedTask.run()` on the selector thread — this bypasses the
-     * continuation's own state machine and leaves it installed as a stale child
-     * handler of the parent Job, producing a `ClassCastException` on later
-     * cancel. Always wrap the resume logic in an explicit `Runnable { ... }`
-     * lambda. See [NioStreamServer] class KDoc for the full history.
+     * so storing a continuation directly would make [processSelectedKeys]
+     * invoke `DispatchedTask.run()` on the selector thread — this bypasses
+     * the continuation's own state machine and leaves it installed as a
+     * stale child handler of the parent Job, producing a
+     * `ClassCastException` on later cancel. Always wrap the resume logic in
+     * an explicit `Runnable { ... }` lambda. See [NioStreamServer] class
+     * KDoc for the full history.
      *
      * @param key      The cached SelectionKey from [registerChannel].
      * @param ops      Interest ops to add (e.g., [SelectionKey.OP_READ]).
      * @param callback Runnable to execute when the channel becomes ready.
      */
     fun setInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
-        key.attach(callback)
+        val callbacks = (key.attachment() as? KeyCallbacks) ?: KeyCallbacks().also { key.attach(it) }
+        if ((ops and SelectionKey.OP_READ) != 0) callbacks.readCallback = callback
+        if ((ops and SelectionKey.OP_WRITE) != 0) callbacks.writeCallback = callback
+        if ((ops and SelectionKey.OP_ACCEPT) != 0) callbacks.acceptCallback = callback
+        if ((ops and SelectionKey.OP_CONNECT) != 0) callbacks.connectCallback = callback
         key.interestOps(key.interestOps() or ops)
         selector.wakeup()
     }
@@ -185,23 +225,19 @@ internal class NioEventLoop(
      *
      * Called from [invokeOnCancellation] when a coroutine waiting on
      * OP_WRITE (flush) or OP_READ is cancelled. Clears only the
-     * specified ops without affecting other interest bits.
+     * specified ops and the matching callback without affecting other
+     * interest bits or the other-direction callback.
      */
     fun removeInterest(key: SelectionKey, ops: Int) {
-        if (key.isValid) {
-            key.interestOps(key.interestOps() and ops.inv())
-            key.attach(null)
+        if (!key.isValid) return
+        val callbacks = key.attachment() as? KeyCallbacks
+        if (callbacks != null) {
+            if ((ops and SelectionKey.OP_READ) != 0) callbacks.readCallback = null
+            if ((ops and SelectionKey.OP_WRITE) != 0) callbacks.writeCallback = null
+            if ((ops and SelectionKey.OP_ACCEPT) != 0) callbacks.acceptCallback = null
+            if ((ops and SelectionKey.OP_CONNECT) != 0) callbacks.connectCallback = null
         }
-    }
-
-    /**
-     * Clears all interest ops (e.g., after processing a ready event).
-     * Called from [processSelectedKeys] to disable readiness notification
-     * until the next [setInterest] call.
-     */
-    private fun clearInterest(key: SelectionKey) {
-        key.interestOps(0)
-        key.attach(null)
+        key.interestOps(key.interestOps() and ops.inv())
     }
 
     // --- Event loop ---
@@ -271,14 +307,48 @@ internal class NioEventLoop(
             val key = iter.next()
             iter.remove()
             try {
-                // Attachments are always plain Runnable instances via
-                // setInterestCallback. See the invariant note on
-                // setInterestCallback — do NOT attach CancellableContinuation
-                // or any other Runnable-implementing type with state-machine
-                // semantics.
-                val attachment = key.attachment() as Runnable? ?: continue
-                clearInterest(key)
-                attachment.run()
+                val callbacks = key.attachment() as? KeyCallbacks ?: continue
+                // Snapshot ready ops, clear interest+callback for ready
+                // direction, then run callbacks. Read and write fire
+                // independently; leaving the other direction's interest
+                // and callback intact preserves armRead while a flush
+                // is back-pressured (and vice versa). The previous
+                // implementation cleared all interest + the single
+                // `attach`ment unconditionally, dropping the
+                // not-yet-fired direction (K23 root cause).
+                val readyOps = key.readyOps()
+                val readReady = (readyOps and SelectionKey.OP_READ) != 0
+                val writeReady = (readyOps and SelectionKey.OP_WRITE) != 0
+                val acceptReady = (readyOps and SelectionKey.OP_ACCEPT) != 0
+                val connectReady = (readyOps and SelectionKey.OP_CONNECT) != 0
+                val readCb = if (readReady) callbacks.readCallback else null
+                val writeCb = if (writeReady) callbacks.writeCallback else null
+                val acceptCb = if (acceptReady) callbacks.acceptCallback else null
+                val connectCb = if (connectReady) callbacks.connectCallback else null
+                var clearMask = 0
+                if (readReady) {
+                    callbacks.readCallback = null
+                    clearMask = clearMask or SelectionKey.OP_READ
+                }
+                if (writeReady) {
+                    callbacks.writeCallback = null
+                    clearMask = clearMask or SelectionKey.OP_WRITE
+                }
+                if (acceptReady) {
+                    callbacks.acceptCallback = null
+                    clearMask = clearMask or SelectionKey.OP_ACCEPT
+                }
+                if (connectReady) {
+                    callbacks.connectCallback = null
+                    clearMask = clearMask or SelectionKey.OP_CONNECT
+                }
+                if (clearMask != 0) {
+                    key.interestOps(key.interestOps() and clearMask.inv())
+                }
+                readCb?.run()
+                writeCb?.run()
+                acceptCb?.run()
+                connectCb?.run()
             } catch (e: Exception) {
                 // Individual key failure must not stop processing other keys.
                 // The channel's coroutine will observe the error on next I/O.
