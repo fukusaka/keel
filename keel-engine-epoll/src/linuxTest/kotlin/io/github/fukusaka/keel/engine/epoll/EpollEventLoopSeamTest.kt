@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
+import platform.linux.EPOLLOUT
 import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
@@ -230,6 +231,113 @@ class EpollEventLoopSeamTest {
         }
         el.loop()
         assertTrue(readCalled, "READ callback must fire on EPOLLERR even without EPOLLIN")
+    }
+
+    // --- stale EPOLLOUT removal tests ---
+    //
+    // A WRITE callback that does not re-register after onReady() (successful
+    // flush) must cause EPOLLOUT to be removed from the epoll filter.
+    // Without this, level-triggered epoll keeps reporting EPOLLOUT on every
+    // wait iteration — a busy loop that starves I/O processing under load
+    // (K22: ktor-cio-keel-epoll stops serving after warmup).
+
+    @Test
+    fun `WRITE callback that does not re-register causes epoll_ctl MOD to clear EPOLLOUT`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD for wakeupFd
+            scriptAddResult(0) // ADD for fd 2000 WRITE interest
+            scriptWaitOk(2000 to EPOLLOUT)  // WRITE ready — no re-arm from callback
+            scriptWaitFailure(EBADF)        // terminate loop
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var writeCalled = false
+        // Register a WRITE callback that intentionally does NOT re-arm,
+        // simulating a flush that completed successfully (no more EAGAIN).
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
+            writeCalled = true
+            // Deliberately NOT calling registerCallback again.
+        }
+        el.loop()
+        assertTrue(writeCalled, "WRITE callback must be invoked")
+        // After a no-re-arm WRITE callback, epoll_ctl(MOD) must be called to
+        // remove EPOLLOUT from the filter and prevent a busy loop.
+        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
+        assertTrue(modCalls.isNotEmpty(), "epoll_ctl(MOD) must be called to clear stale EPOLLOUT")
+        assertTrue(
+            (modCalls.last().events and EPOLLOUT) == 0,
+            "MOD must clear EPOLLOUT bit, got events=${modCalls.last().events}",
+        )
+    }
+
+    @Test
+    fun `WRITE callback that re-registers does not remove EPOLLOUT from epoll`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD for wakeupFd
+            scriptAddResult(0) // ADD for fd 2000 (first registerCallback)
+            // First wait: WRITE fires, callback re-arms (still EAGAIN).
+            scriptWaitOk(2000 to EPOLLOUT)
+            // Second wait: WRITE fires again, callback does not re-arm.
+            scriptWaitOk(2000 to EPOLLOUT)
+            scriptWaitFailure(EBADF)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var callCount = 0
+        // FdReadyListener that re-registers on the first call (EAGAIN still
+        // pending), then stops on the second (flush succeeded).
+        val listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                callCount++
+                if (callCount == 1) {
+                    // Still EAGAIN — re-arm the WRITE callback.
+                    el.registerCallback(fd = 2000, interest = interest, listener = this)
+                }
+                // Second call: no re-arm.
+            }
+        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE, listener = listener)
+        el.loop()
+        assertEquals(2, callCount, "WRITE callback must be invoked exactly twice")
+        // On the first fire the callback re-registered, so no MOD should have been
+        // issued between the first and second wait (EPOLLOUT stays armed).
+        // On the second fire no re-registration → one MOD to clear EPOLLOUT.
+        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
+        assertEquals(1, modCalls.size, "exactly one MOD (after second fire) expected")
+        assertTrue(
+            (modCalls[0].events and EPOLLOUT) == 0,
+            "MOD must clear EPOLLOUT bit, got events=${modCalls[0].events}",
+        )
+    }
+
+    @Test
+    fun `READ callback that re-registers via armRead does not trigger epoll_ctl MOD`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD
+            scriptAddResult(0) // ADD for fd 2000
+            scriptWaitOk(2000 to platform.linux.EPOLLIN)
+            scriptWaitFailure(EBADF)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var readCalled = false
+        // READ callback that immediately re-arms (simulates armRead in the pipeline).
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { interest ->
+            readCalled = true
+            // Re-arm: mirrors what EpollIoTransport.armRead() does.
+            el.registerCallback(fd = 2000, interest = interest, listener = { })
+        }
+        el.loop()
+        assertTrue(readCalled)
+        // Re-registration during onReady() means no MOD to remove EPOLLIN should occur.
+        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
+        assertTrue(
+            modCalls.none { (it.events and platform.linux.EPOLLIN) == 0 },
+            "No MOD removing EPOLLIN expected when READ callback re-arms",
+        )
     }
 
     @Test
