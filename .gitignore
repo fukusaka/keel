@@ -46,3 +46,4 @@ file-uploads/
 
 # Claude Code session data
 .claude/
+/profile-output/

@@ -14,7 +14,6 @@ import kotlinx.io.readByteArray
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.coroutines.coroutineContext
 
 /**
  * Ktor [BufferedByteWriteChannel] backed directly by a keel pipeline.
@@ -33,12 +32,27 @@ import kotlin.coroutines.coroutineContext
  * `flushAndClose` paths read from the buffer on the same coroutine that
  * wrote to it.
  *
- * **Dispatch**: every drain hops to [PipelinedChannel.ioDispatcher] via
- * [withContext]. On Native engines (kqueue / epoll / io_uring) the
- * application coroutine already runs on the EventLoop thread, so the hop is
- * a no-op. On JVM transports the hop crosses to the worker thread; this is
- * an intentional cost to make per-frame flushes propagate (vs. the old
- * bridge that batched them).
+ * **Dispatch**: every drain forwards the chunk's [emitBody] to
+ * [PipelinedChannel.ioDispatcher] with a fire-and-forget
+ * [CoroutineDispatcher.dispatch], not [withContext]. The dispatch primitive
+ * is sufficient because [emitBody] only enqueues
+ * `pipeline.requestWrite + requestFlush` — both async, with bytes not on
+ * the wire when they return — so the caller never needs to wait.
+ * Ktor's `BaseApplicationResponse.respondWriteChannelContent` always wraps
+ * the user `writeTo` lambda in `withContext(Dispatchers.IOBridge)`, so
+ * [flush] is invariably called from `Dispatchers.IO`; we always cross
+ * threads to reach the EL and there is no fast path to take.
+ *
+ * Pipeline handlers can throw inside [emitBody] (encoder state errors,
+ * transport write failure on a peer disconnect, etc.). The dispatched
+ * `Runnable` runs as raw work on the EL — outside any coroutine — so an
+ * uncaught exception would propagate up the EL's `drainTasks` loop and
+ * kill the daemon. The dispatch wrapper catches and stores the cause in
+ * [closeCause], marking the channel closed; subsequent [flush] /
+ * [flushAndClose] calls rethrow the cause to the caller. This mirrors the
+ * behaviour of the previous `withContext(ioDispatcher)` path which
+ * propagated the exception synchronously, but delays the user-visible
+ * error by one operation.
  *
  * **Lifecycle**:
  * - [flush] is suspending and awaits engine-side completion ordering only
@@ -70,7 +84,7 @@ internal class KeelByteWriteChannel(
 
     override val isClosedForWrite: Boolean get() = closed.load()
 
-    override val closedCause: Throwable? get() = closeCause.load()
+    override val closedCause: Throwable? get() = closeCause.load()?.let { wrapClosedCause(it) }
 
     @InternalAPI
     override val writeBuffer: Sink = internalBuffer
@@ -84,6 +98,8 @@ internal class KeelByteWriteChannel(
      * empty user flush — matches the no-op behaviour of the old bridge).
      */
     override suspend fun flush() {
+        val cause = closeCause.load()
+        if (cause != null) throw wrapClosedCause(cause)
         if (closed.load()) return
         drainAndDispatch()
     }
@@ -125,25 +141,74 @@ internal class KeelByteWriteChannel(
         terminated.store(true)
     }
 
-    private suspend fun drainAndDispatch() {
+    private fun drainAndDispatch() {
         if (internalBuffer.exhausted()) return
         val bytes = internalBuffer.readByteArray()
-        // Fast path: if the calling coroutine already runs on the ioDispatcher
-        // (the default for keel-server-ktor — see
-        // KeelApplicationEngine.Configuration.applicationDispatcher KDoc), skip
-        // the withContext wrapper so each per-frame flush avoids the
-        // continuation rebuild that withContext does even when no dispatch is
-        // needed. On Native, the saved overhead is large enough that this fast
-        // path turns ktor-keel SSE from ~450 req/s back up to the per-frame
-        // baseline shared with pipeline-http (~4 K req/s on macOS kqueue).
-        val ctx = coroutineContext
-        if (pipelinedChannel.ioDispatcher.isDispatchNeeded(ctx)) {
-            withContext(pipelinedChannel.ioDispatcher) {
+        // Fire-and-forget submit to the EventLoop. Ktor's
+        // `BaseApplicationResponse.respondWriteChannelContent` wraps the
+        // user's `writeTo` lambda in `withContext(Dispatchers.IOBridge)`,
+        // so [flush] is invariably called from `Dispatchers.IO` and we
+        // always cross threads to reach the EL. [emitBody] only enqueues
+        // `pipeline.requestWrite + requestFlush` (both async — bytes are
+        // not on the wire when they return), so the caller does not need
+        // to wait for completion; submitting via [CoroutineDispatcher.dispatch]
+        // drops the per-frame `withContext` round-trip that previously
+        // consumed the bulk of CPU time inside
+        // `kotlinx.coroutines.scheduling.CoroutineScheduler` (work-stealing
+        // / parking / unparking).
+        //
+        // FIFO ordering on the EL keeps body chunks ahead of the trailing
+        // [HttpBodyEnd] terminator that [terminate] enqueues with a real
+        // suspend.
+        //
+        // [emitBody] runs as a raw `Runnable` on the EL thread, outside
+        // any coroutine, so an uncaught exception would propagate up
+        // [drainTasks] and kill the EL daemon. Pipeline handlers can
+        // legitimately throw (encoder state errors, transport write
+        // failures on a peer disconnect, etc.), so catch and surface the
+        // failure via [closeCause]: subsequent [flush] / [flushAndClose]
+        // calls observe the cause and rethrow it to the caller. This
+        // mirrors the behaviour of the previous `withContext(ioDispatcher)`
+        // path which would have rethrown in the suspending caller, but
+        // delays the user-visible error by one operation.
+        pipelinedChannel.ioDispatcher.dispatch(kotlin.coroutines.EmptyCoroutineContext) {
+            try {
                 emitBody(bytes)
+            } catch (e: Throwable) {
+                closeCause.compareAndSet(expectedValue = null, newValue = e)
+                closed.store(true)
+                if (e is Error) throw e
             }
-        } else {
-            emitBody(bytes)
         }
+    }
+
+    /**
+     * Wraps the recorded close cause into a fresh [Throwable] for each
+     * user-visible throw, mirroring Ktor's
+     * `io.ktor.utils.io.CloseToken.wrapCause` pattern (the class is
+     * internal to `ktor-io`, so we re-implement the same policy here).
+     * Throwing the same `Throwable` instance repeatedly mutates its
+     * stack trace and lets `addSuppressed` accumulate across catch
+     * sites; wrapping keeps each surfaced exception independent.
+     *
+     * Branch table matches Ktor's `CloseToken.wrapCause`:
+     * - [kotlinx.coroutines.CancellationException] → fresh
+     *   `CancellationException(message, origin)` so structured-concurrency
+     *   cancellation propagation still recognises it.
+     * - [kotlinx.coroutines.CopyableThrowable] → `createCopy()` so the
+     *   coroutine framework's stack-trace recovery works across hops.
+     *   Falls back to the original instance if `createCopy()` returns
+     *   `null` (the contract for opting out of copying).
+     * - Any other throwable → wrapped in Ktor's standard
+     *   [io.ktor.utils.io.ClosedWriteChannelException].
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun wrapClosedCause(cause: Throwable): Throwable = when (cause) {
+        is kotlinx.coroutines.CancellationException ->
+            kotlinx.coroutines.CancellationException(cause.message, cause)
+        is kotlinx.coroutines.CopyableThrowable<*> ->
+            cause.createCopy() ?: cause
+        else -> io.ktor.utils.io.ClosedWriteChannelException(cause)
     }
 
     /**
