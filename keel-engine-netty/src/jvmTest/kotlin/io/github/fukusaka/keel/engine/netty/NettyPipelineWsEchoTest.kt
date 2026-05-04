@@ -17,12 +17,15 @@ import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.seconds
 import kotlin.test.assertEquals
 
 /**
@@ -220,7 +223,13 @@ class NettyPipelineWsEchoTest {
      * Exercises the pipeline under more load to catch intermittent hangs.
      */
     @Test
-    fun `ws-echo five concurrent connections all complete multiple rounds`() = runTest {
+    fun `ws-echo five concurrent connections all complete multiple rounds`() = runBlocking {
+        // Use a 60-second outer cap because the per-step waits below
+        // (15s connect + 30s echo + 10s close per VU) can each saturate
+        // a slow GitHub Actions runner under parallel jvmTest load. The
+        // shared 10-second `runTest` cap was too tight even after PR
+        // #437's per-future bumps, producing the K29 PR's CI flake.
+        withTimeout(60.seconds) {
         val engine = NettyEngine()
         val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
             channel.pipeline.addLast("encoder", HttpResponseEncoder())
@@ -268,6 +277,7 @@ class NettyPipelineWsEchoTest {
         } finally {
             server.close()
             engine.close()
+        }
         }
     }
 
