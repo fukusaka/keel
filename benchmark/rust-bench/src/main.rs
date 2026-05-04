@@ -77,9 +77,25 @@ async fn sse_stream(Query(params): Query<HashMap<String, String>>) -> impl IntoR
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(SSE_DEFAULT_SIZE);
     let payload = "x".repeat(size);
-    let stream = futures_util::stream::iter((0..count).map(move |_| {
-        Ok::<_, Infallible>(Event::default().data(payload.clone()))
-    }));
+    // Per-frame yield: `stream::iter` produces every item synchronously
+    // in one tokio poll, so hyper's HTTP/1 body writer coalesces them
+    // into a single chunked-transfer batch (~3-4× the per-frame baseline
+    // that `pipeline-http-*` / `ktor-keel-*` / `netty-raw` / `zig-bench`
+    // enforce). `unfold` + `tokio::task::yield_now` reschedules the body
+    // task between events so hyper can flush each encoded frame.
+    let stream = futures_util::stream::unfold(0usize, move |i| {
+        let payload = payload.clone();
+        async move {
+            if i >= count {
+                None
+            } else {
+                if i > 0 {
+                    tokio::task::yield_now().await;
+                }
+                Some((Ok::<_, Infallible>(Event::default().data(payload)), i + 1))
+            }
+        }
+    });
     Sse::new(stream)
 }
 

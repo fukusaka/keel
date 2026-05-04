@@ -126,6 +126,17 @@ object VertxEngine : EngineBenchmark {
             response.end(io.vertx.core.buffer.Buffer.buffer(uploadAckBytes))
         }
 
+        // Vertx SSE — `response.write(frame)` × N + `response.end()`.
+        // Audit during PR #442 (K30) measured the `vertx` SSE row at
+        // ~2× the per-frame keel ceiling, not the 3-4× inflation that
+        // `netty-raw` / `zig-bench` / `rust-bench` showed before their
+        // fixes — so Vertx's HttpServerResponse already delivers chunks
+        // close to per-frame on its own. There is no public per-write
+        // flush API on Vertx HttpServerResponse without blocking the
+        // EventLoop on `Future<Void>`, and the residual coalescing is
+        // framework-internal (does not affect any keel engine row).
+        // Change only if a future measurement shows Vertx drifting
+        // away from the keel ceiling.
         router.get("/sse-stream").handler { ctx ->
             val count = ctx.request().getParam("count")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
             val size = ctx.request().getParam("size")?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE

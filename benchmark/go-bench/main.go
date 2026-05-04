@@ -302,6 +302,16 @@ func main() {
 	// GET /sse-stream?count=N&size=M — emit N SSE frames of M bytes each
 	// via gin's chunked Stream() helper. Defaults match the rest of the
 	// engines (100 frames x 1024 bytes).
+	//
+	// Per-frame flush is correct here without an explicit Flusher call:
+	// gin's Context.Stream calls w.Flush() (which casts to
+	// http.Flusher and writes the chunk to the wire) after each `step`
+	// returns, so each `w.Write(payload)` becomes one flushed HTTP
+	// chunk. Audit during PR #442 (K30) confirmed the `go-bench` SSE
+	// row sits at the same per-frame ceiling as `pipeline-http-netty`
+	// — no change needed. If gin's Stream contract ever changes (or
+	// the body switches off `c.Stream`), restore an explicit
+	// `c.Writer.Flush()` after each `w.Write`.
 	r.GET("/sse-stream", func(c *gin.Context) {
 		count, _ := strconv.Atoi(c.Query("count"))
 		if count <= 0 {
