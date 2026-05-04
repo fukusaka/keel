@@ -157,23 +157,38 @@ internal class KeelApplicationResponse(
         )
         upgradeJob = scope.launch {
             try {
-                // K23 workaround: bound the WebSocket close handshake to
-                // [WS_CLOSE_TIMEOUT_MS]. Ktor's WebSocketSession waits
-                // for `inputChannel` EOF before completing `sessionJob`,
-                // and EOF only fires after `RawInboundBridge.onInactive`,
-                // which on ktor-keel-nio (macOS) only fires after the
-                // socket is closed — and the socket is only closed once
-                // `upgradeJob` completes, hence the deadlock. Bounding
-                // the wait lets the connection tear down within the
-                // timeout instead of pinning the EventLoop indefinitely;
-                // the proper fix needs cross-engine teardown ordering
-                // (track separately, do not extend this scope here).
+                // K23 workaround (#443): bound the WebSocket close handshake
+                // wait to [WS_CLOSE_TIMEOUT_MS]. The complete diagnosis is
+                // in the PR description and status.md K23 entry, summary:
+                //
+                //  * Python WS client (sends explicit CLOSE frame): server
+                //    completes the close handshake within milliseconds on
+                //    every transport including ktor-keel-nio macOS.
+                //  * k6 ws-echo / ws-large (closes by cancelling the
+                //    iteration after `duration`): server hangs forever on
+                //    ktor-keel-nio macOS, completes within the 30 s k6
+                //    grace period on ktor-keel-netty macOS.
+                //
+                // The differentiator is k6's hard-close path — it tears
+                // down the TCP socket without first observing the server
+                // CLOSE echo. Netty's `ALLOW_HALF_CLOSURE` /
+                // `readClosedFired` machinery picks up the peer FIN
+                // promptly and bubbles it to the keel pipeline as
+                // `onInactive`, which in turn closes the inbound bridge
+                // and lets `sessionJob` complete. java.nio's Selector on
+                // macOS (kqueue-based) appears to delay the FIN-derived
+                // read EOF when the EventLoop coroutine is parked
+                // elsewhere; without an external nudge `sessionJob` never
+                // observes input EOF and the upgrade hangs.
+                //
+                // Until keel-engine-nio gains an equivalent half-close /
+                // explicit FIN-detect path (track separately), bound the
+                // join to `WS_CLOSE_TIMEOUT_MS` and force-cancel the
+                // session afterwards so the connection slot is freed.
                 kotlinx.coroutines.withTimeoutOrNull(WS_CLOSE_TIMEOUT_MS) {
                     sessionJob.join()
                 }
-                if (sessionJob.isActive) {
-                    sessionJob.cancel()
-                }
+                if (sessionJob.isActive) sessionJob.cancel()
             } finally {
                 runCatching { outboundPump.join() }
                 inboundPump.cancel()
