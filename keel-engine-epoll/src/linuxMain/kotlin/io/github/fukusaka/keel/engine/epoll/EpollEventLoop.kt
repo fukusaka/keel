@@ -627,13 +627,19 @@ internal class EpollEventLoop(
      * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
      *
      * Checks callback registrations first (pipeline path), then suspend
-     * registrations (Channel path). Does NOT call epoll_ctl to remove the
-     * interest — level-triggered epoll will re-fire, but the handler's
-     * [armRead]/[registerCallback] re-registers the callback before the next
-     * epoll_wait, so no spurious wakeup occurs.
+     * registrations (Channel path).
      *
-     * For suspend registrations (Channel path), the interest is removed from
-     * [fdEvents] and epoll is updated via MOD, because the coroutine may not
+     * **Pipeline path**: after [FdReadyListener.onReady] returns, checks whether
+     * the callback was re-registered. READ callbacks always re-arm synchronously
+     * via `armRead()`, so the check is a no-op (fast lock + map lookup, no
+     * epoll_ctl). WRITE callbacks that complete a successful flush do NOT re-arm;
+     * in that case [removeInterestFromEpoll] is called to clear EPOLLOUT from
+     * the epoll filter. Without this, level-triggered epoll keeps reporting
+     * EPOLLOUT on every wait iteration — a busy loop that saturates the
+     * EventLoop thread when many connections have completed writes.
+     *
+     * **Suspend path**: the interest is removed from [fdEvents] and epoll is
+     * updated via MOD when the chain empties, because the coroutine may not
      * immediately re-register (unlike Pipeline's synchronous armRead cycle).
      */
     private fun dispatchReady(fd: Int, interest: Interest) {
@@ -641,9 +647,16 @@ internal class EpollEventLoop(
         val key = registrationKey(fd, interest)
         val cb = withRegLock { callbackRegistrations.remove(key) }
         if (cb != null) {
-            // Pipeline path: callback re-arms synchronously (armRead inside
-            // handler chain), so fdEvents stays as-is — no epoll_ctl needed.
             cb.onReady(interest)
+            // If the callback did not re-register during onReady (e.g., a WRITE
+            // callback after a successful flush that does not re-arm), remove the
+            // interest from epoll to prevent a stale level-triggered busy loop.
+            // READ callbacks always re-arm via armRead(), so this branch is
+            // normally skipped (no epoll_ctl syscall on the read hot path).
+            val reRegistered = withRegLock { callbackRegistrations[key] != null }
+            if (!reRegistered) {
+                removeInterestFromEpoll(fd, interest)
+            }
         } else {
             // Suspend path: pop one waiter from the FIFO chain. If
             // siblings remain (concurrent `accept()` callers waiting on
