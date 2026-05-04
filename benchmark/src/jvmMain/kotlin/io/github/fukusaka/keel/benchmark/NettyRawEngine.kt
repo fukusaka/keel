@@ -282,16 +282,21 @@ private class BenchmarkHandler(
         val count = parseBenchmarkQueryInt(query, "count") ?: BENCHMARK_SSE_DEFAULT_COUNT
         val size = parseBenchmarkQueryInt(query, "size") ?: BENCHMARK_SSE_DEFAULT_SIZE
         val frame = "data: ${"x".repeat(size)}\n\n".toByteArray()
-        // Send response head with Transfer-Encoding: chunked, then write
-        // raw frame buffers. Netty serializes each write as one HTTP
-        // chunk because we send a HttpResponse without Content-Length.
         val head = io.netty.handler.codec.http.DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
         head.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream")
         head.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED)
         applyConnectionHeader(head)
-        ctx.write(head)
+        // Per-frame writeAndFlush: matches the per-frame flush semantics
+        // that pipeline-http (PR #440 / K25) and ktor-keel (PR #441 / K29)
+        // enforce. The previous `ctx.write` × N + a single trailing
+        // `writeAndFlush(LAST_CONTENT)` queued every frame in Netty's
+        // ChannelOutboundBuffer until the terminator triggered one flush —
+        // apparent throughput inflated 3-4× over the keel engines because
+        // the bench measured one-shot bulk delivery, not real SSE
+        // streaming.
+        ctx.writeAndFlush(head)
         repeat(count) {
-            ctx.write(io.netty.handler.codec.http.DefaultHttpContent(Unpooled.wrappedBuffer(frame)))
+            ctx.writeAndFlush(io.netty.handler.codec.http.DefaultHttpContent(Unpooled.wrappedBuffer(frame)))
         }
         val future = ctx.writeAndFlush(io.netty.handler.codec.http.LastHttpContent.EMPTY_LAST_CONTENT)
         if (connectionClose) future.addListener(ChannelFutureListener.CLOSE)
