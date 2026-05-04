@@ -5,6 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.context.annotation.Bean
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
+import org.springframework.web.reactive.function.BodyInserters
 import org.springframework.web.reactive.function.server.*
 import org.springframework.web.server.WebFilter
 
@@ -103,11 +104,25 @@ open class SpringBenchmarkApp {
         GET("/sse-stream") { req ->
             val count = req.queryParam("count").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_COUNT)
             val size = req.queryParam("size").map { it.toInt() }.orElse(BENCHMARK_SSE_DEFAULT_SIZE)
-            val payload = "data: ${"x".repeat(size)}\n\n"
-            val flux = reactor.core.publisher.Flux.range(0, count).map { payload }
+            // Bypass Spring's `Flux<String>` + `text/event-stream` SSE adapter:
+            // it splits each item on `\n` and prefixes every line with `data:`,
+            // turning our pre-formatted `"data: xxx\n\n"` into a malformed
+            // `"data:data: xxx\ndata:\ndata:\n\n"` (the empty lines from `\n\n`
+            // gain `data:` prefixes too) AND uses `data:` without the trailing
+            // space the other engines emit. Either issue alone breaks k6's
+            // `body size matches` check (counts went 50 % pass).
+            //
+            // Write the raw bytes through `BodyInserters.fromDataBuffers` so
+            // the wire format matches every other engine (`data: <size×x>\n\n`
+            // per frame) and the bench is comparable.
+            val payloadBytes = "data: ${"x".repeat(size)}\n\n".toByteArray()
+            val factory: org.springframework.core.io.buffer.DataBufferFactory =
+                org.springframework.core.io.buffer.DefaultDataBufferFactory.sharedInstance
+            val byteFlux: reactor.core.publisher.Flux<org.springframework.core.io.buffer.DataBuffer> =
+                reactor.core.publisher.Flux.range(0, count).map { factory.wrap(payloadBytes) }
             ServerResponse.ok()
                 .contentType(MediaType.parseMediaType("text/event-stream"))
-                .body(flux, String::class.java)
+                .body(BodyInserters.fromDataBuffers(byteFlux))
         }
     }
 
