@@ -217,7 +217,14 @@ internal class NioEventLoop(
         if ((ops and SelectionKey.OP_ACCEPT) != 0) callbacks.acceptCallback = callback
         if ((ops and SelectionKey.OP_CONNECT) != 0) callbacks.connectCallback = callback
         key.interestOps(key.interestOps() or ops)
-        selector.wakeup()
+        // Skip wakeup when already on the EventLoop thread — the next
+        // select() iteration will pick up the new interest mask without
+        // needing the wakeup pipe write. Same rationale as dispatch();
+        // saves a syscall on the per-frame `armRead` / `registerWriteCallback`
+        // hot path (K31).
+        if (!inEventLoop()) {
+            selector.wakeup()
+        }
     }
 
     /**

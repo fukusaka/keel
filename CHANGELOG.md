@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `keel-engine-nio`: `NioEventLoop.setInterestCallback` now skips `selector.wakeup()` when called from the EventLoop thread itself (same `inEventLoop()` guard as `dispatch`); removes a per-`armRead` / `registerWriteCallback` pipe-write syscall on the SSE / WebSocket per-frame hot path. Bench A/B on macOS M1 (`/sse` 50 VU / 15s): `ktor-keel-nio` 1,231 → 1,437 RPS (+16.7 %), `ktor-cio-keel-nio` 8,837 → 10,430 RPS (+18.0 %); `/hello` 4t/100c/10s unchanged within run-to-run variance (K31) (#445)
 - **BREAKING** (`core`): `SocketOptions.DEFAULT` now enables `TCP_NODELAY` (`tcpNoDelay = true`), matching the default of Netty, OkHttp, Go `net/http`, and SwiftNIO; code that relied on Nagle being enabled must explicitly pass `SocketOptions(tcpNoDelay = false)` (#431)
 - `keel-server-ktor-cio`: ktor-cio inbound now flows through a direct `KtorCioInboundBridge` `InboundHandler` (`SuspendMessageBridge` shape from `:keel-codec-http` / `:keel-server-ktor`, specialised for `IoBuf`) instead of the previous `BufferedSuspendSource(SuspendBridgeHandler)` chain, shortening connection-close propagation from 4 cross-context hops to 2 (#419)
 - `keel-server-ktor-cio`: serialise `parseRequest` on Kotlin/Native to dodge the ktor-http-cio `HeadersDataPool` non-reentrant `SynchronizedObject` lock contention (`HeaderParseMutex`, no-op on JVM); turns 30 % accept-burst failure rate into 0 % and lifts steady-state `/hello` throughput from ≈ 14 k to ≈ 43 k RPS on macOS M1 (#419)
