@@ -306,7 +306,12 @@ fn handleSseStream(req: *http.Server.Request, target: []const u8, keep_alive: bo
     }
     if (size > sse_max_size) size = sse_max_size;
 
-    var stream_buf: [16 * 1024]u8 = undefined;
+    // Use a small (256-byte) stream_buf so frames cannot accumulate inside
+    // it before the per-frame `flush` below; the previous 16 KB buffer let
+    // ~15 frames coalesce before the writer pushed a chunk to the wire,
+    // inflating the SSE bench by the same factor relative to per-frame
+    // engines (pipeline-http-* / ktor-keel-* / netty-raw).
+    var stream_buf: [256]u8 = undefined;
     var body = req.respondStreaming(&stream_buf, .{
         .respond_options = .{
             .keep_alive = keep_alive,
@@ -319,12 +324,19 @@ fn handleSseStream(req: *http.Server.Request, target: []const u8, keep_alive: bo
     // BodyWriter.writer is a field (not a method). splatBytesAll repeats
     // the byte sequence N times — used for the SSE frame's `x...` payload
     // so we don't have to allocate a per-frame buffer of `size` bytes.
+    //
+    // Per-frame flush: the 16 KB stream_buf above otherwise accumulates
+    // ~15 frames before flushing to the wire, so an apparent throughput
+    // ~15× the real per-frame number leaks into the SSE bench. Match the
+    // per-frame send semantics that pipeline-http-* (PR #440 / K25),
+    // ktor-keel-* (PR #441 / K29), and netty-raw (PR #442 / K30) enforce.
     const out = &body.writer;
     var i: usize = 0;
     while (i < count) : (i += 1) {
         try out.writeAll("data: ");
         try out.splatBytesAll("x", size);
         try out.writeAll("\n\n");
+        try out.flush();
     }
     try body.end();
 }
