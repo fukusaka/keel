@@ -305,6 +305,16 @@ if config.showConfig {
     }
     // GET /sse-stream?count=N&size=M — emit N SSE frames of M bytes each
     // via a streamed ResponseBody. Defaults match the rest of the engines.
+    //
+    // Per-frame flush is correct here without an explicit flush call:
+    // each `try await writer.write(payload)` resolves on the SwiftNIO
+    // EventLoop after the chunk has been written to the channel, so
+    // Hummingbird honours per-`write` semantics. Audit during PR #442
+    // (K30) confirmed the `swift-bench` SSE row sits at the same
+    // per-frame ceiling as `pipeline-http-netty` — no change needed.
+    // If Hummingbird's writer contract ever changes to coalesce
+    // `await write` calls before flushing, this loop will need an
+    // explicit per-iteration flush hook.
     router.get("/sse-stream") { request, _ in
         let count = request.uri.queryParameters["count"].flatMap { Int($0) } ?? sseDefaultCount
         let size = request.uri.queryParameters["size"].flatMap { Int($0) } ?? sseDefaultSize

@@ -167,6 +167,25 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
             call.respondBytes(uploadAckBytes, ContentType.Text.Plain)
         }
         get("/sse-stream") {
+            // SSE per-frame contract for the bench harness:
+            //   * The handler emits exactly `count` frames of
+            //     `"data: " + size×'x' + "\n\n"` bytes (k6 sse.js verifies
+            //     the total body length as `count * (6 + size + 2)`).
+            //   * `flush()` after each frame is required for the bench to
+            //     measure per-event throughput, not bulk delivery.
+            //
+            // Whether `flush()` actually reaches the wire as a per-frame
+            // `requestFlush` depends on the engine adapter:
+            //   * `ktor-keel-*` and `ktor-cio-keel-*` (PR #441 / K29) now
+            //     own a `BufferedByteWriteChannel` impl that maps each user
+            //     `flush()` to one `requestWrite + requestFlush` on the
+            //     pipelined channel.
+            //   * `ktor-cio` (the upstream Ktor engine) honours `flush()`
+            //     directly through its own ByteWriteChannel.
+            // History: prior to PR #441 the keel-server-ktor adapter
+            // bridged Ktor's `ByteChannel` through a `readAvailable(8 KB)`
+            // worker, coalescing multiple per-user flushes into one engine
+            // flush. The K29 fix removed that bridge.
             val count = call.request.queryParameters["count"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
             val size = call.request.queryParameters["size"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
             val payload = sseFramePayload(size)
