@@ -49,7 +49,6 @@ internal class KeelApplicationResponse(
 
     private var statusCode: HttpStatusCode = HttpStatusCode.OK
     private val headersBuilder = HeadersBuilder()
-    private var responseBodyJob: Job? = null
 
     /**
      * Set by [respondUpgrade] when a protocol upgrade (e.g. WebSocket) is performed.
@@ -81,35 +80,14 @@ internal class KeelApplicationResponse(
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestFlush()
         }
-        val bodyChannel = ByteChannel()
-        // Launch on the EventLoop dispatcher so that pipeline.requestWrite
-        // is called on the correct thread without per-chunk withContext
-        // dispatch. bodyChannel.readAvailable() suspends and releases the
-        // EventLoop while waiting for data, so other I/O events are processed.
-        responseBodyJob = scope.launch(pipelinedChannel.ioDispatcher) {
-            try {
-                val buf = ByteArray(RESPONSE_CHUNK_SIZE)
-                while (!bodyChannel.isClosedForRead) {
-                    val n = bodyChannel.readAvailable(buf)
-                    if (n == -1) break
-                    if (n > 0) {
-                        val ioBuf = pipelinedChannel.allocator.allocate(n)
-                        ioBuf.writeByteArray(buf, 0, n)
-                        pipelinedChannel.pipeline.requestWrite(HttpBody(ioBuf))
-                        pipelinedChannel.pipeline.requestFlush()
-                    }
-                }
-            } finally {
-                pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
-                pipelinedChannel.pipeline.requestFlush()
-                // Await write callback before the coroutine completes so that
-                // a close() dispatched after join() cannot cancel the in-flight
-                // nw_connection_send that carries HttpBodyEnd (same race as
-                // respondFromBytes — see awaitPendingFlush KDoc).
-                pipelinedChannel.awaitFlushComplete()
-            }
-        }
-        return bodyChannel
+        // K29: return a frame-aware ByteWriteChannel. Each user `flush()`
+        // dispatches one `requestWrite + requestFlush` pair directly through
+        // the pipeline; the body terminator (HttpBodyEnd) is emitted on the
+        // first close / flushAndClose / cancel. The previous bridge
+        // (`ByteChannel` + `readAvailable(8 KB)`) coalesced per-frame flushes
+        // into drain-sized batches, which broke SSE / chunked streaming
+        // semantics on JVM engines whose scheduler outpaced the bridge.
+        return KeelByteWriteChannel(pipelinedChannel, scope)
     }
 
     /**
@@ -222,7 +200,10 @@ internal class KeelApplicationResponse(
 
     override suspend fun respondOutgoingContent(content: OutgoingContent) {
         super.respondOutgoingContent(content)
-        responseBodyJob?.join()
+        // K29: body completion is awaited inside KeelByteWriteChannel.flushAndClose
+        // (via awaitFlushComplete on the terminating HttpBodyEnd). The previous
+        // responseBodyJob.join() guarded the bridge coroutine, which no longer
+        // exists.
     }
 
     /**
@@ -308,9 +289,6 @@ internal class KeelApplicationResponse(
     }
 
     private companion object {
-        /** Buffer size for streaming response body chunks. */
-        private const val RESPONSE_CHUNK_SIZE = 8192
-
         /** Buffer size for upgrade session inbound/outbound pumps. */
         private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
     }

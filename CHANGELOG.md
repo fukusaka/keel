@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `keel-server-ktor`: `KeelApplicationResponse.responseChannel()` now propagates `ByteWriteChannel.flush()` to the engine pipeline 1:1 (per-frame `requestWrite + requestFlush`) instead of coalescing 1-15 frames per drain through the previous `ByteChannel` + 8 KB `readAvailable` bridge; SSE / chunked streaming on `ktor-keel-*` engines now match the per-frame send semantics that `respondBytesWriter { writeFully + flush }` callers (and `pipeline-http-*` after #440) already provide (#TBD)
 - `keel-server-ktor-cio`: `KtorCioConnectionHandler` now awaits transport flush completion before closing the connection, preventing chunked-stream terminator loss under high concurrency on epoll / io-uring engines (#439)
 - `benchmark`: `wsbench` WebSocket fragment client now sets `TCP_NODELAY` on its outgoing connections; `bench-stream-one.sh`'s `bindConfigFor`/`childSocketOptions` now defaults `tcpNoDelay` to `true` (matching `SocketOptions.DEFAULT`) so POSIX engines (epoll/io-uring) no longer stall ~40 ms per echo round-trip due to Nagle+delayed-ACK interaction (#438)
 - `keel-core`: `TypedInboundHandler` auto-release now correctly releases the original input when a transforming handler propagates a different output object (e.g. `WsFrameDecoder` propagating `WsFrame` after consuming `IoBuf`); the previous identity-blind check leaked the source Netty `ByteBuf` indefinitely, causing OOM under sustained WebSocket load (#437)
