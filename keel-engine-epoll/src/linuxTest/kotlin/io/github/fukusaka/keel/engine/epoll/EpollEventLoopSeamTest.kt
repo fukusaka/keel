@@ -4,6 +4,8 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.linux.EPOLLERR
+import platform.linux.EPOLLHUP
 import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
@@ -11,6 +13,7 @@ import platform.posix.EMFILE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -183,6 +186,68 @@ class EpollEventLoopSeamTest {
         assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
         assertEquals(1, errors.size)
         assertTrue(errors.first().contains("epoll_wait()"))
+    }
+
+    // --- EPOLLHUP / EPOLLERR dispatch tests ---
+    //
+    // The kernel always reports EPOLLHUP and EPOLLERR regardless of the
+    // interest mask. On a peer FIN / RST the kernel may fire EPOLLHUP
+    // without EPOLLIN. Without treating these flags as READ-ready, the
+    // pipeline callback is never invoked, read() never returns 0, and
+    // onReadClosed never fires — connections pile up in CLOSE-WAIT.
+
+    @Test
+    fun `EPOLLHUP-only event invokes READ callback`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0)
+            scriptWaitOk(2000 to EPOLLHUP)   // EPOLLHUP only — no EPOLLIN
+            scriptWaitFailure(EBADF)          // terminate loop
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var readCalled = false
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ ->
+            readCalled = true
+        }
+        el.loop()
+        assertTrue(readCalled, "READ callback must fire on EPOLLHUP even without EPOLLIN")
+    }
+
+    @Test
+    fun `EPOLLERR-only event invokes READ callback`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0)
+            scriptWaitOk(2000 to EPOLLERR)   // EPOLLERR only — no EPOLLIN
+            scriptWaitFailure(EBADF)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var readCalled = false
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ ->
+            readCalled = true
+        }
+        el.loop()
+        assertTrue(readCalled, "READ callback must fire on EPOLLERR even without EPOLLIN")
+    }
+
+    @Test
+    fun `EPOLLHUP-only event does not spuriously invoke WRITE callback`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0)
+            scriptWaitOk(2000 to EPOLLHUP)
+            scriptWaitFailure(EBADF)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var writeCalled = false
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
+            writeCalled = true
+        }
+        el.loop()
+        assertFalse(writeCalled, "WRITE callback must NOT fire on EPOLLHUP alone")
     }
 
     /**
