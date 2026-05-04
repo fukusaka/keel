@@ -220,9 +220,19 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
             // A protocol upgrade (e.g. WebSocket) was performed: the upgrade session
             // now owns the raw input/output channels. Join the session job to keep
             // the connection alive until the peer closes, then exit the keep-alive loop.
+            //
+            // K23: bound the wait to [WS_CLOSE_TIMEOUT_MS]. Ktor's WebSocketSession
+            // can deadlock with our pipeline-side teardown waiting for `inputChannel`
+            // EOF that is itself blocked behind `upgradeJob` completion (observed on
+            // ktor-cio-keel-nio macOS). Bounding the join lets the connection tear
+            // down within the timeout instead of pinning a connection slot
+            // indefinitely; the proper fix needs cross-engine teardown ordering.
             val upgradeJob = call.response.upgradeJob
             if (upgradeJob != null) {
-                upgradeJob.join()
+                kotlinx.coroutines.withTimeoutOrNull(WS_CLOSE_TIMEOUT_MS) {
+                    upgradeJob.join()
+                }
+                if (upgradeJob.isActive) upgradeJob.cancel()
                 break
             }
 
@@ -363,5 +373,15 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         private const val PUMP_BUFFER_SIZE = 8192
         private const val BASE_TEN = 10
         private const val INBOUND_BRIDGE_NAME = "__ktor_cio_inbound__"
+
+        /** Upper bound (ms) on how long the connection handler waits for
+         *  Ktor's WebSocket `upgradeJob` to complete before forcing
+         *  teardown. See K23 in status.md — Ktor's WebSocketSession can
+         *  deadlock with our pipeline-side teardown waiting for input
+         *  EOF that is itself blocked behind `upgradeJob` completion.
+         *  5 s is generous compared to typical close handshake latency
+         *  and tight enough that a stuck upgrade does not pin a
+         *  connection slot indefinitely. */
+        private const val WS_CLOSE_TIMEOUT_MS = 5_000L
     }
 }

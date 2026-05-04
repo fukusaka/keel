@@ -157,10 +157,24 @@ internal class KeelApplicationResponse(
         )
         upgradeJob = scope.launch {
             try {
-                sessionJob.join()
+                // K23 workaround: bound the WebSocket close handshake to
+                // [WS_CLOSE_TIMEOUT_MS]. Ktor's WebSocketSession waits
+                // for `inputChannel` EOF before completing `sessionJob`,
+                // and EOF only fires after `RawInboundBridge.onInactive`,
+                // which on ktor-keel-nio (macOS) only fires after the
+                // socket is closed — and the socket is only closed once
+                // `upgradeJob` completes, hence the deadlock. Bounding
+                // the wait lets the connection tear down within the
+                // timeout instead of pinning the EventLoop indefinitely;
+                // the proper fix needs cross-engine teardown ordering
+                // (track separately, do not extend this scope here).
+                kotlinx.coroutines.withTimeoutOrNull(WS_CLOSE_TIMEOUT_MS) {
+                    sessionJob.join()
+                }
+                if (sessionJob.isActive) {
+                    sessionJob.cancel()
+                }
             } finally {
-                // Session closed outputChannel; wait for outbound pump to flush
-                // the last frames before the connection tears down.
                 runCatching { outboundPump.join() }
                 inboundPump.cancel()
                 rawBridge.close()
@@ -291,5 +305,15 @@ internal class KeelApplicationResponse(
     private companion object {
         /** Buffer size for upgrade session inbound/outbound pumps. */
         private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
+
+        /** Upper bound (ms) on how long [respondUpgrade] waits for
+         *  Ktor's `sessionJob` to complete before forcing teardown.
+         *  See K23 in status.md — Ktor's WebSocketSession can deadlock
+         *  with our pipeline-side teardown waiting for `inputChannel`
+         *  EOF that is itself blocked behind `sessionJob` completion.
+         *  5 s is generous compared to typical close handshake latency
+         *  (sub-millisecond on loopback) and tight enough that a stuck
+         *  upgrade does not pin a connection slot indefinitely. */
+        private const val WS_CLOSE_TIMEOUT_MS = 5_000L
     }
 }
