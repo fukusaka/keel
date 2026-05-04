@@ -21,6 +21,8 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.linux.EPOLLERR
+import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.posix.EAGAIN
@@ -537,11 +539,25 @@ internal class EpollEventLoop(
                 }
 
                 // Process both EPOLLIN and EPOLLOUT if both are set.
+                //
+                // EPOLLERR / EPOLLHUP are reported by the kernel regardless of
+                // the interest mask (man epoll_ctl: "EPOLLERR / EPOLLHUP will
+                // always be reported"). On peer FIN / RST the kernel may fire
+                // EPOLLHUP without EPOLLIN on this socket — without dispatching
+                // these flags as READ ready, the per-fd Pipeline callback
+                // never observes the EOF, the read handler never invokes
+                // [IoTransport.onReadClosed], the keep-alive loop hangs in
+                // its parser, and connections pile up in CLOSE-WAIT. Mapping
+                // HUP/ERR onto the READ branch lets the handler call read()
+                // which returns 0 and triggers onReadClosed → propagateInactive
+                // → bridge close → keep-alive loop exits → finally cleanup.
                 val evFlags = ev.events
-                if (evFlags and EPOLLIN != 0) {
+                val readReady = (evFlags and (EPOLLIN or EPOLLERR or EPOLLHUP)) != 0
+                val writeReady = (evFlags and EPOLLOUT) != 0
+                if (readReady) {
                     dispatchReady(fd, Interest.READ)
                 }
-                if (evFlags and EPOLLOUT != 0) {
+                if (writeReady) {
                     dispatchReady(fd, Interest.WRITE)
                 }
             }
