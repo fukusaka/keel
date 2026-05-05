@@ -233,13 +233,30 @@ class EpollEventLoopSeamTest {
         assertTrue(readCalled, "READ callback must fire on EPOLLERR even without EPOLLIN")
     }
 
+    @Test
+    fun `EPOLLHUP-only event does not spuriously invoke WRITE callback`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0)
+            scriptWaitOk(2000 to EPOLLHUP)
+            scriptWaitFailure(EBADF)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        var writeCalled = false
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
+            writeCalled = true
+        }
+        el.loop()
+        assertFalse(writeCalled, "WRITE callback must NOT fire on EPOLLHUP alone")
+    }
+
     // --- stale EPOLLOUT removal tests ---
     //
     // A WRITE callback that does not re-register after onReady() (successful
     // flush) must cause EPOLLOUT to be removed from the epoll filter.
     // Without this, level-triggered epoll keeps reporting EPOLLOUT on every
-    // wait iteration — a busy loop that starves I/O processing under load
-    // (K22: ktor-cio-keel-epoll stops serving after warmup).
+    // wait iteration — a busy loop that starves I/O processing under load.
 
     @Test
     fun `WRITE callback that does not re-register causes epoll_ctl MOD to clear EPOLLOUT`() {
@@ -332,30 +349,10 @@ class EpollEventLoopSeamTest {
         }
         el.loop()
         assertTrue(readCalled)
-        // Re-registration during onReady() means no MOD to remove EPOLLIN should occur.
+        // Re-registration during onReady() means removeInterestFromEpoll is not
+        // called — no MOD at all on the read hot path.
         val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
-        assertTrue(
-            modCalls.none { (it.events and platform.linux.EPOLLIN) == 0 },
-            "No MOD removing EPOLLIN expected when READ callback re-arms",
-        )
-    }
-
-    @Test
-    fun `EPOLLHUP-only event does not spuriously invoke WRITE callback`() {
-        val fake = FakeEpollSyscallOps().apply {
-            scriptEpollCreateFd(fd = 1000)
-            scriptEventfdCreateFd(fd = 1001)
-            scriptAddResult(0)
-            scriptWaitOk(2000 to EPOLLHUP)
-            scriptWaitFailure(EBADF)
-        }
-        val el = EpollEventLoop(logger, syscallOps = fake)
-        var writeCalled = false
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
-            writeCalled = true
-        }
-        el.loop()
-        assertFalse(writeCalled, "WRITE callback must NOT fire on EPOLLHUP alone")
+        assertTrue(modCalls.isEmpty(), "No MOD expected when READ callback re-arms synchronously")
     }
 
     /**
