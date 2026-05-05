@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -16,6 +17,7 @@ import platform.posix.EPIPE
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.socket
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -369,11 +371,73 @@ class EpollTransportSeamTest {
 
     @Test
     fun `awaitPendingFlush returns immediately when pending queue is empty`() = runBlocking {
+        // EL must be started: the fix dispatches check+register to EL even for
+        // the empty-queue fast path, so the EL thread must be running to process
+        // the lambda and resume the continuation.
+        eventLoop.start()
+
         val fake = FakeNativeSocket()
         val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
-        // No writes enqueued — pendingWrites is empty, must return without suspending.
         withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
+    }
+
+    // --- awaitPendingFlush TOCTOU race fix (K34) ---
+
+    /**
+     * Regression test for K34: verifies that `awaitPendingFlush` correctly
+     * handles the case where flush completes on the EventLoop thread while
+     * the continuation is being registered.
+     *
+     * **The race (pre-fix)**: the check (`pendingWrites.isEmpty()`) and the
+     * store (`flushContinuation = cont`) were both performed off-EL, creating
+     * a TOCTOU window:
+     * 1. Caller off-EL: `pendingWrites.isEmpty()` → false (writes pending)
+     * 2. EL: `onReady(WRITE)` → `flush()` succeeds → `flushContinuation` is null
+     *    (cont not yet stored) → no resume; EPOLLOUT removed
+     * 3. Caller off-EL: `flushContinuation = cont` → stored after EL already
+     *    passed its null check → **permanent deadlock**
+     *
+     * **The fix**: `awaitPendingFlush` dispatches the check+register lambda to
+     * the EventLoop. When the lambda runs on the EL thread, the check and store
+     * are atomic from the EL's perspective: if `pendingWrites` is already empty,
+     * `cont.resume(Unit)` is called immediately instead of storing the cont.
+     *
+     * **Test approach**: the FIFO task queue guarantees that Task_A (onReady,
+     * dispatched below) precedes Task_B (check+register dispatched by
+     * awaitPendingFlush). Post-fix: Task_A drains pendingWrites; Task_B sees the
+     * empty queue and resumes the continuation — always correct. Pre-fix: the
+     * check+register runs off-EL; if Task_A fires between the isEmpty check and
+     * the cont store, the race manifests. The narrow race window makes this
+     * non-deterministic in a unit test; the regression evidence is the bench
+     * result (30 req/s → ~490 req/s after fix).
+     */
+    @Test
+    fun `awaitPendingFlush resumes after concurrent EL flush via FIFO dispatch ordering`() = runBlocking {
+        eventLoop.start()
+
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.WouldBlock)
+            enqueueWrite(fd, WriteResult.Written(4))
+        }
+        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()  // WouldBlock → pendingWrites non-empty, EPOLLOUT registered
+
+        // Task_A: simulate EPOLLOUT firing — drains pendingWrites.
+        // Dispatched before awaitPendingFlush, guaranteed to be queued first.
+        // Post-fix: awaitPendingFlush dispatches Task_B; FIFO ensures Task_A runs
+        // first (drains queue), then Task_B sees empty → cont.resume(Unit). ✓
+        // Pre-fix: check+store off-EL; Task_A fires between them → deadlock (race).
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable {
+            transport.onReady(EpollEventLoop.Interest.WRITE)
+        })
+
+        withTimeout(2000) {
             transport.awaitPendingFlush()
         }
     }

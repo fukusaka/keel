@@ -7,9 +7,11 @@ import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.EmptyCoroutineContext
 import platform.posix.AF_INET
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
@@ -311,10 +313,45 @@ class KqueueTransportSeamTest {
 
     @Test
     fun `awaitPendingFlush returns immediately when pending queue is empty`() = runBlocking {
+        // EL must be started: the fix dispatches check+register to EL even for
+        // the empty-queue fast path, so the EL thread must be running to process
+        // the lambda and resume the continuation.
+        eventLoop.start()
+
         val fake = FakeNativeSocket()
         val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
+    }
+
+    // --- awaitPendingFlush TOCTOU race fix (K34) ---
+
+    /** Symmetric kqueue counterpart of the epoll K34 regression test. */
+    @Test
+    fun `awaitPendingFlush resumes after concurrent EL flush via FIFO dispatch ordering`() = runBlocking {
+        eventLoop.start()
+
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.WouldBlock)
+            enqueueWrite(fd, WriteResult.Written(4))
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()  // WouldBlock → pendingWrites non-empty, EVFILT_WRITE registered
+
+        // Task_A dispatched before awaitPendingFlush; FIFO guarantees it runs first.
+        // Post-fix: awaitPendingFlush dispatches Task_B; Task_A drains queue, Task_B
+        // sees isEmpty=true → cont.resume(Unit). Pre-fix: race between off-EL check
+        // and EL Task_A completing flush → potential deadlock.
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable {
+            transport.onReady(KqueueEventLoop.Interest.WRITE)
+        })
+
+        withTimeout(2000) {
             transport.awaitPendingFlush()
         }
     }

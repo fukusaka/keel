@@ -214,11 +214,41 @@ class IoUringTransportSeamTest {
      */
     @Test
     fun `awaitPendingFlush returns immediately when no async flush is pending`() = runBlocking {
+        // EL must be started: the fix dispatches check+register to EL even for
+        // the empty-queue fast path, so the EL thread must be running to process
+        // the lambda and resume the continuation.
+        eventLoop.start()
+
         val fake = FakeNativeSocket()
         val transport = newTransport(fake)
 
-        // No writes — asyncFlushPending is false; must not suspend.
         withTimeout(500) {
+            transport.awaitPendingFlush()
+        }
+    }
+
+    // --- awaitPendingFlush TOCTOU race fix (K34) ---
+
+    /**
+     * Verifies the K34 fix for the `asyncFlushPending = false` fast path: when
+     * the EL-dispatched check+register lambda sees no pending flush, the
+     * continuation is resumed immediately rather than stored (post-fix invariant).
+     *
+     * The full K34 race (asyncFlushPending=true → write CQE fires between check
+     * and cont store → deadlock) requires a real io_uring ring to trigger
+     * `submitAsyncSend`; that path is covered by the integration tests in
+     * `IoModeTest` and `IoUringEngineReadWriteTest`.
+     */
+    @Test
+    fun `awaitPendingFlush dispatches to EL and resumes when no flush is pending`() = runBlocking {
+        eventLoop.start()
+
+        val fake = FakeNativeSocket()
+        val transport = newTransport(fake)
+
+        // asyncFlushPending is false. Post-fix: dispatches to EL, lambda sees
+        // !asyncFlushPending → cont.resume(Unit). Must not hang.
+        withTimeout(2000) {
             transport.awaitPendingFlush()
         }
     }

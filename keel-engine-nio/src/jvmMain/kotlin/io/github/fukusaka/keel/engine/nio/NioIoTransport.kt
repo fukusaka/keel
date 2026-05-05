@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.EmptyCoroutineContext
@@ -237,11 +238,32 @@ internal class NioIoTransport(
         )
     }
 
+    /**
+     * Suspends until all pending async flush operations complete.
+     *
+     * Returns immediately if no async flush is pending (`pendingWrites` is empty
+     * on the EventLoop thread when the lambda executes). Dispatches the check
+     * and registration to the EventLoop so they are atomic with the OP_WRITE
+     * callback: if the flush already completed before the lambda runs, [cont] is
+     * resumed immediately rather than stored, avoiding a TOCTOU deadlock.
+     */
     override suspend fun awaitPendingFlush() {
-        if (pendingWrites.isEmpty()) return
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            flushContinuation = cont
-            cont.invokeOnCancellation { flushContinuation = null }
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                when {
+                    !opened -> cont.cancel()
+                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    else -> {
+                        flushContinuation = cont
+                        cont.invokeOnCancellation { flushContinuation = null }
+                    }
+                }
+            }
+            if (eventLoop.inEventLoop()) {
+                register.run()
+            } else {
+                eventLoop.dispatch(EmptyCoroutineContext, register)
+            }
         }
     }
 }
