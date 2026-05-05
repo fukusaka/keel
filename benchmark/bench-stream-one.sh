@@ -477,8 +477,11 @@ for run in $(seq 1 "$RUNS"); do
         )
         printf '%s\n' "$K6_OUT" > "$RAW_FILE"
         # The wsbench output line is already in the right shape; pull
-        # only the line starting with the engine name.
-        ROW=$(printf '%s' "$K6_OUT" | grep -E "^${SAFE_NAME}\|" | tail -1)
+        # only the line starting with the engine name. Use NAME (not
+        # SAFE_NAME) because wsbench is invoked with -name="$NAME" above
+        # and outputs the name verbatim; SAFE_NAME replaces ':' with '-'
+        # which would never match.
+        ROW=$(printf '%s' "$K6_OUT" | grep -E "^${NAME}\|" | tail -1)
         if [ -z "$ROW" ]; then
             PARSED="||"
         else

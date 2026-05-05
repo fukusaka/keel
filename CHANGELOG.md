@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `benchmark`: fix `bench-stream-one.sh` ws-fragment result aggregation — `grep` now matches on `NAME` (verbatim wsbench `-name` value) instead of `SAFE_NAME` (`:` → `-` sanitised), which previously caused all ws-fragment rows to be written as empty in the stream results file (#451)
 - `engine-kqueue`: remove stale `EVFILT_WRITE` kqueue filter after a pipeline WRITE callback completes without re-registering; without this, the persistent `EV_ADD` filter fired on every `kevent()` call while the fd was writable, busy-looping the EventLoop thread and causing `ktor-cio-keel-kqueue` to stop serving after warmup (#449)
 - `engine-epoll`, `engine-kqueue`: suppress SIGPIPE per-connection instead of process-wide `signal(SIG_IGN)`; writes to peer-closed sockets return `WriteResult.Failed(EPIPE)` without terminating the process or disrupting application SIGPIPE handling (#448)
 - `pipeline`: writes arriving after `close()` are now discarded instead of enqueued; `PipelinedChannel.requestFlush()` is now a no-op when the channel is already closed (#448)
