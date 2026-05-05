@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-epoll`, `engine-kqueue`: suppress SIGPIPE without process-wide `signal(SIGPIPE, SIG_IGN)`; `keel_write`/`keel_writev` now use `send(MSG_NOSIGNAL)`/`sendmsg(MSG_NOSIGNAL)` on Linux, and `SO_NOSIGPIPE` is set per-socket on macOS via `PosixNativeSocketOps.setNonBlocking`; writing to a peer-closed socket surfaces as `WriteResult.Failed(EPIPE)` without terminating the process or disrupting the application's own SIGPIPE handling (#448)
-- `pipeline`: `AbstractIoTransport.write()` now releases buffers that arrive after `close()` instead of enqueueing them; `PipelinedChannel.requestFlush()` is now a no-op instead of throwing when the channel is closed (#448)
+- `engine-epoll`, `engine-kqueue`: suppress SIGPIPE per-connection instead of process-wide `signal(SIG_IGN)`; writes to peer-closed sockets return `WriteResult.Failed(EPIPE)` without terminating the process or disrupting application SIGPIPE handling (#448)
+- `pipeline`: writes arriving after `close()` are now discarded instead of enqueued; `PipelinedChannel.requestFlush()` is now a no-op when the channel is already closed (#448)
 - `engine-epoll`: log WARN and remove the interest from epoll when `dispatchReady` fires for a fd+interest that has neither a callback nor a suspend waiter; without this, a stale interest left in `fdEvents` caused a level-triggered busy loop with no log output until the fd was closed (#447)
 - `engine-epoll`: remove stale `EPOLLOUT` from the epoll filter after a pipeline WRITE callback completes without re-registering; without this, level-triggered epoll busy-looped on every `epoll_wait` for all connections that had ever stalled on `EAGAIN`, saturating the EventLoop thread and causing `ktor-cio-keel-epoll` to stop serving after warmup (#447)
 - `engine-epoll`: map `EPOLLHUP` and `EPOLLERR` to the READ-ready branch in the event loop; the kernel delivers these flags regardless of the interest mask, so on peer FIN / RST a socket could receive `EPOLLHUP` without `EPOLLIN`, leaving connections in CLOSE-WAIT (#447)

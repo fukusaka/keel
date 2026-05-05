@@ -127,9 +127,9 @@ interface PipelinedChannel : Channel {
     /**
      * Initiates a flush through the pipeline (fire-and-forget).
      *
-     * Non-suspend: callers must ensure this is called from the EventLoop
-     * thread or an appropriate context. Use [flush] (suspend) for safe
-     * cross-thread flushing.
+     * No-op if the channel is already closed. Non-suspend: callers must
+     * ensure this is called from the EventLoop thread or an appropriate
+     * context. Use [flush] (suspend) for safe cross-thread flushing.
      */
     override fun requestFlush() {
         if (!isOpen) return
