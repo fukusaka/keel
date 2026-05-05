@@ -9,6 +9,7 @@ actual fun engineRegistry(): Map<String, EngineBenchmark> = mapOf(
     "ktor-cio-keel-kqueue" to KeelCioKqueueEngine,
     "pipeline-http-kqueue" to PipelineHttpKqueueBenchmark,
     "ktor-keel-nwconnection" to KeelNwConnectionEngine,
+    "ktor-cio-keel-nwconnection" to KeelCioNwConnectionEngine,
     "pipeline-http-nwconnection" to PipelineHttpNwBenchmark,
     "ktor-cio" to CioEngine,
 )
