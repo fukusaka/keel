@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import platform.darwin.EVFILT_WRITE
 import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
@@ -145,7 +146,7 @@ class KqueueEventLoopSeamTest {
             scriptWaitFailure(EINTR)   // 1st: retriable, loop should `continue`
             scriptWaitFailure(EBADF)   // 2nd: fatal, loop should log + break
         }
-        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         el.loop()
         assertEquals(2, fake.waitCalls, "EINTR should be retried, then EBADF terminates")
         assertEquals(1, errors.size, "fatal errno should produce exactly one error log")
@@ -162,7 +163,7 @@ class KqueueEventLoopSeamTest {
             scriptWaitFailure(EAGAIN)
             scriptWaitFailure(EBADF)
         }
-        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         el.loop()
         assertEquals(2, fake.waitCalls, "EAGAIN should be retried, then EBADF terminates")
         assertEquals(1, errors.size)
@@ -175,22 +176,84 @@ class KqueueEventLoopSeamTest {
         val fake = FakeKqueueSyscallOps().apply {
             scriptWaitFailure(EBADF)   // fatal on first call
         }
-        val el = KqueueEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         el.loop()
         assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
         assertEquals(1, errors.size)
         assertTrue(errors.first().contains("kevent()"))
     }
 
+    // --- dispatchReady stale-filter removal tests (K22/K33 regression) ---
+    //
+    // kqueue uses persistent EV_ADD filters: EVFILT_WRITE fires on every kevent()
+    // call while the fd is writable. Without EV_DELETE after a completed flush,
+    // the EventLoop spins in a busy loop — saturating the EventLoop thread and
+    // starving accept() / reads under load (same root cause as epoll K22 / PR #447).
+    //
+    // Drive `loop()` directly on the test thread. Each test scripts exactly one
+    // EVFILT_WRITE event followed by a fatal EBADF to terminate the loop.
+
+    @Test
+    fun `WRITE callback that does not re-register causes deleteWriteFilter`() {
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            // addFilter queue empty → all addFilter calls succeed (default 0)
+            scriptWaitOk(Triple(5000, EVFILT_WRITE, 0)) // fd 5000 writable
+            scriptWaitFailure(EBADF)                     // terminate loop
+        }
+        val el = KqueueEventLoop(logger, syscallOps = fake)
+        // Callback does NOT re-register: simulates a flush that completed fully.
+        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE) { /* no-op */ }
+        el.loop()
+        assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called when callback does not re-register")
+        assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
+        assertEquals(5000, fake.deleteFilterCalls[0].fd)
+    }
+
+    @Test
+    fun `WRITE callback that re-registers does not call deleteWriteFilter`() {
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            scriptWaitOk(Triple(5000, EVFILT_WRITE, 0)) // first WRITE fire
+            scriptWaitFailure(EBADF)
+        }
+        val el = KqueueEventLoop(logger, syscallOps = fake)
+        // Callback re-registers: simulates a partial flush that needs another WRITE event.
+        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE) { interest ->
+            el.registerCallback(5000, interest) { /* second callback; never fires in this test */ }
+        }
+        el.loop()
+        assertTrue(fake.deleteFilterCalls.isEmpty(), "deleteWriteFilter must NOT be called when callback re-registers")
+    }
+
+    @Test
+    fun `stale EVFILT_WRITE with no handler emits WARN and calls deleteWriteFilter`() {
+        val warns = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            scriptWaitOk(Triple(5000, EVFILT_WRITE, 0)) // stale: no handler for fd 5000
+            scriptWaitFailure(EBADF)
+        }
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.WARN, warns), syscallOps = fake)
+        el.loop()
+        assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called for stale interest")
+        assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
+        assertEquals(5000, fake.deleteFilterCalls[0].fd)
+        assertEquals(1, warns.size, "stale interest must produce exactly one WARN log")
+        assertTrue(warns.first().contains("stale"), "WARN must mention 'stale'")
+    }
+
     /**
-     * Logger that captures `error`-level messages into [sink]. Other levels
-     * are discarded. Used by the main-loop error-branch tests to assert
-     * the fatal-exit path emits the expected log.
+     * Logger that captures messages at exactly [level] into [sink].
+     * All other levels are discarded.
      */
-    private fun recordingLogger(sink: MutableList<String>): Logger = object : Logger {
-        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
+    private fun levelRecordingLogger(captured: LogLevel, sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = level == captured
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
-            if (level == LogLevel.ERROR) sink.add(message.toString())
+            if (level == captured) sink.add(message.toString())
         }
     }
 }
