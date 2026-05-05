@@ -20,10 +20,9 @@ import kotlinx.coroutines.sync.withLock
  * block the I/O thread — other connections continue their I/O work while
  * one parses headers.
  *
- * **Linux targets** use a no-op pass-through (see `HeaderParseMutex.linux.kt`)
- * because epoll and io_uring engines are single-threaded: no concurrent pool
- * access is possible, so the shared mutex would only add unnecessary
- * cross-connection queuing overhead.
+ * **Linux targets** use the same process-wide [Mutex] (see `HeaderParseMutex.linux.kt`)
+ * for the same reason: epoll and io_uring engines also run `availableProcessors()`
+ * worker threads, so the same concurrent pool-access risk exists.
  *
  * Empirically (macOS M1, kqueue default workers ≈ 8 cores,
  * wrk 4t/100c/10s, 20 iterations):
