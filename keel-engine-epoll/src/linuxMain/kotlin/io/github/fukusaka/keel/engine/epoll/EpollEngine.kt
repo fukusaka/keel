@@ -36,7 +36,6 @@ import platform.linux.EPOLL_CTL_ADD
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import platform.posix.errno
-import posix_socket.keel_ignore_sigpipe
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -101,10 +100,6 @@ class EpollEngine(
     private var closed = false
 
     init {
-        // Suppress SIGPIPE so that writing to a peer-closed socket surfaces as
-        // WriteResult.Failed(EPIPE) instead of terminating the process. Servers
-        // always call this; the disposition is process-wide and harmless on Linux.
-        keel_ignore_sigpipe()
         bossLoop.start()
         workerGroup.start()
     }

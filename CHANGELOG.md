@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-epoll`, `engine-io-uring`: call `keel_ignore_sigpipe()` at engine initialization to suppress SIGPIPE; without this, writing to a peer-closed socket via `keel_write` / `keel_writev` raised SIGPIPE and terminated the process with exit code 141 on Linux (#448)
+- `engine-epoll`, `engine-kqueue`: suppress SIGPIPE without process-wide `signal(SIGPIPE, SIG_IGN)`; `keel_write`/`keel_writev` now use `send(MSG_NOSIGNAL)`/`sendmsg(MSG_NOSIGNAL)` on Linux, and `SO_NOSIGPIPE` is set per-socket on macOS via `PosixNativeSocketOps.setNonBlocking`; writing to a peer-closed socket surfaces as `WriteResult.Failed(EPIPE)` without terminating the process or disrupting the application's own SIGPIPE handling (#448)
 - `pipeline`: `AbstractIoTransport.write()` now releases buffers that arrive after `close()` instead of enqueueing them; `PipelinedChannel.requestFlush()` is now a no-op instead of throwing when the channel is closed (#448)
 - `engine-epoll`: log WARN and remove the interest from epoll when `dispatchReady` fires for a fd+interest that has neither a callback nor a suspend waiter; without this, a stale interest left in `fdEvents` caused a level-triggered busy loop with no log output until the fd was closed (#447)
 - `engine-epoll`: remove stale `EPOLLOUT` from the epoll filter after a pipeline WRITE callback completes without re-registering; without this, level-triggered epoll busy-looped on every `epoll_wait` for all connections that had ever stalled on `EAGAIN`, saturating the EventLoop thread and causing `ktor-cio-keel-epoll` to stop serving after warmup (#447)
