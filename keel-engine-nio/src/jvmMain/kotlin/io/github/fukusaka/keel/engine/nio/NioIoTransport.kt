@@ -238,6 +238,15 @@ internal class NioIoTransport(
         )
     }
 
+    /**
+     * Suspends until all pending async flush operations complete.
+     *
+     * Returns immediately if no async flush is pending (`pendingWrites` is empty
+     * on the EventLoop thread when the lambda executes). Dispatches the check
+     * and registration to the EventLoop so they are atomic with the OP_WRITE
+     * callback: if the flush already completed before the lambda runs, [cont] is
+     * resumed immediately rather than stored, avoiding a TOCTOU deadlock.
+     */
     override suspend fun awaitPendingFlush() {
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
