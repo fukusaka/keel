@@ -4,11 +4,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Process-wide serialisation of ktor-http-cio parser calls for Apple targets.
+ * Process-wide serialisation of ktor-http-cio parser calls for Kotlin/Native targets.
  *
- * keel's macOS engines (kqueue, NWConnection) run connections across multiple
- * EventLoop worker threads (one per CPU core). Multiple workers can call
- * [parseRequest][io.ktor.http.cio.parseRequest] simultaneously, which causes
+ * All keel Native engines (kqueue, NWConnection, epoll, io_uring) use a boss/worker
+ * EventLoop model with `availableProcessors()` worker threads. Multiple workers can
+ * call [parseRequest][io.ktor.http.cio.parseRequest] simultaneously, which causes
  * a lock contention storm inside ktor's process-wide `HeadersDataPool`:
  * `borrow()` holds the pool's internal lock while calling `clearInstance`,
  * which re-enters the same lock via `recycle()`. On Kotlin/Native the lock
@@ -20,9 +20,9 @@ import kotlinx.coroutines.sync.withLock
  * block the I/O thread — other connections continue their I/O work while
  * one parses headers.
  *
- * **Linux targets** use the same process-wide [Mutex] (see `HeaderParseMutex.linux.kt`)
- * for the same reason: epoll and io_uring engines also run `availableProcessors()`
- * worker threads, so the same concurrent pool-access risk exists.
+ * Within a single worker, coroutines are cooperatively scheduled (one runs
+ * at a time), so the mutex is only ever contended across workers — not within
+ * a single worker's connection set.
  *
  * Empirically (macOS M1, kqueue default workers ≈ 8 cores,
  * wrk 4t/100c/10s, 20 iterations):

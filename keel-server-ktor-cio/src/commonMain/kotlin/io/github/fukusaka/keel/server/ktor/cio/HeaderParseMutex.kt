@@ -18,13 +18,11 @@ package io.github.fukusaka.keel.server.ktor.cio
  *
  * **Platform policy**:
  * - **JVM**: no-op pass-through (see `HeaderParseMutex.jvm.kt`)
- * - **Linux** (epoll, io_uring): process-wide [kotlinx.coroutines.sync.Mutex]
- *   (see `HeaderParseMutex.linux.kt`).  epoll and io_uring engines use the same
- *   boss/worker model as kqueue: `availableProcessors()` worker threads, each
- *   on its own pthread.  The same concurrent pool-access risk applies.
- * - **Apple** (kqueue, NWConnection): process-wide [kotlinx.coroutines.sync.Mutex]
- *   (see `HeaderParseMutex.apple.kt`).  kqueue spawns one EventLoop worker
- *   per CPU core; the mutex prevents concurrent pool access across workers.
+ * - **Native** (kqueue, NWConnection, epoll, io_uring): process-wide
+ *   [kotlinx.coroutines.sync.Mutex] (see `HeaderParseMutex.native.kt`).
+ *   All Native engines use the same boss/worker model with
+ *   `availableProcessors()` worker threads; the mutex prevents concurrent
+ *   pool access across workers.
  *
  * Empirically (macOS M1, kqueue ≈ 8 workers, wrk 4t/100c/10s):
  *
