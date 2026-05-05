@@ -12,6 +12,7 @@ import kotlinx.cinterop.refTo
 import kotlinx.cinterop.usePinned
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
+import platform.darwin.EV_DELETE
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.kevent
@@ -65,6 +66,12 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
     override fun addWriteFilter(kqFd: Int, fd: Int): Int =
         submitEventAdd(kqFd, fd, EVFILT_WRITE)
 
+    override fun deleteReadFilter(kqFd: Int, fd: Int): Int =
+        submitEventDelete(kqFd, fd, EVFILT_READ)
+
+    override fun deleteWriteFilter(kqFd: Int, fd: Int): Int =
+        submitEventDelete(kqFd, fd, EVFILT_WRITE)
+
     override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int {
         memScoped {
             val eventList = allocArray<kevent>(eventsOut.size)
@@ -117,6 +124,18 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
             keel_ev_set(
                 ev.ptr, fd.convert(), filter.convert(),
                 EV_ADD.convert(), 0u, 0, null,
+            )
+            val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
+            return if (rc < 0) errno else 0
+        }
+    }
+
+    private fun submitEventDelete(kqFd: Int, fd: Int, filter: Int): Int {
+        memScoped {
+            val ev = alloc<kevent>()
+            keel_ev_set(
+                ev.ptr, fd.convert(), filter.convert(),
+                EV_DELETE.convert(), 0u, 0, null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
             return if (rc < 0) errno else 0
