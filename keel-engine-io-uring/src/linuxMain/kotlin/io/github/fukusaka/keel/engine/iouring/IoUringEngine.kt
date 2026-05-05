@@ -45,6 +45,7 @@ import platform.posix.sockaddr_in
 import platform.posix.sockaddr_in6
 import posix_socket.keel_fill_sockaddr_in6_addr
 import posix_socket.keel_htonl
+import posix_socket.keel_ignore_sigpipe
 import posix_socket.keel_init_sockaddr_in
 import posix_socket.keel_init_sockaddr_in6
 import posix_socket.keel_sockaddr_un_sizeof
@@ -109,6 +110,11 @@ class IoUringEngine(
     private var closed = false
 
     init {
+        // Suppress SIGPIPE so that writing to a peer-closed socket surfaces as
+        // WriteResult.Failed(EPIPE) instead of terminating the process. Servers
+        // always call this; the disposition is process-wide and harmless on Linux.
+        keel_ignore_sigpipe()
+
         // Detect capabilities using kernel version. Opcode probe (SEND_ZC)
         // requires a ring, so create boss loop first with default capabilities,
         // then probe from its ring.
