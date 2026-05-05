@@ -17,6 +17,7 @@ import io.netty.channel.EventLoop
 import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import io.netty.channel.Channel as NettyNativeChannel
 
@@ -60,11 +61,12 @@ import io.netty.channel.Channel as NettyNativeChannel
  * single-thread invariant the same way the EventLoop-based Native engines
  * (epoll / kqueue / io_uring) already do.
  *
- * **No awaitPendingFlush**: Netty internally buffers data submitted via
- * `writeAndFlush` and processes it in EventLoop order. Even if the channel
- * is closed immediately after flush, Netty guarantees the write is processed
- * before close (same EventLoop ordering). This is the same model as
- * NWConnection (framework-managed flow control).
+ * **awaitPendingFlush**: tracks [lastFlushFuture] from each [flush] call.
+ * [awaitPendingFlush] suspends until that future completes, ensuring the
+ * chunked terminator (or any final write) is on the wire before the caller
+ * returns. This prevents truncated responses when the socket buffer is
+ * momentarily full and Netty would otherwise send the trailing bytes
+ * asynchronously after the connection handler has already returned.
  *
  * @param nettyChannel The underlying Netty channel.
  * @param allocator    Buffer allocator for read operations.
@@ -228,12 +230,23 @@ internal class NettyIoTransport(
     // --- Write path ---
 
     /**
+     * The [ChannelFuture] from the most recent [flush] call.
+     *
+     * Guarded by the EventLoop thread — [flush] sets it and
+     * [awaitPendingFlush] reads it; both always execute on the channel's
+     * [EventLoop] (the former via [onFlush], the latter via
+     * `withContext(ioDispatcher)` in [terminate]).
+     */
+    private var lastFlushFuture: ChannelFuture? = null
+
+    /**
      * Sends all pending writes via Netty's [writeAndFlush].
      *
      * Batches all pending writes into Netty's outbound buffer using
      * [write][NettyNativeChannel.write], then issues a single flush on
      * the last write. The last write's [ChannelFuture] listener releases
-     * buffers and invokes [onFlushComplete].
+     * buffers and invokes [onFlushComplete]. [lastFlushFuture] is updated
+     * so [awaitPendingFlush] can wait for completion.
      *
      * @return always `false` because Netty writes are asynchronous.
      */
@@ -270,6 +283,7 @@ internal class NettyIoTransport(
                 }
             }
 
+            lastFlushFuture = lastFuture
             lastFuture?.addListener {
                 for (pw in writes) pw.buf.release()
                 updatePendingBytes(-totalBytes)
@@ -282,10 +296,40 @@ internal class NettyIoTransport(
             // Release all buffers on write failure (e.g. channel already closed).
             for (pw in writes) pw.buf.release()
             updatePendingBytes(-totalBytes)
+            lastFlushFuture = null
             throw e
         }
 
         return false // Always async.
+    }
+
+    /**
+     * Suspends until the most recent Netty flush completes.
+     *
+     * Dispatches the check and listener registration to the EventLoop so
+     * the read of [lastFlushFuture] is atomic with any concurrent [flush]
+     * call. If the future is already done (synchronous socket write) or no
+     * flush has been issued, the continuation resumes immediately.
+     *
+     * This prevents truncated chunked HTTP responses: without this wait,
+     * `terminate()` could return while the chunked terminator `0\r\n\r\n`
+     * is still in Netty's [io.netty.channel.ChannelOutboundBuffer], and a
+     * subsequent [close] could discard it before it reaches the wire.
+     */
+    override suspend fun awaitPendingFlush() {
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                val f = lastFlushFuture
+                when {
+                    !opened -> cont.cancel()
+                    f == null || f.isDone -> cont.resume(Unit)
+                    else -> f.addListener { cont.resume(Unit) }
+                }
+            }
+            val loop = nettyChannel.eventLoop()
+            if (loop.inEventLoop()) register.run()
+            else loop.execute(register)
+        }
     }
 
     /**
