@@ -128,8 +128,13 @@ internal class KeelByteWriteChannel(
     }
 
     override suspend fun flushAndClose() {
-        if (!closed.compareAndSet(expectedValue = false, newValue = true)) return
-        drainAndDispatch()
+        val alreadyClosed = !closed.compareAndSet(expectedValue = false, newValue = true)
+        // If cancel() was called (terminated is already true), skip: no body terminator
+        // should be sent for a cancelled/abandoned response. Any other early close (e.g.
+        // emitBody error setting closed=true) still needs terminate() so the chunked
+        // terminator reaches the wire and the client gets a well-formed response.
+        if (alreadyClosed && terminated.load()) return
+        if (!alreadyClosed) drainAndDispatch()
         terminate()
     }
 
