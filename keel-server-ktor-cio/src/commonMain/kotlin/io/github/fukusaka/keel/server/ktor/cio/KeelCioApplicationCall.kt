@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
 import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.http.cio.Request
 import io.ktor.server.application.Application
 import io.ktor.server.engine.BaseApplicationCall
@@ -30,6 +31,7 @@ internal class KeelCioApplicationCall(
     requestBody: ByteReadChannel,
     rawInput: ByteReadChannel,
     output: ByteWriteChannel,
+    pipelinedChannel: PipelinedChannel,
     localAddress: SocketAddress?,
     remoteAddress: SocketAddress?,
     scope: CoroutineScope,
@@ -51,6 +53,7 @@ internal class KeelCioApplicationCall(
         call = this,
         rawInput = rawInput,
         output = output,
+        pipelinedChannel = pipelinedChannel,
         scope = scope,
         keepAlive = keepAlive,
         protocolVersion = cioRequest.version.toString(),
