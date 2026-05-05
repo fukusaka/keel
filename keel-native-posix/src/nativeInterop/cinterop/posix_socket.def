@@ -1,4 +1,4 @@
-headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h string.h sys/un.h stddef.h errno.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h string.h sys/un.h stddef.h errno.h signal.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -345,6 +345,22 @@ static int keel_fill_sockaddr_un(struct sockaddr_storage *sa, const unsigned cha
         un->sun_path[path_len] = '\0';
         return (int)sizeof(*un);
     }
+}
+
+/*
+ * Suppress SIGPIPE for the calling process.
+ *
+ * On Linux (and macOS), write(2) / writev(2) / send(2) to a socket whose
+ * peer has closed the connection raises SIGPIPE. The default disposition
+ * terminates the process. Servers suppress SIGPIPE globally so that a
+ * broken client connection surfaces as EPIPE (WriteResult.Failed) instead
+ * of killing the server.
+ *
+ * Call once during engine initialization. The disposition is process-wide
+ * and inherited by threads and child processes (but not across exec).
+ */
+static inline void keel_ignore_sigpipe(void) {
+    signal(SIGPIPE, SIG_IGN);
 }
 
 /*
