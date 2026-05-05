@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -641,6 +642,11 @@ internal class EpollEventLoop(
      * **Suspend path**: the interest is removed from [fdEvents] and epoll is
      * updated via MOD when the chain empties, because the coroutine may not
      * immediately re-register (unlike Pipeline's synchronous armRead cycle).
+     *
+     * **Stale-interest safety net**: when neither a callback nor a suspend
+     * waiter is found, a WARN is logged and the interest is removed from epoll.
+     * Without this, a stale interest left in [fdEvents] would cause a
+     * level-triggered busy loop until the fd is closed.
      */
     private fun dispatchReady(fd: Int, interest: Interest) {
         assertInEventLoop("EpollEventLoop.dispatchReady")
@@ -679,6 +685,15 @@ internal class EpollEventLoop(
                     removeInterestFromEpoll(fd, interest)
                 }
                 popped.continuation.resume(Unit)
+            } else {
+                // No handler (no callback, no suspend waiter). The epoll interest
+                // is stale: an interest was armed without a corresponding handler, or
+                // was not removed when the last handler deregistered. Level-triggered
+                // epoll re-fires every wait iteration for as long as the fd is ready —
+                // a busy loop. Remove the stale interest now and emit a WARN so the
+                // invariant violation is immediately observable in logs.
+                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale epoll interest" }
+                removeInterestFromEpoll(fd, interest)
             }
         }
     }
