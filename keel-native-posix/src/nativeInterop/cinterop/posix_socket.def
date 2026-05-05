@@ -147,7 +147,20 @@ static inline ssize_t keel_read(int fd, void *buf, size_t count) {
 
 static inline ssize_t keel_write(int fd, const void *buf, size_t count) {
     ssize_t n;
+    /*
+     * Use send(MSG_NOSIGNAL) on Linux so that writing to a peer-closed
+     * socket returns EPIPE (WriteResult.Failed) instead of raising
+     * SIGPIPE. This is a per-call suppression that does not affect the
+     * process-wide signal disposition, unlike signal(SIGPIPE, SIG_IGN).
+     *
+     * On macOS/BSD, SO_NOSIGPIPE is set per-socket (see keel_set_nosigpipe)
+     * so write(2) is used unchanged.
+     */
+#if defined(__linux__)
+    do { n = send(fd, buf, count, MSG_NOSIGNAL); } while (n < 0 && errno == EINTR);
+#else
     do { n = write(fd, buf, count); } while (n < 0 && errno == EINTR);
+#endif
     return n;
 }
 
@@ -209,7 +222,21 @@ static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int c
         iov[i].iov_len = lens[i];
     }
     ssize_t n;
+    /*
+     * Use sendmsg(MSG_NOSIGNAL) on Linux for the same reason as keel_write:
+     * per-call SIGPIPE suppression without touching the process signal mask.
+     * sendmsg(2) with an iovec is equivalent to writev(2) for connected
+     * stream sockets, with the addition of the MSG_NOSIGNAL flag.
+     */
+#if defined(__linux__)
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = iov;
+    msg.msg_iovlen = (size_t)count;
+    do { n = sendmsg(fd, &msg, MSG_NOSIGNAL); } while (n < 0 && errno == EINTR);
+#else
     do { n = writev(fd, iov, count); } while (n < 0 && errno == EINTR);
+#endif
     return n;
 }
 
@@ -345,6 +372,32 @@ static int keel_fill_sockaddr_un(struct sockaddr_storage *sa, const unsigned cha
         un->sun_path[path_len] = '\0';
         return (int)sizeof(*un);
     }
+}
+
+/*
+ * Suppress SIGPIPE on a per-socket basis (macOS/BSD only).
+ *
+ * SO_NOSIGPIPE prevents write(2)/writev(2) to a peer-closed socket from
+ * raising SIGPIPE. Unlike the process-wide signal(SIGPIPE, SIG_IGN), this
+ * only affects this specific socket fd, leaving the application's own
+ * SIGPIPE handling (e.g. for Unix pipes) intact.
+ *
+ * Call this on every socket fd right after creation — PosixNativeSocketOps
+ * does so inside setNonBlocking(), which is invoked for every socket keel
+ * creates or accepts.
+ *
+ * On Linux, this function is a no-op: SIGPIPE is suppressed per-call via
+ * MSG_NOSIGNAL in keel_write / keel_writev instead (SO_NOSIGPIPE is not
+ * available on Linux). The no-op body lets PosixNativeSocketOps call it
+ * unconditionally on all platforms.
+ */
+static inline void keel_set_nosigpipe(int fd) {
+#if !defined(__linux__)
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#else
+    (void)fd;
+#endif
 }
 
 /*

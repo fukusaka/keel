@@ -53,6 +53,7 @@ import platform.posix.sockaddr_in6
 import platform.posix.sockaddr_storage
 import platform.posix.socket
 import posix_socket.keel_bind_un
+import posix_socket.keel_set_nosigpipe
 import posix_socket.keel_connect_un
 import posix_socket.keel_extract_sockaddr_in6_addr
 import posix_socket.keel_fill_sockaddr_in6_addr
@@ -246,6 +247,9 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         check(flags >= 0) { "fcntl(F_GETFL) failed: ${errnoMessage(errno)}" }
         val rc = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
         check(rc == 0) { "fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(errno)}" }
+        // Suppress SIGPIPE per-socket (macOS: SO_NOSIGPIPE; Linux: no-op,
+        // MSG_NOSIGNAL is used in keel_write/keel_writev instead).
+        keel_set_nosigpipe(fd)
     }
 
     /**

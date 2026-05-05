@@ -129,6 +129,13 @@ abstract class AbstractIoTransport(
      * transferred ownership, and there is nothing to enqueue.
      */
     override fun write(buf: IoBuf) {
+        // Discard writes that arrive after close() — the fd is already released
+        // and may have been reused by a new connection. Writing to a reused fd
+        // would silently corrupt the new connection's data stream.
+        if (!opened) {
+            buf.release()
+            return
+        }
         val bytes = buf.readableBytes
         if (bytes == 0) {
             buf.release()
