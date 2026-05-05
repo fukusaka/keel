@@ -132,7 +132,7 @@ interface PipelinedChannel : Channel {
      * cross-thread flushing.
      */
     override fun requestFlush() {
-        check(isOpen) { "Channel is closed" }
+        if (!isOpen) return
         pipeline.requestFlush()
     }
 
