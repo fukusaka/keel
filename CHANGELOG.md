@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-*`: `awaitPendingFlush` no longer deadlocks when `onWritable` drains the send queue before the continuation is stored; the isEmpty check and continuation store are now atomic on the EventLoop thread (#452)
 - `benchmark`: fix ws-fragment result aggregation in `bench-stream-one.sh`; `grep` now matches on verbatim `NAME` instead of sanitised `SAFE_NAME`, which caused all ws-fragment rows to be empty in the stream results file (#451)
 - `engine-kqueue`: remove stale `EVFILT_WRITE` kqueue filter after a pipeline WRITE callback completes without re-registering; without this, the persistent `EV_ADD` filter fired on every `kevent()` call while the fd was writable, busy-looping the EventLoop thread and causing `ktor-cio-keel-kqueue` to stop serving after warmup (#449)
 - `engine-epoll`, `engine-kqueue`: suppress SIGPIPE per-connection instead of process-wide `signal(SIG_IGN)`; writes to peer-closed sockets return `WriteResult.Failed(EPIPE)` without terminating the process or disrupting application SIGPIPE handling (#448)
