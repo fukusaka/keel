@@ -17,7 +17,6 @@ import io.netty.channel.EventLoop
 import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
-import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import io.netty.channel.Channel as NettyNativeChannel
 
