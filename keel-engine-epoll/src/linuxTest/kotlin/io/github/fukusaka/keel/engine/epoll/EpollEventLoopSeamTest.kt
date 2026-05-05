@@ -329,6 +329,42 @@ class EpollEventLoopSeamTest {
         )
     }
 
+    // --- stale interest safety-net tests ---
+    //
+    // When an epoll event fires but no handler (callback or suspend waiter)
+    // is registered for that fd+interest, dispatchReady must WARN and call
+    // removeInterestFromEpoll to prevent a level-triggered busy loop. This
+    // can happen if a callback is unregistered after the interest was armed
+    // but before the event fires.
+
+    @Test
+    fun `stale WRITE interest with no handler logs WARN and calls epoll_ctl MOD to clear EPOLLOUT`() {
+        val warns = mutableListOf<String>()
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD for wakeupFd
+            scriptAddResult(0) // ADD for fd 2000 via registerCallback
+            // Stale EPOLLOUT fires after the callback was unregistered.
+            scriptWaitOk(2000 to EPOLLOUT)
+            scriptWaitFailure(EBADF) // terminate loop
+        }
+        val el = EpollEventLoop(logger = recordingWarnLogger(warns), syscallOps = fake)
+        // Register then immediately unregister: interest stays armed in epoll
+        // (unregisterCallback removes from callbackRegistrations but not fdEvents).
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ -> }
+        el.unregisterCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE)
+        el.loop()
+        assertEquals(1, warns.size, "stale event must produce exactly one WARN")
+        assertTrue(warns.first().contains("2000"), "WARN must mention the fd")
+        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
+        assertTrue(modCalls.isNotEmpty(), "MOD must be called to remove stale EPOLLOUT")
+        assertTrue(
+            (modCalls.last().events and EPOLLOUT) == 0,
+            "MOD must clear EPOLLOUT bit, got events=${modCalls.last().events}",
+        )
+    }
+
     @Test
     fun `READ callback that re-registers via armRead does not trigger epoll_ctl MOD`() {
         val fake = FakeEpollSyscallOps().apply {
@@ -364,6 +400,17 @@ class EpollEventLoopSeamTest {
         override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             if (level == LogLevel.ERROR) sink.add(message.toString())
+        }
+    }
+
+    /**
+     * Logger that captures `warn`-level messages into [sink]. Other levels
+     * are discarded. Used by the stale-interest safety-net tests.
+     */
+    private fun recordingWarnLogger(sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.WARN
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            if (level == LogLevel.WARN) sink.add(message.toString())
         }
     }
 }
