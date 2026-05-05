@@ -71,6 +71,26 @@ internal interface KqueueSyscallOps {
     fun addWriteFilter(kqFd: Int, fd: Int): Int
 
     /**
+     * Removes [fd]'s read filter from [kqFd] (`EV_DELETE` + `EVFILT_READ`).
+     *
+     * @return `0` on success; positive errno on failure (`ENOENT` if the
+     *   filter was not registered).
+     */
+    fun deleteReadFilter(kqFd: Int, fd: Int): Int
+
+    /**
+     * Removes [fd]'s write filter from [kqFd] (`EV_DELETE` + `EVFILT_WRITE`).
+     *
+     * Called from [KqueueEventLoop.dispatchReady] on the pipeline path when a
+     * WRITE callback does not re-register after firing, to prevent the
+     * persistent `EV_ADD` filter from causing a level-triggered busy loop.
+     *
+     * @return `0` on success; positive errno on failure (`ENOENT` if the
+     *   filter was not registered).
+     */
+    fun deleteWriteFilter(kqFd: Int, fd: Int): Int
+
+    /**
      * Waits for events on [kqFd] and fills [eventsOut] in place with
      * the fired events. The caller must pre-allocate [eventsOut] once
      * and reuse it across iterations so the hot path allocates nothing.

@@ -70,10 +70,11 @@ internal class FakeKqueueSyscallOps(
         }
     }
 
-    // --- addReadFilter / addWriteFilter ---
+    // --- addReadFilter / addWriteFilter / deleteReadFilter / deleteWriteFilter ---
 
     enum class FilterKind { READ, WRITE }
     data class AddFilterCall(val kqFd: Int, val fd: Int, val filter: FilterKind)
+    data class DeleteFilterCall(val kqFd: Int, val fd: Int, val filter: FilterKind)
 
     val addFilterCalls: MutableList<AddFilterCall> = mutableListOf()
     private val addFilterResults = ArrayDeque<Int>()
@@ -92,6 +93,25 @@ internal class FakeKqueueSyscallOps(
     override fun addWriteFilter(kqFd: Int, fd: Int): Int {
         addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.WRITE))
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
+    }
+
+    val deleteFilterCalls: MutableList<DeleteFilterCall> = mutableListOf()
+    private val deleteFilterResults = ArrayDeque<Int>()
+
+    /** Scripts the next `deleteReadFilter` / `deleteWriteFilter` call to return [errno] (0 = success). */
+    fun scriptDeleteFilterResult(errno: Int) {
+        require(errno >= 0)
+        deleteFilterResults.addLast(errno)
+    }
+
+    override fun deleteReadFilter(kqFd: Int, fd: Int): Int {
+        deleteFilterCalls.add(DeleteFilterCall(kqFd, fd, FilterKind.READ))
+        return if (deleteFilterResults.isEmpty()) 0 else deleteFilterResults.removeFirst()
+    }
+
+    override fun deleteWriteFilter(kqFd: Int, fd: Int): Int {
+        deleteFilterCalls.add(DeleteFilterCall(kqFd, fd, FilterKind.WRITE))
+        return if (deleteFilterResults.isEmpty()) 0 else deleteFilterResults.removeFirst()
     }
 
     // --- waitEvents ---
