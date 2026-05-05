@@ -18,6 +18,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.plus
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.SHUT_WR
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
@@ -294,10 +295,26 @@ internal class EpollIoTransport(
     }
 
     override suspend fun awaitPendingFlush() {
-        if (pendingWrites.isEmpty()) return
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            flushContinuation = cont
-            cont.invokeOnCancellation { flushContinuation = null }
+        // Check+register must be atomic from the EventLoop's perspective.
+        // Performing both off-EL creates a TOCTOU race: onWritable() can drain
+        // pendingWrites between the isEmpty check (false) and the cont store,
+        // leaving a stored continuation that is never resumed (permanent deadlock).
+        // Dispatching to the EL thread serialises the lambda with onWritable(),
+        // so if the queue is already empty when the lambda runs, cont is resumed
+        // immediately rather than parked.
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                when {
+                    !opened -> cont.cancel()
+                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    else -> {
+                        flushContinuation = cont
+                        cont.invokeOnCancellation { flushContinuation = null }
+                    }
+                }
+            }
+            if (eventLoop.inEventLoop()) register.run()
+            else eventLoop.dispatch(EmptyCoroutineContext, register)
         }
     }
 

@@ -18,6 +18,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import io_uring.io_uring_prep_send
@@ -752,16 +753,26 @@ internal class IoUringIoTransport(
     /**
      * Suspends until all pending async flush operations complete.
      *
-     * Returns immediately if the last [flush] completed synchronously.
-     * Called from Coroutine mode's [IoUringPipelinedChannel.awaitFlushComplete].
-     *
-     * Must be called on the EventLoop thread (no synchronisation needed).
+     * Dispatches the check+register lambda to the EventLoop so the
+     * [asyncFlushPending] check and [flushContinuation] store are atomic
+     * with the write-CQE handler that clears the flag. If the flush already
+     * completed before the lambda executes, [cont] is resumed immediately
+     * rather than stored, avoiding a TOCTOU deadlock.
      */
     override suspend fun awaitPendingFlush() {
-        if (!asyncFlushPending) return
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            flushContinuation = cont
-            cont.invokeOnCancellation { flushContinuation = null }
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                when {
+                    !opened -> cont.cancel()
+                    !asyncFlushPending -> cont.resume(Unit)
+                    else -> {
+                        flushContinuation = cont
+                        cont.invokeOnCancellation { flushContinuation = null }
+                    }
+                }
+            }
+            if (eventLoop.inEventLoop()) register.run()
+            else eventLoop.dispatch(EmptyCoroutineContext, register)
         }
     }
 

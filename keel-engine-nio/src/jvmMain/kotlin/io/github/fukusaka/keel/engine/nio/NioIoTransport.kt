@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.EmptyCoroutineContext
@@ -238,10 +239,22 @@ internal class NioIoTransport(
     }
 
     override suspend fun awaitPendingFlush() {
-        if (pendingWrites.isEmpty()) return
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            flushContinuation = cont
-            cont.invokeOnCancellation { flushContinuation = null }
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                when {
+                    !opened -> cont.cancel()
+                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    else -> {
+                        flushContinuation = cont
+                        cont.invokeOnCancellation { flushContinuation = null }
+                    }
+                }
+            }
+            if (eventLoop.inEventLoop()) {
+                register.run()
+            } else {
+                eventLoop.dispatch(EmptyCoroutineContext, register)
+            }
         }
     }
 }

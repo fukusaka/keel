@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -301,16 +302,26 @@ internal class KqueueIoTransport(
     /**
      * Suspends until all pending async flush operations complete.
      *
-     * Returns immediately if no async flush is pending (pendingWrites is empty).
-     * Called from Coroutine mode's [KqueuePipelinedChannel.awaitFlushComplete].
-     *
-     * Must be called on the EventLoop thread (no synchronisation needed).
+     * Returns immediately if no async flush is pending (`pendingWrites` is empty
+     * on the EventLoop thread when the lambda executes). Dispatches the check
+     * and registration to the EventLoop so they are atomic with [onWritable]:
+     * if the flush already completed before the lambda runs, [cont] is resumed
+     * immediately rather than stored, avoiding a TOCTOU deadlock.
      */
     override suspend fun awaitPendingFlush() {
-        if (pendingWrites.isEmpty()) return
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            flushContinuation = cont
-            cont.invokeOnCancellation { flushContinuation = null }
+        suspendCancellableCoroutine { cont ->
+            val register = Runnable {
+                when {
+                    !opened -> cont.cancel()
+                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    else -> {
+                        flushContinuation = cont
+                        cont.invokeOnCancellation { flushContinuation = null }
+                    }
+                }
+            }
+            if (eventLoop.inEventLoop()) register.run()
+            else eventLoop.dispatch(EmptyCoroutineContext, register)
         }
     }
 
