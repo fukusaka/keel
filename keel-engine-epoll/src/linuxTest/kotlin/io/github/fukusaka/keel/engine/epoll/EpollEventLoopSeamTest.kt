@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
+import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.posix.EAGAIN
 import platform.posix.EBADF
@@ -372,7 +373,7 @@ class EpollEventLoopSeamTest {
             scriptEventfdCreateFd(fd = 1001)
             scriptAddResult(0) // init ADD
             scriptAddResult(0) // ADD for fd 2000
-            scriptWaitOk(2000 to platform.linux.EPOLLIN)
+            scriptWaitOk(2000 to EPOLLIN)
             scriptWaitFailure(EBADF)
         }
         val el = EpollEventLoop(logger, syscallOps = fake)
