@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `engine-epoll`: log WARN and remove the interest from epoll when `dispatchReady` fires for a fd+interest that has neither a callback nor a suspend waiter; without this, a stale interest left in `fdEvents` caused a level-triggered busy loop with no log output until the fd was closed (#447)
+- `engine-epoll`: remove stale `EPOLLOUT` from the epoll filter after a pipeline WRITE callback completes without re-registering; without this, level-triggered epoll busy-looped on every `epoll_wait` for all connections that had ever stalled on `EAGAIN`, saturating the EventLoop thread and causing `ktor-cio-keel-epoll` to stop serving after warmup (#447)
+- `engine-epoll`: map `EPOLLHUP` and `EPOLLERR` to the READ-ready branch in the event loop; the kernel delivers these flags regardless of the interest mask, so on peer FIN / RST a socket could receive `EPOLLHUP` without `EPOLLIN`, leaving connections in CLOSE-WAIT (#447)
+
 ### Changed
 
 - `keel-server-ktor`: `KeelByteWriteChannel.drainAndDispatch` now submits the per-frame `emitBody` to the engine `EventLoop` with a fire-and-forget `CoroutineDispatcher.dispatch` instead of `withContext(ioDispatcher)`. `emitBody` only enqueues `pipeline.requestWrite + requestFlush` (themselves async — bytes are not on the wire when they return), so the caller never had to wait for them; dropping the suspend round-trip removes the per-frame continuation rebuild + scheduler resume hop that previously dominated the CPU profile on SSE / chunked streaming. Pipeline handler exceptions thrown inside the dispatched `Runnable` are caught and surfaced via `closeCause`; the next `flush` / `flushAndClose` rethrows, mirroring the previous synchronous propagation but delaying the user-visible error by one operation. Bench A/B (k6 sse 50 VU / 15s, JVM): `ktor-keel-nio` 1,231 → 3,336 RPS macOS (+171 %), 2,254 → 6,294 RPS luna (+179 %); `/hello` 4t/100c/10s unchanged within run-to-run variance. Ktor's `IOBridge` wrapping is preserved, so user lambdas that perform blocking I/O still run on `Dispatchers.IO` (#446)

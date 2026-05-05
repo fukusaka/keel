@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.Arena
@@ -21,6 +22,8 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.linux.EPOLLERR
+import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.posix.EAGAIN
@@ -537,11 +540,25 @@ internal class EpollEventLoop(
                 }
 
                 // Process both EPOLLIN and EPOLLOUT if both are set.
+                //
+                // EPOLLERR / EPOLLHUP are reported by the kernel regardless of
+                // the interest mask (man epoll_ctl: "EPOLLERR / EPOLLHUP will
+                // always be reported"). On peer FIN / RST the kernel may fire
+                // EPOLLHUP without EPOLLIN on this socket — without dispatching
+                // these flags as READ ready, the per-fd Pipeline callback
+                // never observes the EOF, the read handler never invokes
+                // [IoTransport.onReadClosed], the keep-alive loop hangs in
+                // its parser, and connections pile up in CLOSE-WAIT. Mapping
+                // HUP/ERR onto the READ branch lets the handler call read()
+                // which returns 0 and triggers onReadClosed → propagateInactive
+                // → bridge close → keep-alive loop exits → finally cleanup.
                 val evFlags = ev.events
-                if (evFlags and EPOLLIN != 0) {
+                val readReady = (evFlags and (EPOLLIN or EPOLLERR or EPOLLHUP)) != 0
+                val writeReady = (evFlags and EPOLLOUT) != 0
+                if (readReady) {
                     dispatchReady(fd, Interest.READ)
                 }
-                if (evFlags and EPOLLOUT != 0) {
+                if (writeReady) {
                     dispatchReady(fd, Interest.WRITE)
                 }
             }
@@ -611,23 +628,41 @@ internal class EpollEventLoop(
      * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
      *
      * Checks callback registrations first (pipeline path), then suspend
-     * registrations (Channel path). Does NOT call epoll_ctl to remove the
-     * interest — level-triggered epoll will re-fire, but the handler's
-     * [armRead]/[registerCallback] re-registers the callback before the next
-     * epoll_wait, so no spurious wakeup occurs.
+     * registrations (Channel path).
      *
-     * For suspend registrations (Channel path), the interest is removed from
-     * [fdEvents] and epoll is updated via MOD, because the coroutine may not
+     * **Pipeline path**: after [FdReadyListener.onReady] returns, checks whether
+     * the callback was re-registered. READ callbacks always re-arm synchronously
+     * via `armRead()`, so the check is a no-op (fast lock + map lookup, no
+     * epoll_ctl). WRITE callbacks that complete a successful flush do NOT re-arm;
+     * in that case [removeInterestFromEpoll] is called to clear EPOLLOUT from
+     * the epoll filter. Without this, level-triggered epoll keeps reporting
+     * EPOLLOUT on every wait iteration — a busy loop that saturates the
+     * EventLoop thread when many connections have completed writes.
+     *
+     * **Suspend path**: the interest is removed from [fdEvents] and epoll is
+     * updated via MOD when the chain empties, because the coroutine may not
      * immediately re-register (unlike Pipeline's synchronous armRead cycle).
+     *
+     * **Stale-interest safety net**: when neither a callback nor a suspend
+     * waiter is found, a WARN is logged and the interest is removed from epoll.
+     * Without this, a stale interest left in [fdEvents] would cause a
+     * level-triggered busy loop until the fd is closed.
      */
     private fun dispatchReady(fd: Int, interest: Interest) {
         assertInEventLoop("EpollEventLoop.dispatchReady")
         val key = registrationKey(fd, interest)
         val cb = withRegLock { callbackRegistrations.remove(key) }
         if (cb != null) {
-            // Pipeline path: callback re-arms synchronously (armRead inside
-            // handler chain), so fdEvents stays as-is — no epoll_ctl needed.
             cb.onReady(interest)
+            // If the callback did not re-register during onReady (e.g., a WRITE
+            // callback after a successful flush that does not re-arm), remove the
+            // interest from epoll to prevent a stale level-triggered busy loop.
+            // READ callbacks always re-arm via armRead(), so this branch is
+            // normally skipped (no epoll_ctl syscall on the read hot path).
+            val reRegistered = withRegLock { callbackRegistrations[key] != null }
+            if (!reRegistered) {
+                removeInterestFromEpoll(fd, interest)
+            }
         } else {
             // Suspend path: pop one waiter from the FIFO chain. If
             // siblings remain (concurrent `accept()` callers waiting on
@@ -650,6 +685,15 @@ internal class EpollEventLoop(
                     removeInterestFromEpoll(fd, interest)
                 }
                 popped.continuation.resume(Unit)
+            } else {
+                // No handler (no callback, no suspend waiter). The epoll interest
+                // is stale: an interest was armed without a corresponding handler, or
+                // was not removed when the last handler deregistered. Level-triggered
+                // epoll re-fires every wait iteration for as long as the fd is ready —
+                // a busy loop. Remove the stale interest now and emit a WARN so the
+                // invariant violation is immediately observable in logs.
+                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale epoll interest" }
+                removeInterestFromEpoll(fd, interest)
             }
         }
     }
@@ -687,9 +731,10 @@ internal class EpollEventLoop(
     /**
      * Removes a specific interest (EPOLLIN or EPOLLOUT) from the epoll registration for [fd].
      *
-     * Called only from the suspend path in [dispatchReady] to prevent level-triggered
-     * busy-loop when the coroutine has not yet re-registered. Pipeline callbacks
-     * skip this because they re-arm synchronously before returning to epoll_wait.
+     * Called from [dispatchReady] on both the pipeline path (when a WRITE callback
+     * does not re-register, indicating flush success) and the suspend path (when the
+     * registration chain empties). Prevents level-triggered busy-loops by removing
+     * the interest until the caller arms again.
      */
     private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
         val removeBit = when (interest) {
