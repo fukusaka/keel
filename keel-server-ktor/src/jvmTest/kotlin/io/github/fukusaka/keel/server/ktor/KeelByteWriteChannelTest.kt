@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor
 
+import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
@@ -9,14 +10,18 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ClosedWriteChannelException
 import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.runBlocking
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNotSame
@@ -212,6 +217,85 @@ class KeelByteWriteChannelTest {
         }
     }
 
+    /**
+     * K39a regression test: `terminate()` in [AbstractPipelinedWriteChannel] must dispatch
+     * [writeTerminator] via [kotlinx.coroutines.CoroutineDispatcher.dispatch] rather than
+     * `withContext`, so the terminator task is always enqueued after pending emit tasks —
+     * even on Netty whose [io.github.fukusaka.keel.engine.netty.NettyEventLoopDispatcher]
+     * returns `isDispatchNeeded() = false` when the caller is already on the EventLoop thread,
+     * causing `withContext` to execute the block **inline** ahead of queued emit tasks.
+     *
+     * **Failure scenario (Red)**: A handler writes N-1 frames with explicit `flush()` and
+     * writes a final (Nth) frame without flushing. Ktor's `respondWriteChannelContent` wraps
+     * the user lambda in `withContext(Dispatchers.IOBridge)`, so frames 0..N-2 enqueue emit
+     * tasks T1..T(N-1) from the IO thread — these land in the EventLoop queue before the
+     * resume-parent task R. When `withContext(IOBridge)` returns the pipeline coroutine
+     * resumes on the EventLoop and Ktor's `use{}` finally calls the deprecated
+     * `ByteWriteChannel.close()` extension, which fires `flushAndClose()` on the EL thread via
+     * `startCoroutineCancellable`. Inside `flushAndClose()`, `drainAndDispatch()` runs on the EL
+     * and enqueues T_last (the unflushed Nth frame) via `ioDispatcher.dispatch()`. Since the
+     * call is made from the EL itself, Netty's `execute()` appends T_last after the current
+     * running task. Then `terminate()` is reached; with the pre-fix `withContext(ioDispatcher)`
+     * Netty's `isDispatchNeeded()=false` causes the block to run **inline**, sending the
+     * `HttpBodyEnd` terminator immediately — before T_last. The client receives N-1 frames and
+     * a well-formed terminator; T_last arrives after the encoder has already moved to `NONE` mode
+     * and is dropped.
+     *
+     * **Post-fix (Green)**: `terminate()` uses
+     * `ioDispatcher.dispatch(EmptyCoroutineContext) { writeTerminator() }` which always
+     * calls `eventLoop.execute()`, enqueuing the terminator task after T_last. The Nth frame
+     * is delivered before the terminator, and the client receives all N frames.
+     *
+     * Red-Green verification: replace [dispatch] with `withContext(ioDispatcher)` in
+     * [AbstractPipelinedWriteChannel.terminate] and confirm this test fails on Netty
+     * (received = frameCount - 1). Restore [dispatch] and confirm it passes (received = frameCount).
+     */
+    @Test
+    fun `K39a — Netty SSE all frames arrive before chunked terminator`() {
+        val frameCount = 5
+        withKeelNettyServer({
+            routing {
+                get("/sse") {
+                    call.respondBytesWriter {
+                        repeat(frameCount - 1) { i ->
+                            writeStringUtf8("data: event-$i\n\n")
+                            flush()
+                        }
+                        // Final frame is NOT flushed explicitly. Its bytes remain in the internal
+                        // buffer until flushAndClose() drains them from the EL thread. With the
+                        // pre-fix withContext, writeTerminator() runs inline before the final emit
+                        // task, causing the client to receive frameCount-1 frames. With the fixed
+                        // dispatch, the emit task is enqueued first, preserving FIFO order.
+                        writeStringUtf8("data: event-${frameCount - 1}\n\n")
+                    }
+                }
+            }
+        }) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = STREAM_TIMEOUT_MS
+                socket.getOutputStream().let { out ->
+                    out.write("GET /sse HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+                    out.flush()
+                }
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                readHttpHeaders(reader)
+
+                var received = 0
+                while (true) {
+                    val chunk = readNextChunk(reader) ?: break
+                    assertEquals("data: event-$received\n\n", chunk, "K39a: frame $received mismatch")
+                    received++
+                }
+                assertEquals(
+                    frameCount,
+                    received,
+                    "K39a: expected $frameCount frames but got $received — " +
+                        "terminate() placed writeTerminator before the final buffered emit task (FIFO violation)",
+                )
+            }
+        }
+    }
+
     // --- Helpers (duplicated from KeelEngineTest to keep this test file self-contained) ---
 
     private fun withKeelServer(
@@ -222,6 +306,24 @@ class KeelByteWriteChannelTest {
         val server = embeddedServer(Keel, port = 0, module = module)
         val cfg = server.engine.configuration
         cfg.engine = NioEngine()
+        cfg.keepAlive = keepAlive
+        server.start(wait = false)
+        try {
+            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            block(port)
+        } finally {
+            server.stop(500, 1000)
+        }
+    }
+
+    private fun withKeelNettyServer(
+        module: suspend Application.() -> Unit,
+        keepAlive: Boolean = true,
+        block: (port: Int) -> Unit,
+    ) {
+        val server = embeddedServer(Keel, port = 0, module = module)
+        val cfg = server.engine.configuration
+        cfg.engine = NettyEngine()
         cfg.keepAlive = keepAlive
         server.start(wait = false)
         try {
@@ -247,5 +349,42 @@ class KeelByteWriteChannelTest {
         } finally {
             conn.disconnect()
         }
+    }
+
+    private fun readHttpHeaders(reader: BufferedReader): Map<String, String> {
+        reader.readLine() ?: error("EOF before status line")
+        val headers = mutableMapOf<String, String>()
+        while (true) {
+            val line = reader.readLine() ?: break
+            if (line.isEmpty()) break
+            val colon = line.indexOf(':')
+            if (colon > 0) {
+                headers.putIfAbsent(line.substring(0, colon).trim(), line.substring(colon + 1).trim())
+            }
+        }
+        return headers
+    }
+
+    private fun readNextChunk(reader: BufferedReader): String? {
+        val sizeLine = reader.readLine() ?: return null
+        val size = sizeLine.trim().toInt(HEX_RADIX)
+        if (size == 0) {
+            reader.readLine()
+            return null
+        }
+        val buf = CharArray(size)
+        var pos = 0
+        while (pos < size) {
+            val n = reader.read(buf, pos, size - pos)
+            if (n == -1) error("Unexpected EOF reading chunk data at offset $pos of $size")
+            pos += n
+        }
+        reader.readLine()
+        return String(buf, 0, pos)
+    }
+
+    private companion object {
+        private const val STREAM_TIMEOUT_MS = 5_000
+        private const val HEX_RADIX = 16
     }
 }
