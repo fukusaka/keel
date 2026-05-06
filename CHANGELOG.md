@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `server-ktor`: fix infinite hang on large WebSocket frames (e.g. 1 MB echo); the outbound upgrade pump now suspends via `awaitFlushComplete` when pending bytes exceed the high-water mark, yielding the EventLoop thread so `kevent(2)` / `epoll_wait(2)` can process write-readiness events (#457)
+- `server-ktor`: fix infinite hang on large WebSocket frames (e.g. 1 MB echo); the outbound upgrade pump now yields the EventLoop thread when pending bytes exceed the high-water mark, allowing write-readiness events to be processed before the next chunk is forwarded (#457)
 - `server-ktor-cio`: restore `ktor-cio-keel-{epoll,io-uring}` SSE throughput from ~154 / ~28 RPS to ~1,266 RPS; the previous chunked streaming path serialised each frame through a separate EventLoop wake-up cycle (#456)
 - `ktor-engine`: `HeaderParseMutex` on Linux now serialises `parseRequest` with a process-wide `Mutex` (same as Apple); the previous no-op allowed all `availableProcessors()` worker threads to call ktor-http-cio concurrently, triggering `HeadersDataPool` non-reentrant lock contention and collapsing `ktor-cio-keel-epoll` / `ktor-cio-keel-io-uring` throughput to 0 RPS (#453)
 - `engine-*`: `awaitPendingFlush` no longer deadlocks when `onWritable` drains the send queue before the continuation is stored; the isEmpty check and continuation store are now atomic on the EventLoop thread (#452)
