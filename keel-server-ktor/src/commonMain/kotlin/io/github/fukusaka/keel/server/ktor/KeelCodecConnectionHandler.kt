@@ -193,6 +193,11 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
         // with the previous response body incomplete. Awaiting here ensures the terminator
         // has been written before we advance to the next request.
         call.response.awaitWriteComplete()
+        // K38b: if the streaming write channel was terminated via cancel() (e.g. a client
+        // disconnection during SSE) the HttpBodyEnd terminator was never written, leaving the
+        // encoder's streamingMode == CHUNKED. Advancing to the next keep-alive request would
+        // trigger the encoder's check(streamingMode == NONE). Close the connection instead.
+        if (call.response.writeChannelCancelled) return false
         // A protocol upgrade (e.g. WebSocket via respondUpgrade) was performed: the codec
         // was swapped and the upgrade session is running. Join it to keep the connection
         // alive until the peer closes, then signal the loop to exit.
