@@ -68,11 +68,10 @@ abstract class AbstractPipelinedWriteChannel(
     private val closeCause = AtomicReference<Throwable?>(null)
 
     /**
-     * Completes when [terminate] finishes (or [cancel] is called). Subclasses in separate
-     * Gradle modules expose [awaitTerminated][io.github.fukusaka.keel.server.ktor.KeelByteWriteChannel.awaitTerminated]
-     * so the connection handler can await it before reading the next request head —
-     * preventing the encoder from receiving the next [HttpResponseHead][io.github.fukusaka.keel.codec.http.HttpResponseHead]
-     * before this response's [HttpBodyEnd][io.github.fukusaka.keel.codec.http.HttpBodyEnd] has been written.
+     * Completes when [terminate] finishes (or [cancel] is called). Subclasses expose an
+     * `awaitTerminated()` function backed by this deferred so the connection handler can
+     * await it before reading the next request head — preventing the HTTP encoder from
+     * receiving the next response head before this response's `HttpBodyEnd` has been written.
      */
     protected val terminationDeferred: CompletableDeferred<Unit> = CompletableDeferred()
 
