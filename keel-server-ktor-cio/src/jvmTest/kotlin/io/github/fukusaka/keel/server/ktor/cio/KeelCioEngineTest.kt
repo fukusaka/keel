@@ -14,8 +14,8 @@ import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.io.IOException
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
@@ -295,7 +295,7 @@ class KeelCioEngineTest {
         val body = if (status in TWO_HUNDRED..TWO_NINETY_NINE) {
             conn.inputStream.bufferedReader().readText()
         } else {
-            conn.errorStream?.bufferedReader()?.readText() ?: ""
+            conn.errorStream?.bufferedReader()?.readText().orEmpty()
         }
         conn.disconnect()
         return status to body
@@ -312,7 +312,7 @@ class KeelCioEngineTest {
         val responseBody = if (status in TWO_HUNDRED..TWO_NINETY_NINE) {
             conn.inputStream.bufferedReader().readText()
         } else {
-            conn.errorStream?.bufferedReader()?.readText() ?: ""
+            conn.errorStream?.bufferedReader()?.readText().orEmpty()
         }
         conn.disconnect()
         return status to responseBody
