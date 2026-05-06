@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.ktor
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.utils.io.BufferedByteWriteChannel
 import io.ktor.utils.io.InternalAPI
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -66,6 +67,14 @@ abstract class AbstractPipelinedWriteChannel(
     private val terminated = AtomicBoolean(false)
     private val closeCause = AtomicReference<Throwable?>(null)
 
+    /**
+     * Completes when [terminate] finishes (or [cancel] is called). Subclasses expose an
+     * `awaitTerminated()` function backed by this deferred so the connection handler can
+     * await it before reading the next request head — preventing the HTTP encoder from
+     * receiving the next response head before this response's `HttpBodyEnd` has been written.
+     */
+    protected val terminationDeferred: CompletableDeferred<Unit> = CompletableDeferred()
+
     override val autoFlush: Boolean = false
 
     override val isClosedForWrite: Boolean get() = closed.load()
@@ -122,6 +131,7 @@ abstract class AbstractPipelinedWriteChannel(
         // Discard any buffered bytes — the connection is going away.
         if (!internalBuffer.exhausted()) internalBuffer.readByteArray()
         terminated.store(true)
+        terminationDeferred.complete(Unit)
     }
 
     /**
@@ -164,13 +174,19 @@ abstract class AbstractPipelinedWriteChannel(
     /**
      * Sends the body terminator and awaits the final flush so the connection
      * handler cannot reuse the socket while bytes are still in flight on
-     * push-mode engines. Idempotent.
+     * push-mode engines. Completes [terminationDeferred] when done so the
+     * connection handler can await termination before reading the next request.
+     * Idempotent.
      */
     private suspend fun terminate() {
         if (!terminated.compareAndSet(expectedValue = false, newValue = true)) return
-        withContext(pipelinedChannel.ioDispatcher) {
-            writeTerminator()
-            pipelinedChannel.awaitFlushComplete()
+        try {
+            withContext(pipelinedChannel.ioDispatcher) {
+                writeTerminator()
+                pipelinedChannel.awaitFlushComplete()
+            }
+        } finally {
+            terminationDeferred.complete(Unit)
         }
     }
 

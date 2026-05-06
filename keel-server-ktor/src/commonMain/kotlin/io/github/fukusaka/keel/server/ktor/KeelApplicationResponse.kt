@@ -51,6 +51,15 @@ internal class KeelApplicationResponse(
     private val headersBuilder = HeadersBuilder()
 
     /**
+     * Tracks the active streaming write channel created by [responseChannel].
+     * Null for non-streaming responses (e.g. [respondFromBytes], [respondNoContent]).
+     * Awaited by [awaitWriteComplete] before the connection handler reads the next
+     * request head, ensuring the encoder has processed `HttpBodyEnd` for this
+     * response before any subsequent `HttpResponseHead` is written.
+     */
+    private var writeChannel: KeelByteWriteChannel? = null
+
+    /**
      * Set by [respondUpgrade] when a protocol upgrade (e.g. WebSocket) is performed.
      * [KeelCodecConnectionHandler] joins this job after [respondOutgoingContent] returns
      * to let the upgrade session run to completion before tearing down the connection.
@@ -87,7 +96,24 @@ internal class KeelApplicationResponse(
         // (`ByteChannel` + `readAvailable(8 KB)`) coalesced per-frame flushes
         // into drain-sized batches, which broke SSE / chunked streaming
         // semantics on JVM engines whose scheduler outpaced the bridge.
-        return KeelByteWriteChannel(pipelinedChannel, scope)
+        val ch = KeelByteWriteChannel(pipelinedChannel, scope)
+        writeChannel = ch
+        return ch
+    }
+
+    /**
+     * Suspends until the streaming response body has been fully written and
+     * confirmed, or returns immediately for non-streaming responses.
+     *
+     * Must be called by [KeelCodecConnectionHandler] after
+     * [io.ktor.util.pipeline.execute] returns — before the keep-alive loop
+     * reads the next request head. Without this gate, the encoder's
+     * `check(streamingMode == NONE)` fires when a keep-alive client sends the
+     * next request before the fire-and-forget `close()` coroutine has written
+     * `HttpBodyEnd` for the previous streaming response.
+     */
+    internal suspend fun awaitWriteComplete() {
+        writeChannel?.awaitTerminated()
     }
 
     /**
