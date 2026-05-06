@@ -267,6 +267,15 @@ internal class KeelApplicationResponse(
      * Reads bytes from [input] (written by the upgrade session's outbound codec) and
      * forwards them as raw [IoBuf]s to the pipeline. Runs on [pipelinedChannel.ioDispatcher]
      * so that [pipelinedChannel.pipeline.requestWrite] is always called on the EventLoop thread.
+     *
+     * **Backpressure**: after each [requestFlush], if [pipelinedChannel.isWritable] is false
+     * (pending bytes exceed the high-water mark), [awaitFlushComplete] is called so the pump
+     * suspends. This yields the EventLoop thread and lets the transport drain [pendingWrites]
+     * via the write-readiness callback before accumulating more data. Without this gate,
+     * a large outbound frame (e.g. 1 MB WebSocket payload) fills the socket send buffer,
+     * every `write(2)` returns EAGAIN, and the tight read-ahead loop never yields — the
+     * EventLoop thread never reaches `kevent(2)` / `epoll_wait(2)`, so write-readiness
+     * events are never processed and the connection stalls indefinitely.
      */
     private suspend fun pumpOutputToRaw(input: ByteReadChannel) {
         val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE)
@@ -279,6 +288,9 @@ internal class KeelApplicationResponse(
                     ioBuf.writeByteArray(tmp, 0, n)
                     pipelinedChannel.pipeline.requestWrite(ioBuf)
                     pipelinedChannel.pipeline.requestFlush()
+                    if (!pipelinedChannel.isWritable) {
+                        pipelinedChannel.awaitFlushComplete()
+                    }
                 }
             }
         } catch (e: CancellationException) {
