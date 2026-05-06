@@ -42,7 +42,8 @@ import io.netty.channel.Channel as NettyNativeChannel
  * **Write path**: batches all pending writes into Netty's outbound buffer
  * via [write][NettyNativeChannel.write], then issues a single flush on the
  * last write. The last write's [ChannelFuture] listener releases buffers
- * and invokes [onFlushComplete].
+ * and invokes [onFlushComplete]. [flush] also stores the future in
+ * [lastFlushFuture] for use by [awaitPendingFlush].
  *
  * **Buffer lifecycle**: `write()` retains the buffer. The flush completion
  * callback releases all buffers after Netty finishes sending.
@@ -60,11 +61,13 @@ import io.netty.channel.Channel as NettyNativeChannel
  * single-thread invariant the same way the EventLoop-based Native engines
  * (epoll / kqueue / io_uring) already do.
  *
- * **No awaitPendingFlush**: Netty internally buffers data submitted via
- * `writeAndFlush` and processes it in EventLoop order. Even if the channel
- * is closed immediately after flush, Netty guarantees the write is processed
- * before close (same EventLoop ordering). This is the same model as
- * NWConnection (framework-managed flow control).
+ * **awaitPendingFlush**: [flush] stores its `lastFuture` in [lastFlushFuture].
+ * [awaitPendingFlush] suspends on that future so callers (e.g.
+ * [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel.awaitFlushComplete])
+ * block until the write reaches the TCP send buffer. Without this, the HTTP
+ * response terminator (`0\r\n\r\n`) can be queued in Netty's outbound pipeline
+ * while the connection handler already moves to the next request, causing
+ * truncated SSE / chunked responses under concurrent load.
  *
  * @param nettyChannel The underlying Netty channel.
  * @param allocator    Buffer allocator for read operations.
@@ -228,6 +231,13 @@ internal class NettyIoTransport(
     // --- Write path ---
 
     /**
+     * The [ChannelFuture] returned by the most recent [writeAndFlush] call.
+     * Set on every [flush] invocation; read by [awaitPendingFlush].
+     * Only accessed on the EventLoop thread.
+     */
+    private var lastFlushFuture: ChannelFuture? = null
+
+    /**
      * Sends all pending writes via Netty's [writeAndFlush].
      *
      * Batches all pending writes into Netty's outbound buffer using
@@ -270,11 +280,14 @@ internal class NettyIoTransport(
                 }
             }
 
-            lastFuture?.addListener {
-                for (pw in writes) pw.buf.release()
-                updatePendingBytes(-totalBytes)
-                callback?.invoke()
-            } ?: run {
+            if (lastFuture != null) {
+                lastFlushFuture = lastFuture
+                lastFuture.addListener {
+                    for (pw in writes) pw.buf.release()
+                    updatePendingBytes(-totalBytes)
+                    callback?.invoke()
+                }
+            } else {
                 for (pw in writes) pw.buf.release()
                 updatePendingBytes(-totalBytes)
             }
@@ -286,6 +299,25 @@ internal class NettyIoTransport(
         }
 
         return false // Always async.
+    }
+
+    /**
+     * Suspends until the [ChannelFuture] from the most recent [writeAndFlush]
+     * completes, ensuring the written bytes have been handed off to the OS TCP
+     * send buffer. Returns immediately if no flush has been issued yet or the
+     * future is already done.
+     *
+     * Called by [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel.awaitFlushComplete]
+     * to give streaming response senders (e.g. SSE, chunked transfer) a way to
+     * confirm the final `0\r\n\r\n` terminator has left the Netty pipeline
+     * before the connection is reused for the next request.
+     */
+    override suspend fun awaitPendingFlush() {
+        val future = lastFlushFuture ?: return
+        if (future.isDone) return
+        suspendCancellableCoroutine { cont ->
+            future.addListener { cont.resume(Unit) }
+        }
     }
 
     /**
