@@ -8,9 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-netty`: `awaitPendingFlush()` now waits for the last `ChannelFuture` to complete, preventing truncated chunked responses when the socket buffer fills during SSE and Netty's outbound buffer holds the trailing `0\r\n\r\n` at connection close (#454)
-- `server-ktor`: `KeelByteWriteChannel.flushAndClose()` now calls `terminate()` even when a fire-and-forget `emitBody` error pre-set `closed`; previously the early return left `HttpBodyEnd` unsent, truncating ~5% of `ktor-keel-netty` SSE responses (#454)
-- `server-ktor-cio`: `ktor-cio-keel-{epoll,io-uring}` SSE throughput restored from ~154 / ~28 RPS to near-reference (~1,266 RPS) by replacing the `ByteChannel + pumpOutputToChannel` relay with `CioKeelStreamChannel`, which fire-and-forgets chunked frames directly to the EventLoop queue (#454)
+- `engine-netty`: prevent truncated chunked responses when the outbound socket buffer is momentarily full during SSE; pending writes are now awaited before the connection tears down (#454)
+- `server-ktor`: fix ~5% `ktor-keel-netty` SSE response truncation; a preceding fire-and-forget write error could pre-close the streaming channel before the chunked terminator was sent (#454)
+- `server-ktor-cio`: restore `ktor-cio-keel-{epoll,io-uring}` SSE throughput from ~154 / ~28 RPS to ~1,266 RPS; the previous chunked streaming path serialised each frame through a separate EventLoop wake-up cycle (#454)
 - `ktor-engine`: `HeaderParseMutex` on Linux now serialises `parseRequest` with a process-wide `Mutex` (same as Apple); the previous no-op allowed all `availableProcessors()` worker threads to call ktor-http-cio concurrently, triggering `HeadersDataPool` non-reentrant lock contention and collapsing `ktor-cio-keel-epoll` / `ktor-cio-keel-io-uring` throughput to 0 RPS (#453)
 - `engine-*`: `awaitPendingFlush` no longer deadlocks when `onWritable` drains the send queue before the continuation is stored; the isEmpty check and continuation store are now atomic on the EventLoop thread (#452)
 - `benchmark`: fix ws-fragment result aggregation in `bench-stream-one.sh`; `grep` now matches on verbatim `NAME` instead of sanitised `SAFE_NAME`, which caused all ws-fragment rows to be empty in the stream results file (#451)
