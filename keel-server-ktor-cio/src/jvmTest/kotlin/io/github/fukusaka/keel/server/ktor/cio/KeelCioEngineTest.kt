@@ -4,15 +4,22 @@ import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -81,6 +88,103 @@ class KeelCioEngineTest {
             assertEquals(200, conn.responseCode)
             assertEquals("keel-cio-value", conn.getHeaderField("X-Custom"))
             conn.disconnect()
+        }
+    }
+
+    // --- Chunked streaming / SSE semantics ---
+
+    /**
+     * Verifies that [CioKeelStreamChannel] delivers frame 1 to the client
+     * before the server produces frame 2.
+     *
+     * A [CompletableDeferred] gate synchronises the two sides: the server
+     * suspends after flushing frame 1, and resumes only after the client has
+     * read it.  This proves that the chunked body is not held in a buffer
+     * waiting for subsequent frames — each [flush] results in observable
+     * bytes at the client.
+     */
+    @Test
+    fun `chunked streaming delivers frame 1 before server produces frame 2`() {
+        val gate = CompletableDeferred<Unit>()
+        withKeelCioServer({
+            routing {
+                get("/stream") {
+                    call.respondBytesWriter {
+                        writeStringUtf8("frame-1\n")
+                        flush()
+                        gate.await() // suspend until client has read frame 1
+                        writeStringUtf8("frame-2\n")
+                        flush()
+                    }
+                }
+            }
+        }) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = STREAM_TIMEOUT_MS
+                socket.getOutputStream().let { out ->
+                    out.write("GET /stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+                    out.flush()
+                }
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                val headers = readHttpHeaders(reader)
+                assertEquals(
+                    "chunked",
+                    headers["Transfer-Encoding"]?.lowercase(),
+                    "response must use Transfer-Encoding: chunked",
+                )
+
+                // Frame 1 must arrive before we open the gate for frame 2.
+                val chunk1 = readNextChunk(reader)
+                assertEquals("frame-1\n", chunk1, "expected frame 1 content")
+
+                gate.complete(Unit) // unblock server to produce frame 2
+
+                val chunk2 = readNextChunk(reader)
+                assertEquals("frame-2\n", chunk2, "expected frame 2 content")
+
+                assertNull(readNextChunk(reader), "expected zero-length terminator chunk")
+            }
+        }
+    }
+
+    /**
+     * Verifies that all N frames arrive with correct chunked wire encoding
+     * when [CioKeelStreamChannel] is used for a streaming response.  Each
+     * frame is sent with an individual [flush], and the final
+     * `0\r\n\r\n` terminator must be present after the last data chunk.
+     */
+    @Test
+    fun `chunked streaming all frames arrive with correct wire encoding`() {
+        val frameCount = 10
+        withKeelCioServer({
+            routing {
+                get("/sse") {
+                    call.respondBytesWriter {
+                        repeat(frameCount) { i ->
+                            writeStringUtf8("data: event-$i\n\n")
+                            flush()
+                        }
+                    }
+                }
+            }
+        }) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = STREAM_TIMEOUT_MS
+                socket.getOutputStream().let { out ->
+                    out.write("GET /sse HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+                    out.flush()
+                }
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                readHttpHeaders(reader)
+
+                var received = 0
+                while (true) {
+                    val chunk = readNextChunk(reader) ?: break
+                    assertEquals("data: event-$received\n\n", chunk, "frame $received mismatch")
+                    received++
+                }
+                assertEquals(frameCount, received, "expected $frameCount frames")
+            }
         }
     }
 
@@ -154,6 +258,52 @@ class KeelCioEngineTest {
         }
     }
 
+    /**
+     * Reads HTTP status line + headers from a raw socket [reader].
+     * Returns a map of header names to values (first value wins on duplicates).
+     * Leaves the reader positioned at the start of the response body.
+     */
+    private fun readHttpHeaders(reader: BufferedReader): Map<String, String> {
+        reader.readLine() ?: error("EOF before status line")
+        val headers = mutableMapOf<String, String>()
+        while (true) {
+            val line = reader.readLine() ?: break
+            if (line.isEmpty()) break
+            val colon = line.indexOf(':')
+            if (colon > 0) {
+                val name = line.substring(0, colon).trim()
+                val value = line.substring(colon + 1).trim()
+                headers.putIfAbsent(name, value)
+            }
+        }
+        return headers
+    }
+
+    /**
+     * Reads one chunk from a `Transfer-Encoding: chunked` response body.
+     *
+     * Each chunk is preceded by its byte count in hexadecimal followed by
+     * `\r\n`, then the data bytes, then a trailing `\r\n`.  Returns `null`
+     * when the zero-length terminator chunk (`0\r\n\r\n`) is reached.
+     */
+    private fun readNextChunk(reader: BufferedReader): String? {
+        val sizeLine = reader.readLine() ?: return null
+        val size = sizeLine.trim().toInt(HEX_RADIX)
+        if (size == 0) {
+            reader.readLine() // consume trailing CRLF of terminator
+            return null
+        }
+        val buf = CharArray(size)
+        var pos = 0
+        while (pos < size) {
+            val n = reader.read(buf, pos, size - pos)
+            if (n == -1) error("Unexpected EOF reading chunk data at offset $pos of $size")
+            pos += n
+        }
+        reader.readLine() // consume trailing CRLF after chunk data
+        return String(buf, 0, pos)
+    }
+
     private companion object {
         private const val LARGE_PAYLOAD_BYTES = 100_000
         private const val KEEPALIVE_ROUND_TRIPS = 5
@@ -161,7 +311,9 @@ class KeelCioEngineTest {
         private const val SHUTDOWN_TIMEOUT_MS = 1000L
         private const val CONNECT_TIMEOUT_MS = 5000
         private const val READ_TIMEOUT_MS = 5000
+        private const val STREAM_TIMEOUT_MS = 5000
         private const val TWO_HUNDRED = 200
         private const val TWO_NINETY_NINE = 299
+        private const val HEX_RADIX = 16
     }
 }
