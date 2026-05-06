@@ -9,16 +9,20 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -200,6 +204,70 @@ class KeelCioEngineTest {
                 assertEquals(200, status)
                 assertEquals("pong", body)
             }
+        }
+    }
+
+    /**
+     * K38b regression test for the ktor-cio path.
+     *
+     * **Scenario**: a handler calls `cancel(cause)` inside [io.ktor.server.response.respondBytesWriter]
+     * without rethrowing. [CioKeelStreamChannel] (via [AbstractPipelinedWriteChannel.cancel])
+     * completes `terminationDeferred` immediately without writing the chunked trailer
+     * `0\r\n\r\n`. If the keep-alive loop then advances to the next request, the next
+     * response's headers arrive at the client *before* the missing trailer — desynchronising
+     * the client's HTTP parser.
+     *
+     * **Pre-fix (Red)**: [KeelCioApplicationResponse.writeChannelCancelled] was absent.
+     * The keep-alive loop reached `if (!keepAlive) break` with `keepAlive=true`, read the
+     * next request from the wire, and the sentinel handler ran (`sentinelInvoked=true`).
+     *
+     * **Post-fix (Green)**: `writeChannelCancelled` returns `true` → the loop breaks
+     * before reading the next request → `sentinelInvoked` stays `false`.
+     */
+    @Test
+    fun `cancel without rethrow closes keep-alive connection before next request — K38b`() {
+        val sentinelInvoked = AtomicBoolean(false)
+
+        withKeelCioServer({
+            routing {
+                get("/cancel-swallowed") {
+                    call.respondBytesWriter {
+                        writeFully("data".encodeToByteArray())
+                        flush()
+                        cancel(IOException("simulated client disconnect"))
+                        // Intentionally NOT rethrowing.
+                    }
+                }
+                get("/sentinel") {
+                    sentinelInvoked.set(true)
+                    call.respondText("sentinel")
+                }
+            }
+        }, keepAlive = true) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 3_000
+                val out = socket.getOutputStream()
+                val inp = socket.getInputStream()
+
+                val req1 = "GET /cancel-swallowed HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"
+                val req2 = "GET /sentinel HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                out.write(req1.toByteArray() + req2.toByteArray())
+                out.flush()
+
+                val buf = ByteArray(4096)
+                try {
+                    while (inp.read(buf) != -1) { /* drain */ }
+                } catch (_: java.net.SocketTimeoutException) {
+                    // Slow CI guard — assertion still catches the Red state because
+                    // sentinelInvoked is set before any response write attempt.
+                }
+            }
+
+            assertFalse(
+                sentinelInvoked.get(),
+                "K38b (ktor-cio): /sentinel handler was invoked — writeChannelCancelled check " +
+                    "is absent or not firing; the connection was not closed after cancel()-without-rethrow",
+            )
         }
     }
 
