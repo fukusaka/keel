@@ -225,37 +225,48 @@ class KeelByteWriteChannelTest {
      * returns `isDispatchNeeded() = false` when the caller is already on the EventLoop thread,
      * causing `withContext` to execute the block **inline** ahead of queued emit tasks.
      *
-     * **Failure scenario (Red)**: 10-frame SSE handler flushes each frame via
-     * [drainAndDispatch], enqueuing emit tasks T1..T10. After the loop,
-     * `respondWriteChannelContent`'s `use {}` finally-block calls the Ktor
-     * `ByteWriteChannel.close()` extension which fires `flushAndClose()` on the current
-     * thread (the EL). In `terminate()`, the pre-fix `withContext(ioDispatcher)` runs
-     * `writeTerminator()` **inline** (Netty, `isDispatchNeeded=false`) before T1..T10
-     * execute, sending the `HttpBodyEnd` terminator first and leaving the encoder in
-     * `NONE` mode. T1..T10 then throw (`HttpBody received without preceding
-     * HttpResponseHead`), and the client observes a well-formed HTTP 200 with a 0-byte
-     * body.
+     * **Failure scenario (Red)**: A handler writes N-1 frames with explicit `flush()` and
+     * writes a final (Nth) frame without flushing. Ktor's `respondWriteChannelContent` wraps
+     * the user lambda in `withContext(Dispatchers.IOBridge)`, so frames 0..N-2 enqueue emit
+     * tasks T1..T(N-1) from the IO thread — these land in the EventLoop queue before the
+     * resume-parent task R. When `withContext(IOBridge)` returns the pipeline coroutine
+     * resumes on the EventLoop and Ktor's `use{}` finally calls the deprecated
+     * `ByteWriteChannel.close()` extension, which fires `flushAndClose()` on the EL thread via
+     * `startCoroutineCancellable`. Inside `flushAndClose()`, `drainAndDispatch()` runs on the EL
+     * and enqueues T_last (the unflushed Nth frame) via `ioDispatcher.dispatch()`. Since the
+     * call is made from the EL itself, Netty's `execute()` appends T_last after the current
+     * running task. Then `terminate()` is reached; with the pre-fix `withContext(ioDispatcher)`
+     * Netty's `isDispatchNeeded()=false` causes the block to run **inline**, sending the
+     * `HttpBodyEnd` terminator immediately — before T_last. The client receives N-1 frames and
+     * a well-formed terminator; T_last arrives after the encoder has already moved to `NONE` mode
+     * and is dropped.
      *
      * **Post-fix (Green)**: `terminate()` uses
      * `ioDispatcher.dispatch(EmptyCoroutineContext) { writeTerminator() }` which always
-     * calls `eventLoop.execute()`, enqueuing the terminator task after T1..T10. All body
-     * frames are delivered before the terminator, and the client receives the full payload.
+     * calls `eventLoop.execute()`, enqueuing the terminator task after T_last. The Nth frame
+     * is delivered before the terminator, and the client receives all N frames.
      *
      * Red-Green verification: replace [dispatch] with `withContext(ioDispatcher)` in
-     * [AbstractPipelinedWriteChannel.terminate] and confirm this test fails on Netty.
-     * Restore [dispatch] and confirm it passes.
+     * [AbstractPipelinedWriteChannel.terminate] and confirm this test fails on Netty
+     * (received = frameCount - 1). Restore [dispatch] and confirm it passes (received = frameCount).
      */
     @Test
     fun `K39a — Netty SSE all frames arrive before chunked terminator`() {
-        val frameCount = 10
+        val frameCount = 5
         withKeelNettyServer({
             routing {
                 get("/sse") {
                     call.respondBytesWriter {
-                        repeat(frameCount) { i ->
+                        repeat(frameCount - 1) { i ->
                             writeStringUtf8("data: event-$i\n\n")
                             flush()
                         }
+                        // Final frame is NOT flushed explicitly. Its bytes remain in the internal
+                        // buffer until flushAndClose() drains them from the EL thread. With the
+                        // pre-fix withContext, writeTerminator() runs inline before the final emit
+                        // task, causing the client to receive frameCount-1 frames. With the fixed
+                        // dispatch, the emit task is enqueued first, preserving FIFO order.
+                        writeStringUtf8("data: event-${frameCount - 1}\n\n")
                     }
                 }
             }
@@ -279,7 +290,7 @@ class KeelByteWriteChannelTest {
                     frameCount,
                     received,
                     "K39a: expected $frameCount frames but got $received — " +
-                        "terminate() placed writeTerminator before emit tasks (FIFO violation)",
+                        "terminate() placed writeTerminator before the final buffered emit task (FIFO violation)",
                 )
             }
         }
