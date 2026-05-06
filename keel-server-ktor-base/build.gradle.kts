@@ -26,6 +26,7 @@ kotlin {
                 implementation(libs.ktor.server.core)
                 implementation(libs.ktor.http.cio)
                 implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.io.core)
             }
         }
         commonTest {
