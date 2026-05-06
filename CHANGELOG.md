@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `server-ktor`: fix SSE / chunked streaming response truncation under keep-alive; the connection handler now awaits `HttpBodyEnd` terminator write-and-flush before reading the next request head, eliminating an encoder `streamingMode` guard violation that closed the connection and left the previous response body incomplete (~5 % check failure rate at 50 VUs) (#TBD)
+- `engine-netty`: `awaitPendingFlush` now suspends on Netty's `ChannelFuture` from the most recent `writeAndFlush`, confirming bytes have reached the OS TCP send buffer before `terminate()` completes (#TBD)
 - `server-ktor`: fix infinite hang on large WebSocket frames (e.g. 1 MB echo); the outbound upgrade pump now yields the EventLoop thread when pending bytes exceed the high-water mark, allowing write-readiness events to be processed before the next chunk is forwarded (#457)
 - `server-ktor-cio`: restore `ktor-cio-keel-{epoll,io-uring}` SSE throughput from ~154 / ~28 RPS to ~1,266 RPS; the previous chunked streaming path serialised each frame through a separate EventLoop wake-up cycle (#456)
 - `ktor-engine`: `HeaderParseMutex` on Linux now serialises `parseRequest` with a process-wide `Mutex` (same as Apple); the previous no-op allowed all `availableProcessors()` worker threads to call ktor-http-cio concurrently, triggering `HeadersDataPool` non-reentrant lock contention and collapsing `ktor-cio-keel-epoll` / `ktor-cio-keel-io-uring` throughput to 0 RPS (#453)
