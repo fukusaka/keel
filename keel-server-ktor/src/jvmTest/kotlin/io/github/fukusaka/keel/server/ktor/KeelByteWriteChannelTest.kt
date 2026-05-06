@@ -9,8 +9,8 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ClosedWriteChannelException
-import io.ktor.utils.io.writeStringUtf8
 import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.IOException
@@ -25,7 +25,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNotSame
-import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
