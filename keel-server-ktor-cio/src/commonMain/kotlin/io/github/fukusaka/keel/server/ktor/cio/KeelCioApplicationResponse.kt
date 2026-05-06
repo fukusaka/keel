@@ -51,6 +51,34 @@ internal class KeelCioApplicationResponse(
     private var responseBodyJob: Job? = null
 
     /**
+     * Tracks the active streaming write channel created by [responseChannel].
+     * Null for non-streaming responses ([respondFromBytes], [respondNoContent]).
+     * Checked by [writeChannelCancelled] before the keep-alive loop advances to
+     * the next request, so that a cancelled response (missing chunked terminator
+     * or incomplete Content-Length body) does not desynchronise the client's
+     * HTTP parser.
+     */
+    private var writeChannel: ByteWriteChannel? = null
+
+    /**
+     * Returns `true` if the streaming write channel was terminated via
+     * [io.ktor.utils.io.ByteWriteChannel.cancel] — i.e. the body write was
+     * abandoned before the terminator was written. For chunked streaming that
+     * means the `0\r\n\r\n` trailer was never sent; for fixed-length streaming
+     * the Content-Length promise was not fulfilled.
+     *
+     * [KtorCioConnectionHandler] must close the connection rather than
+     * advancing to the next keep-alive request when this returns `true`,
+     * because the client's HTTP parser state is no longer aligned with
+     * the wire (the partial body bytes it received cannot be recovered).
+     *
+     * Returns `false` for non-streaming responses and for streaming responses
+     * that completed normally via [io.ktor.utils.io.ByteWriteChannel.flushAndClose].
+     */
+    internal val writeChannelCancelled: Boolean
+        get() = writeChannel?.closedCause != null
+
+    /**
      * Set by [respondUpgrade] when a protocol upgrade (e.g. WebSocket) is performed.
      * [KtorCioConnectionHandler] joins this job after [respondOutgoingContent] returns
      * to let the upgrade session run to completion before tearing down the connection.
@@ -118,12 +146,15 @@ internal class KeelCioApplicationResponse(
             // task queue ensures pumpOutputToChannel forwards them to the
             // transport before any body chunk dispatched by the returned
             // channel reaches the pipeline.
-            CioKeelStreamChannel(pipelinedChannel, scope)
+            val ch = CioKeelStreamChannel(pipelinedChannel, scope)
+            writeChannel = ch
+            ch
         } else {
             // Fixed-length path: the caller manages the body length; continue
             // to route through `output` so the existing pump forwards bytes
             // without this class having to replicate Content-Length tracking.
             val bodyChannel = ByteChannel(autoFlush = true)
+            writeChannel = bodyChannel
             responseBodyJob = scope.launch(Dispatchers.Unconfined) {
                 try {
                     bodyChannel.copyAndClose(output)

@@ -218,6 +218,13 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                 output.flush()
             }
 
+            // K38b: if the streaming write channel was terminated via cancel() (e.g. a
+            // client disconnection during SSE, or application code that calls cancel()
+            // without rethrowing), the chunked terminator `0\r\n\r\n` (or the full
+            // Content-Length body) was never written. Advancing to the next keep-alive
+            // request would write the next response's headers before the terminator,
+            // desynchronising the client's HTTP parser. Close the connection instead.
+            if (call.response.writeChannelCancelled) break
             // A protocol upgrade (e.g. WebSocket) was performed: the upgrade session
             // now owns the raw input/output channels. Join the session job to keep
             // the connection alive until the peer closes, then exit the keep-alive loop.
