@@ -117,6 +117,21 @@ internal class KeelApplicationResponse(
     }
 
     /**
+     * Returns `true` if the streaming write channel was terminated via
+     * [io.ktor.utils.io.ByteWriteChannel.cancel] (i.e. the body write failed
+     * with an error — typically a client disconnection during SSE or chunked
+     * streaming). In that case the [HttpBodyEnd] terminator was never written,
+     * so the HTTP response encoder's `streamingMode` is still `CHUNKED`.
+     * [KeelCodecConnectionHandler] must close the connection rather than
+     * advancing to the next keep-alive request.
+     *
+     * Returns `false` for non-streaming responses and for streaming responses
+     * that completed normally via [io.ktor.utils.io.ByteWriteChannel.flushAndClose].
+     */
+    internal val writeChannelCancelled: Boolean
+        get() = writeChannel?.closedCause != null
+
+    /**
      * Performs a protocol upgrade (e.g. WebSocket) via the keel codec pipeline.
      *
      * Sequence:
