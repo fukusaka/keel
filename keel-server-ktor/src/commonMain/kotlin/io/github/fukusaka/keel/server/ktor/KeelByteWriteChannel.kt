@@ -31,4 +31,16 @@ internal class KeelByteWriteChannel(
         pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
         pipelinedChannel.pipeline.requestFlush()
     }
+
+    /**
+     * Suspends until [writeTerminator] has been written and the final flush
+     * confirmed, or until [cancel] is called.
+     *
+     * Called by [KeelApplicationResponse.awaitWriteComplete] so the connection
+     * handler does not advance to the next request before the current response's
+     * `HttpBodyEnd` has been written to the encoder — preventing the encoder's
+     * `check(streamingMode == NONE)` from firing when a keep-alive client
+     * reuses the connection immediately.
+     */
+    internal suspend fun awaitTerminated() = terminationDeferred.await()
 }

@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.ktor
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.utils.io.BufferedByteWriteChannel
 import io.ktor.utils.io.InternalAPI
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -66,6 +67,15 @@ abstract class AbstractPipelinedWriteChannel(
     private val terminated = AtomicBoolean(false)
     private val closeCause = AtomicReference<Throwable?>(null)
 
+    /**
+     * Completes when [terminate] finishes (or [cancel] is called). Subclasses in separate
+     * Gradle modules expose [awaitTerminated][io.github.fukusaka.keel.server.ktor.KeelByteWriteChannel.awaitTerminated]
+     * so the connection handler can await it before reading the next request head —
+     * preventing the encoder from receiving the next [HttpResponseHead][io.github.fukusaka.keel.codec.http.HttpResponseHead]
+     * before this response's [HttpBodyEnd][io.github.fukusaka.keel.codec.http.HttpBodyEnd] has been written.
+     */
+    protected val terminationDeferred: CompletableDeferred<Unit> = CompletableDeferred()
+
     override val autoFlush: Boolean = false
 
     override val isClosedForWrite: Boolean get() = closed.load()
@@ -122,6 +132,7 @@ abstract class AbstractPipelinedWriteChannel(
         // Discard any buffered bytes — the connection is going away.
         if (!internalBuffer.exhausted()) internalBuffer.readByteArray()
         terminated.store(true)
+        terminationDeferred.complete(Unit)
     }
 
     /**
@@ -164,13 +175,19 @@ abstract class AbstractPipelinedWriteChannel(
     /**
      * Sends the body terminator and awaits the final flush so the connection
      * handler cannot reuse the socket while bytes are still in flight on
-     * push-mode engines. Idempotent.
+     * push-mode engines. Completes [terminationDeferred] when done so the
+     * connection handler can await termination before reading the next request.
+     * Idempotent.
      */
     private suspend fun terminate() {
         if (!terminated.compareAndSet(expectedValue = false, newValue = true)) return
-        withContext(pipelinedChannel.ioDispatcher) {
-            writeTerminator()
-            pipelinedChannel.awaitFlushComplete()
+        try {
+            withContext(pipelinedChannel.ioDispatcher) {
+                writeTerminator()
+                pipelinedChannel.awaitFlushComplete()
+            }
+        } finally {
+            terminationDeferred.complete(Unit)
         }
     }
 

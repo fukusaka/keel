@@ -184,6 +184,15 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
             runCatching { bodyPipe.discard() }
             pumpJob.join()
         }
+        // K38: Ktor's ByteWriteChannel.use{} calls the deprecated non-suspend close(),
+        // which dispatches the HttpBodyEnd terminator as a fire-and-forget EventLoop task.
+        // If the next request is already buffered in the bridge, bridge.receiveCatching()
+        // would return synchronously — the keep-alive loop would write the next response's
+        // HttpResponseHead to the shared encoder before the terminator task runs, causing
+        // the encoder's check(streamingMode == NONE) to throw and the connection to close
+        // with the previous response body incomplete. Awaiting here ensures the terminator
+        // has been written before we advance to the next request.
+        call.response.awaitWriteComplete()
         // A protocol upgrade (e.g. WebSocket via respondUpgrade) was performed: the codec
         // was swapped and the upgrade session is running. Join it to keep the connection
         // alive until the peer closes, then signal the loop to exit.
