@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `server-ktor`: close connection when the streaming write channel is cancelled; Ktor's exception path in `respondWriteChannelContent` calls `cancel(cause)` which skips `HttpBodyEnd`, leaving the encoder in `CHUNKED` mode and causing a keep-alive guard violation on the next request (#459)
 - `server-ktor`: fix SSE / chunked streaming response truncation under keep-alive; the connection handler now awaits `HttpBodyEnd` terminator write-and-flush before reading the next request head, eliminating an encoder `streamingMode` guard violation that closed the connection and left the previous response body incomplete (~5 % check failure rate at 50 VUs) (#458)
 - `engine-netty`: `awaitPendingFlush` now suspends on Netty's `ChannelFuture` from the most recent `writeAndFlush`, confirming bytes have reached the OS TCP send buffer before `terminate()` completes (#458)
 - `server-ktor`: fix infinite hang on large WebSocket frames (e.g. 1 MB echo); the outbound upgrade pump now yields the EventLoop thread when pending bytes exceed the high-water mark, allowing write-readiness events to be processed before the next chunk is forwarded (#457)
