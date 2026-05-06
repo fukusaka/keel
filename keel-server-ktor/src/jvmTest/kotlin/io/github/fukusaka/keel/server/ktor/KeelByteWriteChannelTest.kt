@@ -4,15 +4,20 @@ import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ClosedWriteChannelException
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URI
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
@@ -121,6 +126,92 @@ class KeelByteWriteChannelTest {
         assertTrue(b is ClosedWriteChannelException)
     }
 
+    /**
+     * K38b regression test: [KeelByteWriteChannel.cancel] without a re-throw must not leave
+     * the keep-alive loop running with the encoder still in `CHUNKED` mode.
+     *
+     * **Scenario**: a handler calls `cancel(cause)` inside [io.ktor.server.response.respondBytesWriter]
+     * without re-throwing, so [engine.pipeline.execute] returns normally.
+     * [AbstractPipelinedWriteChannel.cancel] completes [terminationDeferred] immediately without
+     * writing [io.github.fukusaka.keel.codec.http.HttpBodyEnd], leaving the
+     * [io.github.fukusaka.keel.codec.http.HttpResponseEncoder] in `CHUNKED` mode.
+     *
+     * **Pre-fix (Red)**: [KeelApplicationResponse.writeChannelCancelled] property was absent.
+     * [processRequest][KeelCodecConnectionHandler] returned `keepAlive = true`, the loop read
+     * the next request (incrementing [sentinelInvoked]), and then the encoder's
+     * `check(streamingMode == NONE)` threw — connection closed with "Connection handling failed".
+     *
+     * **Post-fix (Green)**: `writeChannelCancelled` returns `true` → `processRequest` returns
+     * `false` → loop exits before ever reading the second request → [sentinelInvoked] stays `false`.
+     *
+     * Red-Green verification: run with the `if (call.response.writeChannelCancelled) return false`
+     * line in [KeelCodecConnectionHandler.processRequest] commented out and confirm the assertion
+     * fails; restore it and confirm it passes.
+     */
+    @Test
+    fun `cancel without rethrow closes keep-alive connection before next request — K38b`() {
+        val sentinelInvoked = AtomicBoolean(false)
+
+        withKeelServer({
+            routing {
+                get("/cancel-swallowed") {
+                    call.respondBytesWriter {
+                        writeFully("data".encodeToByteArray())
+                        flush()
+                        // Cancel without rethrowing: models explicit early termination such as
+                        // SSE handlers that catch client-disconnection and exit cleanly.
+                        // Ktor's exception path in respondWriteChannelContent also calls
+                        // cancel(cause) before rethrowing, but in that case the exception
+                        // propagates through engine.pipeline.execute() and the keep-alive
+                        // guard is bypassed — this test covers the no-rethrow variant.
+                        cancel(IOException("simulated client disconnect"))
+                    }
+                }
+                get("/sentinel") {
+                    // This handler must NOT be reached: after cancel()-without-rethrow the
+                    // connection must be closed before the keep-alive loop can read a next head.
+                    sentinelInvoked.set(true)
+                    call.respondText("sentinel")
+                }
+            }
+        }, keepAlive = true) { port ->
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 3_000
+                val out = socket.getOutputStream()
+                val inp = socket.getInputStream()
+
+                // Send both requests back-to-back without waiting for the first response.
+                // This ensures /sentinel bytes are already buffered when the server
+                // decides whether to close the connection — making the Red-state path
+                // deterministic: in Red, the loop reads and processes /sentinel before
+                // the encoder crash; in Green, the loop exits before reading /sentinel.
+                val req1 = "GET /cancel-swallowed HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"
+                val req2 = "GET /sentinel HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                out.write(req1.toByteArray() + req2.toByteArray())
+                out.flush()
+
+                // Drain until EOF. In both fix states this terminates promptly:
+                //  Green: server detects writeChannelCancelled → closes connection.
+                //  Red: server attempts /sentinel, encoder check fires, closes connection.
+                val buf = ByteArray(4096)
+                try {
+                    while (inp.read(buf) != -1) { /* drain */ }
+                } catch (_: java.net.SocketTimeoutException) {
+                    // Guard against slow CI — assertion below still catches the Red state
+                    // because sentinelInvoked is set before the encoder crash.
+                }
+            }
+
+            // sentinelInvoked is set before the server tries to write the /sentinel response
+            // (Red) or never at all (Green), so no further delay is needed.
+            assertFalse(
+                sentinelInvoked.get(),
+                "K38b: /sentinel handler was invoked — writeChannelCancelled check is absent or not firing; " +
+                    "the encoder was left in CHUNKED mode after cancel()-without-rethrow",
+            )
+        }
+    }
+
     // --- Helpers (duplicated from KeelEngineTest to keep this test file self-contained) ---
 
     private fun withKeelServer(
@@ -129,7 +220,7 @@ class KeelByteWriteChannelTest {
         block: (port: Int) -> Unit,
     ) {
         val server = embeddedServer(Keel, port = 0, module = module)
-        val cfg = (server.engine as KeelApplicationEngine).configuration
+        val cfg = server.engine.configuration
         cfg.engine = NioEngine()
         cfg.keepAlive = keepAlive
         server.start(wait = false)
