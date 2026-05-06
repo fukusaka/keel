@@ -196,6 +196,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                 requestBody = bodyChannel,
                 rawInput = input,
                 output = output,
+                pipelinedChannel = channel,
                 localAddress = channel.localAddress,
                 remoteAddress = channel.remoteAddress,
                 scope = scope,

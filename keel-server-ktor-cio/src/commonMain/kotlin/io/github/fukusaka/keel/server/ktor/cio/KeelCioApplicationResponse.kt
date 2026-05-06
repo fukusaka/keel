@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.http.HeadersBuilder
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -10,7 +11,6 @@ import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.copyAndClose
-import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +40,7 @@ internal class KeelCioApplicationResponse(
     call: KeelCioApplicationCall,
     private val rawInput: ByteReadChannel,
     private val output: ByteWriteChannel,
+    private val pipelinedChannel: PipelinedChannel,
     private val scope: CoroutineScope,
     private val keepAlive: Boolean,
     private val protocolVersion: String,
@@ -96,8 +97,8 @@ internal class KeelCioApplicationResponse(
 
     override suspend fun responseChannel(): ByteWriteChannel {
         // Streaming response: emit headers with Transfer-Encoding: chunked
-        // unless the caller already declared a Content-Length, then pump the
-        // returned ByteChannel into the connection output as chunked frames.
+        // unless the caller already declared a Content-Length, then serve
+        // the body via the most efficient path available.
         val contentLength = headersBuilder[HttpHeaders.ContentLength]
         val useChunked = contentLength == null
         if (useChunked && headersBuilder[HttpHeaders.TransferEncoding] == null) {
@@ -105,19 +106,33 @@ internal class KeelCioApplicationResponse(
         }
         writeStatusAndHeaders()
 
-        val bodyChannel = ByteChannel(autoFlush = true)
-        responseBodyJob = scope.launch(Dispatchers.Unconfined) {
-            try {
-                if (useChunked) {
-                    pumpChunked(bodyChannel, output)
-                } else {
+        return if (useChunked) {
+            // Fast path: chunked body bytes are encoded inline and dispatched
+            // fire-and-forget directly to the pipeline, bypassing the
+            // pumpOutputToChannel ByteChannel relay.  This avoids one EL
+            // wake-up cycle per frame (eventfd write + SQE/CQE round-trip for
+            // io_uring; epoll syscall round-trip for epoll) that the relay
+            // imposes, matching the K29 optimisation applied to ktor-keel.
+            //
+            // Headers were written to `output` above; the EventLoop's FIFO
+            // task queue ensures pumpOutputToChannel forwards them to the
+            // transport before any body chunk dispatched by the returned
+            // channel reaches the pipeline.
+            CioKeelStreamChannel(pipelinedChannel, scope)
+        } else {
+            // Fixed-length path: the caller manages the body length; continue
+            // to route through `output` so the existing pump forwards bytes
+            // without this class having to replicate Content-Length tracking.
+            val bodyChannel = ByteChannel(autoFlush = true)
+            responseBodyJob = scope.launch(Dispatchers.Unconfined) {
+                try {
                     bodyChannel.copyAndClose(output)
+                } finally {
+                    output.flush()
                 }
-            } finally {
-                output.flush()
             }
+            bodyChannel
         }
-        return bodyChannel
     }
 
     /**
@@ -171,25 +186,5 @@ internal class KeelCioApplicationResponse(
         }
         sb.append("\r\n")
         output.writeStringUtf8(sb.toString())
-    }
-
-    private suspend fun pumpChunked(input: ByteReadChannel, dest: ByteWriteChannel) {
-        val buf = ByteArray(CHUNK_BUFFER_SIZE)
-        while (!input.isClosedForRead) {
-            val n = input.readAvailable(buf)
-            if (n == -1) break
-            if (n > 0) {
-                dest.writeStringUtf8(n.toString(HEX_RADIX))
-                dest.writeStringUtf8("\r\n")
-                dest.writeFully(buf, 0, n)
-                dest.writeStringUtf8("\r\n")
-            }
-        }
-        dest.writeStringUtf8("0\r\n\r\n")
-    }
-
-    private companion object {
-        private const val CHUNK_BUFFER_SIZE = 8192
-        private const val HEX_RADIX = 16
     }
 }
