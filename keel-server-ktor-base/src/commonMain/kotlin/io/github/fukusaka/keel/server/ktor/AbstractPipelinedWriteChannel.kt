@@ -6,8 +6,10 @@ import io.ktor.utils.io.InternalAPI
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.Buffer
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.io.Sink
 import kotlinx.io.readByteArray
 import kotlin.concurrent.atomics.AtomicBoolean
@@ -177,14 +179,35 @@ abstract class AbstractPipelinedWriteChannel(
      * push-mode engines. Completes [terminationDeferred] when done so the
      * connection handler can await termination before reading the next request.
      * Idempotent.
+     *
+     * **K39a — FIFO ordering**: [writeTerminator] is dispatched via explicit
+     * [kotlinx.coroutines.CoroutineDispatcher.dispatch] rather than
+     * [kotlinx.coroutines.withContext]. Some EL dispatchers (e.g. Netty's)
+     * override [kotlinx.coroutines.CoroutineDispatcher.isDispatchNeeded] to
+     * return `false` when the caller is already on the EL thread, causing
+     * `withContext` to run the block **inline** (without queuing). If
+     * [drainAndDispatch] has already enqueued emit tasks, inline execution
+     * places [writeTerminator] **ahead** of those tasks — producing a
+     * `0\r\n\r\n` terminator before the body frames and yielding a
+     * well-formed HTTP 200 with a 0-byte body. Using [dispatch] unconditionally
+     * enqueues the terminator task, restoring FIFO order (emit tasks first,
+     * terminator last).
      */
     private suspend fun terminate() {
         if (!terminated.compareAndSet(expectedValue = false, newValue = true)) return
         try {
-            withContext(pipelinedChannel.ioDispatcher) {
-                writeTerminator()
-                pipelinedChannel.awaitFlushComplete()
+            suspendCancellableCoroutine { cont ->
+                pipelinedChannel.ioDispatcher.dispatch(kotlin.coroutines.EmptyCoroutineContext) {
+                    try {
+                        writeTerminator()
+                    } catch (e: Throwable) {
+                        cont.resumeWithException(e)
+                        return@dispatch
+                    }
+                    cont.resume(Unit)
+                }
             }
+            pipelinedChannel.awaitFlushComplete()
         } finally {
             terminationDeferred.complete(Unit)
         }
