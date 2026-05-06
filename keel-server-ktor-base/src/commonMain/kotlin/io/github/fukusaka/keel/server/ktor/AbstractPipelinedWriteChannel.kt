@@ -56,7 +56,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  * caller.
  */
 @OptIn(ExperimentalAtomicApi::class)
-internal abstract class AbstractPipelinedWriteChannel(
+abstract class AbstractPipelinedWriteChannel(
     protected val pipelinedChannel: PipelinedChannel,
     private val scope: CoroutineScope,
 ) : BufferedByteWriteChannel {
