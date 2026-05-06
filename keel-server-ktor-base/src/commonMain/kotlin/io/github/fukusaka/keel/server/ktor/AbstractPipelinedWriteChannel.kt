@@ -8,13 +8,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.io.Buffer
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.io.Sink
 import kotlinx.io.readByteArray
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Abstract Ktor [BufferedByteWriteChannel] that routes writes directly to a keel
