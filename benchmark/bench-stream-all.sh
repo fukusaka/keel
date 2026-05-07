@@ -46,6 +46,20 @@ fi
 build_engine_list() {
     local engines=()
 
+    # Cross-language reference servers
+    for pair in \
+        "rust-bench|benchmark/rust-bench/target/release/rust-bench --port=${PORT}" \
+        "go-bench|benchmark/go-bench/go-bench --port=${PORT}" \
+        "swift-bench|benchmark/swift-bench/.build/release/swift-bench --port=${PORT}" \
+        "zig-bench|benchmark/zig-bench/zig-out/bin/zig-bench --port=${PORT}"; do
+        local display="${pair%%|*}"
+        local cmd="${pair#*|}"
+        local binary="${cmd%% *}"
+        if [ -f "$binary" ]; then
+            engines+=("${display}|${cmd}")
+        fi
+    done
+
     # Kotlin/Native servers
     if [ "$(uname)" = "Darwin" ]; then
         ARCH=$(uname -m)
@@ -72,7 +86,7 @@ build_engine_list() {
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
         JVM_CP=$(cat "$JVM_CP_FILE")
-        for engine in ktor-keel-nio pipeline-http-nio ktor-keel-netty pipeline-http-netty ktor-cio ktor-netty; do
+        for engine in ktor-keel-nio pipeline-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
             engines+=("jvm:${engine}|java -cp ${JVM_CP} io.github.fukusaka.keel.benchmark.JvmMainKt --engine=${engine} --port=${PORT}")
         done
     fi
