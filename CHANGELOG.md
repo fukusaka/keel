@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: add `bench-stream-all.sh` to run all non-compression streaming scenarios across available engines and write a per-host summary table (#462)
 - `keel-server-ktor`, `keel-server-ktor-cio`: Ktor's `webSocket { }` DSL is now functional on both adapters; `respondUpgrade` is implemented for both (#436)
 - `keel-server-ktor`: `KeelApplicationEngine.Configuration.socketOptions` forwards `SocketOptions` to every accepted connection; defaults to `SocketOptions.DEFAULT` (`TCP_NODELAY` enabled); pass `SocketOptions(tcpNoDelay = false)` to re-enable Nagle for bulk streaming workloads (#431)
 - `benchmark`: `ktor-cio-keel-nwconnection` (macOS) and `ktor-cio-keel-netty` (JVM) complete the Pattern C engine set; all keel push-model engines (`kqueue`, `epoll`, `io-uring`, `nwconnection`, `netty`, `nio`) now have both `ktor-keel-*` and `ktor-cio-keel-*` bench entries (#450)
