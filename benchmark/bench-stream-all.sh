@@ -44,21 +44,28 @@ fi
 # Mirrors the engine detection logic in bench-all.sh.
 
 build_engine_list() {
+    local scenario="$1"
     local engines=()
 
     # Cross-language reference servers
-    for pair in \
-        "rust-bench|benchmark/rust-bench/target/release/rust-bench --port=${PORT}" \
-        "go-bench|benchmark/go-bench/go-bench --port=${PORT}" \
-        "swift-bench|benchmark/swift-bench/.build/release/swift-bench --port=${PORT}" \
-        "zig-bench|benchmark/zig-bench/zig-out/bin/zig-bench --port=${PORT}"; do
-        local display="${pair%%|*}"
-        local cmd="${pair#*|}"
-        local binary="${cmd%% *}"
-        if [ -f "$binary" ]; then
-            engines+=("${display}|${cmd}")
-        fi
-    done
+    case "$scenario" in
+        multipart|method-mix|path-param)
+            ;;
+        *)
+            for pair in \
+                "rust-bench|benchmark/rust-bench/target/release/rust-bench --port=${PORT}" \
+                "go-bench|benchmark/go-bench/go-bench --port=${PORT}" \
+                "swift-bench|benchmark/swift-bench/.build/release/swift-bench --port=${PORT}" \
+                "zig-bench|benchmark/zig-bench/zig-out/bin/zig-bench --port=${PORT}"; do
+                local display="${pair%%|*}"
+                local cmd="${pair#*|}"
+                local binary="${cmd%% *}"
+                if [ -f "$binary" ]; then
+                    engines+=("${display}|${cmd}")
+                fi
+            done
+            ;;
+    esac
 
     # Kotlin/Native servers
     if [ "$(uname)" = "Darwin" ]; then
@@ -145,7 +152,7 @@ for scenario in $SCENARIOS; do
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED" >> "$OUTFILE"
         fi
         sleep "$COOLDOWN"
-    done < <(build_engine_list)
+    done < <(build_engine_list "$scenario")
 
     echo ""
     echo "" >> "$OUTFILE"
