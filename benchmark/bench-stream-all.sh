@@ -24,6 +24,7 @@ cd "$(dirname "$0")/.."
 
 SHUFFLE=${BENCH_SHUFFLE:-false}
 PORT=${BENCH_PORT:-18090}
+COOLDOWN=${BENCH_COOLDOWN:-2}
 RESULTS_BASE="benchmark/results"
 HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
 RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
@@ -129,6 +130,7 @@ for scenario in $SCENARIOS; do
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED"
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED" >> "$OUTFILE"
         fi
+        sleep "$COOLDOWN"
     done < <(build_engine_list)
 
     echo ""
