@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: defer the auto-close triggered by engine-driven peer-FIN until `SuspendBridgeHandler` is installed; `DefaultPipeline` replays `onInactive` to handlers added after `notifyInactive` so a peer-FIN observed before the user calls `read(buf)` is surfaced as `-1` instead of leaving the suspend reader hung (#467)
 - `engine-kqueue`: detect peer-FIN even when `PipelinedChannel.readEnabled = false`; write-only push clients no longer linger in CLOSE-WAIT until the next write attempt or `SO_KEEPALIVE` timer. `FdReadyListener` gains an `onPeerClosed(interest)` default-no-op method and transports surface `EV_EOF` via `onReadClosed` regardless of `readEnabled` state. First engine of a roll-out — epoll / io-uring / nio / netty / nwconnection follow in separate PRs (#467)
 - `engine-nio`: WARN + clear interest when a `SelectionKey` ready op fires without a registered callback; mirrors the K22 / K33 guards in `EpollEventLoop` / `KqueueEventLoop` (#465)
 - `server-ktor-base`, `server-ktor-cio`, `core`: bound `pendingWrites` against slow readers — apply K37-style high-water gate to `AbstractPipelinedWriteChannel.flush` and the cio outbound pump; `@Volatile` on `AbstractIoTransport.writable` for the new off-EL read (#464)
