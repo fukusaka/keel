@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
@@ -20,6 +21,24 @@ import kotlin.coroutines.resume
  * **Read path**: registers OP_READ via [NioEventLoop.setInterestCallback].
  * On data arrival, allocates a buffer, calls [SocketChannel.read], and delivers
  * via [onRead]. EOF (read returns -1) triggers [onReadClosed].
+ *
+ * **Idle-read trade-off** ([idleReadPolicy]): Java NIO `Selector` exposes
+ * only `POLLIN` to user code — there is no `POLLRDHUP` analogue, so the
+ * engine cannot observe peer FIN without calling `SocketChannel.read`,
+ * which in turn drains kernel `rcvbuf` and breaks back-pressure. The
+ * selected [IdleReadPolicy] picks which side of the trade-off is
+ * preserved while [readEnabled] is `false`:
+ * - [IdleReadPolicy.DETECT_PEER_CLOSE]: arm `OP_READ` at construction;
+ *   reads always run when the selector fires; bytes received while
+ *   `readEnabled = false` are released without being delivered through
+ *   [onRead]; `read = -1` always surfaces through [onReadClosed].
+ * - [IdleReadPolicy.PRESERVE_BACKPRESSURE]: arm `OP_READ` only when
+ *   `readEnabled` flips to `true`; data sits in `rcvbuf` and the peer's
+ *   TCP window stalls; peer FIN is not surfaced until `readEnabled`
+ *   becomes `true` again or `SO_KEEPALIVE` declares the peer dead.
+ *
+ * See [IdleReadPolicy] KDoc for the engine applicability table and
+ * recommended choice per workload.
  *
  * **Write path**: buffers outbound [IoBuf] writes and flushes via
  * [SocketChannel.write] / [GatheringByteChannel.write][java.nio.channels.GatheringByteChannel.write].
@@ -48,16 +67,39 @@ internal class NioIoTransport(
     private val selectionKey: SelectionKey,
     private val eventLoop: NioEventLoop,
     allocator: BufferAllocator,
+    private val idleReadPolicy: IdleReadPolicy,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    init {
+        // [IdleReadPolicy.DETECT_PEER_CLOSE]: arm OP_READ at construction
+        // so peer FIN surfaces through [onReadClosed] regardless of the
+        // user's [readEnabled] state. The cost is documented in the class
+        // KDoc above (kernel `rcvbuf` is drained while readEnabled =
+        // false, and bytes the peer sends before user inbound handlers
+        // are installed are released — see the [IdleReadPolicy] KDoc for
+        // the data-loss caveat that drove the conservative default of
+        // [IdleReadPolicy.PRESERVE_BACKPRESSURE]).
+        if (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE) {
+            @Suppress("LeakingThis")
+            armRead()
+        }
+    }
 
     // --- Read path ---
 
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && opened) armRead()
+            // [IdleReadPolicy.DETECT_PEER_CLOSE]: OP_READ is already
+            // armed from construction and we keep it armed for the
+            // lifetime of the transport — flipping `readEnabled` only
+            // controls whether [onReadable] delivers the bytes or
+            // releases them silently.
+            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
+                armRead()
+            }
         }
 
     private fun armRead() {
@@ -78,8 +120,18 @@ internal class NioIoTransport(
         val n = socketChannel.read(bb)
         when {
             n > 0 -> {
-                buf.writerIndex += n
-                onRead?.invoke(buf)
+                if (readEnabled) {
+                    buf.writerIndex += n
+                    onRead?.invoke(buf)
+                } else {
+                    // Reachable only with [IdleReadPolicy.DETECT_PEER_CLOSE]:
+                    // OP_READ stays armed while readEnabled = false, so the
+                    // selector keeps firing readable events on incoming
+                    // data. The user has explicitly opted into draining
+                    // these bytes (in exchange for prompt peer-FIN
+                    // detection), so we release without delivering.
+                    buf.release()
+                }
                 armRead()
             }
             n == -1 -> {

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeBuffer
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import kotlinx.coroutines.CoroutineDispatcher
@@ -76,9 +77,37 @@ import io.netty.channel.Channel as NettyNativeChannel
 internal class NettyIoTransport(
     internal val nettyChannel: NettyNativeChannel,
     allocator: BufferAllocator,
+    private val idleReadPolicy: IdleReadPolicy,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
+
+    init {
+        // [IdleReadPolicy.DETECT_PEER_CLOSE]: enable Netty's auto-read at
+        // construction so the underlying Java NIO `Selector` keeps
+        // `OP_READ` registered for the channel. Without `OP_READ` in the
+        // selection key, the Selector cannot observe peer FIN while
+        // `setAutoRead(false)` is in effect (the NIO Selector API maps
+        // `OP_READ` to `POLLIN` only and never `POLLRDHUP`), so a
+        // write-only push client that holds `readEnabled = false` would
+        // miss peer close. With auto-read on, [channelRead] fires for
+        // any inbound bytes — the handler below releases them silently
+        // when `readEnabled = false` (the documented cost of the
+        // policy), and [channelInactive] /
+        // [ChannelInputShutdownReadComplete] fire on FIN.
+        //
+        // Engine applicability is resolved upstream in [NettyEngine]:
+        // for the [NettyTransport.Epoll] / [NettyTransport.KQueue] native
+        // transports the engine passes
+        // [IdleReadPolicy.PRESERVE_BACKPRESSURE] regardless of the
+        // user's [IoEngineConfig.idleReadPolicy], because native
+        // transports observe peer FIN through `EPOLLRDHUP` / `EV_EOF`
+        // independently of auto-read state.
+        if (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE) {
+            @Suppress("LeakingThis")
+            armRead()
+        }
+    }
 
     // --- Read path ---
 
@@ -96,7 +125,14 @@ internal class NettyIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && opened) armRead()
+            // [IdleReadPolicy.DETECT_PEER_CLOSE]: auto-read is already
+            // armed from construction and stays armed for the lifetime
+            // of the transport — flipping `readEnabled` only controls
+            // whether [channelRead] delivers bytes to [onRead] or
+            // releases them silently.
+            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
+                armRead()
+            }
         }
 
     /**
@@ -134,6 +170,19 @@ internal class NettyIoTransport(
         override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
             val byteBuf = msg as ByteBuf
             if (!byteBuf.isReadable) {
+                byteBuf.release()
+                return
+            }
+
+            // Reachable only with [IdleReadPolicy.DETECT_PEER_CLOSE]:
+            // auto-read stays enabled while [readEnabled] is false, so
+            // Netty keeps invoking channelRead on peer-sent bytes. The
+            // user has explicitly opted into draining these in
+            // exchange for prompt peer-FIN detection — release without
+            // delivering through [onRead]. (PRESERVE_BACKPRESSURE
+            // disables auto-read while readEnabled = false, so this
+            // branch is naturally unreachable in that mode.)
+            if (!readEnabled) {
                 byteBuf.release()
                 return
             }
