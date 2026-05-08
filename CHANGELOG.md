@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`: detect peer-FIN even when `PipelinedChannel.readEnabled = false`; mirrors the kqueue fix from #467 for the epoll engine. `EpollIoTransport` arms `EPOLLIN` (with `EPOLLRDHUP`) at construction, surfaces peer FIN through `onReadClosed` regardless of `readEnabled` state. The `keel-core` deferred-close + `notifyInactive` replay introduced in #467 absorbs the peer-FIN-before-bridge-install race (#468)
 - `core`: defer the auto-close triggered by engine-driven peer-FIN until `SuspendBridgeHandler` is installed; `DefaultPipeline` replays `onInactive` to handlers added after `notifyInactive` so a peer-FIN observed before the user calls `read(buf)` is surfaced as `-1` instead of leaving the suspend reader hung (#467)
 - `engine-kqueue`: detect peer-FIN even when `PipelinedChannel.readEnabled = false`; write-only push clients no longer linger in CLOSE-WAIT until the next write attempt or `SO_KEEPALIVE` timer. `FdReadyListener` gains an `onPeerClosed(interest)` default-no-op method and transports surface `EV_EOF` via `onReadClosed` regardless of `readEnabled` state. First engine of a roll-out — epoll / io-uring / nio / netty / nwconnection follow in separate PRs (#467)
 - `engine-nio`: WARN + clear interest when a `SelectionKey` ready op fires without a registered callback; mirrors the K22 / K33 guards in `EpollEventLoop` / `KqueueEventLoop` (#465)
