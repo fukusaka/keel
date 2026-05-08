@@ -49,6 +49,14 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
     private var eof = false
     private lateinit var ctx: PipelineHandlerContext
 
+    /**
+     * Whether the bridge has observed pipeline inactivation. Exposed for
+     * unit tests of [AbstractPipelinedChannel]'s deferred-close path; user
+     * code should observe EOF via [read] returning `-1` instead of polling
+     * this flag.
+     */
+    internal val isEof: Boolean get() = eof
+
     override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
     }
