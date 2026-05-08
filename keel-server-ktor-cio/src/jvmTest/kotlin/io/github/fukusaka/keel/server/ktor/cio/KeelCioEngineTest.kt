@@ -12,6 +12,7 @@ import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.IOException
@@ -271,6 +272,84 @@ class KeelCioEngineTest {
         }
     }
 
+    /**
+     * K37 audit follow-up (ktor-cio variant): the chunked streaming path through
+     * [CioKeelStreamChannel] (which inherits [io.github.fukusaka.keel.server.ktor.AbstractPipelinedWriteChannel])
+     * must apply the high-water backpressure gate so a slow reader cannot drive
+     * unbounded `pendingWrites` growth on the server.
+     *
+     * Mirrors `K37-audit — flush suspends slow-reader producer beyond high-water mark`
+     * in `KeelByteWriteChannelTest`, but exercised through the ktor-cio adapter
+     * so the `:keel-server-ktor-cio` half of the audit is also Red-Green covered.
+     *
+     * Red-Green verification (manual): comment out the
+     * `if (!pipelinedChannel.isWritable) { pipelinedChannel.awaitFlushComplete() }`
+     * block in [io.github.fukusaka.keel.server.ktor.AbstractPipelinedWriteChannel.flush]
+     * and run this test — it must fail (`iterationsCompleted` reaches `chunkCount`).
+     * Restore the gate and the test passes.
+     */
+    @Test
+    fun `K37-audit — chunked streaming flush suspends slow-reader producer past high-water`() {
+        val writerStarted = CompletableDeferred<Unit>()
+        val iterationsCompleted = java.util.concurrent.atomic.AtomicInteger(0)
+        val chunkSize = 16 * 1024
+        val chunkCount = 500 // = 8 MB — overflows Linux loopback's auto-tuned rcvbuf max
+
+        withKeelCioServer({
+            routing {
+                get("/slow-pump") {
+                    writerStarted.complete(Unit)
+                    call.respondBytesWriter {
+                        repeat(chunkCount) { i ->
+                            writeFully(ByteArray(chunkSize))
+                            flush()
+                            iterationsCompleted.set(i + 1)
+                            // Give the EL time to run the dispatched emit task and
+                            // update isWritable before the next flush observes it.
+                            delay(SIMULATED_FRAME_GAP_MS)
+                        }
+                    }
+                }
+            }
+        }, /* keepAlive = */ false) { port ->
+            Socket().use { socket ->
+                // Pin client SO_RCVBUF small to keep the test independent of platform
+                // auto-tuning (Linux can otherwise grow rcvbuf into the multi-MB range
+                // on loopback and absorb the full payload).
+                socket.receiveBufferSize = SLOW_READER_RCVBUF
+                socket.soTimeout = SOCKET_READ_TIMEOUT_MS
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), SOCKET_READ_TIMEOUT_MS)
+                socket.getOutputStream().let { out ->
+                    out.write("GET /slow-pump HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+                    out.flush()
+                }
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                // Drain headers only; the body is intentionally left unread to
+                // simulate a Slowloris-style slow consumer.
+                while (reader.readLine()?.isNotEmpty() == true) {
+                    /* drop header line */
+                }
+
+                runBlocking { writerStarted.await() }
+
+                // With the gate the producer suspends after pendingBytes crosses
+                // the high-water mark; without it, all chunkCount iterations
+                // complete within ~chunkCount × SIMULATED_FRAME_GAP_MS.
+                Thread.sleep(SLOW_READER_PAUSE_MS)
+
+                val completed = iterationsCompleted.get()
+                assertTrue(
+                    completed < chunkCount,
+                    "ktor-cio: producer completed all $chunkCount iterations during the " +
+                        "slow-reader pause — chunked streaming high-water gate not engaging.",
+                )
+
+                // Drain the rest so the server-side close can settle cleanly.
+                socket.getInputStream().readBytes()
+            }
+        }
+    }
+
     private fun withKeelCioServer(
         module: suspend Application.() -> Unit,
         keepAlive: Boolean = true,
@@ -383,5 +462,29 @@ class KeelCioEngineTest {
         private const val TWO_HUNDRED = 200
         private const val TWO_NINETY_NINE = 299
         private const val HEX_RADIX = 16
+
+        /**
+         * Pause the slow-reader test holds without consuming the body. With the
+         * gate engaged the producer suspends well before this elapses; without
+         * the gate it completes all chunks in ~chunkCount × frame-gap ms.
+         */
+        private const val SLOW_READER_PAUSE_MS = 3_000L
+
+        /**
+         * Per-frame gap that approximates real chunked / SSE producer pacing.
+         * Gives the EL thread time to drain dispatched `emit` tasks and update
+         * `isWritable` before the producer's next `flush()`.
+         */
+        private const val SIMULATED_FRAME_GAP_MS = 5L
+
+        /** Read timeout for the slow-reader test's raw `Socket`. */
+        private const val SOCKET_READ_TIMEOUT_MS = 5_000
+
+        /**
+         * Client-side `SO_RCVBUF` for the slow-reader test. Small value so the test
+         * does not depend on platform receive-buffer auto-tuning (Linux loopback can
+         * otherwise grow rcvbuf into the multi-MB range and absorb the full payload).
+         */
+        private const val SLOW_READER_RCVBUF = 16 * 1024
     }
 }

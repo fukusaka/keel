@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `server-ktor-base`, `server-ktor-cio`, `core`: bound `pendingWrites` against slow readers — apply K37-style high-water gate to `AbstractPipelinedWriteChannel.flush` and the cio outbound pump; `@Volatile` on `AbstractIoTransport.writable` for the new off-EL read (#464)
 - `server-ktor-base`: fix Netty SSE / chunked streaming delivering a 0-byte body; `terminate()` now enqueues `writeTerminator` via `CoroutineDispatcher.dispatch` instead of `withContext` to preserve emit-task FIFO ordering in the EventLoop task queue (#461)
 - `server-ktor-cio`: close connection when the chunked streaming write channel is cancelled; `cancel()` without rethrowing skips the `0\r\n\r\n` trailer, desynchronising the client's HTTP parser if the keep-alive loop advances to the next request (#460)
 - `server-ktor`: close connection when the streaming write channel is cancelled; Ktor's exception path in `respondWriteChannelContent` calls `cancel(cause)` which skips `HttpBodyEnd`, leaving the encoder in `CHUNKED` mode and causing a keep-alive guard violation on the next request (#459)
