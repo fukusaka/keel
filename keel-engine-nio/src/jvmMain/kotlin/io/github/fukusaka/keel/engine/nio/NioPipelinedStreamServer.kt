@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -27,6 +28,7 @@ internal class NioPipelinedStreamServer(
     private val localAddr: SocketAddress,
     private val logger: Logger,
     private val config: BindConfig,
+    private val idleReadPolicy: IdleReadPolicy,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
 ) : PipelinedStreamServer {
 
@@ -82,7 +84,13 @@ internal class NioPipelinedStreamServer(
     ) {
         // Register client with worker's Selector (must be on worker thread).
         val clientKey = client.register(loop.selector, 0)
-        val transport = NioIoTransport(client, clientKey, loop, loop.allocator)
+        val transport = NioIoTransport(
+            client,
+            clientKey,
+            loop,
+            loop.allocator,
+            idleReadPolicy,
+        )
         val channel = NioPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

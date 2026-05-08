@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
@@ -68,6 +69,7 @@ internal class NioStreamServer(
     private val workerGroup: NioEventLoopGroup,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
+    private val idleReadPolicy: IdleReadPolicy,
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("NioStreamServer"),
 ) : StreamServer {
 
@@ -143,7 +145,13 @@ internal class NioStreamServer(
                 // One-time registration with the worker's Selector.
                 // Returns a cached SelectionKey for interestOps toggling.
                 val clientKey = workerLoop.registerChannel(client)
-                val transport = NioIoTransport(client, clientKey, workerLoop, workerLoop.allocator)
+                val transport = NioIoTransport(
+                    client,
+                    clientKey,
+                    workerLoop,
+                    workerLoop.allocator,
+                    idleReadPolicy,
+                )
                 val channel = NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
                 bindConfig.initializeConnection(channel)
                 return channel

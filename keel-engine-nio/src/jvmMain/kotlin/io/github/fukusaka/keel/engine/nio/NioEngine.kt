@@ -122,7 +122,16 @@ class NioEngine(
             val selectionKey = bossLoop.registerChannel(serverChannel)
 
             logger.debug { "Bound to $localAddr" }
-            return NioStreamServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            return NioStreamServer(
+                serverChannel,
+                selectionKey,
+                bossLoop,
+                workerGroup,
+                localAddr,
+                bindConfig,
+                config.idleReadPolicy,
+                logger,
+            )
         } catch (t: Throwable) {
             closeQuietly(serverChannel, "bindUnix cleanup")
             throw t
@@ -146,7 +155,16 @@ class NioEngine(
             val selectionKey = bossLoop.registerChannel(serverChannel)
 
             logger.debug { "Bound to $localAddr" }
-            return NioStreamServer(serverChannel, selectionKey, bossLoop, workerGroup, localAddr, bindConfig, logger)
+            return NioStreamServer(
+                serverChannel,
+                selectionKey,
+                bossLoop,
+                workerGroup,
+                localAddr,
+                bindConfig,
+                config.idleReadPolicy,
+                logger,
+            )
         } catch (t: Throwable) {
             closeQuietly(serverChannel, "bindInet cleanup")
             throw t
@@ -216,7 +234,13 @@ class NioEngine(
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to $remoteAddr" }
-        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, workerLoop.allocator)
+        val transport = NioIoTransport(
+            socketChannel,
+            selectionKey,
+            workerLoop,
+            workerLoop.allocator,
+            config.idleReadPolicy,
+        )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
@@ -274,7 +298,13 @@ class NioEngine(
         val localAddr = NioPipelinedChannel.toSocketAddress(socketChannel.localAddress)
 
         logger.debug { "Connected to $remoteAddr" }
-        val transport = NioIoTransport(socketChannel, selectionKey, workerLoop, workerLoop.allocator)
+        val transport = NioIoTransport(
+            socketChannel,
+            selectionKey,
+            workerLoop,
+            workerLoop.allocator,
+            config.idleReadPolicy,
+        )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
@@ -331,6 +361,7 @@ class NioEngine(
                 localAddr = localAddr ?: error("Failed to get local address"),
                 logger = logger,
                 config = config,
+                idleReadPolicy = this@NioEngine.config.idleReadPolicy,
                 pipelineInitializer = pipelineInitializer,
             )
             serverPipeline.start()
@@ -369,6 +400,7 @@ class NioEngine(
                 localAddr = localAddr,
                 logger = logger,
                 config = config,
+                idleReadPolicy = this@NioEngine.config.idleReadPolicy,
                 pipelineInitializer = pipelineInitializer,
             )
             serverPipeline.start()
