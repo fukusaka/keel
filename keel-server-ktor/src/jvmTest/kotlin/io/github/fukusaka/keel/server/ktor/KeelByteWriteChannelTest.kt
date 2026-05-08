@@ -11,6 +11,8 @@ import io.ktor.server.routing.routing
 import io.ktor.utils.io.ClosedWriteChannelException
 import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.IOException
@@ -296,6 +298,125 @@ class KeelByteWriteChannelTest {
         }
     }
 
+    /**
+     * K37 audit follow-up: [AbstractPipelinedWriteChannel.flush] must suspend on
+     * [PipelinedChannel.awaitFlushComplete] when [PipelinedChannel.isWritable] is `false`,
+     * preventing unbounded `pendingWrites` growth when the producer outruns the consumer.
+     *
+     * **Failure scenario (Red — pre-fix)**: Without the high-water gate, every `flush()`
+     * dispatches an `emit` task to the EventLoop and returns immediately. A producer that
+     * pumps `N` flush()es back-to-back fills the application-layer `pendingWrites` queue
+     * unboundedly while the EL is unable to drain — kernel `sndbuf` fills, then the client
+     * `rcvbuf` fills (with the client deliberately not reading), then `pendingWrites`
+     * accumulates the rest. The producer lambda completes in ~milliseconds regardless of
+     * how slow the client is. Each pending [io.github.fukusaka.keel.buf.IoBuf] holds
+     * allocator memory, so a single Slowloris-style slow reader can drive the server's
+     * memory footprint up by `total_response_size` per connection.
+     *
+     * **Post-fix (Green)**: After each `drainAndDispatch`, [flush] suspends on
+     * `awaitFlushComplete()` if `pendingBytes >= DEFAULT_HIGH_WATER_MARK` (64 KB). The
+     * producer cannot run ahead of the EL; throughput is paced by the slowest consumer.
+     *
+     * **Observable invariant**: with a client that reads the headers and then pauses
+     * without reading any body, `respondBytesWriter` must NOT complete its lambda within
+     * the pause window. Pre-fix the lambda returns in ~ms; post-fix it stays suspended
+     * until the client resumes.
+     *
+     * Red-Green verification (manual): comment out the `if (!pipelinedChannel.isWritable)
+     * { pipelinedChannel.awaitFlushComplete() }` block in [AbstractPipelinedWriteChannel.flush]
+     * and run this test — it must fail (`writerCompleted` becomes `true` during the pause).
+     * Restore the gate and the test passes.
+     */
+    @Test
+    fun `K37-audit — flush suspends slow-reader producer beyond high-water mark`() {
+        slowReaderBackpressureScenario(::withKeelServer, label = "NioEngine")
+    }
+
+    @Test
+    fun `K37-audit — flush suspends slow-reader producer beyond high-water mark on Netty`() {
+        slowReaderBackpressureScenario(::withKeelNettyServer, label = "NettyEngine")
+    }
+
+    private fun slowReaderBackpressureScenario(
+        serverRunner: (suspend Application.() -> Unit, Boolean, (Int) -> Unit) -> Unit,
+        label: String,
+    ) {
+        val writerStarted = CompletableDeferred<Unit>()
+        val iterationsCompleted = java.util.concurrent.atomic.AtomicInteger(0)
+        // Total bytes must exceed the combined bound of:
+        //   - Ktor BufferedByteWriteChannel internal buffer (small, ~4 KB)
+        //   - keel pendingWrites high-water mark (DEFAULT_HIGH_WATER_MARK = 64 KB)
+        //   - kernel SO_SNDBUF (~256 KB on macOS, may be larger on Linux)
+        //   - kernel SO_RCVBUF on the client side (~256 KB)
+        // Otherwise everything sits in OS buffers and the gate never fires.
+        //
+        // The per-iteration `delay()` simulates realistic per-frame application
+        // work (event generation, JSON encoding, etc.) and gives the EL time to
+        // run the dispatched `emit` task and latch [backpressureSignal] before
+        // the producer's next flush. Without this, a tight `repeat(N)` loop on
+        // `Dispatchers.IO` races ahead of the EL — the producer dispatches all
+        // N emit tasks before the first one runs, never observing the signal.
+        // Real SSE / chunked producers naturally pause between frames; this
+        // test approximates that.
+        val chunkSize = 16 * 1024
+        val chunkCount = 500 // = 8 MB total — overflows Linux loopback's auto-tuned rcvbuf max
+        val module: suspend Application.() -> Unit = {
+            routing {
+                get("/slow-pump") {
+                    writerStarted.complete(Unit)
+                    call.respondBytesWriter {
+                        repeat(chunkCount) { i ->
+                            writeFully(ByteArray(chunkSize))
+                            flush()
+                            iterationsCompleted.set(i + 1)
+                            delay(SIMULATED_FRAME_GAP_MS)
+                        }
+                    }
+                }
+            }
+        }
+
+        serverRunner(module, /* keepAlive = */ false) { port ->
+            Socket().use { socket ->
+                // Pin the client receive buffer small so the test does not depend on
+                // platform SO_RCVBUF defaults. Linux auto-tunes rcvbuf into the multi-MB
+                // range on loopback, which can absorb the entire test payload before the
+                // server's pendingWrites cross DEFAULT_HIGH_WATER_MARK; macOS defaults
+                // are ~256 KB which is already enough to need this clamp.
+                socket.receiveBufferSize = SLOW_READER_RCVBUF
+                socket.soTimeout = STREAM_TIMEOUT_MS
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", port), STREAM_TIMEOUT_MS)
+                socket.getOutputStream().let { out ->
+                    out.write("GET /slow-pump HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".toByteArray())
+                    out.flush()
+                }
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                readHttpHeaders(reader)
+
+                // The handler reaches respondBytesWriter; the producer is now pumping.
+                runBlocking { writerStarted.await() }
+
+                // Pause without reading any body bytes. With the gate the producer suspends
+                // before completing all chunks (after pendingBytes crosses high-water);
+                // without the gate it completes all chunkCount iterations within ~chunkCount
+                // × frame-gap ms.
+                Thread.sleep(SLOW_READER_PAUSE_MS)
+
+                val completed = iterationsCompleted.get()
+                assertTrue(
+                    completed < chunkCount,
+                    "$label: producer completed all $chunkCount iterations (= " +
+                        "${chunkCount * chunkSize / 1024} KB) during the slow-reader pause. " +
+                        "High-water backpressure gate not engaging. Slowloris-style slow " +
+                        "readers can drive unbounded pendingWrites memory growth.",
+                )
+
+                // Drain the response so the server-side connection close can complete cleanly.
+                socket.getInputStream().readBytes()
+            }
+        }
+    }
+
     // --- Helpers (duplicated from KeelEngineTest to keep this test file self-contained) ---
 
     private fun withKeelServer(
@@ -386,5 +507,30 @@ class KeelByteWriteChannelTest {
     private companion object {
         private const val STREAM_TIMEOUT_MS = 5_000
         private const val HEX_RADIX = 16
+
+        /**
+         * Pause window for `K37-audit — flush suspends slow-reader producer` tests.
+         * Must be long enough that a Red (gate-disabled) producer would have completed
+         * its full N × chunkSize dispatch loop, but short enough to keep the test fast.
+         * 1 second comfortably exceeds the few-millisecond Red-state runtime.
+         */
+        private const val SLOW_READER_PAUSE_MS = 3_000L
+
+        /**
+         * Per-frame gap inside the test producer. Approximates the natural
+         * pacing of realistic SSE / chunked producers (event generation, JSON
+         * encoding, etc.) and gives the EL thread time to drain dispatched
+         * `emit` tasks so the backpressure signal can latch ahead of the next
+         * `flush()`.
+         */
+        private const val SIMULATED_FRAME_GAP_MS = 5L
+
+        /**
+         * Client-side `SO_RCVBUF` for the slow-reader test. Pinned to a small value
+         * (16 KB) so the test does not depend on platform-specific receive-buffer
+         * auto-tuning — Linux loopback can otherwise grow rcvbuf into the multi-MB
+         * range, absorbing the full test payload before any server-side gate fires.
+         */
+        private const val SLOW_READER_RCVBUF = 16 * 1024
     }
 }
