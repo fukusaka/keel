@@ -518,4 +518,150 @@ class DefaultPipelineTest {
 
         assertEquals(listOf("error:event error"), errorHandler.events)
     }
+
+    // --- Inactive replay (late-installed handlers receive previous onInactive) ---
+
+    @Test
+    fun `addLast after notifyInactive replays onInactive on the new handler`() {
+        val pipeline = createPipeline()
+        pipeline.notifyInactive()
+
+        val late = RecordingInboundHandler()
+        pipeline.addLast("late", late)
+
+        assertEquals(listOf("inactive"), late.events)
+    }
+
+    @Test
+    fun `addFirst addBefore addAfter and replace all replay onInactive after inactive`() {
+        val pipeline = createPipeline()
+        pipeline.addLast("anchor", RecordingInboundHandler())
+        pipeline.notifyInactive()
+
+        val first = RecordingInboundHandler()
+        pipeline.addFirst("first", first)
+        assertEquals(listOf("inactive"), first.events)
+
+        val before = RecordingInboundHandler()
+        pipeline.addBefore("anchor", "before", before)
+        assertEquals(listOf("inactive"), before.events)
+
+        val after = RecordingInboundHandler()
+        pipeline.addAfter("anchor", "after", after)
+        assertEquals(listOf("inactive"), after.events)
+
+        val replacement = RecordingInboundHandler()
+        pipeline.replace("anchor", "replacement", replacement)
+        assertEquals(listOf("inactive"), replacement.events)
+    }
+
+    @Test
+    fun `addLast before notifyInactive does not replay — handler receives inactive once via normal dispatch`() {
+        val pipeline = createPipeline()
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+        pipeline.notifyInactive()
+
+        assertEquals(listOf("inactive"), handler.events)
+    }
+
+    @Test
+    fun `notifyInactive is idempotent — second call does not re-dispatch to existing handlers`() {
+        val pipeline = createPipeline()
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        pipeline.notifyInactive()
+        pipeline.notifyInactive()
+        pipeline.notifyInactive()
+
+        assertEquals(listOf("inactive"), handler.events)
+    }
+
+    @Test
+    fun `outbound-only handler does not receive replayed onInactive`() {
+        val pipeline = createPipeline()
+        pipeline.notifyInactive()
+
+        val outbound = RecordingOutboundHandler()
+        pipeline.addLast("out", outbound)
+
+        assertTrue(outbound.events.isEmpty())
+    }
+
+    @Test
+    fun `replayed onInactive exception is logged and does not abort handler installation`() {
+        val pipeline = createPipeline()
+        pipeline.notifyInactive()
+
+        val failing = object : InboundHandler {
+            override fun onInactive(ctx: PipelineHandlerContext) {
+                throw RuntimeException("replay error")
+            }
+        }
+        // Must not throw — logger swallows the replay exception and pipeline
+        // state stays consistent.
+        pipeline.addLast("failing", failing)
+
+        // Pipeline still accepts subsequent installs and replays for them.
+        val later = RecordingInboundHandler()
+        pipeline.addLast("later", later)
+        assertEquals(listOf("inactive"), later.events)
+    }
+
+    @Test
+    fun `handler removed then re-added after inactive receives onInactive again`() {
+        val pipeline = createPipeline()
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+        pipeline.notifyInactive()
+        // Normal dispatch fired once.
+        assertEquals(listOf("inactive"), handler.events)
+
+        pipeline.remove("h")
+        // Re-add the same handler instance — the replay should fire onInactive
+        // a second time because the inactive state has been observed.
+        pipeline.addLast("h", handler)
+
+        assertEquals(listOf("inactive", "inactive"), handler.events)
+    }
+
+    @Test
+    fun `handler installed during onInactive walk still observes inactive`() {
+        val pipeline = createPipeline()
+        val laterRef = arrayOfNulls<RecordingInboundHandler>(1)
+        val firstHandler = object : InboundHandler {
+            override fun onInactive(ctx: PipelineHandlerContext) {
+                // Install a new handler from inside onInactive — exercises
+                // the boundary where [notifyInactive] is mid-walk and the
+                // pipeline-level `inactiveObserved` flag has already been
+                // set. The replay path in [callHandlerAdded] guarantees the
+                // late handler is notified at least once.
+                //
+                // Note: the in-progress walk may also reach the new handler
+                // via [PipelineHandlerContext.propagateInactive], so handlers
+                // observing inactivation must remain idempotent. The
+                // canonical [io.github.fukusaka.keel.pipeline.SuspendBridgeHandler]
+                // satisfies this — it sets `eof = true` and resumes the
+                // pending continuation (no-op on a resumed continuation).
+                laterRef[0] = RecordingInboundHandler().also {
+                    pipeline.addLast("nested-late", it)
+                }
+                ctx.propagateInactive()
+            }
+        }
+        pipeline.addLast("first", firstHandler)
+
+        pipeline.notifyInactive()
+
+        // The nested handler must observe inactive at least once. Whether
+        // the in-progress walk also dispatches in addition to the replay is
+        // implementation-defined; both are acceptable as long as handlers
+        // are idempotent.
+        val events = laterRef[0]!!.events
+        assertTrue(
+            events.all { it == "inactive" } && events.isNotEmpty(),
+            "expected one or more 'inactive' events, got: $events",
+        )
+    }
 }
