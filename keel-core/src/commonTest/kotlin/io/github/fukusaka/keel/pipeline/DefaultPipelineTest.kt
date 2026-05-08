@@ -789,6 +789,124 @@ class DefaultPipelineTest {
         assertEquals("after-drain", handler.lastMsg)
     }
 
+    // --- Per-handler lifecycle replay (late-added handlers receive current state) ---
+    //
+    // These tests cover the generalisation of the existing
+    // `inactiveObserved` per-handler replay to all three lifecycle
+    // events (`onActive`, `onWritabilityChanged`, `onInactive`). A
+    // handler added after the chain has already received a lifecycle
+    // event must observe the current state so it can act correctly
+    // (e.g. a metrics handler joining a running channel needs to know
+    // it is active; a parser added after peer FIN needs to clean up).
+
+    @Test
+    fun `addLast after notifyActive replays onActive on the new handler`() {
+        val pipeline = createPipeline()
+        // First handler triggers drain inline; activeFired set during drain.
+        val first = RecordingInboundHandler()
+        pipeline.notifyActive()
+        pipeline.addLast("first", first)
+        // Sanity: first observed active via the drain replay.
+        assertEquals(listOf("active"), first.events)
+
+        // Late-added handler joins an already-active channel.
+        val late = RecordingInboundHandler()
+        pipeline.addLast("late", late)
+
+        assertEquals(listOf("active"), late.events)
+    }
+
+    @Test
+    fun `addLast after notifyActive plus writabilityChanged replays both with latest writability`() {
+        val pipeline = createPipeline()
+        pipeline.notifyActive()
+        // First handler installs the chain — drain replays active for it.
+        val first = RecordingInboundHandler()
+        pipeline.addLast("first", first)
+        // Update writability after drain; writabilityCurrent is set.
+        pipeline.notifyWritabilityChanged(true)
+        pipeline.notifyWritabilityChanged(false)
+        pipeline.notifyWritabilityChanged(true) // latest
+
+        // Late-added handler should see active + the latest writability.
+        val recorded = mutableListOf<String>()
+        val late = object : InboundHandler {
+            override val acceptedType: KClass<*> = Any::class
+            override val producedType: KClass<*> = Any::class
+            override fun onActive(ctx: PipelineHandlerContext) {
+                recorded.add("active")
+                ctx.propagateActive()
+            }
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                recorded.add("writability:$isWritable")
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+        pipeline.addLast("late", late)
+
+        assertEquals(listOf("active", "writability:true"), recorded)
+    }
+
+    @Test
+    fun `per-handler replay terminal-state-wins — late handler after active and inactive sees only inactive`() {
+        val pipeline = createPipeline()
+        // Install first handler so the chain is non-empty; drain runs
+        // with an empty journal (no pre-attach events) and the
+        // following notifyXxx are post-drain.
+        val first = RecordingInboundHandler()
+        pipeline.addLast("first", first)
+        pipeline.notifyActive()
+        pipeline.notifyInactive()
+        // Sanity: first observed both via head propagation.
+        assertEquals(listOf("active", "inactive"), first.events)
+
+        // Late handler joins now — channel is in terminal inactive
+        // state. Per-handler replay must observe `onInactive` only,
+        // because replaying `onActive` would confuse cleanup logic
+        // that conditions on isActive.
+        val late = RecordingInboundHandler()
+        pipeline.addLast("late", late)
+
+        assertEquals(listOf("inactive"), late.events)
+    }
+
+    @Test
+    fun `drain preserves causal order — pre-attach active then inactive both deliver to first handler`() {
+        val pipeline = createPipeline()
+        pipeline.notifyActive()
+        pipeline.notifyInactive()
+
+        // The first handler installs the chain; drain replays both
+        // events in causal order (active before inactive). This
+        // differs from the post-drain per-handler replay where
+        // terminal state suppresses `onActive` — at drain time, the
+        // chain has not yet observed any event, so the full sequence
+        // is delivered for protocol correctness (e.g. a handler
+        // tracking lifecycle counts must observe each transition).
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        assertEquals(listOf("active", "inactive"), handler.events)
+    }
+
+    @Test
+    fun `lifecycle replay does not double-fire on the handler that triggered drain`() {
+        val pipeline = createPipeline()
+        // Pre-attach: notifyActive + notifyWritabilityChanged
+        pipeline.notifyActive()
+        pipeline.notifyWritabilityChanged(true)
+
+        // First handler triggers drain inline; drain propagates active +
+        // writability through head (which reaches this handler).
+        // Per-handler replay must NOT fire again or the handler sees
+        // each event twice.
+        val first = RecordingInboundHandler()
+        pipeline.addLast("first", first)
+
+        // Single set of events — drain via head only.
+        assertEquals(listOf("active"), first.events)
+    }
+
     @Test
     fun `pre-attach journal does not drain on outbound-only addLast`() {
         val pipeline = createPipeline()
