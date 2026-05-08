@@ -182,17 +182,20 @@ internal class NwIoTransport(
                 onReadClosed?.invoke()
             }
             bytesRead > 0 -> {
-                if (readEnabled) {
-                    buf.writerIndex += bytesRead
-                    onRead?.invoke(buf)
-                } else {
-                    // Reachable only with [IdleReadPolicy.DETECT_PEER_CLOSE]:
-                    // receive is always armed, so peer-sent bytes during
-                    // an idle window are released without delivery. The
-                    // user has explicitly opted into draining these in
-                    // exchange for prompt peer-FIN detection.
-                    buf.release()
-                }
+                buf.writerIndex += bytesRead
+                // Always deliver via [onRead] in both modes. In
+                // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
+                // only reachable when the receive is armed (which only
+                // happens after `readEnabled = true`). In
+                // [IdleReadPolicy.DETECT_PEER_CLOSE] we deliver
+                // regardless of `readEnabled`; bytes that arrive while
+                // no user [InboundHandler] is installed are absorbed by
+                // `DefaultPipeline`'s pre-attach event journal and
+                // replayed when the first user handler is added — this
+                // trades engine-level data dropping for pipeline-level
+                // buffering, closing the data-loss caveat that
+                // DETECT_PEER_CLOSE previously documented.
+                onRead?.invoke(buf)
                 armRead()
             }
             else -> {
