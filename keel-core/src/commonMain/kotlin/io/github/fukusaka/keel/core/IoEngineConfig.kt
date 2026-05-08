@@ -39,10 +39,28 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  *                    blocking system resolver. Substitute with
  *                    [CachingDnsResolver] or a custom implementation
  *                    to share resolution across calls.
+ * @property idleReadPolicy Trade-off between peer-close detection and
+ *                          TCP back-pressure for the idle-read window
+ *                          (`PipelinedChannel.readEnabled = false`).
+ *                          Consulted only by engines that face an API
+ *                          structural constraint (engine-nio,
+ *                          engine-netty's NIO fallback transport,
+ *                          engine-nwconnection); other engines achieve
+ *                          both simultaneously and silently ignore this
+ *                          setting. See [IdleReadPolicy] for the engine
+ *                          applicability table and trade-off details.
+ *                          Defaults to [IdleReadPolicy.PRESERVE_BACKPRESSURE]
+ *                          to keep existing behaviour of the affected
+ *                          engines unchanged; opt in to
+ *                          [IdleReadPolicy.DETECT_PEER_CLOSE] for
+ *                          write-only push clients and accept the
+ *                          pre-attach data-loss caveat documented on
+ *                          [IdleReadPolicy].
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
     val threads: Int = 0,
     val loggerFactory: LoggerFactory = NoopLoggerFactory,
     val resolver: DnsResolver = DnsResolver.SYSTEM,
+    val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE,
 )
