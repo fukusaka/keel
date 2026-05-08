@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nio`: WARN + clear interest when a `SelectionKey` ready op fires without a registered callback; mirrors the K22 / K33 guards in `EpollEventLoop` / `KqueueEventLoop` (#465)
 - `server-ktor-base`, `server-ktor-cio`, `core`: bound `pendingWrites` against slow readers — apply K37-style high-water gate to `AbstractPipelinedWriteChannel.flush` and the cio outbound pump; `@Volatile` on `AbstractIoTransport.writable` for the new off-EL read (#464)
 - `server-ktor-base`: fix Netty SSE / chunked streaming delivering a 0-byte body; `terminate()` now enqueues `writeTerminator` via `CoroutineDispatcher.dispatch` instead of `withContext` to preserve emit-task FIFO ordering in the EventLoop task queue (#461)
 - `server-ktor-cio`: close connection when the chunked streaming write channel is cancelled; `cancel()` without rethrowing skips the `0\r\n\r\n` trailer, desynchronising the client's HTTP parser if the keep-alive loop advances to the next request (#460)
