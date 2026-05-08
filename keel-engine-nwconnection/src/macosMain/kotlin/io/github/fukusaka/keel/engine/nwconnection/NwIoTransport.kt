@@ -43,6 +43,40 @@ import platform.darwin.dispatch_queue_t
  * Each read callback allocates a buffer, fills it, and invokes [onRead].
  * EOF/error invokes [onReadClosed].
  *
+ * **Contract gap — peer-FIN with `readEnabled = false` is not detected**:
+ * NWConnection has no event-readiness API analogous to kqueue's `EV_EOF`
+ * flag delivered separately from data — peer-FIN is observable only
+ * through an active `nw_connection_receive` completion (`is_complete =
+ * true` with `len = 0`). The lazy-arm semantic above (arm receive only
+ * when `readEnabled` flips to `true`) means a write-only push client that
+ * holds `readEnabled = false` for the entire connection lifetime cannot
+ * observe peer FIN through [onReadClosed]; the connection sits idle
+ * until either the next write attempt fails or `SO_KEEPALIVE` declares
+ * the peer dead (default ~2 hours).
+ *
+ * Always-arming a receive at construction would expose two problems
+ * that are unique to NWConnection's push-model API and that the
+ * pull-model engines (kqueue / epoll / netty native) avoid:
+ *
+ * 1. `nw_connection_receive` *consumes* data from the framework receive
+ *    buffer — there is no equivalent of "tell me when data is ready
+ *    without taking it" the way `EVFILT_READ` ready notification works.
+ *    Always-arm therefore drains kernel-level TCP back-pressure.
+ * 2. Data delivered before the [PipelinedChannel.ensureBridge]
+ *    `SuspendBridgeHandler` install lands at a pipeline that has no
+ *    inbound handler yet, and `DefaultPipeline.propagateRead`'s
+ *    `findNextInbound() ?: return` path silently drops the buffer
+ *    (and its bytes). This breaks pull-mode `read(buf)` flows that
+ *    rely on data accumulating between accept and the first read.
+ *
+ * This contract gap is the same shape as the engine-nio / engine-netty
+ * NIO fallback gap (Java NIO `Selector` API constraint — `OP_READ`
+ * maps to `POLLIN` only, never `POLLRDHUP`); the planned `NioReadMode`
+ * follow-up will expose a per-engine config to opt into peer-FIN
+ * detection at the cost of TCP back-pressure (and, for nwconnection,
+ * the ensureBridge race), and will cover engine-nio / engine-netty NIO
+ * fallback / engine-nwconnection uniformly.
+ *
  * **Write path**: Sends outbound [IoBuf] writes via `nw_connection_send`.
  * NWConnection handles EAGAIN internally — `nw_connection_send` accepts data
  * immediately and delivers completion asynchronously via a dispatch queue callback.
