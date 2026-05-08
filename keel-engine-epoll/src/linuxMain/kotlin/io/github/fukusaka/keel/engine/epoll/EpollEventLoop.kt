@@ -26,6 +26,7 @@ import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
+import platform.linux.EPOLLRDHUP
 import platform.posix.EAGAIN
 import platform.posix.EEXIST
 import platform.posix.EINTR
@@ -193,8 +194,36 @@ internal class EpollEventLoop(
      * implementation dispatch read vs. write callbacks without separate
      * sub-listener objects.
      */
-    fun interface FdReadyListener {
+    /**
+     * Listener for epoll readiness events on a registered fd.
+     *
+     * Two callbacks separate the orthogonal concerns of normal readiness and
+     * peer-close detection. Listeners that only care about one side leave the
+     * other as the default no-op:
+     * - `EpollPipelinedStreamServer` overrides only [onReady] — server fd
+     *   teardown is driven by `server.close()` rather than peer-FIN.
+     * - `EpollIoTransport` overrides both — the EOF path is what fires
+     *   `onReadClosed` to user code even when read interest was never armed
+     *   (`readEnabled = false` write-only push client).
+     *
+     * The dispatch contract is documented on [dispatchReady]: for combined
+     * data-and-EOF events the engine calls [onReady] first (so the listener
+     * can drain the final bytes) and then [onPeerClosed]. Mirrors the shape
+     * established on `KqueueEventLoop`.
+     */
+    interface FdReadyListener {
+        /** Ready for [interest]: data available (READ), space available (WRITE). */
         fun onReady(interest: Interest)
+
+        /**
+         * Peer FIN/RST observed via `EPOLLHUP` / `EPOLLERR` / `EPOLLRDHUP`.
+         * Default no-op — only listeners that need to surface peer-close to
+         * higher layers override (e.g. transports must fire `onReadClosed`).
+         *
+         * The engine unconditionally removes the epoll interest after this
+         * returns, so the listener does not need to disarm explicitly.
+         */
+        fun onPeerClosed(interest: Interest) {}
     }
 
     init {
@@ -436,7 +465,13 @@ internal class EpollEventLoop(
      */
     fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
         val events = when (interest) {
-            Interest.READ -> EPOLLIN
+            // Request EPOLLRDHUP alongside EPOLLIN so peer-shutdown of the
+            // read side (graceful FIN) is delivered explicitly. Without it,
+            // the kernel delivers EPOLLIN on FIN (read returns 0) but
+            // EPOLLHUP only fires for full hangup (both directions closed).
+            // dispatchReady's eofFlag check covers HUP / ERR / RDHUP, so the
+            // listener's onPeerClosed is invoked on graceful peer-FIN.
+            Interest.READ -> EPOLLIN or EPOLLRDHUP
             Interest.WRITE -> EPOLLOUT
         }
         val key = registrationKey(fd, interest)
@@ -555,11 +590,20 @@ internal class EpollEventLoop(
                 val evFlags = ev.events
                 val readReady = (evFlags and (EPOLLIN or EPOLLERR or EPOLLHUP)) != 0
                 val writeReady = (evFlags and EPOLLOUT) != 0
+                // Surface peer-FIN / peer-RST so listeners can fire
+                // onReadClosed even when read interest was never armed by user
+                // code (`PipelinedChannel.readEnabled = false`). EPOLLRDHUP
+                // is the explicit read-side hangup; EPOLLHUP / EPOLLERR are
+                // catch-all hangup / error states.
+                val eofFlag = (evFlags and (EPOLLHUP or EPOLLERR or EPOLLRDHUP)) != 0
                 if (readReady) {
-                    dispatchReady(fd, Interest.READ)
+                    dispatchReady(fd, Interest.READ, eofFlag)
                 }
                 if (writeReady) {
-                    dispatchReady(fd, Interest.WRITE)
+                    // EOF flag also propagates to WRITE dispatch so a write
+                    // callback can choose to surface peer-close, but the
+                    // primary EOF path is via READ.
+                    dispatchReady(fd, Interest.WRITE, eofFlag)
                 }
             }
         }
@@ -648,20 +692,34 @@ internal class EpollEventLoop(
      * Without this, a stale interest left in [fdEvents] would cause a
      * level-triggered busy loop until the fd is closed.
      */
-    private fun dispatchReady(fd: Int, interest: Interest) {
+    private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
         assertInEventLoop("EpollEventLoop.dispatchReady")
         val key = registrationKey(fd, interest)
         val cb = withRegLock { callbackRegistrations.remove(key) }
         if (cb != null) {
+            // Order: drain (onReady) before close (onPeerClosed) for combined
+            // data-and-EOF events. For pure EOF the listener detects it via
+            // read syscall returning 0 inside onReady; the eofFlag dispatch
+            // path is the engine-side fallback when read interest was never
+            // armed (`readEnabled = false` write-only push client). Mirrors
+            // the dispatch shape established on KqueueEventLoop.
             cb.onReady(interest)
-            // If the callback did not re-register during onReady (e.g., a WRITE
-            // callback after a successful flush that does not re-arm), remove the
-            // interest from epoll to prevent a stale level-triggered busy loop.
-            // READ callbacks always re-arm via armRead(), so this branch is
-            // normally skipped (no epoll_ctl syscall on the read hot path).
-            val reRegistered = withRegLock { callbackRegistrations[key] != null }
-            if (!reRegistered) {
+            if (eofFlag) {
+                cb.onPeerClosed(interest)
+                // EOF path always removes the filter; the listener cannot
+                // re-register meaningfully (the connection is ending).
                 removeInterestFromEpoll(fd, interest)
+            } else {
+                // Stale-filter cleanup path: if the callback did not
+                // re-register during onReady (e.g., a WRITE callback after
+                // a successful flush that does not re-arm), remove the
+                // interest from epoll to prevent a stale level-triggered
+                // busy loop. READ callbacks always re-arm via armRead() in
+                // the normal flow.
+                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                if (!reRegistered) {
+                    removeInterestFromEpoll(fd, interest)
+                }
             }
         } else {
             // Suspend path: pop one waiter from the FIFO chain. If

@@ -44,6 +44,16 @@ class EpollEventLoopSeamTest {
 
     private val logger = NoopLoggerFactory.logger("EpollEventLoopSeamTest")
 
+    /**
+     * No-op `FdReadyListener` for tests that only need the registration side
+     * effect (epoll_ctl call, callback bookkeeping). Replaces the SAM-lambda
+     * style retired when [EpollEventLoop.FdReadyListener] gained an
+     * `onPeerClosed` default-no-op method.
+     */
+    private object NoOpListener : EpollEventLoop.FdReadyListener {
+        override fun onReady(interest: EpollEventLoop.Interest) { /* no-op */ }
+    }
+
     // --- init failure paths ---
 
     @Test
@@ -126,7 +136,7 @@ class EpollEventLoopSeamTest {
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             // Trigger addOrModifyEpoll via registerCallback (fd 2000, READ).
-            el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ -> /* noop */ }
+            el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
             val ctl = fake.ctlCalls
             // init ADD (wakeup, 1001), then ADD (2000) -> EEXIST, then MOD (2000).
             assertEquals(3, ctl.size)
@@ -209,9 +219,11 @@ class EpollEventLoopSeamTest {
         }
         val el = EpollEventLoop(logger, syscallOps = fake)
         var readCalled = false
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ ->
-            readCalled = true
-        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                readCalled = true
+            }
+        })
         el.loop()
         assertTrue(readCalled, "READ callback must fire on EPOLLHUP even without EPOLLIN")
     }
@@ -227,9 +239,11 @@ class EpollEventLoopSeamTest {
         }
         val el = EpollEventLoop(logger, syscallOps = fake)
         var readCalled = false
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { _ ->
-            readCalled = true
-        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                readCalled = true
+            }
+        })
         el.loop()
         assertTrue(readCalled, "READ callback must fire on EPOLLERR even without EPOLLIN")
     }
@@ -245,9 +259,11 @@ class EpollEventLoopSeamTest {
         }
         val el = EpollEventLoop(logger, syscallOps = fake)
         var writeCalled = false
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
-            writeCalled = true
-        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE, listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                writeCalled = true
+            }
+        })
         el.loop()
         assertFalse(writeCalled, "WRITE callback must NOT fire on EPOLLHUP alone")
     }
@@ -273,10 +289,12 @@ class EpollEventLoopSeamTest {
         var writeCalled = false
         // Register a WRITE callback that intentionally does NOT re-arm,
         // simulating a flush that completed successfully (no more EAGAIN).
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ ->
-            writeCalled = true
-            // Deliberately NOT calling registerCallback again.
-        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE, listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                writeCalled = true
+                // Deliberately NOT calling registerCallback again.
+            }
+        })
         el.loop()
         assertTrue(writeCalled, "WRITE callback must be invoked")
         // After a no-re-arm WRITE callback, epoll_ctl(MOD) must be called to
@@ -353,7 +371,7 @@ class EpollEventLoopSeamTest {
         val el = EpollEventLoop(logger = recordingWarnLogger(warns), syscallOps = fake)
         // Register then immediately unregister: interest stays armed in epoll
         // (unregisterCallback removes from callbackRegistrations but not fdEvents).
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE) { _ -> }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE, listener = NoOpListener)
         el.unregisterCallback(fd = 2000, interest = EpollEventLoop.Interest.WRITE)
         el.loop()
         assertEquals(1, warns.size, "stale event must produce exactly one WARN")
@@ -379,11 +397,15 @@ class EpollEventLoopSeamTest {
         val el = EpollEventLoop(logger, syscallOps = fake)
         var readCalled = false
         // READ callback that immediately re-arms (simulates armRead in the pipeline).
-        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ) { interest ->
-            readCalled = true
-            // Re-arm: mirrors what EpollIoTransport.armRead() does.
-            el.registerCallback(fd = 2000, interest = interest, listener = { })
-        }
+        el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = object : EpollEventLoop.FdReadyListener {
+            override fun onReady(interest: EpollEventLoop.Interest) {
+                readCalled = true
+                // Re-arm: mirrors what EpollIoTransport.armRead() does.
+                el.registerCallback(fd = 2000, interest = interest, listener = object : EpollEventLoop.FdReadyListener {
+                    override fun onReady(interest: EpollEventLoop.Interest) { /* no-op */ }
+                })
+            }
+        })
         el.loop()
         assertTrue(readCalled)
         // Re-registration during onReady() means removeInterestFromEpoll is not

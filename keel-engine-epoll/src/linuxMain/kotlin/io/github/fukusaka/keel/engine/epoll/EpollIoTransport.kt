@@ -56,6 +56,24 @@ internal class EpollIoTransport(
         }
     }
 
+    /**
+     * Peer-FIN / peer-RST observed via `EPOLLHUP` / `EPOLLERR` / `EPOLLRDHUP`.
+     * Surfaces the close to the user via [onReadClosed] regardless of
+     * [readEnabled] — a write-only push client must not silently linger in
+     * CLOSE-WAIT until the next write attempt or `SO_KEEPALIVE` timer.
+     *
+     * Mirrors the path on `KqueueIoTransport`: the engine calls this *after*
+     * [onReady], so for combined data-and-EOF events [onReadable] has already
+     * had a chance to drain pending bytes. Calling [onReadClosed] twice is
+     * benign — the cancel guards in the connection handlers (PR #459 / #460)
+     * are idempotent.
+     */
+    override fun onPeerClosed(interest: EpollEventLoop.Interest) {
+        if (interest != EpollEventLoop.Interest.READ) return
+        if (!opened) return
+        onReadClosed?.invoke()
+    }
+
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     // Parallel primitive arrays reused across [flushGather] calls to
@@ -77,8 +95,26 @@ internal class EpollIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
+            // Read is armed at construction for EOF detection. The setter
+            // only re-arms if the dispatch path stopped re-registering due to
+            // back-pressure (data arrived while readEnabled was false).
             if (value && opened) armRead()
         }
+
+    init {
+        // Arm EPOLLIN at construction so peer-FIN / peer-RST is
+        // surfaced via EPOLLHUP / EPOLLRDHUP / EPOLLERR even when the user keeps
+        // readEnabled = false for the entire connection lifetime (e.g. write-only
+        // push client, one-direction logger, monitoring metrics sender).
+        // Without this, epoll has no entry for the fd, no event of any kind is
+        // delivered, and the connection sits in CLOSE-WAIT until the next write
+        // attempt or the SO_KEEPALIVE timer (~2 hours by default). The arm is
+        // cheap (one EPOLL_CTL_ADD syscall); the dispatch path tolerates fire-
+        // without-data via the readEnabled-false back-pressure handling in
+        // onReadable, and EOF dispatch is via the separate onPeerClosed.
+        @Suppress("LeakingThis")
+        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ, this)
+    }
 
     private fun armRead() {
         if (!opened) return
@@ -87,12 +123,25 @@ internal class EpollIoTransport(
 
     private fun onReadable() {
         if (!opened) return
+
+        // Back-pressure path: if data is ready but the user has disabled
+        // read, do not consume the data and do not re-arm. dispatchReady's
+        // "no re-register" branch will MOD-out EPOLLIN so epoll does not
+        // busy-loop. The kernel rcvbuf retains the data and applies back-
+        // pressure to the peer (TCP window). The setter's armRead() call
+        // re-registers EPOLLIN when readEnabled is flipped back to true.
+        // Note: peer-close detection on this path is handled by [onPeerClosed]
+        // — the engine calls it separately when EPOLLHUP / EPOLLRDHUP /
+        // EPOLLERR is observed, so we do not need to detect EOF here when
+        // readEnabled is false.
+        if (!readEnabled) return
+
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
                 buf.writerIndex += result.bytes
-                onRead?.invoke(buf)
+                onRead?.invoke(buf) ?: buf.release()
                 armRead()
             }
             ReadResult.Eof -> {
