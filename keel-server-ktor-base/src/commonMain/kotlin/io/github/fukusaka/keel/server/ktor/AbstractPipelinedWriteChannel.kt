@@ -91,6 +91,16 @@ abstract class AbstractPipelinedWriteChannel(
         if (cause != null) throw wrapClosedCause(cause)
         if (closed.load()) return
         drainAndDispatch()
+        // Backpressure: if pendingWrites have piled past the high-water mark, suspend
+        // until the transport drains them. Without this gate a SSE / chunked producer
+        // that calls flush() per frame can outpace the EventLoop's write-readiness
+        // processing — the EL keeps servicing emit tasks and never reaches
+        // kevent(2) / epoll_wait(2), so write-readiness is observed late and
+        // throughput collapses. Mirrors the K37 fix on the upgrade pump
+        // (KeelApplicationResponse.pumpOutputToRaw).
+        if (!pipelinedChannel.isWritable) {
+            pipelinedChannel.awaitFlushComplete()
+        }
     }
 
     @InternalAPI

@@ -155,6 +155,22 @@ abstract class AbstractIoTransport(
      * flush (partial or complete). Drives [isWritable] state transitions.
      */
     protected var pendingBytes: Int = 0
+
+    /**
+     * Per-transport writability flag, flipped by [updatePendingBytes] when
+     * [pendingBytes] crosses [IoTransport.DEFAULT_HIGH_WATER_MARK] (→ `false`)
+     * or [IoTransport.DEFAULT_LOW_WATER_MARK] (→ `true`).
+     *
+     * `@Volatile` because [isWritable] is read off-EL by the
+     * `AbstractPipelinedWriteChannel.flush` backpressure gate (running on
+     * Ktor's `Dispatchers.IO`). Without the annotation a JIT-cached `true`
+     * could keep the producer dispatching past the high-water mark even
+     * after the EL flipped the flag to `false`, defeating the gate. The
+     * write side stays single-threaded (only the EL calls
+     * [updatePendingBytes]) so a plain `@Volatile` is sufficient — no
+     * atomic CAS is needed.
+     */
+    @Volatile
     private var writable: Boolean = true
     override val isWritable: Boolean get() = writable
 
