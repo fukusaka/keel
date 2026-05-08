@@ -120,18 +120,19 @@ internal class NioIoTransport(
         val n = socketChannel.read(bb)
         when {
             n > 0 -> {
-                if (readEnabled) {
-                    buf.writerIndex += n
-                    onRead?.invoke(buf)
-                } else {
-                    // Reachable only with [IdleReadPolicy.DETECT_PEER_CLOSE]:
-                    // OP_READ stays armed while readEnabled = false, so the
-                    // selector keeps firing readable events on incoming
-                    // data. The user has explicitly opted into draining
-                    // these bytes (in exchange for prompt peer-FIN
-                    // detection), so we release without delivering.
-                    buf.release()
-                }
+                buf.writerIndex += n
+                // Always deliver via [onRead] in both modes. In
+                // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
+                // only reachable when `readEnabled = true` (otherwise
+                // OP_READ is not armed). In [IdleReadPolicy.DETECT_PEER_CLOSE]
+                // we deliver regardless of `readEnabled`; bytes that
+                // arrive while no user [InboundHandler] is installed
+                // are absorbed by `DefaultPipeline`'s pre-attach event
+                // journal and replayed when the first user handler is
+                // added — this trades engine-level data dropping for
+                // pipeline-level buffering, closing the data-loss
+                // caveat that DETECT_PEER_CLOSE previously documented.
+                onRead?.invoke(buf)
                 armRead()
             }
             n == -1 -> {

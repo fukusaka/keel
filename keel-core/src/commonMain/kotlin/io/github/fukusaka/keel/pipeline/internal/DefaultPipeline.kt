@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.pipeline.internal
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.OutboundHandler
@@ -11,6 +12,9 @@ import io.github.fukusaka.keel.pipeline.PipelineHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.PipelineTypeException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Default [Pipeline] implementation using a doubly-linked list of handler contexts.
@@ -40,6 +44,14 @@ internal class DefaultPipeline(
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
 
     /**
+     * Dispatcher captured from the underlying [IoTransport]. Used by the
+     * pre-attach event journal to schedule [drainPreAttachJournal] on the
+     * next dispatcher tick after the first user [InboundHandler] is
+     * added — see the [PreAttachJournal] doc below for the rationale.
+     */
+    private val ioDispatcher: CoroutineDispatcher = transport.ioDispatcher
+
+    /**
      * Tracks whether [notifyInactive] has been observed at the pipeline level.
      *
      * Set once on the first [notifyInactive] call. Used by [callHandlerAdded]
@@ -54,6 +66,86 @@ internal class DefaultPipeline(
      * EventLoop-thread-only by contract).
      */
     private var inactiveObserved: Boolean = false
+
+    /**
+     * Tracks whether `head.invokeOnInactive` has actually propagated
+     * through the inbound chain. Distinct from [inactiveObserved],
+     * which only records "the engine reported inactive". Per-handler
+     * inactive replay in [callHandlerAdded] fires only when both flags
+     * are true — i.e. inactive arrived *and* the chain has already been
+     * notified, so the late-added handler genuinely missed the
+     * propagation. When inactive arrives during the pre-attach window
+     * (`inactiveObserved` set but [drainPreAttachJournal] has not yet
+     * fired the head), the drain will deliver `onInactive` through
+     * the now-assembled chain and the per-handler replay would
+     * otherwise double-fire.
+     */
+    private var inactiveHeadFired: Boolean = false
+
+    /**
+     * Pre-attach event journal: holds inbound events that arrive before
+     * the pipeline acquires its first user [InboundHandler] and replays
+     * them once such a handler is installed.
+     *
+     * **Why**: when an engine arms its read primitive eagerly (e.g.
+     * `IdleReadPolicy.DETECT_PEER_CLOSE` on `engine-nio` /
+     * `engine-netty` NIO fallback / `engine-nwconnection`, where the
+     * underlying API forces an active read to observe peer FIN), bytes
+     * the peer sends between channel construction and the first
+     * [PipelinedChannel.ensureBridge] / `pipeline.addLast` call would
+     * otherwise reach [TailHandler.onRead] and be released with a `WARN`
+     * log. The journal captures those events and drains them onto the
+     * (now fully-constructed) pipeline after the user's synchronous
+     * setup block completes.
+     *
+     * **Drain timing — dispatcher tick, not first addX**: a synchronous
+     * codec-stack setup typically calls `addLast(decoder)`,
+     * `addLast(aggregator)`, `addLast(handler)` back-to-back. Draining
+     * the journal on the *first* `addX` would replay events through a
+     * partial pipeline (decoder → tail), bypassing aggregator and
+     * handler that are added afterwards in the same call site. To avoid
+     * this, the first user-inbound `addX` schedules the drain via
+     * [ioDispatcher] (`dispatch(EmptyCoroutineContext, Runnable {
+     * drainPreAttachJournal() })`); the current synchronous block
+     * (containing the remaining `addX` calls) runs to completion before
+     * the dispatcher picks up the drain task, so replay sees the fully
+     * assembled handler chain. This is the keel equivalent of Netty's
+     * `ChannelInitializer` deferred-event model.
+     *
+     * **Per-event replay strategy**:
+     * - `notifyActive` → flag (idempotent).
+     * - `notifyRead(msg)` → bounded queue (each message matters; cap at
+     *   [MAX_PRE_ATTACH_READS] elements; overflow releases the oldest
+     *   and logs `WARN` — overflow indicates the user's handler-add
+     *   path is too slow relative to peer write rate).
+     * - `notifyReadComplete` → flag (consecutive completes coalesce
+     *   into one drain-time invocation).
+     * - `notifyWritabilityChanged(b)` → latest-only (stateful: only
+     *   the most recent value is meaningful).
+     * - `notifyError(cause)` → bounded queue (errors retained;
+     *   [MAX_PRE_ATTACH_ERRORS] cap protects against pathological
+     *   error storms).
+     * - `notifyUserEvent(event)` → bounded queue ([MAX_PRE_ATTACH_USER_EVENTS]).
+     * - `notifyInactive` → reuses the existing [inactiveObserved] flag;
+     *   per-handler replay through [callHandlerAdded] continues to
+     *   apply. Drain time invokes `head.invokeOnInactive` so the entire
+     *   chain processes the event, not just the first handler.
+     *
+     * **Single-thread invariant**: all journal mutations happen on the
+     * EventLoop thread (engine `notifyXxx` callbacks and pipeline
+     * `addX` are both EventLoop-bound by contract). The drain task is
+     * dispatched onto the same dispatcher, so it runs on the EventLoop
+     * thread serially with subsequent events.
+     */
+    private var drainScheduled: Boolean = false
+    private var preAttachJournalDrained: Boolean = false
+
+    private val pendingReads: ArrayDeque<Any> = ArrayDeque()
+    private var pendingActive: Boolean = false
+    private var pendingReadComplete: Boolean = false
+    private var pendingWritability: Boolean? = null
+    private val pendingUserEvents: ArrayDeque<Any> = ArrayDeque()
+    private val pendingErrors: ArrayDeque<Throwable> = ArrayDeque()
 
     init {
         head.next = tail
@@ -147,17 +239,47 @@ internal class DefaultPipeline(
     // --- Inbound entry ---
 
     override fun notifyActive(): Pipeline {
-        head.invokeOnActive()
+        if (preAttachJournalDrained) {
+            head.invokeOnActive()
+        } else {
+            // Idempotent flag — multiple notifyActive calls coalesce.
+            pendingActive = true
+        }
         return this
     }
 
     override fun notifyRead(msg: Any): Pipeline {
-        head.invokeOnRead(msg)
+        if (preAttachJournalDrained) {
+            head.invokeOnRead(msg)
+        } else {
+            if (pendingReads.size >= MAX_PRE_ATTACH_READS) {
+                // Overflow: release the oldest queued message to make room.
+                // Stream protocols cannot recover from out-of-order delivery,
+                // so the WARN here flags a likely user-side bug — handler
+                // add is too slow relative to peer write rate, and peer
+                // bytes are being lost.
+                val dropped = pendingReads.removeFirst()
+                logger.warn {
+                    "Pre-attach read journal overflow (cap=$MAX_PRE_ATTACH_READS); released oldest " +
+                        "${dropped::class.simpleName} to enqueue new message — install user inbound handler " +
+                        "earlier or pre-allocate the codec stack inside BindConfig.initializeConnection"
+                }
+                ReferenceCountUtil.safeRelease(dropped)
+            }
+            pendingReads.addLast(msg)
+        }
         return this
     }
 
     override fun notifyReadComplete(): Pipeline {
-        head.invokeOnReadComplete()
+        if (preAttachJournalDrained) {
+            head.invokeOnReadComplete()
+        } else {
+            // Coalesce consecutive readComplete events into a single
+            // drain-time invocation — handlers treat readComplete as a
+            // best-effort "batch boundary" hint, not a per-message signal.
+            pendingReadComplete = true
+        }
         return this
     }
 
@@ -175,22 +297,52 @@ internal class DefaultPipeline(
         // (e.g. inside [PipelinedChannel.read]) would be lost — the bridge
         // would suspend forever waiting for `eof = true`.
         inactiveObserved = true
-        head.invokeOnInactive()
+        if (preAttachJournalDrained) {
+            inactiveHeadFired = true
+            head.invokeOnInactive()
+        }
+        // Pre-attach: the inactiveObserved flag is sufficient; drain replays
+        // it via head.invokeOnInactive at drain time and sets
+        // [inactiveHeadFired].
         return this
     }
 
     override fun notifyError(cause: Throwable): Pipeline {
-        head.invokeOnError(cause)
+        if (preAttachJournalDrained) {
+            head.invokeOnError(cause)
+        } else {
+            if (pendingErrors.size < MAX_PRE_ATTACH_ERRORS) {
+                pendingErrors.addLast(cause)
+            } else {
+                logger.warn(cause) {
+                    "Pre-attach error journal overflow (cap=$MAX_PRE_ATTACH_ERRORS); dropping additional error"
+                }
+            }
+        }
         return this
     }
 
     override fun notifyUserEvent(event: Any): Pipeline {
-        head.invokeOnUserEvent(event)
+        if (preAttachJournalDrained) {
+            head.invokeOnUserEvent(event)
+        } else {
+            if (pendingUserEvents.size < MAX_PRE_ATTACH_USER_EVENTS) {
+                pendingUserEvents.addLast(event)
+            } else {
+                logger.warn { "Pre-attach user-event journal overflow (cap=$MAX_PRE_ATTACH_USER_EVENTS); dropping" }
+            }
+        }
         return this
     }
 
     override fun notifyWritabilityChanged(isWritable: Boolean): Pipeline {
-        head.invokeOnWritabilityChanged(isWritable)
+        if (preAttachJournalDrained) {
+            head.invokeOnWritabilityChanged(isWritable)
+        } else {
+            // Latest-only — only the most recent value is meaningful when
+            // a handler joins.
+            pendingWritability = isWritable
+        }
         return this
     }
 
@@ -237,6 +389,32 @@ internal class DefaultPipeline(
     }
 
     private fun callHandlerAdded(ctx: DefaultContext) {
+        // Schedule the pre-attach journal drain on the *first* user
+        // [InboundHandler] addition. Subsequent addX calls in the same
+        // synchronous block (e.g. codec stack setup adding decoder +
+        // aggregator + handler back-to-back) must accumulate before the
+        // drain fires, which is why the drain is deferred onto
+        // [ioDispatcher] rather than executed inline. See the journal
+        // KDoc above for the full rationale.
+        var firedDrainInline = false
+        if (!preAttachJournalDrained && !drainScheduled && ctx.handler is InboundHandler) {
+            drainScheduled = true
+            // Defer drain via the dispatcher so any addX calls remaining
+            // in the current synchronous block (e.g. codec stack setup
+            // adding decoder + aggregator + handler back-to-back) all
+            // accumulate before drain replays through the assembled
+            // chain. Test transports backed by `Dispatchers.Unconfined`
+            // — which throws from `dispatch()` by design (Unconfined is
+            // meant for inline execution) — fall back to inline drain;
+            // unit tests typically add a single handler before
+            // `notifyXxx`, so partial-chain replay does not arise.
+            if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+                ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
+            } else {
+                drainPreAttachJournal()
+                firedDrainInline = true
+            }
+        }
         try {
             ctx.handler.handlerAdded(ctx)
             // Replay a previously-observed inactivation so handlers installed
@@ -246,7 +424,19 @@ internal class DefaultPipeline(
             // the always-armed read filter (kqueue `EV_EOF`, epoll
             // `EPOLLRDHUP`) before the user code calls `read` would
             // otherwise leave the bridge waiting forever for `eof = true`.
-            if (inactiveObserved) {
+            if (inactiveObserved && inactiveHeadFired && !firedDrainInline) {
+                // The chain has already received head.invokeOnInactive
+                // (either via notifyInactive after drain, or via drain
+                // itself). Replay onInactive on this lone late-added
+                // handler so it does not miss the lifecycle event.
+                // Pre-drain notifyInactive (inactiveObserved without
+                // inactiveHeadFired) skips this branch — the journal
+                // drain will deliver onInactive through the now-assembled
+                // chain including this handler. The [firedDrainInline]
+                // exclusion handles the inline-drain path: the drain
+                // that just ran above already propagated onInactive
+                // through this handler via head, so per-handler replay
+                // would double-fire.
                 val handler = ctx.handler
                 if (handler is InboundHandler) {
                     try {
@@ -551,5 +741,77 @@ internal class DefaultPipeline(
             }
             return null
         }
+    }
+
+    /**
+     * Drains the pre-attach event journal onto the now fully-constructed
+     * pipeline. Scheduled by [callHandlerAdded] on the first user
+     * [InboundHandler] addition via [ioDispatcher.dispatch]; runs on the
+     * EventLoop thread serially with subsequent `notifyXxx` calls.
+     *
+     * **Replay order**: `onActive` (if pending) → buffered reads in
+     * arrival order → `onReadComplete` (if any read completed before
+     * the drain) → `onWritabilityChanged` with the latest value (if
+     * any) → buffered user events → buffered errors → `onInactive` (if
+     * the channel transitioned to inactive before the drain).
+     *
+     * The flag flip `preAttachJournalDrained = true` happens at the
+     * *start* of the drain so any `addX` invoked from within a replay
+     * handler (e.g. a codec that installs another handler in
+     * `handlerAdded`) bypasses the journal and propagates events
+     * directly through the head — the journal is one-shot.
+     */
+    private fun drainPreAttachJournal() {
+        if (preAttachJournalDrained) return
+        preAttachJournalDrained = true
+
+        if (pendingActive) {
+            pendingActive = false
+            head.invokeOnActive()
+        }
+        while (pendingReads.isNotEmpty()) {
+            head.invokeOnRead(pendingReads.removeFirst())
+        }
+        if (pendingReadComplete) {
+            pendingReadComplete = false
+            head.invokeOnReadComplete()
+        }
+        pendingWritability?.let { writable ->
+            pendingWritability = null
+            head.invokeOnWritabilityChanged(writable)
+        }
+        while (pendingUserEvents.isNotEmpty()) {
+            head.invokeOnUserEvent(pendingUserEvents.removeFirst())
+        }
+        while (pendingErrors.isNotEmpty()) {
+            head.invokeOnError(pendingErrors.removeFirst())
+        }
+        if (inactiveObserved) {
+            // Replay the inactivation through the head so the entire
+            // chain (not just the first handler via the per-handler
+            // [callHandlerAdded] replay) processes onInactive.
+            inactiveHeadFired = true
+            head.invokeOnInactive()
+        }
+    }
+
+    private companion object {
+        /**
+         * Per-pipeline cap on buffered inbound messages waiting for the
+         * first user [InboundHandler]. Sized to handle realistic codec
+         * setup races (HTTP/1 request line + headers + small body
+         * chunks) without unbounded growth if the user forgets to
+         * install a handler. Overflow drops the oldest queued message
+         * with a `WARN` log — protocol streams cannot recover from
+         * out-of-order delivery, so the WARN flags a likely user-side
+         * bug.
+         */
+        private const val MAX_PRE_ATTACH_READS = 64
+
+        /** Cap on buffered errors. Pathological error storms get truncated. */
+        private const val MAX_PRE_ATTACH_ERRORS = 8
+
+        /** Cap on buffered user events. */
+        private const val MAX_PRE_ATTACH_USER_EVENTS = 16
     }
 }

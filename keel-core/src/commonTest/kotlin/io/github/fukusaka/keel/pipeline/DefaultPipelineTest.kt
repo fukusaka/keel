@@ -664,4 +664,150 @@ class DefaultPipelineTest {
             "expected one or more 'inactive' events, got: $events",
         )
     }
+
+    // --- Pre-attach event journal ---
+    //
+    // These tests exercise the journal infrastructure that buffers
+    // inbound events arriving before the pipeline acquires its first
+    // user [InboundHandler]. With [TestIoTransport]'s
+    // [Dispatchers.Unconfined] backing, drain runs inline on the first
+    // user inbound `addX` (the deferred dispatcher path is exercised by
+    // the engine integration tests for [IdleReadPolicy.DETECT_PEER_CLOSE]).
+
+    @Test
+    fun `pre-attach journal preserves notifyRead delivered before any user handler`() {
+        val pipeline = createPipeline()
+        // Engine-side notifyRead arrives before the user installs a handler.
+        // Without the journal this would reach TailHandler.onRead and be
+        // released with a WARN log; with the journal the message is buffered.
+        pipeline.notifyRead("payload")
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        // Drain replays the buffered read through the now-assembled chain.
+        assertEquals(listOf("read"), handler.events)
+        assertEquals("payload", handler.lastMsg)
+    }
+
+    @Test
+    fun `pre-attach journal preserves multiple notifyRead in order`() {
+        val pipeline = createPipeline()
+        pipeline.notifyRead("first")
+        pipeline.notifyRead("second")
+        pipeline.notifyRead("third")
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        // FIFO order preservation is essential for stream protocols.
+        assertEquals(listOf("read", "read", "read"), handler.events)
+    }
+
+    @Test
+    fun `pre-attach journal replays notifyActive once then reads then readComplete`() {
+        val pipeline = createPipeline()
+        pipeline.notifyActive()
+        pipeline.notifyActive() // idempotent — coalesces into single replay
+        pipeline.notifyRead("data")
+        pipeline.notifyReadComplete()
+        pipeline.notifyReadComplete() // idempotent — coalesces
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        assertEquals(listOf("active", "read", "readComplete"), handler.events)
+    }
+
+    @Test
+    fun `pre-attach journal replays writability with latest value only`() {
+        val pipeline = createPipeline()
+        pipeline.notifyWritabilityChanged(true)
+        pipeline.notifyWritabilityChanged(false)
+        pipeline.notifyWritabilityChanged(true) // latest
+
+        val recorded = mutableListOf<Boolean>()
+        val handler = object : InboundHandler {
+            override val acceptedType: KClass<*> = Any::class
+            override val producedType: KClass<*> = Any::class
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                recorded.add(isWritable)
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+        pipeline.addLast("h", handler)
+
+        // Latest-only: only the most recent (`true`) is replayed.
+        assertEquals(listOf(true), recorded)
+    }
+
+    @Test
+    fun `pre-attach journal replays notifyError`() {
+        val pipeline = createPipeline()
+        pipeline.notifyError(RuntimeException("boom"))
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        assertEquals(listOf("error:boom"), handler.events)
+    }
+
+    @Test
+    fun `pre-attach journal replays notifyUserEvent`() {
+        val pipeline = createPipeline()
+        pipeline.notifyUserEvent("upgrade")
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        assertEquals(listOf("userEvent:upgrade"), handler.events)
+    }
+
+    @Test
+    fun `pre-attach journal replays notifyInactive without doubling per-handler replay`() {
+        val pipeline = createPipeline()
+        pipeline.notifyInactive()
+
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+
+        // The journal drain delivers onInactive via head propagation.
+        // The per-handler replay in callHandlerAdded must skip when
+        // drain just fired inline so onInactive is not double-delivered.
+        assertEquals(listOf("inactive"), handler.events)
+    }
+
+    @Test
+    fun `events arriving after first handler bypass the journal`() {
+        val pipeline = createPipeline()
+        val handler = RecordingInboundHandler()
+        pipeline.addLast("h", handler)
+        // After drain, subsequent notifyXxx propagate directly through head.
+        pipeline.notifyRead("after-drain")
+
+        assertEquals(listOf("read"), handler.events)
+        assertEquals("after-drain", handler.lastMsg)
+    }
+
+    @Test
+    fun `pre-attach journal does not drain on outbound-only addLast`() {
+        val pipeline = createPipeline()
+        pipeline.notifyRead("queued")
+
+        // Adding an outbound-only handler does not trigger drain — the
+        // journal is keyed on InboundHandler addition because data flows
+        // through the inbound chain.
+        val outbound = object : OutboundHandler {
+            override fun onWrite(ctx: PipelineHandlerContext, msg: Any) = ctx.propagateWrite(msg)
+            override fun onFlush(ctx: PipelineHandlerContext) = ctx.propagateFlush()
+            override fun onClose(ctx: PipelineHandlerContext) = ctx.propagateClose()
+        }
+        pipeline.addLast("out", outbound)
+
+        // Now add the inbound handler — drain replays the queued read.
+        val inbound = RecordingInboundHandler()
+        pipeline.addLast("in", inbound)
+
+        assertEquals(listOf("read"), inbound.events)
+    }
 }

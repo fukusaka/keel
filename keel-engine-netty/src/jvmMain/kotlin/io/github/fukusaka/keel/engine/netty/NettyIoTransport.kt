@@ -174,18 +174,18 @@ internal class NettyIoTransport(
                 return
             }
 
-            // Reachable only with [IdleReadPolicy.DETECT_PEER_CLOSE]:
-            // auto-read stays enabled while [readEnabled] is false, so
-            // Netty keeps invoking channelRead on peer-sent bytes. The
-            // user has explicitly opted into draining these in
-            // exchange for prompt peer-FIN detection — release without
-            // delivering through [onRead]. (PRESERVE_BACKPRESSURE
-            // disables auto-read while readEnabled = false, so this
-            // branch is naturally unreachable in that mode.)
-            if (!readEnabled) {
-                byteBuf.release()
-                return
-            }
+            // Always deliver via [onRead] in both modes. In
+            // [IdleReadPolicy.PRESERVE_BACKPRESSURE] auto-read is only
+            // enabled when `readEnabled = true`, so this branch only
+            // runs with `readEnabled = true`. In
+            // [IdleReadPolicy.DETECT_PEER_CLOSE] auto-read stays
+            // enabled regardless of `readEnabled`; bytes that arrive
+            // while no user [InboundHandler] is installed are absorbed
+            // by `DefaultPipeline`'s pre-attach event journal and
+            // replayed when the first user handler is added — this
+            // trades engine-level data dropping for pipeline-level
+            // buffering, closing the data-loss caveat that
+            // DETECT_PEER_CLOSE previously documented.
 
             val readable = byteBuf.readableBytes()
             if (byteBuf.nioBufferCount() == 1) {
