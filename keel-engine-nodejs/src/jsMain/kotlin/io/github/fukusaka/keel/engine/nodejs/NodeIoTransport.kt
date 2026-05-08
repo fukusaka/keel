@@ -39,46 +39,69 @@ internal class NodeIoTransport(
 
     // --- Read path ---
 
+    /**
+     * Stable [Socket.on] listener for "data" events. Captured into a field
+     * so [readEnabled] setter can attach / detach the same function
+     * instance via `socket.on / socket.removeListener`. Node.js stream
+     * listener removal requires referential equality with the registered
+     * function — fresh lambdas on each call would leak the previous
+     * registration.
+     */
+    private val dataListener: (dynamic) -> Unit = { data: dynamic ->
+        if (opened) {
+            val dataLength = data.length as Int
+            if (dataLength > 0) {
+                val buf = allocator.allocate(dataLength)
+                // Copy Node.js Buffer (Uint8Array subclass) to IoBuf's
+                // Int8Array. Int8Array and Uint8Array share the same byte
+                // representation, so we create an Int8Array view over the
+                // Buffer's ArrayBuffer and use IoBuf.unsafeArray.set() for
+                // a single native memcpy.
+                val srcView = js("new Int8Array(data.buffer, data.byteOffset, data.length)")
+                buf.unsafeArray.asDynamic().set(srcView, buf.writerIndex)
+                buf.writerIndex += dataLength
+                onRead?.invoke(buf)
+            }
+        }
+    }
+
     override var readEnabled: Boolean = false
         set(value) {
+            if (field == value) return
             field = value
-            if (value && opened) armRead()
+            if (!opened) return
+            if (value) {
+                // Attach 'data' listener — Node.js transitions the stream
+                // into flowing mode and starts emitting 'data' events.
+                socket.on("data", dataListener)
+            } else {
+                // Detach 'data' listener — Node.js drops back to paused
+                // mode when no 'data' listeners remain. Kernel `rcvbuf`
+                // retains the bytes for genuine TCP back-pressure. The
+                // 'end' / 'error' listeners installed in [init] continue
+                // to fire, so peer FIN / RST is still surfaced via
+                // [onReadClosed].
+                socket.asDynamic().removeListener("data", dataListener)
+            }
         }
 
-    /**
-     * Registers `socket.on("data")` and `socket.on("end"/"error")` to
-     * deliver data via [onRead] and [onReadClosed] callbacks.
-     *
-     * Each "data" event copies the Node.js Buffer into [IoBuf] and calls [onRead].
-     */
-    private fun armRead() {
-        socket.on("data") { data: dynamic ->
-            if (!opened) return@on
-            val dataLength = data.length as Int
-            if (dataLength == 0) return@on
-
-            val buf = allocator.allocate(dataLength)
-            // Copy Node.js Buffer (Uint8Array subclass) to IoBuf's Int8Array.
-            // Int8Array and Uint8Array share the same byte representation,
-            // so we create an Int8Array view over the Buffer's ArrayBuffer
-            // and use IoBuf.unsafeArray.set() for a single native memcpy.
-            val srcView = js("new Int8Array(data.buffer, data.byteOffset, data.length)")
-            buf.unsafeArray.asDynamic().set(srcView, buf.writerIndex)
-            buf.writerIndex += dataLength
-
-            onRead?.invoke(buf)
-        }
-
+    init {
+        // Register 'end' / 'error' listeners at construction so peer FIN /
+        // peer RST is surfaced via [onReadClosed] even when the user keeps
+        // [readEnabled] = false for the entire connection lifetime (e.g.
+        // write-only push client, one-direction logger, monitoring metrics
+        // sender). Node.js delivers 'end' / 'error' to all registered
+        // listeners regardless of stream paused / flowing state, so this
+        // listener stays effective even when no 'data' listener is
+        // attached. Without this, kqueue's `EV_EOF` / epoll's
+        // `EPOLLRDHUP` analogue (Node's 'end') was effectively lost
+        // because the listener was lazily registered inside `armRead()`,
+        // which was never reached when `readEnabled` stayed `false`.
         socket.on("end") { _: dynamic ->
-            if (opened) {
-                onReadClosed?.invoke()
-            }
+            if (opened) onReadClosed?.invoke()
         }
-
         socket.on("error") { _: dynamic ->
-            if (opened) {
-                onReadClosed?.invoke()
-            }
+            if (opened) onReadClosed?.invoke()
         }
     }
 
