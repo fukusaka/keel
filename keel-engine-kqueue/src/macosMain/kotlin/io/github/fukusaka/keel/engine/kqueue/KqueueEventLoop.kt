@@ -24,6 +24,7 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
+import platform.darwin.EV_EOF
 import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.pthread_create
@@ -193,8 +194,41 @@ internal class KqueueEventLoop(
      * implementation dispatch read vs. write callbacks without separate
      * sub-listener objects.
      */
-    fun interface FdReadyListener {
+    /**
+     * Listener for kqueue readiness events on a registered fd.
+     *
+     * Two callbacks separate the orthogonal concerns of normal readiness and
+     * peer-close detection. Listeners that only care about one side leave the
+     * other as the default no-op:
+     * - `KqueuePipelinedStreamServer` overrides only [onReady] — server fd
+     *   teardown is driven by `server.close()` rather than peer-FIN.
+     * - `KqueueIoTransport` overrides both — the peer-close path is what fires
+     *   `onReadClosed` to user code even when read interest was never armed
+     *   (`readEnabled = false` write-only push client).
+     *
+     * The dispatch contract is documented on [dispatchReady]: for combined
+     * data-and-EOF events the engine calls [onReady] first (so the listener
+     * can drain the final bytes) and then [onPeerClosed].
+     */
+    interface FdReadyListener {
+        /**
+         * Called when [interest] is ready: data available (READ), space available
+         * (WRITE), accept queue non-empty (server fd READ).
+         */
         fun onReady(interest: Interest)
+
+        /**
+         * Called when kqueue delivered an `EV_EOF` flag for this fd, signalling
+         * peer-FIN / peer-RST. Default no-op — only listeners that need to surface
+         * the peer-close signal to higher layers override (e.g. transports must
+         * fire `onReadClosed` so the user's connection-close path runs).
+         *
+         * Always called *after* [onReady] for combined data-and-EOF events; for
+         * pure EOF (no pending data) only [onPeerClosed] is invoked. The engine
+         * unconditionally removes the kqueue filter after this returns, so the
+         * listener does not need to disarm explicitly.
+         */
+        fun onPeerClosed(interest: Interest) {}
     }
 
     init {
@@ -562,7 +596,13 @@ internal class KqueueEventLoop(
                     EVFILT_WRITE -> Interest.WRITE
                     else -> continue
                 }
-                dispatchReady(fd, interest)
+                // EV_EOF surfaces peer-FIN / peer-RST regardless of which filter
+                // is armed. Pass it to the listener so write-only push clients
+                // (`PipelinedChannel.readEnabled = false`) can still detect
+                // peer close: see `KqueueIoTransport.onPeerClosed` for how the
+                // signal reaches `IoTransport.onReadClosed`.
+                val eofFlag = (ev.flags and EV_EOF) != 0
+                dispatchReady(fd, interest, eofFlag)
             }
         }
     }
@@ -590,20 +630,35 @@ internal class KqueueEventLoop(
      * is found, a WARN is logged and the filter is removed. Without this, a stale
      * filter causes a level-triggered busy loop until the fd is closed.
      */
-    private fun dispatchReady(fd: Int, interest: Interest) {
+    private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
         assertInEventLoop("KqueueEventLoop.dispatchReady")
         val key = registrationKey(fd, interest)
         val cb = withRegLock { callbackRegistrations.remove(key) }
         if (cb != null) {
+            // Order: drain (onReady) before close (onPeerClosed) for combined
+            // data-and-EOF events. For pure EOF (no pending data) the listener
+            // can detect "no more data" via the read syscall in onReady — the
+            // standard `read()` returns 0 path — so unconditionally calling
+            // onReady first keeps the contract simple. The eofFlag dispatch
+            // path is for the case where read interest was never armed
+            // (`readEnabled = false`) and the only way to surface peer-close
+            // is via this engine-side hook.
             cb.onReady(interest)
-            // If the callback did not re-register during onReady (e.g., a WRITE
-            // callback after a successful flush that does not re-arm), remove the
-            // kqueue filter to prevent a stale level-triggered busy loop.
-            // READ callbacks always re-arm via armRead(), so this branch is
-            // normally skipped (no kevent syscall on the read hot path).
-            val reRegistered = withRegLock { callbackRegistrations[key] != null }
-            if (!reRegistered) {
+            if (eofFlag) {
+                cb.onPeerClosed(interest)
+                // EOF path always removes the filter; the listener cannot
+                // re-register meaningfully (the connection is ending).
                 removeInterestFromKqueue(fd, interest)
+            } else {
+                // Existing stale-filter cleanup path (PR #449): if the callback
+                // did not re-register during onReady (e.g., a WRITE callback
+                // after a successful flush that does not re-arm), remove the
+                // kqueue filter to prevent a stale level-triggered busy loop.
+                // READ callbacks always re-arm via armRead() in the normal flow.
+                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                if (!reRegistered) {
+                    removeInterestFromKqueue(fd, interest)
+                }
             }
         } else {
             // Suspend path: pop one waiter from the FIFO chain. If siblings remain

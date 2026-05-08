@@ -73,6 +73,9 @@ internal class KqueuePipelinedStreamServer(
      * never armed for the listening fd.
      */
     override fun onReady(interest: KqueueEventLoop.Interest) {
+        // Peer-close on the listening fd is unusual (server.close() drives
+        // teardown via its own path), so [onPeerClosed] is left as the
+        // default no-op.
         onAcceptable()
     }
 
