@@ -330,6 +330,17 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
      * Reads bytes from [input] (the response writer's side) and forwards them
      * to the keel transport via the channel's pipeline (no codec installed —
      * bytes flow straight through to the underlying socket).
+     *
+     * **Backpressure**: after each [requestFlush][PipelinedChannel.pipeline], if
+     * [channel.isWritable][PipelinedChannel.isWritable] is false (pending bytes exceed
+     * the high-water mark), [awaitFlushComplete][PipelinedChannel.awaitFlushComplete]
+     * is called so the pump suspends. This yields the EventLoop thread and lets the
+     * transport drain `pendingWrites` via the write-readiness callback before
+     * accumulating more data. Without this gate, a large response body fills the socket
+     * send buffer, every `write(2)` returns `EAGAIN`, and the tight read-ahead loop
+     * never yields — the EventLoop thread never reaches `kevent(2)` / `epoll_wait(2)`,
+     * so write-readiness events are never processed and throughput collapses. Mirrors
+     * the K37 fix on the upgrade pump (see `KeelApplicationResponse.pumpOutputToRaw`).
      */
     private suspend fun pumpOutputToChannel(
         input: ByteReadChannel,
@@ -346,6 +357,9 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                     ioBuf.writeByteArray(buf, 0, n)
                     channel.pipeline.requestWrite(ioBuf)
                     channel.pipeline.requestFlush()
+                    if (!channel.isWritable) {
+                        channel.awaitFlushComplete()
+                    }
                 }
             }
         } catch (e: Exception) {
