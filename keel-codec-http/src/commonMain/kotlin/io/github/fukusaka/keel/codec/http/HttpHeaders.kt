@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.io.toDecLongOrNull
+
 /**
  * HTTP header fields (RFC 7230 §3.2).
  *
@@ -152,7 +154,7 @@ class HttpHeaders private constructor(
     // --- Typed properties ---
 
     /** Parsed value of the Content-Length header, or null if absent or malformed. */
-    val contentLength: Long? get() = getByLowercaseKey(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toLongOrNull()
+    val contentLength: Long? get() = getByLowercaseKey(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
 
     /** Value of the Content-Type header, or null if absent. */
     val contentType: String? get() = getByLowercaseKey(HttpHeaderName.CONTENT_TYPE_KEY)

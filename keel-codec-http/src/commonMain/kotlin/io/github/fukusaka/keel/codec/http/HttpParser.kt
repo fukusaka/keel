@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.io.BufferedSuspendSource
+import io.github.fukusaka.keel.io.toHexLongOrNull
 import kotlinx.io.Source
 import kotlinx.io.readByteArray
 import kotlinx.io.readLine
@@ -245,7 +246,7 @@ internal fun readChunkedBody(source: Source): ByteArray? {
         val sizeLine = source.readLine()
             ?: throw HttpEofException("Unexpected EOF reading chunk size")
         val sizeStr = sizeLine.substringBefore(';').trim()
-        val chunkSize = sizeStr.toLongOrNull(16)
+        val chunkSize = sizeStr.toHexLongOrNull()
             ?: throw HttpParseException("Invalid chunk size '$sizeStr'")
         if (chunkSize == 0L) {
             // Consume optional trailer headers
