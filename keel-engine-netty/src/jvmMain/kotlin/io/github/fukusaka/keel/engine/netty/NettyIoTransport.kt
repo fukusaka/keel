@@ -14,6 +14,7 @@ import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
 import io.netty.channel.EventLoop
+import io.netty.channel.socket.ChannelInputShutdownEvent
 import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
@@ -177,13 +178,32 @@ internal class NettyIoTransport(
         /**
          * Fires read-closed when the inbound half of a half-closed connection
          * has been fully drained. With [ChannelOption.ALLOW_HALF_CLOSURE] = true
-         * on server channels, the peer's TCP FIN triggers
-         * [ChannelInputShutdownReadComplete] (after all buffered data has been
-         * delivered via [channelRead]) instead of [channelInactive], so body
-         * bytes are not lost before the bridge pump can consume them.
+         * on server channels, the peer's TCP FIN triggers two related events
+         * depending on the underlying [NettyTransport]:
+         *
+         * - **Native transport** ([NettyTransport.Epoll] / [NettyTransport.KQueue]):
+         *   [ChannelInputShutdownEvent] fires the moment kernel-level
+         *   `EPOLLRDHUP` / `EV_EOF` is observed, *regardless* of the
+         *   `setAutoRead(false)` state. This is the path that lets keel
+         *   surface peer FIN to write-only push clients
+         *   (`PipelinedChannel.readEnabled = false`) without waiting on
+         *   `SO_KEEPALIVE`.
+         * - **NIO transport** ([NettyTransport.Nio]):
+         *   [ChannelInputShutdownReadComplete] fires after all buffered
+         *   data has been delivered via [channelRead], so body bytes are
+         *   not lost before the bridge pump consumes them. NIO requires
+         *   `setAutoRead(true)` for these events to fire at all (Java NIO
+         *   `Selector` only delivers `POLLIN`-derived events, never
+         *   `POLLRDHUP`); see [NettyTransport] KDoc for the
+         *   `translateInterestOps` constraint.
+         *
+         * Both events route to [fireReadClosed], which is idempotent.
          */
         override fun userEventTriggered(ctx: ChannelHandlerContext, evt: Any) {
-            if (evt is ChannelInputShutdownReadComplete) fireReadClosed()
+            when (evt) {
+                is ChannelInputShutdownEvent -> fireReadClosed()
+                is ChannelInputShutdownReadComplete -> fireReadClosed()
+            }
             ctx.fireUserEventTriggered(evt)
         }
 
