@@ -56,6 +56,26 @@ internal class KqueueIoTransport(
         }
     }
 
+    /**
+     * Surfaces peer-FIN / peer-RST (observed via `EV_EOF`) to user code via
+     * [onReadClosed], regardless of [readEnabled] state. Without this, a
+     * write-only push client would silently linger in CLOSE-WAIT until the
+     * next write attempt or the `SO_KEEPALIVE` timer (~2 hours by default).
+     *
+     * Called *after* [onReady] for combined data-and-EOF events; by that
+     * point [onReadable] has already drained pending bytes and (for
+     * `read()` returning 0) may have already invoked `onReadClosed`. This
+     * defensive call is the engine-side fallback when read interest was
+     * never armed at all (`readEnabled = false`, no prior `read(...)`).
+     * Calling `onReadClosed` twice is benign — the cancel guards in the
+     * connection handlers (PR #459 / #460) are idempotent.
+     */
+    override fun onPeerClosed(interest: KqueueEventLoop.Interest) {
+        if (interest != KqueueEventLoop.Interest.READ) return
+        if (!opened) return
+        onReadClosed?.invoke()
+    }
+
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     // Parallel primitive arrays reused across [flushGather] calls to
@@ -77,8 +97,26 @@ internal class KqueueIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
+            // Read is armed at construction for peer-close detection (see
+            // [init]). The setter only needs to re-arm if the dispatch path
+            // stopped re-registering due to back-pressure (data arrived while
+            // readEnabled was false).
             if (value && opened) armRead()
         }
+
+    init {
+        // Arm EVFILT_READ at construction so peer-FIN is surfaced via
+        // EV_EOF + [onPeerClosed] even when the user keeps readEnabled = false
+        // for the entire connection lifetime (e.g. write-only push client,
+        // one-direction logger, monitoring metrics sender). Without this,
+        // kqueue would deliver no event on graceful peer close until the
+        // next write attempt or the SO_KEEPALIVE timer (~2 hours by default)
+        // — a public API contract gap. The arm is cheap (one EV_ADD syscall);
+        // [onReadable] / [onPeerClosed] handle fire-without-data and
+        // peer-close cases respectively.
+        @Suppress("LeakingThis")
+        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ, this)
+    }
 
     private fun armRead() {
         if (!opened) return
@@ -87,12 +125,25 @@ internal class KqueueIoTransport(
 
     private fun onReadable() {
         if (!opened) return
+
+        // Back-pressure path: if data is ready but the user has disabled
+        // read, do not consume the data and do not re-arm. dispatchReady's
+        // "no re-register" branch will EV_DELETE the filter so kqueue does
+        // not busy-loop. The kernel rcvbuf retains the data and applies
+        // back-pressure to the peer (TCP window). The setter's armRead()
+        // call re-registers the filter when readEnabled is flipped back to
+        // true. Peer-close detection on this idle path is handled by
+        // [onPeerClosed] — the engine calls it separately when EV_EOF is
+        // observed, so we do not need to detect EOF here when readEnabled
+        // is false.
+        if (!readEnabled) return
+
         val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
                 buf.writerIndex += result.bytes
-                onRead?.invoke(buf)
+                onRead?.invoke(buf) ?: buf.release()
                 armRead()
             }
             ReadResult.Eof -> {

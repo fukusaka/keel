@@ -204,7 +204,9 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback does NOT re-register: simulates a flush that completed fully.
-        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE) { /* no-op */ }
+        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE, object : KqueueEventLoop.FdReadyListener {
+            override fun onReady(interest: KqueueEventLoop.Interest) { /* no-op */ }
+        })
         el.loop()
         assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called when callback does not re-register")
         assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
@@ -221,9 +223,15 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback re-registers: simulates a partial flush that needs another WRITE event.
-        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE) { interest ->
-            el.registerCallback(5000, interest) { /* second callback; never fires in this test */ }
-        }
+        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE, object : KqueueEventLoop.FdReadyListener {
+            override fun onReady(interest: KqueueEventLoop.Interest) {
+                el.registerCallback(5000, interest, object : KqueueEventLoop.FdReadyListener {
+                    override fun onReady(interest: KqueueEventLoop.Interest) {
+                        /* second callback; never fires in this test */
+                    }
+                })
+            }
+        })
         el.loop()
         assertTrue(fake.deleteFilterCalls.isEmpty(), "deleteWriteFilter must NOT be called when callback re-registers")
     }

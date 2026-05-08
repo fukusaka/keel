@@ -39,6 +39,22 @@ internal class DefaultPipeline(
     private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport))
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
 
+    /**
+     * Tracks whether [notifyInactive] has been observed at the pipeline level.
+     *
+     * Set once on the first [notifyInactive] call. Used by [callHandlerAdded]
+     * to replay [PipelineHandler.onInactive] to handlers installed *after*
+     * the inactivation event so engine-driven peer-FIN detection (kqueue
+     * `EV_EOF`, epoll `EPOLLRDHUP`, etc.) does not race with the lazy
+     * install of [io.github.fukusaka.keel.pipeline.SuspendBridgeHandler]
+     * inside [io.github.fukusaka.keel.pipeline.PipelinedChannel.read].
+     *
+     * Single-threaded read/write on the EventLoop thread, so no `@Volatile`
+     * is required (pipeline composition + lifecycle dispatch are both
+     * EventLoop-thread-only by contract).
+     */
+    private var inactiveObserved: Boolean = false
+
     init {
         head.next = tail
         tail.prev = head
@@ -146,6 +162,19 @@ internal class DefaultPipeline(
     }
 
     override fun notifyInactive(): Pipeline {
+        // Idempotent: only the first [notifyInactive] propagates through the
+        // chain. Subsequent calls (e.g. [AbstractPipelinedChannel.close]
+        // running after an `onReadClosed`-driven `notifyInactive`, or a
+        // user-initiated `ch.close()` after peer FIN) become no-ops so
+        // existing handlers continue to receive `onInactive` exactly once.
+        if (inactiveObserved) return this
+        // Record the inactivation so handlers installed after this point
+        // receive a replayed [PipelineHandler.onInactive] from
+        // [callHandlerAdded]. Without the replay, an engine-driven peer-FIN
+        // event delivered before [SuspendBridgeHandler] is lazily installed
+        // (e.g. inside [PipelinedChannel.read]) would be lost — the bridge
+        // would suspend forever waiting for `eof = true`.
+        inactiveObserved = true
         head.invokeOnInactive()
         return this
     }
@@ -210,6 +239,23 @@ internal class DefaultPipeline(
     private fun callHandlerAdded(ctx: DefaultContext) {
         try {
             ctx.handler.handlerAdded(ctx)
+            // Replay a previously-observed inactivation so handlers installed
+            // after [notifyInactive] still receive the lifecycle event. The
+            // canonical case is the lazy [SuspendBridgeHandler] installed by
+            // [PipelinedChannel.read]: an engine that reports peer FIN from
+            // the always-armed read filter (kqueue `EV_EOF`, epoll
+            // `EPOLLRDHUP`) before the user code calls `read` would
+            // otherwise leave the bridge waiting forever for `eof = true`.
+            if (inactiveObserved) {
+                val handler = ctx.handler
+                if (handler is InboundHandler) {
+                    try {
+                        handler.onInactive(ctx)
+                    } catch (e: Throwable) {
+                        logger.error(e) { "onInactive() replay threw for '${ctx.name}'" }
+                    }
+                }
+            }
         } catch (e: Throwable) {
             logger.error(e) { "handlerAdded() threw for '${ctx.name}'" }
         }

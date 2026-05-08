@@ -6,10 +6,12 @@ import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngineReadWriteTest {
@@ -49,23 +51,33 @@ class KqueueEngineReadWriteTest {
 
     @Test
     fun readReturnsMinusOneOnEof() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        // Wall-clock guard: this test exercises the engine-driven peer-FIN
+        // dispatch path. A regression in [AbstractPipelinedChannel]'s
+        // deferred close-on-EOF handling can leave [SuspendBridgeHandler]
+        // suspended forever on `bridge.read`, so without an explicit
+        // [withTimeout] the test would hang until the CI job-level timeout
+        // (~25 minutes) instead of failing fast with a stack trace. The
+        // bound is generous (5 s) — the post-fix latency is sub-millisecond
+        // on loopback.
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
 
-        close(clientFd) // Client closes → EOF
+            close(clientFd) // Client closes → EOF
 
-        val buf = DefaultAllocator.allocate(64)
-        val n = ch.read(buf)
-        assertEquals(-1, n)
+            val buf = DefaultAllocator.allocate(64)
+            val n = ch.read(buf)
+            assertEquals(-1, n)
 
-        buf.release()
-        ch.close()
-        server.close()
-        engine.close()
+            buf.release()
+            ch.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
