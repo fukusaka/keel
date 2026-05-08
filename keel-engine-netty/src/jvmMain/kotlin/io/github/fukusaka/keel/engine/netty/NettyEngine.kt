@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
@@ -113,6 +114,26 @@ class NettyEngine(
     private val workerGroup = this.nettyTransport.newEventLoopGroup(config.threads)
     private var closed = false
 
+    /**
+     * [IdleReadPolicy] actually applied to [NettyIoTransport] instances
+     * created by this engine. Resolves to:
+     * - [IoEngineConfig.idleReadPolicy] when [nettyTransport] resolves
+     *   to [NettyTransport.Nio] (the only Netty transport that faces
+     *   the Java NIO `Selector` API constraint and therefore needs the
+     *   policy);
+     * - [IdleReadPolicy.PRESERVE_BACKPRESSURE] otherwise — the native
+     *   transports ([NettyTransport.Epoll] / [NettyTransport.KQueue])
+     *   observe peer FIN through `EPOLLRDHUP` / `EV_EOF` regardless of
+     *   `setAutoRead` state, so the policy would be a no-op; coercing
+     *   to `PRESERVE_BACKPRESSURE` keeps the transport's existing
+     *   behaviour (lazy auto-read enable on `readEnabled = true`)
+     *   untouched.
+     */
+    private val effectiveIdleReadPolicy: IdleReadPolicy = run {
+        val resolved = (this.nettyTransport as? NettyTransport.Auto)?.delegate ?: this.nettyTransport
+        if (resolved == NettyTransport.Nio) config.idleReadPolicy else IdleReadPolicy.PRESERVE_BACKPRESSURE
+    }
+
 
     /**
      * One buffer allocator per worker [EventLoop]. Each allocator is accessed
@@ -159,7 +180,7 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -223,7 +244,7 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -305,7 +326,7 @@ class NettyEngine(
         val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress()) ?: address
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
-        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel))
+        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy)
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,
         )
@@ -350,7 +371,7 @@ class NettyEngine(
         val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress())
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
-        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel))
+        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy)
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,
         )
@@ -401,7 +422,7 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -445,7 +466,7 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch))
+                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
