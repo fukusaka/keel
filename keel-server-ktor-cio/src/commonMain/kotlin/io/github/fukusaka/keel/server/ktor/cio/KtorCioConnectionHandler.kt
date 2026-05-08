@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.io.toDecLongOrNull
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -166,7 +167,7 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         while (channel.isActive && !input.isClosedForRead) {
             val request = parserMutex.withLock { parseRequest(input) } ?: break
 
-            val length = request.headers[HttpHeaders.ContentLength]?.parseDecLong() ?: -1L
+            val length = request.headers[HttpHeaders.ContentLength]?.toDecLongOrNull() ?: -1L
             val transferEncoding = request.headers[HttpHeaders.TransferEncoding]
             val connectionOptions = ConnectionOptions.parse(request.headers[HttpHeaders.Connection])
             val expectsBody = expectHttpBody(request)
@@ -357,19 +358,8 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         }
     }
 
-    private fun CharSequence.parseDecLong(): Long? {
-        var result = 0L
-        for (i in 0 until length) {
-            val c = this[i]
-            if (c !in '0'..'9') return null
-            result = result * BASE_TEN + (c - '0')
-        }
-        return result
-    }
-
     private companion object {
         private const val PUMP_BUFFER_SIZE = 8192
-        private const val BASE_TEN = 10
         private const val INBOUND_BRIDGE_NAME = "__ktor_cio_inbound__"
     }
 }
