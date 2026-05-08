@@ -332,6 +332,13 @@ internal class NioEventLoop(
                 val writeCb = if (writeReady) callbacks.writeCallback else null
                 val acceptCb = if (acceptReady) callbacks.acceptCallback else null
                 val connectCb = if (connectReady) callbacks.connectCallback else null
+                // Defensive: a direction was reported ready but no callback was
+                // registered. Should never happen — the only path that sets an
+                // interest bit also installs the callback. If it does, the
+                // interest must still be cleared so the next select() does not
+                // spin on the same fd. Mirrors the WARN+remove guard in
+                // EpollEventLoop / KqueueEventLoop (PR #447 / #449).
+                warnIfStaleInterest(key, readReady, readCb, writeReady, writeCb, acceptReady, acceptCb, connectReady, connectCb)
                 var clearMask = 0
                 if (readReady) {
                     callbacks.readCallback = null
@@ -361,6 +368,39 @@ internal class NioEventLoop(
                 // The channel's coroutine will observe the error on next I/O.
                 logger.warn(e) { "SelectionKey processing failed" }
             }
+        }
+    }
+
+    /**
+     * Logs a WARN line for each direction that was reported ready by [Selector] but
+     * had no registered callback in [KeyCallbacks]. Extracted from
+     * [processSelectedKeys] so the per-key dispatch loop stays under detekt's
+     * cyclomatic-complexity limit. The message format mirrors the sibling guards
+     * in `EpollEventLoop` / `KqueueEventLoop` (cf. PR #447 / #449).
+     */
+    @Suppress("LongParameterList")
+    private fun warnIfStaleInterest(
+        key: SelectionKey,
+        readReady: Boolean,
+        readCb: Runnable?,
+        writeReady: Boolean,
+        writeCb: Runnable?,
+        acceptReady: Boolean,
+        acceptCb: Runnable?,
+        connectReady: Boolean,
+        connectCb: Runnable?,
+    ) {
+        if (readReady && readCb == null) {
+            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_READ — clearing NIO interest" }
+        }
+        if (writeReady && writeCb == null) {
+            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_WRITE — clearing NIO interest" }
+        }
+        if (acceptReady && acceptCb == null) {
+            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_ACCEPT — clearing NIO interest" }
+        }
+        if (connectReady && connectCb == null) {
+            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_CONNECT — clearing NIO interest" }
         }
     }
 
