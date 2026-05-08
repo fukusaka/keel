@@ -25,18 +25,11 @@ import io.netty.channel.ChannelFuture
 import io.netty.channel.ChannelInitializer
 import io.netty.channel.ChannelOption
 import io.netty.channel.EventLoop
-import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
-import io.netty.channel.socket.nio.NioDomainSocketChannel
-import io.netty.channel.socket.nio.NioServerDomainSocketChannel
-import io.netty.channel.socket.nio.NioServerSocketChannel
-import io.netty.channel.socket.nio.NioSocketChannel
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.net.UnixDomainSocketAddress
-import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -75,19 +68,51 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
  * ```
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] is passed
- *               directly to Netty's `NioEventLoopGroup`. 0 (default) lets Netty
- *               choose automatically (`cpu * 2`).
+ *               directly to the selected EventLoopGroup. 0 (default) lets
+ *               Netty choose automatically (`cpu * 2`).
+ * @param nettyTransport Underlying Netty transport implementation. Default is
+ *               [NettyTransport.Auto], which prefers the native transport
+ *               for the host platform (Linux → [NettyTransport.Epoll],
+ *               macOS / BSD → [NettyTransport.KQueue]) and falls back to
+ *               [NettyTransport.Nio] when neither native transport is
+ *               available. Override only for explicit testing /
+ *               benchmarking / troubleshooting needs (e.g. forcing the
+ *               NIO fallback to verify behaviour parity, or pinning to
+ *               a specific native transport when Netty's classpath
+ *               detection would otherwise pick the wrong one). Specifying
+ *               an unavailable transport (e.g. [NettyTransport.Epoll] on
+ *               macOS) fails fast at construction.
  */
 class NettyEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
+    nettyTransport: NettyTransport = NettyTransport.Auto,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
     private val logger = config.loggerFactory.logger("NettyEngine")
-    private val bossGroup = NioEventLoopGroup(1)
-    private val workerGroup = NioEventLoopGroup(config.threads)
+
+    /**
+     * Underlying Netty transport. Resolved at construction time — either
+     * the user-provided value (default [NettyTransport.Auto] picks the
+     * best native transport for the host platform) or the explicit
+     * transport passed to [NettyEngine]'s constructor.
+     *
+     * Selection criteria (when [NettyTransport.Auto]):
+     * - Linux: [NettyTransport.Epoll] (native, peer-FIN visible via
+     *   `EPOLLRDHUP` even when `setAutoRead(false)`)
+     * - macOS / BSD: [NettyTransport.KQueue] (native, peer-FIN visible
+     *   via `EV_EOF`)
+     * - Other JVM platforms: [NettyTransport.Nio] (Java NIO Selector
+     *   fallback — peer FIN not detectable while `setAutoRead(false)`
+     *   due to `sun.nio.ch.SocketChannelImpl.translateInterestOps` only
+     *   mapping `OP_READ` to `POLLIN`, never `POLLRDHUP`)
+     */
+    private val nettyTransport: NettyTransport = nettyTransport.also { it.requireAvailable() }
+    private val bossGroup = this.nettyTransport.newEventLoopGroup(1)
+    private val workerGroup = this.nettyTransport.newEventLoopGroup(config.threads)
     private var closed = false
+
 
     /**
      * One buffer allocator per worker [EventLoop]. Each allocator is accessed
@@ -125,7 +150,7 @@ class NettyEngine(
         val serverChannel = NettyStreamServer.create()
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
-            .channel(NioServerDomainSocketChannel::class.java)
+            .channel(nettyTransport.serverDomainSocketChannelClass())
             .applyChildSocketOptions(bindConfig.childSocketOptions)
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
@@ -145,7 +170,7 @@ class NettyEngine(
             })
 
         val nettyServerCh = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
-            bootstrap.bind(UnixDomainSocketAddress.of(Path.of(address.path))).addListener { f ->
+            bootstrap.bind(nettyTransport.newUdsAddress(address.path)).addListener { f ->
                 val cf = f as ChannelFuture
                 if (cf.isSuccess) {
                     cont.resume(cf.channel())
@@ -181,7 +206,7 @@ class NettyEngine(
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
-            .channel(NioServerSocketChannel::class.java)
+            .channel(nettyTransport.serverSocketChannelClass())
             .option(ChannelOption.SO_BACKLOG, bindConfig.backlog)
             .applyChildSocketOptions(bindConfig.childSocketOptions)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
@@ -256,7 +281,7 @@ class NettyEngine(
 
         val bootstrap = Bootstrap()
             .group(workerGroup)
-            .channel(NioDomainSocketChannel::class.java)
+            .channel(nettyTransport.domainSocketChannelClass())
             .applySocketOptions(socketOptions)
             .handler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
@@ -265,7 +290,7 @@ class NettyEngine(
             })
 
         val nettyChannel = suspendCancellableCoroutine<NettyNativeChannel> { cont ->
-            bootstrap.connect(UnixDomainSocketAddress.of(Path.of(address.path))).addListener { f ->
+            bootstrap.connect(nettyTransport.newUdsAddress(address.path)).addListener { f ->
                 val cf = f as ChannelFuture
                 if (cf.isSuccess) {
                     cont.resume(cf.channel())
@@ -300,7 +325,7 @@ class NettyEngine(
     private suspend fun connectToIp(host: String, port: Int, socketOptions: SocketOptions): KeelChannel {
         val bootstrap = Bootstrap()
             .group(workerGroup)
-            .channel(NioSocketChannel::class.java)
+            .channel(nettyTransport.socketChannelClass())
             .applySocketOptions(socketOptions)
             .handler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
@@ -367,7 +392,7 @@ class NettyEngine(
 
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
-            .channel(NioServerDomainSocketChannel::class.java)
+            .channel(nettyTransport.serverDomainSocketChannelClass())
             .applyChildSocketOptions(config.childSocketOptions)
             .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
                 override fun initChannel(ch: NettyNativeChannel) {
@@ -387,7 +412,7 @@ class NettyEngine(
                 }
             })
 
-        val nettyServerCh = bootstrap.bind(UnixDomainSocketAddress.of(Path.of(address.path))).sync().channel()
+        val nettyServerCh = bootstrap.bind(nettyTransport.newUdsAddress(address.path)).sync().channel()
         try {
             val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
             logger.debug { "Pipeline bound to $localAddr" }
@@ -410,7 +435,7 @@ class NettyEngine(
         val port = address.port
         val bootstrap = ServerBootstrap()
             .group(bossGroup, workerGroup)
-            .channel(NioServerSocketChannel::class.java)
+            .channel(nettyTransport.serverSocketChannelClass())
             .option(ChannelOption.SO_BACKLOG, config.backlog)
             .applyChildSocketOptions(config.childSocketOptions)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
@@ -480,7 +505,7 @@ class NettyEngine(
             // causes CI timeouts when channels are not fully drained.
             workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
             bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
-            logger.debug { "Engine closed" }
+            logger.debug { "Engine closed (transport=${nettyTransport.name})" }
         }
     }
 
