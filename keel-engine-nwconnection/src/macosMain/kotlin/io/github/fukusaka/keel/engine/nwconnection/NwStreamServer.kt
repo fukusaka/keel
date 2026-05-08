@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
@@ -70,6 +71,7 @@ internal class NwStreamServer(
     private val allocator: BufferAllocator,
     private val bindConfig: BindConfig,
     private val loggerFactory: LoggerFactory,
+    private val idleReadPolicy: IdleReadPolicy,
 ) : StreamServer {
 
     private val arena = Arena()
@@ -175,7 +177,7 @@ internal class NwStreamServer(
 
         val remoteAddr = extractAddress(conn)
         val logger = loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, allocator)
+        val transport = NwIoTransport(conn, connQueue, allocator, idleReadPolicy)
         val channel = NwPipelinedChannel(transport, logger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel

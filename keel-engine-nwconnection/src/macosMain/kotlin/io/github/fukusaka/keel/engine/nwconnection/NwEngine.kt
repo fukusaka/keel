@@ -133,7 +133,7 @@ class NwEngine(
             // arrive during startup. localAddress is updated after the
             // assigned port is known.
             val serverChannel = NwStreamServer(
-                lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory,
+                lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory, config.idleReadPolicy,
             )
 
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -258,7 +258,7 @@ class NwEngine(
                     // internally until the connection reaches the ready state.
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy)
                     val channel = NwPipelinedChannel(transport, logger)
                     // Listener-level TLS: connections arrive already TLS-encrypted,
                     // so skip per-connection TLS initialization.
@@ -356,7 +356,7 @@ class NwEngine(
 
         logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator)
+        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
@@ -393,7 +393,7 @@ class NwEngine(
                 "io.github.fukusaka.keel.nwconnection.listener.unix", null,
             )
             val serverChannel = NwStreamServer(
-                lsnr, address, config.allocator, bindConfig, config.loggerFactory,
+                lsnr, address, config.allocator, bindConfig, config.loggerFactory, this@NwEngine.config.idleReadPolicy,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
 
@@ -453,7 +453,7 @@ class NwEngine(
 
         logger.debug { "Connected to UDS ${address.path}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator)
+        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy)
         return NwPipelinedChannel(transport, channelLogger, address, address)
     }
 
@@ -504,7 +504,7 @@ class NwEngine(
                     nw_connection_set_queue(conn, connQueue)
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator)
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy)
                     val channel = NwPipelinedChannel(transport, logger)
                     config.initializeConnection(channel)
                     pipelineInitializer(channel)
