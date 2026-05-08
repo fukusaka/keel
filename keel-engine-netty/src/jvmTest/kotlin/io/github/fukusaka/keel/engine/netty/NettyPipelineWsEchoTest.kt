@@ -17,6 +17,10 @@ import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.net.URI
@@ -221,63 +225,84 @@ class NettyPipelineWsEchoTest {
     /**
      * K4 extended: 5 concurrent connections, each does 3 echo rounds.
      * Exercises the pipeline under more load to catch intermittent hangs.
+     *
+     * **K40 (CI flake fix)**: previously `CompletableFuture.get(N, TimeUnit.SECONDS)`
+     * was used both for connection setup and echo waits. Each `.get()` is a JVM
+     * blocking call on the `runBlocking` coroutine thread — it does not cooperate
+     * with `withTimeout`, so the outer 60 s cap could not interrupt a stalled
+     * step. Worse, sequential setup (5 connections × 15 s worst case = 75 s)
+     * exceeded the cap on its own under heavy GitHub Actions runner load.
+     *
+     * Fixed by:
+     * - `kotlinx.coroutines.future.await()` (suspend) replaces every `.get()`.
+     *   `withTimeout` now correctly enforces the 60 s budget by cancelling the
+     *   awaiting continuation rather than waiting for a JVM-blocking call to
+     *   return on its own schedule.
+     * - `async / awaitAll` parallelises connection setup so the 5 builds run
+     *   concurrently instead of in sequence.
      */
     @Test
     fun `ws-echo five concurrent connections all complete multiple rounds`() = runBlocking {
-        // Use a 60-second outer cap because the per-step waits below
-        // (15s connect + 30s echo + 10s close per VU) can each saturate
-        // a slow GitHub Actions runner under parallel jvmTest load. The
-        // shared 10-second `runTest` cap was too tight even after PR
-        // #437's per-future bumps, producing the K29 PR's CI flake.
         withTimeout(60.seconds) {
-        val engine = NettyEngine()
-        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("ws-echo", WsEchoHandler())
-        }
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val http = buildWsClient()
-            val connections = (1..5).map { id ->
-                val rounds = 3
-                val futures = (1..rounds).map { CompletableFuture<String>() }
-                var roundIdx = 0
-                val pending = StringBuilder()
-                val ws = http.newWebSocketBuilder()
-                    .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                        override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                        override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
-                            pending.append(data)
-                            if (last) {
-                                futures.getOrNull(roundIdx++)?.complete(pending.toString())
-                                pending.clear()
-                            }
-                            return null
-                        }
-                        override fun onError(ws: WebSocket, error: Throwable) {
-                            futures.forEach { it.completeExceptionally(error) }
-                        }
-                    })
-                    .get(15, TimeUnit.SECONDS)
-                Triple(id, ws, futures)
+            val engine = NettyEngine()
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("ws-echo", WsEchoHandler())
             }
-
-            for ((id, ws, _) in connections) {
-                for (r in 1..3) ws.sendText("vu$id-r$r", true)
-            }
-
-            for ((id, ws, futures) in connections) {
-                for (r in 1..3) {
-                    assertEquals("vu$id-r$r", futures[r - 1].get(30, TimeUnit.SECONDS),
-                        "VU$id round $r echo mismatch")
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                val http = buildWsClient()
+                val connections = coroutineScope {
+                    (1..5).map { id ->
+                        async {
+                            val rounds = 3
+                            val futures = (1..rounds).map { CompletableFuture<String>() }
+                            var roundIdx = 0
+                            val pending = StringBuilder()
+                            val ws = http.newWebSocketBuilder()
+                                .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
+                                    override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                                    override fun onText(
+                                        ws: WebSocket,
+                                        data: CharSequence,
+                                        last: Boolean,
+                                    ): Nothing? {
+                                        pending.append(data)
+                                        if (last) {
+                                            futures.getOrNull(roundIdx++)?.complete(pending.toString())
+                                            pending.clear()
+                                        }
+                                        return null
+                                    }
+                                    override fun onError(ws: WebSocket, error: Throwable) {
+                                        futures.forEach { it.completeExceptionally(error) }
+                                    }
+                                })
+                                .await()
+                            Triple(id, ws, futures)
+                        }
+                    }.awaitAll()
                 }
-                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(10, TimeUnit.SECONDS)
+
+                for ((id, ws, _) in connections) {
+                    for (r in 1..3) ws.sendText("vu$id-r$r", true)
+                }
+
+                for ((id, ws, futures) in connections) {
+                    for (r in 1..3) {
+                        assertEquals(
+                            "vu$id-r$r",
+                            futures[r - 1].await(),
+                            "VU$id round $r echo mismatch",
+                        )
+                    }
+                    ws.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
+                }
+            } finally {
+                server.close()
+                engine.close()
             }
-        } finally {
-            server.close()
-            engine.close()
-        }
         }
     }
 
