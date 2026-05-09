@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.codec.websocket.writeFrame
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.io.Buffer
+import kotlinx.io.readByteArray
 import kotlin.test.assertEquals
 
 /**
@@ -107,14 +108,20 @@ internal class WsSeamContext(
             return WsSeamContext(effectiveTracker, transport, channel, ownsTracker)
         }
 
-        /** Encode a [WsFrame] to wire-format bytes via the existing [writeFrame] writer. */
+        /**
+         * Encode a [WsFrame] to wire-format bytes via the existing [writeFrame] writer.
+         *
+         * Uses [readByteArray] (the full-read variant) rather than
+         * [kotlinx.io.Source.readAtMostTo], because the latter returns a
+         * possibly-short count when the kotlinx-io [Buffer] holds the bytes
+         * across multiple internal segments (8 KiB each). At payload sizes
+         * ≥8 KiB the partial read silently truncates the encoded frame and
+         * the round-trip assertion fails at the segment boundary.
+         */
         fun encodeFrame(frame: WsFrame): ByteArray {
             val scratch = Buffer()
             writeFrame(frame, scratch)
-            val size = scratch.size.toInt()
-            val out = ByteArray(size)
-            scratch.readAtMostTo(out, 0, size)
-            return out
+            return scratch.readByteArray(scratch.size.toInt())
         }
     }
 }
