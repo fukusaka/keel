@@ -158,8 +158,11 @@ private class JvmZlibEncoderSession(
                 }
                 current.writeByteArray(scratch, 0, n)
             }
-            val done = if (finishStream) deflater.finished()
-            else deflater.needsInput()
+            val done = if (finishStream) {
+                deflater.finished()
+            } else {
+                deflater.needsInput()
+            }
             if (done) break
             if (n == 0) {
                 // No progress and not finished — should be impossible
@@ -171,10 +174,10 @@ private class JvmZlibEncoderSession(
     }
 
     private fun appendGzipTrailerIfNeeded(buf: IoBuf): IoBuf {
-        if (wrap != WrapFormat.Gzip) return buf
+        val gzipCrc = crc ?: return buf
         var out = buf
         if (out.writableBytes < 8) out = grow(out, 8)
-        val crcVal = crc!!.value
+        val crcVal = gzipCrc.value
         val isize = (inputBytesTotal and 0xFFFFFFFFL)
         // Both little-endian per RFC 1952.
         writeLE32(out, crcVal.toInt())
@@ -216,7 +219,7 @@ private class JvmZlibDecoderSession(
     private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
 
     private var headerStripped: Boolean = wrap != WrapFormat.Gzip
-    private var headerScratch: ByteArray? = if (wrap == WrapFormat.Gzip) ByteArray(GZIP_HEADER_SIZE) else null
+    private val headerScratch: ByteArray? = if (wrap == WrapFormat.Gzip) ByteArray(GZIP_HEADER_SIZE) else null
     private var headerScratchLen: Int = 0
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
@@ -303,30 +306,37 @@ private class JvmZlibDecoderSession(
         // possibly FHCRC) which is what GzipEncoder + every standard
         // server emits. Non-standard inputs with FNAME / FCOMMENT will
         // fail validation — acceptable for v1.
-        val scratch = headerScratch!!
+        val scratch = headerScratch ?: return null
         var consumed = 0
         while (headerScratchLen < GZIP_HEADER_SIZE && consumed < bytes.size) {
             scratch[headerScratchLen++] = bytes[consumed++]
         }
         if (headerScratchLen < GZIP_HEADER_SIZE) return null
-        // Validate magic.
-        val magic = (scratch[0].toInt() and 0xFF) or ((scratch[1].toInt() and 0xFF) shl 8)
-        if (magic != 0x8B1F) {
-            throw DecompressionException("invalid gzip magic: 0x${magic.toString(16)}")
-        }
-        if (scratch[2] != 0x08.toByte()) {
-            throw DecompressionException("unsupported gzip CM: ${scratch[2]}")
-        }
-        val flg = scratch[3].toInt() and 0xFF
-        if (flg and 0xE0 != 0) {
-            throw DecompressionException("reserved gzip FLG bits set: $flg")
-        }
-        // FEXTRA / FNAME / FCOMMENT / FHCRC are not supported in v1.
-        if (flg and 0x1E != 0) {
-            throw DecompressionException("gzip optional fields not supported in v1 (FLG=$flg)")
-        }
+        validateGzipHeader(scratch)
         headerStripped = true
         return if (consumed < bytes.size) bytes.copyOfRange(consumed, bytes.size) else EMPTY_BYTES
+    }
+
+    /**
+     * Validates the 10-byte gzip header per RFC 1952.
+     *
+     * Throws [DecompressionException] on any mismatch — single throw
+     * site so detekt's `ThrowsCount` rule (max 2) is satisfied with
+     * the [stripGzipHeader] caller.
+     */
+    private fun validateGzipHeader(scratch: ByteArray) {
+        val magic = (scratch[0].toInt() and 0xFF) or ((scratch[1].toInt() and 0xFF) shl 8)
+        val cm = scratch[2]
+        val flg = scratch[3].toInt() and 0xFF
+        val reason = when {
+            magic != 0x8B1F -> "invalid gzip magic: 0x${magic.toString(16)}"
+            cm != 0x08.toByte() -> "unsupported gzip CM: $cm"
+            flg and 0xE0 != 0 -> "reserved gzip FLG bits set: $flg"
+            // FEXTRA / FNAME / FCOMMENT / FHCRC not supported in v1.
+            flg and 0x1E != 0 -> "gzip optional fields not supported in v1 (FLG=$flg)"
+            else -> return
+        }
+        throw DecompressionException(reason)
     }
 
     private fun enforceLimits(produced: Int) {
