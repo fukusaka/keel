@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.engine.nio.NioEngine
+import io.github.fukusaka.keel.server.ktor.websocket.keelWebSocket
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -13,8 +14,10 @@ import java.net.Socket
 import java.net.URI
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.http.WebSocket
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -125,6 +128,90 @@ class EngineStopLifecycleTest {
             } finally {
                 pending.cancel(true)
             }
+        }
+    }
+
+    /**
+     * Defect G from PR #481's R3 / R1 root-cause analysis: 50 concurrent idle
+     * WebSocket connections must terminate within the configured grace period
+     * when [io.ktor.server.engine.EmbeddedServer.stop] is called. WebSocket
+     * connections are different from HTTP keep-alive in two ways that matter
+     * for graceful shutdown:
+     *
+     * 1. The server-side handler is *suspended on `incoming.receive()`* (not on
+     *    a next-request read), so the cancel signal must reach a different
+     *    coroutine continuation than the keep-alive case.
+     * 2. The protocol closing handshake involves a server-initiated CLOSE
+     *    frame that must reach every client before the engine tears down the
+     *    underlying socket — naive shutdown would simply RST the connections
+     *    and clients would see an abrupt EOF.
+     *
+     * The defect was originally observed as a hypothesis from the K40 / K4
+     * SIGKILL flake on macOS Apple Silicon; the seam tests in
+     * [io.github.fukusaka.keel.engine.netty.NettyPipelineWsEchoSeamTest] /
+     * [io.github.fukusaka.keel.engine.netty.NettyPipelineWsLargePayloadTest]
+     * cover the per-frame K4 invariant deterministically, but graceful-stop
+     * timing under sustained connection counts is a separate failure class
+     * scoped to the integration layer (engine + Ktor adapter).
+     *
+     * 50 connections is large enough to surface a per-connection cleanup cost
+     * that scales linearly (~10 ms / conn × 50 = 500 ms would already exhaust
+     * the grace budget) but small enough to fit within the existing 1500 ms
+     * elapsed-time bound used by the rest of the suite.
+     */
+    @Test
+    fun `stop with 50 idle WebSocket connections completes within grace period`() {
+        val server = embeddedServer(Keel, port = 0) {
+            routing {
+                keelWebSocket("/idle") {
+                    // Drain the inbound channel so the handler stays suspended
+                    // on `incoming.receive()` rather than exiting early. We
+                    // never expect a frame in this test — the goal is to keep
+                    // the server-side coroutine parked exactly the way a
+                    // long-lived idle WS conn would.
+                    for (frame in incoming) {
+                        // discard
+                    }
+                }
+            }
+        }
+        (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
+        server.start(wait = false)
+        val port = runBlocking { server.engine.resolvedConnectors().first().port }
+
+        val connectionCount = 50
+        newTestHttpClient(threadPoolSize = 8).use { client ->
+            // Fork the WS opens in parallel via buildAsync — building 50
+            // sequentially via .get(...) would stack ~50 × accept latencies
+            // on the test thread before stop() is called. The async path
+            // matches how a real client population would arrive.
+            val pending = (1..connectionCount).map {
+                client.http.newWebSocketBuilder()
+                    .buildAsync(URI("ws://127.0.0.1:$port/idle"), IdleWsListener())
+            }
+            val sockets = pending.map { it.get(10, TimeUnit.SECONDS) }
+            try {
+                val elapsed = measureStopMillis(server, gracePeriodMillis = 500, timeoutMillis = 1000)
+                assertTrue(
+                    elapsed < GRACE_BUDGET_MS,
+                    "stop with 50 idle WS connections took ${elapsed}ms, expected < $GRACE_BUDGET_MS",
+                )
+            } finally {
+                for (ws in sockets) runCatching { ws.abort() }
+            }
+        }
+    }
+
+    /**
+     * Minimal [WebSocket.Listener] for the graceful-stop test. Requests
+     * unbounded inbound demand so any frames the server sends (in particular
+     * the closing CLOSE frame) reach the client without per-frame request
+     * gating, but otherwise discards every callback — this client is parked
+     * for the duration of the test.
+     */
+    private class IdleWsListener : WebSocket.Listener {
+        override fun onOpen(webSocket: WebSocket) {
+            webSocket.request(Long.MAX_VALUE)
         }
     }
 
