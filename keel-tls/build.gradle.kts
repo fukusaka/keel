@@ -22,7 +22,7 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
-                implementation(project(":keel-testing-common"))
+                implementation(project(":keel-testing-internal"))
             }
         }
     }

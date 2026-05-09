@@ -37,7 +37,7 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
-                implementation(project(":keel-testing-common"))
+                implementation(project(":keel-testing-internal"))
                 implementation(libs.kotlinx.coroutines.test)
             }
         }
@@ -48,7 +48,7 @@ kotlin {
                 // `StreamEngine` to run against.
                 implementation(project(":keel-engine-nio"))
                 // Shared test fixtures (`TestHttpClient` + `newTestHttpClient`).
-                implementation(project(":keel-testing-common"))
+                implementation(project(":keel-testing-internal"))
                 // Standard Ktor WebSocket plugin for respondUpgrade tests.
                 implementation(libs.ktor.server.websockets)
             }

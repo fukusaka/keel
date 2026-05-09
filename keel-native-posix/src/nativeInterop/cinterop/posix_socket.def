@@ -402,7 +402,7 @@ static inline void keel_set_nosigpipe(int fd) {
 
 /*
  * (Test-only helpers `keel_connect_inet_loopback` / `keel_set_rcvtimeo`
- * were extracted to keel-native-posix-testing/posix_testing.def on
+ * were extracted to keel-testing-internal/src/nativeInterop/cinterop/posix_testing.def on
  * 2026-04-23 so that production artifact no longer compiles
  * test-scaffolding C wrappers.)
  */
