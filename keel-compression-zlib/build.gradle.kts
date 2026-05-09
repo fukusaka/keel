@@ -23,15 +23,23 @@ plugins {
 // `EncoderOptions(wrapFormat = WrapFormat.Raw)` to either codec's
 // encoder, which yields raw RFC 1951 bits without a wrapper.
 
+fun org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.configureZlibCinterop() {
+    compilations["main"].cinterops {
+        create("keel_zlib") {
+            defFile("src/nativeInterop/cinterop/keel_zlib.def")
+        }
+    }
+}
+
 kotlin {
     jvm()
     js(IR) {
         nodejs()
     }
-    linuxX64()
-    linuxArm64()
-    macosArm64()
-    macosX64()
+    linuxX64 { configureZlibCinterop() }
+    linuxArm64 { configureZlibCinterop() }
+    macosArm64 { configureZlibCinterop() }
+    macosX64 { configureZlibCinterop() }
 
     applyDefaultHierarchyTemplate()
 

@@ -1,0 +1,133 @@
+headers = zlib.h stdlib.h string.h
+linkerOpts.linux = -lz
+linkerOpts.osx = -lz
+---
+
+#include <zlib.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*
+ * cinterop helpers for keel-compression-zlib (Native).
+ *
+ * libz ships with macOS / Linux by default — `linkerOpts = -lz` resolves
+ * via /usr/lib/libz.dylib on macOS and /usr/lib/x86_64-linux-gnu/libz.so on
+ * glibc Linux. No vendoring or build-time flag needed.
+ *
+ * The wrappers below normalize the zlib API across platforms and avoid
+ * cinterop's struggle with `z_stream`'s embedded `next_in` / `next_out`
+ * pointers (which must be set every call). All wrappers operate on a
+ * caller-allocated `z_stream` (32 bytes-ish, allocated via
+ * `interop.alloc<z_stream>()` from Kotlin).
+ */
+
+static inline z_stream* keel_zstream_alloc(void) {
+    z_stream* z = (z_stream*)calloc(1, sizeof(z_stream));
+    return z;
+}
+
+static inline void keel_zstream_free(z_stream* z) {
+    free(z);
+}
+
+/*
+ * deflateInit2 wrapper. Maps `wrap_format` directly to the windowBits
+ * convention used by deflateInit2:
+ *   - 0  = pick from `windowBits_override` (raw if negative, gzip if +16 or higher)
+ *   - 1  = zlib  (windowBits  15)
+ *   - 2  = raw   (windowBits -15)
+ *   - 3  = gzip  (windowBits +31, i.e. 15 + 16)
+ */
+static int keel_deflate_init(z_stream* z, int level, int wrap_kind, int strategy, int windowBits_override) {
+    int wb;
+    switch (wrap_kind) {
+        case 1: wb = 15; break;
+        case 2: wb = -15; break;
+        case 3: wb = 31; break;
+        default: wb = (windowBits_override != 0) ? windowBits_override : 15; break;
+    }
+    return deflateInit2(z, level, Z_DEFLATED, wb, 8 /* memLevel default */, strategy);
+}
+
+static int keel_inflate_init(z_stream* z, int wrap_kind, int windowBits_override) {
+    int wb;
+    switch (wrap_kind) {
+        case 1: wb = 15; break;
+        case 2: wb = -15; break;
+        case 3: wb = 31; break;
+        default: wb = (windowBits_override != 0) ? windowBits_override : 47; break;
+        /* default 47 = zlib + gzip auto-detect */
+    }
+    return inflateInit2(z, wb);
+}
+
+/*
+ * Drive one deflate / inflate step. Returns the zlib status code
+ * (Z_OK / Z_STREAM_END / Z_BUF_ERROR / Z_DATA_ERROR / etc.). The
+ * caller passes raw input / output buffer pointers + lengths and
+ * receives back the consumed input + produced output via
+ * `consumed_in` / `produced_out` out-parameters — avoids manipulating
+ * z_stream fields from Kotlin.
+ */
+static int keel_deflate(
+    z_stream* z,
+    const unsigned char* in_buf, int in_len,
+    unsigned char* out_buf, int out_cap,
+    int flush_flag,
+    int* consumed_in, int* produced_out
+) {
+    z->next_in = (Bytef*)in_buf;
+    z->avail_in = (uInt)in_len;
+    z->next_out = (Bytef*)out_buf;
+    z->avail_out = (uInt)out_cap;
+    int rc = deflate(z, flush_flag);
+    *consumed_in = in_len - (int)z->avail_in;
+    *produced_out = out_cap - (int)z->avail_out;
+    return rc;
+}
+
+static int keel_inflate(
+    z_stream* z,
+    const unsigned char* in_buf, int in_len,
+    unsigned char* out_buf, int out_cap,
+    int flush_flag,
+    int* consumed_in, int* produced_out
+) {
+    z->next_in = (Bytef*)in_buf;
+    z->avail_in = (uInt)in_len;
+    z->next_out = (Bytef*)out_buf;
+    z->avail_out = (uInt)out_cap;
+    int rc = inflate(z, flush_flag);
+    *consumed_in = in_len - (int)z->avail_in;
+    *produced_out = out_cap - (int)z->avail_out;
+    return rc;
+}
+
+static inline int keel_deflate_set_dictionary(z_stream* z, const unsigned char* dict, int len) {
+    return deflateSetDictionary(z, (const Bytef*)dict, (uInt)len);
+}
+
+static inline int keel_inflate_set_dictionary(z_stream* z, const unsigned char* dict, int len) {
+    return inflateSetDictionary(z, (const Bytef*)dict, (uInt)len);
+}
+
+static inline int keel_deflate_reset(z_stream* z) { return deflateReset(z); }
+static inline int keel_inflate_reset(z_stream* z) { return inflateReset(z); }
+
+static inline int keel_deflate_end(z_stream* z) { return deflateEnd(z); }
+static inline int keel_inflate_end(z_stream* z) { return inflateEnd(z); }
+
+static inline const char* keel_zlib_msg(z_stream* z) { return z->msg ? z->msg : ""; }
+
+/* zlib flush flag constants exposed for cinterop binding. */
+static inline int keel_zlib_flag_no_flush(void)   { return Z_NO_FLUSH;   }
+static inline int keel_zlib_flag_sync_flush(void) { return Z_SYNC_FLUSH; }
+static inline int keel_zlib_flag_full_flush(void) { return Z_FULL_FLUSH; }
+static inline int keel_zlib_flag_finish(void)     { return Z_FINISH;     }
+static inline int keel_zlib_flag_block(void)      { return Z_BLOCK;      }
+
+static inline int keel_zlib_status_ok(void)         { return Z_OK; }
+static inline int keel_zlib_status_stream_end(void) { return Z_STREAM_END; }
+static inline int keel_zlib_status_buf_error(void)  { return Z_BUF_ERROR; }
+static inline int keel_zlib_status_data_error(void) { return Z_DATA_ERROR; }
+static inline int keel_zlib_status_need_dict(void)  { return Z_NEED_DICT; }
