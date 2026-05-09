@@ -14,6 +14,7 @@ import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -26,6 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration tests for the `KeelCio` factory — `embeddedServer(KeelCio)` driving
@@ -330,7 +332,7 @@ class KeelCioEngineTest {
                     /* drop header line */
                 }
 
-                runBlocking { writerStarted.await() }
+                runBlocking { withTimeout(5.seconds) { writerStarted.await() } }
 
                 // With the gate the producer suspends after pendingBytes crosses
                 // the high-water mark; without it, all chunkCount iterations

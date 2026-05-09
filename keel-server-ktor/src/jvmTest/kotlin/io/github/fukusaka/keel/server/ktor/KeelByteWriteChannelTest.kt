@@ -14,6 +14,7 @@ import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -30,6 +31,7 @@ import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration tests for [KeelByteWriteChannel]'s close-cause wrap policy:
@@ -394,7 +396,7 @@ class KeelByteWriteChannelTest {
                 readHttpHeaders(reader)
 
                 // The handler reaches respondBytesWriter; the producer is now pumping.
-                runBlocking { writerStarted.await() }
+                runBlocking { withTimeout(5.seconds) { writerStarted.await() } }
 
                 // Pause without reading any body bytes. With the gate the producer suspends
                 // before completing all chunks (after pendingBytes crosses high-water);

@@ -7,6 +7,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.PrintWriter
 import java.net.Socket
 import java.net.URI
@@ -17,6 +18,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Regression test for `KeelApplicationEngine.stop()` completing within the
@@ -43,7 +45,7 @@ class EngineStopLifecycleTest {
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         // Resolve the port so startup has definitely finished.
-        runBlocking { server.engine.resolvedConnectors().first().port }
+        runBlocking { withTimeout(5.seconds) { server.engine.resolvedConnectors().first().port } }
 
         val elapsed = measureStopMillis(server, gracePeriodMillis = 500, timeoutMillis = 1000)
         assertTrue(elapsed < GRACE_BUDGET_MS, "stop took ${elapsed}ms, expected < $GRACE_BUDGET_MS")
