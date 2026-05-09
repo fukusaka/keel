@@ -68,19 +68,26 @@ internal class DefaultPipeline(
     private var inactiveObserved: Boolean = false
 
     /**
-     * Tracks whether `head.invokeOnInactive` has actually propagated
-     * through the inbound chain. Distinct from [inactiveObserved],
-     * which only records "the engine reported inactive". Per-handler
-     * inactive replay in [callHandlerAdded] fires only when both flags
-     * are true — i.e. inactive arrived *and* the chain has already been
-     * notified, so the late-added handler genuinely missed the
-     * propagation. When inactive arrives during the pre-attach window
-     * (`inactiveObserved` set but [drainPreAttachJournal] has not yet
-     * fired the head), the drain will deliver `onInactive` through
-     * the now-assembled chain and the per-handler replay would
-     * otherwise double-fire.
+     * Lifecycle "head fired" flags — track whether each lifecycle
+     * event has actually propagated through the inbound chain
+     * (distinct from "the engine reported the event", which is
+     * recorded by [inactiveObserved] / [pendingActive] / etc.).
+     * Per-handler lifecycle replay in [callHandlerAdded] fires only
+     * when the corresponding "fired" flag is true — i.e. the event
+     * has already swept the chain and the late-added handler genuinely
+     * missed it. When an event arrives during the pre-attach window
+     * (observed but [drainPreAttachJournal] has not yet fired through
+     * head), the drain will deliver it via the now-assembled chain,
+     * so per-handler replay must skip to avoid double-firing.
+     *
+     * [writabilityCurrent] is the latest value seen by head — kept
+     * because writability is stateful, so a late handler needs to
+     * receive the *current* boolean rather than a replay of every
+     * past transition.
      */
-    private var inactiveHeadFired: Boolean = false
+    private var activeFired: Boolean = false
+    private var inactiveFired: Boolean = false
+    private var writabilityCurrent: Boolean? = null
 
     /**
      * Pre-attach event journal: holds inbound events that arrive before
@@ -240,7 +247,14 @@ internal class DefaultPipeline(
 
     override fun notifyActive(): Pipeline {
         if (preAttachJournalDrained) {
-            head.invokeOnActive()
+            // Idempotent: only the first observation fires through the
+            // chain; subsequent calls are dropped. Late-added handlers
+            // pick up the active state via [callHandlerAdded]'s
+            // per-handler replay using [activeFired].
+            if (!activeFired) {
+                activeFired = true
+                head.invokeOnActive()
+            }
         } else {
             // Idempotent flag — multiple notifyActive calls coalesce.
             pendingActive = true
@@ -298,12 +312,12 @@ internal class DefaultPipeline(
         // would suspend forever waiting for `eof = true`.
         inactiveObserved = true
         if (preAttachJournalDrained) {
-            inactiveHeadFired = true
+            inactiveFired = true
             head.invokeOnInactive()
         }
         // Pre-attach: the inactiveObserved flag is sufficient; drain replays
         // it via head.invokeOnInactive at drain time and sets
-        // [inactiveHeadFired].
+        // [inactiveFired].
         return this
     }
 
@@ -337,6 +351,11 @@ internal class DefaultPipeline(
 
     override fun notifyWritabilityChanged(isWritable: Boolean): Pipeline {
         if (preAttachJournalDrained) {
+            // Record the latest value so [callHandlerAdded]'s
+            // per-handler replay can deliver the current state to a
+            // late-added handler. Writability is stateful — only the
+            // most recent value is meaningful when joining.
+            writabilityCurrent = isWritable
             head.invokeOnWritabilityChanged(isWritable)
         } else {
             // Latest-only — only the most recent value is meaningful when
@@ -424,27 +443,13 @@ internal class DefaultPipeline(
             // the always-armed read filter (kqueue `EV_EOF`, epoll
             // `EPOLLRDHUP`) before the user code calls `read` would
             // otherwise leave the bridge waiting forever for `eof = true`.
-            if (inactiveObserved && inactiveHeadFired && !firedDrainInline) {
-                // The chain has already received head.invokeOnInactive
-                // (either via notifyInactive after drain, or via drain
-                // itself). Replay onInactive on this lone late-added
-                // handler so it does not miss the lifecycle event.
-                // Pre-drain notifyInactive (inactiveObserved without
-                // inactiveHeadFired) skips this branch — the journal
-                // drain will deliver onInactive through the now-assembled
-                // chain including this handler. The [firedDrainInline]
-                // exclusion handles the inline-drain path: the drain
-                // that just ran above already propagated onInactive
-                // through this handler via head, so per-handler replay
-                // would double-fire.
-                val handler = ctx.handler
-                if (handler is InboundHandler) {
-                    try {
-                        handler.onInactive(ctx)
-                    } catch (e: Throwable) {
-                        logger.error(e) { "onInactive() replay threw for '${ctx.name}'" }
-                    }
-                }
+            // Per-handler lifecycle replay for late-added handlers.
+            // The [firedDrainInline] guard skips replay when the drain
+            // that just ran inline above already propagated lifecycle
+            // events through this handler via head — replaying again
+            // would double-fire.
+            if (!firedDrainInline && ctx.handler is InboundHandler) {
+                replayLifecycleTo(ctx, ctx.handler)
             }
         } catch (e: Throwable) {
             logger.error(e) { "handlerAdded() threw for '${ctx.name}'" }
@@ -744,6 +749,38 @@ internal class DefaultPipeline(
     }
 
     /**
+     * Replays the current lifecycle state to a late-added inbound
+     * handler. Replay precedence is "inactive wins" because the
+     * channel's terminal state takes priority — a handler joining an
+     * already-closed channel should observe `onInactive` (not
+     * `onActive`) so it can clean up immediately, regardless of the
+     * `activeFired` history.
+     */
+    private fun replayLifecycleTo(ctx: DefaultContext, handler: InboundHandler) {
+        when {
+            inactiveObserved && inactiveFired -> invokeReplayCatching(ctx, "onInactive") {
+                handler.onInactive(ctx)
+            }
+            activeFired -> {
+                invokeReplayCatching(ctx, "onActive") { handler.onActive(ctx) }
+                writabilityCurrent?.let { writable ->
+                    invokeReplayCatching(ctx, "onWritabilityChanged") {
+                        handler.onWritabilityChanged(ctx, writable)
+                    }
+                }
+            }
+        }
+    }
+
+    private inline fun invokeReplayCatching(ctx: DefaultContext, eventName: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Throwable) {
+            logger.error(e) { "$eventName() replay threw for '${ctx.name}'" }
+        }
+    }
+
+    /**
      * Drains the pre-attach event journal onto the now fully-constructed
      * pipeline. Scheduled by [callHandlerAdded] on the first user
      * [InboundHandler] addition via [ioDispatcher.dispatch]; runs on the
@@ -767,6 +804,7 @@ internal class DefaultPipeline(
 
         if (pendingActive) {
             pendingActive = false
+            activeFired = true
             head.invokeOnActive()
         }
         while (pendingReads.isNotEmpty()) {
@@ -778,6 +816,7 @@ internal class DefaultPipeline(
         }
         pendingWritability?.let { writable ->
             pendingWritability = null
+            writabilityCurrent = writable
             head.invokeOnWritabilityChanged(writable)
         }
         while (pendingUserEvents.isNotEmpty()) {
@@ -790,7 +829,7 @@ internal class DefaultPipeline(
             // Replay the inactivation through the head so the entire
             // chain (not just the first handler via the per-handler
             // [callHandlerAdded] replay) processes onInactive.
-            inactiveHeadFired = true
+            inactiveFired = true
             head.invokeOnInactive()
         }
     }
