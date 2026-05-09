@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -64,7 +65,7 @@ class JssePipelineHttpsMultiRequestTest {
             }
             val port = (server.localAddress as InetSocketAddress).port
 
-            Thread.sleep(SERVER_START_DELAY_MS)
+            delay(SERVER_START_DELAY_MS)
 
             try {
                 repeat(REQUEST_COUNT) { i ->
@@ -108,7 +109,7 @@ class JssePipelineHttpsMultiRequestTest {
             }
             val port = (server.localAddress as InetSocketAddress).port
 
-            Thread.sleep(SERVER_START_DELAY_MS)
+            delay(SERVER_START_DELAY_MS)
 
             try {
                 val (exitCode, output) = curlHttps(port, "/large")
