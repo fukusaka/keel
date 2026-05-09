@@ -21,7 +21,6 @@ include(
     ":keel-io",
     ":keel-core",
     ":keel-native-posix",
-    ":keel-native-posix-testing",
     ":keel-engine-nio",
     ":keel-engine-netty",
     ":keel-engine-nodejs",
@@ -33,7 +32,7 @@ include(
     ":keel-server-ktor-base",
     ":keel-server-ktor",
     ":keel-server-ktor-cio",
-    ":keel-testing-common",
+    ":keel-testing-internal",
     ":detekt-rules",
 )
 

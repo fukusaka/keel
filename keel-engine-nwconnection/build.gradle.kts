@@ -38,11 +38,11 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(project(":keel-tls"))
-                // `keel-native-posix-testing` provides PosixRawClient + fakes:
+                // `keel-testing-internal` (nativeMain) provides PosixRawClient + fakes:
                 // NwEngineTest drives a dumb TCP client from the peer side.
                 // Production `keel-engine-nwconnection` uses Network.framework
                 // exclusively, no POSIX dep.
-                implementation(project(":keel-native-posix-testing"))
+                implementation(project(":keel-testing-internal"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
             }

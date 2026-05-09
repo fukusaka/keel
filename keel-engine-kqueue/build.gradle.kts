@@ -42,7 +42,7 @@ kotlin {
                 // FakeNativeSocket / FakeNativeSocketOps / PosixRawClient /
                 // InternalTestApi were extracted from keel-native-posix's
                 // nativeMain into this test-only module on 2026-04-23.
-                implementation(project(":keel-native-posix-testing"))
+                implementation(project(":keel-testing-internal"))
             }
         }
     }
