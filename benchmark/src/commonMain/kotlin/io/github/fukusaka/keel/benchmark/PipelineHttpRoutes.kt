@@ -43,9 +43,31 @@ object PipelineHttpResponses {
  * body messages ([HttpBody] / [HttpBodyEnd]) directly. This avoids
  * the aggregator's per-request body copy overhead in benchmarks.
  */
-fun installPipelineHttpHandlers(pipeline: Pipeline) {
+fun installPipelineHttpHandlers(pipeline: Pipeline, compression: Boolean = false) {
     pipeline.addLast("encoder", HttpResponseEncoder())
     pipeline.addLast("decoder", HttpRequestDecoder())
+    if (compression) {
+        // Place CompressionHandler BEFORE the routing handler on the
+        // outbound side: routing emits HttpResponseHead → HttpBody* →
+        // HttpBodyEnd, the compression handler intercepts those before
+        // they reach the encoder. Pipeline.addLast appends to the tail;
+        // outbound flows tail → head, so insertion order here is:
+        //   encoder (tail) ← decoder ← compression ← routing (head)
+        // and outbound HttpResponseHead from `routing` traverses
+        // compression → decoder (no-op for outbound, it's an inbound
+        // handler) → encoder.
+        val registry = io.github.fukusaka.keel.compression.CompressionRegistry().apply {
+            register(io.github.fukusaka.keel.compression.zlib.GzipCodec)
+            register(io.github.fukusaka.keel.compression.zlib.DeflateCodec)
+        }
+        pipeline.addLast(
+            "compression",
+            io.github.fukusaka.keel.codec.http.CompressionHandler(
+                registry = registry,
+                allocator = io.github.fukusaka.keel.buf.DefaultAllocator,
+            ),
+        )
+    }
     pipeline.addLast("routing", BenchmarkRoutingHandler())
 }
 

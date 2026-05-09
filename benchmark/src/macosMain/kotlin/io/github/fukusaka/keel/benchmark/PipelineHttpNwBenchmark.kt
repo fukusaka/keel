@@ -30,7 +30,7 @@ object PipelineHttpNwBenchmark : EngineBenchmark {
         // NwEngine.bindPipeline() is suspend (listener startup is async).
         val server = runBlocking {
             engine.bindPipeline("0.0.0.0", config.port, config = bindConfig) { channel ->
-                installPipelineHttpHandlers(channel.pipeline)
+                installPipelineHttpHandlers(channel.pipeline, compression = config.compression)
             }
         }
 

@@ -29,7 +29,7 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
         val (bindConfig, tlsCloseable) = bindConfigFor(config)
 
         val server = engine.bindPipeline("0.0.0.0", config.port, config = bindConfig) { channel ->
-            installPipelineHttpHandlers(channel.pipeline)
+            installPipelineHttpHandlers(channel.pipeline, compression = config.compression)
         }
 
         return {

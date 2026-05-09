@@ -50,6 +50,9 @@ kotlin {
                 // commonMain-wide, not per-target.
                 implementation(project(":keel-codec-http"))
                 implementation(project(":keel-codec-websocket"))
+                // K16 fix: pipeline-http engines wire `keel-compression-zlib`
+                // (gzip / deflate backend) when `--compression=true`.
+                implementation(project(":keel-compression-zlib"))
                 implementation(libs.kotlinx.coroutines.core)
             }
         }

@@ -33,7 +33,7 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
 
         val server = runBlocking {
             engine.bindPipeline("0.0.0.0", config.port, config = tlsBindConfig) { channel ->
-                installPipelineHttpHandlers(channel.pipeline)
+                installPipelineHttpHandlers(channel.pipeline, compression = config.compression)
             }
         }
 
