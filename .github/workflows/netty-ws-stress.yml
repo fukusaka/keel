@@ -1,0 +1,77 @@
+name: engine-netty WS stress
+
+# Manual on-demand stress run for keel-engine-netty's WebSocket pipeline.
+# The class `NettyPipelineWsStressTest` is gated by the system property
+# `keel.stress=true` so the default PR-gate run skips it; this workflow
+# sets the property and runs the suite on macOS Apple Silicon — the same
+# runner family where the original K40 / K4 SIGKILL flake surfaced.
+#
+# Triggers:
+#   - workflow_dispatch: manual run with configurable iteration count
+#     (Actions tab → "engine-netty WS stress" → Run workflow)
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of test-suite iterations'
+        required: false
+        default: '5'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  stress:
+    name: Stress (macOS Apple Silicon) x${{ github.event.inputs.iterations || '5' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    env:
+      ITERATIONS_DEFAULT: '5'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Stress loop
+        env:
+          ITERATIONS: ${{ github.event.inputs.iterations || env.ITERATIONS_DEFAULT }}
+        run: |
+          set +e
+          mkdir -p stress-reports
+          fail_count=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            echo "=== iteration $i ==="
+            ./gradlew :keel-engine-netty:cleanJvmTest :keel-engine-netty:jvmTest -Dkeel.stress=true
+            rc=$?
+            if [ -d keel-engine-netty/build/reports/tests ]; then
+              cp -r keel-engine-netty/build/reports/tests "stress-reports/iter-$i-reports"
+            fi
+            if [ -d keel-engine-netty/build/test-results ]; then
+              cp -r keel-engine-netty/build/test-results "stress-reports/iter-$i-results"
+            fi
+            if [ $rc -ne 0 ]; then
+              fail_count=$((fail_count + 1))
+              echo "iteration $i FAILED (rc=$rc, total failures=$fail_count)"
+            fi
+          done
+          echo "=== summary: $fail_count / $ITERATIONS iterations failed ==="
+          # Exit 0 so artifacts upload even if some iterations failed;
+          # the summary line above is the signal.
+
+      - name: Upload stress reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netty-ws-stress-reports
+          path: stress-reports/
+          if-no-files-found: ignore
+          retention-days: 14
