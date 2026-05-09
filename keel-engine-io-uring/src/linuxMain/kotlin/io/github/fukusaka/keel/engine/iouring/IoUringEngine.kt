@@ -163,7 +163,17 @@ class IoUringEngine(
         try {
             logger.debug { "Bound to $address" }
             return IoUringStreamServer(
-                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                serverFd = serverFd,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddress = address,
+                bindConfig = bindConfig,
+                writeModeSelector = writeModeSelector,
+                capabilities = resolvedCapabilities,
+                logger = logger,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+                idleReadPolicy = config.idleReadPolicy,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
@@ -181,7 +191,17 @@ class IoUringEngine(
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return IoUringStreamServer(
-                serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                serverFd = serverFd,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                localAddress = localAddr,
+                bindConfig = bindConfig,
+                writeModeSelector = writeModeSelector,
+                capabilities = resolvedCapabilities,
+                logger = logger,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+                idleReadPolicy = config.idleReadPolicy,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
@@ -245,7 +265,18 @@ class IoUringEngine(
         val fileRegistry = workerGroup.fileRegistryAt(wi)
         val bufferTable = workerGroup.bufferTableAt(wi)
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+            IoUringIoTransport(
+                fd = fd,
+                eventLoop = workerLoop,
+                capabilities = resolvedCapabilities,
+                writeModeSelector = writeModeSelector,
+                allocator = allocator,
+                bufferRing = bufferRing,
+                fixedFileRegistry = fileRegistry,
+                registeredBufferTable = bufferTable,
+                nativeSocket = nativeSocket,
+                idleReadPolicy = config.idleReadPolicy,
+            )
         }
         logger.debug { "Connected to $address" }
         return IoUringPipelinedChannel(transport, logger, address, null)
@@ -316,7 +347,18 @@ class IoUringEngine(
         // `FixedFileRegistry.register(fd)` (invoked from the transport
         // constructor's property initialiser) runs on the submitter task.
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+            IoUringIoTransport(
+                fd = fd,
+                eventLoop = workerLoop,
+                capabilities = resolvedCapabilities,
+                writeModeSelector = writeModeSelector,
+                allocator = allocator,
+                bufferRing = bufferRing,
+                fixedFileRegistry = fileRegistry,
+                registeredBufferTable = bufferTable,
+                nativeSocket = nativeSocket,
+                idleReadPolicy = config.idleReadPolicy,
+            )
         }
         logger.debug { "Connected to $remoteAddr" }
         return IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
@@ -362,7 +404,16 @@ class IoUringEngine(
         val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog))
         try {
             val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                workerGroup = workerGroup,
+                serverFds = serverFds,
+                localAddr = address,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+                capabilities = resolvedCapabilities,
+                logger = logger,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+                idleReadPolicy = this@IoUringEngine.config.idleReadPolicy,
             )
             server.start()
             logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
@@ -396,7 +447,16 @@ class IoUringEngine(
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
             val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
             val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                workerGroup = workerGroup,
+                serverFds = serverFds,
+                localAddr = localAddr,
+                config = config,
+                pipelineInitializer = pipelineInitializer,
+                capabilities = resolvedCapabilities,
+                logger = logger,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+                idleReadPolicy = this@IoUringEngine.config.idleReadPolicy,
             )
             server.start()
             logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }

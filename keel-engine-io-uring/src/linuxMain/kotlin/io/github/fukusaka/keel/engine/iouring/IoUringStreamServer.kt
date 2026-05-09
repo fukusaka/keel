@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
@@ -64,6 +65,7 @@ internal class IoUringStreamServer(
     private val logger: Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("IoUringStreamServer"),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
+    private val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE,
 ) : StreamServer {
 
     // @Volatile so the bossLoop-side read in armMultishotAccept.onCqe
@@ -130,7 +132,18 @@ internal class IoUringStreamServer(
             val bufferTable = workerGroup.bufferTableAt(wi)
             // Construct on the worker EventLoop pthread — same reason as IoUringEngine.connect.
             val transport = withContext(workerLoop) {
-                IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+                IoUringIoTransport(
+                    fd = clientFd,
+                    eventLoop = workerLoop,
+                    capabilities = capabilities,
+                    writeModeSelector = writeModeSelector,
+                    allocator = allocator,
+                    bufferRing = bufferRing,
+                    fixedFileRegistry = fileRegistry,
+                    registeredBufferTable = bufferTable,
+                    nativeSocket = nativeSocket,
+                    idleReadPolicy = idleReadPolicy,
+                )
             }
             val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)

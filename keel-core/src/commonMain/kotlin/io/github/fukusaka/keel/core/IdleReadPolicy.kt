@@ -29,7 +29,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * | engine-nwconnection | yes | NWConnection has no ready-without-consume API |
  * | engine-kqueue | no | `EV_EOF` flag observable while `EVFILT_READ` is armed without reading |
  * | engine-epoll | no | `EPOLLRDHUP` observable likewise |
- * | engine-io-uring | no | same kernel-level event flag as epoll |
+ * | engine-io-uring | yes | multishot `IORING_OP_RECV` is structurally an active receive — peer FIN is delivered as a `res = 0` CQE only while the recv SQE is armed |
  * | engine-netty (`NettyTransport.Epoll` / `KQueue`) | no | native transport reuses kqueue / epoll mechanism |
  * | engine-nodejs | no | Node `net.Socket` exposes peer FIN through a separate `'end'` event independent of the data listener |
  *

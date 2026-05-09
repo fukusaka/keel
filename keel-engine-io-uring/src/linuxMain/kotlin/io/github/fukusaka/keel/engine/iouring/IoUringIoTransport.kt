@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io_uring.keel_prep_shutdown
 import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
@@ -81,6 +82,7 @@ internal class IoUringIoTransport(
      */
     preAllocatedIndex: Int = -1,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    private val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -129,10 +131,60 @@ internal class IoUringIoTransport(
 
     private var multishotSlot = -1
 
+    /**
+     * [IdleReadPolicy.DETECT_PEER_CLOSE]: arm multishot recv here so
+     * peer FIN surfaces through [onReadClosed] regardless of the user's
+     * [readEnabled] state. Arming runs *after*
+     * `AbstractPipelinedChannel.init` has wired up [onRead] /
+     * [onReadClosed], so the first CQE always observes non-null
+     * callbacks; arming earlier in `init { }` would race with the
+     * channel-construction sequence and could leak buffers via a
+     * still-null [onRead] (which would also leak provided buffer ring
+     * slots until the connection closes — see PR #475 for the same
+     * fix on engine-nio / engine-netty / engine-nwconnection).
+     *
+     * Although io_uring is a "pull-model" engine in the sense that the
+     * `IoUringEventLoop` owns the read primitive, multishot recv with
+     * a provided buffer ring is structurally an *active* receive — the
+     * kernel only generates a `res = 0` CQE on FIN when a recv SQE is
+     * armed and waiting on the connection. Without an armed multishot
+     * recv, peer FIN is invisible to user code (no event-readiness
+     * notification analogous to kqueue's `EV_EOF` flag is delivered
+     * separately). [IdleReadPolicy] therefore applies to engine-io-uring
+     * the same way it applies to the push-model engines.
+     */
+    override fun onChannelAttached() {
+        if (idleReadPolicy != IdleReadPolicy.DETECT_PEER_CLOSE) return
+        // [submitMultishotRecv] manipulates the SQ ring directly and is
+        // not thread-safe — it must run on the owning EventLoop thread.
+        // [AbstractPipelinedChannel.init] (which calls this hook) may
+        // execute on any thread because [IoUringPipelinedChannel]'s
+        // constructor is invoked outside the [withContext(eventLoop)]
+        // block that constructed the transport. Dispatch the arm onto
+        // the EventLoop when called from a non-EventLoop thread; same
+        // pattern used by the rest of the engine for SQ submissions
+        // from foreign threads.
+        if (eventLoop.inEventLoop()) {
+            armRecv()
+        } else {
+            eventLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable { armRecv() })
+        }
+    }
+
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && opened) armRecv()
+            // [IdleReadPolicy.DETECT_PEER_CLOSE]: multishot recv is
+            // already armed from [onChannelAttached] and stays armed for
+            // the lifetime of the transport — flipping `readEnabled`
+            // only controls whether subsequent CQEs deliver bytes
+            // through [onRead] (the always-deliver path also used by
+            // engine-nio / engine-netty / engine-nwconnection — pre-attach
+            // event journal absorbs them when no user [InboundHandler]
+            // is installed yet).
+            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
+                armRecv()
+            }
         }
 
     private fun armRecv() {
@@ -152,7 +204,22 @@ internal class IoUringIoTransport(
                         val buf = wrappers!![bufId]
                         buf.reset()
                         buf.writerIndex = res
-                        onRead?.invoke(buf)
+                        val callback = onRead
+                        if (callback != null) {
+                            callback(buf)
+                        } else {
+                            // Defensive: release the slot back to the
+                            // provided buffer ring. With the
+                            // [onChannelAttached] hook (PR #475) onRead
+                            // is wired up before the first CQE can
+                            // arrive in [IdleReadPolicy.DETECT_PEER_CLOSE]
+                            // mode. This branch protects against future
+                            // call paths that might arm before
+                            // [onChannelAttached] — leaking the slot
+                            // would deplete the ring and stall recv
+                            // with -ENOBUFS.
+                            buf.release()
+                        }
                     }
                     res == -ENOBUFS -> armRecv()
                     else -> onReadClosed?.invoke()

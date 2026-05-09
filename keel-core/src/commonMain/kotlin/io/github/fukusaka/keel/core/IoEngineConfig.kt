@@ -42,11 +42,13 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  * @property idleReadPolicy Trade-off between peer-close detection and
  *                          TCP back-pressure for the idle-read window
  *                          (`PipelinedChannel.readEnabled = false`).
- *                          Consulted only by engines that face an API
- *                          structural constraint (engine-nio,
+ *                          Consulted by engines whose read primitive
+ *                          is structurally an active operation (engine-nio,
  *                          engine-netty's NIO fallback transport,
- *                          engine-nwconnection); other engines achieve
- *                          both simultaneously and silently ignore this
+ *                          engine-nwconnection, engine-io-uring's
+ *                          multishot recv); other engines achieve both
+ *                          peer-close detection and TCP back-pressure
+ *                          simultaneously and silently ignore this
  *                          setting. See [IdleReadPolicy] for the engine
  *                          applicability table and trade-off details.
  *                          Defaults to [IdleReadPolicy.DETECT_PEER_CLOSE]

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
@@ -58,6 +59,7 @@ internal class IoUringPipelinedStreamServer(
     private val logger: Logger,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
+    private val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE,
 ) : PipelinedStreamServer {
 
     override val localAddress: SocketAddress get() = localAddr
@@ -208,6 +210,7 @@ internal class IoUringPipelinedStreamServer(
                 registeredBufferTable = bufferTable,
                 preAllocatedIndex = acceptRes,
                 nativeSocket = nativeSocket,
+                idleReadPolicy = idleReadPolicy,
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
@@ -221,6 +224,7 @@ internal class IoUringPipelinedStreamServer(
                 fixedFileRegistry = fileRegistry,
                 registeredBufferTable = bufferTable,
                 nativeSocket = nativeSocket,
+                idleReadPolicy = idleReadPolicy,
             )
         }
         val channel = IoUringPipelinedChannel(transport, logger)
