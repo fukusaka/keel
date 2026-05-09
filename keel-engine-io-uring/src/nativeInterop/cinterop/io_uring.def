@@ -1,10 +1,12 @@
 headers = liburing.h sys/utsname.h
 linkerOpts.linux = -luring-ffi -L/usr/lib/x86_64-linux-gnu
-compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu
+compilerOpts.linux = -I/usr/include -I/usr/include/x86_64-linux-gnu -D_GNU_SOURCE
 
 ---
 
+#define _GNU_SOURCE
 #include <liburing.h>
+#include <poll.h>
 #include <stdlib.h>
 
 /*
@@ -47,6 +49,51 @@ static unsigned short keel_cqe_get_buf_id(unsigned int cqe_flags) {
 /* Check if CQE has the BUFFER flag set (provided buffer was used). */
 static int keel_cqe_has_buffer(unsigned int cqe_flags) {
     return (cqe_flags & IORING_CQE_F_BUFFER) != 0;
+}
+
+/*
+ * Linux poll-event constants for IORING_OP_POLL_ADD.
+ *
+ * POLLRDHUP is a Linux-specific extension (kernel 2.6.17+, requires
+ * `_GNU_SOURCE`) and is not bound by Kotlin/Native cinterop's default
+ * `platform.posix` package. Re-export the constants we need so callers
+ * use a single namespace (`io_uring.KEEL_POLLRDHUP` etc.) rather than
+ * spreading platform.linux / platform.posix imports across the engine.
+ *
+ * Values match the kernel ABI (`<asm-generic/poll.h>`):
+ *   POLLRDHUP = 0x2000  (peer half-closed write side; Linux-specific)
+ *   POLLHUP   = 0x0010  (full hangup)
+ *   POLLERR   = 0x0008  (poll error)
+ *
+ * POLLIN is intentionally omitted — keel watches peer-close events only
+ * and never includes POLLIN in the POLL_ADD mask, so we don't re-export
+ * it. The `_GNU_SOURCE` guard at the top of <liburing.h> pulls in the
+ * POLLRDHUP definition, so the macro is in scope when this file is
+ * compiled.
+ */
+static const unsigned int KEEL_POLLRDHUP = POLLRDHUP;
+static const unsigned int KEEL_POLLHUP = POLLHUP;
+static const unsigned int KEEL_POLLERR = POLLERR;
+
+/*
+ * Single-shot IORING_OP_POLL_ADD wrapper.
+ *
+ * Registers an interest in `poll_mask` for `fd` and produces exactly one
+ * CQE when any bit in the mask becomes set. Equivalent to a single
+ * `epoll_ctl(EPOLL_CTL_ADD, ...)` + first event delivery.
+ *
+ * keel uses this with `POLLRDHUP | POLLHUP | POLLERR` (no `POLLIN`) for
+ * event-only peer-FIN / peer-close detection without consuming bytes
+ * from the socket — the "ready notification without consume" channel
+ * that lets engine-io-uring detect peer FIN while `readEnabled = false`
+ * and a multishot recv SQE is not armed.
+ *
+ * Wrapper needed because `io_uring_prep_poll_add` is an inline
+ * function in liburing.h and cinterop cannot bind it directly. Marked
+ * static — same rationale as the other helpers above.
+ */
+static void keel_prep_poll_add(struct io_uring_sqe *sqe, int fd, unsigned poll_mask) {
+    io_uring_prep_poll_add(sqe, fd, poll_mask);
 }
 
 /* Check if CQE has the MORE flag set (multi-shot SQE still armed). */

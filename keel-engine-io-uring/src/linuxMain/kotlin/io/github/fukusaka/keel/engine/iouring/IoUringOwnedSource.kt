@@ -203,7 +203,7 @@ internal class IoUringOwnedSource(
         if (!closed) {
             closed = true
             if (multishotSlot != -1) {
-                eventLoop.cancelMultishot(multishotSlot)
+                eventLoop.cancelSqe(multishotSlot)
                 multishotSlot = -1
             }
             pendingReadCont?.let { cont ->

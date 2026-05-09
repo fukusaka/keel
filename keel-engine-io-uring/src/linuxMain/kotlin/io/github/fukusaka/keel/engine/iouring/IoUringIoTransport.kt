@@ -21,8 +21,12 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
+import io_uring.KEEL_POLLERR
+import io_uring.KEEL_POLLHUP
+import io_uring.KEEL_POLLRDHUP
 import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
+import io_uring.keel_prep_poll_add
 import platform.posix.ENOBUFS
 import platform.posix.SHUT_WR
 import io_uring.iovec
@@ -129,6 +133,126 @@ internal class IoUringIoTransport(
 
     private var multishotSlot = -1
 
+    /**
+     * Slot tracking the single-shot `IORING_OP_POLL_ADD` SQE that watches
+     * for peer FIN / hangup / error events. Negative when no POLL_ADD is
+     * armed; non-negative once [armPollAddForFin] has registered the SQE.
+     * The slot is implicitly released when the kernel delivers the
+     * (single) CQE — either because the poll mask fired or because the
+     * fd was closed and the kernel cancelled the op.
+     */
+    private var pollAddFinSlot = -1
+
+    /**
+     * Whether [onReadClosed] has already been invoked. Guards against
+     * double-firing when both [armPollAddForFin]'s POLL_ADD CQE and
+     * [armRecv]'s multishot recv CQE observe the same peer FIN. Set on
+     * the EventLoop thread only.
+     */
+    private var readClosedFired = false
+
+    private fun fireReadClosedOnce() {
+        if (readClosedFired) return
+        readClosedFired = true
+        onReadClosed?.invoke()
+    }
+
+    /**
+     * Arms a single-shot `IORING_OP_POLL_ADD` watching for `POLLRDHUP |
+     * POLLHUP | POLLERR` (no `POLLIN` — bytes do not trigger the CQE).
+     *
+     * **Why a separate POLL_ADD instead of relying on multishot recv**:
+     * the multishot recv path only delivers a `res = 0` CQE on FIN
+     * while it is armed (i.e. while `readEnabled = true`). When a user
+     * holds `readEnabled = false` (write-only push client, monitoring
+     * forwarder, etc.), no recv SQE is queued and peer FIN is invisible
+     * — the connection lingers in `CLOSE-WAIT` until the next write or
+     * `SO_KEEPALIVE` expires (~2 hours by default). POLL_ADD provides
+     * an *event-only* peer-close channel that is independent of the
+     * read syscall path: the kernel produces one CQE when the requested
+     * mask is satisfied, and the fd's receive buffer is left untouched
+     * so genuine TCP back-pressure (kernel `rcvbuf` retention) is
+     * preserved.
+     *
+     * Equivalent to `epoll_ctl(EPOLL_CTL_ADD, EPOLLRDHUP | EPOLLHUP |
+     * EPOLLERR)` on engine-epoll and `EVFILT_READ` + `EV_EOF` flag
+     * observation on engine-kqueue. With this in place, engine-io-uring
+     * achieves the same "peer FIN detection without active read"
+     * semantics as those engines and does not need to honour
+     * [io.github.fukusaka.keel.core.IdleReadPolicy] (the policy is
+     * relevant only for engines whose underlying API forces a trade-off
+     * between peer-close detection and back-pressure on the idle-read
+     * window).
+     *
+     * **Why single-shot, not multishot**: `POLLRDHUP | POLLHUP | POLLERR`
+     * are terminal events — once a bit is set, the kernel never clears
+     * it for the lifetime of the connection. Multishot poll re-arms on
+     * state transitions, but terminal events have no transition back,
+     * so multishot would fire exactly one CQE and idle thereafter —
+     * functionally equivalent to single-shot. Given the equivalence,
+     * single-shot is the simpler choice: the kernel auto-releases the
+     * SQE after the single CQE rather than requiring an explicit
+     * `IORING_OP_ASYNC_CANCEL` round-trip when the event has already
+     * fired before close. Single-shot also sidesteps the multishot
+     * poll re-arm race classes that have surfaced historically in
+     * io_uring CVEs (the kernel's terminal-event handling for the
+     * single-shot path is the longer-standing implementation).
+     */
+    private fun armPollAddForFin() {
+        // POLL_ADD does not support the registered file table (fd must be
+        // a raw POSIX fd), so direct-allocated transports skip this path.
+        // Direct-allocated multishot accept is gated behind the
+        // `acceptDirectAlloc` capability and is rare in normal use.
+        if (useDirectAlloc) {
+            eventLoop.logger.debug {
+                "skipping POLL_ADD for FIN detection: useDirectAlloc=true (no raw fd)"
+            }
+            return
+        }
+        // Mask: POLLRDHUP | POLLHUP | POLLERR — peer-close / hangup / error
+        // events ONLY. POLLIN is intentionally excluded so application bytes
+        // arriving in the receive buffer do NOT fire this CQE (data delivery
+        // remains exclusively the multishot recv path's responsibility).
+        // Without this, a `transport.onReadClosed` default that closes the
+        // channel on EOF would prematurely tear the connection down on every
+        // non-empty data arrival under `readEnabled = false`.
+        val pollMask: UInt = KEEL_POLLRDHUP or KEEL_POLLHUP or KEEL_POLLERR
+        pollAddFinSlot = eventLoop.submitCallback(
+            prepare = { sqe ->
+                io_uring.keel_prep_poll_add(sqe, fd, pollMask)
+            },
+            onCqe = { res, _ ->
+                pollAddFinSlot = -1
+                if (!opened) return@submitCallback
+                if (res >= 0) {
+                    eventLoop.logger.debug {
+                        "POLL_ADD FIN CQE: fd=$fd revents=0x${res.toString(16)}"
+                    }
+                    fireReadClosedOnce()
+                }
+                // Negative `res` means the poll itself was cancelled
+                // (e.g. `-ECANCELED` when [teardownOnEventLoop] cancels the
+                // SQE before close). No action — close path handles cleanup.
+            },
+        )
+        eventLoop.logger.debug {
+            "POLL_ADD FIN armed: fd=$fd slot=$pollAddFinSlot mask=0x${pollMask.toString(16)}"
+        }
+    }
+
+    override fun onChannelAttached() {
+        // Arm POLL_ADD here — after [AbstractPipelinedChannel.init] has
+        // wired up [onReadClosed] — so the (single) CQE always observes
+        // a non-null callback. Same race-avoidance pattern as engine-nio
+        // / engine-netty / engine-nwconnection (PR #475's
+        // [IoTransport.onChannelAttached] hook).
+        if (eventLoop.inEventLoop()) {
+            armPollAddForFin()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { armPollAddForFin() })
+        }
+    }
+
     override var readEnabled: Boolean = false
         set(value) {
             field = value
@@ -155,7 +279,7 @@ internal class IoUringIoTransport(
                         onRead?.invoke(buf)
                     }
                     res == -ENOBUFS -> armRecv()
-                    else -> onReadClosed?.invoke()
+                    else -> fireReadClosedOnce()
                 }
             },
         )
@@ -404,7 +528,7 @@ internal class IoUringIoTransport(
             // Route through the read-closed path so the pipeline notifies
             // inactive and the channel tears down cleanly. Safe even though
             // the error is write-side: the connection is unusable either way.
-            onReadClosed?.invoke()
+            fireReadClosedOnce()
         }
         return true
     }
@@ -475,7 +599,7 @@ internal class IoUringIoTransport(
                     }
                     buf.release()
                     onComplete()
-                    if (res < 0) onReadClosed?.invoke()
+                    if (res < 0) fireReadClosedOnce()
                 }
             },
         )
@@ -800,7 +924,7 @@ internal class IoUringIoTransport(
             teardownOnEventLoop()
         } else {
             // Channel.close() is non-suspend and may be invoked from any thread.
-            // Dispatch the EventLoop-bound teardown (cancelMultishot, fixed-file
+            // Dispatch the EventLoop-bound teardown (cancelSqe, fixed-file
             // unregister, fd close) onto the owning EventLoop. Fire-and-forget:
             // pending close tasks are drained at the top of each loop iteration,
             // so the ring is never torn down before its channel teardown runs.
@@ -818,8 +942,22 @@ internal class IoUringIoTransport(
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
         if (multishotSlot >= 0) {
-            eventLoop.cancelMultishot(multishotSlot)
+            eventLoop.cancelSqe(multishotSlot)
             multishotSlot = -1
+        }
+        // Cancel the peer-FIN-watching POLL_ADD before closing the fd.
+        // An in-flight POLL_ADD SQE holds a kernel-side `struct file`
+        // reference to the watched socket; userspace `close(fd)` drops the
+        // fd table entry but the kernel keeps the socket alive until every
+        // pending io_uring op completes. For TCP sockets this defers FIN
+        // emission until cancellation, so peer-side `POLLRDHUP` never fires
+        // on the connected partner — manifesting as `onReadClosed` not
+        // firing within the test/timeout window. Cancelling the SQE
+        // unwinds the kernel reference; the subsequent `close(fd)` is then
+        // the last reference and the TCP stack emits FIN promptly.
+        if (pollAddFinSlot >= 0) {
+            eventLoop.cancelSqe(pollAddFinSlot)
+            pollAddFinSlot = -1
         }
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
