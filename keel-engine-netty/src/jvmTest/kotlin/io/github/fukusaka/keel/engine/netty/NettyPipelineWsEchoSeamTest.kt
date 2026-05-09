@@ -1,19 +1,14 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.websocket.WsFrame
-import io.github.fukusaka.keel.codec.websocket.WsFrameDecoder
-import io.github.fukusaka.keel.codec.websocket.WsFrameEncoder
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
-import io.github.fukusaka.keel.codec.websocket.parseFrame
-import io.github.fukusaka.keel.codec.websocket.writeFrame
+import io.github.fukusaka.keel.engine.netty.WsSeamContext.Companion.encodeFrame
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
-import kotlinx.io.Buffer
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -49,8 +44,8 @@ import kotlin.test.assertTrue
  *   that the original sequential 5-conn flow could not produce.
  * - Real-network sustained-load OOM (deleted scenario): out of unit-test
  *   scope. The original 15-frame attempt was several orders of magnitude
- *   below the failure scale — the proper coverage is a stress test (PR #486
- *   `NettyPipelineWsStressTest` with `@Tag("stress")`).
+ *   below the failure scale — the proper coverage is [NettyPipelineWsStressTest]
+ *   gated by the `keel.stress=true` system property.
  */
 class NettyPipelineWsEchoSeamTest {
 
@@ -60,7 +55,7 @@ class NettyPipelineWsEchoSeamTest {
      */
     @Test
     fun `single text frame is echoed and IoBuf released`() {
-        val ctx = newSeamContext()
+        val ctx = WsSeamContext.new()
         try {
             val frame = WsFrame.text("hello", maskKey = 0x12345678)
             ctx.channel.pipeline.notifyRead(ctx.encodeAsIoBuf(frame))
@@ -85,7 +80,7 @@ class NettyPipelineWsEchoSeamTest {
      */
     @Test
     fun `1000 frames sustained — alloc count matches release count`() {
-        val ctx = newSeamContext()
+        val ctx = WsSeamContext.new()
         try {
             for (i in 1..1000) {
                 val frame = WsFrame.text("frame-$i", maskKey = 0x12345678)
@@ -105,7 +100,7 @@ class NettyPipelineWsEchoSeamTest {
      */
     @Test
     fun `frame ordering preserved across 100 rounds`() {
-        val ctx = newSeamContext()
+        val ctx = WsSeamContext.new()
         try {
             val payloads = (1..100).map { "round-$it-${Random(it).nextInt()}" }
             for (p in payloads) {
@@ -137,7 +132,7 @@ class NettyPipelineWsEchoSeamTest {
     @Test
     fun `multi-channel state isolation — 5 channels keep separate echoes`() {
         val tracker = TrackingAllocator(DefaultAllocator)
-        val contexts = (1..5).map { id -> newSeamContext(tracker = tracker, label = "ch$id") }
+        val contexts = (1..5).map { id -> WsSeamContext.new(tracker = tracker, label = "ch$id") }
         try {
             for ((idx, ctx) in contexts.withIndex()) {
                 val id = idx + 1
@@ -170,7 +165,7 @@ class NettyPipelineWsEchoSeamTest {
     @Test
     fun `interleaved inbound across 5 channels — alloc count equals release count`() {
         val tracker = TrackingAllocator(DefaultAllocator)
-        val contexts = (1..5).map { id -> newSeamContext(tracker = tracker, label = "ch$id") }
+        val contexts = (1..5).map { id -> WsSeamContext.new(tracker = tracker, label = "ch$id") }
         try {
             val operations = buildList {
                 for (round in 1..100) {
@@ -199,7 +194,7 @@ class NettyPipelineWsEchoSeamTest {
     /** Protocol invariant: a PING frame is answered with a PONG, not a TEXT echo. */
     @Test
     fun `WsOpcode PING returns PONG`() {
-        val ctx = newSeamContext()
+        val ctx = WsSeamContext.new()
         try {
             ctx.channel.pipeline.notifyRead(
                 ctx.encodeAsIoBuf(WsFrame(fin = true, opcode = WsOpcode.PING, maskKey = 0x44444444, payload = "ping".encodeToByteArray())),
@@ -220,7 +215,7 @@ class NettyPipelineWsEchoSeamTest {
      */
     @Test
     fun `WsOpcode CLOSE responds with close echo and disables echo mode`() {
-        val ctx = newSeamContext()
+        val ctx = WsSeamContext.new()
         try {
             ctx.channel.pipeline.notifyRead(
                 ctx.encodeAsIoBuf(WsFrame(fin = true, opcode = WsOpcode.CLOSE, maskKey = 0x55555555, payload = ByteArray(0))),
@@ -299,81 +294,6 @@ class NettyPipelineWsEchoSeamTest {
             "HTTP→WS upgrade flow leaked IoBuf — alloc=${tracker.allocateCount} " +
                 "release=${tracker.releaseCount}",
         )
-    }
-
-    // --- Test infrastructure ---
-
-    /**
-     * Bundle of pipeline + tracker + transport for a single seam-test channel.
-     * Owns the pipeline starting in post-upgrade state (`WsFrameEncoder` /
-     * `WsFrameDecoder` / `WsEchoHandler(postUpgradeMode=true)` already wired)
-     * so each test can directly drive `WsFrame` bytes without staging the
-     * HTTP upgrade dance. The full HTTP→WS flow is tested separately by
-     * `HTTP→WS upgrade plus 100 frames — alloc count matches release count`.
-     */
-    private class SeamContext(
-        val tracker: TrackingAllocator,
-        val transport: TestIoTransport,
-        val channel: AbstractPipelinedChannel,
-        private val ownsTracker: Boolean,
-    ) {
-        fun encodeAsIoBuf(frame: WsFrame): IoBuf {
-            val bytes = encodeFrame(frame)
-            return tracker.allocate(bytes.size).apply { writeByteArray(bytes, 0, bytes.size) }
-        }
-
-        fun decodeOutbound(buf: IoBuf): WsFrame {
-            val n = buf.readableBytes
-            val bytes = ByteArray(n)
-            buf.readByteArray(bytes, 0, n)
-            // restore so subsequent inspection is possible (defensive — tests typically read once)
-            buf.writerIndex = n
-            buf.readerIndex = 0
-            // Decode via parseFrame
-            val scratch = Buffer()
-            scratch.write(bytes)
-            return parseFrame(scratch)
-        }
-
-        fun close() {
-            transport.releaseWritten()
-            channel.close()
-        }
-
-        fun assertBalanced() {
-            if (!ownsTracker) return
-            assertEquals(
-                0,
-                tracker.outstandingCount,
-                "IoBuf leak — alloc=${tracker.allocateCount} release=${tracker.releaseCount}",
-            )
-        }
-    }
-
-    private fun newSeamContext(
-        tracker: TrackingAllocator? = null,
-        label: String = "seam",
-    ): SeamContext {
-        val ownsTracker = tracker == null
-        val effectiveTracker = tracker ?: TrackingAllocator(DefaultAllocator)
-        val transport = TestIoTransport(effectiveTracker)
-        val channel = object : AbstractPipelinedChannel(transport, PrintLogger(label)) {}
-        channel.pipeline.addLast("ws-encoder", WsFrameEncoder())
-        channel.pipeline.addLast("ws-decoder", WsFrameDecoder())
-        channel.pipeline.addLast("ws-echo", WsEchoHandler(postUpgradeMode = true))
-        return SeamContext(effectiveTracker, transport, channel, ownsTracker)
-    }
-
-    companion object {
-        /** Encode a [WsFrame] to wire-format bytes via the existing [writeFrame] writer. */
-        private fun encodeFrame(frame: WsFrame): ByteArray {
-            val scratch = Buffer()
-            writeFrame(frame, scratch)
-            val size = scratch.size.toInt()
-            val out = ByteArray(size)
-            scratch.readAtMostTo(out, 0, size)
-            return out
-        }
     }
 
 }

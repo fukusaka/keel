@@ -38,7 +38,8 @@ import kotlin.test.assertEquals
  * [io.github.fukusaka.keel.buf.TrackingAllocator] alloc/release count comparison
  * across 1000+ frames per channel, with deterministic interleaved-multi-channel
  * scenarios that the integration test could not produce. Sustained-load OOM at
- * proper scale is covered by `NettyPipelineWsStressTest` (`@Tag("stress")`).
+ * proper scale is covered by `NettyPipelineWsStressTest` (gated by the
+ * `keel.stress=true` system property).
  *
  * **Resource discipline (see [TestWsClient])**: every test wraps `HttpClient` use
  * in `newTestWsClient().use { ... }` so that the JDK HTTP client and its executor
