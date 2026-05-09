@@ -78,11 +78,69 @@ public class CompressionHandler(
 
     override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
+            is HttpResponse -> handleAggregatedResponse(ctx, msg)
             is HttpResponseHead -> handleResponseHead(ctx, msg)
             is HttpBodyEnd -> handleBodyEnd(ctx, msg)
             is HttpBody -> handleBody(ctx, msg) // must come AFTER HttpBodyEnd (subclass).
             else -> ctx.propagateWrite(msg)
         }
+    }
+
+    private fun handleAggregatedResponse(ctx: PipelineHandlerContext, response: HttpResponse) {
+        val accept = if (acceptQueue.isNotEmpty()) acceptQueue.removeFirst() else null
+
+        if (isNoBodyStatus(response.status.code) || response.body == null || response.body.isEmpty()) {
+            ctx.propagateWrite(response)
+            return
+        }
+        // Reuse the response-head condition logic — wrap into a head temporarily.
+        val asHead = HttpResponseHead(response.status, response.version, response.headers)
+        if (!condition.shouldCompress(asHead)) {
+            ctx.propagateWrite(response)
+            return
+        }
+        val encoder = registry.negotiate(accept) ?: run {
+            ctx.propagateWrite(response)
+            return
+        }
+        val session = encoder.newSession(allocator, defaultEncoderOptions)
+        val srcBuf = allocator.allocate(response.body.size)
+        srcBuf.writeByteArray(response.body, 0, response.body.size)
+        // Encoder takes ownership of srcBuf and releases it.
+        val mid = session.update(srcBuf)
+        val tail = session.finish()
+        session.close()
+        // Concatenate mid + tail bytes to a single ByteArray for the
+        // aggregated response shape (HttpResponse holds a byte[] body,
+        // not a streaming chunk list).
+        val midN = mid.readableBytes
+        val tailN = tail.readableBytes
+        val out = ByteArray(midN + tailN)
+        if (midN > 0) mid.readByteArray(out, 0, midN)
+        if (tailN > 0) tail.readByteArray(out, midN, tailN)
+        mid.release()
+        tail.release()
+
+        val newHeaders = HttpHeaders().apply {
+            for (i in 0 until response.headers.size) {
+                val name = response.headers.nameAt(i)
+                val value = response.headers.valueAt(i)
+                if (name.equals(HttpHeaderName.CONTENT_LENGTH, ignoreCase = true)) continue
+                if (name.equals(HttpHeaderName.CONTENT_ENCODING, ignoreCase = true)) continue
+                add(name, value)
+            }
+            this[HttpHeaderName.CONTENT_ENCODING] = encoder.name
+            this[HttpHeaderName.CONTENT_LENGTH] = out.size.toString()
+            val existingVary = response.headers["Vary"]
+            this["Vary"] = if (existingVary.isNullOrBlank()) {
+                "Accept-Encoding"
+            } else if (existingVary.contains("accept-encoding", ignoreCase = true)) {
+                existingVary
+            } else {
+                "$existingVary, Accept-Encoding"
+            }
+        }
+        ctx.propagateWrite(response.copy(headers = newHeaders, body = out))
     }
 
     private fun handleResponseHead(ctx: PipelineHandlerContext, head: HttpResponseHead) {
