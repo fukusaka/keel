@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.testing.http.newTestHttpClient
+import io.github.fukusaka.keel.testing.websocket.WsEchoHandler
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
