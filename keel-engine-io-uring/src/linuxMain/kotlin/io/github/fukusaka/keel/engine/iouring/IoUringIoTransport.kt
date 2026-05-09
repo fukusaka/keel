@@ -184,10 +184,19 @@ internal class IoUringIoTransport(
      * between peer-close detection and back-pressure on the idle-read
      * window).
      *
-     * Single-shot: the CQE fires exactly once. There is no need to
-     * re-arm because peer FIN / hangup / error are terminal events.
-     * The slot is released by the kernel (with the CQE) regardless of
-     * whether the mask fired or the fd was closed underneath us.
+     * **Why single-shot, not multishot**: `POLLRDHUP | POLLHUP | POLLERR`
+     * are terminal events — once a bit is set, the kernel never clears
+     * it for the lifetime of the connection. Multishot poll re-arms on
+     * state transitions, but terminal events have no transition back,
+     * so multishot would fire exactly one CQE and idle thereafter —
+     * functionally equivalent to single-shot. Given the equivalence,
+     * single-shot is the simpler choice: the kernel auto-releases the
+     * SQE after the single CQE rather than requiring an explicit
+     * `IORING_OP_ASYNC_CANCEL` round-trip when the event has already
+     * fired before close. Single-shot also sidesteps the multishot
+     * poll re-arm race classes that have surfaced historically in
+     * io_uring CVEs (the kernel's terminal-event handling for the
+     * single-shot path is the longer-standing implementation).
      */
     private fun armPollAddForFin() {
         // POLL_ADD does not support the registered file table (fd must be
