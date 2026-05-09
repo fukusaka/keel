@@ -12,9 +12,11 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Regression test for bench infra no.8: pipeline-http-nio + JSSE — 0.12 RPS.
@@ -44,38 +46,40 @@ class JssePipelineHttpsMultiRequestTest {
      */
     @Test
     fun `pipeline HTTPS NIO multiple sequential requests all complete quickly`() = runBlocking {
-        val factory = JsseTlsCodecFactory()
-        val engine = NioEngine()
-        val response = HttpResponse.ok("Hello, pipeline!", contentType = "text/plain")
+        withTimeout(5.seconds) {
+            val factory = JsseTlsCodecFactory()
+            val engine = NioEngine()
+            val response = HttpResponse.ok("Hello, pipeline!", contentType = "text/plain")
 
-        val server = engine.bindPipeline(
-            "127.0.0.1",
-            0,
-            config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
-        ) { channel ->
-            // Install HTTP codec in correct order: decoder first so encoder
-            // (DuplexHandler) receives inbound HttpRequestHead for HEAD tracking.
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
-        }
-        val port = (server.localAddress as InetSocketAddress).port
-
-        Thread.sleep(SERVER_START_DELAY_MS)
-
-        try {
-            repeat(REQUEST_COUNT) { i ->
-                val (exitCode, output) = curlHttps(port, "/hello")
-                assertEquals(0, exitCode, "curl exit code on request ${i + 1} (output: $output)")
-                val lines = output.trimEnd().lines()
-                assertTrue(lines.size >= 2, "expected body + status, got: $output (request ${i + 1})")
-                assertEquals("200", lines.last(), "HTTP status on request ${i + 1}")
-                assertEquals("Hello, pipeline!", lines.dropLast(1).joinToString("\n"))
+            val server = engine.bindPipeline(
+                "127.0.0.1",
+                0,
+                config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
+            ) { channel ->
+                // Install HTTP codec in correct order: decoder first so encoder
+                // (DuplexHandler) receives inbound HttpRequestHead for HEAD tracking.
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
             }
-        } finally {
-            server.close()
-            factory.close()
-            engine.close()
+            val port = (server.localAddress as InetSocketAddress).port
+
+            Thread.sleep(SERVER_START_DELAY_MS)
+
+            try {
+                repeat(REQUEST_COUNT) { i ->
+                    val (exitCode, output) = curlHttps(port, "/hello")
+                    assertEquals(0, exitCode, "curl exit code on request ${i + 1} (output: $output)")
+                    val lines = output.trimEnd().lines()
+                    assertTrue(lines.size >= 2, "expected body + status, got: $output (request ${i + 1})")
+                    assertEquals("200", lines.last(), "HTTP status on request ${i + 1}")
+                    assertEquals("Hello, pipeline!", lines.dropLast(1).joinToString("\n"))
+                }
+            } finally {
+                server.close()
+                factory.close()
+                engine.close()
+            }
         }
     }
 
@@ -87,37 +91,39 @@ class JssePipelineHttpsMultiRequestTest {
      */
     @Test
     fun `pipeline HTTPS NIO large response completes without truncation`() = runBlocking {
-        val largeBody = "x".repeat(LARGE_PAYLOAD_BYTES)
-        val factory = JsseTlsCodecFactory()
-        val engine = NioEngine()
-        val response = HttpResponse.ok(largeBody, contentType = "text/plain")
+        withTimeout(5.seconds) {
+            val largeBody = "x".repeat(LARGE_PAYLOAD_BYTES)
+            val factory = JsseTlsCodecFactory()
+            val engine = NioEngine()
+            val response = HttpResponse.ok(largeBody, contentType = "text/plain")
 
-        val server = engine.bindPipeline(
-            "127.0.0.1",
-            0,
-            config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
-        ) { channel ->
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/large" to { response })))
-        }
-        val port = (server.localAddress as InetSocketAddress).port
+            val server = engine.bindPipeline(
+                "127.0.0.1",
+                0,
+                config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
+            ) { channel ->
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/large" to { response })))
+            }
+            val port = (server.localAddress as InetSocketAddress).port
 
-        Thread.sleep(SERVER_START_DELAY_MS)
+            Thread.sleep(SERVER_START_DELAY_MS)
 
-        try {
-            val (exitCode, output) = curlHttps(port, "/large")
-            assertEquals(0, exitCode, "curl exit code (output length: ${output.length})")
-            val lines = output.trimEnd().lines()
-            assertTrue(lines.size >= 2, "expected body + status code, got output of ${output.length} chars")
-            assertEquals("200", lines.last(), "expected HTTP 200")
-            val body = lines.dropLast(1).joinToString("\n")
-            assertEquals(LARGE_PAYLOAD_BYTES, body.length, "body length mismatch: got ${body.length}")
-            assertEquals(largeBody, body)
-        } finally {
-            server.close()
-            factory.close()
-            engine.close()
+            try {
+                val (exitCode, output) = curlHttps(port, "/large")
+                assertEquals(0, exitCode, "curl exit code (output length: ${output.length})")
+                val lines = output.trimEnd().lines()
+                assertTrue(lines.size >= 2, "expected body + status code, got output of ${output.length} chars")
+                assertEquals("200", lines.last(), "expected HTTP 200")
+                val body = lines.dropLast(1).joinToString("\n")
+                assertEquals(LARGE_PAYLOAD_BYTES, body.length, "body length mismatch: got ${body.length}")
+                assertEquals(largeBody, body)
+            } finally {
+                server.close()
+                factory.close()
+                engine.close()
+            }
         }
     }
 

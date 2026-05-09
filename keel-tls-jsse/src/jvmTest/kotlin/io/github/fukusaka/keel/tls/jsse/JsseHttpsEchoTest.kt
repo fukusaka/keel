@@ -13,9 +13,11 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration test: NIO Pipeline + TlsHandler(JSSE) + HTTP codec.
@@ -40,34 +42,36 @@ class JsseHttpsEchoTest {
 
     @Test
     fun `HTTPS echo via curl`() = runBlocking {
-        val factory = JsseTlsCodecFactory()
-        val engine = NioEngine()
+        withTimeout(5.seconds) {
+            val factory = JsseTlsCodecFactory()
+            val engine = NioEngine()
 
-        val response = HttpResponse.ok("Hello, JSSE!", contentType = "text/plain")
+            val response = HttpResponse.ok("Hello, JSSE!", contentType = "text/plain")
 
-        val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            }
+            val port = (server.localAddress as InetSocketAddress).port
+
+            // Allow server thread to start accepting connections.
+            Thread.sleep(SERVER_START_DELAY_MS)
+
+            val (exitCode, output) = curlHttps(port, "/hello")
+
+            // Cleanup — `engine.close()` became `suspend` in #291, hence runBlocking.
+            server.close()
+            factory.close()
+            engine.close()
+
+            // Verify curl succeeded and response is correct.
+            assertEquals(0, exitCode, "curl exit code")
+            val lines = output.trimEnd().lines()
+            assertTrue(lines.size >= 2, "expected body + status code, got: $output")
+            assertEquals("Hello, JSSE!", lines.dropLast(1).joinToString("\n"))
+            assertEquals("200", lines.last())
         }
-        val port = (server.localAddress as InetSocketAddress).port
-
-        // Allow server thread to start accepting connections.
-        Thread.sleep(SERVER_START_DELAY_MS)
-
-        val (exitCode, output) = curlHttps(port, "/hello")
-
-        // Cleanup — `engine.close()` became `suspend` in #291, hence runBlocking.
-        server.close()
-        factory.close()
-        engine.close()
-
-        // Verify curl succeeded and response is correct.
-        assertEquals(0, exitCode, "curl exit code")
-        val lines = output.trimEnd().lines()
-        assertTrue(lines.size >= 2, "expected body + status code, got: $output")
-        assertEquals("Hello, JSSE!", lines.dropLast(1).joinToString("\n"))
-        assertEquals("200", lines.last())
     }
 
     /**
