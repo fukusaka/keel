@@ -137,7 +137,9 @@ class CompressionHandlerTest {
                     val tmp = ByteArray(n)
                     input.readByteArray(tmp, 0, n)
                     input.release()
-                    val upper = String(tmp, Charsets.US_ASCII).uppercase().encodeToByteArray()
+                    // ASCII-only test payload — decodeToString() is sufficient
+                    // and avoids the JVM-only Charsets.US_ASCII constant.
+                    val upper = tmp.decodeToString().uppercase().encodeToByteArray()
                     val out = allocator.allocate(upper.size.coerceAtLeast(64))
                     out.writeByteArray(upper, 0, upper.size)
                     return out
