@@ -472,9 +472,9 @@ internal class IoUringEventLoop(
                     // If the ring is full, the cancel SQE is silently dropped; the original
                     // SQE will complete on its own and the slot will be released normally.
                     dispatch(EmptyCoroutineContext, Runnable {
-                        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
-                        io_uring_prep_cancel64(cancelSqe, userData, 0)
-                        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+                        val sqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
+                        io_uring_prep_cancel64(sqe, userData, 0)
+                        io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
                     })
                 }
             } else {
@@ -487,9 +487,9 @@ internal class IoUringEventLoop(
                     val ud = submittedUserData.value
                     if (ud == 0L) return@invokeOnCancellation
                     dispatch(EmptyCoroutineContext, Runnable {
-                        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
-                        io_uring_prep_cancel64(cancelSqe, ud.toULong(), 0)
-                        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+                        val sqe = io_uring_get_sqe(ring.ptr) ?: return@Runnable
+                        io_uring_prep_cancel64(sqe, ud.toULong(), 0)
+                        io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
                     })
                 }
                 dispatch(EmptyCoroutineContext, Runnable {
@@ -671,7 +671,7 @@ internal class IoUringEventLoop(
      * @param onCqe   Callback invoked on the EventLoop thread for each CQE.
      *                `res` is the CQE result; `flags` contains CQE flags
      *                (check `keel_cqe_has_more` for continuation).
-     * @return The slot index, needed for [cancelMultishot].
+     * @return The slot index, needed for [cancelSqe].
      * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitMultishot(
@@ -695,7 +695,7 @@ internal class IoUringEventLoop(
      * (e.g., SEND, WRITEV, single-shot POLL_ADD). The slot is released by the
      * drain loop after the (single) callback fires. The acquired slot is
      * returned so callers can cancel a still-in-flight SQE via
-     * [cancelMultishot] (e.g., `IoUringIoTransport`'s POLL_ADD-based
+     * [cancelSqe] (e.g., `IoUringIoTransport`'s POLL_ADD-based
      * peer-FIN watcher cancels the SQE in `teardownOnEventLoop` before
      * `close(fd)` so the kernel-side `struct file` reference is released
      * and the TCP stack emits FIN promptly to the peer); fire-and-forget
@@ -705,7 +705,7 @@ internal class IoUringEventLoop(
      *
      * @param prepare Fills in the SQE via `io_uring_prep_*` functions.
      * @param onCqe   Callback invoked with `(res, flags)` when the CQE arrives.
-     * @return The slot index, needed for [cancelMultishot].
+     * @return The slot index, needed for [cancelSqe].
      * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitCallback(
@@ -723,36 +723,37 @@ internal class IoUringEventLoop(
     }
 
     /**
-     * Cancels an in-flight SQE — multishot or single-shot.
+     * Cancels an in-flight SQE by slot — works for both multishot and
+     * single-shot SQEs.
      *
      * Submits `IORING_OP_ASYNC_CANCEL` targeting the SQE's user_data and
-     * replaces the callback with a no-op. The slot is NOT released here;
-     * it is released by the CQE drain loop when the (final) CQE arrives
-     * with `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response —
-     * always set on the cancellation CQE for both multishot and single-shot
-     * SQEs). This prevents a slot reuse race where a new operation could
-     * be assigned the same slot before the kernel delivers the
-     * cancellation CQE.
+     * replaces the callback with a no-op. The mechanism is generic:
+     * `IORING_OP_ASYNC_CANCEL` operates on user_data, not on the
+     * cancelled op's type, so it cancels whatever in-flight SQE bears
+     * the matching user_data. The slot is NOT released here; it is
+     * released by the CQE drain loop when the (final) CQE arrives with
+     * `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response —
+     * always set on the cancellation CQE for both multishot and
+     * single-shot SQEs). This prevents a slot reuse race where a new
+     * operation could be assigned the same slot before the kernel
+     * delivers the cancellation CQE.
      *
-     * Despite the historical name (kept to minimise call-site churn) the
-     * mechanism is generic: `IORING_OP_ASYNC_CANCEL` operates on user_data,
-     * not on the cancelled op's type. Single-shot users (e.g.
-     * `IoUringIoTransport`'s POLL_ADD-based peer-FIN watcher) cancel via
-     * this same path so an unfired SQE does not retain a kernel-side
-     * `struct file` reference past `close(fd)`.
+     * Single-shot users (e.g. `IoUringIoTransport`'s POLL_ADD-based
+     * peer-FIN watcher) call this so an unfired SQE does not retain a
+     * kernel-side `struct file` reference past `close(fd)`.
      *
      * Must be called on the EventLoop thread only.
      *
      * @param slot The slot index returned by [submitMultishot] or
      *             [submitCallback].
      */
-    internal fun cancelMultishot(slot: Int) {
+    internal fun cancelSqe(slot: Int) {
         // Replace with no-op; the drain loop releases the slot on F_MORE=0.
         callbackSlots[slot] = { _, _ -> }
-        val cancelSqe = io_uring_get_sqe(ring.ptr) ?: return
+        val sqe = io_uring_get_sqe(ring.ptr) ?: return
         val userData = slot.toULong() + SLOT_BASE
-        io_uring_prep_cancel64(cancelSqe, userData, 0)
-        io_uring_sqe_set_data64(cancelSqe, CANCEL_TOKEN)
+        io_uring_prep_cancel64(sqe, userData, 0)
+        io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
     }
 
     /**
@@ -768,7 +769,7 @@ internal class IoUringEventLoop(
      * @param fd   The connected socket file descriptor.
      * @param bgid Buffer group ID for the provided buffer ring.
      * @param onCqe Callback invoked on the EventLoop thread for each CQE.
-     * @return The slot index, needed for [cancelMultishot].
+     * @return The slot index, needed for [cancelSqe].
      * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitMultishotRecv(

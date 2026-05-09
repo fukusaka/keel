@@ -206,7 +206,7 @@ internal class IoUringStreamServer(
      * schedules cleanup; the cleanup block itself is dispatched onto
      * the [bossLoop] thread because every resource it touches
      * (`multishotSlot`, `pendingAcceptConts`, `pendingFds`, and the
-     * ring-scoped `cancelMultishot` / `closeFdSafely` calls) is
+     * ring-scoped `cancelSqe` / `closeFdSafely` calls) is
      * documented as bossLoop-thread-only. Every queued waiter in
      * [pendingAcceptConts] is resumed with [CancellationException].
      * Subsequent calls after the first are no-ops.
@@ -219,7 +219,7 @@ internal class IoUringStreamServer(
         bossLoop.dispatch(EmptyCoroutineContext, Runnable {
             closeFdSafely(serverFd, logger, "server close")
             if (multishotSlot != -1) {
-                bossLoop.cancelMultishot(multishotSlot)
+                bossLoop.cancelSqe(multishotSlot)
                 multishotSlot = -1
             }
             // Resume every queued accept waiter with cancellation.

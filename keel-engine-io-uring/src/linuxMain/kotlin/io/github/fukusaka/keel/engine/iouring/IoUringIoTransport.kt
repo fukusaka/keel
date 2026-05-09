@@ -924,7 +924,7 @@ internal class IoUringIoTransport(
             teardownOnEventLoop()
         } else {
             // Channel.close() is non-suspend and may be invoked from any thread.
-            // Dispatch the EventLoop-bound teardown (cancelMultishot, fixed-file
+            // Dispatch the EventLoop-bound teardown (cancelSqe, fixed-file
             // unregister, fd close) onto the owning EventLoop. Fire-and-forget:
             // pending close tasks are drained at the top of each loop iteration,
             // so the ring is never torn down before its channel teardown runs.
@@ -942,7 +942,7 @@ internal class IoUringIoTransport(
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
         if (multishotSlot >= 0) {
-            eventLoop.cancelMultishot(multishotSlot)
+            eventLoop.cancelSqe(multishotSlot)
             multishotSlot = -1
         }
         // Cancel the peer-FIN-watching POLL_ADD before closing the fd.
@@ -956,7 +956,7 @@ internal class IoUringIoTransport(
         // unwinds the kernel reference; the subsequent `close(fd)` is then
         // the last reference and the TCP stack emits FIN promptly.
         if (pollAddFinSlot >= 0) {
-            eventLoop.cancelMultishot(pollAddFinSlot)
+            eventLoop.cancelSqe(pollAddFinSlot)
             pollAddFinSlot = -1
         }
         for (pw in pendingWrites) pw.buf.release()
