@@ -49,18 +49,21 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
  *                          both simultaneously and silently ignore this
  *                          setting. See [IdleReadPolicy] for the engine
  *                          applicability table and trade-off details.
- *                          Defaults to [IdleReadPolicy.PRESERVE_BACKPRESSURE]
- *                          to keep existing behaviour of the affected
- *                          engines unchanged; opt in to
- *                          [IdleReadPolicy.DETECT_PEER_CLOSE] for
- *                          write-only push clients and accept the
- *                          pre-attach data-loss caveat documented on
- *                          [IdleReadPolicy].
+ *                          Defaults to [IdleReadPolicy.DETECT_PEER_CLOSE]
+ *                          so peer FIN is surfaced to user code on every
+ *                          engine without explicit configuration —
+ *                          matches the contract of pull-model engines
+ *                          (kqueue / epoll / netty native / nodejs)
+ *                          where peer-close detection is structurally
+ *                          free. Workloads that require kernel-level
+ *                          TCP back-pressure on the idle window must
+ *                          opt in to [IdleReadPolicy.PRESERVE_BACKPRESSURE]
+ *                          explicitly.
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
     val threads: Int = 0,
     val loggerFactory: LoggerFactory = NoopLoggerFactory,
     val resolver: DnsResolver = DnsResolver.SYSTEM,
-    val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE,
+    val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.DETECT_PEER_CLOSE,
 )

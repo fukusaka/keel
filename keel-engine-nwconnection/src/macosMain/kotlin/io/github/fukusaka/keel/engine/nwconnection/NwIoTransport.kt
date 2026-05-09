@@ -104,16 +104,19 @@ internal class NwIoTransport(
     private val idleReadPolicy: IdleReadPolicy,
 ) : AbstractIoTransport(allocator) {
 
-    init {
-        // [IdleReadPolicy.DETECT_PEER_CLOSE]: arm an NWConnection receive
-        // at construction so peer FIN surfaces through [onReadClosed]
-        // even when the user keeps readEnabled = false for the entire
-        // connection lifetime. The two trade-offs (drain framework
-        // back-pressure + lose bytes that arrive before the channel's
-        // pipeline has an inbound handler) are documented on the class
-        // KDoc and on [IdleReadPolicy].
+    /**
+     * [IdleReadPolicy.DETECT_PEER_CLOSE]: arm an NWConnection receive
+     * here so peer FIN surfaces through [onReadClosed] even when
+     * `readEnabled = false` for the entire connection lifetime. Arming
+     * runs *after* `AbstractPipelinedChannel.init` has wired up
+     * [onRead] / [onReadClosed], so the first receive completion
+     * always observes non-null callbacks; arming earlier in `init { }`
+     * races with the channel-construction sequence and can leak bytes
+     * through a still-null [onRead] when [connQueue] dispatches the
+     * receive completion before `AbstractPipelinedChannel.init` finishes.
+     */
+    override fun onChannelAttached() {
         if (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE) {
-            @Suppress("LeakingThis")
             armRead()
         }
     }

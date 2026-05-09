@@ -72,22 +72,24 @@ internal class NioIoTransport(
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
-    init {
-        // [IdleReadPolicy.DETECT_PEER_CLOSE]: arm OP_READ at construction
-        // so peer FIN surfaces through [onReadClosed] regardless of the
-        // user's [readEnabled] state. The cost is documented in the class
-        // KDoc above (kernel `rcvbuf` is drained while readEnabled =
-        // false, and bytes the peer sends before user inbound handlers
-        // are installed are released — see the [IdleReadPolicy] KDoc for
-        // the data-loss caveat that drove the conservative default of
-        // [IdleReadPolicy.PRESERVE_BACKPRESSURE]).
+    // --- Read path ---
+
+    /**
+     * [IdleReadPolicy.DETECT_PEER_CLOSE]: arm `OP_READ` here so peer FIN
+     * surfaces through [onReadClosed] regardless of the user's
+     * [readEnabled] state. Arming runs *after* `AbstractPipelinedChannel.init`
+     * has wired up [onRead] / [onReadClosed], so the first selector
+     * fire always observes non-null callbacks; arming earlier in
+     * `init { }` races with the channel-construction sequence and can
+     * leak bytes through a still-null [onRead] when the worker
+     * EventLoop's selector picks up the readable event before
+     * `AbstractPipelinedChannel.init` finishes.
+     */
+    override fun onChannelAttached() {
         if (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE) {
-            @Suppress("LeakingThis")
             armRead()
         }
     }
-
-    // --- Read path ---
 
     override var readEnabled: Boolean = false
         set(value) {

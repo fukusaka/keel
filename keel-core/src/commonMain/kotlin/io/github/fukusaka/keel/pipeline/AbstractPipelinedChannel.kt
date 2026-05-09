@@ -88,6 +88,12 @@ abstract class AbstractPipelinedChannel(
                 pendingClose = true
             }
         }
+        // Notify the transport that all callbacks are wired up. Engines
+        // that pre-arm their read primitive (IdleReadPolicy.DETECT_PEER_CLOSE)
+        // arm here instead of in their own init { } block — arming earlier
+        // races with the channel-construction sequence and can deliver
+        // bytes through a still-null [onRead].
+        transport.onChannelAttached()
     }
 
     override fun ensureBridge(): SuspendBridgeHandler {

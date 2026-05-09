@@ -36,25 +36,17 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * Engines marked "no" achieve both peer-close detection and TCP
  * back-pressure simultaneously and silently ignore [IoEngineConfig.idleReadPolicy].
  *
- * **Default**: [PRESERVE_BACKPRESSURE]. Matches the existing keel
- * behaviour for the affected engines (lazy-arm of the underlying read
- * primitive), so adopting [IdleReadPolicy] in [IoEngineConfig] does not
- * change the contract of any existing connection. Workloads that need
- * peer-close detection while `readEnabled = false` (write-only push
- * clients, monitoring forwarders) opt in to [DETECT_PEER_CLOSE]
- * explicitly and accept its caveat — currently, bytes the peer sends
- * before the channel's pipeline acquires its first user inbound
- * handler are released by `TailHandler` (a `WARN` is logged) because
- * `DefaultPipeline` does not yet buffer pre-attach inbound events.
- *
- * The default may flip to [DETECT_PEER_CLOSE] in a future BREAKING
- * release once `DefaultPipeline` gains a pre-attach event journal
- * (planned follow-up) and a per-handler lifecycle replay mechanism
- * (generalisation of the existing `inactiveObserved` flag from PR #467
- * so all `InboundHandler` instances added to an already-active pipeline
- * receive the current `active` / `inactive` / `writability` state).
- * Together, those follow-ups remove the data-loss caveat that justifies
- * the conservative default chosen for this PR.
+ * **Default**: [DETECT_PEER_CLOSE]. The 2-hour silent loss window of
+ * `SO_KEEPALIVE` is a worse default than dropping kernel-level
+ * back-pressure on the affected engines, and the `DefaultPipeline`
+ * pre-attach event journal + per-handler lifecycle replay (added in
+ * PRs #473 / #474) close the data-loss caveat that motivated the
+ * earlier conservative default — bytes that arrive before the channel
+ * acquires its first user `InboundHandler` are now buffered and
+ * replayed onto the assembled chain. Workloads that require
+ * kernel-level TCP back-pressure on the idle window (bulk transfer,
+ * large upload streaming with no application-level flow control)
+ * opt in to [PRESERVE_BACKPRESSURE] explicitly.
  */
 public enum class IdleReadPolicy {
     /**
