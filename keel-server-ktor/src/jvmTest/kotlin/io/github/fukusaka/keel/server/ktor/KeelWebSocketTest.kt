@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.codec.websocket.WsCloseCode
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.ktor.websocket.keelWebSocket
+import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer

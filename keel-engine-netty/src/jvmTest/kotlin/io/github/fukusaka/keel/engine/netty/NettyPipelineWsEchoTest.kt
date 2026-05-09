@@ -3,18 +3,15 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.test.runTest
 import java.net.URI
-import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -41,8 +38,9 @@ import kotlin.test.assertEquals
  * proper scale is covered by `NettyPipelineWsStressTest` (gated by the
  * `keel.stress=true` system property).
  *
- * **Resource discipline (see [TestWsClient])**: every test wraps `HttpClient` use
- * in `newTestWsClient().use { ... }` so that the JDK HTTP client and its executor
+ * **Resource discipline (see [io.github.fukusaka.keel.testing.http.TestHttpClient])**:
+ * every test wraps `HttpClient` use in `newTestHttpClient().use { ... }` so that the
+ * JDK HTTP client and its executor
  * are torn down deterministically. Without this, fresh `HttpClient.newHttpClient()`
  * instances fork a private selector + executor pair per test that survives the
  * test method, accumulating zombie threads across the suite. On resource-
@@ -51,37 +49,6 @@ import kotlin.test.assertEquals
  * second runtime towards the outer test timeout.
  */
 class NettyPipelineWsEchoTest {
-
-    /**
-     * Test-only [HttpClient] wrapper that owns its executor and shuts both down on [close].
-     *
-     * Solves the `HttpClient.newHttpClient` resource-leak problem: a freshly-built JDK
-     * `HttpClient` forks its own selector thread plus an executor pool, and the JDK 21
-     * `HttpClient.close()` API must be called explicitly to release them.
-     *
-     * Using a fixed-size daemon executor (instead of the implicit
-     * `ForkJoinPool.commonPool()` that `newHttpClient()` falls back to) also keeps `WebSocket.Listener`
-     * callbacks off any shared global pool, so callbacks from this test do not interleave with
-     * other test classes that might use the common pool.
-     */
-    private class TestWsClient(
-        val http: HttpClient,
-        private val executor: ExecutorService,
-    ) : AutoCloseable {
-        override fun close() {
-            http.close()
-            executor.shutdown()
-            executor.awaitTermination(5, TimeUnit.SECONDS)
-        }
-    }
-
-    private fun newTestWsClient(): TestWsClient {
-        val executor = Executors.newFixedThreadPool(4) { runnable ->
-            Thread(runnable, "test-ws-client").apply { isDaemon = true }
-        }
-        val http = HttpClient.newBuilder().executor(executor).build()
-        return TestWsClient(http, executor)
-    }
 
     /**
      * Single VU: 1 connection, 3 sequential text echo rounds.
@@ -103,7 +70,7 @@ class NettyPipelineWsEchoTest {
         }
         val port = (server.localAddress as InetSocketAddress).port
         try {
-            newTestWsClient().use { client ->
+            newTestHttpClient().use { client ->
                 val echo1 = CompletableFuture<String>()
                 val echo2 = CompletableFuture<String>()
                 val echo3 = CompletableFuture<String>()
@@ -154,7 +121,7 @@ class NettyPipelineWsEchoTest {
         }
         val port = (server.localAddress as InetSocketAddress).port
         try {
-            newTestWsClient().use { client ->
+            newTestHttpClient().use { client ->
                 suspend fun openWs(): Pair<WebSocket, CompletableFuture<String>> {
                     val echoFuture = CompletableFuture<String>()
                     val pending = StringBuilder()

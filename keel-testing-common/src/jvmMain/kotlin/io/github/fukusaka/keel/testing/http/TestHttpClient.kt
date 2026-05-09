@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.server.ktor
+package io.github.fukusaka.keel.testing.http
 
 import java.net.http.HttpClient
 import java.util.concurrent.ExecutorService
@@ -25,10 +25,20 @@ import java.util.concurrent.TimeUnit
  * Each consumer should wrap its `HttpClient` use in `newTestHttpClient().use { client ->
  * ... }`. The 4-thread pool size is the minimum that avoids deadlock if a
  * `WebSocket.Listener` callback on the executor needs to wait on another HttpClient
- * operation; tests with more concurrent connections than that should size-up explicitly.
+ * operation; tests with more concurrent connections than that should size-up explicitly
+ * via [newTestHttpClient]'s [threadPoolSize] parameter.
+ *
+ * **History**: this helper was duplicated across four sites before consolidation —
+ * `TestHttpClient` in `keel-server-ktor` / `keel-server-ktor-cio` jvmTest (PR #483 / #484)
+ * and inline `TestWsClient` private classes inside `NettyPipelineWsEchoTest` /
+ * `NettyPipelineWsStressTest` (PR #483 / #486). The four copies had identical shape; this
+ * module collapses them into a single canonical definition.
+ *
+ * @property http the underlying [HttpClient], built with the test-owned [executor]
+ *   so that `executor` shutdown also drains any pending [HttpClient] callbacks.
  */
-internal class TestHttpClient(
-    val http: HttpClient,
+public class TestHttpClient(
+    public val http: HttpClient,
     private val executor: ExecutorService,
 ) : AutoCloseable {
     override fun close() {
@@ -40,8 +50,15 @@ internal class TestHttpClient(
     }
 }
 
-/** Build a [TestHttpClient] with a fixed-size daemon executor. */
-internal fun newTestHttpClient(threadPoolSize: Int = 4): TestHttpClient {
+/**
+ * Build a [TestHttpClient] with a fixed-size daemon executor.
+ *
+ * @param threadPoolSize executor pool size. Default 4 is the minimum that avoids
+ *   deadlock when a `WebSocket.Listener` callback on the executor must await another
+ *   `HttpClient` operation. Tests opening more than ~4 concurrent WebSocket listeners
+ *   should size up explicitly so the open burst does not throttle.
+ */
+public fun newTestHttpClient(threadPoolSize: Int = 4): TestHttpClient {
     val executor = Executors.newFixedThreadPool(threadPoolSize) { runnable ->
         Thread(runnable, "test-http-client").apply { isDaemon = true }
     }

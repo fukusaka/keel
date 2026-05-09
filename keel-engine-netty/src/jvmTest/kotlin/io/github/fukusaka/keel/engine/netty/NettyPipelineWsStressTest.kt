@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -13,9 +14,6 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -63,34 +61,6 @@ import kotlin.time.Duration.Companion.nanoseconds
 class NettyPipelineWsStressTest {
 
     /**
-     * Test-only [HttpClient] wrapper that owns its executor and shuts both
-     * down on [close]. Same shape as the resource-disciplined wrapper in
-     * [NettyPipelineWsEchoTest] (PR #483) and in `keel-server-ktor` /
-     * `keel-server-ktor-cio` jvmTest (PR #484). Not extracted to a shared
-     * helper here because no shared test-fixtures source set exists yet —
-     * once one does, all three copies (this file, the integration test, the
-     * server-ktor TestHttpClient) collapse into a single definition.
-     */
-    private class TestWsClient(
-        val http: HttpClient,
-        private val executor: ExecutorService,
-    ) : AutoCloseable {
-        override fun close() {
-            http.close()
-            executor.shutdown()
-            executor.awaitTermination(5, TimeUnit.SECONDS)
-        }
-    }
-
-    private fun newTestWsClient(threadPoolSize: Int = 8): TestWsClient {
-        val executor = Executors.newFixedThreadPool(threadPoolSize) { runnable ->
-            Thread(runnable, "stress-ws-client").apply { isDaemon = true }
-        }
-        val http = HttpClient.newBuilder().executor(executor).build()
-        return TestWsClient(http, executor)
-    }
-
-    /**
      * Sustained-load: 50 concurrent WebSocket connections, each completing
      * 100 round-trip text echoes. Total: 5000 frames in flight across the
      * `NettyEngine` worker threads, exercising the same code paths the
@@ -125,7 +95,7 @@ class NettyPipelineWsStressTest {
         val port = (server.localAddress as InetSocketAddress).port
 
         try {
-            newTestWsClient(threadPoolSize = 16).use { client ->
+            newTestHttpClient(threadPoolSize = 16).use { client ->
                 val totalEchoes = AtomicLong(0)
                 val startNanos = System.nanoTime()
                 coroutineScope {

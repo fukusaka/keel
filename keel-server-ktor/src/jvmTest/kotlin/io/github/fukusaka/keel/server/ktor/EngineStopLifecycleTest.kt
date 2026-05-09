@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.ktor.websocket.keelWebSocket
+import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
