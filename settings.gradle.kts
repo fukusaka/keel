@@ -26,6 +26,7 @@ include(
     ":keel-engine-nodejs",
     ":keel-codec-http",
     ":keel-codec-websocket",
+    ":keel-compression",
     ":keel-tls",
     ":keel-tls-jsse",
     ":keel-server",
