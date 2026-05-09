@@ -27,7 +27,6 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.seconds
 import kotlin.test.assertEquals
@@ -146,21 +145,28 @@ class NettyPipelineWsEchoTest {
             val echoes = listOf(echo1, echo2, echo3)
             var echoIdx = 0
 
+            // Suspend-aware (`await()`) instead of blocking (`.get(N, TimeUnit)`)
+            // for the same reason as the K40 fix on the five-concurrent test:
+            // a blocking `.get()` does not cooperate with the outer `runTest`
+            // dispatch-timeout cancellation, so a stalled call appears as a
+            // raw `TimeoutException` rather than a clean coroutine-cancel
+            // stack trace. `runTest` enforces its own dispatch-timeout
+            // (default 60 s) which fires if any single `await()` stalls.
             val ws = buildWsClient().newWebSocketBuilder()
                 .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
                     override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
                     override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) =
                         echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null }
                 })
-                .get(5, TimeUnit.SECONDS)
+                .await()
 
-            ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
-            assertEquals("hello", echo1.get(5, TimeUnit.SECONDS))
-            ws.sendText("world", true).get(5, TimeUnit.SECONDS)
-            assertEquals("world", echo2.get(5, TimeUnit.SECONDS))
-            ws.sendText("keel", true).get(5, TimeUnit.SECONDS)
-            assertEquals("keel", echo3.get(5, TimeUnit.SECONDS))
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(3, TimeUnit.SECONDS)
+            ws.sendText("hello", true).await()
+            assertEquals("hello", echo1.await())
+            ws.sendText("world", true).await()
+            assertEquals("world", echo2.await())
+            ws.sendText("keel", true).await()
+            assertEquals("keel", echo3.await())
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
         } finally {
             server.close()
             engine.close()
@@ -186,7 +192,14 @@ class NettyPipelineWsEchoTest {
         try {
             val http = buildWsClient()
 
-            fun openWs(): Pair<WebSocket, CompletableFuture<String>> {
+            // Suspend-aware setup (`await()` not `.get(N, TimeUnit)`) and
+            // parallelised connection establishment via `coroutineScope { ...
+            // async { ... }.awaitAll() }` — same K40 pattern applied to the
+            // five-concurrent test. `runTest` provides the outer
+            // dispatch-timeout safety net (default 60 s) so any stalled
+            // `await()` surfaces as a clean coroutine-cancel rather than a
+            // raw `TimeoutException`.
+            suspend fun openWs(): Pair<WebSocket, CompletableFuture<String>> {
                 val echoFuture = CompletableFuture<String>()
                 val pending = StringBuilder()
                 val ws = http.newWebSocketBuilder()
@@ -201,21 +214,24 @@ class NettyPipelineWsEchoTest {
                             echoFuture.completeExceptionally(error)
                         }
                     })
-                    .get(5, TimeUnit.SECONDS)
+                    .await()
                 return ws to echoFuture
             }
 
-            val (ws1, echo1) = openWs()
-            val (ws2, echo2) = openWs()
+            val (first, second) = coroutineScope {
+                listOf(async { openWs() }, async { openWs() }).awaitAll()
+            }
+            val (ws1, echo1) = first
+            val (ws2, echo2) = second
 
             ws1.sendText("from-vu1", true)
             ws2.sendText("from-vu2", true)
 
-            assertEquals("from-vu1", echo1.get(8, TimeUnit.SECONDS))
-            assertEquals("from-vu2", echo2.get(8, TimeUnit.SECONDS))
+            assertEquals("from-vu1", echo1.await())
+            assertEquals("from-vu2", echo2.await())
 
-            ws1.sendClose(WebSocket.NORMAL_CLOSURE, "").get(3, TimeUnit.SECONDS)
-            ws2.sendClose(WebSocket.NORMAL_CLOSURE, "").get(3, TimeUnit.SECONDS)
+            ws1.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
+            ws2.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
         } finally {
             server.close()
             engine.close()
