@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
 import io.github.fukusaka.keel.pipeline.PipelineHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs

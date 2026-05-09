@@ -17,37 +17,62 @@ plugins {
 // `keel-testing-native-posix` in a separate cleanup once the fixture-
 // consolidation roadmap settles.
 //
-// Initial scope (PR #488): consolidate `TestHttpClient` + factory function
-// from keel-server-ktor / keel-server-ktor-cio jvmTest and the inline
-// `TestWsClient` private classes inside keel-engine-netty's
-// NettyPipelineWsEchoTest / NettyPipelineWsStressTest. These four copies
-// have identical shape — an `AutoCloseable` wrapper around `HttpClient` +
-// `Executors.newFixedThreadPool(N)` daemon executor — and serve identical
-// purposes (deterministic teardown of JDK 21 HttpClient selector +
-// executor threads to avoid zombie-thread accumulation across the test
-// suite, which on resource-constrained runners pushed later tests towards
-// timeout budgets).
+// Scope so far:
+//   - PR #488: `TestHttpClient` + `newTestHttpClient` (JVM-only)
+//     consolidating four copies in keel-server-ktor / keel-server-ktor-cio
+//     jvmTest + inline `TestWsClient` from NettyPipelineWsEchoTest /
+//     NettyPipelineWsStressTest.
+//   - This PR: `TestIoTransport` (`commonMain`) consolidating six copies
+//     across keel-core / keel-tls / keel-codec-http / keel-codec-websocket /
+//     keel-server-ktor-cio commonTest + keel-engine-netty jvmTest.
+//     The two codec copies used `retain` semantics that violated
+//     `AbstractIoTransport.write`'s ownership-transfer contract; this
+//     canonical version restores ownership-transfer.
 //
 // Future scope (separate PRs):
-//   - `TestIoTransport`: 6 copies across keel-core / keel-tls /
-//     keel-codec-http / keel-codec-websocket / keel-server-ktor-cio /
-//     keel-engine-netty, with two divergent write semantics
-//     (retain vs ownership-transfer) that must be reconciled before
-//     consolidation.
 //   - `WsEchoHandler` / `WsSeamContext`: keel-engine-netty-specific
-//     fixtures, can move once this module proves stable as a host for
-//     multiplatform fixtures.
+//     fixtures, can move once a `jvmMain` extension is justified.
 
 kotlin {
-    // Only the JVM target for now — `TestHttpClient` is JVM-only because
-    // it wraps `java.net.http.HttpClient`. Add multiplatform targets when
-    // the first commonMain fixture (likely the unified `TestIoTransport`)
-    // lands.
+    // Multiplatform target shape covers the union of test-fixture consumer
+    // modules' targets so a single `commonMain` fixture (`TestIoTransport`)
+    // can be imported uniformly from any consumer's `commonTest` /
+    // `jvmTest`. Targets mirror keel-core / keel-codec-* / keel-tls /
+    // keel-server-ktor-cio (JS Node.js included; macOS x64 included for
+    // dokka publication parity even though it has no production
+    // consumers).
     jvm()
+    linuxX64()
+    linuxArm64()
+    macosArm64()
+    macosX64()
+    js(IR) {
+        nodejs()
+    }
+
+    applyDefaultHierarchyTemplate()
+
+    compilerOptions {
+        // Required for `expect class` / `actual class` on KMP — kept in
+        // sync with keel-core. Not used in the current scope (the
+        // commonMain fixtures are pure-Kotlin), but flipped on so that
+        // future additions don't trip the compiler default.
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
 
     sourceSets {
+        commonMain {
+            dependencies {
+                // `api` because TestIoTransport extends `AbstractIoTransport`
+                // and exposes `IoBuf` / `BufferAllocator` types that
+                // consumers reference directly when constructing or
+                // inspecting captured outbound buffers.
+                api(project(":keel-core"))
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
         jvmMain {
-            // No production deps: TestHttpClient only wraps the JDK 21
+            // No additional deps: `TestHttpClient` only wraps the JDK 21
             // `java.net.http.HttpClient` + `java.util.concurrent.Executors`,
             // both available on the standard library classpath.
         }
