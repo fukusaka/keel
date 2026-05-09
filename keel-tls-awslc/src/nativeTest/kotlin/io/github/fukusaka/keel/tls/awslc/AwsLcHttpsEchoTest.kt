@@ -37,9 +37,11 @@ import platform.posix.read
 import platform.posix.usleep
 import platform.posix.waitpid
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration test: Native Pipeline + TlsHandler(AWS-LC) + HTTP codec.
@@ -58,31 +60,33 @@ class AwsLcHttpsEchoTest {
 
     @Test
     fun `HTTPS echo via curl`() = runBlocking {
-        val factory = AwsLcCodecFactory()
-        val engine = createTestEngine()
+        withTimeout(5.seconds) {
+            val factory = AwsLcCodecFactory()
+            val engine = createTestEngine()
 
-        val response = HttpResponse.ok("Hello, AWS-LC!", contentType = "text/plain")
+            val response = HttpResponse.ok("Hello, AWS-LC!", contentType = "text/plain")
 
-        val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            }
+            val port = (server.localAddress as InetSocketAddress).port
+
+            usleep(SERVER_START_DELAY_US)
+
+            val (exitCode, output) = curlHttps(port, "/hello")
+
+            server.close()
+            factory.close()
+            engine.close()
+
+            assertEquals(0, exitCode, "curl exit code")
+            val lines = output.trimEnd().lines()
+            assertTrue(lines.size >= 2, "expected body + status code, got: $output")
+            assertEquals("Hello, AWS-LC!", lines.dropLast(1).joinToString("\n"))
+            assertEquals("200", lines.last())
         }
-        val port = (server.localAddress as InetSocketAddress).port
-
-        usleep(SERVER_START_DELAY_US)
-
-        val (exitCode, output) = curlHttps(port, "/hello")
-
-        server.close()
-        factory.close()
-        engine.close()
-
-        assertEquals(0, exitCode, "curl exit code")
-        val lines = output.trimEnd().lines()
-        assertTrue(lines.size >= 2, "expected body + status code, got: $output")
-        assertEquals("Hello, AWS-LC!", lines.dropLast(1).joinToString("\n"))
-        assertEquals("200", lines.last())
     }
 
     private fun curlHttps(port: Int, path: String): Pair<Int, String> = memScoped {

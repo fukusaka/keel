@@ -37,9 +37,11 @@ import platform.posix.read
 import platform.posix.usleep
 import platform.posix.waitpid
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Integration test: Native Pipeline + TlsHandler + HTTP codec.
@@ -63,35 +65,37 @@ class MbedTlsHttpsEchoTest {
 
     @Test
     fun `HTTPS echo via curl`() = runBlocking {
-        val factory = MbedTlsCodecFactory()
-        val engine = createTestEngine()
+        withTimeout(5.seconds) {
+            val factory = MbedTlsCodecFactory()
+            val engine = createTestEngine()
 
-        val response = HttpResponse.ok("Hello, HTTPS!", contentType = "text/plain")
-        response.headers.size // warm flatEntries cache
+            val response = HttpResponse.ok("Hello, HTTPS!", contentType = "text/plain")
+            response.headers.size // warm flatEntries cache
 
-        val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+            }
+            val port = (server.localAddress as InetSocketAddress).port
+
+            usleep(200_000u) // 200ms — allow server to start
+
+            val (exitCode, output) = curlHttps(port, "/hello")
+
+            // Cleanup
+            server.close()
+            factory.close()
+            engine.close()
+
+            // Verify curl succeeded and response is correct.
+            assertEquals(0, exitCode, "curl exit code")
+            // curl output: body + "\n" + http_code (from -w "\n%{http_code}")
+            val lines = output.trimEnd().lines()
+            assertTrue(lines.size >= 2, "expected body + status code, got: $output")
+            assertEquals("Hello, HTTPS!", lines.dropLast(1).joinToString("\n"))
+            assertEquals("200", lines.last())
         }
-        val port = (server.localAddress as InetSocketAddress).port
-
-        usleep(200_000u) // 200ms — allow server to start
-
-        val (exitCode, output) = curlHttps(port, "/hello")
-
-        // Cleanup
-        server.close()
-        factory.close()
-        engine.close()
-
-        // Verify curl succeeded and response is correct.
-        assertEquals(0, exitCode, "curl exit code")
-        // curl output: body + "\n" + http_code (from -w "\n%{http_code}")
-        val lines = output.trimEnd().lines()
-        assertTrue(lines.size >= 2, "expected body + status code, got: $output")
-        assertEquals("Hello, HTTPS!", lines.dropLast(1).joinToString("\n"))
-        assertEquals("200", lines.last())
     }
 
     // --- Test helpers ---
