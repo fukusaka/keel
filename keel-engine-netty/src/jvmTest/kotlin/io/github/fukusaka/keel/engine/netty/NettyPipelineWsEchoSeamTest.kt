@@ -9,11 +9,10 @@ import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsFrameDecoder
 import io.github.fukusaka.keel.codec.websocket.WsFrameEncoder
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
+import io.github.fukusaka.keel.codec.websocket.parseFrame
 import io.github.fukusaka.keel.codec.websocket.writeFrame
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
-import io.github.fukusaka.keel.pipeline.InboundHandler
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlinx.io.Buffer
 import kotlin.random.Random
 import kotlin.test.Test
@@ -333,8 +332,7 @@ class NettyPipelineWsEchoSeamTest {
             // Decode via parseFrame
             val scratch = Buffer()
             scratch.write(bytes)
-            return io.github.fukusaka.keel.codec.websocket.parseFrame(scratch)
-                ?: error("failed to decode outbound bytes (length=$n)")
+            return parseFrame(scratch)
         }
 
         fun close() {
@@ -378,17 +376,4 @@ class NettyPipelineWsEchoSeamTest {
         }
     }
 
-    /**
-     * Sink handler that swallows untyped messages — placed at the tail so
-     * any `propagateRead` in [WsEchoHandler]'s `else` branch (non-WS
-     * messages) is a no-op rather than a "no handler accepted" error. Not
-     * yet exercised by the current tests but documented for future
-     * additions involving non-WS inbound.
-     */
-    @Suppress("unused")
-    private class SinkHandler : InboundHandler {
-        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-            if (msg is IoBuf) msg.release()
-        }
-    }
 }
