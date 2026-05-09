@@ -9,6 +9,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Tests for [IoMode] selection, [IoUringCapabilities] invariants,
@@ -49,112 +50,126 @@ class IoModeTest {
 
     @Test
     fun `coopTaskrun enabled works`() = runBlocking {
-        // threads=2: echoSmall opens client and server on the same engine, so
-        // the client's suspended read must not block the server's EventLoop.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(coopTaskrun = true),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: echoSmall opens client and server on the same engine, so
+            // the client's suspended read must not block the server's EventLoop.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(coopTaskrun = true),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `coopTaskrun disabled works`() = runBlocking {
-        // threads=2: see note on `coopTaskrun enabled works`.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(coopTaskrun = false),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: see note on `coopTaskrun enabled works`.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(coopTaskrun = false),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `singleIssuer enabled works`() = runBlocking {
-        // threads=2: see note on `coopTaskrun enabled works`.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(singleIssuer = true),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: see note on `coopTaskrun enabled works`.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(singleIssuer = true),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `singleIssuer disabled works`() = runBlocking {
-        // threads=2: see note on `coopTaskrun enabled works`.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(singleIssuer = false),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: see note on `coopTaskrun enabled works`.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(singleIssuer = false),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `deferTaskrun enabled works`() = runBlocking {
-        // threads=2: see note on `coopTaskrun enabled works`.
-        // DEFER_TASKRUN is opt-in; enable alongside the default singleIssuer=true.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(deferTaskrun = true),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: see note on `coopTaskrun enabled works`.
+            // DEFER_TASKRUN is opt-in; enable alongside the default singleIssuer=true.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(deferTaskrun = true),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `msgRingWakeup enabled works`() = runBlocking {
-        // threads=2: client/server on separate ELs exercises the cross-EL
-        // dispatch path. MSG_RING is opt-in; enable alongside defaults.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(msgRingWakeup = true),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: client/server on separate ELs exercises the cross-EL
+            // dispatch path. MSG_RING is opt-in; enable alongside defaults.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(msgRingWakeup = true),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `registerRingFd disabled works`() = runBlocking {
-        // threads=2: see note on `coopTaskrun enabled works`.
-        // The default is on; explicitly disable to exercise the slow path
-        // (no `io_uring_register_ring_fd` call) and verify the EL lifecycle
-        // still works without the optimisation.
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(registerRingFd = false),
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // threads=2: see note on `coopTaskrun enabled works`.
+            // The default is on; explicitly disable to exercise the slow path
+            // (no `io_uring_register_ring_fd` call) and verify the EL lifecycle
+            // still works without the optimisation.
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(registerRingFd = false),
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -193,35 +208,39 @@ class IoModeTest {
 
     @Test
     fun `SENDMSG_ZC falls back to CQE when sendmsgZc capability is false`() = runBlocking {
-        // Force sendmsgZc=false but keep other capabilities at default.
-        // SENDMSG_ZC mode should fall back to CQE.
-        // threads=2: CQE flush + awaitPendingFlush requires separate EventLoops
-        // for client and server to avoid deadlock (suspend blocks CQE drain).
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(sendZc = false, sendmsgZc = false),
-            writeModeSelector = IoModeSelectors.SENDMSG_ZC,
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            // Force sendmsgZc=false but keep other capabilities at default.
+            // SENDMSG_ZC mode should fall back to CQE.
+            // threads=2: CQE flush + awaitPendingFlush requires separate EventLoops
+            // for client and server to avoid deadlock (suspend blocks CQE drain).
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(sendZc = false, sendmsgZc = false),
+                writeModeSelector = IoModeSelectors.SENDMSG_ZC,
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `SEND_ZC falls back to CQE when sendZc capability is false`() = runBlocking {
-        val defaultCaps = IoUringCapabilities()
-        val engine = IoUringEngine(
-            config = IoEngineConfig(threads = 2),
-            capabilities = defaultCaps.copy(sendZc = false, sendmsgZc = false),
-            writeModeSelector = IoModeSelectors.SEND_ZC,
-        )
-        try {
-            echoSmall(engine)
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            val defaultCaps = IoUringCapabilities()
+            val engine = IoUringEngine(
+                config = IoEngineConfig(threads = 2),
+                capabilities = defaultCaps.copy(sendZc = false, sendmsgZc = false),
+                writeModeSelector = IoModeSelectors.SEND_ZC,
+            )
+            try {
+                echoSmall(engine)
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -250,38 +269,52 @@ class IoModeTest {
 
     @Test
     fun `echo with CQE mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.CQE)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.CQE)
+        }
     }
 
     @Test
     fun `echo with SEND_ZC mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.SEND_ZC)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.SEND_ZC)
+        }
     }
 
     @Test
     fun `echo with SENDMSG_ZC mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.SENDMSG_ZC)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.SENDMSG_ZC)
+        }
     }
 
     @Test
     fun `echo with FALLBACK_CQE mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.FALLBACK_CQE)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.FALLBACK_CQE)
+        }
     }
 
     @Test
     fun `large payload with SENDMSG_ZC mode`() = runBlocking {
-        // 100KB payload triggers gather write path (multiple 8KB buffers).
-        echoWithMode(IoModeSelectors.SENDMSG_ZC, payloadSize = 100_000)
+        withTimeout(5.seconds) {
+            // 100KB payload triggers gather write path (multiple 8KB buffers).
+            echoWithMode(IoModeSelectors.SENDMSG_ZC, payloadSize = 100_000)
+        }
     }
 
     @Test
     fun `large payload with CQE mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.CQE, payloadSize = 100_000)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.CQE, payloadSize = 100_000)
+        }
     }
 
     @Test
     fun `large payload with SEND_ZC mode`() = runBlocking {
-        echoWithMode(IoModeSelectors.SEND_ZC, payloadSize = 100_000)
+        withTimeout(5.seconds) {
+            echoWithMode(IoModeSelectors.SEND_ZC, payloadSize = 100_000)
+        }
     }
 
     private suspend fun echoWithMode(selector: IoModeSelector, payloadSize: Int = 13) = withTimeout(ECHO_TEST_TIMEOUT_MS) {
