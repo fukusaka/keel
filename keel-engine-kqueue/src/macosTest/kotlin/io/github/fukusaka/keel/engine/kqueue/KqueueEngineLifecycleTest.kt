@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngineLifecycleTest {
@@ -24,143 +25,163 @@ class KqueueEngineLifecycleTest {
 
     @Test
     fun engineCreateAndClose() = runBlocking {
-        val engine = KqueueEngine()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            engine.close()
+        }
     }
 
     @Test
     fun bindReturnsActiveServerChannel() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertTrue(server.isActive)
-        server.close()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertTrue(server.isActive)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelLocalAddress() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
-        assertTrue((server.localAddress as InetSocketAddress).port > 0)
-        server.close()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+            assertTrue((server.localAddress as InetSocketAddress).port > 0)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelCloseStopsListening() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        server.close()
-        assertFalse(server.isActive)
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            server.close()
+            assertFalse(server.isActive)
+            engine.close()
+        }
     }
 
     @Test
     fun channelLifecycleAfterClose() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        assertTrue(ch.isOpen)
-        assertTrue(ch.isActive)
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            assertTrue(ch.isOpen)
+            assertTrue(ch.isActive)
 
-        ch.close()
-        assertFalse(ch.isOpen)
-        assertFalse(ch.isActive)
+            ch.close()
+            assertFalse(ch.isOpen)
+            assertFalse(ch.isActive)
 
-        close(clientFd)
-        server.close()
-        engine.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     // --- Error ---
 
     @Test
     fun readOnClosedChannelThrows() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.read(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.read(DefaultAllocator.allocate(8))
+            }
+
+            close(clientFd)
+            server.close()
+            engine.close()
         }
-
-        close(clientFd)
-        server.close()
-        engine.close()
     }
 
     @Test
     fun writeOnClosedChannelThrows() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.write(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.write(DefaultAllocator.allocate(8))
+            }
+
+            close(clientFd)
+            server.close()
+            engine.close()
         }
-
-        close(clientFd)
-        server.close()
-        engine.close()
     }
 
     @Test
     fun bindOnClosedEngineThrows() = runBlocking {
-        val engine = KqueueEngine()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            engine.close()
 
-        assertFailsWith<IllegalStateException> {
-            engine.bind("0.0.0.0", 0)
+            assertFailsWith<IllegalStateException> {
+                engine.bind("0.0.0.0", 0)
+            }
+            Unit
         }
-        Unit
     }
 
     @Test
     fun `double close is idempotent`() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
 
-        ch.close()
-        ch.close()
+            ch.close()
+            ch.close()
 
-        close(clientFd)
-        server.close()
-        engine.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun `write zero bytes returns zero`() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
 
-        val buf = DefaultAllocator.allocate(8)
-        val written = ch.write(buf)
-        assertEquals(0, written)
+            val buf = DefaultAllocator.allocate(8)
+            val written = ch.write(buf)
+            assertEquals(0, written)
 
-        ch.close()
-        close(clientFd)
-        server.close()
-        engine.close()
+            ch.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     // --- Close race ---
@@ -265,57 +286,63 @@ class KqueueEngineLifecycleTest {
 
     @Test
     fun `UDS abstract namespace is rejected on macOS`() = runBlocking<Unit> {
-        val engine = KqueueEngine()
-        try {
-            val addr = UnixSocketAddress.abstract("keel-abstract-should-fail")
-            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
-            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
-        } finally {
-            engine.close()
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            try {
+                val addr = UnixSocketAddress.abstract("keel-abstract-should-fail")
+                assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+                assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect to unresolvable hostname throws`() = runBlocking {
-        val engine = KqueueEngine()
-        assertFailsWith<RuntimeException> {
-            engine.connect("keel-test-host.invalid", 80)
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            assertFailsWith<RuntimeException> {
+                engine.connect("keel-test-host.invalid", 80)
+            }
+            engine.close()
         }
-        engine.close()
     }
 
     @Test
     fun `connect and echo round trip`() = runBlocking {
-        val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)
-        val client = engine.connect("127.0.0.1", port)
-        val serverCh = server.accept()
+            // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)
+            val client = engine.connect("127.0.0.1", port)
+            val serverCh = server.accept()
 
-        // Client writes, server reads and echoes back
-        val msg = "async-connect"
-        val writeBuf = DefaultAllocator.allocate(64)
-        for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
-        client.write(writeBuf)
-        client.flush()
+            // Client writes, server reads and echoes back
+            val msg = "async-connect"
+            val writeBuf = DefaultAllocator.allocate(64)
+            for (b in msg.encodeToByteArray()) writeBuf.writeByte(b)
+            client.write(writeBuf)
+            client.flush()
 
-        val readBuf = DefaultAllocator.allocate(64)
-        val n = serverCh.read(readBuf)
-        assertEquals(msg.length, n)
-        serverCh.write(readBuf)
-        serverCh.flush()
+            val readBuf = DefaultAllocator.allocate(64)
+            val n = serverCh.read(readBuf)
+            assertEquals(msg.length, n)
+            serverCh.write(readBuf)
+            serverCh.flush()
 
-        val echoBuf = DefaultAllocator.allocate(64)
-        val n2 = client.read(echoBuf)
-        assertEquals(msg.length, n2)
-        echoBuf.release()
+            val echoBuf = DefaultAllocator.allocate(64)
+            val n2 = client.read(echoBuf)
+            assertEquals(msg.length, n2)
+            echoBuf.release()
 
-        client.close()
-        serverCh.close()
-        server.close()
-        engine.close()
+            client.close()
+            serverCh.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test

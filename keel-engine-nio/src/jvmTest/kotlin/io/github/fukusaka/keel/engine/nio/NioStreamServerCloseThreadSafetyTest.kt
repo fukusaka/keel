@@ -39,41 +39,43 @@ class NioServerCloseThreadSafetyTest {
 
     @Test
     fun `concurrent close from many threads is idempotent and exception-free`() = runBlocking {
-        val engine = NioEngine(IoEngineConfig(threads = 1))
-        val server = engine.bind("127.0.0.1", 0)
-        val parallelism = 16
-        val latch = CountDownLatch(parallelism)
-        val executor = Executors.newFixedThreadPool(parallelism)
-        val thrown = CopyOnWriteArrayList<Throwable>()
+        withTimeout(5.seconds) {
+            val engine = NioEngine(IoEngineConfig(threads = 1))
+            val server = engine.bind("127.0.0.1", 0)
+            val parallelism = 16
+            val latch = CountDownLatch(parallelism)
+            val executor = Executors.newFixedThreadPool(parallelism)
+            val thrown = CopyOnWriteArrayList<Throwable>()
 
-        try {
-            repeat(parallelism) {
-                executor.submit {
-                    try {
-                        latch.countDown()
-                        latch.await()
-                        // Hammer close() from a fresh thread; only the
-                        // first caller should actually release resources.
-                        server.close()
-                    } catch (t: Throwable) {
-                        thrown.add(t)
+            try {
+                repeat(parallelism) {
+                    executor.submit {
+                        try {
+                            latch.countDown()
+                            latch.await()
+                            // Hammer close() from a fresh thread; only the
+                            // first caller should actually release resources.
+                            server.close()
+                        } catch (t: Throwable) {
+                            thrown.add(t)
+                        }
                     }
                 }
+                executor.shutdown()
+                assertTrue(
+                    executor.awaitTermination(5, TimeUnit.SECONDS),
+                    "concurrent close workers did not finish in 5s",
+                )
+            } finally {
+                runCatching { engine.close() }
             }
-            executor.shutdown()
-            assertTrue(
-                executor.awaitTermination(5, TimeUnit.SECONDS),
-                "concurrent close workers did not finish in 5s",
-            )
-        } finally {
-            runCatching { engine.close() }
+
+            assertTrue(thrown.isEmpty(), "concurrent close raised: $thrown")
+            assertFalse(server.isActive, "server should report inactive after close")
+
+            // Second round of close() calls — must stay silent no-ops.
+            repeat(4) { server.close() }
         }
-
-        assertTrue(thrown.isEmpty(), "concurrent close raised: $thrown")
-        assertFalse(server.isActive, "server should report inactive after close")
-
-        // Second round of close() calls — must stay silent no-ops.
-        repeat(4) { server.close() }
     }
 
     @Test
