@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
+import io.github.fukusaka.keel.testing.websocket.WsSeamContext
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

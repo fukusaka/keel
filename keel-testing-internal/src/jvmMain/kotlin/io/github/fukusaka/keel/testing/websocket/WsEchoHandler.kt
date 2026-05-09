@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.engine.netty
+package io.github.fukusaka.keel.testing.websocket
 
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
@@ -14,26 +14,26 @@ import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
-import io.github.fukusaka.keel.testing.transport.TestIoTransport
 
 /**
- * Test-only `InboundHandler` that mirrors `BenchmarkRoutingHandler`'s
- * `/ws-echo` semantics: process the HTTP→WS upgrade handshake, swap the
- * pipeline from HTTP codec to WS codec, then echo every text/binary
- * frame and respond to PING/CLOSE per the protocol.
+ * Test-only `InboundHandler` that mirrors a `/ws-echo` server: process the
+ * HTTP→WS upgrade handshake, swap the pipeline from HTTP codec to WS codec,
+ * then echo every text/binary frame and respond to PING/CLOSE per the
+ * protocol.
  *
- * Shared between [NettyPipelineWsEchoTest] (integration smoke against a
- * real Netty engine + JDK HttpClient) and [NettyPipelineWsEchoSeamTest]
- * (deterministic seam test against a `TestIoTransport`). Both tests
- * exercise the same handler so a regression in either layer surfaces
- * uniformly; lifting the handler out of the integration test's private
- * scope avoids the seam test having to reimplement an equivalent.
+ * Shared between integration tests (real Netty engine + JDK HttpClient,
+ * such as `NettyPipelineWsEchoTest`) and deterministic seam tests against
+ * a `TestIoTransport` (such as `NettyPipelineWsEchoSeamTest`). Both
+ * surfaces exercise the same handler so a regression in either layer
+ * surfaces uniformly; promoting the handler from a per-test fixture into
+ * `keel-testing-internal/jvmMain` lets future test classes reuse it
+ * without copy-paste.
  *
  * @param postUpgradeMode If true, the handler starts in echo mode and
- *   skips the HTTP upgrade dance — used by the seam test to drive
+ *   skips the HTTP upgrade dance — used by seam tests to drive
  *   `WsFrame` events directly without first staging an HTTP request.
  */
-internal class WsEchoHandler(
+public class WsEchoHandler(
     postUpgradeMode: Boolean = false,
 ) : InboundHandler {
     private var wsUpgradePending = false
@@ -50,7 +50,8 @@ internal class WsEchoHandler(
             }
             is HttpBodyEnd -> {
                 if (wsUpgradePending) {
-                    val acceptKey = computeAcceptKey(wsClientKey!!)
+                    val key = wsClientKey ?: error("Sec-WebSocket-Key missing despite wsUpgradePending=true")
+                    val acceptKey = computeAcceptKey(key)
                     ctx.propagateWrite(
                         HttpResponseHead(
                             status = HttpStatus(101),

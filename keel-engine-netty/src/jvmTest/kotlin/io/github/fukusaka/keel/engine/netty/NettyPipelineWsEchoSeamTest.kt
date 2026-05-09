@@ -6,10 +6,12 @@ import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
-import io.github.fukusaka.keel.engine.netty.WsSeamContext.Companion.encodeFrame
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import io.github.fukusaka.keel.testing.websocket.WsEchoHandler
+import io.github.fukusaka.keel.testing.websocket.WsSeamContext
+import io.github.fukusaka.keel.testing.websocket.WsSeamContext.Companion.encodeFrame
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

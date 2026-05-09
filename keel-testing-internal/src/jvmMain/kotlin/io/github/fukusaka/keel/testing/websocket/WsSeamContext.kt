@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.engine.netty
+package io.github.fukusaka.keel.testing.websocket
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
@@ -13,10 +13,9 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
-import kotlin.test.assertEquals
 
 /**
- * Shared seam-test infrastructure for the engine-netty WebSocket pipeline.
+ * Shared seam-test infrastructure for the keel WebSocket pipeline.
  *
  * Bundles a [TrackingAllocator] + [TestIoTransport] + [AbstractPipelinedChannel]
  * with the post-upgrade WS pipeline (`WsFrameEncoder` / `WsFrameDecoder` /
@@ -24,11 +23,11 @@ import kotlin.test.assertEquals
  * `WsFrame` events directly into [channel] without first staging the HTTP
  * upgrade handshake.
  *
- * Used by both [NettyPipelineWsEchoSeamTest] (per-frame K4 leak detection at
- * baseline scale) and [NettyPipelineWsLargePayloadTest] (large + fragmented
- * payloads). The HTTP→WS upgrade case stays inline in `NettyPipelineWsEchoSeamTest`
- * because it builds its own pipeline (HTTP codec + ws-echo) without
- * `postUpgradeMode`.
+ * Used by per-frame K4 leak detection seam tests (e.g.
+ * `NettyPipelineWsEchoSeamTest`) and by large-payload / fragmented seam
+ * tests (e.g. `NettyPipelineWsLargePayloadTest`). The full HTTP→WS upgrade
+ * flow stays inline in those test classes because it builds its own
+ * pipeline (HTTP codec + ws-echo) without `postUpgradeMode`.
  *
  * @property ownsTracker `true` when this context allocated [tracker] itself
  *   (single-channel tests). `false` when the caller passes a shared tracker
@@ -37,14 +36,14 @@ import kotlin.test.assertEquals
  *   tracker must skip the leak assertion, because the multi-channel total is
  *   asserted by the test body after all channels close.
  */
-internal class WsSeamContext(
-    val tracker: TrackingAllocator,
-    val transport: TestIoTransport,
-    val channel: AbstractPipelinedChannel,
+public class WsSeamContext(
+    public val tracker: TrackingAllocator,
+    public val transport: TestIoTransport,
+    public val channel: AbstractPipelinedChannel,
     private val ownsTracker: Boolean,
 ) {
     /** Encode [frame] to wire bytes and wrap them in a tracker-allocated [IoBuf]. */
-    fun encodeAsIoBuf(frame: WsFrame): IoBuf {
+    public fun encodeAsIoBuf(frame: WsFrame): IoBuf {
         val bytes = encodeFrame(frame)
         return tracker.allocate(bytes.size).apply { writeByteArray(bytes, 0, bytes.size) }
     }
@@ -57,7 +56,7 @@ internal class WsSeamContext(
      * (decode payload, then verify length, etc.) become correct without an
      * explicit retain.
      */
-    fun decodeOutbound(buf: IoBuf): WsFrame {
+    public fun decodeOutbound(buf: IoBuf): WsFrame {
         val n = buf.readableBytes
         val bytes = ByteArray(n)
         buf.readByteArray(bytes, 0, n)
@@ -69,7 +68,7 @@ internal class WsSeamContext(
     }
 
     /** Release every captured outbound buffer and tear down the channel. */
-    fun close() {
+    public fun close() {
         transport.releaseWritten()
         channel.close()
     }
@@ -78,24 +77,32 @@ internal class WsSeamContext(
      * Assert alloc/release balance — only meaningful when this context owns
      * its tracker. Multi-channel tests share a tracker across contexts and
      * must perform the assertion themselves after closing every channel.
+     *
+     * Implemented as a raw [AssertionError] throw rather than going through
+     * `kotlin.test.assertEquals` to keep this fixture module independent of
+     * the kotlin-test runtime — the failure surface (an `AssertionError`
+     * with a descriptive message) is the same as what `assertEquals` would
+     * produce, but consumers do not need `kotlin-test` on their fixture
+     * compile classpath to call this.
      */
-    fun assertBalanced() {
+    public fun assertBalanced() {
         if (!ownsTracker) return
-        assertEquals(
-            0,
-            tracker.outstandingCount,
-            "IoBuf leak — alloc=${tracker.allocateCount} release=${tracker.releaseCount}",
-        )
+        if (tracker.outstandingCount != 0) {
+            throw AssertionError(
+                "IoBuf leak — expected outstandingCount=0, but was ${tracker.outstandingCount} " +
+                    "(alloc=${tracker.allocateCount} release=${tracker.releaseCount})",
+            )
+        }
     }
 
-    companion object {
+    public companion object {
         /**
          * Build a [WsSeamContext] in post-upgrade WS state. When [tracker] is
          * `null` (single-channel test), allocates a private tracker; when
          * non-null (multi-channel test), the shared tracker is reused and
          * [assertBalanced] becomes a no-op for this context.
          */
-        fun new(
+        public fun new(
             tracker: TrackingAllocator? = null,
             label: String = "seam",
         ): WsSeamContext {
@@ -119,7 +126,7 @@ internal class WsSeamContext(
          * ≥8 KiB the partial read silently truncates the encoded frame and
          * the round-trip assertion fails at the segment boundary.
          */
-        fun encodeFrame(frame: WsFrame): ByteArray {
+        public fun encodeFrame(frame: WsFrame): ByteArray {
             val scratch = Buffer()
             writeFrame(frame, scratch)
             return scratch.readByteArray(scratch.size.toInt())

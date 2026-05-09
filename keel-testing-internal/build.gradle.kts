@@ -30,8 +30,11 @@ plugins {
 //
 // Source set layout:
 //   - commonMain: target-agnostic fixtures (`TestIoTransport`)
-//   - jvmMain:    JDK-only fixtures (`TestHttpClient` for JDK 21
-//                 `java.net.http.HttpClient` lifecycle discipline)
+//   - jvmMain:    JVM-only fixtures (`TestHttpClient` for JDK 21
+//                 `java.net.http.HttpClient` lifecycle discipline,
+//                 `WsEchoHandler` for WebSocket echo seam tests,
+//                 `WsSeamContext` for `TrackingAllocator`-driven
+//                 WS pipeline seam tests)
 //   - nativeMain: POSIX socket Native fakes (`FakeNativeSocket` /
 //                 `FakeNativeSocketOps` / `PosixRawClient`) +
 //                 `posix_testing` cinterop
@@ -50,15 +53,16 @@ plugins {
 //     `AbstractIoTransport.write`'s ownership-transfer contract; the
 //     canonical version restored ownership-transfer. Module went
 //     multiplatform.
-//   - PR #490 (this): renamed `keel-testing-common` → `keel-testing-internal`
+//   - PR #490: renamed `keel-testing-common` → `keel-testing-internal`
 //     and merged `keel-native-posix-testing` (4 native fakes + cinterop) into
 //     this module's `nativeMain` + `nativeTest`. Reserved the qualifier-free
 //     `keel-testing` slot for a future user-facing umbrella.
-//
-// Future scope (separate PRs):
-//   - `WsEchoHandler` / `WsSeamContext` (keel-engine-netty jvmTest test
-//     fixtures): can move into `jvmMain` here once a justification for
-//     cross-test-class reuse appears beyond `keel-engine-netty` itself.
+//   - PR #491 (this): promoted `WsEchoHandler` / `WsSeamContext` from
+//     `keel-engine-netty/jvmTest` into `jvmMain` so future test classes
+//     (current consumers: `NettyPipelineWsEchoTest` /
+//     `NettyPipelineWsEchoSeamTest` / `NettyPipelineWsLargePayloadTest`)
+//     reuse a single canonical fixture instead of copy-pasting. Closed the
+//     fixture-consolidation roadmap entry (c).
 
 kotlin {
     // Targets mirror the union of fixture consumers: keel-core /
@@ -127,9 +131,21 @@ kotlin {
             }
         }
         jvmMain {
-            // No additional deps: `TestHttpClient` only wraps the JDK 21
-            // `java.net.http.HttpClient` + `java.util.concurrent.Executors`,
-            // both available on the standard library classpath.
+            dependencies {
+                // `api` because [WsEchoHandler] / [WsSeamContext] expose
+                // `WsFrame` / `HttpRequestHead` etc. as public types in
+                // their parameter / return signatures, and consumers
+                // construct or inspect those values directly.
+                api(project(":keel-codec-http"))
+                api(project(":keel-codec-websocket"))
+                // `api` because [WsSeamContext] uses `TrackingAllocator`
+                // in its public type signature (constructor parameter).
+                api(project(":keel-io"))
+                // `kotlinx-io-core` carries `Buffer` / `Source` types
+                // referenced by the WS encode/decode helpers; promote
+                // to `api` so consumers don't need to redeclare it.
+                api(libs.kotlinx.io.core)
+            }
         }
         nativeMain {
             dependencies {
