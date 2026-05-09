@@ -44,8 +44,8 @@ import kotlin.test.assertTrue
  *   that the original sequential 5-conn flow could not produce.
  * - Real-network sustained-load OOM (deleted scenario): out of unit-test
  *   scope. The original 15-frame attempt was several orders of magnitude
- *   below the failure scale — the proper coverage is a stress test (PR #486
- *   `NettyPipelineWsStressTest` with `@Tag("stress")`).
+ *   below the failure scale — the proper coverage is [NettyPipelineWsStressTest]
+ *   gated by the `keel.stress=true` system property.
  */
 class NettyPipelineWsEchoSeamTest {
 

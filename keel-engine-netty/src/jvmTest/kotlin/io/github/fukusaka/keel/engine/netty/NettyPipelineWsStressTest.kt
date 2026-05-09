@@ -98,12 +98,12 @@ class NettyPipelineWsStressTest {
      *
      * The success criterion is binary — every connection completes every
      * round without exception or timeout, and the engine shuts down cleanly.
-     * Underlying K4 leak would manifest as either OOM during the run (with
-     * the current `-Xmx2g` JVM heap) or a `BufferAllocator` leak on engine
-     * close; neither is asserted directly here because the seam tests
-     * already catch the IoBuf-counting class deterministically. This test's
-     * value is the *combination* of real Netty accept + real JDK HttpClient
-     * + real network bytes flowing for the duration.
+     * Underlying K4 leak would manifest as either OOM during the run or a
+     * `BufferAllocator` leak on engine close; neither is asserted directly
+     * here because the seam tests already catch the IoBuf-counting class
+     * deterministically. This test's value is the *combination* of real
+     * Netty accept + real JDK HttpClient + real network bytes flowing for
+     * the duration.
      */
     @Test
     fun `50 concurrent connections each complete 100 echo rounds without leak or timeout`() = runBlocking {
@@ -151,9 +151,15 @@ class NettyPipelineWsStressTest {
 
     /**
      * Drive one VU: open a WebSocket, send [rounds] sequential text frames
-     * each waiting for its echo, then close. A `CompletableFuture` per
-     * round lets the [WebSocket.Listener] hand the inbound frame back to
-     * the suspending sender without crossing dispatcher boundaries.
+     * each waiting for its echo, then close. A FIFO queue of
+     * [CompletableFuture] entries — one per outstanding round — bridges
+     * the [WebSocket.Listener] callbacks (running on the test executor)
+     * back to this coroutine: the sender enqueues a future, then suspends
+     * on `kotlinx.coroutines.future.await`; the listener completes the
+     * head-of-queue future when an echo arrives, which resumes the sender
+     * on its original coroutine dispatcher. Access to the shared queue is
+     * `synchronized` because the listener thread and the coroutine thread
+     * mutate it concurrently.
      */
     private suspend fun runConnection(
         http: HttpClient,
