@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
 
 /**
  * Test-only `InboundHandler` that mirrors `BenchmarkRoutingHandler`'s

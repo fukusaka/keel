@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

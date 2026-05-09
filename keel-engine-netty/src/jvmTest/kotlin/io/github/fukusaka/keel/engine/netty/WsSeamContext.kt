@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.codec.websocket.parseFrame
 import io.github.fukusaka.keel.codec.websocket.writeFrame
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
 import kotlin.test.assertEquals

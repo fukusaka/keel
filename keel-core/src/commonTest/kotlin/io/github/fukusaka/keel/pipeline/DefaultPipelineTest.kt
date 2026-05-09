@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.reflect.KClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,27 +17,11 @@ class DefaultPipelineTest {
 
     private val logger = PrintLogger("test")
 
-    /**
-     * Tracking transport that records `flush` and `close` invocations in
-     * addition to [TestIoTransport.written]. Assertions rely on these
-     * observable flags.
-     */
-    private class TrackingTransport : TestIoTransport() {
-        var flushed: Boolean = false
-        var closed: Boolean = false
-
-        override fun flush(): Boolean {
-            flushed = true
-            return super.flush()
-        }
-
-        override fun close() {
-            if (!markClosing()) return
-            closed = true
-        }
-    }
-
-    private val transport = TrackingTransport()
+    // Use the canonical [TestIoTransport] directly — its built-in
+    // `flushed` and `closed` flags cover the assertions this test needs
+    // (the previous private TrackingTransport subclass that added these
+    // flags is now redundant with the consolidated fixture).
+    private val transport = TestIoTransport()
     private val channel = object : AbstractPipelinedChannel(transport, logger) {}
 
     private fun createPipeline(): Pipeline = channel.pipeline
