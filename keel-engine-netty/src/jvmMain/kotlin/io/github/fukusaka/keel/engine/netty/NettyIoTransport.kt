@@ -82,34 +82,30 @@ internal class NettyIoTransport(
 
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
 
-    init {
-        // [IdleReadPolicy.DETECT_PEER_CLOSE]: enable Netty's auto-read at
-        // construction so the underlying Java NIO `Selector` keeps
-        // `OP_READ` registered for the channel. Without `OP_READ` in the
-        // selection key, the Selector cannot observe peer FIN while
-        // `setAutoRead(false)` is in effect (the NIO Selector API maps
-        // `OP_READ` to `POLLIN` only and never `POLLRDHUP`), so a
-        // write-only push client that holds `readEnabled = false` would
-        // miss peer close. With auto-read on, [channelRead] fires for
-        // any inbound bytes — the handler below releases them silently
-        // when `readEnabled = false` (the documented cost of the
-        // policy), and [channelInactive] /
-        // [ChannelInputShutdownReadComplete] fire on FIN.
-        //
-        // Engine applicability is resolved upstream in [NettyEngine]:
-        // for the [NettyTransport.Epoll] / [NettyTransport.KQueue] native
-        // transports the engine passes
-        // [IdleReadPolicy.PRESERVE_BACKPRESSURE] regardless of the
-        // user's [IoEngineConfig.idleReadPolicy], because native
-        // transports observe peer FIN through `EPOLLRDHUP` / `EV_EOF`
-        // independently of auto-read state.
+    // --- Read path ---
+
+    /**
+     * [IdleReadPolicy.DETECT_PEER_CLOSE]: enable Netty's auto-read here
+     * so the underlying Java NIO `Selector` keeps `OP_READ` registered.
+     * Arming runs *after* `AbstractPipelinedChannel.init` has wired up
+     * [onRead] / [onReadClosed], so the first [channelRead] always
+     * observes non-null callbacks; arming earlier in `init { }` races
+     * with the channel-construction sequence and can leak bytes
+     * through a still-null [onRead] when Netty's EventLoop fires
+     * channelRead before `AbstractPipelinedChannel.init` finishes.
+     *
+     * Engine applicability is resolved upstream in [NettyEngine]: for
+     * the [NettyTransport.Epoll] / [NettyTransport.KQueue] native
+     * transports the engine passes [IdleReadPolicy.PRESERVE_BACKPRESSURE]
+     * regardless of the user's [IoEngineConfig.idleReadPolicy], because
+     * native transports observe peer FIN through `EPOLLRDHUP` /
+     * `EV_EOF` independently of auto-read state.
+     */
+    override fun onChannelAttached() {
         if (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE) {
-            @Suppress("LeakingThis")
             armRead()
         }
     }
-
-    // --- Read path ---
 
     // Guarded by EventLoop thread — both channelInactive and userEventTriggered
     // run there, so a plain var suffices.

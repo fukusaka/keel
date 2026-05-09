@@ -74,6 +74,28 @@ interface IoTransport {
     var onReadClosed: (() -> Unit)?
 
     /**
+     * Hook invoked by [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel]
+     * after [onRead], [onReadClosed], and [onWritabilityChanged] have all
+     * been wired up. Engines that pre-arm their read primitive when the
+     * caller selects [io.github.fukusaka.keel.core.IdleReadPolicy.DETECT_PEER_CLOSE]
+     * should arm here (rather than in `init { }`) so any inbound bytes
+     * the platform delivers via the read primitive's first event always
+     * observe a non-null [onRead] — arming in `init { }` exposes a race
+     * with the channel-construction sequence (`Engine.IoTransport(...)` →
+     * `Engine.PipelinedChannel(...)` → `AbstractPipelinedChannel.init`)
+     * where the platform's EventLoop / dispatch queue can deliver the
+     * first read event before the channel constructor has finished
+     * setting the callbacks.
+     *
+     * Default no-op for engines that arm read lazily on `readEnabled =
+     * true` (the [io.github.fukusaka.keel.core.IdleReadPolicy.PRESERVE_BACKPRESSURE]
+     * path) or that already deliver `onReadClosed` through a separate
+     * channel (engine-nodejs / engine-kqueue / engine-epoll / native
+     * netty transports).
+     */
+    fun onChannelAttached() {}
+
+    /**
      * Enables or disables the read loop.
      *
      * When set to `true`, the transport registers platform-specific read
