@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
 import io.github.fukusaka.keel.engine.nio.NioEngine
+import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer

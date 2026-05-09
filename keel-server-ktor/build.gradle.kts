@@ -51,6 +51,8 @@ kotlin {
                 implementation(project(":keel-engine-nio"))
                 implementation(project(":keel-engine-netty"))
                 implementation(project(":keel-tls-jsse"))
+                // Shared test fixtures (`TestHttpClient` + `newTestHttpClient`).
+                implementation(project(":keel-testing-common"))
                 // Standard Ktor WebSocket plugin for respondUpgrade tests.
                 implementation(libs.ktor.server.websockets)
             }

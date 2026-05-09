@@ -44,6 +44,11 @@ kotlin {
                 implementation(project(":keel-codec-http"))
                 implementation(project(":keel-codec-websocket"))
                 implementation(project(":keel-io"))
+                // Shared test fixtures (`TestHttpClient` + `newTestHttpClient`,
+                // replacing the inline `TestWsClient` private classes that
+                // NettyPipelineWsEchoTest / NettyPipelineWsStressTest used to
+                // duplicate from PR #483 / #486).
+                implementation(project(":keel-testing-common"))
             }
         }
     }
