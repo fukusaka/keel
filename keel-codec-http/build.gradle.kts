@@ -18,6 +18,7 @@ kotlin {
                 implementation(libs.kotlinx.io.core)
                 api(project(":keel-io"))
                 api(project(":keel-core"))
+                api(project(":keel-compression"))
             }
         }
         commonTest {
