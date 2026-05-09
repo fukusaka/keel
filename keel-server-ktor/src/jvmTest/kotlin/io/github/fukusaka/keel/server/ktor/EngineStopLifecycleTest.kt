@@ -11,7 +11,6 @@ import kotlinx.coroutines.withTimeout
 import java.io.PrintWriter
 import java.net.Socket
 import java.net.URI
-import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
@@ -107,23 +106,25 @@ class EngineStopLifecycleTest {
         server.start(wait = false)
         val port = runBlocking { server.engine.resolvedConnectors().first().port }
 
-        val http = HttpClient.newHttpClient()
-        val req = HttpRequest.newBuilder(URI("http://127.0.0.1:$port/slow"))
-            .timeout(Duration.ofSeconds(30))
-            .GET()
-            .build()
-        val pending: CompletableFuture<HttpResponse<String>> = http.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+        newTestHttpClient().use { client ->
+            val req = HttpRequest.newBuilder(URI("http://127.0.0.1:$port/slow"))
+                .timeout(Duration.ofSeconds(30))
+                .GET()
+                .build()
+            val pending: CompletableFuture<HttpResponse<String>> =
+                client.http.sendAsync(req, HttpResponse.BodyHandlers.ofString())
 
-        // Ensure the request has been accepted and the handler has
-        // started suspending. 200 ms is empirically enough for Ktor
-        // routing to dispatch to the handler on all supported OSes.
-        Thread.sleep(200)
+            // Ensure the request has been accepted and the handler has
+            // started suspending. 200 ms is empirically enough for Ktor
+            // routing to dispatch to the handler on all supported OSes.
+            Thread.sleep(200)
 
-        try {
-            val elapsed = measureStopMillis(server, gracePeriodMillis = 500, timeoutMillis = 1500)
-            assertTrue(elapsed < GRACE_BUDGET_MS, "stop took ${elapsed}ms, expected < $GRACE_BUDGET_MS")
-        } finally {
-            pending.cancel(true)
+            try {
+                val elapsed = measureStopMillis(server, gracePeriodMillis = 500, timeoutMillis = 1500)
+                assertTrue(elapsed < GRACE_BUDGET_MS, "stop took ${elapsed}ms, expected < $GRACE_BUDGET_MS")
+            } finally {
+                pending.cancel(true)
+            }
         }
     }
 

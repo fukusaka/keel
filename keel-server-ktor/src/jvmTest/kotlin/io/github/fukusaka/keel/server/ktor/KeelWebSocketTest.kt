@@ -41,14 +41,16 @@ class KeelWebSocketTest {
                 for (frame in incoming) send(frame)
             }
         }) { port ->
-            val recorder = WsRecorder()
-            val ws = openWebSocket(port, "/echo", recorder)
-            ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
-            ws.sendText("世界", true).get(5, TimeUnit.SECONDS)
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(5, TimeUnit.SECONDS)
-            recorder.awaitClosed(5)
+            newTestHttpClient().use { client ->
+                val recorder = WsRecorder()
+                val ws = openWebSocket(client.http, port, "/echo", recorder)
+                ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
+                ws.sendText("世界", true).get(5, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(5, TimeUnit.SECONDS)
+                recorder.awaitClosed(5)
 
-            assertEquals(listOf("hello", "世界"), recorder.texts)
+                assertEquals(listOf("hello", "世界"), recorder.texts)
+            }
         }
     }
 
@@ -59,15 +61,17 @@ class KeelWebSocketTest {
                 for (frame in incoming) send(frame)
             }
         }) { port ->
-            val recorder = WsRecorder()
-            val ws = openWebSocket(port, "/echo", recorder)
-            val payload = byteArrayOf(0x01, 0x02, 0x03, 0xFF.toByte())
-            ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
-            recorder.awaitClosed(5)
+            newTestHttpClient().use { client ->
+                val recorder = WsRecorder()
+                val ws = openWebSocket(client.http, port, "/echo", recorder)
+                val payload = byteArrayOf(0x01, 0x02, 0x03, 0xFF.toByte())
+                ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+                recorder.awaitClosed(5)
 
-            assertEquals(1, recorder.binaries.size)
-            assertTrue(payload.contentEquals(recorder.binaries[0]))
+                assertEquals(1, recorder.binaries.size)
+                assertTrue(payload.contentEquals(recorder.binaries[0]))
+            }
         }
     }
 
@@ -85,10 +89,12 @@ class KeelWebSocketTest {
                 }
             }
         }) { port ->
-            val recorder = WsRecorder()
-            openWebSocket(port, "/ws", recorder)
-            recorder.awaitClosed(5)
-            assertEquals(listOf("from-server"), recorder.texts)
+            newTestHttpClient().use { client ->
+                val recorder = WsRecorder()
+                openWebSocket(client.http, port, "/ws", recorder)
+                recorder.awaitClosed(5)
+                assertEquals(listOf("from-server"), recorder.texts)
+            }
         }
     }
 
@@ -106,28 +112,30 @@ class KeelWebSocketTest {
                 }
             }
         }) { port ->
-            val texts = mutableListOf<String>()
-            val gotTwo = CompletableFuture<List<String>>()
-            val pendingText = StringBuilder()
-            val ws = openWebSocket(port, "/ws", object : WebSocket.Listener {
-                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-                    pendingText.append(data)
-                    if (last) {
-                        texts += pendingText.toString()
-                        pendingText.clear()
-                        if (texts.size == 2) gotTwo.complete(texts.toList())
+            newTestHttpClient().use { client ->
+                val texts = mutableListOf<String>()
+                val gotTwo = CompletableFuture<List<String>>()
+                val pendingText = StringBuilder()
+                val ws = openWebSocket(client.http, port, "/ws", object : WebSocket.Listener {
+                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                    override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                        pendingText.append(data)
+                        if (last) {
+                            texts += pendingText.toString()
+                            pendingText.clear()
+                            if (texts.size == 2) gotTwo.complete(texts.toList())
+                        }
+                        return null
                     }
-                    return null
-                }
-            })
-            ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
-            ws.sendText("world", true).get(5, TimeUnit.SECONDS)
-            // Wait for both echoes before sending CLOSE.
-            val received = gotTwo.get(5, TimeUnit.SECONDS)
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+                })
+                ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
+                ws.sendText("world", true).get(5, TimeUnit.SECONDS)
+                // Wait for both echoes before sending CLOSE.
+                val received = gotTwo.get(5, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
 
-            assertEquals(listOf("hello", "world"), received)
+                assertEquals(listOf("hello", "world"), received)
+            }
         }
     }
 
@@ -143,24 +151,26 @@ class KeelWebSocketTest {
                 }
             }
         }) { port ->
-            val payload = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
-            val gotEcho = CompletableFuture<ByteArray>()
-            val ws = openWebSocket(port, "/ws-bin", object : WebSocket.Listener {
-                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
-                    if (last) {
-                        val bytes = ByteArray(data.remaining())
-                        data.get(bytes)
-                        gotEcho.complete(bytes)
+            newTestHttpClient().use { client ->
+                val payload = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
+                val gotEcho = CompletableFuture<ByteArray>()
+                val ws = openWebSocket(client.http, port, "/ws-bin", object : WebSocket.Listener {
+                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                    override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+                        if (last) {
+                            val bytes = ByteArray(data.remaining())
+                            data.get(bytes)
+                            gotEcho.complete(bytes)
+                        }
+                        return null
                     }
-                    return null
-                }
-            })
-            ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
-            val received = gotEcho.get(5, TimeUnit.SECONDS)
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+                })
+                ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
+                val received = gotEcho.get(5, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
 
-            assertTrue(payload.contentEquals(received))
+                assertTrue(payload.contentEquals(received))
+            }
         }
     }
 
@@ -184,20 +194,22 @@ class KeelWebSocketTest {
             conn.disconnect()
 
             // WS side still works.
-            val gotEcho = CompletableFuture<String>()
-            val pendingText = StringBuilder()
-            val ws = openWebSocket(port, "/ws", object : WebSocket.Listener {
-                override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-                    pendingText.append(data)
-                    if (last) { gotEcho.complete(pendingText.toString()); pendingText.clear() }
-                    return null
-                }
-            })
-            ws.sendText("ping", true).get(5, TimeUnit.SECONDS)
-            val received = gotEcho.get(5, TimeUnit.SECONDS)
-            ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
-            assertEquals("ping", received)
+            newTestHttpClient().use { client ->
+                val gotEcho = CompletableFuture<String>()
+                val pendingText = StringBuilder()
+                val ws = openWebSocket(client.http, port, "/ws", object : WebSocket.Listener {
+                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                    override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                        pendingText.append(data)
+                        if (last) { gotEcho.complete(pendingText.toString()); pendingText.clear() }
+                        return null
+                    }
+                })
+                ws.sendText("ping", true).get(5, TimeUnit.SECONDS)
+                val received = gotEcho.get(5, TimeUnit.SECONDS)
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
+                assertEquals("ping", received)
+            }
         }
     }
 
@@ -234,14 +246,15 @@ class KeelWebSocketTest {
                 get("/health") { call.respondText("OK") }
             }
         }) { port ->
-            val client = HttpClient.newHttpClient()
-            val recorder = WsRecorder()
-            val future = client.newWebSocketBuilder().buildAsync(
-                URI("ws://127.0.0.1:$port/nonexistent"),
-                recorder,
-            )
-            val ex = runCatching { future.get(5, TimeUnit.SECONDS) }.exceptionOrNull()
-            assertNotNull(ex, "expected handshake to fail when path is not registered")
+            newTestHttpClient().use { client ->
+                val recorder = WsRecorder()
+                val future = client.http.newWebSocketBuilder().buildAsync(
+                    URI("ws://127.0.0.1:$port/nonexistent"),
+                    recorder,
+                )
+                val ex = runCatching { future.get(5, TimeUnit.SECONDS) }.exceptionOrNull()
+                assertNotNull(ex, "expected handshake to fail when path is not registered")
+            }
         }
     }
 
@@ -253,24 +266,34 @@ class KeelWebSocketTest {
                 close(WsCloseCode.GOING_AWAY, "shutting down")
             }
         }) { port ->
-            val recorder = WsRecorder()
-            openWebSocket(port, "/early-close", recorder)
-            recorder.awaitClosed(5)
+            newTestHttpClient().use { client ->
+                val recorder = WsRecorder()
+                openWebSocket(client.http, port, "/early-close", recorder)
+                recorder.awaitClosed(5)
 
-            assertEquals(listOf("welcome"), recorder.texts)
-            assertEquals(WsCloseCode.GOING_AWAY.code, recorder.closeStatusCode)
-            assertEquals("shutting down", recorder.closeReason)
+                assertEquals(listOf("welcome"), recorder.texts)
+                assertEquals(WsCloseCode.GOING_AWAY.code, recorder.closeStatusCode)
+                assertEquals("shutting down", recorder.closeReason)
+            }
         }
     }
 
     // --- Helpers ---
 
-    private fun openWebSocket(port: Int, path: String, listener: WebSocket.Listener): WebSocket {
-        val client = HttpClient.newHttpClient()
-        return client.newWebSocketBuilder()
-            .buildAsync(URI("ws://127.0.0.1:$port$path"), listener)
-            .get(5, TimeUnit.SECONDS)
-    }
+    /**
+     * Opens a WebSocket using the supplied [client]. The [client]'s lifecycle is owned
+     * by the caller (typically `newTestHttpClient().use { ... }`) — this method does
+     * not capture or close the client. Per-test `TestHttpClient` ownership ensures the
+     * underlying selector + executor threads are torn down deterministically.
+     */
+    private fun openWebSocket(
+        client: HttpClient,
+        port: Int,
+        path: String,
+        listener: WebSocket.Listener,
+    ): WebSocket = client.newWebSocketBuilder()
+        .buildAsync(URI("ws://127.0.0.1:$port$path"), listener)
+        .get(5, TimeUnit.SECONDS)
 
     private fun withKeelServer(
         module: suspend Application.() -> Unit,
