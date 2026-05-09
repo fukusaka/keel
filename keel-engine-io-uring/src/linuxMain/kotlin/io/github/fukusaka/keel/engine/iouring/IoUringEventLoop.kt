@@ -692,14 +692,20 @@ internal class IoUringEventLoop(
      * Submits a single-shot SQE and routes the CQE to [onCqe] (fire-and-forget).
      *
      * Unlike [submitMultishot], this is for SQEs that produce exactly one CQE
-     * (e.g., SEND, WRITEV). The slot is released after the first callback.
-     * Does not return a slot index (cancellation not supported — use
-     * `close(fd)` for implicit kernel cancellation).
+     * (e.g., SEND, WRITEV, single-shot POLL_ADD). The slot is released by the
+     * drain loop after the (single) callback fires. The acquired slot is
+     * returned so callers can cancel a still-in-flight SQE via
+     * [cancelMultishot] (e.g., `IoUringIoTransport`'s POLL_ADD-based
+     * peer-FIN watcher cancels the SQE in `teardownOnEventLoop` before
+     * `close(fd)` so the kernel-side `struct file` reference is released
+     * and the TCP stack emits FIN promptly to the peer); fire-and-forget
+     * callers (SEND, WRITEV) ignore the return.
      *
      * Must be called on the EventLoop thread only.
      *
      * @param prepare Fills in the SQE via `io_uring_prep_*` functions.
      * @param onCqe   Callback invoked with `(res, flags)` when the CQE arrives.
+     * @return The slot index, needed for [cancelMultishot].
      * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitCallback(
@@ -717,18 +723,28 @@ internal class IoUringEventLoop(
     }
 
     /**
-     * Cancels a multishot SQE.
+     * Cancels an in-flight SQE — multishot or single-shot.
      *
-     * Submits `IORING_OP_ASYNC_CANCEL` targeting the multishot SQE's user_data
-     * and replaces the callback with a no-op. The slot is NOT released here;
-     * it is released by the CQE drain loop when the final CQE arrives with
-     * `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response). This
-     * prevents a slot reuse race where a new operation could be assigned the
-     * same slot before the kernel delivers the cancellation CQE.
+     * Submits `IORING_OP_ASYNC_CANCEL` targeting the SQE's user_data and
+     * replaces the callback with a no-op. The slot is NOT released here;
+     * it is released by the CQE drain loop when the (final) CQE arrives
+     * with `IORING_CQE_F_MORE == 0` (the kernel's `-ECANCELED` response —
+     * always set on the cancellation CQE for both multishot and single-shot
+     * SQEs). This prevents a slot reuse race where a new operation could
+     * be assigned the same slot before the kernel delivers the
+     * cancellation CQE.
+     *
+     * Despite the historical name (kept to minimise call-site churn) the
+     * mechanism is generic: `IORING_OP_ASYNC_CANCEL` operates on user_data,
+     * not on the cancelled op's type. Single-shot users (e.g.
+     * `IoUringIoTransport`'s POLL_ADD-based peer-FIN watcher) cancel via
+     * this same path so an unfired SQE does not retain a kernel-side
+     * `struct file` reference past `close(fd)`.
      *
      * Must be called on the EventLoop thread only.
      *
-     * @param slot The slot index returned by [submitMultishot].
+     * @param slot The slot index returned by [submitMultishot] or
+     *             [submitCallback].
      */
     internal fun cancelMultishot(slot: Int) {
         // Replace with no-op; the drain loop releases the slot on F_MORE=0.
