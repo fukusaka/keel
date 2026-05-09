@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineLifecycleTest {
@@ -24,143 +25,163 @@ class EpollEngineLifecycleTest {
 
     @Test
     fun engineCreateAndClose() = runBlocking {
-        val engine = EpollEngine()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            engine.close()
+        }
     }
 
     @Test
     fun bindReturnsActiveServerChannel() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertTrue(server.isActive)
-        server.close()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertTrue(server.isActive)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelLocalAddress() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
-        assertTrue((server.localAddress as InetSocketAddress).port > 0)
-        server.close()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+            assertTrue((server.localAddress as InetSocketAddress).port > 0)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelCloseStopsListening() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        server.close()
-        assertFalse(server.isActive)
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            server.close()
+            assertFalse(server.isActive)
+            engine.close()
+        }
     }
 
     @Test
     fun channelLifecycleAfterClose() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        assertTrue(ch.isOpen)
-        assertTrue(ch.isActive)
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            assertTrue(ch.isOpen)
+            assertTrue(ch.isActive)
 
-        ch.close()
-        assertFalse(ch.isOpen)
-        assertFalse(ch.isActive)
+            ch.close()
+            assertFalse(ch.isOpen)
+            assertFalse(ch.isActive)
 
-        close(clientFd)
-        server.close()
-        engine.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     // --- Error ---
 
     @Test
     fun readOnClosedChannelThrows() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.read(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.read(DefaultAllocator.allocate(8))
+            }
+
+            close(clientFd)
+            server.close()
+            engine.close()
         }
-
-        close(clientFd)
-        server.close()
-        engine.close()
     }
 
     @Test
     fun writeOnClosedChannelThrows() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.write(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.write(DefaultAllocator.allocate(8))
+            }
+
+            close(clientFd)
+            server.close()
+            engine.close()
         }
-
-        close(clientFd)
-        server.close()
-        engine.close()
     }
 
     @Test
     fun bindOnClosedEngineThrows() = runBlocking {
-        val engine = EpollEngine()
-        engine.close()
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            engine.close()
 
-        assertFailsWith<IllegalStateException> {
-            engine.bind("0.0.0.0", 0)
+            assertFailsWith<IllegalStateException> {
+                engine.bind("0.0.0.0", 0)
+            }
+            Unit
         }
-        Unit
     }
 
     @Test
     fun `double close is idempotent`() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
 
-        ch.close()
-        ch.close()
+            ch.close()
+            ch.close()
 
-        close(clientFd)
-        server.close()
-        engine.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun `write zero bytes returns zero`() = runBlocking {
-        val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(5.seconds) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientFd = connectRawClient(port)
-        val ch = server.accept()
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
 
-        val buf = DefaultAllocator.allocate(8)
-        val written = ch.write(buf)
-        assertEquals(0, written)
+            val buf = DefaultAllocator.allocate(8)
+            val written = ch.write(buf)
+            assertEquals(0, written)
 
-        ch.close()
-        close(clientFd)
-        server.close()
-        engine.close()
+            ch.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
     }
 
     // --- Close race ---
