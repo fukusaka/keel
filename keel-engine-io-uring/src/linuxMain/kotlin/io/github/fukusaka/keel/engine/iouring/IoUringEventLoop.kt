@@ -705,7 +705,7 @@ internal class IoUringEventLoop(
     internal fun submitCallback(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
-    ) {
+    ): Int {
         val sqe = io_uring_get_sqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         prepare(sqe)
@@ -713,6 +713,7 @@ internal class IoUringEventLoop(
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
+        return slot
     }
 
     /**
