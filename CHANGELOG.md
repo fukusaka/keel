@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `compression`: new `keel-compression` SPI module (`Encoder` / `Decoder` / `CompressionCodec` / `EncoderOptions` / `DecoderOptions` / `CompressionRegistry`) for protocol-agnostic byte-stream compression — reusable across HTTP server / HTTP client / WebSocket `permessage-deflate` / gRPC per-message; HPACK / QPACK are out of scope (#492)
+- `compression-zlib`: gzip + deflate + raw-deflate backend (`GzipCodec` / `DeflateCodec`) for JVM (`java.util.zip.Deflater`), Native (`libz` cinterop), and JS (Node `zlib`). Supports `WrapFormat` Gzip/Zlib/Raw, `FlushMode` Sync/Full/Block/NoFlush, `EncoderSession.reset()`, dictionary, and `DecoderOptions.maxOutputSize` / `maxRatio` zip-bomb defence (#492)
+- `codec-http`: `CompressionHandler` (`DuplexHandler`) — server-outbound response compression with `Accept-Encoding` negotiation (RFC 9110 §12.5.3), `Content-Encoding` / `Content-Length` / `Vary` header rewrite, both streaming (`HttpResponseHead` + `HttpBody` + `HttpBodyEnd`) and aggregated (`HttpResponse`) message shapes. `CompressionCondition` skip rules for pre-compressed mime types and small bodies (#492)
+- `benchmark`: pipeline-http engines wire `keel-compression-zlib` (gzip + deflate) when `--compression=true`, closing the K16 gate for Native pipeline-http engines. k6 `compression.js` with `BENCH_COMPRESSION_STRICT=true` passes on `pipeline-http-{kqueue,nwconnection,nio,netty}` on macOS; epoll / io_uring follow under the same wiring once verified on Linux (#492)
+
 ### Changed
 
 - **BREAKING** (`engine-nio`, `engine-netty` NIO fallback, `engine-nwconnection`): `IoEngineConfig.idleReadPolicy` default flipped from `IdleReadPolicy.PRESERVE_BACKPRESSURE` to `IdleReadPolicy.DETECT_PEER_CLOSE` so peer FIN is surfaced through `onReadClosed` on every engine without explicit configuration — bringing these three engines in line with the pull-model engines (kqueue / epoll / netty native / nodejs) where peer-close detection is structurally free. The data-loss caveat that motivated the previous conservative default was closed by the pre-attach event journal (#473) + per-handler lifecycle replay (#474). Workloads that require kernel-level TCP back-pressure on the idle read window (bulk transfer, large upload streaming with no application-level flow control) opt in to `IdleReadPolicy.PRESERVE_BACKPRESSURE` explicitly via `IoEngineConfig`. Users who relied on the old default to keep bytes from arriving at the engine while `readEnabled = false` can restore the previous behaviour with `EngineX(IoEngineConfig(idleReadPolicy = IdleReadPolicy.PRESERVE_BACKPRESSURE))` (#475)

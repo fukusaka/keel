@@ -30,7 +30,7 @@ object PipelineHttpNettyBenchmark : EngineBenchmark {
         val (tlsBindConfig, tlsCloseable) = if (config.tls != null) createTlsBindConfig(config) else (BindConfig() to null)
 
         val server = engine.bindPipeline("0.0.0.0", config.port, config = tlsBindConfig) { channel ->
-            installPipelineHttpHandlers(channel.pipeline)
+            installPipelineHttpHandlers(channel.pipeline, compression = config.compression)
         }
 
         return {
