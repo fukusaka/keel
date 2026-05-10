@@ -194,15 +194,23 @@ case "$SCENARIO" in
         # POSTs to /upload-stream with `Content-Encoding: gzip`. Verifies
         # the **inbound** decompression path (k6 sends compressed bytes,
         # server should report the decoded byte count via
-        # `X-Bytes-Received`). Until `HttpRequestDecompressionHandler`
-        # and the Native `KeelContentEncodingPlugin` land, all engines
-        # fail the strict check — the FAIL is the deliberate signal that
-        # the gap exists. `BENCH_COMPRESSION_UPLOAD_STRICT=false` runs
-        # the same scenario in non-strict mode for throughput
-        # comparisons across engines that do not decompress yet.
+        # `X-Bytes-Received`).
+        #
+        # Defaults `BENCH_COMPRESSION_ENABLE=true` so the server starts
+        # with `--compression=true` and installs the inbound decode path
+        # (KeelCompression plugin / HttpRequestDecompressionHandler).
+        # Without this default the server runs decompression-disabled,
+        # the route handler sees raw gzip bytes, and the strict check
+        # (`reportedBytes === EXPECTED_DECODED_BYTES`) fails uniformly
+        # across all engines — masking real engine behaviour as a
+        # blanket "everything FAIL" signal. Override with
+        # `BENCH_COMPRESSION_ENABLE=false` to measure throughput against
+        # engines that do not decompress yet (combine with
+        # `BENCH_COMPRESSION_UPLOAD_STRICT=false`).
         SCRIPT="benchmark/k6/compression-upload.js"
         READY_ENDPOINT="/hello"
         PARSER="http"
+        BENCH_COMPRESSION_ENABLE="${BENCH_COMPRESSION_ENABLE:-true}"
         ;;
     slow-upload)
         SCRIPT="benchmark/k6/slow-upload.js"
