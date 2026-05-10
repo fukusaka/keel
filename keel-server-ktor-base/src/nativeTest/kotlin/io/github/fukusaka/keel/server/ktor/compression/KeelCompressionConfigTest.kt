@@ -1,6 +1,3 @@
-/*
- * Copyright 2026 fukusaka. Licensed under the Apache License, Version 2.0.
- */
 package io.github.fukusaka.keel.server.ktor.compression
 
 import kotlin.test.Test
