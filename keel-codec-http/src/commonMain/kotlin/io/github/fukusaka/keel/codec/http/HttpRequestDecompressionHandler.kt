@@ -384,11 +384,30 @@ public class HttpRequestDecompressionHandler(
         }
     }
 
+    /**
+     * Build a fresh [HttpHeaders] from [src] with `Content-Encoding` and
+     * `Content-Length` filtered out. Iterates [src] in insertion order so
+     * the downstream handler observes original-case names + duplicate
+     * preservation for any other headers (`Accept-*` etc.).
+     *
+     * **Critical**: do NOT use `src.remove(...)` — `HttpHeaders.remove`
+     * mutates in place and returns `this`, which would corrupt the
+     * upstream [HttpRequestDecoder]'s local `head.headers` reference.
+     * The decoder reads `head.headers.contentLength` AFTER
+     * `propagateRead(head)` returns to determine body framing
+     * (`READ_FIXED_BODY` vs `READ_CHUNK_SIZE`); a stripped
+     * Content-Length there would short-circuit the body emit and the
+     * compressed bytes would never reach this handler.
+     */
     private fun stripDecodedHeaders(src: HttpHeaders): HttpHeaders {
-        var out = src
-        if (HttpHeaderName.CONTENT_ENCODING in out) out = out.remove(HttpHeaderName.CONTENT_ENCODING)
-        if (HttpHeaderName.CONTENT_LENGTH in out) out = out.remove(HttpHeaderName.CONTENT_LENGTH)
-        return out
+        return HttpHeaders.build {
+            for (i in 0 until src.size) {
+                val name = src.nameAt(i)
+                if (name.equals(HttpHeaderName.CONTENT_ENCODING, ignoreCase = true)) continue
+                if (name.equals(HttpHeaderName.CONTENT_LENGTH, ignoreCase = true)) continue
+                add(name, src.valueAt(i))
+            }
+        }
     }
 
     public companion object {
