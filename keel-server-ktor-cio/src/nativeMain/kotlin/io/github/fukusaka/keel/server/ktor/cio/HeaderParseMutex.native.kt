@@ -4,38 +4,59 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Process-wide serialisation of ktor-http-cio parser calls for Kotlin/Native targets.
+ * Process-wide serialisation of ktor-http-cio's `HeadersDataPool` access for
+ * Kotlin/Native targets. Covers both ends of the borrow ↔ recycle cycle —
+ * `parseRequest` (which borrows) and `request.release()` (which recycles).
  *
- * All keel Native engines (kqueue, NWConnection, epoll, io_uring) use a boss/worker
- * EventLoop model with `availableProcessors()` worker threads. Multiple workers can
- * call [parseRequest][io.ktor.http.cio.parseRequest] simultaneously, which causes
- * a lock contention storm inside ktor's process-wide `HeadersDataPool`:
- * `borrow()` holds the pool's internal lock while calling `clearInstance`,
- * which re-enters the same lock via `recycle()`. On Kotlin/Native the lock
- * is a non-reentrant primitive, so concurrent callers collapse to ≈ 0 RPS.
+ * All keel Native engines (kqueue, NWConnection, epoll, io_uring) use a
+ * boss/worker EventLoop model with `availableProcessors()` worker threads.
+ * Multiple workers can interact with `HeadersDataPool` simultaneously, which
+ * causes a lock contention storm at the level of ktor-io's
+ * `DefaultPool.posix.kt` and ktor-http-cio's `HeadersDataPool`:
+ *
+ * 1. `DefaultPool.borrow()` runs the subclass `clearInstance` hook **inside**
+ *    `synchronized(lock)` — anti-pattern that holds the pool lock across an
+ *    arbitrary subclass extension point.
+ * 2. `HeadersDataPool.clearInstance` does `instance.release()`, which calls
+ *    `IntArrayPool.recycle(array)` for each header-array — taking a *second*
+ *    pool's lock while still holding the first.
+ * 3. ktor-io's `SynchronizedObject` is an `AtomicReference<LockState>` spin
+ *    lock that escalates to a pooled `pthread_mutex` on contention. Once
+ *    several workers contend, futex_wait pile-up amplifies the cascading
+ *    nested-lock wait; on Kotlin/Native the synchronized primitive does not
+ *    enjoy the JVM's biased-locking / JIT-elision optimisations, so the
+ *    storm collapses parser throughput to a small fraction of the ideal.
+ *
+ * It is **not enough to serialise only the `borrow` side** — the `recycle`
+ * runs at request end (out of band w.r.t. parseRequest) and contends with
+ * the next worker's borrow exactly as much. Both ends must serialise to
+ * close the race; serialising the borrow alone leaves a 30s-collapse
+ * window under multi-worker bursts (e.g. fresh Native instance taking 50
+ * keep-alive connections after a deployment) where one in three iterations
+ * loses its k6 / load generator request to a pool stall.
  *
  * A single process-wide [Mutex] prevents more than one worker from entering
- * the parser at a time. The mutex is held only for the duration of the
- * synchronous header-parse call (not body decoding), so suspension does not
- * block the I/O thread — other connections continue their I/O work while
- * one parses headers.
+ * either path at a time. The mutex is held only for synchronous pool
+ * operations (not body decoding), so suspension does not block the I/O
+ * thread — other connections continue their I/O work while one parses or
+ * recycles headers.
  *
  * Within a single worker, coroutines are cooperatively scheduled (one runs
  * at a time), so the mutex is only ever contended across workers — not within
  * a single worker's connection set.
  *
- * Empirically (macOS M1, kqueue default workers ≈ 8 cores,
- * wrk 4t/100c/10s, 20 iterations):
+ * Empirically (Linux x86_64, epoll default workers ≈ 32 cores, k6 50 VU
+ * compression-upload `/upload-stream` 15s, 10 server-restart iterations):
  *
- * | Configuration                                | failures (0 RPS) | median RPS | p99      |
- * | ---                                          | ---              | ---        | ---      |
- * | parallel parsers (no serialisation)          | 6 / 20           | ≈ 14 500   | ≈ 11 ms  |
- * | single worker (`threads=1`)                  | 0 / 20           | ≈ 36 000   | ≈ 5.3 ms |
- * | parallel I/O + serialised parser (this class)| 0 / 20           | ≈ 43 400   | ≈ 2.8 ms |
+ * | Configuration                                | flaky runs (≈ 30 s collapse) | median RPS |
+ * | ---                                          | ---                           | ---        |
+ * | parseRequest only serialised (pre-fix)       | 4 / 10                        | ≈ 27 000   |
+ * | parseRequest + request.release() serialised  | 0 / 10                        | ≈ 25 000   |
  *
- * **Upstream**: tracked at the ktor issue tracker. When `HeadersDataPool` is
- * reworked to release the pool lock around `clearInstance`, this class can
- * become a no-op on all platforms and eventually be deleted.
+ * **Upstream**: tracked at the ktor issue tracker. When ktor-io's
+ * `DefaultPool` releases its lock around `clearInstance` (or `HeadersDataPool`
+ * stops nesting another pool's recycle inside its own clearInstance), this
+ * class can become a no-op on all platforms and eventually be deleted.
  */
 private val sharedMutex = Mutex()
 

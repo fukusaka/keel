@@ -31,14 +31,18 @@ import io.ktor.server.engine.ApplicationEngineFactory
  * parser for benchmarking and feature-parity validation against the
  * `:keel-server-ktor` adapter.
  *
- * **Kotlin/Native parser serialisation**: ktor-http-cio's `HeadersDataPool`
- * holds a non-reentrant `SynchronizedObject` lock around `clearInstance`,
- * which on Kotlin/Native (`pthread_mutex`) collapses under multi-worker
- * accept bursts and starves the parser to ≈ 0 RPS.  This adapter therefore
- * serialises every `parseRequest` call through a process-wide mutex on
- * Native targets — see [HeaderParseMutex] for evidence and
- * trade-offs.  The JVM is unaffected (`synchronized` is reentrant +
- * JIT-optimised) and runs the parser concurrently as before.
+ * **Kotlin/Native parser serialisation**: ktor-io's `DefaultPool.posix.kt`
+ * runs the subclass `clearInstance` hook inside `synchronized(lock)`, and
+ * ktor-http-cio's `HeadersDataPool` exploits that anti-pattern by reaching
+ * into another pool's recycle inside its own clearInstance. On
+ * Kotlin/Native the `SynchronizedObject` lock escalates to `pthread_mutex`
+ * on contention; under multi-worker accept bursts the cascading
+ * nested-lock wait collapses parser throughput to ≈ 0 RPS. This adapter
+ * therefore serialises **both** `parseRequest` (header borrow) **and**
+ * `request.release()` (header recycle) through a process-wide mutex on
+ * Native targets — see [HeaderParseMutex] for evidence and trade-offs.
+ * The JVM is unaffected (`synchronized` is reentrant + biased-locking +
+ * JIT-optimised) and runs both ends concurrently as before.
  *
  * The serialisation caps Native single-host parser throughput at the
  * single-core parse rate (≈ 43 k RPS for `/hello` on macOS M1, since
