@@ -22,6 +22,8 @@ object KeelKqueueEngine : EngineBenchmark {
                 connector { this.port = config.port }
             }
             this.engine = KqueueEngine()
+            // Native ktor-keel compression: keel-codec-http CompressionHandler at engine pipeline level
+            pipelineCustomizer = keelNativeCompressionCustomizer(config.compression)
         }.start(wait = false)
         return {
             factory?.close()
