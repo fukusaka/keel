@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.compression.Encoder as KeelEncoder
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.compression.zlib.GzipCodec
 import io.ktor.util.ContentEncoder
+import io.ktor.util.logging.KtorSimpleLogger
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
@@ -37,6 +38,10 @@ import kotlin.coroutines.CoroutineContext
  * @see KeelCompressionPlugin
  */
 private const val SCRATCH_SIZE: Int = 8192
+
+private val LOGGER = KtorSimpleLogger(
+    "io.github.fukusaka.keel.server.ktor.compression.KeelContentEncoders",
+)
 
 public sealed class KeelContentEncoder protected constructor(
     private val keelEncoder: KeelEncoder,
@@ -75,7 +80,18 @@ private suspend fun keelEncodePump(
     try {
         while (!source.isClosedForRead) {
             val n = source.readAvailable(scratchIn, 0, scratchIn.size)
-            if (n <= 0) continue
+            if (n < 0) break // -1 = channel closed; outer while will also exit on next check
+            if (n == 0) {
+                // Per ktor's `ByteReadChannel.readAvailable` contract the function
+                // returns -1 (closed) or N >= 1 (bytes read); a 0 return implies the
+                // internal `awaitContent()` resumed without producing bytes and
+                // without closing — a contract violation in ktor itself. Log and
+                // bail rather than spin.
+                LOGGER.warn(
+                    "ByteReadChannel.readAvailable returned 0 (ktor contract violation), terminating encode pump",
+                )
+                break
+            }
             input.compact()
             input.writeByteArray(scratchIn, 0, n)
             // Drive update until input is consumed or encoder asks for more.
@@ -113,7 +129,14 @@ private suspend fun keelDecodePump(
     try {
         while (!source.isClosedForRead) {
             val n = source.readAvailable(scratchIn, 0, scratchIn.size)
-            if (n <= 0) continue
+            if (n < 0) break // -1 = channel closed; outer while will also exit on next check
+            if (n == 0) {
+                // See keelEncodePump for the rationale on this branch.
+                LOGGER.warn(
+                    "ByteReadChannel.readAvailable returned 0 (ktor contract violation), terminating decode pump",
+                )
+                break
+            }
             input.compact()
             input.writeByteArray(scratchIn, 0, n)
             while (input.readableBytes > 0) {
