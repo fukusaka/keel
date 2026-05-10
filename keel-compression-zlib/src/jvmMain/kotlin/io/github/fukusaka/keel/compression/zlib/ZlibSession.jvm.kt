@@ -175,6 +175,11 @@ private class JvmZlibEncoderSession(
         trailerBuf = null
         trailerOffset = 0
         finishedReturned = false
+        // Deflater.reset / new Deflater zeros bytesRead — sync our
+        // delta-tracking watermark so the next update doesn't compute
+        // a negative delta (which would skip input.readerIndex advance
+        // and cause an infinite loop).
+        deflaterBytesReadAtLastUpdate = 0
     }
 
     override fun close() {
@@ -183,15 +188,22 @@ private class JvmZlibEncoderSession(
         closed = true
     }
 
+    /**
+     * Drain Deflater output into [output] (caller-provided IoBuf), then
+     * advance [input]'s readerIndex by what the Deflater consumed from
+     * the ByteBuffer view passed via [setInput] in [update].
+     *
+     * `Deflater.bytesRead` is cumulative across the session, so we
+     * track [deflaterBytesReadAtLastUpdate] to compute the per-call
+     * delta — both [reset] and [close] must reset this counter for
+     * the new Deflater instance's bytesRead-from-zero baseline.
+     */
     private fun drainEncode(
         input: IoBuf?,
         output: IoBuf,
         effectiveFlush: Int,
         isFinish: Boolean,
     ): CodecStatus {
-        // Get the output ByteBuffer view — Deflater.deflate(ByteBuffer)
-        // advances its position by what it wrote. We propagate that back
-        // to output.writerIndex after the call.
         while (output.writableBytes > 0) {
             val outBuf = sliceForWriter(output)
             val before = outBuf.position()
@@ -200,25 +212,7 @@ private class JvmZlibEncoderSession(
             output.writerIndex += produced
             if (produced == 0) break
         }
-        // After deflate() consumes part of the input ByteBuffer (passed via setInput),
-        // the underlying buffer position is advanced. We translate that back to
-        // input.readerIndex.
-        if (input != null && deflater.bytesRead > 0) {
-            val readSoFar = deflater.bytesRead
-            val expected = inputBytesTotal
-            // bytesRead is cumulative across the session; for the current input
-            // chunk, the consumed amount = readSoFar - (expected - thisInputSize).
-            // Easier: track via input.readableBytes change after setInput by reading
-            // back the ByteBuffer position. setInput stored the buffer; deflate()
-            // advanced its position. We need to recover that.
-            // Implementation note: we used sliceForReader which created a fresh
-            // duplicate, so we can't read it back. Use a different approach: track
-            // bytesRead delta.
-            // For simplicity: assume deflate fully consumed the previous setInput
-            // (Deflater.needsInput() == true after drain). If not, partial and we
-            // need to track. Adjust input.readerIndex incrementally.
-            advanceInputReaderIndex(input, readSoFar)
-        }
+        if (input != null) advanceInputReaderIndex(input)
         return when {
             isFinish && deflater.finished() -> CodecStatus.NEED_INPUT
             !isFinish && deflater.needsInput() -> CodecStatus.NEED_INPUT
@@ -227,15 +221,21 @@ private class JvmZlibEncoderSession(
         }
     }
 
-    // Track the cumulative bytesRead reported by Deflater between calls so we
-    // can advance input.readerIndex by the delta.
+    /**
+     * Cumulative bytesRead-watermark for delta-based input.readerIndex
+     * advancement. MUST be reset by [reset] when the underlying
+     * Deflater is rebuilt (`bytesRead` resets to 0 there) — otherwise
+     * the next delta computes negative and `input.readerIndex` stops
+     * advancing, causing an infinite loop.
+     */
     private var deflaterBytesReadAtLastUpdate: Long = 0
 
-    private fun advanceInputReaderIndex(input: IoBuf, deflaterBytesRead: Long) {
-        val delta = (deflaterBytesRead - deflaterBytesReadAtLastUpdate).toInt()
+    private fun advanceInputReaderIndex(input: IoBuf) {
+        val current = deflater.bytesRead
+        val delta = (current - deflaterBytesReadAtLastUpdate).toInt()
         if (delta > 0) {
             input.readerIndex += delta
-            deflaterBytesReadAtLastUpdate = deflaterBytesRead
+            deflaterBytesReadAtLastUpdate = current
         }
     }
 }
