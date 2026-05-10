@@ -76,26 +76,34 @@ import kotlin.coroutines.ContinuationInterceptor
  * SupervisorJob — they get cancelled cleanly when the connection closes.
  *
  * **Native parser serialisation**: every call to ktor-http-cio's
- * `parseRequest` is wrapped in [HeaderParseMutex] to avoid a
- * Kotlin/Native lock contention storm in `HeadersDataPool` when many
- * concurrent connections parse headers simultaneously.  See
+ * `parseRequest` **and the matching `request.release()`** is wrapped in
+ * [HeaderParseMutex] to avoid a Kotlin/Native lock contention storm in
+ * `HeadersDataPool`.  parseRequest borrows from the pool, release recycles
+ * to it; serialising both ends closes the borrow ↔ recycle race.  See
  * [HeaderParseMutex] for evidence and [KeelCio] for the documented
  * trade-off.  `parseHttpBody` is intentionally *not* serialised — body
  * decoding is per-connection (no shared pool contention) and may run for
  * unbounded durations on streaming uploads.
  */
-internal class KtorCioConnectionHandler : KtorConnectionHandler {
-
+internal class KtorCioConnectionHandler(
     /**
-     * Serialises every `parseRequest` / `parseHttpBody` call so concurrent
-     * header parsing on Kotlin/Native does not pathologically contend on
-     * the shared `HeadersDataPool` lock inside ktor-http-cio.  See
-     * [HeaderParseMutex] for the empirical evidence and the JVM /
-     * Native split (no-op on JVM, process-wide [kotlinx.coroutines.sync.Mutex]
-     * on Native).  The mutex is coroutine-level, so suspension does not
-     * block the I/O thread.
+     * Serialises both `parseRequest` (header borrow) and the matching
+     * `request.release()` (header recycle) so concurrent header parsing
+     * on Kotlin/Native does not pathologically contend on the shared
+     * `HeadersDataPool` lock inside ktor-http-cio.  See [HeaderParseMutex]
+     * for the empirical evidence and the JVM / Native split (no-op on
+     * JVM, process-wide [kotlinx.coroutines.sync.Mutex] on Native).  The
+     * mutex is coroutine-level, so suspension does not block the I/O
+     * thread.  `parseHttpBody` runs without this serialisation (per-call
+     * body decoding does not touch the shared pool).
+     *
+     * Constructor seam — defaults to a fresh `HeaderParseMutex()` for
+     * production. Tests override with a recording subclass to assert
+     * that both borrow and recycle paths route through the mutex (see
+     * `KtorCioRequestReleaseSerialisationTest`).
      */
-    private val parserMutex = HeaderParseMutex()
+    private val parserMutex: HeaderParseMutex = HeaderParseMutex(),
+) : KtorConnectionHandler {
 
     override suspend fun handle(
         channel: PipelinedChannel,
@@ -226,7 +234,22 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
                     engine.pipeline.execute(call)
                 }
             } finally {
-                request.release()
+                // Serialise request.release() through parserMutex too — not just
+                // parseRequest. release() walks Request.headers.release() which
+                // calls HeadersDataPool.recycle(), and recycle() acquires the
+                // SAME pool lock that parseRequest's borrow() takes. Without
+                // serialisation, worker A's release runs concurrently with
+                // worker B's parseRequest, and B's borrow holds the
+                // HeadersDataPool lock while clearInstance() reaches into
+                // IntArrayPool.recycle() (a different pool, hence a nested lock
+                // acquisition). Under multi-worker bursts (e.g. fresh Native
+                // instance taking 50 keep-alive connections at once on a
+                // deployment), the cascading lock waits on Kotlin/Native's
+                // SynchronizedObject (escalating to pthread_mutex on
+                // contention) collapse parser throughput in the same way
+                // HeaderParseMutex was originally introduced to prevent. Cover
+                // the recycle path here so the borrow ↔ recycle race is closed.
+                parserMutex.withLock { request.release() }
                 runCatching { bodyChannel.discard() }
                 output.flush()
             }
