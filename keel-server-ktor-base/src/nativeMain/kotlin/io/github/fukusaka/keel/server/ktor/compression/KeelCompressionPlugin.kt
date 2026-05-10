@@ -234,8 +234,10 @@ private suspend fun io.ktor.server.application.OnCallReceiveContext<KeelCompress
         applyUnknownEncodingPolicy(raw, options.unknownEncodingPolicy)
         return
     }
+    // After the guards above we know `tokens.size == 1` and the single
+    // token is not "identity" (the all-identity branch has already
+    // returned).
     val token = tokens.single()
-    if (token == "identity") return
     val encoderConfig = options.encoders[token] ?: run {
         LOGGER.trace("Unknown Content-Encoding '$token' on ${call.request.local.uri}")
         applyUnknownEncodingPolicy(token, options.unknownEncodingPolicy)
