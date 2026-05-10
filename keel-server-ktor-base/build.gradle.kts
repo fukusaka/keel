@@ -49,6 +49,9 @@ kotlin {
                 implementation(project(":keel-compression"))
                 implementation(project(":keel-compression-zlib"))
                 implementation(project(":keel-codec-http"))
+                // ktor `StatusPages` is referenced by the opt-in
+                // `installKeelCompressionStatusMappers()` helper.
+                implementation(libs.ktor.server.status.pages)
             }
         }
     }
