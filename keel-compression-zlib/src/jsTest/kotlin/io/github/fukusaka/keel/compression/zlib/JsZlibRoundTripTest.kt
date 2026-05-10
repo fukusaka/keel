@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.EncoderOptions
@@ -13,21 +14,21 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 
 /**
- * JS (Node) zlib backend round-trip tests.
+ * JS (Node) zlib backend round-trip tests, streaming SPI shape.
  *
- * Closure tests only — same shape as the Native tests. The wire format
- * is platform-agnostic so JVM-encode-JS-decode equivalence holds
- * transitively.
+ * Sync API mode: input fully buffered until `finish`, then chunk-emitted
+ * via NEED_OUTPUT cycles. Tests verify round-trip closure + chunk
+ * emission count.
  */
 class JsZlibRoundTripTest {
 
     private val allocator: BufferAllocator = DefaultAllocator
+    private val outputCap = 256
 
     @Test
     fun `gzip round-trip`() {
         val payload = "Hello, JS compression. ".repeat(64).encodeToByteArray()
         val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions()))
-        // gzip magic
         assertEquals(0x1F.toByte(), compressed[0])
         assertEquals(0x8B.toByte(), compressed[1])
         val decoded = decodeAll(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
@@ -53,26 +54,67 @@ class JsZlibRoundTripTest {
     }
 
     private fun encodeAll(payload: ByteArray, session: EncoderSession): ByteArray {
-        val src = allocator.allocate(payload.size.coerceAtLeast(64)).apply { writeByteArray(payload, 0, payload.size) }
-        session.update(src).release()
-        val end = session.finish()
-        val n = end.readableBytes
-        val out = ByteArray(n)
-        if (n > 0) end.readByteArray(out, 0, n)
-        end.release()
+        val src = allocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
+        val output = allocator.allocate(outputCap)
+        val total = mutableListOf<Byte>()
+        // Drive update — JS impl always returns NEED_INPUT (defers emit).
+        while (true) {
+            when (session.update(src, output)) {
+                CodecStatus.NEED_INPUT -> break
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+        }
+        // Drive finish — emits compressed bytes in chunks.
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        src.release()
         session.close()
-        return out
+        return ByteArray(total.size) { i -> total[i] }
     }
 
-    private fun decodeAll(payload: ByteArray, session: DecoderSession): ByteArray {
-        val src = allocator.allocate(payload.size.coerceAtLeast(64)).apply { writeByteArray(payload, 0, payload.size) }
-        session.update(src).release()
-        val end = session.finish()
-        val n = end.readableBytes
-        val out = ByteArray(n)
-        if (n > 0) end.readByteArray(out, 0, n)
-        end.release()
+    private fun decodeAll(compressed: ByteArray, session: DecoderSession): ByteArray {
+        val src = allocator.allocate(compressed.size).apply { writeByteArray(compressed, 0, compressed.size) }
+        val output = allocator.allocate(outputCap)
+        val total = mutableListOf<Byte>()
+        while (true) {
+            when (session.update(src, output)) {
+                CodecStatus.NEED_INPUT -> break
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+        }
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        src.release()
         session.close()
-        return out
+        return ByteArray(total.size) { i -> total[i] }
+    }
+
+    private fun drainOutput(output: IoBuf, dest: MutableList<Byte>) {
+        val n = output.readableBytes
+        if (n == 0) return
+        val tmp = ByteArray(n)
+        output.readByteArray(tmp, 0, n)
+        for (b in tmp) dest.add(b)
+        output.clear()
     }
 }
