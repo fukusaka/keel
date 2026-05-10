@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor.compression
 
+import io.github.fukusaka.keel.codec.http.UnknownEncodingPolicy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -78,5 +79,74 @@ class KeelCompressionConfigTest {
                 "$name should have default conditions injected when no user conditions present",
             )
         }
+    }
+
+    // ------------------------------------------------------------------ Mode
+
+    @Test
+    fun `mode default is All -- both response and request`() {
+        val options = KeelCompressionConfig().buildOptions()
+        assertEquals(KeelCompressionConfig.Mode.All, options.mode)
+        assertTrue(options.mode.response, "default mode should enable response side")
+        assertTrue(options.mode.request, "default mode should enable request side")
+    }
+
+    @Test
+    fun `mode CompressResponse disables request side`() {
+        val options = KeelCompressionConfig()
+            .apply { mode = KeelCompressionConfig.Mode.CompressResponse }
+            .buildOptions()
+        assertTrue(options.mode.response, "response side should be enabled")
+        assertTrue(!options.mode.request, "request side should be disabled")
+    }
+
+    @Test
+    fun `mode DecompressRequest disables response side`() {
+        val options = KeelCompressionConfig()
+            .apply { mode = KeelCompressionConfig.Mode.DecompressRequest }
+            .buildOptions()
+        assertTrue(!options.mode.response, "response side should be disabled")
+        assertTrue(options.mode.request, "request side should be enabled")
+    }
+
+    // ------------------------------------------------------------------ inbound limit defaults
+
+    @Test
+    fun `inbound limit defaults match the codec-http handler defaults`() {
+        // Pin parity with HttpRequestDecompressionHandler defaults so callers
+        // configuring one path get matching behaviour from the other.
+        val config = KeelCompressionConfig()
+        assertEquals(1L * 1024 * 1024, config.decompressionLimit, "1 MiB absolute cap")
+        assertEquals(100, config.ratioLimit, "100:1 decoded:input ratio cap")
+        assertEquals(3, config.ratioBurst, "burst tolerance 3 (Apache mod_deflate)")
+        assertEquals(
+            UnknownEncodingPolicy.UnsupportedMediaType,
+            config.unknownEncodingPolicy,
+            "unknown encoding default → 415",
+        )
+    }
+
+    @Test
+    fun `inbound limit overrides round-trip through buildOptions`() {
+        val options = KeelCompressionConfig().apply {
+            decompressionLimit = 100L
+            ratioLimit = 5
+            ratioBurst = 7
+            unknownEncodingPolicy = UnknownEncodingPolicy.BadRequest
+        }.buildOptions()
+        assertEquals(100L, options.decompressionLimit)
+        assertEquals(5, options.ratioLimit)
+        assertEquals(7, options.ratioBurst)
+        assertEquals(UnknownEncodingPolicy.BadRequest, options.unknownEncodingPolicy)
+    }
+
+    @Test
+    fun `inbound limits opt out via Long_MAX_VALUE and Int_MAX_VALUE`() {
+        val options = KeelCompressionConfig().apply {
+            decompressionLimit = Long.MAX_VALUE
+            ratioLimit = Int.MAX_VALUE
+        }.buildOptions()
+        assertEquals(Long.MAX_VALUE, options.decompressionLimit)
+        assertEquals(Int.MAX_VALUE, options.ratioLimit)
     }
 }

@@ -45,7 +45,19 @@ private val LOGGER = KtorSimpleLogger(
 
 public sealed class KeelContentEncoder protected constructor(
     private val keelEncoder: KeelEncoder,
-    private val keelDecoder: KeelDecoder,
+    /**
+     * The underlying keel-compression `Decoder` SPI instance. Internal
+     * so [KeelCompressionPlugin]'s `onCallReceive` decode path can drive
+     * it directly with a configured [io.github.fukusaka.keel.compression.DecoderOptions]
+     * + handler-level burst tracking — `ContentEncoder.decode(...)`'s
+     * fixed signature does not let us thread per-request limits through
+     * the public path, so the plugin needs SPI-level access.
+     *
+     * External callers should use [decode] (which always uses
+     * `DecoderOptions.Default` — unbounded). For zip-bomb defence wire
+     * `KeelCompressionPlugin` instead.
+     */
+    internal val keelDecoder: KeelDecoder,
 ) : ContentEncoder {
 
     @OptIn(DelicateCoroutinesApi::class)
@@ -229,4 +241,171 @@ public object KeelDeflateEncoder : KeelContentEncoder(
     keelDecoder = DeflateCodec.decoder,
 ) {
     override val name: String = "deflate"
+}
+
+/**
+ * Bridge a ktor [ByteReadChannel] of compressed bytes to a decoded
+ * [ByteReadChannel] driven by the keel-compression streaming SPI, with
+ * dual-gate zip-bomb defence (absolute byte cap + decoded:input ratio
+ * cap with burst tolerance).
+ *
+ * This is the pump used by [KeelCompressionPlugin]'s `onCallReceive`
+ * decode block when the client sent `Content-Encoding`. It mirrors the
+ * pump in `keel-codec-http`'s `HttpRequestDecompressionHandler` but
+ * reads from / writes to ktor channels instead of pipeline messages.
+ *
+ * Limit semantics:
+ *
+ * - [decompressionLimit]: cumulative decoded byte cap per request.
+ *   `Long.MAX_VALUE` opts out. Violation throws
+ *   [io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException]
+ *   with `Reason.AbsoluteSizeExceeded`.
+ * - [ratioLimit]: decoded:input ratio cap evaluated after each
+ *   [io.github.fukusaka.keel.compression.DecoderSession.update] /
+ *   [io.github.fukusaka.keel.compression.DecoderSession.finish] returns.
+ *   `Int.MAX_VALUE` opts out. Violation increments the burst counter;
+ *   when [ratioBurst] consecutive violations occur, the pump throws
+ *   [io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException]
+ *   with `Reason.RatioExceeded`.
+ *
+ * The exceptions propagate up through the writer's coroutine and
+ * surface as read errors on the returned channel. Callers (typically a
+ * Ktor `StatusPages` plugin) map them to HTTP 413.
+ */
+@OptIn(DelicateCoroutinesApi::class)
+internal fun keelDecodeWithLimits(
+    decoder: KeelDecoder,
+    source: ByteReadChannel,
+    decompressionLimit: Long,
+    ratioLimit: Int,
+    ratioBurst: Int,
+    coroutineContext: CoroutineContext,
+): ByteReadChannel = GlobalScope.writer(coroutineContext) {
+    keelDecodeWithLimitsPump(
+        decoder = decoder,
+        source = source,
+        sink = channel,
+        decompressionLimit = decompressionLimit,
+        ratioLimit = ratioLimit,
+        ratioBurst = ratioBurst,
+    )
+}.channel
+
+private suspend fun keelDecodeWithLimitsPump(
+    decoder: KeelDecoder,
+    source: ByteReadChannel,
+    sink: ByteWriteChannel,
+    decompressionLimit: Long,
+    ratioLimit: Int,
+    ratioBurst: Int,
+) {
+    val session = decoder.newSession(allocator = DefaultAllocator)
+    val input = DefaultAllocator.allocate(SCRATCH_SIZE)
+    val output = DefaultAllocator.allocate(SCRATCH_SIZE)
+    val scratchIn = ByteArray(SCRATCH_SIZE)
+    val scratchOut = ByteArray(SCRATCH_SIZE)
+    var bytesIn = 0L
+    var bytesOut = 0L
+    var burstRemaining = ratioBurst
+    try {
+        while (!source.isClosedForRead) {
+            val n = source.readAvailable(scratchIn, 0, scratchIn.size)
+            if (n < 0) break
+            if (n == 0) {
+                LOGGER.warn(
+                    "ByteReadChannel.readAvailable returned 0 (ktor contract violation), " +
+                        "terminating decode-with-limits pump",
+                )
+                break
+            }
+            input.compact()
+            input.writeByteArray(scratchIn, 0, n)
+            bytesIn += n
+            while (input.readableBytes > 0) {
+                output.clear()
+                val status = session.update(input, output)
+                val emitted = drainOutputCounted(output, scratchOut, sink)
+                bytesOut += emitted
+                burstRemaining = enforceLimits(
+                    bytesIn, bytesOut,
+                    decompressionLimit, ratioLimit, ratioBurst, burstRemaining,
+                )
+                if (status == CodecStatus.NEED_INPUT) break
+            }
+        }
+        // Finish — flush any pending state plus codec trailer.
+        while (true) {
+            output.clear()
+            val status = session.finish(output)
+            val emitted = drainOutputCounted(output, scratchOut, sink)
+            bytesOut += emitted
+            burstRemaining = enforceLimits(
+                bytesIn, bytesOut,
+                decompressionLimit, ratioLimit, ratioBurst, burstRemaining,
+            )
+            if (status == CodecStatus.FINISHED) break
+        }
+    } finally {
+        session.close()
+        input.release()
+        output.release()
+    }
+}
+
+private suspend fun drainOutputCounted(
+    output: io.github.fukusaka.keel.buf.IoBuf,
+    scratch: ByteArray,
+    sink: ByteWriteChannel,
+): Int {
+    val n = output.readableBytes
+    if (n <= 0) return 0
+    output.readByteArray(scratch, 0, n)
+    sink.writeFully(scratch, 0, n)
+    return n
+}
+
+/**
+ * Enforce the absolute / ratio caps with burst tracking, matching the
+ * codec-http handler's contract:
+ *
+ * - Absolute cap fires before ratio cap on simultaneous violation
+ *   (deterministic `Reason.AbsoluteSizeExceeded`).
+ * - Ratio violations within [ratioBurstMax] consecutive calls pass;
+ *   the [burstRemaining] counter resets on a non-violating chunk.
+ *
+ * Throws [io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException]
+ * on cap exceeded; otherwise returns the new [burstRemaining] value.
+ */
+private fun enforceLimits(
+    bytesIn: Long,
+    bytesOut: Long,
+    decompressionLimit: Long,
+    ratioLimit: Int,
+    ratioBurstMax: Int,
+    burstRemaining: Int,
+): Int {
+    if (decompressionLimit != Long.MAX_VALUE && bytesOut > decompressionLimit) {
+        throw io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException(
+            io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded,
+            bytesDecoded = bytesOut,
+            bytesIn = bytesIn,
+        )
+    }
+    if (ratioLimit == Int.MAX_VALUE || bytesIn == 0L) return burstRemaining
+    val violation = bytesOut > ratioLimit.toLong() * bytesIn
+    if (!violation) {
+        // Reset burst on a non-violating chunk so transient high-ratio
+        // bursts (gzip header / dictionary hits) don't permanently
+        // consume burst tolerance.
+        return ratioBurstMax
+    }
+    val next = burstRemaining - 1
+    if (next < 0) {
+        throw io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException(
+            io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException.Reason.RatioExceeded,
+            bytesDecoded = bytesOut,
+            bytesIn = bytesIn,
+        )
+    }
+    return next
 }
