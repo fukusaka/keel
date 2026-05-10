@@ -128,6 +128,53 @@ public class KeelApplicationEngine(
         public var socketOptions: SocketOptions = SocketOptions.DEFAULT
 
         /**
+         * Optional pipeline customizer invoked once per accepted
+         * connection, **after** the standard HTTP/1.1 codec stack has
+         * been installed and **before** the suspend-bridge handler is
+         * appended. The callback receives the freshly-built
+         * `PipelinedChannel` and may add custom handlers (compression,
+         * tracing, header rewrite, etc.) at the appropriate position.
+         *
+         * Pipeline shape at the call point (before customizer runs):
+         * ```
+         *   HEAD ↔ decoder ↔ encoder ↔ TAIL
+         * ```
+         *
+         * After the customizer has appended a "compression" handler:
+         * ```
+         *   HEAD ↔ decoder ↔ encoder ↔ compression ↔ TAIL
+         * ```
+         *
+         * The bridge is added next, yielding the final shape:
+         * ```
+         *   HEAD ↔ decoder ↔ encoder ↔ compression ↔ bridge ↔ TAIL
+         * ```
+         *
+         * **Concurrency**: invoked on the EventLoop pinned to the
+         * channel — the same thread that drives all subsequent
+         * pipeline events. The customizer must not block.
+         *
+         * **Use case**: opt-in installation of `CompressionHandler`
+         * from `keel-codec-http` for Native engines (`ktor-keel-kqueue`
+         * / `-nwconnection` / `-epoll` / `-io-uring`) where
+         * `ktor-server-compression` is not available. JVM-only consumers
+         * typically install Ktor's `Compression` plugin at the
+         * application layer instead.
+         *
+         * **Path semantics**: invoked on both the `Keel` (keel codec-http
+         * parser) and `KeelCio` (ktor-http-cio parser) connection-handler
+         * paths for API symmetry. However, only the `Keel` path's
+         * pipeline carries `HttpResponseHead` / `HttpBody` / `HttpBodyEnd`
+         * messages — `CompressionHandler` only intercepts response bytes
+         * meaningfully on the `Keel` path. On `KeelCio`, byte-level
+         * handlers (tracing / byte-counters / metrics) still work, but
+         * compression of cio-parser output requires a different
+         * integration point. JVM `KeelCio` consumers should use Ktor's
+         * application-level `Compression` plugin instead.
+         */
+        public var pipelineCustomizer: ((io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit)? = null
+
+        /**
          * TLS configuration per connector. Keyed by [EngineConnectorConfig]
          * added via [sslConnector].
          */

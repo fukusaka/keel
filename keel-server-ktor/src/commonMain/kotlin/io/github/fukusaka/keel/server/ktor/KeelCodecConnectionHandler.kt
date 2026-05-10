@@ -76,6 +76,11 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
         // HttpRequestHead → HttpBody* → HttpBodyEnd per request.
         val bridge = SuspendMessageBridge(HttpMessage::class)
         channel.addHttp1ServerCodec(aggregateBody = false)
+        // Allow the user to inject extra handlers (e.g.,
+        // CompressionHandler from keel-codec-http) between the codec
+        // stack and the suspend bridge. See
+        // KeelApplicationEngine.Configuration.pipelineCustomizer.
+        engine.configuration.pipelineCustomizer?.invoke(channel)
         channel.pipeline.addLast("bridge", bridge)
 
         // Arm the read loop.
