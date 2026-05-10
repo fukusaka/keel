@@ -231,14 +231,17 @@ public class CompressionHandler(
     /**
      * Emit the readable bytes of [scratch] as a fresh [HttpBody]
      * downstream, then clear the scratch for reuse.
+     *
+     * Uses `IoBuf.copyTo` to skip the intermediate `ByteArray` that
+     * a `readByteArray + writeByteArray` round-trip would force —
+     * `copyTo` delegates to platform-optimized `memcpy` on JVM
+     * (DirectByteBuffer.put) and Native (`memcpy` via cinterop).
      */
     private fun emitChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
         val n = scratchBuf.readableBytes
         if (n == 0) return
         val emit = allocator.allocate(n)
-        val tmp = ByteArray(n)
-        scratchBuf.readByteArray(tmp, 0, n)
-        emit.writeByteArray(tmp, 0, n)
+        scratchBuf.copyTo(emit, n)
         scratchBuf.clear()
         ctx.propagateWrite(HttpBody(emit))
     }
@@ -249,44 +252,55 @@ public class CompressionHandler(
         }
     }
 
+    /**
+     * Drive the streaming SPI, accumulating compressed output into a
+     * primitive `ByteArray` (no `ArrayList<Byte>` boxing). Used by the
+     * aggregated `HttpResponse` path where the result must end up as a
+     * single contiguous byte array — bench `/large` 100 KB takes this
+     * path on `pipeline-http-*`.
+     *
+     * Initial estimate is pessimistic (`max(input/4, 256)` — typical
+     * gzip output for text payloads is ≤ ¼ of input); growth doubles
+     * on overflow.
+     */
     private fun encodeAggregated(session: EncoderSession, src: IoBuf): ByteArray {
         ensureScratch()
         val s = scratch!!
-        val collected = ArrayList<Byte>(src.readableBytes)
+        var result = ByteArray((src.readableBytes / 4).coerceAtLeast(MIN_AGGREGATED_BUF))
+        var resultLen = 0
+
+        fun appendScratch() {
+            val n = s.readableBytes
+            if (n == 0) return
+            if (resultLen + n > result.size) {
+                val newSize = (result.size + n).coerceAtLeast(result.size * 2)
+                result = result.copyOf(newSize)
+            }
+            s.readByteArray(result, resultLen, n)
+            resultLen += n
+            s.clear()
+        }
+
         while (true) {
             when (session.update(src, s)) {
-                CodecStatus.NEED_OUTPUT -> drainScratch(s, collected)
+                CodecStatus.NEED_OUTPUT -> appendScratch()
                 CodecStatus.NEED_INPUT -> break
                 CodecStatus.FINISHED -> error("update should not return FINISHED")
             }
         }
-        if (s.readableBytes > 0) drainScratch(s, collected)
+        appendScratch()
+
         var finishing = true
         while (finishing) {
             when (session.finish(s)) {
-                CodecStatus.NEED_OUTPUT -> drainScratch(s, collected)
+                CodecStatus.NEED_OUTPUT -> appendScratch()
                 CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                    if (s.readableBytes > 0) drainScratch(s, collected)
+                    appendScratch()
                     finishing = false
                 }
             }
         }
-        return collected.toByteArray()
-    }
-
-    private fun drainScratch(s: IoBuf, dest: ArrayList<Byte>) {
-        val n = s.readableBytes
-        if (n == 0) return
-        val tmp = ByteArray(n)
-        s.readByteArray(tmp, 0, n)
-        for (b in tmp) dest.add(b)
-        s.clear()
-    }
-
-    private fun ArrayList<Byte>.toByteArray(): ByteArray {
-        val out = ByteArray(size)
-        for (i in indices) out[i] = this[i]
-        return out
+        return if (resultLen == result.size) result else result.copyOf(resultLen)
     }
 
     private fun rewriteHeaders(src: HttpHeaders, encoding: String, fixedLength: String?): HttpHeaders {
@@ -313,6 +327,7 @@ public class CompressionHandler(
 
     public companion object {
         public const val SCRATCH_CAPACITY: Int = 8 * 1024
+        private const val MIN_AGGREGATED_BUF: Int = 256
     }
 }
 
