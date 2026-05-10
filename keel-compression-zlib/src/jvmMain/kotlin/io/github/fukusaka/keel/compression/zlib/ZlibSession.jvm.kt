@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.compression.zlib
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
@@ -16,70 +17,67 @@ import java.util.zip.Deflater
 import java.util.zip.Inflater
 
 /**
- * JVM zlib backend.
+ * JVM zlib backend (caller-provided output + CodecStatus pattern).
  *
  * Implementation strategy:
- *   - Use `java.util.zip.Deflater` / `Inflater` for raw deflate bytes
- *     (`nowrap = true`). zlib (`Zlib`) wrapping is handled by switching
- *     `nowrap = false`. gzip (`Gzip`) wrapping is generated manually
- *     because `Deflater(nowrap = false)` produces zlib output, not
- *     gzip — the JDK only exposes gzip framing through the older
- *     `GZIPOutputStream` which does not fit a streaming `update` /
- *     `finish` interface cleanly.
+ *   - Uses `java.util.zip.Deflater` / `Inflater` for raw deflate bytes
+ *     (`nowrap = true`). zlib wrapping uses `nowrap = false`. gzip
+ *     wrapping is generated manually (10-byte header + raw deflate +
+ *     CRC32 + ISIZE trailer) because the JDK only exposes gzip framing
+ *     via `GZIPOutputStream` which does not fit a streaming
+ *     `update`/`finish` interface.
+ *   - Output is the caller's [IoBuf]. The session never allocates
+ *     output buffers; it only allocates a single per-session scratch
+ *     `ByteArray` (8 KiB) reused across all `deflate`/`inflate` calls.
+ *   - Status return drives caller flow: `NEED_OUTPUT` flushes, clears,
+ *     re-calls; `NEED_INPUT` fetches next input chunk; `FINISHED`
+ *     ends.
  *
- * Buffer sizing: pessimistic `max(input + 64, 1024)` per output IoBuf.
- * `Deflater.SYNC_FLUSH` may inflate small inputs by header overhead
- * (2-byte zlib header + 4-byte SYNC_FLUSH marker `00 00 ff ff` per
- * call), so a small constant lower-bound prevents tight loops on
- * tiny inputs.
+ * The [allocator] passed via [Encoder.newSession] is unused on this
+ * backend (caller-provided output makes it redundant); kept on the
+ * SPI for future backends that may need it.
  */
-private const val MIN_OUTPUT_BUFFER: Int = 1024
+private const val SCRATCH_SIZE: Int = 8 * 1024
 
 internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
     defaultWrap: WrapFormat,
-): EncoderSession = JvmZlibEncoderSession(allocator, options, defaultWrap)
+): EncoderSession = JvmZlibEncoderSession(options, defaultWrap)
 
 internal actual fun newZlibDecoderSession(
     allocator: BufferAllocator,
     options: DecoderOptions,
     defaultWrap: WrapFormat,
-): DecoderSession = JvmZlibDecoderSession(allocator, options, defaultWrap)
+): DecoderSession = JvmZlibDecoderSession(options, defaultWrap)
 
 private class JvmZlibEncoderSession(
-    private val allocator: BufferAllocator,
     private val options: EncoderOptions,
     defaultWrap: WrapFormat,
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
 
-    // For Gzip we wrap raw deflate output ourselves. For Zlib / Raw the
-    // Deflater handles framing directly via `nowrap`.
+    // For Gzip we wrap raw deflate ourselves; for Zlib the Deflater handles wrap.
     private val nowrap: Boolean = wrap != WrapFormat.Zlib
 
-    // `var` rather than `val` so [reset] can rebuild the Deflater from
-    // scratch when `contextTakeover = false`. JDK's `Deflater.reset()`
-    // preserves the dictionary / sliding window across messages, but
-    // gRPC per-message + WebSocket `*_no_context_takeover` semantics
-    // require a full state reset — only achievable by `end() + new
-    // Deflater()`. This matches Netty's `PerMessageDeflateEncoder`
-    // pattern (`destroyEncoder() + initEncoder()` per frame in
-    // no-takeover mode).
     private var deflater: Deflater = newDeflater()
     private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
 
-    private fun newDeflater(): Deflater {
-        val d = Deflater(level(options.level), nowrap)
-        options.dictionary?.let { d.setDictionary(it) }
-        return d
-    }
+    /** Reusable scratch for `deflate(byte[], offset, length, flushFlag)`. */
+    private val scratch: ByteArray = ByteArray(SCRATCH_SIZE)
+
+    /** Reusable byte[] for IoBuf → Deflater.setInput; sized at first refill, grown if needed. */
+    private var inputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
 
     private var inputBytesTotal: Long = 0
     private var headerEmitted: Boolean = false
+    private var deflaterFinishedSent: Boolean = false
+    private var trailerBuf: ByteArray? = null
+    private var trailerOffset: Int = 0
+
     private var closed: Boolean = false
-    private var finished: Boolean = false
+    private var finishedReturned: Boolean = false
 
     private val flushFlag: Int = when (options.flushMode) {
         FlushMode.NoFlush -> Deflater.NO_FLUSH
@@ -88,53 +86,97 @@ private class JvmZlibEncoderSession(
         FlushMode.Block -> Deflater.SYNC_FLUSH // JDK doesn't expose Z_BLOCK; closest equivalent.
     }
 
-    // Dictionary is loaded inside [newDeflater] so it survives both
-    // initial construction and the [reset] full-rebuild path.
-
-    override fun update(input: IoBuf): IoBuf {
-        check(!closed) { "session closed" }
-        check(!finished) { "session finished — call reset() before update()" }
-        try {
-            val n = input.readableBytes
-            if (n == 0) return allocator.allocate(MIN_OUTPUT_BUFFER) // empty buffer; harmless
-            val bytes = readBytes(input, n)
-            crc?.update(bytes, 0, n)
-            inputBytesTotal += n
-            return encodeChunk(bytes, finishStream = false)
-        } finally {
-            input.release()
-        }
+    private fun newDeflater(): Deflater {
+        val d = Deflater(level(options.level), nowrap)
+        options.dictionary?.let { d.setDictionary(it) }
+        return d
     }
 
-    override fun finish(): IoBuf {
+    override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        if (finished) return allocator.allocate(MIN_OUTPUT_BUFFER)
-        deflater.finish()
-        val out = encodeChunk(EMPTY_BYTES, finishStream = true)
-        finished = true
-        return appendGzipTrailerIfNeeded(out)
+        check(!finishedReturned) { "session finished — call reset() before update()" }
+
+        // Step 1: emit gzip header if not yet done.
+        if (wrap == WrapFormat.Gzip && !headerEmitted) {
+            if (output.writableBytes < GZIP_HEADER_SIZE) return CodecStatus.NEED_OUTPUT
+            writeGzipHeader(output)
+            headerEmitted = true
+        }
+
+        // Step 2: refill Deflater from input if it needs more input AND input has bytes.
+        if (deflater.needsInput() && input.readableBytes > 0) {
+            val n = input.readableBytes
+            if (n > inputScratch.size) inputScratch = ByteArray(n)
+            input.readByteArray(inputScratch, 0, n)
+            inputBytesTotal += n
+            crc?.update(inputScratch, 0, n)
+            deflater.setInput(inputScratch, 0, n)
+        }
+
+        // Step 3: drain Deflater into output buffer.
+        val outputFull = drainDeflate(output, flushFlag)
+        return if (outputFull) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
+    }
+
+    override fun finish(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        if (finishedReturned) return CodecStatus.FINISHED
+
+        // Step 0: ensure gzip header emitted (empty input + immediate finish).
+        if (wrap == WrapFormat.Gzip && !headerEmitted) {
+            if (output.writableBytes < GZIP_HEADER_SIZE) return CodecStatus.NEED_OUTPUT
+            writeGzipHeader(output)
+            headerEmitted = true
+        }
+
+        // Step 1: tell Deflater this is the end of input.
+        if (!deflaterFinishedSent) {
+            deflater.finish()
+            deflaterFinishedSent = true
+        }
+
+        // Step 2: drain remaining bytes (finish-flag mode).
+        if (!deflater.finished()) {
+            val outputFull = drainDeflate(output, Deflater.NO_FLUSH)
+            if (outputFull) return CodecStatus.NEED_OUTPUT
+            // Otherwise deflater.finished() should now be true and we proceed to trailer.
+        }
+
+        // Step 3: gzip trailer (CRC32 + ISIZE, little-endian).
+        if (wrap == WrapFormat.Gzip) {
+            if (trailerBuf == null) {
+                trailerBuf = buildGzipTrailer(crc!!.value, inputBytesTotal)
+                trailerOffset = 0
+            }
+            val tb = trailerBuf!!
+            while (trailerOffset < tb.size && output.writableBytes > 0) {
+                output.writeByte(tb[trailerOffset])
+                trailerOffset++
+            }
+            if (trailerOffset < tb.size) return CodecStatus.NEED_OUTPUT
+        }
+
+        finishedReturned = true
+        return CodecStatus.FINISHED
     }
 
     override fun reset() {
         check(!closed) { "session closed" }
         if (options.contextTakeover) {
-            // Preserve sliding-window / dictionary across messages —
-            // Deflater.reset() clears input/output state but keeps the
-            // compression dictionary, which is what HTTP keep-alive
-            // clients want.
+            // Preserve sliding-window / dictionary across messages.
             deflater.reset()
         } else {
-            // gRPC per-message + WebSocket *_no_context_takeover require
-            // forgetting all internal state. Rebuild the Deflater from
-            // scratch (Netty's PerMessageDeflateEncoder uses the same
-            // pattern in no-takeover mode).
+            // gRPC per-message + WS no-takeover: full state reset.
             deflater.end()
             deflater = newDeflater()
         }
         crc?.reset()
         inputBytesTotal = 0
         headerEmitted = false
-        finished = false
+        deflaterFinishedSent = false
+        trailerBuf = null
+        trailerOffset = 0
+        finishedReturned = false
     }
 
     override fun close() {
@@ -143,143 +185,107 @@ private class JvmZlibEncoderSession(
         closed = true
     }
 
-    private fun encodeChunk(input: ByteArray, finishStream: Boolean): IoBuf {
-        if (input.isNotEmpty()) {
-            deflater.setInput(input, 0, input.size)
+    /**
+     * Drain Deflater output into [output] until either the buffer fills
+     * or the Deflater reports `needsInput()` / `finished()`.
+     *
+     * @return true if [output] is now full while Deflater still has
+     *   pending bytes (caller must flush + retry); false if Deflater
+     *   is satisfied (`needsInput()` for non-final drain, or
+     *   `finished()` for final drain) — caller proceeds.
+     */
+    private fun drainDeflate(output: IoBuf, effectiveFlush: Int): Boolean {
+        while (output.writableBytes > 0) {
+            val cap = output.writableBytes.coerceAtMost(scratch.size)
+            val n = deflater.deflate(scratch, 0, cap, effectiveFlush)
+            if (n == 0) break
+            output.writeByteArray(scratch, 0, n)
         }
-        // Estimate output capacity. SYNC_FLUSH adds ~6 bytes overhead;
-        // worst-case deflate stores input verbatim with ~5 byte / 32 KB
-        // header overhead.
-        val estimate = (input.size + 64).coerceAtLeast(MIN_OUTPUT_BUFFER)
-        val out = allocator.allocate(estimateWithGzipHeader(estimate))
-
-        // Emit gzip header on first byte we produce.
-        if (wrap == WrapFormat.Gzip && !headerEmitted) {
-            writeGzipHeader(out)
-            headerEmitted = true
-        }
-
-        // Drain Deflater into the output buffer, growing on overflow.
-        var current = out
-        while (true) {
-            val scratch = ByteArray(current.writableBytes.coerceAtLeast(64))
-            val n = if (finishStream) {
-                deflater.deflate(scratch, 0, scratch.size)
-            } else {
-                deflater.deflate(scratch, 0, scratch.size, flushFlag)
-            }
-            if (n > 0) {
-                if (n > current.writableBytes) {
-                    current = grow(current, n)
-                }
-                current.writeByteArray(scratch, 0, n)
-            }
-            val done = if (finishStream) {
-                deflater.finished()
-            } else {
-                deflater.needsInput()
-            }
-            if (done) break
-            if (n == 0) {
-                // No progress and not finished — should be impossible
-                // but guard against tight loop.
-                break
-            }
-        }
-        return current
+        // Output is full when writableBytes == 0 AND Deflater hasn't yet
+        // signalled satisfaction. needsInput() fires when Deflater wants
+        // more input; finished() after a finish()'d stream's tail.
+        val deflaterSatisfied = deflater.needsInput() || deflater.finished()
+        return !deflaterSatisfied && output.writableBytes == 0
     }
-
-    private fun appendGzipTrailerIfNeeded(buf: IoBuf): IoBuf {
-        val gzipCrc = crc ?: return buf
-        var out = buf
-        if (out.writableBytes < 8) out = grow(out, 8)
-        val crcVal = gzipCrc.value
-        val isize = (inputBytesTotal and 0xFFFFFFFFL)
-        // Both little-endian per RFC 1952.
-        writeLE32(out, crcVal.toInt())
-        writeLE32(out, isize.toInt())
-        return out
-    }
-
-    private fun grow(buf: IoBuf, additional: Int): IoBuf {
-        val newCap = (buf.capacity + additional).coerceAtLeast(buf.capacity * 2)
-        val bigger = allocator.allocate(newCap)
-        // Copy existing contents.
-        val n = buf.readableBytes
-        if (n > 0) {
-            val tmp = ByteArray(n)
-            buf.readByteArray(tmp, 0, n)
-            bigger.writeByteArray(tmp, 0, n)
-        }
-        buf.release()
-        return bigger
-    }
-
-    private fun estimateWithGzipHeader(base: Int): Int =
-        if (wrap == WrapFormat.Gzip && !headerEmitted) base + GZIP_HEADER_SIZE else base
 }
 
 private class JvmZlibDecoderSession(
-    private val allocator: BufferAllocator,
     private val options: DecoderOptions,
     defaultWrap: WrapFormat,
 ) : DecoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
 
-    // Inflater(nowrap=true) skips the zlib wrapper; we strip the gzip
-    // header manually. For Zlib we let Inflater handle it.
     private val nowrap: Boolean = wrap != WrapFormat.Zlib
 
     private val inflater: Inflater = Inflater(nowrap)
-    private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
 
-    /** RFC 1952 chunk-aware header parser; `null` for non-gzip wrap. */
     private var gzipHeaderParser: GzipHeaderParser? =
         if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
+
+    private val scratch: ByteArray = ByteArray(SCRATCH_SIZE)
+    private var inputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
 
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
     private var closed: Boolean = false
+    private var finishedReturned: Boolean = false
 
     init {
         options.dictionary?.let { inflater.setDictionary(it) }
     }
 
-    override fun update(input: IoBuf): IoBuf {
+    override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        try {
-            val n = input.readableBytes
-            if (n == 0) return allocator.allocate(MIN_OUTPUT_BUFFER)
-            var bytes = readBytes(input, n)
-            totalInput += n
-            gzipHeaderParser?.let { parser ->
-                if (!parser.done) {
-                    val rest = parser.consume(bytes)
-                    bytes = rest ?: return allocator.allocate(MIN_OUTPUT_BUFFER)
+
+        // Step 1: gzip header parse (chunk-aware) before inflate.
+        gzipHeaderParser?.let { parser ->
+            if (!parser.done) {
+                val n = input.readableBytes
+                if (n == 0) return CodecStatus.NEED_INPUT
+                if (n > inputScratch.size) inputScratch = ByteArray(n)
+                input.readByteArray(inputScratch, 0, n)
+                totalInput += n
+                val tail = parser.consume(copyOf(inputScratch, n))
+                if (tail == null) return CodecStatus.NEED_INPUT
+                if (tail.isNotEmpty()) {
+                    inflater.setInput(tail, 0, tail.size)
                 }
             }
-            return decodeChunk(bytes)
-        } finally {
-            input.release()
         }
+
+        // Step 2: refill Inflater from input when it needs more.
+        if (inflater.needsInput() && input.readableBytes > 0) {
+            val n = input.readableBytes
+            if (n > inputScratch.size) inputScratch = ByteArray(n)
+            input.readByteArray(inputScratch, 0, n)
+            totalInput += n
+            inflater.setInput(inputScratch, 0, n)
+        }
+
+        return drainDecode(output)
     }
 
-    override fun finish(): IoBuf {
+    override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        // Drain any remaining buffered output. Most callers will have
-        // consumed everything via repeated update() — finish() is a
-        // safety net for trailing bytes.
-        return decodeChunk(EMPTY_BYTES)
+        if (finishedReturned) return CodecStatus.FINISHED
+        val s = drainDecode(output)
+        if (s == CodecStatus.NEED_OUTPUT) return s
+        if (inflater.finished() || (s == CodecStatus.NEED_INPUT && inflater.needsInput())) {
+            // Stream end (or trailing bytes consumed without further inflation needed).
+            finishedReturned = true
+            return CodecStatus.FINISHED
+        }
+        return s
     }
 
     override fun reset() {
         check(!closed) { "session closed" }
         inflater.reset()
-        crc?.reset()
         gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
         totalDecoded = 0
         totalInput = 0
+        finishedReturned = false
     }
 
     override fun close() {
@@ -288,32 +294,31 @@ private class JvmZlibDecoderSession(
         closed = true
     }
 
-    private fun decodeChunk(input: ByteArray): IoBuf {
-        if (input.isNotEmpty()) {
-            inflater.setInput(input, 0, input.size)
-        }
-        val estimate = (input.size * 4).coerceAtLeast(MIN_OUTPUT_BUFFER)
-        var out = allocator.allocate(estimate)
+    private fun drainDecode(output: IoBuf): CodecStatus {
         try {
-            while (true) {
-                val scratch = ByteArray(out.writableBytes.coerceAtLeast(64))
-                val n = inflater.inflate(scratch, 0, scratch.size)
+            while (output.writableBytes > 0) {
+                val cap = output.writableBytes.coerceAtMost(scratch.size)
+                val n = inflater.inflate(scratch, 0, cap)
                 if (n > 0) {
                     enforceLimits(produced = n)
-                    if (n > out.writableBytes) {
-                        out = grow(out, n)
-                    }
-                    out.writeByteArray(scratch, 0, n)
-                    crc?.update(scratch, 0, n)
+                    output.writeByteArray(scratch, 0, n)
                     totalDecoded += n
+                    continue
                 }
-                if (inflater.finished() || inflater.needsInput() || inflater.needsDictionary()) break
-                if (n == 0) break
+                // n == 0: needsInput / finished / needsDictionary
+                if (inflater.finished()) {
+                    return CodecStatus.NEED_INPUT // nothing more to do; caller calls finish() to acknowledge
+                }
+                if (inflater.needsInput()) return CodecStatus.NEED_INPUT
+                if (inflater.needsDictionary()) {
+                    throw DecompressionException("inflate needs dictionary")
+                }
+                break
             }
         } catch (e: DataFormatException) {
             throw DecompressionException("malformed deflate stream: ${e.message}", e)
         }
-        return out
+        return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
     }
 
     private fun enforceLimits(produced: Int) {
@@ -329,25 +334,11 @@ private class JvmZlibDecoderSession(
             }
         }
     }
-
-    private fun grow(buf: IoBuf, additional: Int): IoBuf {
-        val newCap = (buf.capacity + additional).coerceAtLeast(buf.capacity * 2)
-        val bigger = allocator.allocate(newCap)
-        val n = buf.readableBytes
-        if (n > 0) {
-            val tmp = ByteArray(n)
-            buf.readByteArray(tmp, 0, n)
-            bigger.writeByteArray(tmp, 0, n)
-        }
-        buf.release()
-        return bigger
-    }
 }
 
-// ---- helpers ----
+// ---- gzip framing helpers ----
 
 internal const val GZIP_HEADER_SIZE: Int = 10
-private val EMPTY_BYTES: ByteArray = ByteArray(0)
 
 private fun writeGzipHeader(out: IoBuf) {
     // RFC 1952 §2.3: ID1 ID2 CM FLG MTIME(4) XFL OS
@@ -363,16 +354,24 @@ private fun writeGzipHeader(out: IoBuf) {
     out.writeByte(0xFF.toByte()) // OS = unknown
 }
 
-private fun writeLE32(out: IoBuf, value: Int) {
-    out.writeByte((value and 0xFF).toByte())
-    out.writeByte(((value shr 8) and 0xFF).toByte())
-    out.writeByte(((value shr 16) and 0xFF).toByte())
-    out.writeByte(((value shr 24) and 0xFF).toByte())
+private fun buildGzipTrailer(crcValue: Long, isize: Long): ByteArray {
+    val tb = ByteArray(8)
+    val crc = crcValue.toInt()
+    tb[0] = (crc and 0xFF).toByte()
+    tb[1] = ((crc shr 8) and 0xFF).toByte()
+    tb[2] = ((crc shr 16) and 0xFF).toByte()
+    tb[3] = ((crc shr 24) and 0xFF).toByte()
+    val sz = (isize and 0xFFFFFFFFL).toInt()
+    tb[4] = (sz and 0xFF).toByte()
+    tb[5] = ((sz shr 8) and 0xFF).toByte()
+    tb[6] = ((sz shr 16) and 0xFF).toByte()
+    tb[7] = ((sz shr 24) and 0xFF).toByte()
+    return tb
 }
 
-private fun readBytes(buf: IoBuf, len: Int): ByteArray {
+private fun copyOf(src: ByteArray, len: Int): ByteArray {
     val out = ByteArray(len)
-    buf.readByteArray(out, 0, len)
+    System.arraycopy(src, 0, out, 0, len)
     return out
 }
 

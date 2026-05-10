@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.compression.zlib
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
@@ -77,21 +78,49 @@ class GzipHeaderParserTest {
     @Test
     fun `chunk split at every byte still parses`() {
         val gzip = makeGzipWithFlags(sample, fname = "x.bin", fcomment = "c", fhcrc = true)
-        // Slice the input into singletons, feed one at a time. The decoder
-        // session must produce the same output as the contiguous case.
+        // Feed one byte at a time. The decoder session must produce the same
+        // output as the contiguous case — verifies chunk-boundary safety
+        // through the gzip header AND through the deflate body.
         val session = GzipDecoder.newSession(DefaultAllocator, DecoderOptions())
+        val output = DefaultAllocator.allocate(256)
         val collected = mutableListOf<Byte>()
         for (i in gzip.indices) {
             val src = DefaultAllocator.allocate(1).apply { writeByteArray(gzip, i, 1) }
-            val out = session.update(src)
-            collected.addAll(out.toByteList())
-            out.release()
+            // Drive update until NEED_INPUT (single byte fully consumed or buffered).
+            var done = false
+            while (!done) {
+                when (session.update(src, output)) {
+                    CodecStatus.NEED_OUTPUT -> drainOutput(output, collected)
+                    CodecStatus.NEED_INPUT -> done = true
+                    CodecStatus.FINISHED -> error("update should not return FINISHED")
+                }
+            }
+            drainOutput(output, collected)
+            src.release()
         }
-        val tail = session.finish()
-        collected.addAll(tail.toByteList())
-        tail.release()
+        // Drive finish.
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, collected)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, collected)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
         session.close()
         assertContentEquals(sample, collected.toByteArray())
+    }
+
+    private fun drainOutput(output: io.github.fukusaka.keel.buf.IoBuf, dest: MutableList<Byte>) {
+        val n = output.readableBytes
+        if (n == 0) return
+        val tmp = ByteArray(n)
+        output.readByteArray(tmp, 0, n)
+        for (b in tmp) dest.add(b)
+        output.clear()
     }
 
     @Test
@@ -149,13 +178,37 @@ class GzipHeaderParserTest {
 
     private fun decodeWith(payload: ByteArray, session: DecoderSession): ByteArray {
         val src = DefaultAllocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
-        val mid = session.update(src)
-        val end = session.finish()
-        val total = mid.toByteList() + end.toByteList()
-        mid.release()
-        end.release()
+        val output = DefaultAllocator.allocate(256)
+        val collected = mutableListOf<Byte>()
+        var done = false
+        while (!done) {
+            when (session.update(src, output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, collected)
+                CodecStatus.NEED_INPUT -> done = true
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+        }
+        drainOutput(output, collected)
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, collected)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, collected)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        src.release()
         session.close()
-        return total.toByteArray()
+        return collected.toByteArray()
+    }
+
+    private fun MutableList<Byte>.toByteArray(): ByteArray {
+        val out = ByteArray(size)
+        for (i in indices) out[i] = this[i]
+        return out
     }
 
     /**
