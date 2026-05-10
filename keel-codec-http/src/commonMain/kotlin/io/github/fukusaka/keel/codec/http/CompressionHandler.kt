@@ -303,6 +303,26 @@ public class CompressionHandler(
         return if (resultLen == result.size) result else result.copyOf(resultLen)
     }
 
+    /**
+     * Build the post-compression header set:
+     *
+     * - drop the original `Content-Length` (compressed size differs)
+     *   and `Content-Encoding` (we replace it),
+     * - drop any pre-existing `Transfer-Encoding` (we'll re-set the
+     *   transfer mode based on whether [fixedLength] is known),
+     * - add `Content-Encoding: <encoding>`,
+     * - add `Vary: Accept-Encoding` (cache correctness),
+     * - add either `Content-Length: <fixedLength>` (aggregated path:
+     *   we accumulated the full compressed body and know its size)
+     *   OR `Transfer-Encoding: chunked` (streaming path: compressed
+     *   size unknown until [EncoderSession.finish] returns FINISHED).
+     *
+     * RFC 9112 §6.1 forbids both `Content-Length` and `Transfer-Encoding:
+     * chunked` on the same response, so the encoder throws if neither
+     * (or both) are set — calling sites here MUST pass one. The
+     * `HttpResponseEncoder` sees the rewritten header and serialises the
+     * matching framing.
+     */
     private fun rewriteHeaders(src: HttpHeaders, encoding: String, fixedLength: String?): HttpHeaders {
         return HttpHeaders().apply {
             for (i in 0 until src.size) {
@@ -310,10 +330,15 @@ public class CompressionHandler(
                 val value = src.valueAt(i)
                 if (name.equals(HttpHeaderName.CONTENT_LENGTH, ignoreCase = true)) continue
                 if (name.equals(HttpHeaderName.CONTENT_ENCODING, ignoreCase = true)) continue
+                if (name.equals(HttpHeaderName.TRANSFER_ENCODING, ignoreCase = true)) continue
                 add(name, value)
             }
             this[HttpHeaderName.CONTENT_ENCODING] = encoding
-            if (fixedLength != null) this[HttpHeaderName.CONTENT_LENGTH] = fixedLength
+            if (fixedLength != null) {
+                this[HttpHeaderName.CONTENT_LENGTH] = fixedLength
+            } else {
+                this[HttpHeaderName.TRANSFER_ENCODING] = "chunked"
+            }
             val existingVary = src["Vary"]
             this["Vary"] = if (existingVary.isNullOrBlank()) {
                 "Accept-Encoding"
