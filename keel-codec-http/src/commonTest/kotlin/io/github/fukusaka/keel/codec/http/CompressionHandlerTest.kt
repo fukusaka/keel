@@ -127,27 +127,62 @@ class CompressionHandlerTest {
 
     // ---- helpers ----
 
-    /** Stub encoder: uppercases ASCII bytes. */
+    /** Stub encoder: uppercases ASCII bytes via the streaming SPI. */
     private object UpperEncoder : Encoder {
         override val name: String = "upper"
-        override fun newSession(allocator: io.github.fukusaka.keel.buf.BufferAllocator, options: EncoderOptions): EncoderSession =
-            object : EncoderSession {
-                override fun update(input: IoBuf): IoBuf {
-                    val n = input.readableBytes
+        override fun newSession(
+            allocator: io.github.fukusaka.keel.buf.BufferAllocator,
+            options: EncoderOptions,
+        ): EncoderSession = object : EncoderSession {
+            private var pending: ByteArray = ByteArray(0)
+            private var finished: Boolean = false
+            override fun update(input: IoBuf, output: IoBuf): io.github.fukusaka.keel.compression.CodecStatus {
+                val n = input.readableBytes
+                if (n > 0) {
                     val tmp = ByteArray(n)
                     input.readByteArray(tmp, 0, n)
-                    input.release()
-                    // ASCII-only test payload — decodeToString() is sufficient
-                    // and avoids the JVM-only Charsets.US_ASCII constant.
                     val upper = tmp.decodeToString().uppercase().encodeToByteArray()
-                    val out = allocator.allocate(upper.size.coerceAtLeast(64))
-                    out.writeByteArray(upper, 0, upper.size)
-                    return out
+                    pending = pending + upper
                 }
-                override fun finish(): IoBuf = allocator.allocate(64)
-                override fun reset() {}
-                override fun close() {}
+                return drain(output, isFinish = false)
             }
+            override fun finish(output: IoBuf): io.github.fukusaka.keel.compression.CodecStatus {
+                return drain(output, isFinish = true)
+            }
+            private fun drain(
+                output: IoBuf,
+                isFinish: Boolean,
+            ): io.github.fukusaka.keel.compression.CodecStatus {
+                if (pending.isEmpty()) {
+                    return if (isFinish && !finished) {
+                        finished = true
+                        io.github.fukusaka.keel.compression.CodecStatus.FINISHED
+                    } else if (isFinish) {
+                        io.github.fukusaka.keel.compression.CodecStatus.FINISHED
+                    } else {
+                        io.github.fukusaka.keel.compression.CodecStatus.NEED_INPUT
+                    }
+                }
+                val toWrite = minOf(pending.size, output.writableBytes)
+                if (toWrite > 0) {
+                    output.writeByteArray(pending, 0, toWrite)
+                    pending = pending.copyOfRange(toWrite, pending.size)
+                }
+                return if (pending.isNotEmpty()) {
+                    io.github.fukusaka.keel.compression.CodecStatus.NEED_OUTPUT
+                } else if (isFinish) {
+                    finished = true
+                    io.github.fukusaka.keel.compression.CodecStatus.FINISHED
+                } else {
+                    io.github.fukusaka.keel.compression.CodecStatus.NEED_INPUT
+                }
+            }
+            override fun reset() {
+                pending = ByteArray(0)
+                finished = false
+            }
+            override fun close() {}
+        }
     }
 
     private class ChainState {

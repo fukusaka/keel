@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionLimitException
@@ -13,20 +14,20 @@ import io.github.fukusaka.keel.compression.WrapFormat
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * Native (Kotlin/Native) zlib backend round-trip tests.
+ * Streaming SPI round-trip tests for the Native zlib backend.
  *
- * Closure tests only — Native doesn't have a JDK to interop against on
- * the test side. The JVM `JvmZlibRoundTripTest` already verifies our
- * gzip output decodes via JDK `GZIPInputStream`, and the wire format is
- * platform-agnostic, so JVM-decode-Native-encode equivalence holds
- * transitively if both backends individually round-trip themselves.
+ * Closure tests (Native ↔ Native). The wire format is platform-agnostic
+ * so JVM-decode-Native-encode equivalence holds transitively from the
+ * JVM `JdkZlib*` interop tests.
  */
 class NativeZlibRoundTripTest {
 
     private val allocator: BufferAllocator = DefaultAllocator
+    private val outputCap = 256
 
     @Test
     fun `gzip round-trip`() {
@@ -60,76 +61,111 @@ class NativeZlibRoundTripTest {
     }
 
     @Test
+    fun `streaming high-ratio decompression yields multiple bounded chunks`() {
+        val payload = "x".repeat(100_000).encodeToByteArray()
+        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val (decoded, chunkCount) = decodeAllWithChunkCount(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
+        assertContentEquals(payload, decoded)
+        assertTrue(chunkCount >= 100_000 / outputCap - 5, "expected many bounded chunks (got $chunkCount)")
+    }
+
+    @Test
     fun `decoder rejects oversize via maxOutputSize`() {
         val payload = "x".repeat(10_000).encodeToByteArray()
         val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
 
         val session = GzipDecoder.newSession(allocator, DecoderOptions(maxOutputSize = 100L))
         val src = allocator.allocate(compressed.size).apply { writeByteArray(compressed, 0, compressed.size) }
+        val output = allocator.allocate(outputCap)
         try {
-            session.update(src)
+            session.update(src, output)
             fail("expected DecompressionLimitException")
         } catch (_: DecompressionLimitException) {
             // expected
         } finally {
+            output.release()
+            src.release()
             session.close()
         }
-    }
-
-    @Test
-    fun `streaming SyncFlush across multiple updates`() {
-        val payload1 = "first chunk".encodeToByteArray()
-        val payload2 = "second chunk".encodeToByteArray()
-        val session = GzipEncoder.newSession(allocator, EncoderOptions())
-        val total = mutableListOf<Byte>()
-        for (p in listOf(payload1, payload2)) {
-            val buf = allocator.allocate(p.size).apply { writeByteArray(p, 0, p.size) }
-            val out = session.update(buf)
-            total.addAll(out.toByteList())
-            out.release()
-        }
-        val final = session.finish()
-        total.addAll(final.toByteList())
-        final.release()
-        session.close()
-
-        val decoded = decodeAll(ByteArray(total.size) { i -> total[i] }, GzipDecoder.newSession(allocator, DecoderOptions()))
-        assertContentEquals(payload1 + payload2, decoded)
     }
 
     // ---- helpers ----
 
     private fun encodeAll(payload: ByteArray, session: EncoderSession): ByteArray {
+        val src = allocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
+        val output = allocator.allocate(outputCap)
         val total = mutableListOf<Byte>()
-        val src = allocator.allocate(payload.size.coerceAtLeast(64)).apply { writeByteArray(payload, 0, payload.size) }
-        val mid = session.update(src)
-        total.addAll(mid.toByteList())
-        mid.release()
-        val end = session.finish()
-        total.addAll(end.toByteList())
-        end.release()
+        while (true) {
+            when (session.update(src, output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT -> break
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+        }
+        drainOutput(output, total)
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        src.release()
         session.close()
         return ByteArray(total.size) { i -> total[i] }
     }
 
-    private fun decodeAll(payload: ByteArray, session: DecoderSession): ByteArray {
+    private fun decodeAll(compressed: ByteArray, session: DecoderSession): ByteArray =
+        decodeAllWithChunkCount(compressed, session).first
+
+    private fun decodeAllWithChunkCount(compressed: ByteArray, session: DecoderSession): Pair<ByteArray, Int> {
+        val src = allocator.allocate(compressed.size).apply { writeByteArray(compressed, 0, compressed.size) }
+        val output = allocator.allocate(outputCap)
         val total = mutableListOf<Byte>()
-        val src = allocator.allocate(payload.size.coerceAtLeast(64)).apply { writeByteArray(payload, 0, payload.size) }
-        val mid = session.update(src)
-        total.addAll(mid.toByteList())
-        mid.release()
-        val end = session.finish()
-        total.addAll(end.toByteList())
-        end.release()
+        var chunks = 0
+        while (true) {
+            when (session.update(src, output)) {
+                CodecStatus.NEED_OUTPUT -> {
+                    chunks++
+                    drainOutput(output, total)
+                }
+                CodecStatus.NEED_INPUT -> break
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+        }
+        if (output.readableBytes > 0) {
+            chunks++
+            drainOutput(output, total)
+        }
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> {
+                    chunks++
+                    drainOutput(output, total)
+                }
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    if (output.readableBytes > 0) drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        src.release()
         session.close()
-        return ByteArray(total.size) { i -> total[i] }
+        return ByteArray(total.size) { i -> total[i] } to chunks
     }
 
-    private fun IoBuf.toByteList(): List<Byte> {
-        val n = readableBytes
-        if (n == 0) return emptyList()
+    private fun drainOutput(output: IoBuf, dest: MutableList<Byte>) {
+        val n = output.readableBytes
+        if (n == 0) return
         val tmp = ByteArray(n)
-        readByteArray(tmp, 0, n)
-        return tmp.toList()
+        output.readByteArray(tmp, 0, n)
+        for (b in tmp) dest.add(b)
+        output.clear()
     }
 }
