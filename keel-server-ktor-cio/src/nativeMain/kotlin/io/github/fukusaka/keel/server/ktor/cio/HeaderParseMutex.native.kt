@@ -45,18 +45,25 @@ import kotlinx.coroutines.sync.withLock
  * at a time), so the mutex is only ever contended across workers — not within
  * a single worker's connection set.
  *
- * Empirically (Linux x86_64, epoll default workers ≈ 32 cores, k6 50 VU
- * compression-upload `/upload-stream` 15s, 10 server-restart iterations):
+ * Empirical signatures across the documented symptom (Kotlin/Native
+ * multi-worker, fresh server taking ≈ 50 concurrent connections at once):
  *
- * | Configuration                                | flaky runs (≈ 30 s collapse) | median RPS |
- * | ---                                          | ---                           | ---        |
- * | parseRequest only serialised (pre-fix)       | 4 / 10                        | ≈ 27 000   |
- * | parseRequest + request.release() serialised  | 0 / 10                        | ≈ 25 000   |
+ * | Configuration                                  | flaky runs | median RPS |
+ * | ---                                            | ---        | ---        |
+ * | no serialisation (historical baseline)         | 6 / 20     | ≈ 14 500   |
+ * | parseRequest only serialised (pre-#502)        | 4 / 10     | ≈ 27 000   |
+ * | parseRequest + request.release() serialised    | 0 / 10     | ≈ 25 000   |
  *
- * **Upstream**: tracked at the ktor issue tracker. When ktor-io's
- * `DefaultPool` releases its lock around `clearInstance` (or `HeadersDataPool`
- * stops nesting another pool's recycle inside its own clearInstance), this
- * class can become a no-op on all platforms and eventually be deleted.
+ * Historical baseline: macOS M1 kqueue, wrk 4t/100c/10s, 20 iterations —
+ * the original motivation for introducing this mutex. pre-#502 / post-#502
+ * rows: Linux x86_64 epoll, k6 50 VU `compression-upload` 15 s, 10
+ * server-restart iterations — the case that motivated PR #502 extending
+ * the coverage from borrow-only to borrow + recycle.
+ *
+ * **Upstream**: when ktor-io's `DefaultPool` releases its lock around
+ * `clearInstance` (or `HeadersDataPool` stops nesting another pool's
+ * recycle inside its own clearInstance), this class can become a no-op on
+ * all platforms and eventually be deleted.
  */
 private val sharedMutex = Mutex()
 

@@ -40,13 +40,20 @@ package io.github.fukusaka.keel.server.ktor.cio
  *   `availableProcessors()` worker threads; the mutex prevents concurrent
  *   pool access across workers.
  *
- * Empirical signatures (Linux x86_64, epoll ≈ 32 workers, k6 50 VU
- * `compression-upload` 15 s, 10 server-restart iterations):
+ * Empirical signatures across the documented symptom (Kotlin/Native
+ * multi-worker, fresh server taking ≈ 50 concurrent connections at once):
  *
- * | Configuration                                | flaky runs | median RPS |
- * | ---                                          | ---        | ---        |
- * | parseRequest only serialised (pre-fix)       | 4 / 10     | ≈ 27 000   |
- * | parseRequest + request.release() serialised  | 0 / 10     | ≈ 25 000   |
+ * | Configuration                                  | flaky runs | median RPS |
+ * | ---                                            | ---        | ---        |
+ * | no serialisation (historical baseline)         | 6 / 20     | ≈ 14 500   |
+ * | parseRequest only serialised (pre-#502)        | 4 / 10     | ≈ 27 000   |
+ * | parseRequest + request.release() serialised    | 0 / 10     | ≈ 25 000   |
+ *
+ * Historical baseline: macOS M1 kqueue, wrk 4t/100c/10s, 20 iterations —
+ * the original motivation for introducing this mutex. pre-#502 / post-#502
+ * rows: Linux x86_64 epoll, k6 50 VU `compression-upload` 15 s, 10
+ * server-restart iterations — the case that motivated PR #502 extending
+ * the coverage from borrow-only to borrow + recycle.
  *
  * **Upstream**: when ktor-io's `DefaultPool` releases the pool lock around
  * `clearInstance` (or `HeadersDataPool` stops nesting another pool's
