@@ -47,15 +47,21 @@ fun installPipelineHttpHandlers(pipeline: Pipeline, compression: Boolean = false
     pipeline.addLast("encoder", HttpResponseEncoder())
     pipeline.addLast("decoder", HttpRequestDecoder())
     if (compression) {
-        // Place CompressionHandler BEFORE the routing handler on the
-        // outbound side: routing emits HttpResponseHead → HttpBody* →
-        // HttpBodyEnd, the compression handler intercepts those before
-        // they reach the encoder. Pipeline.addLast appends to the tail;
-        // outbound flows tail → head, so insertion order here is:
-        //   encoder (tail) ← decoder ← compression ← routing (head)
-        // and outbound HttpResponseHead from `routing` traverses
-        // compression → decoder (no-op for outbound, it's an inbound
-        // handler) → encoder.
+        // Both directions of compression share one per-channel registry
+        // (`gzip` + `deflate` from `keel-compression-zlib`):
+        //
+        // - **Outbound** [io.github.fukusaka.keel.codec.http.CompressionHandler]:
+        //   intercepts routing's HttpResponseHead → HttpBody* → HttpBodyEnd
+        //   before the encoder. Pipeline addLast appends to tail; outbound
+        //   flows tail → head, so insertion order here is
+        //     encoder (tail) ← decoder ← compression ← request-decompression ← routing (head)
+        //   and routing's response traverses request-decompression (passthrough
+        //   for outbound) → compression → encoder.
+        // - **Inbound** [io.github.fukusaka.keel.codec.http.HttpRequestDecompressionHandler]:
+        //   intercepts decoder's HttpRequestHead → HttpBody* → HttpBodyEnd
+        //   before the routing handler, applying the secure-by-default
+        //   dual-gate zip-bomb defence (1 MiB absolute / 100:1 ratio /
+        //   burst 3, registry-driven encoding lookup).
         val registry = io.github.fukusaka.keel.compression.CompressionRegistry().apply {
             register(io.github.fukusaka.keel.compression.zlib.GzipCodec)
             register(io.github.fukusaka.keel.compression.zlib.DeflateCodec)
@@ -63,6 +69,13 @@ fun installPipelineHttpHandlers(pipeline: Pipeline, compression: Boolean = false
         pipeline.addLast(
             "compression",
             io.github.fukusaka.keel.codec.http.CompressionHandler(
+                registry = registry,
+                allocator = io.github.fukusaka.keel.buf.DefaultAllocator,
+            ),
+        )
+        pipeline.addLast(
+            "request-decompression",
+            io.github.fukusaka.keel.codec.http.HttpRequestDecompressionHandler(
                 registry = registry,
                 allocator = io.github.fukusaka.keel.buf.DefaultAllocator,
             ),

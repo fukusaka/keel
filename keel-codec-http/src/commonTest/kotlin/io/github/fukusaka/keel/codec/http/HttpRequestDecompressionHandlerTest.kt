@@ -531,6 +531,43 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals(RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded, ex.reason)
     }
 
+    // -------------------------------------------------------------- header mutation safety
+
+    @Test
+    fun `handleRequestHead does not mutate the original headers instance`() {
+        // Regression test for the bug where stripDecodedHeaders previously
+        // called `HttpHeaders.remove(...)` on the input — `remove()` mutates
+        // in place and returns `this`, which corrupted the upstream
+        // HttpRequestDecoder's local `head.headers` reference. The decoder
+        // reads `head.headers.contentLength` AFTER `propagateRead(head)`
+        // returns to choose READ_FIXED_BODY vs READ_CHUNK_SIZE; a stripped
+        // Content-Length there short-circuited the body emit so the
+        // compressed bytes never reached this handler.
+        //
+        // Pin the contract: the handler propagates a NEW HttpHeaders
+        // instance with the two filtered, the original is untouched.
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator)
+        val ctx = TestCtx(state)
+        val originalHeaders = HttpHeaders().apply {
+            add("Content-Encoding", "lower")
+            add("Content-Length", "5")
+            add("Content-Type", "text/plain")
+        }
+        val head = HttpRequestHead(HttpMethod.POST, "/upload", headers = originalHeaders)
+
+        handler.onRead(ctx, head)
+
+        // Original headers must still carry both filtered fields.
+        assertEquals("lower", originalHeaders["Content-Encoding"])
+        assertEquals("5", originalHeaders["Content-Length"])
+        // Propagated head sees them stripped.
+        val emitted = state.reads.single() as HttpRequestHead
+        assertNull(emitted.headers["Content-Encoding"])
+        assertNull(emitted.headers["Content-Length"])
+        assertEquals("text/plain", emitted.headers["Content-Type"])
+    }
+
     // -------------------------------------------------------------- onWrite passthrough
 
     @Test
