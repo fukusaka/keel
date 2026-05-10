@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.compression.zlib
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
@@ -45,28 +46,20 @@ import kotlinx.cinterop.value
 import platform.posix.uint8_tVar
 
 /**
- * Native zlib backend.
+ * Native zlib backend (caller-provided output + CodecStatus pattern).
  *
- * Implementation strategy:
- *   - One C-allocated `z_stream` per session (calloc / free via cinterop
- *     wrappers `keel_zstream_alloc` / `keel_zstream_free`).
- *   - `deflate` / `inflate` are driven through the `keel_*` cinterop
- *     wrappers which set the four `next_in`/`avail_in`/`next_out`/`avail_out`
- *     fields and return the consumed-input + produced-output counts via
- *     out-parameters — avoids touching `z_stream` fields from Kotlin.
- *   - libz handles all three wrap formats (Gzip / Zlib / Raw) via
- *     `windowBits` (`-15` raw, `15` zlib, `31` gzip), so unlike the JVM
- *     impl we do not have to build the gzip framing manually.
- *   - ByteArray ↔ C pointer conversion uses `usePinned { pinned ->
- *     pinned.addressOf(offset).reinterpret<uint8_tVar>() }`, the
- *     standard Kotlin/Native pattern used elsewhere in keel
- *     (`PosixKqueueSyscallOps`, etc.).
- *   - Output growth: pessimistic `max(input + 64, 1024)`, doubled when
- *     libz reports `Z_BUF_ERROR` (output room exhausted).
- *   - `maxOutputSize` / `maxRatio` enforced after every successful
- *     `inflate` step in [decodeStep].
+ * libz handles all three wrap formats (Gzip / Zlib / Raw) via
+ * `windowBits` (`-15` raw, `15` zlib, `31` gzip + 47 = auto-detect),
+ * so unlike the JVM impl we do not have to build the gzip framing
+ * manually — the deflate/inflate algorithm produces / consumes the
+ * full wire format.
+ *
+ * Per-session allocations:
+ *   - one C-allocated `z_stream` (calloc / free via cinterop wrappers)
+ *   - one 8 KiB scratch ByteArray for input/output staging (Kotlin-side)
+ *   - the caller-provided output [IoBuf] (no internal alloc)
  */
-private const val MIN_OUTPUT_BUFFER: Int = 1024
+private const val SCRATCH_SIZE: Int = 8 * 1024
 
 private const val WRAP_KIND_DEFAULT = 0
 private const val WRAP_KIND_ZLIB = 1
@@ -78,33 +71,45 @@ internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
     defaultWrap: WrapFormat,
-): EncoderSession = NativeZlibEncoderSession(allocator, options, defaultWrap)
+): EncoderSession = NativeZlibEncoderSession(options, defaultWrap)
 
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun newZlibDecoderSession(
     allocator: BufferAllocator,
     options: DecoderOptions,
     defaultWrap: WrapFormat,
-): DecoderSession = NativeZlibDecoderSession(allocator, options, defaultWrap)
+): DecoderSession = NativeZlibDecoderSession(options, defaultWrap)
 
 @OptIn(ExperimentalForeignApi::class)
 private class NativeZlibEncoderSession(
-    private val allocator: BufferAllocator,
     private val options: EncoderOptions,
     defaultWrap: WrapFormat,
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
+
+    /** Reusable input scratch — copied from input IoBuf for setInput-equivalent. */
+    private var inputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
+    private var pendingInput: ByteArray? = null
+    private var pendingInputOffset: Int = 0
+
+    /** Valid byte count in [pendingInput] — `inputScratch` may be larger as a reusable buffer. */
+    private var pendingInputEnd: Int = 0
+
+    /** Reusable output scratch — libz writes here, then we copy to caller IoBuf. */
+    private val outputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
+
     private val flushFlag: Int = when (options.flushMode) {
         FlushMode.NoFlush -> keel_zlib_flag_no_flush()
         FlushMode.Sync -> keel_zlib_flag_sync_flush()
         FlushMode.Full -> keel_zlib_flag_full_flush()
-        FlushMode.Block -> keel_zlib_flag_sync_flush() // libz Z_BLOCK has narrow use, fall back to Sync.
+        FlushMode.Block -> keel_zlib_flag_sync_flush()
     }
 
     private var closed: Boolean = false
-    private var finished: Boolean = false
+    private var finishStarted: Boolean = false
+    private var finishedReturned: Boolean = false
 
     init {
         val rc = keel_deflate_init(
@@ -124,31 +129,62 @@ private class NativeZlibEncoderSession(
         }
     }
 
-    override fun update(input: IoBuf): IoBuf {
+    override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        check(!finished) { "session finished — call reset() before update()" }
-        try {
+        check(!finishedReturned) { "session finished — call reset() before update()" }
+
+        // Step 1: refill pending input from caller's IoBuf if we exhausted last chunk.
+        if (pendingInput == null && input.readableBytes > 0) {
             val n = input.readableBytes
-            if (n == 0) return allocator.allocate(MIN_OUTPUT_BUFFER)
-            val bytes = readBytes(input, n)
-            return encodeStep(bytes, finishStream = false)
-        } finally {
-            input.release()
+            if (n > inputScratch.size) inputScratch = ByteArray(n)
+            input.readByteArray(inputScratch, 0, n)
+            pendingInput = inputScratch
+            pendingInputOffset = 0
+            pendingInputEnd = n
         }
+
+        // Step 2: drive deflate.
+        return drainDeflate(output, flushFlag, isFinish = false)
     }
 
-    override fun finish(): IoBuf {
+    override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        if (finished) return allocator.allocate(MIN_OUTPUT_BUFFER)
-        val out = encodeStep(EMPTY_BYTES, finishStream = true)
-        finished = true
-        return out
+        if (finishedReturned) return CodecStatus.FINISHED
+        finishStarted = true
+        val s = drainDeflate(output, keel_zlib_flag_finish(), isFinish = true)
+        if (s == CodecStatus.NEED_OUTPUT) return CodecStatus.NEED_OUTPUT
+        finishedReturned = true
+        return CodecStatus.FINISHED
     }
 
     override fun reset() {
         check(!closed) { "session closed" }
-        keel_deflate_reset(z)
-        finished = false
+        if (options.contextTakeover) {
+            keel_deflate_reset(z)
+        } else {
+            // libz deflateReset already clears state fully, but we mirror JVM
+            // semantics: end + re-init for strict no-takeover.
+            keel_deflate_end(z)
+            val rc = keel_deflate_init(
+                z,
+                level = if (options.level == -1) -1 else options.level.coerceIn(0, 9),
+                wrap_kind = wrapKind(wrap),
+                strategy = strategy(options.strategy),
+                windowBits_override = options.windowBits ?: 0,
+            )
+            check(rc == keel_zlib_status_ok()) { "deflateInit2 rc=$rc on reset" }
+            options.dictionary?.let { dict ->
+                if (dict.isNotEmpty()) {
+                    dict.usePinned { pinned ->
+                        keel_deflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
+                    }
+                }
+            }
+        }
+        pendingInput = null
+        pendingInputOffset = 0
+        finishStarted = false
+        finishedReturned = false
     }
 
     override fun close() {
@@ -158,72 +194,75 @@ private class NativeZlibEncoderSession(
         closed = true
     }
 
-    private fun encodeStep(input: ByteArray, finishStream: Boolean): IoBuf {
-        var out = allocator.allocate((input.size + 64).coerceAtLeast(MIN_OUTPUT_BUFFER))
-        val effectiveFlush = if (finishStream) keel_zlib_flag_finish() else flushFlag
-        var inOffset = 0
-        // Loop driving deflate to completion. Each iteration may reallocate
-        // `out` if libz wants more output room.
-        while (true) {
-            val outCap = out.writableBytes.coerceAtLeast(64)
-            val outScratch = ByteArray(outCap)
-            val (rc, consumed, produced) = driveDeflate(
-                input, inOffset, outScratch, outCap, effectiveFlush,
-            )
-            inOffset += consumed
+    /** Returns the appropriate CodecStatus given drain progress. */
+    private fun drainDeflate(output: IoBuf, flag: Int, isFinish: Boolean): CodecStatus {
+        while (output.writableBytes > 0) {
+            val outCap = output.writableBytes.coerceAtMost(outputScratch.size)
+            val (rc, consumed, produced) = step(flag, outCap)
             if (produced > 0) {
-                if (produced > out.writableBytes) {
-                    out = grow(out, produced)
+                output.writeByteArray(outputScratch, 0, produced)
+            }
+            // Update pending-input bookkeeping.
+            val pi = pendingInput
+            if (pi != null) {
+                pendingInputOffset += consumed
+                if (pendingInputOffset >= pendingInputEnd) {
+                    pendingInput = null
+                    pendingInputOffset = 0
+                    pendingInputEnd = 0
                 }
-                out.writeByteArray(outScratch, 0, produced)
             }
             when (rc) {
-                keel_zlib_status_stream_end() -> return out
+                keel_zlib_status_stream_end() -> return CodecStatus.NEED_INPUT
                 keel_zlib_status_buf_error() -> {
-                    out = grow(out, 1024)
+                    if (output.writableBytes == 0) return CodecStatus.NEED_OUTPUT
+                    if (pendingInput == null) return CodecStatus.NEED_INPUT
+                    break
                 }
                 keel_zlib_status_ok() -> {
-                    if (!finishStream && inOffset >= input.size && produced < outCap) {
-                        return out
-                    }
+                    // In non-finish mode: once input is fully consumed, return
+                    // NEED_INPUT without further calls — keeping the deflater's
+                    // unflushed internal state for the next update / finish.
+                    // Calling deflate(Z_NO_FLUSH) with no input would either
+                    // emit additional bytes that double the output (libz quirk)
+                    // or noop; we want neither here.
+                    if (!isFinish && pendingInput == null) return CodecStatus.NEED_INPUT
+                    if (produced == 0 && consumed == 0) break
                 }
                 else -> error("deflate rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
             }
         }
+        return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
     }
 
-    private fun driveDeflate(
-        input: ByteArray,
-        inOffset: Int,
-        outScratch: ByteArray,
-        outCap: Int,
-        flush: Int,
-    ): Triple<Int, Int, Int> = memScoped {
+    /** One step of deflate; returns (rc, consumed_bytes, produced_bytes). */
+    private fun step(flag: Int, outCap: Int): Triple<Int, Int, Int> = memScoped {
         val consumed = alloc<IntVar>()
         val produced = alloc<IntVar>()
-        val rc = if (input.isEmpty() || inOffset >= input.size) {
-            outScratch.usePinned { outPinned ->
+        val pi = pendingInput
+        val rc = if (pi == null || pendingInputOffset >= pendingInputEnd) {
+            outputScratch.usePinned { outPinned ->
                 keel_deflate(
                     z,
                     in_buf = null,
                     in_len = 0,
                     out_buf = outPinned.addressOf(0).reinterpret<uint8_tVar>(),
                     out_cap = outCap,
-                    flush_flag = flush,
+                    flush_flag = flag,
                     consumed_in = consumed.ptr,
                     produced_out = produced.ptr,
                 )
             }
         } else {
-            input.usePinned { inPinned ->
-                outScratch.usePinned { outPinned ->
+            pi.usePinned { inPinned ->
+                outputScratch.usePinned { outPinned ->
                     keel_deflate(
                         z,
-                        in_buf = inPinned.addressOf(inOffset).reinterpret<uint8_tVar>(),
-                        in_len = input.size - inOffset,
+                        in_buf = inPinned.addressOf(pendingInputOffset).reinterpret<uint8_tVar>(),
+                        in_len = pendingInputEnd - pendingInputOffset,
                         out_buf = outPinned.addressOf(0).reinterpret<uint8_tVar>(),
                         out_cap = outCap,
-                        flush_flag = flush,
+                        flush_flag = flag,
                         consumed_in = consumed.ptr,
                         produced_out = produced.ptr,
                     )
@@ -232,31 +271,26 @@ private class NativeZlibEncoderSession(
         }
         Triple(rc, consumed.value, produced.value)
     }
-
-    private fun grow(buf: IoBuf, additional: Int): IoBuf {
-        val newCap = (buf.capacity + additional).coerceAtLeast(buf.capacity * 2)
-        val bigger = allocator.allocate(newCap)
-        val n = buf.readableBytes
-        if (n > 0) {
-            val tmp = ByteArray(n)
-            buf.readByteArray(tmp, 0, n)
-            bigger.writeByteArray(tmp, 0, n)
-        }
-        buf.release()
-        return bigger
-    }
 }
 
 @OptIn(ExperimentalForeignApi::class)
 private class NativeZlibDecoderSession(
-    private val allocator: BufferAllocator,
     private val options: DecoderOptions,
     defaultWrap: WrapFormat,
 ) : DecoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
+
+    private var inputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
+    private var pendingInput: ByteArray? = null
+    private var pendingInputOffset: Int = 0
+    private var pendingInputEnd: Int = 0
+
+    private val outputScratch: ByteArray = ByteArray(SCRATCH_SIZE)
+
     private var closed: Boolean = false
+    private var finishedReturned: Boolean = false
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
 
@@ -265,29 +299,38 @@ private class NativeZlibDecoderSession(
         check(rc == keel_zlib_status_ok()) { "inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
     }
 
-    override fun update(input: IoBuf): IoBuf {
+    override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        try {
+        if (pendingInput == null && input.readableBytes > 0) {
             val n = input.readableBytes
-            if (n == 0) return allocator.allocate(MIN_OUTPUT_BUFFER)
+            if (n > inputScratch.size) inputScratch = ByteArray(n)
+            input.readByteArray(inputScratch, 0, n)
             totalInput += n
-            val bytes = readBytes(input, n)
-            return decodeStep(bytes)
-        } finally {
-            input.release()
+            pendingInput = inputScratch
+            pendingInputOffset = 0
+            pendingInputEnd = n
         }
+        return drainInflate(output)
     }
 
-    override fun finish(): IoBuf {
+    override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
-        return decodeStep(EMPTY_BYTES)
+        if (finishedReturned) return CodecStatus.FINISHED
+        val s = drainInflate(output)
+        if (s == CodecStatus.NEED_OUTPUT) return s
+        finishedReturned = true
+        return CodecStatus.FINISHED
     }
 
     override fun reset() {
         check(!closed) { "session closed" }
         keel_inflate_reset(z)
+        pendingInput = null
+        pendingInputOffset = 0
+        pendingInputEnd = 0
         totalDecoded = 0
         totalInput = 0
+        finishedReturned = false
     }
 
     override fun close() {
@@ -297,50 +340,52 @@ private class NativeZlibDecoderSession(
         closed = true
     }
 
-    private fun decodeStep(input: ByteArray): IoBuf {
-        var out = allocator.allocate((input.size * 4).coerceAtLeast(MIN_OUTPUT_BUFFER))
-        var inOffset = 0
-        while (true) {
-            val outCap = out.writableBytes.coerceAtLeast(64)
-            val outScratch = ByteArray(outCap)
-            val (rc, consumed, produced) = driveInflate(input, inOffset, outScratch, outCap)
-            inOffset += consumed
+    private fun drainInflate(output: IoBuf): CodecStatus {
+        while (output.writableBytes > 0) {
+            val outCap = output.writableBytes.coerceAtMost(outputScratch.size)
+            val (rc, consumed, produced) = step(outCap)
             if (produced > 0) {
                 enforceLimits(produced)
-                if (produced > out.writableBytes) {
-                    out = grow(out, produced)
-                }
-                out.writeByteArray(outScratch, 0, produced)
+                output.writeByteArray(outputScratch, 0, produced)
                 totalDecoded += produced
             }
+            val pi = pendingInput
+            if (pi != null) {
+                pendingInputOffset += consumed
+                if (pendingInputOffset >= pi.size) {
+                    pendingInput = null
+                    pendingInputOffset = 0
+                }
+            }
             when (rc) {
-                keel_zlib_status_stream_end() -> return out
+                keel_zlib_status_stream_end() -> return CodecStatus.NEED_INPUT
                 keel_zlib_status_data_error() ->
                     throw DecompressionException("inflate data error: ${keel_zlib_msg(z)?.toKString()}")
                 keel_zlib_status_need_dict() ->
                     throw DecompressionException("inflate needs dictionary")
                 keel_zlib_status_buf_error() -> {
-                    if (inOffset >= input.size) return out
-                    out = grow(out, 1024)
+                    if (output.writableBytes == 0) return CodecStatus.NEED_OUTPUT
+                    if (pendingInput == null) return CodecStatus.NEED_INPUT
+                    break
                 }
                 keel_zlib_status_ok() -> {
-                    if (inOffset >= input.size && produced < outCap) return out
+                    // Once input is fully consumed, return NEED_INPUT without
+                    // calling inflate again — symmetric with the encoder side.
+                    if (pendingInput == null) return CodecStatus.NEED_INPUT
+                    if (produced == 0 && consumed == 0) break
                 }
                 else -> error("inflate rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
             }
         }
+        return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
     }
 
-    private fun driveInflate(
-        input: ByteArray,
-        inOffset: Int,
-        outScratch: ByteArray,
-        outCap: Int,
-    ): Triple<Int, Int, Int> = memScoped {
+    private fun step(outCap: Int): Triple<Int, Int, Int> = memScoped {
         val consumed = alloc<IntVar>()
         val produced = alloc<IntVar>()
-        val rc = if (input.isEmpty() || inOffset >= input.size) {
-            outScratch.usePinned { outPinned ->
+        val pi = pendingInput
+        val rc = if (pi == null || pendingInputOffset >= pendingInputEnd) {
+            outputScratch.usePinned { outPinned ->
                 keel_inflate(
                     z,
                     in_buf = null,
@@ -353,12 +398,12 @@ private class NativeZlibDecoderSession(
                 )
             }
         } else {
-            input.usePinned { inPinned ->
-                outScratch.usePinned { outPinned ->
+            pi.usePinned { inPinned ->
+                outputScratch.usePinned { outPinned ->
                     keel_inflate(
                         z,
-                        in_buf = inPinned.addressOf(inOffset).reinterpret<uint8_tVar>(),
-                        in_len = input.size - inOffset,
+                        in_buf = inPinned.addressOf(pendingInputOffset).reinterpret<uint8_tVar>(),
+                        in_len = pendingInputEnd - pendingInputOffset,
                         out_buf = outPinned.addressOf(0).reinterpret<uint8_tVar>(),
                         out_cap = outCap,
                         flush_flag = keel_zlib_flag_no_flush(),
@@ -384,27 +429,6 @@ private class NativeZlibDecoderSession(
             }
         }
     }
-
-    private fun grow(buf: IoBuf, additional: Int): IoBuf {
-        val newCap = (buf.capacity + additional).coerceAtLeast(buf.capacity * 2)
-        val bigger = allocator.allocate(newCap)
-        val n = buf.readableBytes
-        if (n > 0) {
-            val tmp = ByteArray(n)
-            buf.readByteArray(tmp, 0, n)
-            bigger.writeByteArray(tmp, 0, n)
-        }
-        buf.release()
-        return bigger
-    }
-}
-
-private val EMPTY_BYTES: ByteArray = ByteArray(0)
-
-private fun readBytes(buf: IoBuf, len: Int): ByteArray {
-    val out = ByteArray(len)
-    buf.readByteArray(out, 0, len)
-    return out
 }
 
 private fun wrapKind(wrap: WrapFormat): Int = when (wrap) {
@@ -421,4 +445,3 @@ private fun strategy(s: Strategy): Int = when (s) {
     Strategy.RunLength -> 3
     Strategy.Fixed -> 4
 }
-
