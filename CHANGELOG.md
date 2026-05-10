@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: `HttpRequestDecompressionHandler` — inbound `DuplexHandler` decoding `Content-Encoding` request bodies through the keel-compression streaming SPI. Apache `mod_deflate` pattern dual-gate zip-bomb defence (1 MiB absolute cap + 100:1 ratio + burst 3 tolerance), `UnknownEncodingPolicy` enum (default 415 Unsupported Media Type). Companion: `RequestDecompressionLimitException` / `UnsupportedContentEncodingException` (#497)
 - `benchmark`: new `compression-upload` k6 scenario + `bench-stream-one.sh` wiring — POSTs a pre-built gzip-compressed body (133 bytes → 100 KiB decoded) to `/upload-stream` with `Content-Encoding: gzip` to verify the inbound decompression path. Visible gap until `HttpRequestDecompressionHandler` lands; `BENCH_COMPRESSION_UPLOAD_STRICT=false` allows uncompressed-throughput comparison meanwhile (#496)
 - `server-ktor-base`: `KeelCompressionPlugin` (Native-only `RouteScopedPlugin` mirroring `ktor-server-compression` API) backed by `keel-compression-zlib`. Closes the Native compression gap where ktor's stock `GZipEncoder` / `DeflateEncoder` are identity no-op stubs; JVM keeps `install(Compression)` unchanged (#495)
 - `benchmark`: install `KeelCompression` on the four Native `KeelCio*` engines, closing the response compression gap for ktor-http-cio's raw byte-channel parser. `BENCH_COMPRESSION_STRICT=true` now passes on all eight Native engines (#495)
