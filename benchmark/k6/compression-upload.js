@@ -3,9 +3,19 @@
 // Verifies that the server-side request decompression path correctly
 // decodes a `Content-Encoding: gzip` request body before the route
 // handler counts the bytes. Pre-built fixture
-// (`compression-upload-payload.gz`, 133 bytes compressed = 102,400 bytes
-// of 'x' uncompressed) is sent verbatim so k6 itself does not need to
+// (`compression-upload-payload.gz`, ~11 KiB compressed → 102,400 bytes
+// decoded, ~9:1 ratio) is sent verbatim so k6 itself does not need to
 // gzip per request.
+//
+// Why ~9:1 ratio (not the trivial 770:1 of `'x' * 102400`):
+//   `HttpRequestDecompressionHandler` ships with Apache-style dual-gate
+//   defence (default `ratioLimit = 100`). A 770:1 fixture would trip the
+//   ratio cap and surface as HTTP 413 once the handler lands, never
+//   reaching the route handler that echoes `X-Bytes-Received`. The
+//   ~9:1 ratio (numbered-lines + alphabet padding, typical of log /
+//   JSON API content) stays well within the default cap so the bench
+//   exercises the happy path. The zip-bomb reject path is covered by
+//   the handler's unit tests, not by this bench.
 //
 // Server-side mechanics:
 //   - Existing `/upload-stream` route reads request body chunks and
@@ -47,10 +57,13 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-// 100 KiB of 'x' compressed at gzip level 6 (133 bytes, deterministic
-// fixture committed alongside this script). Matches LARGE_PAYLOAD_SIZE
-// in BenchmarkConstants.kt so a successful decode round-trips to the
-// same expected value as compression.js's response-side bench.
+// 100 KiB of numbered lines + alphabet padding compressed at gzip
+// level 6 (~11 KiB, ~9:1 ratio). Deterministic fixture committed
+// alongside this script. Decoded size matches LARGE_PAYLOAD_SIZE in
+// BenchmarkConstants.kt so the compressed-and-decoded round-trip
+// resolves to the same expected value as compression.js's response
+// side. The ~9:1 ratio fits inside the upcoming
+// HttpRequestDecompressionHandler's default ratio cap (100:1).
 const PAYLOAD = open('./compression-upload-payload.gz', 'b');
 const EXPECTED_DECODED_BYTES = 100 * 1024;
 
