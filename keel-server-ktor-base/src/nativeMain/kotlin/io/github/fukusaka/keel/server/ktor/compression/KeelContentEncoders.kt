@@ -116,6 +116,20 @@ private suspend fun keelEncodePump(
     }
 }
 
+/**
+ * Decode pump — drives [DecoderSession] from a ktor [ByteReadChannel] of
+ * compressed bytes to a ktor [ByteWriteChannel] of decoded bytes.
+ *
+ * **Unbounded output.** Uses `DecoderOptions.Default` (`maxOutputSize = null`,
+ * `maxRatio = null`), so a malicious zip-bomb input (e.g. 1 KB compressed
+ * → 1 GB decoded) would be silently accepted modulo ktor channel
+ * back-pressure. Callers needing zip-bomb defence should not invoke
+ * [KeelGZipEncoder.decode] / [KeelDeflateEncoder.decode] directly; use
+ * the upcoming `HttpRequestDecompressionHandler` /
+ * `KeelContentEncodingPlugin` (follow-up PR) which applies a dual-gate
+ * cap (absolute byte limit + decoded:input ratio + burst tolerance) per
+ * design.md §35.10.
+ */
 private suspend fun keelDecodePump(
     decoder: KeelDecoder,
     source: ByteReadChannel,
@@ -177,6 +191,20 @@ private suspend fun drainOutput(
  * `GZipEncoder` (which uses `java.util.zip.Deflater`). On Native,
  * ktor's stock `GZipEncoder` is an identity stub; this object provides
  * actual gzip compression via libz cinterop.
+ *
+ * ## Decode path is unbounded
+ *
+ * The [decode] override uses [DecoderOptions.Default] which has
+ * `maxOutputSize = null` and `maxRatio = null` — i.e. **no zip-bomb
+ * defence**. This is acceptable here because [KeelCompressionPlugin]
+ * (the only blessed caller of this object) only uses the [encode] path
+ * (response compression, output is bounded by ratio ≤ 1.0). For request
+ * decompression, use the upcoming `HttpRequestDecompressionHandler` /
+ * `KeelContentEncodingPlugin` (follow-up PR) which applies the
+ * dual-gate defence (1 MB absolute cap + 100:1 ratio + burst 3). Direct
+ * callers of [decode] should use `keel-compression-zlib`'s
+ * `GzipDecoder.newSession(allocator, DecoderOptions(maxOutputSize, maxRatio))`
+ * with explicit limits instead.
  */
 public object KeelGZipEncoder : KeelContentEncoder(
     keelEncoder = GzipCodec.encoder,
@@ -192,6 +220,9 @@ public object KeelGZipEncoder : KeelContentEncoder(
  * `Content-Encoding: deflate`. Some legacy HTTP clients erroneously expect
  * raw deflate; modern browsers and HTTP libraries (curl, requests, OkHttp,
  * ktor-client) all handle the zlib wrap correctly.
+ *
+ * Decode path is unbounded — see [KeelGZipEncoder] KDoc for rationale
+ * and recommended alternatives.
  */
 public object KeelDeflateEncoder : KeelContentEncoder(
     keelEncoder = DeflateCodec.encoder,

@@ -160,6 +160,12 @@ private fun KeelContentEncodingHook.Context.encode(
             return@transformBody null
         }
         LOGGER.trace("Encoding response for ${call.request.local.uri} with ${chosen.encoder.name}")
-        message.compressed(chosen.encoder)
+        // Pass the call's coroutineContext so the encoder's GlobalScope.writer
+        // job inherits the call's Job as parent. When the call is cancelled
+        // (client disconnect, server shutdown, route timeout), the encoder
+        // pump receives CancellationException and runs its finally{} cleanup
+        // (session.close + IoBuf.release) instead of leaking as an orphan
+        // GlobalScope coroutine.
+        message.compressed(chosen.encoder, call.coroutineContext)
     }
 }
