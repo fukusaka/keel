@@ -85,8 +85,7 @@ import kotlin.coroutines.ContinuationInterceptor
  * decoding is per-connection (no shared pool contention) and may run for
  * unbounded durations on streaming uploads.
  */
-internal class KtorCioConnectionHandler : KtorConnectionHandler {
-
+internal class KtorCioConnectionHandler(
     /**
      * Serialises both `parseRequest` (header borrow) and the matching
      * `request.release()` (header recycle) so concurrent header parsing
@@ -97,8 +96,14 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
      * mutex is coroutine-level, so suspension does not block the I/O
      * thread.  `parseHttpBody` runs without this serialisation (per-call
      * body decoding does not touch the shared pool).
+     *
+     * Constructor seam — defaults to a fresh `HeaderParseMutex()` for
+     * production. Tests override with a recording subclass to assert
+     * that both borrow and recycle paths route through the mutex (see
+     * `KtorCioRequestReleaseSerialisationTest`).
      */
-    private val parserMutex = HeaderParseMutex()
+    private val parserMutex: HeaderParseMutex = HeaderParseMutex(),
+) : KtorConnectionHandler {
 
     override suspend fun handle(
         channel: PipelinedChannel,

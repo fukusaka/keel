@@ -67,6 +67,6 @@ import kotlinx.coroutines.sync.withLock
  */
 private val sharedMutex = Mutex()
 
-internal actual class HeaderParseMutex actual constructor() {
-    actual suspend fun <T> withLock(block: suspend () -> T): T = sharedMutex.withLock { block() }
+internal actual open class HeaderParseMutex actual constructor() {
+    actual open suspend fun <T> withLock(block: suspend () -> T): T = sharedMutex.withLock { block() }
 }

@@ -60,7 +60,7 @@ package io.github.fukusaka.keel.server.ktor.cio
  * recycle inside its own clearInstance), this class can become a no-op on
  * all platforms.
  */
-internal expect class HeaderParseMutex() {
+internal expect open class HeaderParseMutex() {
     /** Runs [block] under the platform-specific serialisation policy. */
-    suspend fun <T> withLock(block: suspend () -> T): T
+    open suspend fun <T> withLock(block: suspend () -> T): T
 }
