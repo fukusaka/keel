@@ -7,11 +7,11 @@
 // response write path (the response is a tiny "ok").
 //
 // Compares engines on heap pressure under streaming uploads:
-//   - Pattern B (current keel-server-ktor) aggregates the body in memory
-//     before the handler runs, so peak heap = N * payload during a load
-//     spike.
-//   - Pattern B (after Step 2 streaming refactor) and Pattern C drain
-//     chunks as they arrive, so peak heap = N * (one chunk).
+//   - Aggregating adapters buffer the body in memory before the handler
+//     runs, so peak heap = N * payload during a load spike.
+//   - Streaming adapters (post Step 2 refactor for `keel-server-ktor`,
+//     and `pipeline-http-*` direct keel pipeline) drain chunks as they
+//     arrive, so peak heap = N * (one chunk).
 // Heap differences are visible in JFR / GC log captured during the run;
 // k6 reports msg/s + latency only.
 //

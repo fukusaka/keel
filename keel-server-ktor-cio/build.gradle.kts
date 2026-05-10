@@ -28,8 +28,9 @@ kotlin {
                 // consumers of `embeddedServer(KeelCio)` reference.
                 api(project(":keel-server-ktor-base"))
                 implementation(libs.ktor.server.core)
-                // Pattern C uses ktor-http-cio's parser instead of keel's
-                // `:keel-codec-http`. parseRequest / parseHttpBody / CIOHeaders.
+                // This adapter uses ktor-http-cio's parser instead of
+                // keel's `:keel-codec-http`. parseRequest / parseHttpBody /
+                // CIOHeaders.
                 implementation(libs.ktor.http.cio)
                 implementation(libs.kotlinx.coroutines.core)
             }
