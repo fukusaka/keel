@@ -106,8 +106,20 @@ internal class KtorCioConnectionHandler : KtorConnectionHandler {
         // Install the inbound bridge as the terminal handler before arming
         // the read loop.  Both must happen on the EventLoop thread so the
         // first onRead callback sees the bridge installed.
+        //
+        // Allow user-injected handlers via Configuration.pipelineCustomizer
+        // — same hook as the Keel codec path. KeelCio's pipeline carries
+        // raw byte-level messages (the ktor-http-cio parser operates on
+        // ByteChannel directly, not on keel HttpResponseHead/Body), so a
+        // CompressionHandler installed here would NOT intercept response
+        // bytes; users wanting compression on KeelCio should use Ktor's
+        // application-level Compression plugin (JVM) or the standalone
+        // ktor-http-cio compression integration (future). The hook still
+        // fires here for symmetry with the Keel path so byte-level
+        // handlers (tracing, metrics, byte-counters) work uniformly.
         val bridge = KtorCioInboundBridge()
         withContext(channel.ioDispatcher) {
+            engine.configuration.pipelineCustomizer?.invoke(channel)
             channel.pipeline.addLast(INBOUND_BRIDGE_NAME, bridge)
             channel.readEnabled = true
         }

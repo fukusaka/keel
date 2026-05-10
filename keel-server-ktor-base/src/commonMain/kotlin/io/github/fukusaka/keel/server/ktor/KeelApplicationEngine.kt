@@ -160,6 +160,17 @@ public class KeelApplicationEngine(
          * `ktor-server-compression` is not available. JVM-only consumers
          * typically install Ktor's `Compression` plugin at the
          * application layer instead.
+         *
+         * **Path semantics**: invoked on both the `Keel` (keel codec-http
+         * parser) and `KeelCio` (ktor-http-cio parser) connection-handler
+         * paths for API symmetry. However, only the `Keel` path's
+         * pipeline carries `HttpResponseHead` / `HttpBody` / `HttpBodyEnd`
+         * messages — `CompressionHandler` only intercepts response bytes
+         * meaningfully on the `Keel` path. On `KeelCio`, byte-level
+         * handlers (tracing / byte-counters / metrics) still work, but
+         * compression of cio-parser output requires a different
+         * integration point. JVM `KeelCio` consumers should use Ktor's
+         * application-level `Compression` plugin instead.
          */
         public var pipelineCustomizer: ((io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit)? = null
 

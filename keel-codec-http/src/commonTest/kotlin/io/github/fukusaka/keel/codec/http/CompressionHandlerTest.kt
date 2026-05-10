@@ -74,6 +74,87 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `streaming response sets Transfer-Encoding chunked when Content-Length stripped`() {
+        // Regression test for the Native ktor-keel-* compression wiring bug:
+        // when the streaming HttpResponseHead path strips Content-Length,
+        // it must add Transfer-Encoding: chunked, otherwise HttpResponseEncoder
+        // throws "must declare either Content-Length or Transfer-Encoding: chunked"
+        // and the connection closes mid-response (curl: "Empty reply from server").
+        //
+        // Pre-fix (PR #494 commit 6fafe524): rewriteHeaders stripped CL but did
+        // not add TE. This test would have failed with `null` for the TE header.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                method = HttpMethod.GET,
+                uri = "/streaming",
+                version = HttpVersion.HTTP_1_1,
+                headers = HttpHeaders().apply { add("Accept-Encoding", "upper") },
+            ),
+        )
+
+        // Streaming HttpResponseHead — has Content-Length: 5 (full body size
+        // before compression), but the streaming code path does NOT know the
+        // post-compression size, so the handler must transition to chunked.
+        val head = HttpResponseHead(
+            status = HttpStatus(200),
+            headers = HttpHeaders().apply {
+                add("Content-Length", "5")
+                add("Content-Type", "text/plain")
+            },
+        )
+        handler.onWrite(ctx, head)
+
+        val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
+        // Compressed: CE set, CL stripped, TE: chunked added.
+        assertEquals("upper", emittedHead.headers["Content-Encoding"])
+        assertNull(emittedHead.headers["Content-Length"])
+        assertEquals("chunked", emittedHead.headers["Transfer-Encoding"])
+        assertEquals("Accept-Encoding", emittedHead.headers["Vary"])
+    }
+
+    @Test
+    fun `streaming response strips pre-existing Transfer-Encoding before re-setting chunked`() {
+        // Belt-and-suspenders: a caller that pre-sets Transfer-Encoding: chunked
+        // (e.g. an upstream handler that already decided streaming) should still
+        // see exactly one Transfer-Encoding value (no duplicates) after rewrite.
+        // RFC 9112 §6.1 forbids both Content-Length and Transfer-Encoding;
+        // duplicate Transfer-Encoding fields would also be invalid.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/x",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply { add("Accept-Encoding", "upper") },
+            ),
+        )
+
+        val head = HttpResponseHead(
+            status = HttpStatus(200),
+            headers = HttpHeaders().apply {
+                add("Transfer-Encoding", "chunked")
+                add("Content-Type", "text/plain")
+            },
+        )
+        handler.onWrite(ctx, head)
+
+        val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
+        assertEquals("upper", emittedHead.headers["Content-Encoding"])
+        assertNull(emittedHead.headers["Content-Length"])
+        // Exactly one Transfer-Encoding header value, set to chunked.
+        assertEquals("chunked", emittedHead.headers["Transfer-Encoding"])
+    }
+
+    @Test
     fun `passes through when client does not accept any registered encoding`() {
         val state = ChainState()
         val handler = CompressionHandler(registry, DefaultAllocator)
