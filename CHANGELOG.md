@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: new `compression-upload` k6 scenario + `bench-stream-one.sh` wiring — POSTs a pre-built gzip-compressed body (133 bytes → 100 KiB decoded) to `/upload-stream` with `Content-Encoding: gzip` to verify the inbound decompression path. Visible gap until `HttpRequestDecompressionHandler` lands; `BENCH_COMPRESSION_UPLOAD_STRICT=false` allows uncompressed-throughput comparison meanwhile (#496)
 - `server-ktor-base`: `KeelCompressionPlugin` (Native-only `RouteScopedPlugin` mirroring `ktor-server-compression` API) backed by `keel-compression-zlib`. Closes the Native compression gap where ktor's stock `GZipEncoder` / `DeflateEncoder` are identity no-op stubs; JVM keeps `install(Compression)` unchanged (#495)
 - `benchmark`: install `KeelCompression` on the four Native `KeelCio*` engines, closing the response compression gap for ktor-http-cio's raw byte-channel parser. `BENCH_COMPRESSION_STRICT=true` now passes on all eight Native engines (#495)
 - `server-ktor`: `KeelApplicationEngine.Configuration.pipelineCustomizer` hook — opt-in `(PipelinedChannel) -> Unit` callback invoked per accepted connection between the HTTP/1.1 codec stack install and the suspend-bridge handler. Used by Native `ktor-keel-*` engines to inject keel-codec-http's `CompressionHandler` (alternative to JVM's `Application.install(Compression)` plugin which is not available on Native) (#494)

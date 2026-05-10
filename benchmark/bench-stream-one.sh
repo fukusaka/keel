@@ -88,6 +88,14 @@
 #                              engines that do not compress FAIL the run so
 #                              the leaderboard is not polluted with /large
 #                              throughput masquerading as compression numbers.
+#   BENCH_COMPRESSION_UPLOAD_STRICT
+#                              `compression-upload` scenario counterpart of
+#                              BENCH_COMPRESSION_STRICT. Default "true":
+#                              engines that do not decompress request bodies
+#                              FAIL the run (X-Bytes-Received reports the
+#                              compressed size instead of the decoded size).
+#                              Set "false" for throughput comparisons across
+#                              engines that do not yet decompress.
 #   BENCH_JFR                 when "true" and the engine command is a JVM
 #                              run (the first arg is `java` or ends in `/java`),
 #                              prepend `-XX:StartFlightRecording=settings=…,
@@ -181,6 +189,21 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="http"
         ;;
+    compression-upload)
+        # Inverse of `compression`: client gzips the request body and
+        # POSTs to /upload-stream with `Content-Encoding: gzip`. Verifies
+        # the **inbound** decompression path (k6 sends compressed bytes,
+        # server should report the decoded byte count via
+        # `X-Bytes-Received`). Until `HttpRequestDecompressionHandler`
+        # and the Native `KeelContentEncodingPlugin` land, all engines
+        # fail the strict check — the FAIL is the deliberate signal that
+        # the gap exists. `BENCH_COMPRESSION_UPLOAD_STRICT=false` runs
+        # the same scenario in non-strict mode for throughput
+        # comparisons across engines that do not decompress yet.
+        SCRIPT="benchmark/k6/compression-upload.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        ;;
     slow-upload)
         SCRIPT="benchmark/k6/slow-upload.js"
         READY_ENDPOINT="/hello"
@@ -211,7 +234,7 @@ case "$SCENARIO" in
         PARSER="wsbench"
         ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment)" >&2
         exit 1
         ;;
 esac
@@ -510,6 +533,7 @@ for run in $(seq 1 "$RUNS"); do
             CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
             COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
             COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-true}" \
+            COMPRESSION_UPLOAD_STRICT="${BENCH_COMPRESSION_UPLOAD_STRICT:-true}" \
             k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1
