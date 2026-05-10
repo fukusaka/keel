@@ -234,9 +234,10 @@ private class JvmZlibDecoderSession(
     private val inflater: Inflater = Inflater(nowrap)
     private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
 
-    private var headerStripped: Boolean = wrap != WrapFormat.Gzip
-    private val headerScratch: ByteArray? = if (wrap == WrapFormat.Gzip) ByteArray(GZIP_HEADER_SIZE) else null
-    private var headerScratchLen: Int = 0
+    /** RFC 1952 chunk-aware header parser; `null` for non-gzip wrap. */
+    private var gzipHeaderParser: GzipHeaderParser? =
+        if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
+
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
     private var closed: Boolean = false
@@ -252,8 +253,11 @@ private class JvmZlibDecoderSession(
             if (n == 0) return allocator.allocate(MIN_OUTPUT_BUFFER)
             var bytes = readBytes(input, n)
             totalInput += n
-            if (!headerStripped) {
-                bytes = stripGzipHeader(bytes) ?: return allocator.allocate(MIN_OUTPUT_BUFFER)
+            gzipHeaderParser?.let { parser ->
+                if (!parser.done) {
+                    val rest = parser.consume(bytes)
+                    bytes = rest ?: return allocator.allocate(MIN_OUTPUT_BUFFER)
+                }
             }
             return decodeChunk(bytes)
         } finally {
@@ -273,8 +277,7 @@ private class JvmZlibDecoderSession(
         check(!closed) { "session closed" }
         inflater.reset()
         crc?.reset()
-        headerStripped = wrap != WrapFormat.Gzip
-        headerScratchLen = 0
+        gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
         totalDecoded = 0
         totalInput = 0
     }
@@ -311,48 +314,6 @@ private class JvmZlibDecoderSession(
             throw DecompressionException("malformed deflate stream: ${e.message}", e)
         }
         return out
-    }
-
-    private fun stripGzipHeader(bytes: ByteArray): ByteArray? {
-        // Buffer up to GZIP_HEADER_SIZE bytes, then validate magic +
-        // skip optional FEXTRA / FNAME / FCOMMENT / FHCRC fields.
-        // Simplification: full gzip header parsing requires unbounded
-        // skip for FNAME / FCOMMENT (NUL-terminated). For v1 we
-        // support fixed-format gzip output (FLG bits all zero except
-        // possibly FHCRC) which is what GzipEncoder + every standard
-        // server emits. Non-standard inputs with FNAME / FCOMMENT will
-        // fail validation — acceptable for v1.
-        val scratch = headerScratch ?: return null
-        var consumed = 0
-        while (headerScratchLen < GZIP_HEADER_SIZE && consumed < bytes.size) {
-            scratch[headerScratchLen++] = bytes[consumed++]
-        }
-        if (headerScratchLen < GZIP_HEADER_SIZE) return null
-        validateGzipHeader(scratch)
-        headerStripped = true
-        return if (consumed < bytes.size) bytes.copyOfRange(consumed, bytes.size) else EMPTY_BYTES
-    }
-
-    /**
-     * Validates the 10-byte gzip header per RFC 1952.
-     *
-     * Throws [DecompressionException] on any mismatch — single throw
-     * site so detekt's `ThrowsCount` rule (max 2) is satisfied with
-     * the [stripGzipHeader] caller.
-     */
-    private fun validateGzipHeader(scratch: ByteArray) {
-        val magic = (scratch[0].toInt() and 0xFF) or ((scratch[1].toInt() and 0xFF) shl 8)
-        val cm = scratch[2]
-        val flg = scratch[3].toInt() and 0xFF
-        val reason = when {
-            magic != 0x8B1F -> "invalid gzip magic: 0x${magic.toString(16)}"
-            cm != 0x08.toByte() -> "unsupported gzip CM: $cm"
-            flg and 0xE0 != 0 -> "reserved gzip FLG bits set: $flg"
-            // FEXTRA / FNAME / FCOMMENT / FHCRC not supported in v1.
-            flg and 0x1E != 0 -> "gzip optional fields not supported in v1 (FLG=$flg)"
-            else -> return
-        }
-        throw DecompressionException(reason)
     }
 
     private fun enforceLimits(produced: Int) {
