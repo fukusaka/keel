@@ -59,8 +59,22 @@ private class JvmZlibEncoderSession(
     // Deflater handles framing directly via `nowrap`.
     private val nowrap: Boolean = wrap != WrapFormat.Zlib
 
-    private val deflater: Deflater = Deflater(level(options.level), nowrap)
+    // `var` rather than `val` so [reset] can rebuild the Deflater from
+    // scratch when `contextTakeover = false`. JDK's `Deflater.reset()`
+    // preserves the dictionary / sliding window across messages, but
+    // gRPC per-message + WebSocket `*_no_context_takeover` semantics
+    // require a full state reset — only achievable by `end() + new
+    // Deflater()`. This matches Netty's `PerMessageDeflateEncoder`
+    // pattern (`destroyEncoder() + initEncoder()` per frame in
+    // no-takeover mode).
+    private var deflater: Deflater = newDeflater()
     private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
+
+    private fun newDeflater(): Deflater {
+        val d = Deflater(level(options.level), nowrap)
+        options.dictionary?.let { d.setDictionary(it) }
+        return d
+    }
 
     private var inputBytesTotal: Long = 0
     private var headerEmitted: Boolean = false
@@ -74,9 +88,8 @@ private class JvmZlibEncoderSession(
         FlushMode.Block -> Deflater.SYNC_FLUSH // JDK doesn't expose Z_BLOCK; closest equivalent.
     }
 
-    init {
-        options.dictionary?.let { deflater.setDictionary(it) }
-    }
+    // Dictionary is loaded inside [newDeflater] so it survives both
+    // initial construction and the [reset] full-rebuild path.
 
     override fun update(input: IoBuf): IoBuf {
         check(!closed) { "session closed" }
@@ -104,16 +117,19 @@ private class JvmZlibEncoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        deflater.reset()
-        if (!options.contextTakeover) {
-            // contextTakeover=false: rebuild Deflater from scratch so the
-            // window / dictionary state is fully gone. JDK's reset()
-            // preserves dictionary; this covers gRPC and WS no-takeover.
+        if (options.contextTakeover) {
+            // Preserve sliding-window / dictionary across messages —
+            // Deflater.reset() clears input/output state but keeps the
+            // compression dictionary, which is what HTTP keep-alive
+            // clients want.
+            deflater.reset()
+        } else {
+            // gRPC per-message + WebSocket *_no_context_takeover require
+            // forgetting all internal state. Rebuild the Deflater from
+            // scratch (Netty's PerMessageDeflateEncoder uses the same
+            // pattern in no-takeover mode).
             deflater.end()
-            // Note: we cannot reassign the val deflater. Instead, the
-            // caller is expected to close + reopen the session. The
-            // (false) branch here is best-effort; for strict
-            // no-takeover semantics, callers should close + newSession.
+            deflater = newDeflater()
         }
         crc?.reset()
         inputBytesTotal = 0

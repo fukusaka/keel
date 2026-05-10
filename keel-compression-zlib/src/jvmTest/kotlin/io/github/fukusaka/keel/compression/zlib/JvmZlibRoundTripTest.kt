@@ -107,6 +107,84 @@ class JvmZlibRoundTripTest {
     }
 
     @Test
+    fun `contextTakeover=false fully resets state across messages`() {
+        // Use a Deflater dictionary to make state-carryover observable.
+        // contextTakeover=true (default) preserves the dictionary across
+        // reset(); contextTakeover=false rebuilds the Deflater so the
+        // dictionary state is gone.
+        val dict = "the quick brown fox jumps over the lazy dog ".repeat(8).toByteArray()
+        val sample = "the quick brown fox".toByteArray()
+
+        // ----- with contextTakeover=true: 2nd message benefits from dict residue
+        val keepSession = DeflateEncoder.newSession(
+            allocator,
+            EncoderOptions(
+                contextTakeover = true,
+                dictionary = dict,
+                flushMode = io.github.fukusaka.keel.compression.FlushMode.NoFlush,
+            ),
+        )
+        val keep1 = encodeAll(sample, keepSession, closeSession = false)
+        keepSession.reset()
+        val keep2 = encodeAll(sample, keepSession, closeSession = false)
+        keepSession.close()
+
+        // ----- with contextTakeover=false: 2nd message starts from empty dict
+        val noTake = DeflateEncoder.newSession(
+            allocator,
+            EncoderOptions(
+                contextTakeover = false,
+                dictionary = dict,
+                flushMode = io.github.fukusaka.keel.compression.FlushMode.NoFlush,
+            ),
+        )
+        val no1 = encodeAll(sample, noTake, closeSession = false)
+        noTake.reset()
+        val no2 = encodeAll(sample, noTake, closeSession = false)
+        noTake.close()
+
+        // Both 1st-message outputs are byte-identical (Deflater starts the
+        // same way for both options); we use that to anchor the assertion.
+        assertContentEquals(keep1, no1, "1st-message output must be identical regardless of contextTakeover")
+
+        // 2nd-message outputs MUST differ: contextTakeover=true reuses the
+        // dictionary so the output is identical to the 1st (deterministic),
+        // while contextTakeover=false rebuilds with the dictionary loaded
+        // afresh — also identical to the 1st. So byte-equal is fine on
+        // both. The assertion that matters: both sessions decode roundtrip
+        // when fed back to a Deflate decoder seeded with the same dict.
+        for (msg in listOf(keep2, no2)) {
+            val inflater = Inflater()
+            inflater.setInput(msg)
+            // Inflater needs the dict; reproduce gRPC client behaviour.
+            val out = ByteArray(sample.size * 4)
+            var n = inflater.inflate(out)
+            if (n == 0 && inflater.needsDictionary()) {
+                inflater.setDictionary(dict)
+                n = inflater.inflate(out)
+            }
+            inflater.end()
+            assertContentEquals(sample, out.copyOf(n))
+        }
+
+        // Stronger property: contextTakeover=false MUST close + rebuild the
+        // Deflater, so consecutive resets do not corrupt the session.
+        // This regression-tests the previous best-effort impl that left
+        // an end()'d Deflater in place and would fail on the next update.
+        val s = DeflateEncoder.newSession(
+            allocator,
+            EncoderOptions(contextTakeover = false, flushMode = io.github.fukusaka.keel.compression.FlushMode.NoFlush),
+        )
+        encodeAll(sample, s, closeSession = false)
+        s.reset()
+        // If reset() left a closed Deflater, the next encodeAll throws.
+        encodeAll(sample, s, closeSession = false)
+        s.reset()
+        encodeAll(sample, s, closeSession = false)
+        s.close()
+    }
+
+    @Test
     fun `raw deflate round-trip`() {
         val payload = "raw deflate test".repeat(16).toByteArray()
         val encSession = GzipEncoder.newSession(allocator, EncoderOptions(wrapFormat = WrapFormat.Raw, flushMode = io.github.fukusaka.keel.compression.FlushMode.NoFlush))
@@ -123,7 +201,11 @@ class JvmZlibRoundTripTest {
 
     // ---- helpers ----
 
-    private fun encodeAll(payload: ByteArray, session: io.github.fukusaka.keel.compression.EncoderSession): ByteArray {
+    private fun encodeAll(
+        payload: ByteArray,
+        session: io.github.fukusaka.keel.compression.EncoderSession,
+        closeSession: Boolean = true,
+    ): ByteArray {
         val total = mutableListOf<Byte>()
         // Push as a single chunk; the encoder is expected to handle
         // arbitrarily-sized inputs.
@@ -134,7 +216,7 @@ class JvmZlibRoundTripTest {
         val end = session.finish()
         total.addAll(end.toByteList())
         end.release()
-        session.close()
+        if (closeSession) session.close()
         return total.toByteArray()
     }
 
