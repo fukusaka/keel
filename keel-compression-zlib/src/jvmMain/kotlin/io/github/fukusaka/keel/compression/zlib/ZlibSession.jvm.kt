@@ -144,11 +144,11 @@ private class JvmZlibEncoderSession(
 
         // Step 3: gzip trailer (CRC32 + ISIZE, little-endian).
         if (wrap == WrapFormat.Gzip) {
-            if (trailerBuf == null) {
-                trailerBuf = buildGzipTrailer(crc!!.value, inputBytesTotal)
+            val gzipCrc = crc ?: error("gzip mode without CRC32 — invariant violation")
+            val tb = trailerBuf ?: buildGzipTrailer(gzipCrc.value, inputBytesTotal).also {
+                trailerBuf = it
                 trailerOffset = 0
             }
-            val tb = trailerBuf!!
             while (trailerOffset < tb.size && output.writableBytes > 0) {
                 output.writeByte(tb[trailerOffset])
                 trailerOffset++
