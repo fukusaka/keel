@@ -22,9 +22,9 @@
 //                   wrapping around.
 //
 //                   HEAD is intentionally excluded by default. The
-//                   pipeline-http engines (Pattern C-style direct
-//                   pipeline) do not auto-strip the response body for
-//                   HEAD, so they emit "ok" body bytes that k6's HTTP
+//                   pipeline-http engines (direct keel pipeline, no
+//                   framework auto-strip) do not strip the response body
+//                   for HEAD, so they emit "ok" body bytes that k6's HTTP
 //                   client then parses as the next response on the
 //                   keep-alive connection ("Unsolicited response
 //                   received on idle HTTP channel"). Framework engines
