@@ -19,9 +19,14 @@
 #   ws-fragment   GET  /ws-echo        (RFC 6455 fragmented-frame send + reassembly
 #                                       echo bench via the custom Go client at
 #                                       benchmark/wsbench/. k6 cannot construct
-#                                       fragmented frames, so this scenario
-#                                       requires the wsbench binary to exist —
-#                                       build with `cd benchmark/wsbench && go build`)
+#                                       fragmented frames, so this scenario uses
+#                                       a Go binary instead — built on demand
+#                                       when missing or cross-platform-broken
+#                                       if `go` is on PATH. Opt out of the
+#                                       auto-rebuild with
+#                                       BENCH_WSBENCH_AUTOBUILD=false and pre-
+#                                       build manually with
+#                                       `cd benchmark/wsbench && go build`)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS                    Number of runs; median is reported (default: 1)
@@ -72,6 +77,14 @@
 #   BENCH_COMPRESSION_TYPE  compression.js Accept-Encoding header value
 #                            (default: "gzip"; "br" / "deflate" / "identity"
 #                            also accepted; sent verbatim to the wire)
+#   BENCH_WSBENCH_AUTOBUILD   when "true" (default), the ws-fragment scenario
+#                              auto-rebuilds the `benchmark/wsbench/wsbench`
+#                              binary via `(cd benchmark/wsbench && go build)`
+#                              if the binary is missing or fails a `--help`
+#                              probe (e.g. Mach-O binary rsync'd onto a Linux
+#                              bench host). Set to "false" on CI / read-only
+#                              filesystems where you would rather fail than
+#                              rebuild.
 #   BENCH_COMPRESSION_ENABLE  when "true", append `--compression=true` to the
 #                              server start command so the engine emits a
 #                              compressed response. Off by default —
@@ -327,9 +340,44 @@ if [ "$PARSER" = "wsbench" ]; then
     # Custom Go client; require pre-built binary to keep this script
     # ecosystem-free at runtime (matches the rust-bench / go-bench /
     # swift-bench / zig-bench convention).
-    if [ ! -x "$SCRIPT" ]; then
-        echo "wsbench binary not built (cd benchmark/wsbench && go build)" >&2
-        exit 1
+    #
+    # The wsbench binary is .gitignore'd and platform-specific (Go output
+    # is Mach-O on macOS, ELF on Linux). When the repo is rsync'd from a
+    # development host to the bench host (e.g. macOS -> luna), the
+    # source-side Mach-O overwrites whatever was last built on the
+    # destination host and `./wsbench` aborts with `Exec format error`
+    # at the kernel exec stage. Historically this silently produced
+    # empty cells in the ws-fragment bench table because the failed exec
+    # message was captured as the bench "result" (and the parser found
+    # no rps number in it).
+    #
+    # Probe the binary with `--help` (Go `flag` exits 0): if the probe
+    # fails and the Go toolchain is on PATH, rebuild for the current
+    # platform automatically. Otherwise emit a clear message pointing
+    # at the rebuild command. `BENCH_WSBENCH_AUTOBUILD=false` opts out
+    # of the auto-rebuild (CI / read-only filesystems).
+    if [ ! -x "$SCRIPT" ] || ! "$SCRIPT" --help >/dev/null 2>&1; then
+        if [ ! -x "$SCRIPT" ]; then
+            echo "wsbench binary not built." >&2
+        else
+            echo "wsbench binary cannot execute on this host (likely cross-platform mismatch — Mach-O vs ELF from rsync transfer)." >&2
+        fi
+        if [ "${BENCH_WSBENCH_AUTOBUILD:-true}" = "true" ] && command -v go >/dev/null 2>&1; then
+            echo "Rebuilding wsbench for this platform with 'cd benchmark/wsbench && go build'..." >&2
+            # Remove the stale binary first; `go build` refuses to overwrite
+            # a non-object-file at the output path (covers the rsync-overwrite
+            # case where the existing file is e.g. Mach-O on a Linux host).
+            rm -f "$SCRIPT"
+            (cd benchmark/wsbench && go build) || { echo "wsbench rebuild failed" >&2; exit 1; }
+            # Re-probe after rebuild to confirm the binary now executes.
+            if ! "$SCRIPT" --help >/dev/null 2>&1; then
+                echo "wsbench rebuild produced a binary but the probe still failed. Inspect '$SCRIPT'." >&2
+                exit 1
+            fi
+        else
+            echo "Rebuild with: cd benchmark/wsbench && go build" >&2
+            exit 1
+        fi
     fi
 elif ! command -v k6 >/dev/null 2>&1; then
     echo "k6 not installed (see benchmark/k6/README.md)" >&2
@@ -385,19 +433,20 @@ extract_metric_pct() {
 parse_k6_output() {
     local out="$1"
     local kind="$2"
-    local rps_metric duration_metric duration_metric_fallback=""
+    local rps_metric duration_metric
     case "$kind" in
         ws)
             # WebSocket bench: count echoed messages received/sec.
-            # Latency: prefer k6's built-in `ws_ping` Trend (Go-side ns
-            # precision, populated by `socket.ping()` in ws-echo.js)
-            # when present; ws-large.js doesn't ping (it's measuring
-            # large-message round-trip, not control-frame RTT) so the
-            # parser falls back to the JS-side `ws_msg_rtt_ms` Trend
-            # which is fine for >1 ms RTTs.
+            # Latency: the `k6/websockets` (stable) module does not auto-
+            # populate the legacy `ws_ping` Trend that `k6/ws` did, so
+            # all three WS scripts (`ws-echo.js` / `ws-large.js` /
+            # `ws-slow-consumer.js`) emit a JS-side `ws_msg_rtt_ms` Trend
+            # via `Date.now()` deltas. ms granularity is fine for >1 ms
+            # RTTs; for sub-millisecond control-frame RTT use `ws.ping()`
+            # in the script and read the engine-specific WS frame stats
+            # directly.
             rps_metric="ws_msgs_received"
-            duration_metric="ws_ping"
-            duration_metric_fallback="ws_msg_rtt_ms"
+            duration_metric="ws_msg_rtt_ms"
             ;;
         *)
             rps_metric="http_reqs"
@@ -410,10 +459,6 @@ parse_k6_output() {
     }')
     p50=$(extract_metric_pct "$out" "$duration_metric" "50")
     p99=$(extract_metric_pct "$out" "$duration_metric" "99")
-    if [ -z "$p50" ] && [ -n "$duration_metric_fallback" ]; then
-        p50=$(extract_metric_pct "$out" "$duration_metric_fallback" "50")
-        p99=$(extract_metric_pct "$out" "$duration_metric_fallback" "99")
-    fi
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
