@@ -151,6 +151,30 @@ NAME="${1:?Usage: bench-stream-one.sh <name> <scenario> <command> [args...]}"
 SCENARIO="${2:?Usage: bench-stream-one.sh <name> <scenario> <command> [args...]}"
 shift 2
 
+# Phase 2 Native reference servers that cannot handle 1 MB single-frame
+# WebSocket payloads. zig-bench's `std.http.Server.WebSocket.readSmallMessage`
+# returns `error.MessageOversize` and immediately sends a 1003 close
+# (upstream Zig master 0.17.0-dev still lacks a streaming-message API).
+# swift Hummingbird / vertx expose a per-frame echo surface that also
+# can't reassemble a single 1 MB message. A/B verified 2026-05-11: k6 v1.7
+# `k6/ws` `socket.sendBinary(1 MB)` blocks the JS event loop while the
+# underlying `net.Conn.Write` is stuck on the closed-then-RST socket,
+# so `timeout(1)` and SIGTERM are both ignored for 5+ minutes. The k6
+# script's JS-side watchdog cannot fire while the event loop is blocked.
+# Skip these refs deterministically so `bench-stream-all.sh` chains
+# stay forward-progressing. Override with
+# `BENCH_WS_LARGE_SKIP_BROKEN_REFS=false` if you specifically want to
+# reproduce the hang for upstream-issue evidence.
+if [ "$SCENARIO" = "ws-large" ] \
+    && [ "${BENCH_WS_LARGE_SKIP_BROKEN_REFS:-true}" = "true" ]; then
+    case "$NAME" in
+        zig*|swift*|vertx*)
+            printf 'note: skipping ws-large for "%s" (Phase 2 Native ref / per-frame WS surface, cannot handle 1 MB single frame; set BENCH_WS_LARGE_SKIP_BROKEN_REFS=false to override).\n' "$NAME" >&2
+            exit 0
+            ;;
+    esac
+fi
+
 # Map scenario name to k6 script + endpoint hint (for readiness probe) +
 # parser kind (HTTP req metrics vs WebSocket session/msg metrics).
 case "$SCENARIO" in
