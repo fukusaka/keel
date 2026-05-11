@@ -1,8 +1,8 @@
 // ws-slow-consumer.js — WebSocket /ws-echo with the client deliberately
-// slow at processing each echo. Mirrors a real "slow consumer" pattern
-// where the client cannot keep up with the server's send rate; on a
-// proper backpressure-respecting engine, the server's WS write must
-// throttle to match the client's read pace.
+// slow at processing each echo (k6/websockets stable). Mirrors a real
+// "slow consumer" pattern where the client cannot keep up with the
+// server's send rate; on a proper backpressure-respecting engine, the
+// server's WS write must throttle to match the client's read pace.
 //
 // How this differs from `ws-echo.js`:
 //   - ws-echo.js sends a ping, waits for the echo, then sends the next
@@ -16,10 +16,15 @@
 //     buffer fills; an engine that just hot-loops the echo will pile up
 //     memory and eventually drop the connection.
 //
-// The bench reports the per-roundtrip RTT (k6's `ws_msg_rtt_ms`
-// derived from interleaved pings) and the WS-session count. Both
-// numbers are slow-consumer-pessimistic: the RTT here includes the
-// server-side queueing time, not just the wire RTT.
+// The bench reports the per-roundtrip RTT (`ws_msg_rtt_ms` computed in
+// JS via `Date.now()`) and the WS-session count. Both numbers are
+// slow-consumer-pessimistic: the RTT here includes the server-side
+// queueing time, not just the wire RTT.
+//
+// Migrated to `k6/websockets` (k6 >= v1.0); the per-echo "sleep" before
+// the next send is implemented with `setTimeout` rather than k6's
+// blocking `sleep()`, which would block the event loop and defeat the
+// purpose of the async client.
 //
 // Required env:
 //   HOST                target host
@@ -38,11 +43,10 @@
 //
 // Note: this measures the server's write-side backpressure under a
 // slow client. For the client-write-side companion (slow uploader)
-// see `slow-upload.js` plus the deferred `tc qdisc netem` setup
-// planned for the slow-path infrastructure step.
+// see `slow-upload.js`.
 
-import ws from 'k6/ws';
-import { check, sleep } from 'k6';
+import { WebSocket } from 'k6/websockets';
+import { check } from 'k6';
 import { Trend } from 'k6/metrics';
 
 const PAYLOAD_BYTES = Number(__ENV.PAYLOAD_BYTES || 256);
@@ -60,13 +64,24 @@ export const options = {
 };
 
 export default function () {
-    const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
-    const sendTimes = []; // index by burst position so RTT can be paired with the matching echo
-    let pingsSent = 0;
-    let echoesReceived = 0;
+    return new Promise((resolve) => {
+        const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
+        const ws = new WebSocket(url);
 
-    const res = ws.connect(url, {}, function (socket) {
-        socket.on('open', () => {
+        const sendTimes = []; // index by burst position so RTT can be paired with the matching echo
+        let pingsSent = 0;
+        let echoesReceived = 0;
+        let opened = false;
+        let resolved = false;
+        const finish = () => {
+            if (!resolved) {
+                resolved = true;
+                resolve();
+            }
+        };
+
+        ws.onopen = () => {
+            opened = true;
             // Up-front burst: queue BURST_PINGS messages on the server's
             // send buffer before doing any consumption. This is the
             // worst case for the server — its writer must accept all
@@ -74,34 +89,35 @@ export default function () {
             // back-pressure from the client.
             for (let i = 0; i < BURST_PINGS; i++) {
                 sendTimes.push(Date.now());
-                socket.send(PAYLOAD);
+                ws.send(PAYLOAD);
                 pingsSent++;
             }
-        });
-        socket.on('message', () => {
+        };
+        ws.onmessage = () => {
             const sent = sendTimes[echoesReceived];
             if (sent !== undefined) {
                 rttTrend.add(Date.now() - sent);
             }
             echoesReceived++;
             // Slow-consumer behaviour: stall before sending the next ping.
-            // While we sleep, the server has nothing to wait on; any
-            // unacknowledged messages it has already queued sit in its
-            // send buffer. After the sleep, we issue the next ping.
-            sleep(CONSUME_DELAY_MS / 1000);
-            sendTimes.push(Date.now());
-            socket.send(PAYLOAD);
-            pingsSent++;
-        });
-        // Stop the session when the global duration elapses (k6 sends an
-        // implicit close). No explicit timer here — the script's
-        // `options.duration` bounds the run.
-    });
-
-    check(res, {
-        'ws connected (status 101)': (r) => r && r.status === 101,
-    });
-    check(null, {
-        'pings ≥ echoes (no echo loss)': () => pingsSent >= echoesReceived,
+            // `setTimeout` rather than k6's blocking `sleep` because the
+            // event loop must remain free to dispatch incoming
+            // `onmessage` events queued by the server during the stall.
+            setTimeout(() => {
+                sendTimes.push(Date.now());
+                ws.send(PAYLOAD);
+                pingsSent++;
+            }, CONSUME_DELAY_MS);
+        };
+        ws.onclose = () => {
+            check(opened, { 'ws connected (status 101)': (v) => v === true });
+            check(null, {
+                'pings ≥ echoes (no echo loss)': () => pingsSent >= echoesReceived,
+            });
+            finish();
+        };
+        ws.onerror = () => {
+            ws.close();
+        };
     });
 }
