@@ -327,9 +327,44 @@ if [ "$PARSER" = "wsbench" ]; then
     # Custom Go client; require pre-built binary to keep this script
     # ecosystem-free at runtime (matches the rust-bench / go-bench /
     # swift-bench / zig-bench convention).
-    if [ ! -x "$SCRIPT" ]; then
-        echo "wsbench binary not built (cd benchmark/wsbench && go build)" >&2
-        exit 1
+    #
+    # The wsbench binary is .gitignore'd and platform-specific (Go output
+    # is Mach-O on macOS, ELF on Linux). When the repo is rsync'd from a
+    # development host to the bench host (e.g. macOS -> luna), the
+    # source-side Mach-O overwrites whatever was last built on the
+    # destination host and `./wsbench` aborts with `Exec format error`
+    # at the kernel exec stage. Historically this silently produced
+    # empty cells in the ws-fragment bench table because the failed exec
+    # message was captured as the bench "result" (and the parser found
+    # no rps number in it).
+    #
+    # Probe the binary with `--help` (Go `flag` exits 0): if the probe
+    # fails and the Go toolchain is on PATH, rebuild for the current
+    # platform automatically. Otherwise emit a clear message pointing
+    # at the rebuild command. `BENCH_WSBENCH_AUTOBUILD=false` opts out
+    # of the auto-rebuild (CI / read-only filesystems).
+    if [ ! -x "$SCRIPT" ] || ! "$SCRIPT" --help >/dev/null 2>&1; then
+        if [ ! -x "$SCRIPT" ]; then
+            echo "wsbench binary not built." >&2
+        else
+            echo "wsbench binary cannot execute on this host (likely cross-platform mismatch — Mach-O vs ELF from rsync transfer)." >&2
+        fi
+        if [ "${BENCH_WSBENCH_AUTOBUILD:-true}" = "true" ] && command -v go >/dev/null 2>&1; then
+            echo "Rebuilding wsbench for this platform with 'cd benchmark/wsbench && go build'..." >&2
+            # Remove the stale binary first; `go build` refuses to overwrite
+            # a non-object-file at the output path (covers the rsync-overwrite
+            # case where the existing file is e.g. Mach-O on a Linux host).
+            rm -f "$SCRIPT"
+            (cd benchmark/wsbench && go build) || { echo "wsbench rebuild failed" >&2; exit 1; }
+            # Re-probe after rebuild to confirm the binary now executes.
+            if ! "$SCRIPT" --help >/dev/null 2>&1; then
+                echo "wsbench rebuild produced a binary but the probe still failed. Inspect '$SCRIPT'." >&2
+                exit 1
+            fi
+        else
+            echo "Rebuild with: cd benchmark/wsbench && go build" >&2
+            exit 1
+        fi
     fi
 elif ! command -v k6 >/dev/null 2>&1; then
     echo "k6 not installed (see benchmark/k6/README.md)" >&2
