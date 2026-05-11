@@ -389,15 +389,16 @@ parse_k6_output() {
     case "$kind" in
         ws)
             # WebSocket bench: count echoed messages received/sec.
-            # Latency: prefer k6's built-in `ws_ping` Trend (Go-side ns
-            # precision, populated by `socket.ping()` in ws-echo.js)
-            # when present; ws-large.js doesn't ping (it's measuring
-            # large-message round-trip, not control-frame RTT) so the
-            # parser falls back to the JS-side `ws_msg_rtt_ms` Trend
-            # which is fine for >1 ms RTTs.
+            # Latency: the `k6/websockets` (stable) module does not auto-
+            # populate the legacy `ws_ping` Trend that `k6/ws` did, so
+            # all three WS scripts (`ws-echo.js` / `ws-large.js` /
+            # `ws-slow-consumer.js`) emit a JS-side `ws_msg_rtt_ms` Trend
+            # via `Date.now()` deltas. ms granularity is fine for >1 ms
+            # RTTs; for sub-millisecond control-frame RTT use `ws.ping()`
+            # in the script and read the engine-specific WS frame stats
+            # directly.
             rps_metric="ws_msgs_received"
-            duration_metric="ws_ping"
-            duration_metric_fallback="ws_msg_rtt_ms"
+            duration_metric="ws_msg_rtt_ms"
             ;;
         *)
             rps_metric="http_reqs"
