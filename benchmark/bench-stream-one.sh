@@ -42,6 +42,17 @@
 # Environment variables forwarded to k6 (script-specific defaults apply):
 #   BENCH_K6_VUS            k6 virtual users          (default: 50)
 #   BENCH_K6_DURATION       k6 bench duration         (default: 15s)
+#   BENCH_K6_TIMEOUT        max wall-clock for one k6 invocation (default: 90s).
+#                            Wraps each `k6 run` / `wsbench` invocation in
+#                            `timeout(1)` so a stuck client (e.g. k6/websockets
+#                            VU deadlocked on `ws.send`) cannot wedge the
+#                            bench-stream-all chain indefinitely. Default is
+#                            `K6_DURATION + ~75s buffer` to cover graceful-stop
+#                            (k6 default `gracefulStop=30s`) + VU startup
+#                            warmup. Timeouts mark the row as `TIMEOUT` and
+#                            store the raw output with a `[TIMEOUT exit=124]`
+#                            marker so the bench chain proceeds to the next
+#                            engine.
 #   BENCH_PAYLOAD_KB        upload.js payload size KB (default: 64)
 #   BENCH_UPLOAD_BYTES      upload.js payload size bytes (overrides
 #                            BENCH_PAYLOAD_KB if set; accepts MB-scale,
@@ -266,6 +277,28 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 READY_TIMEOUT=60
 K6_VUS=${BENCH_K6_VUS:-50}
 K6_DURATION=${BENCH_K6_DURATION:-15s}
+K6_TIMEOUT=${BENCH_K6_TIMEOUT:-90s}
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "warning: 'timeout' command not found; k6 invocation will not be wall-clock protected." >&2
+    echo "         install GNU coreutils ('brew install coreutils' on macOS) to enable BENCH_K6_TIMEOUT." >&2
+    TIMEOUT_BIN=""
+else
+    TIMEOUT_BIN="timeout"
+fi
+
+# Wrap a command in `timeout` if available. Used to bound `k6 run` and the
+# Go `wsbench` invocation so a stuck client (e.g. k6/websockets VU deadlocked
+# on `ws.send`) cannot wedge the bench-stream-all chain indefinitely. The
+# function is callable from inside `$(...)` subshells (bash inherits parent
+# function definitions). When TIMEOUT_BIN is empty the function falls
+# through to the bare command (no wall-clock protection).
+run_k6_with_timeout() {
+    if [ -n "$TIMEOUT_BIN" ]; then
+        "$TIMEOUT_BIN" "$K6_TIMEOUT" "$@"
+    else
+        "$@"
+    fi
+}
 SCHEME=${BENCH_SCHEME:-http}
 case "$SCHEME" in
     http)  WS_SCHEME=ws  ;;
@@ -492,6 +525,13 @@ for run in $(seq 1 "$RUNS"); do
     kill_port "$PORT"
     sleep 1
 
+    # Reset per-iteration state. INVALID is consulted by the post-parse
+    # block to short-circuit success-rate validation when a run times
+    # out; K6_EXIT carries the wall-clock timeout signal from the
+    # `timeout(1)` wrapper.
+    INVALID=false
+    K6_EXIT=0
+
     # See bench-one.sh for the rationale: setsid lets us kill the entire
     # process group so JVM helper threads / native forks don't leak.
     USED_SETSID=false
@@ -539,7 +579,7 @@ for run in $(seq 1 "$RUNS"); do
         # `<name>|<rps>|<p50>|<p99>` row, so no parsing needed —
         # capture stdout straight as the bench output.
         K6_OUT=$(
-            "$SCRIPT" \
+            run_k6_with_timeout "$SCRIPT" \
                 -name="$NAME" \
                 -scenario=fragment-recv \
                 -scheme="$WS_SCHEME" \
@@ -551,6 +591,11 @@ for run in $(seq 1 "$RUNS"); do
                 -fragments="${BENCH_WS_FRAG_COUNT:-4}" \
                 2>&1
         )
+        K6_EXIT=$?
+        if [ "$K6_EXIT" = "124" ]; then
+            K6_OUT="[TIMEOUT exit=124 after ${K6_TIMEOUT}]
+$K6_OUT"
+        fi
         printf '%s\n' "$K6_OUT" > "$RAW_FILE"
         # The wsbench output line is already in the right shape; pull
         # only the line starting with the engine name. Use NAME (not
@@ -587,16 +632,32 @@ for run in $(seq 1 "$RUNS"); do
             COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
             COMPRESSION_STRICT="${BENCH_COMPRESSION_STRICT:-true}" \
             COMPRESSION_UPLOAD_STRICT="${BENCH_COMPRESSION_UPLOAD_STRICT:-true}" \
-            k6 run --quiet --no-color \
+            run_k6_with_timeout k6 run --quiet --no-color \
                 --summary-trend-stats="avg,min,med,max,p(50),p(95),p(99)" \
                 "$SCRIPT" 2>&1
         )
+        K6_EXIT=$?
+        if [ "$K6_EXIT" = "124" ]; then
+            K6_OUT="[TIMEOUT exit=124 after ${K6_TIMEOUT}]
+$K6_OUT"
+        fi
         printf '%s\n' "$K6_OUT" > "$RAW_FILE"
         PARSED=$(parse_k6_output "$K6_OUT" "$PARSER")
     fi
     RPS=$(echo "$PARSED" | cut -d'|' -f1)
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)
+
+    # K45 fix: surface k6 wall-clock timeout as a distinct outcome. Without
+    # this the parsed RPS / p50 / p99 are all empty and the row looks like
+    # a silent "no data" line — operators couldn't tell hang from missing
+    # measurement.
+    if [ "$K6_EXIT" = "124" ]; then
+        INVALID=true
+        RPS=""
+        P50="TIMEOUT ${K6_TIMEOUT}"
+        P99="-"
+    fi
 
     # Validate success rate. k6's `http_reqs` / `ws_msgs_received` count
     # everything including failed responses, so a server that returns
@@ -606,8 +667,8 @@ for run in $(seq 1 "$RUNS"); do
     # silently dropped from the summary table.
     SUCCESS_RATE=$(extract_success_rate "$K6_OUT")
     THRESHOLD="${BENCH_K6_SUCCESS_THRESHOLD:-95}"
-    INVALID=false
-    if [ -n "$SUCCESS_RATE" ] && awk "BEGIN {exit !($SUCCESS_RATE < $THRESHOLD)}" 2>/dev/null; then
+    INVALID="${INVALID:-false}"
+    if [ "$INVALID" != true ] && [ -n "$SUCCESS_RATE" ] && awk "BEGIN {exit !($SUCCESS_RATE < $THRESHOLD)}" 2>/dev/null; then
         INVALID=true
         RPS=""
         P50="checks=${SUCCESS_RATE}%"
