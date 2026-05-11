@@ -19,9 +19,14 @@
 #   ws-fragment   GET  /ws-echo        (RFC 6455 fragmented-frame send + reassembly
 #                                       echo bench via the custom Go client at
 #                                       benchmark/wsbench/. k6 cannot construct
-#                                       fragmented frames, so this scenario
-#                                       requires the wsbench binary to exist —
-#                                       build with `cd benchmark/wsbench && go build`)
+#                                       fragmented frames, so this scenario uses
+#                                       a Go binary instead — built on demand
+#                                       when missing or cross-platform-broken
+#                                       if `go` is on PATH. Opt out of the
+#                                       auto-rebuild with
+#                                       BENCH_WSBENCH_AUTOBUILD=false and pre-
+#                                       build manually with
+#                                       `cd benchmark/wsbench && go build`)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS                    Number of runs; median is reported (default: 1)
@@ -72,6 +77,14 @@
 #   BENCH_COMPRESSION_TYPE  compression.js Accept-Encoding header value
 #                            (default: "gzip"; "br" / "deflate" / "identity"
 #                            also accepted; sent verbatim to the wire)
+#   BENCH_WSBENCH_AUTOBUILD   when "true" (default), the ws-fragment scenario
+#                              auto-rebuilds the `benchmark/wsbench/wsbench`
+#                              binary via `(cd benchmark/wsbench && go build)`
+#                              if the binary is missing or fails a `--help`
+#                              probe (e.g. Mach-O binary rsync'd onto a Linux
+#                              bench host). Set to "false" on CI / read-only
+#                              filesystems where you would rather fail than
+#                              rebuild.
 #   BENCH_COMPRESSION_ENABLE  when "true", append `--compression=true` to the
 #                              server start command so the engine emits a
 #                              compressed response. Off by default —
