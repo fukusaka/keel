@@ -50,9 +50,17 @@
 #                            `K6_DURATION + ~75s buffer` to cover graceful-stop
 #                            (k6 default `gracefulStop=30s`) + VU startup
 #                            warmup. Timeouts mark the row as `TIMEOUT` and
-#                            store the raw output with a `[TIMEOUT exit=124]`
+#                            store the raw output with a `[TIMEOUT exit=124|137]`
 #                            marker so the bench chain proceeds to the next
 #                            engine.
+#   BENCH_K6_KILL_AFTER     grace period between SIGTERM and SIGKILL when
+#                            BENCH_K6_TIMEOUT fires (default: 30s). k6/
+#                            websockets has been observed to ignore SIGTERM
+#                            when its VU goroutine is parked inside a Go
+#                            `net.Conn.Write` syscall — without this grace
+#                            escalation the `timeout` parent waits forever
+#                            for a non-responsive child. SIGKILL is uncatchable
+#                            and guarantees release.
 #   BENCH_PAYLOAD_KB        upload.js payload size KB (default: 64)
 #   BENCH_UPLOAD_BYTES      upload.js payload size bytes (overrides
 #                            BENCH_PAYLOAD_KB if set; accepts MB-scale,
@@ -278,6 +286,12 @@ READY_TIMEOUT=60
 K6_VUS=${BENCH_K6_VUS:-50}
 K6_DURATION=${BENCH_K6_DURATION:-15s}
 K6_TIMEOUT=${BENCH_K6_TIMEOUT:-90s}
+# Grace period between SIGTERM and SIGKILL. GNU `timeout` defaults to SIGTERM
+# only; if the child ignores SIGTERM (k6/websockets has been observed to
+# park inside a Go `net.Conn.Write` syscall that does not honour the
+# scheduler-level cancel) the parent `timeout` waits forever. `-k Ns`
+# escalates to SIGKILL after the grace, guaranteeing wall-clock release.
+K6_KILL_AFTER=${BENCH_K6_KILL_AFTER:-30s}
 if ! command -v timeout >/dev/null 2>&1; then
     echo "warning: 'timeout' command not found; k6 invocation will not be wall-clock protected." >&2
     echo "         install GNU coreutils ('brew install coreutils' on macOS) to enable BENCH_K6_TIMEOUT." >&2
@@ -292,9 +306,14 @@ fi
 # function is callable from inside `$(...)` subshells (bash inherits parent
 # function definitions). When TIMEOUT_BIN is empty the function falls
 # through to the bare command (no wall-clock protection).
+#
+# `-k ${K6_KILL_AFTER}`: SIGTERM at $K6_TIMEOUT, escalate to SIGKILL after
+# $K6_KILL_AFTER additional grace. Required because k6/websockets ignores
+# SIGTERM when stuck in a Go runtime syscall and would otherwise pin the
+# `timeout` parent indefinitely.
 run_k6_with_timeout() {
     if [ -n "$TIMEOUT_BIN" ]; then
-        "$TIMEOUT_BIN" "$K6_TIMEOUT" "$@"
+        "$TIMEOUT_BIN" -k "$K6_KILL_AFTER" "$K6_TIMEOUT" "$@"
     else
         "$@"
     fi
@@ -592,8 +611,11 @@ for run in $(seq 1 "$RUNS"); do
                 2>&1
         )
         K6_EXIT=$?
-        if [ "$K6_EXIT" = "124" ]; then
-            K6_OUT="[TIMEOUT exit=124 after ${K6_TIMEOUT}]
+        # 124 = SIGTERM-induced timeout exit (child responded to TERM).
+        # 137 = SIGKILL (128+9), used when the child ignored SIGTERM and
+        # `timeout -k` had to escalate. Both indicate wall-clock exhaustion.
+        if [ "$K6_EXIT" = "124" ] || [ "$K6_EXIT" = "137" ]; then
+            K6_OUT="[TIMEOUT exit=${K6_EXIT} after ${K6_TIMEOUT} (+${K6_KILL_AFTER} kill grace)]
 $K6_OUT"
         fi
         printf '%s\n' "$K6_OUT" > "$RAW_FILE"
@@ -637,8 +659,9 @@ $K6_OUT"
                 "$SCRIPT" 2>&1
         )
         K6_EXIT=$?
-        if [ "$K6_EXIT" = "124" ]; then
-            K6_OUT="[TIMEOUT exit=124 after ${K6_TIMEOUT}]
+        # See above for 124 vs 137 distinction.
+        if [ "$K6_EXIT" = "124" ] || [ "$K6_EXIT" = "137" ]; then
+            K6_OUT="[TIMEOUT exit=${K6_EXIT} after ${K6_TIMEOUT} (+${K6_KILL_AFTER} kill grace)]
 $K6_OUT"
         fi
         printf '%s\n' "$K6_OUT" > "$RAW_FILE"
@@ -652,10 +675,17 @@ $K6_OUT"
     # this the parsed RPS / p50 / p99 are all empty and the row looks like
     # a silent "no data" line — operators couldn't tell hang from missing
     # measurement.
-    if [ "$K6_EXIT" = "124" ]; then
+    if [ "$K6_EXIT" = "124" ] || [ "$K6_EXIT" = "137" ]; then
         INVALID=true
         RPS=""
-        P50="TIMEOUT ${K6_TIMEOUT}"
+        if [ "$K6_EXIT" = "137" ]; then
+            # SIGKILL escalation — child ignored SIGTERM; surface this as
+            # KILLED in the row so the operator sees that the friendly
+            # shutdown path was bypassed.
+            P50="KILLED ${K6_TIMEOUT}"
+        else
+            P50="TIMEOUT ${K6_TIMEOUT}"
+        fi
         P99="-"
     fi
 
