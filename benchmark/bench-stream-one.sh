@@ -385,7 +385,7 @@ extract_metric_pct() {
 parse_k6_output() {
     local out="$1"
     local kind="$2"
-    local rps_metric duration_metric duration_metric_fallback=""
+    local rps_metric duration_metric
     case "$kind" in
         ws)
             # WebSocket bench: count echoed messages received/sec.
@@ -411,10 +411,6 @@ parse_k6_output() {
     }')
     p50=$(extract_metric_pct "$out" "$duration_metric" "50")
     p99=$(extract_metric_pct "$out" "$duration_metric" "99")
-    if [ -z "$p50" ] && [ -n "$duration_metric_fallback" ]; then
-        p50=$(extract_metric_pct "$out" "$duration_metric_fallback" "50")
-        p99=$(extract_metric_pct "$out" "$duration_metric_fallback" "99")
-    fi
     printf '%s|%s|%s\n' "$rps" "$p50" "$p99"
 }
 
