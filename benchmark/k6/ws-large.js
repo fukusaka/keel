@@ -1,4 +1,4 @@
-// ws-large.js — WebSocket large-message round-trip bench
+// ws-large.js — WebSocket large-message round-trip bench (k6/websockets stable)
 //
 // Each VU opens one WebSocket connection and round-trips a single binary
 // message of `WS_LARGE_BYTES` bytes (default 1 MB). The server is
@@ -16,6 +16,15 @@
 //   WebSocket frames) and the bench picks up backpressure handling +
 //   send loop correctness.
 //
+// Migrated to `k6/websockets` (k6 >= v1.0). The legacy `k6/ws` module's
+// `socket.sendBinary(1 MB)` blocked the JS event loop for 5+ minutes
+// when the server closed the connection partway through (e.g.
+// zig-bench's `readSmallMessage` MessageOversize 1003 close). The
+// `k6/websockets` `ws.send` is async so `onclose` / iteration end fire
+// immediately on partial-write-to-closed-socket and the bench pipeline
+// stays forward-progressing — verified A/B against zig-bench (clean 5 s
+// run, `rc=0`) and ktor-cio JVM (steady-state 1 MB echo round trip).
+//
 // Required env:
 //   HOST       target host
 //   PORT       target port
@@ -24,7 +33,7 @@
 //   VUS            concurrent connections (default: 4)
 //   DURATION       bench duration (default: 15s)
 
-import ws from 'k6/ws';
+import { WebSocket } from 'k6/websockets';
 import { check } from 'k6';
 import { Trend } from 'k6/metrics';
 
@@ -39,8 +48,7 @@ const PAYLOAD = (() => {
 
 // JS-side per-message RTT (ms precision) — large messages typically push
 // each round trip well over 1 ms even on loopback so ms granularity is
-// usable here, unlike the small-frame ws-echo where we fall back to
-// `ws_ping`. Throughput is the primary signal.
+// usable here. Throughput is the primary signal.
 const rttMs = new Trend('ws_msg_rtt_ms', true);
 
 export const options = {
@@ -51,22 +59,44 @@ export const options = {
 };
 
 export default function () {
-    const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
-    const expectedLen = WS_LARGE_BYTES;
-    const res = ws.connect(url, {}, function (socket) {
+    return new Promise((resolve) => {
+        const url = `${__ENV.WS_SCHEME || 'ws'}://${__ENV.HOST}:${__ENV.PORT}/ws-echo`;
+        const expectedLen = WS_LARGE_BYTES;
+        const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+
         let sendTs = 0;
+        let opened = false;
+        let resolved = false;
+        const finish = () => {
+            if (!resolved) {
+                resolved = true;
+                resolve();
+            }
+        };
+
         const sendOne = () => {
             sendTs = Date.now();
-            socket.sendBinary(PAYLOAD);
+            ws.send(PAYLOAD);
         };
-        socket.on('open', sendOne);
-        socket.on('binaryMessage', (msg) => {
+
+        ws.onopen = () => {
+            opened = true;
+            sendOne();
+        };
+        ws.onmessage = (event) => {
             rttMs.add(Date.now() - sendTs);
-            const len = msg.byteLength || 0;
+            const data = event.data;
+            const len = data && data.byteLength ? data.byteLength : (data ? data.length : 0);
             check(len, { 'echo size correct': (n) => n === expectedLen });
             sendOne();
-        });
-        socket.on('error', () => socket.close());
+        };
+        ws.onclose = () => {
+            check(opened, { 'status 101': (v) => v === true });
+            finish();
+        };
+        ws.onerror = () => {
+            ws.close();
+        };
     });
-    check(res, { 'status 101': (r) => r && r.status === 101 });
 }
