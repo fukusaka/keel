@@ -373,22 +373,26 @@ internal class KqueueEventLoop(
         // [eventLoopThread] — in that window, submit inline too, otherwise
         // the dispatched task would never be drained.
         if (eventLoopThread == null || inEventLoop()) {
-            submitAddFilter(fd, interest, newReg, cont)
+            submitAddFilter(fd, interest, key, newReg, cont)
         } else {
-            dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, newReg, cont) })
+            dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, key, newReg, cont) })
         }
         return newReg
     }
 
     /**
      * EventLoop-thread submission of EV_ADD for [fd]. Resumes [cont] with
-     * an exception on failure (after removing [reg] from the chain).
+     * an exception on failure (after removing [reg] from the chain at [key]).
+     *
+     * [key] is computed by the caller (`register()`) so the error path
+     * does not recompute `registrationKey(fd, interest)`.
      *
      * @param reg The Registration to remove on submit failure.
      */
     private fun submitAddFilter(
         fd: Int,
         interest: Interest,
+        key: Long,
         reg: Registration,
         cont: CancellableContinuation<Unit>,
     ) {
@@ -398,7 +402,6 @@ internal class KqueueEventLoop(
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            val key = registrationKey(fd, interest)
             withRegLock { removeRegistration(key, reg) }
             cont.resumeWithException(
                 IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
