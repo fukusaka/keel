@@ -183,18 +183,21 @@ class KqueueEventLoopSeamTest {
         assertTrue(errors.first().contains("kevent()"))
     }
 
-    // --- dispatchReady stale-filter removal tests (K22/K33 regression) ---
+    // --- dispatchReady stale-filter removal tests (K22/K33/K50 regression) ---
     //
-    // kqueue uses persistent EV_ADD filters: EVFILT_WRITE fires on every kevent()
-    // call while the fd is writable. Without EV_DELETE after a completed flush,
-    // the EventLoop spins in a busy loop — saturating the EventLoop thread and
-    // starving accept() / reads under load (same root cause as epoll K22 / PR #447).
+    // K50 fix (Erlang/OTP pattern): kqueue filters are armed with
+    // EV_ADD | EV_ENABLE | EV_DISPATCH. The kernel atomically auto-disables
+    // the filter on each fire, so the engine does NOT call EV_DELETE in
+    // dispatchReady. Without auto-disable, persistent EV_ADD filters cause
+    // a busy loop (same root cause as epoll K22 / PR #447); with EV_DISPATCH
+    // the kernel handles it. Skipping the engine-side EV_DELETE closes the
+    // K50 race against a concurrent armRead's EV_ADD on a different thread.
     //
     // Drive `loop()` directly on the test thread. Each test scripts exactly one
     // EVFILT_WRITE event followed by a fatal EBADF to terminate the loop.
 
     @Test
-    fun `WRITE callback that does not re-register causes deleteWriteFilter`() {
+    fun `WRITE callback that does not re-register skips deleteWriteFilter — kernel auto-disabled`() {
         val fake = FakeKqueueSyscallOps().apply {
             scriptKqueueCreateFd(fd = 1000)
             scriptMakePipeFds(readFd = 1001, writeFd = 1002)
@@ -208,9 +211,12 @@ class KqueueEventLoopSeamTest {
             override fun onReady(interest: KqueueEventLoop.Interest) { /* no-op */ }
         })
         el.loop()
-        assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called when callback does not re-register")
-        assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
-        assertEquals(5000, fake.deleteFilterCalls[0].fd)
+        // Erlang/OTP pattern: kernel auto-disabled the filter via EV_DISPATCH;
+        // engine does NOT issue EV_DELETE (avoids K50 race with concurrent EV_ADD).
+        assertTrue(
+            fake.deleteFilterCalls.isEmpty(),
+            "deleteWriteFilter must NOT be called — kernel auto-disabled via EV_DISPATCH",
+        )
     }
 
     @Test
@@ -237,7 +243,7 @@ class KqueueEventLoopSeamTest {
     }
 
     @Test
-    fun `stale EVFILT_WRITE with no handler emits WARN and calls deleteWriteFilter`() {
+    fun `stale EVFILT_WRITE with no handler emits WARN — kernel auto-disabled`() {
         val warns = mutableListOf<String>()
         val fake = FakeKqueueSyscallOps().apply {
             scriptKqueueCreateFd(fd = 1000)
@@ -247,11 +253,15 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.WARN, warns), syscallOps = fake)
         el.loop()
-        assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called for stale interest")
-        assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
-        assertEquals(5000, fake.deleteFilterCalls[0].fd)
+        // Erlang/OTP pattern: kernel auto-disabled the stale filter via EV_DISPATCH;
+        // engine logs the invariant violation but does NOT issue EV_DELETE
+        // (avoids K50 race against a concurrent EV_ADD on the same fd).
+        assertTrue(
+            fake.deleteFilterCalls.isEmpty(),
+            "deleteWriteFilter must NOT be called — kernel auto-disabled via EV_DISPATCH",
+        )
         assertEquals(1, warns.size, "stale interest must produce exactly one WARN log")
-        assertTrue(warns.first().contains("stale"), "WARN must mention 'stale'")
+        assertTrue(warns.first().contains("no handler"), "WARN must mention 'no handler'")
     }
 
     /**

@@ -13,6 +13,9 @@ import kotlinx.cinterop.usePinned
 import kqueue.keel_ev_set
 import platform.darwin.EV_ADD
 import platform.darwin.EV_DELETE
+import platform.darwin.EV_DISABLE
+import platform.darwin.EV_DISPATCH
+import platform.darwin.EV_ENABLE
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.kevent
@@ -61,16 +64,30 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
     }
 
     override fun addReadFilter(kqFd: Int, fd: Int): Int =
-        submitEventAdd(kqFd, fd, EVFILT_READ)
+        // EV_ENABLE forces re-evaluation of the filter condition. Without it, an
+        // EV_ADD on a filter that was previously auto-disabled by EV_DISPATCH
+        // does NOT re-fire for data already pending in rcvbuf — empirically
+        // observed on Darwin (macOS 14, K50 debug trace).
+        submitEv(kqFd, fd, EVFILT_READ, EV_ADD or EV_ENABLE or EV_DISPATCH)
+
+    override fun addReadFilterPersistent(kqFd: Int, fd: Int): Int =
+        submitEv(kqFd, fd, EVFILT_READ, EV_ADD)
+
+    override fun disableReadFilter(kqFd: Int, fd: Int): Int =
+        submitEv(kqFd, fd, EVFILT_READ, EV_ADD or EV_DISPATCH or EV_DISABLE)
 
     override fun addWriteFilter(kqFd: Int, fd: Int): Int =
-        submitEventAdd(kqFd, fd, EVFILT_WRITE)
+        // See addReadFilter — EV_ENABLE required for re-arm after EV_DISPATCH.
+        submitEv(kqFd, fd, EVFILT_WRITE, EV_ADD or EV_ENABLE or EV_DISPATCH)
+
+    override fun disableWriteFilter(kqFd: Int, fd: Int): Int =
+        submitEv(kqFd, fd, EVFILT_WRITE, EV_ADD or EV_DISPATCH or EV_DISABLE)
 
     override fun deleteReadFilter(kqFd: Int, fd: Int): Int =
-        submitEventDelete(kqFd, fd, EVFILT_READ)
+        submitEv(kqFd, fd, EVFILT_READ, EV_DELETE)
 
     override fun deleteWriteFilter(kqFd: Int, fd: Int): Int =
-        submitEventDelete(kqFd, fd, EVFILT_WRITE)
+        submitEv(kqFd, fd, EVFILT_WRITE, EV_DELETE)
 
     override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int {
         memScoped {
@@ -118,24 +135,18 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         }
     }
 
-    private fun submitEventAdd(kqFd: Int, fd: Int, filter: Int): Int {
+    /**
+     * Unified kevent submission for arm / persistent / disable / unregister,
+     * parameterised by [flags]. Matches Erlang/OTP's `erl_poll.c` pattern
+     * where a single `kevent` submission path covers all filter state
+     * transitions via flag composition.
+     */
+    private fun submitEv(kqFd: Int, fd: Int, filter: Int, flags: Int): Int {
         memScoped {
             val ev = alloc<kevent>()
             keel_ev_set(
                 ev.ptr, fd.convert(), filter.convert(),
-                EV_ADD.convert(), 0u, 0, null,
-            )
-            val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
-            return if (rc < 0) errno else 0
-        }
-    }
-
-    private fun submitEventDelete(kqFd: Int, fd: Int, filter: Int): Int {
-        memScoped {
-            val ev = alloc<kevent>()
-            keel_ev_set(
-                ev.ptr, fd.convert(), filter.convert(),
-                EV_DELETE.convert(), 0u, 0, null,
+                flags.convert(), 0u, 0, null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
             return if (rc < 0) errno else 0

@@ -55,20 +55,53 @@ internal interface KqueueSyscallOps {
     fun setNonBlocking(fd: Int)
 
     /**
-     * Registers [fd] with [kqFd] for read-readiness (`EV_ADD` +
-     * `EVFILT_READ`). Re-registering the same fd is idempotent.
+     * Registers [fd] with [kqFd] for read-readiness using the Erlang/OTP
+     * `EV_ADD | EV_DISPATCH` pattern (`erts/emulator/sys/common/erl_poll.c`
+     * concurrent build, Darwin/FreeBSD path). The kernel auto-disables
+     * the filter atomically with each dispatch — re-arm by calling
+     * [addReadFilter] again. Use for connection sockets and server accept
+     * fds. For long-lived persistent filters (engine wakeup pipe) use
+     * [addReadFilterPersistent] instead.
      *
      * @return `0` on success; positive errno on failure.
      */
     fun addReadFilter(kqFd: Int, fd: Int): Int
 
     /**
-     * Registers [fd] with [kqFd] for write-readiness (`EV_ADD` +
-     * `EVFILT_WRITE`).
+     * Registers [fd] with [kqFd] for read-readiness in **level-triggered
+     * persistent** mode (`EV_ADD` only, no `EV_DISPATCH`). Used for the
+     * EventLoop wakeup pipe which must remain armed across all wakeups.
+     *
+     * @return `0` on success; positive errno on failure.
+     */
+    fun addReadFilterPersistent(kqFd: Int, fd: Int): Int
+
+    /**
+     * Disables [fd]'s read filter on [kqFd]
+     * (`EV_ADD | EV_DISPATCH | EV_DISABLE`) without removing the
+     * registration. Used for back-pressure (`readEnabled = false`) so
+     * the kernel retains data in the recv buffer (back-pressuring the
+     * peer) without the filter being deleted.
+     *
+     * @return `0` on success; positive errno on failure.
+     */
+    fun disableReadFilter(kqFd: Int, fd: Int): Int
+
+    /**
+     * Registers [fd] with [kqFd] for write-readiness using
+     * `EV_ADD | EV_DISPATCH`. See [addReadFilter] for the rationale.
      *
      * @return `0` on success; positive errno on failure.
      */
     fun addWriteFilter(kqFd: Int, fd: Int): Int
+
+    /**
+     * Disables [fd]'s write filter
+     * (`EV_ADD | EV_DISPATCH | EV_DISABLE`). See [disableReadFilter].
+     *
+     * @return `0` on success; positive errno on failure.
+     */
+    fun disableWriteFilter(kqFd: Int, fd: Int): Int
 
     /**
      * Removes [fd]'s read filter from [kqFd] (`EV_DELETE` + `EVFILT_READ`).

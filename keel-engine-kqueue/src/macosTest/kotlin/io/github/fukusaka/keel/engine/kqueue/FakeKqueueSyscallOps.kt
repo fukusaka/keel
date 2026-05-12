@@ -90,9 +90,27 @@ internal class FakeKqueueSyscallOps(
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
     }
 
+    override fun addReadFilterPersistent(kqFd: Int, fd: Int): Int {
+        // Fakes do not distinguish persistent vs dispatch flags; both add READ.
+        addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.READ))
+        return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
+    }
+
+    override fun disableReadFilter(kqFd: Int, fd: Int): Int {
+        // Treat disable as a deregistration variant for accounting purposes;
+        // tests that care about the ENABLE/DISABLE distinction can subclass.
+        deleteFilterCalls.add(DeleteFilterCall(kqFd, fd, FilterKind.READ))
+        return if (deleteFilterResults.isEmpty()) 0 else deleteFilterResults.removeFirst()
+    }
+
     override fun addWriteFilter(kqFd: Int, fd: Int): Int {
         addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.WRITE))
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
+    }
+
+    override fun disableWriteFilter(kqFd: Int, fd: Int): Int {
+        deleteFilterCalls.add(DeleteFilterCall(kqFd, fd, FilterKind.WRITE))
+        return if (deleteFilterResults.isEmpty()) 0 else deleteFilterResults.removeFirst()
     }
 
     val deleteFilterCalls: MutableList<DeleteFilterCall> = mutableListOf()

@@ -245,7 +245,11 @@ internal class KqueueEventLoop(
         syscallOps.setNonBlocking(wakeupFds[0])
         syscallOps.setNonBlocking(wakeupFds[1])
 
-        val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
+        // K50 fix (Erlang/OTP pattern): wakeup pipe must remain level-
+        // triggered so subsequent cross-thread dispatch() calls keep
+        // firing the EventLoop. Under EV_DISPATCH the filter would
+        // auto-disable after the first wakeup and the loop would deadlock.
+        val kevErr = syscallOps.addReadFilterPersistent(kqFd, wakeupFds[0])
         if (kevErr != 0) {
             closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
             closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
@@ -646,44 +650,55 @@ internal class KqueueEventLoop(
             cb.onReady(interest)
             if (eofFlag) {
                 cb.onPeerClosed(interest)
-                // EOF path always removes the filter; the listener cannot
-                // re-register meaningfully (the connection is ending).
-                removeInterestFromKqueue(fd, interest)
-            } else {
-                // Existing stale-filter cleanup path (PR #449): if the callback
-                // did not re-register during onReady (e.g., a WRITE callback
-                // after a successful flush that does not re-arm), remove the
-                // kqueue filter to prevent a stale level-triggered busy loop.
-                // READ callbacks always re-arm via armRead() in the normal flow.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
-                if (!reRegistered) {
-                    removeInterestFromKqueue(fd, interest)
-                }
+                // EOF path: the listener cannot re-register meaningfully (the
+                // connection is ending). K50 fix (Erlang/OTP pattern): the
+                // kernel auto-disabled the filter atomically with the
+                // dispatch, so no explicit EV_DELETE is needed for busy-
+                // loop prevention. close(fd) on connection teardown will
+                // also auto-remove any remaining filter state. Not issuing
+                // EV_DELETE here closes the K50 race against a concurrent
+                // armRead's EV_ADD on a different thread.
             }
+            // Non-EOF: EV_DISPATCH already auto-disabled the filter at fire
+            // time (atomic with the dispatch). If the listener re-armed
+            // (via armRead → registerCallback → EV_ADD), the filter is
+            // re-enabled. If it did not re-arm (back-pressure or end of
+            // operation), the filter stays disabled until the user code
+            // re-arms it. No stale-filter cleanup or busy-loop possible.
         } else {
-            // Suspend path: pop one waiter from the FIFO chain. If siblings remain
-            // (concurrent `accept()` callers waiting on the same serverFd), keep the
-            // filter armed so the next kevent() cycle cascade-fires the next sibling.
-            // Only when the chain becomes empty do we disarm to avoid busy-loop
-            // re-fire while the resumed continuation finishes its async I/O.
-            val pair: Pair<Registration?, Boolean> = withRegLock {
-                val popped = popHeadRegistration(key)
-                popped to (registrations[key] != null)
+            // Suspend path: pop one waiter from the FIFO chain. With
+            // EV_DISPATCH the filter auto-disables atomically with fire,
+            // so we MUST explicitly re-arm via EV_ADD when sibling waiters
+            // remain (e.g. multiple concurrent accept callers on the same
+            // serverFd) so the next kevent() cycle can dispatch the next
+            // sibling. When the chain becomes empty, leave the filter
+            // disabled (the kernel did this for us) — the next register()
+            // call from the resumed continuation will re-arm.
+            var poppedReg: Registration? = null
+            var hasSiblings = false
+            withRegLock {
+                poppedReg = popHeadRegistration(key)
+                hasSiblings = registrations[key] != null
             }
-            val popped = pair.first
+            val popped = poppedReg
             if (popped != null) {
-                if (!pair.second) {
-                    removeInterestFromKqueue(fd, interest)
+                if (hasSiblings) {
+                    val err = when (interest) {
+                        Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+                        Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
+                    }
+                    if (err != 0) {
+                        logger.debug {
+                            "kevent(EV_ADD re-arm for sibling, fd=$fd, ${interest.name}) failed: ${errnoMessage(err)}"
+                        }
+                    }
                 }
                 popped.continuation.resume(Unit)
             } else {
-                // No handler (no callback, no suspend waiter). The kqueue filter is
-                // stale: armed without a corresponding handler, or not removed when
-                // the last handler deregistered. The persistent EV_ADD filter re-fires
-                // every kevent() call for as long as the fd is ready — a busy loop.
-                // Remove it now and log a WARN so the invariant violation is visible.
-                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale kqueue filter" }
-                removeInterestFromKqueue(fd, interest)
+                // No handler at all — log so the invariant violation is
+                // visible. Filter is auto-disabled by EV_DISPATCH; no
+                // explicit EV_DELETE needed.
+                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} (filter auto-disabled by EV_DISPATCH)" }
             }
         }
     }
