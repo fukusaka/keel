@@ -355,15 +355,19 @@ internal class KqueueEventLoop(
         val key = registrationKey(fd, interest)
         val newReg = Registration(fd, interest, cont)
 
-        // Append BEFORE arming the kqueue filter to close the race window
-        // where kevent fires before the map entry exists. The event loop
-        // checks the map under the same lock, so the head Registration is
-        // always found.
-        withRegLock { appendRegistration(key, newReg) }
-
-        val kevErr = when (interest) {
-            Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
-            Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
+        // K50 fix (Option A — submission mutex): hold regMutex across both the
+        // map append AND the kevent submission so the entire sequence is
+        // atomic against a concurrent dispatchReady's stale-filter EV_DELETE
+        // on the same fd. Without this, the kernel could reorder EV_ADD vs
+        // EV_DELETE, leaving a registered listener whose filter has been
+        // deleted — events would silently drop. The lock is released before
+        // wakeup() to keep the wakeup write off the hot path of other waiters.
+        val kevErr = withRegLock {
+            appendRegistration(key, newReg)
+            when (interest) {
+                Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+                Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
+            }
         }
         if (kevErr != 0) {
             // kevent(EV_ADD) failed — remove the just-appended entry and fail
@@ -491,14 +495,16 @@ internal class KqueueEventLoop(
     fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
         val key = registrationKey(fd, interest)
 
-        // Register callback BEFORE adding to kqueue (same rationale as register()).
-        withRegLock {
+        // K50 fix (Option A — submission mutex): hold regMutex across the
+        // map insert AND the kevent submission so the (insert + submit) pair
+        // is atomic against a concurrent dispatchReady's stale-filter
+        // EV_DELETE on the same fd. See [register] for the full rationale.
+        val kevErr = withRegLock {
             callbackRegistrations[key] = listener
-        }
-
-        val kevErr = when (interest) {
-            Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
-            Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
+            when (interest) {
+                Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+                Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
+            }
         }
         if (kevErr != 0) {
             // kevent(EV_ADD) failed — remove the stale callback entry. There is
@@ -647,17 +653,29 @@ internal class KqueueEventLoop(
             if (eofFlag) {
                 cb.onPeerClosed(interest)
                 // EOF path always removes the filter; the listener cannot
-                // re-register meaningfully (the connection is ending).
-                removeInterestFromKqueue(fd, interest)
+                // re-register meaningfully (the connection is ending). K50
+                // fix (Option A): the (check + delete) pair is held under
+                // regMutex so a concurrent registerCallback's (insert + add)
+                // sequence cannot interleave between our re-check and our
+                // delete-submit. See block comment in [register].
+                withRegLock {
+                    if (callbackRegistrations[key] == null) {
+                        removeInterestFromKqueue(fd, interest)
+                    }
+                }
             } else {
                 // Existing stale-filter cleanup path (PR #449): if the callback
                 // did not re-register during onReady (e.g., a WRITE callback
                 // after a successful flush that does not re-arm), remove the
                 // kqueue filter to prevent a stale level-triggered busy loop.
                 // READ callbacks always re-arm via armRead() in the normal flow.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
-                if (!reRegistered) {
-                    removeInterestFromKqueue(fd, interest)
+                // K50 fix (Option A): hold regMutex across re-check + delete
+                // so a concurrent registerCallback (insert + add) cannot
+                // interleave between our re-check and the EV_DELETE submit.
+                withRegLock {
+                    if (callbackRegistrations[key] == null) {
+                        removeInterestFromKqueue(fd, interest)
+                    }
                 }
             }
         } else {
@@ -666,15 +684,18 @@ internal class KqueueEventLoop(
             // filter armed so the next kevent() cycle cascade-fires the next sibling.
             // Only when the chain becomes empty do we disarm to avoid busy-loop
             // re-fire while the resumed continuation finishes its async I/O.
-            val pair: Pair<Registration?, Boolean> = withRegLock {
-                val popped = popHeadRegistration(key)
-                popped to (registrations[key] != null)
-            }
-            val popped = pair.first
-            if (popped != null) {
-                if (!pair.second) {
+            // K50 fix (Option A): the (pop + decide + delete) sequence is
+            // atomic against a concurrent register's (append + add) on the
+            // same fd because both run under regMutex.
+            var poppedReg: Registration? = null
+            withRegLock {
+                poppedReg = popHeadRegistration(key)
+                if (poppedReg != null && registrations[key] == null) {
                     removeInterestFromKqueue(fd, interest)
                 }
+            }
+            val popped = poppedReg
+            if (popped != null) {
                 popped.continuation.resume(Unit)
             } else {
                 // No handler (no callback, no suspend waiter). The kqueue filter is
@@ -682,8 +703,16 @@ internal class KqueueEventLoop(
                 // the last handler deregistered. The persistent EV_ADD filter re-fires
                 // every kevent() call for as long as the fd is ready — a busy loop.
                 // Remove it now and log a WARN so the invariant violation is visible.
+                // K50 fix (Option A): the EV_DELETE is also held under regMutex
+                // so a concurrent register's (append + add) cannot race with us.
                 logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale kqueue filter" }
-                removeInterestFromKqueue(fd, interest)
+                withRegLock {
+                    // Re-check inside the lock: a concurrent register may have
+                    // appended after we last checked. If so, leave the filter armed.
+                    if (registrations[key] == null && callbackRegistrations[key] == null) {
+                        removeInterestFromKqueue(fd, interest)
+                    }
+                }
             }
         }
     }
