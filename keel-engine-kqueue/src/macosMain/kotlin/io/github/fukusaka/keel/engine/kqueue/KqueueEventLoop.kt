@@ -40,6 +40,7 @@ import platform.posix.pthread_t
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -361,25 +362,48 @@ internal class KqueueEventLoop(
         // always found.
         withRegLock { appendRegistration(key, newReg) }
 
+        // K50 fix (Option D — EventLoop-funneled submission): only the
+        // EventLoop thread issues kevent submissions, so a concurrent
+        // dispatchReady's stale-filter EV_DELETE cannot race against an
+        // EV_ADD from another thread. Matches Netty / libuv's "I/O ops on
+        // the I/O thread" model. When register() is called from the
+        // EventLoop thread itself (e.g., a chained suspend register from
+        // within onReady), submit inline to keep the fast path lock-free.
+        // Engine init / seam-driven tests run before [start] sets
+        // [eventLoopThread] — in that window, submit inline too, otherwise
+        // the dispatched task would never be drained.
+        if (eventLoopThread == null || inEventLoop()) {
+            submitAddFilter(fd, interest, newReg, cont)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, newReg, cont) })
+        }
+        return newReg
+    }
+
+    /**
+     * EventLoop-thread submission of EV_ADD for [fd]. Resumes [cont] with
+     * an exception on failure (after removing [reg] from the chain).
+     *
+     * @param reg The Registration to remove on submit failure.
+     */
+    private fun submitAddFilter(
+        fd: Int,
+        interest: Interest,
+        reg: Registration,
+        cont: CancellableContinuation<Unit>,
+    ) {
+        assertInEventLoop("KqueueEventLoop.submitAddFilter")
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            // kevent(EV_ADD) failed — remove the just-appended entry and fail
-            // the caller's suspend. Without this, the continuation would never
-            // resume (the registration exists but the filter is not armed).
-            // TODO(v1.0 前): proper engine-level exception type. IllegalStateException
-            // is a placeholder; the design for a PosixException / EventLoopException
-            // hierarchy is deferred to a separate task.
-            withRegLock { removeRegistration(key, newReg) }
+            val key = registrationKey(fd, interest)
+            withRegLock { removeRegistration(key, reg) }
             cont.resumeWithException(
                 IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
             )
-            return newReg
         }
-        wakeup()
-        return newReg
     }
 
     /**
@@ -496,22 +520,34 @@ internal class KqueueEventLoop(
             callbackRegistrations[key] = listener
         }
 
+        // K50 fix (Option D — EventLoop-funneled submission). See [register]
+        // for the rationale.
+        if (eventLoopThread == null || inEventLoop()) {
+            submitAddCallbackFilter(fd, interest, key)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { submitAddCallbackFilter(fd, interest, key) })
+        }
+    }
+
+    /**
+     * EventLoop-thread submission of EV_ADD for a callback registration.
+     * Removes the callback entry on submit failure (no continuation to
+     * resume — the caller must observe the missing event via a higher-
+     * level timeout).
+     */
+    private fun submitAddCallbackFilter(fd: Int, interest: Interest, key: Long) {
+        assertInEventLoop("KqueueEventLoop.submitAddCallbackFilter")
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            // kevent(EV_ADD) failed — remove the stale callback entry. There is
-            // no continuation to resume here, so the error is logged and the
-            // caller must handle the missing readiness notification.
             withRegLock { callbackRegistrations.remove(key) }
             logger.error {
                 "kevent(EV_ADD, fd=$fd, ${interest.name}) for callback failed: " +
                     "${errnoMessage(kevErr)} — readiness callback will not fire"
             }
-            return
         }
-        wakeup()
     }
 
     /**
