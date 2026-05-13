@@ -37,6 +37,22 @@ import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
  * is bridged to keel's pull model (suspend read) via [SuspendBridgeHandler]
  * in [NodePipelinedChannel]. See [NodePipelinedChannel] KDoc for details.
  *
+ * **I/O ownership invariant**: the Node.js process runs a single
+ * libuv-driven event loop on a single JavaScript thread. Every
+ * `socket.on(...)` callback, `socket.write` continuation, and coroutine
+ * resumption (via `Dispatchers.Unconfined`, which inherits the libuv
+ * thread context) runs on that single thread in FIFO order. This
+ * matches the "strict single-thread per loop + cross-thread funnel"
+ * contract that the POSIX engines (`engine-kqueue` / `engine-epoll` /
+ * `engine-nio`) enforce explicitly via
+ * `if (inEventLoop()) apply else dispatch(Runnable)`, but the
+ * enforcement is upstream-delegated: V8 + libuv guarantee the
+ * single-thread semantics at the runtime level, so this engine does
+ * not need an application-level funnel — and the JS platform exposes
+ * no thread-identity primitive against which we could write a runtime
+ * assertion in the first place. See `IoEngine` KDoc for the
+ * cross-engine contract.
+ *
  * ```
  * NodeEngine (Node.js net module)
  *   |

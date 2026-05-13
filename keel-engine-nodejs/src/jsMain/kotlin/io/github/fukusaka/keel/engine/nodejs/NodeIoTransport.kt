@@ -26,8 +26,19 @@ import kotlinx.coroutines.Dispatchers
  * byte range. [flush] copies data to a Node.js Buffer, sends it
  * via `socket.write()`, and releases the retained buffer.
  *
- * **Thread model**: JS is single-threaded (Node.js event loop).
- * All state fields are accessed from the same thread — no locking required.
+ * **I/O ownership invariant**: JS is single-threaded; every
+ * `socket.on(...)` callback, `socket.write` continuation, and
+ * coroutine resumption runs on the single Node.js event-loop thread
+ * in FIFO order. This matches the "strict single-thread per loop +
+ * cross-thread funnel" contract that the POSIX engines enforce
+ * explicitly via `if (inEventLoop()) apply else dispatch(Runnable)`,
+ * but the enforcement is upstream-delegated (V8 + libuv). All state
+ * fields are accessed from that single thread — no locking required,
+ * no funnel needed. JS exposes no thread-identity primitive, so
+ * unlike the POSIX engines there is no runtime `assertInEventLoop`
+ * analog; the invariant is documented and structurally enforced
+ * rather than runtime-checked. See `NodeEngine` / `IoEngine` KDoc for
+ * the cross-engine contract.
  */
 internal class NodeIoTransport(
     private val socket: Socket,

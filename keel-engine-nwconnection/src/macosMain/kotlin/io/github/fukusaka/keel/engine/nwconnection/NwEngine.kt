@@ -72,6 +72,20 @@ import kotlin.coroutines.CoroutineContext
  * No thread blocking occurs — all I/O operations suspend via
  * [suspendCancellableCoroutine] and are resumed by dispatch queue callbacks.
  *
+ * **I/O ownership invariant**: each NWConnection owns a per-connection
+ * serial dispatch queue. All read / write / state-change callbacks plus
+ * every coroutine resumption that uses `NwIoTransport.ioDispatcher` are
+ * serialised on that queue in FIFO order. This matches the "strict
+ * single-thread per loop + cross-thread funnel" contract of the POSIX
+ * engines (`engine-kqueue` / `engine-epoll` / `engine-nio`) but the
+ * enforcement is upstream-delegated: GCD (Apple's libdispatch)
+ * guarantees the serial semantics at the runtime level, so this engine
+ * does not need an application-level funnel. Callback entry points
+ * declare the invariant inline via
+ * [NwConnectionQueueDispatcher.assertInConnectionQueue], the same
+ * fail-fast contract that `assertInEventLoop` provides on the POSIX
+ * engines. See `IoEngine` KDoc for the cross-engine contract.
+ *
  * ```
  * NwEngine
  *   |

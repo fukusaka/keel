@@ -87,14 +87,25 @@ import platform.darwin.dispatch_queue_t
  * [ReadContext]. The read callback disposes and re-arms on each invocation.
  * On close, the closed flag prevents re-arming.
  *
- * **Thread model**: all callbacks (read completion, write completion, and
- * the teardown block dispatched from [close]) run on [connQueue], the
- * per-connection serial dispatch queue. Pipeline handlers execute
- * synchronously on that thread. [close] itself is safe to invoke from
- * any thread — it fires a `dispatch_async` onto [connQueue] and returns
- * immediately; the actual teardown runs serialised with in-flight
- * read / write callbacks, so `pendingWrites` / `pendingBytes` mutations
- * never race.
+ * **I/O ownership invariant**: every callback (read completion, write
+ * completion, the teardown block dispatched from [close]) and every
+ * coroutine resumption that uses [ioDispatcher] runs on [connQueue],
+ * the per-connection serial dispatch queue, in FIFO order.
+ * `pendingWrites` / `pendingBytes` / `pendingReadBuf` and other
+ * single-thread-invariant state are read and written only from that
+ * queue. This is the upstream-delegated counterpart of the explicit
+ * `if (inEventLoop()) apply else dispatch(Runnable)` funnel that
+ * `EpollEventLoop` / `KqueueEventLoop` / `NioEventLoop` install on the
+ * POSIX engines (see `IoEngine` KDoc for the cross-engine contract).
+ *
+ * Pipeline handlers execute synchronously on the queue thread.
+ * [close] is safe to invoke from any thread — it fires
+ * `dispatch_async` onto [connQueue] and returns immediately; the
+ * actual teardown runs serialised with in-flight read / write
+ * callbacks, so the single-thread-invariant state mutations never
+ * race. Callback entry points fail fast via [assertOnConnQueue] if
+ * they are ever invoked off-queue, mirroring `assertInEventLoop` on
+ * the POSIX engines.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
@@ -128,11 +139,28 @@ internal class NwIoTransport(
      * (e.g. `PipelinedChannel.read`) land on the same thread that
      * NWConnection uses for its read / write completion callbacks.
      *
-     * This aligns the engine with the single-thread contract of
-     * `SuspendBridgeHandler` (see `NwConnectionQueueDispatcher` KDoc
-     * for the race this fixes).
+     * This aligns the engine with the I/O ownership invariant — every
+     * callback + coroutine resumption for this connection runs on a
+     * single per-connection serial dispatch queue in FIFO order, the
+     * upstream-delegated counterpart of the explicit
+     * `if (inEventLoop()) apply else dispatch(Runnable)` funnel that
+     * the POSIX engines (epoll / kqueue / nio) use. See
+     * [NwConnectionQueueDispatcher] KDoc for the original race that
+     * motivated wiring `ioDispatcher` at [connQueue] in the first
+     * place, and `IoEngine` interface KDoc for the cross-engine
+     * contract.
      */
-    override val ioDispatcher: CoroutineDispatcher = NwConnectionQueueDispatcher(connQueue)
+    private val connQueueDispatcher = NwConnectionQueueDispatcher(connQueue)
+    override val ioDispatcher: CoroutineDispatcher = connQueueDispatcher
+
+    /**
+     * Fails fast if the caller is not currently executing on
+     * [connQueue]. Wraps [NwConnectionQueueDispatcher.assertInConnectionQueue]
+     * so callback paths can declare the invariant inline without
+     * leaking the dispatcher cast.
+     */
+    private fun assertOnConnQueue(operation: String) =
+        connQueueDispatcher.assertInConnectionQueue(operation)
 
     // --- Read path ---
 
@@ -174,6 +202,7 @@ internal class NwIoTransport(
     }
 
     internal fun onReadComplete(buf: IoBuf, bytesRead: Int, isComplete: Boolean, failed: Boolean) {
+        assertOnConnQueue("NwIoTransport.onReadComplete")
         pendingReadBuf = null
         if (!opened) {
             buf.release()
@@ -322,6 +351,7 @@ internal class NwIoTransport(
     }
 
     private fun teardownOnConnQueue() {
+        assertOnConnQueue("NwIoTransport.teardownOnConnQueue")
         if (!markTeardownStarted()) return
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()

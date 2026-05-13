@@ -17,6 +17,20 @@ import kotlin.coroutines.CoroutineContext
  * `dispatch_queue_t` that [NwIoTransport] already uses for NWConnection
  * read / write / state-change callbacks.
  *
+ * **I/O ownership invariant**: every read / write callback,
+ * `state_changed_handler` callback, and coroutine resumption for this
+ * connection runs on a single per-connection serial dispatch queue, in
+ * FIFO order. This matches the "strict single-thread per loop +
+ * cross-thread funnel" invariant that the POSIX engines enforce
+ * explicitly via `if (inEventLoop()) apply else dispatch(Runnable)`
+ * (see `EpollEventLoop` / `KqueueEventLoop` / `NioEventLoop`). The
+ * difference is the enforcement mechanism: POSIX engines run an
+ * application-thread funnel + an `assertInEventLoop` contract; here
+ * the kernel-level GCD runtime enforces the serial order at the queue
+ * level, so no application-level funnel is needed. [assertInConnectionQueue]
+ * gives the same fail-fast contract on the assert side for future
+ * maintainers who add callback paths.
+ *
  * **Why this exists**: [SuspendBridgeHandler]
  * (in `keel-core`) has a documented single-thread invariant — all
  * methods (`onRead`, `onInactive`, `read`, `write`, `flush`) must run
@@ -102,6 +116,32 @@ internal class NwConnectionQueueDispatcher(
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         dispatch_async(queue) {
             block.run()
+        }
+    }
+
+    /**
+     * Fails fast if the caller is not currently executing on [queue].
+     *
+     * Used as a contract on callback entry points and other code paths
+     * that read or mutate `NwIoTransport` state owned by the serial
+     * dispatch queue ([NwIoTransport.pendingWrites] / `pendingBytes` /
+     * the read pending-buf slot / channel teardown). The GCD runtime
+     * already guarantees serial execution at the queue level; this
+     * assertion catches an accidental wiring change (e.g. someone
+     * re-points `ioDispatcher` at `Dispatchers.Default`, or schedules a
+     * callback on the wrong queue) before it silently corrupts
+     * single-thread-invariant state. Same shape and rationale as
+     * `EpollEventLoop.assertInEventLoop` /
+     * `KqueueEventLoop.assertInEventLoop` /
+     * `NioEventLoop.assertInEventLoop`.
+     *
+     * Cheap: `dispatch_get_specific` is a single TLS lookup the GCD
+     * runtime already uses for [isDispatchNeeded], so the check stays
+     * on the hot path.
+     */
+    internal fun assertInConnectionQueue(operation: String) {
+        check(dispatch_get_specific(marker) == marker) {
+            "$operation must run on the NWConnection serial dispatch queue"
         }
     }
 }

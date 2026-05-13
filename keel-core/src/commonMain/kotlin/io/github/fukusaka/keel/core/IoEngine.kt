@@ -42,6 +42,36 @@ import kotlinx.coroutines.CoroutineScope
  * back to [kotlinx.coroutines.Dispatchers.Default], which is almost
  * never what the caller wants for I/O work.
  *
+ * **I/O ownership invariant** (cross-engine contract): every keel
+ * engine MUST execute all callbacks, state mutations, and coroutine
+ * resumptions for a given channel on a single owning thread (or a
+ * single serial queue equivalent), in FIFO order. This is the
+ * "strict single-thread per loop + cross-thread funnel" property
+ * that lets engines avoid locking on `pendingWrites`, `pendingBytes`,
+ * read-buffer slots, registration tables, and similar single-writer
+ * state. Implementations choose one of two enforcement mechanisms:
+ *
+ * - **Explicit funnel** (POSIX-style: `engine-kqueue`, `engine-epoll`,
+ *   `engine-nio`, `engine-io-uring`, `engine-netty`). The engine owns
+ *   an `EventLoop` thread and exposes a funnelled entry point of the
+ *   shape `if (inEventLoop()) apply else dispatch(Runnable)`. Any
+ *   off-loop caller marshals work onto the loop thread through the
+ *   dispatcher. Inner helpers carry an `assertInEventLoop` contract
+ *   so accidental bypass fails fast.
+ * - **Upstream-delegated** (`engine-nwconnection`, `engine-nodejs`,
+ *   `engine-netty` via Netty's own `EventLoop`). The underlying
+ *   runtime (GCD serial `dispatch_queue` / Node.js libuv event loop
+ *   / Netty `SingleThreadEventLoop`) guarantees serial execution at
+ *   the framework level, so no application-level funnel is needed.
+ *   Where the runtime exposes a queue / thread identity check
+ *   (`dispatch_get_specific`), the engine still installs an
+ *   `assertIn…Queue` analog of `assertInEventLoop` on callback
+ *   entries so future maintainers wiring up new callback sites get
+ *   the same fail-fast contract.
+ *
+ * The invariant is the same in both cases; only the enforcement
+ * mechanism differs.
+ *
  * @see StreamEngine
  * @see IoEngineConfig
  */
