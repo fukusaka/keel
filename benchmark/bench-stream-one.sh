@@ -554,11 +554,28 @@ for run in $(seq 1 "$RUNS"); do
     # See bench-one.sh for the rationale: setsid lets us kill the entire
     # process group so JVM helper threads / native forks don't leak.
     USED_SETSID=false
+    # Daemonise the server by both detaching the process group (setsid) AND
+    # closing every inherited fd above stdio. The fd-close is not optional —
+    # bash 5.3+ keeps process substitution FIFOs alive for the entire
+    # surrounding compound command (`for ... done`, `while ... done`,
+    # `{ ... }`), so `bench-stream-all.sh`'s
+    #   `for scenario in ...; do while ... done < <(build_engine_list); done`
+    # leaves a live FIFO fd that is inherited by every backgrounded server
+    # forked from inside the compound. Empirically (macOS bash 5.3.9) that
+    # inherited fd correlates with the kqueue server's READ filter failing
+    # to fire on the ws-large 50-VU workload — `bench-stream-all.sh ws-large`
+    # showed `ktor-cio-keel-kqueue` + `ktor-keel-kqueue` hanging at
+    # `client SIGKILL @ 90 s` until this guard was added, while the same
+    # engine via `bench-stream-one.sh` directly (no compound wrapper) passed.
+    # Closing fds 3..255 before `exec`ing the server matches the standard
+    # daemon-hardening idiom and removes the regression independently of
+    # which scenario / engine combination triggers the surfacing pattern.
+    _CLOSE_INHERITED_FDS='for fd in $(/usr/bin/seq 3 255); do eval "exec $fd<&-" 2>/dev/null || true; done'
     if command -v setsid >/dev/null 2>&1; then
-        setsid "$@" >/dev/null 2>&1 &
+        setsid bash -c "$_CLOSE_INHERITED_FDS"' ; exec "$@"' bash "$@" >/dev/null 2>&1 &
         USED_SETSID=true
     else
-        "$@" >/dev/null 2>&1 &
+        bash -c "$_CLOSE_INHERITED_FDS"' ; exec "$@"' bash "$@" >/dev/null 2>&1 &
     fi
     PID=$!
 
