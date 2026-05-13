@@ -43,6 +43,7 @@ import platform.posix.pthread_t
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -338,8 +339,9 @@ internal class EpollEventLoop(
      * without losing continuations.
      *
      * The fd is added to epoll via `EPOLL_CTL_ADD` (or `MOD` if already
-     * armed). [wakeup] is called to interrupt `epoll_wait()` if the
-     * EventLoop is blocked.
+     * armed) on the EventLoop thread. If `register()` is called from
+     * another thread the `epoll_ctl` syscall is dispatched to the EL —
+     * see [submitAddOrModifyEpoll].
      *
      * @return The newly created [Registration] handle. Pass it to
      *   [unregister] from `invokeOnCancellation` to remove only this
@@ -357,9 +359,40 @@ internal class EpollEventLoop(
         // epoll fires before the chain entry exists.
         withRegLock { appendRegistration(key, newReg) }
 
-        addOrModifyEpoll(fd, events)
-        wakeup()
+        // Funnel the epoll_ctl submission to the owning EventLoop
+        // thread. Same idiom as KqueueEventLoop.register (#509) and the
+        // libuv / Netty `if (inEventLoop) inline else execute` pattern:
+        // every fd-registration syscall runs on a single thread per
+        // loop so concurrent EL-thread `EPOLL_CTL_DEL` (issued from
+        // dispatchReady for a stale event) cannot reorder against a
+        // user-thread `EPOLL_CTL_ADD` for the same fd. Engine init /
+        // seam-driven tests run before [start] sets [eventLoopThread];
+        // in that window submit inline so the eventually-drained task
+        // does not pile up on a queue that never runs.
+        if (eventLoopThread == null || inEventLoop()) {
+            submitAddOrModifyEpoll(fd, events)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
+        }
         return newReg
+    }
+
+    /**
+     * EventLoop-thread submission of `EPOLL_CTL_ADD` / `EPOLL_CTL_MOD`
+     * for [fd] with the requested [events]. Wraps [addOrModifyEpoll]
+     * with the [assertInEventLoop] contract.
+     *
+     * The `wakeup()` that earlier sat right after `addOrModifyEpoll`
+     * in [register] / [registerCallback] is no longer needed: the
+     * cross-thread caller path goes through [dispatch] (which performs
+     * the eventfd write itself when not in the EL), and the
+     * in-EventLoop / engine-init paths do not need to interrupt
+     * `epoll_wait` because the loop will iterate naturally on the next
+     * pass.
+     */
+    private fun submitAddOrModifyEpoll(fd: Int, events: Int) {
+        assertInEventLoop("EpollEventLoop.submitAddOrModifyEpoll")
+        addOrModifyEpoll(fd, events)
     }
 
     /**
@@ -480,8 +513,12 @@ internal class EpollEventLoop(
             callbackRegistrations[key] = listener
         }
 
-        addOrModifyEpoll(fd, events)
-        wakeup()
+        // Same funnel idiom as [register] — see its KDoc for rationale.
+        if (eventLoopThread == null || inEventLoop()) {
+            submitAddOrModifyEpoll(fd, events)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
+        }
     }
 
     /** Removes a pending callback registration. */

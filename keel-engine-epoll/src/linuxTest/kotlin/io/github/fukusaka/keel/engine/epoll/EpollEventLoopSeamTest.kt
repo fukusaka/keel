@@ -149,6 +149,70 @@ class EpollEventLoopSeamTest {
         }
     }
 
+    // --- EventLoop-thread funnel pin ---
+    //
+    // PR #514 changed `register` / `registerCallback` to funnel the
+    // `epoll_ctl` syscall through the owning EventLoop thread:
+    //
+    //   if (eventLoopThread == null || inEventLoop()) {
+    //       submitAddOrModifyEpoll(fd, events)
+    //   } else {
+    //       dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
+    //   }
+    //
+    // The pre-start window (where seam tests live — `start()` has not run,
+    // so `eventLoopThread == null`) must take the inline branch:
+    // `submitAddOrModifyEpoll` runs synchronously on the caller thread,
+    // `assertInEventLoop` no-ops (its `eventLoopThread ?: return` short-
+    // circuits), and `addOrModifyEpoll` reaches `FakeEpollSyscallOps`
+    // immediately. Regression guard against an accidental return to the
+    // A-case (mutex-gate) wiring, or against breaking the
+    // `eventLoopThread == null` shortcut and stranding the task on a
+    // never-drained queue.
+
+    @Test
+    fun `registerCallback READ pre-start runs submitAddOrModifyEpoll inline`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptAddResult(0) // ADD for fd 2000
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        try {
+            // Before start(), eventLoopThread is null — register must take
+            // the `eventLoopThread == null || inEventLoop()` inline branch.
+            el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
+            // The syscall must have fired SYNCHRONOUSLY: if the funnel
+            // mistakenly dispatched, the task would sit on taskQueue with
+            // no EL thread to drain it and `ctlCalls.size` would still be 1.
+            assertEquals(2, fake.ctlCalls.size, "init ADD + register ADD must both fire on the caller thread pre-start")
+            assertEquals(2000, fake.ctlCalls[1].fd)
+            assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
+        } finally {
+            el.close()
+        }
+    }
+
+    @Test
+    fun `registerCallback WRITE pre-start runs submitAddOrModifyEpoll inline`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptAddResult(0) // ADD for fd 3000 (callback path)
+        }
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        try {
+            el.registerCallback(fd = 3000, interest = EpollEventLoop.Interest.WRITE, listener = NoOpListener)
+            assertEquals(2, fake.ctlCalls.size, "registerCallback pre-start must fire epoll_ctl synchronously")
+            assertEquals(3000, fake.ctlCalls[1].fd)
+            assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
+        } finally {
+            el.close()
+        }
+    }
+
     // --- main loop error branch tests ---
     //
     // Drive `loop()` directly on the test thread (no `start()` / pthread).
