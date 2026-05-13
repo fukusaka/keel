@@ -15,7 +15,11 @@ import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
+import platform.posix.FD_CLOEXEC
+import platform.posix.F_GETFD
+import platform.posix.F_SETFD
 import platform.posix.errno
+import platform.posix.fcntl
 import posix_socket.keel_accept
 import posix_socket.keel_connect
 import posix_socket.keel_read
@@ -69,7 +73,22 @@ public object PosixNativeSocket : NativeSocket {
     override fun accept(serverFd: Int): AcceptResult {
         val fd = keel_accept(serverFd)
         return when {
-            fd >= 0 -> AcceptResult.Accepted(fd)
+            fd >= 0 -> {
+                // Set FD_CLOEXEC on the accepted client fd so it does not leak
+                // into any subprocess the host application later forks
+                // (symmetric counterpart of the bug fixed in #510). macOS
+                // lacks accept4(SOCK_CLOEXEC) so we post-fcntl; on Linux a
+                // future keel_accept variant taking flags could close the
+                // TOCTOU window atomically. Fail-fast matches the pattern
+                // in PosixNativeSocketOps.setCloexec / setNonBlocking:
+                // F_GETFD / F_SETFD on a just-accepted fd can only fail
+                // with EBADF, which would indicate a corrupt kernel state.
+                val flags = fcntl(fd, F_GETFD, 0)
+                check(flags >= 0) { "fcntl(F_GETFD, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+                check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                AcceptResult.Accepted(fd)
+            }
             else -> {
                 val err = errno
                 if (err == EAGAIN || err == EWOULDBLOCK) AcceptResult.WouldBlock

@@ -19,7 +19,9 @@ import platform.darwin.kevent
 import platform.darwin.kqueue
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import platform.posix.EAGAIN
+import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFL
+import platform.posix.F_SETFD
 import platform.posix.F_SETFL
 import platform.posix.O_NONBLOCK
 import platform.posix.errno
@@ -45,12 +47,43 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
 
     override fun kqueueCreate(): Int {
         val fd = kqueue()
-        return if (fd < 0) -errno else fd
+        if (fd < 0) return -errno
+        // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
+        // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
+        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so we
+        // post-fcntl. `setCloexec` fail-fasts on fcntl errors — on a fd
+        // kqueue() just returned, F_GETFD / F_SETFD can only fail with
+        // EBADF, which would indicate a corrupt kernel state.
+        setCloexec(fd)
+        return fd
     }
 
     override fun makePipe(fds: IntArray): Int {
         val rc = pipe(fds.refTo(0))
-        return if (rc != 0) errno else 0
+        if (rc != 0) return errno
+        // Same FD_CLOEXEC rationale as kqueueCreate(). macOS lacks pipe2() so
+        // we post-fcntl both ends. The wakeup pipe is purely in-process; any
+        // child inheriting it would be a leak with no legitimate use case.
+        setCloexec(fds[0])
+        setCloexec(fds[1])
+        return 0
+    }
+
+    /**
+     * Sets `FD_CLOEXEC` on [fd] via `fcntl(F_GETFD)` + `fcntl(F_SETFD)` so
+     * the fd does not leak into any subprocess the host application later
+     * `fork+exec`s — the symmetric counterpart of the bug fixed in #510,
+     * where keel was the *recipient* of an inherited fd from a bash compound
+     * command. Fail-fast (`check()`) matches [setNonBlocking]: on a
+     * just-opened fd, `fcntl(F_GETFD)` / `fcntl(F_SETFD)` can only fail
+     * with `EBADF`, which would mean the fd we just opened is invalid —
+     * a pathological kernel state, not a recoverable runtime condition.
+     */
+    private fun setCloexec(fd: Int) {
+        val flags = fcntl(fd, platform.posix.F_GETFD, 0)
+        check(flags >= 0) { "fcntl(F_GETFD, fd=$fd) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+        check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(errno)}" }
     }
 
     override fun setNonBlocking(fd: Int) {
