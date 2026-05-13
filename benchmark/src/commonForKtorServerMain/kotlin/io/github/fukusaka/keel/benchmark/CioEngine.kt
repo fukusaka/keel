@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.benchmark
 import io.ktor.server.application.serverConfig
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
-import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 
 /** Ktor CIO engine settings. */
@@ -26,9 +25,22 @@ object CioEngine : EngineBenchmark {
         val rootConfig = serverConfig {
             module { benchmarkModule(config.connectionClose, config.compression) }
         }
-        require(config.tls == null) { "Ktor CIO does not support HTTPS. Use ktor-netty or keel engines instead." }
+        // Connector wiring delegates to the platform-specific
+        // [cioConfigureConnector]: JVM calls Ktor's official
+        // `sslConnector(keyStore, ...)`, Native uses `connector { ... }`
+        // (TLS request raises an error because Ktor 3.4.1 has no
+        // multiplatform sslConnector overload yet — see KDoc).
+        //
+        // No benchmark-level protective guard: Ktor's own
+        // `CIOApplicationEngine.kt:224` check throws
+        // `UnsupportedOperationException` for `ConnectorType.HTTPS`
+        // (upstream issue ktorio/ktor#886 is OPEN), so requesting TLS
+        // results in a clean `STARTUP REFUSE` row from the bench
+        // harness. If Ktor ever ships CIO Server HTTPS, this code
+        // path will start producing real bench numbers automatically
+        // without any benchmark-side change.
         val engine = embeddedServer(CIO, rootConfig) {
-            connector { this.port = config.port }
+            cioConfigureConnector(config)
             config.socket.reuseAddress?.let { reuseAddress = it }
             cio.idleTimeout?.let { connectionIdleTimeoutSeconds = it }
         }.start(wait = false)
