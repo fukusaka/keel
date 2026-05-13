@@ -47,6 +47,27 @@ build_engine_list() {
     local scenario="$1"
     local engines=()
 
+    # JS (Node.js) server runs first to avoid macOS ephemeral port exhaustion.
+    # Each preceding engine consumes ~5K-7K ephemeral ports during its 50-VU
+    # 15s bench, and macOS holds them in TIME_WAIT for 2*MSL = 30s (sysctl
+    # `net.inet.tcp.msl` default 15000 ms). With only a 2s inter-engine
+    # cooldown, the macOS ephemeral pool (49152-65535 = 16,384 ports) drains
+    # within ~3-4 engines and stays at saturation for the rest of the chain.
+    # Multi-threaded engines (kqueue / nio / netty / nwconnection / Phase 2
+    # natives) absorb the resulting connection setup pressure transparently;
+    # Node.js's single-threaded libuv event loop is materially slower at
+    # completing a WebSocket upgrade on the loopback path, so it is the
+    # canary that surfaces the saturation as `k6 ws-large status 101 0%`
+    # (every WS handshake completes then immediately closes — k6's onclose
+    # fires with `opened === false`). Same class of macOS-specific bench
+    # symptom documented in nodejs/node#32337. Running the JS engine first
+    # is a fixed-cost workaround that costs nothing for the other engines
+    # (they handle port saturation transparently regardless of position).
+    JS_BIN="benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js"
+    if [ -f "$JS_BIN" ]; then
+        engines+=("js:pipeline-http-nodejs|node ${JS_BIN} --engine=pipeline-http-nodejs --port=${PORT}")
+    fi
+
     # Cross-language reference servers
     case "$scenario" in
         multipart|method-mix|path-param)
@@ -98,11 +119,9 @@ build_engine_list() {
         done
     fi
 
-    # JS (Node.js) server
-    JS_BIN="benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js"
-    if [ -f "$JS_BIN" ]; then
-        engines+=("js:pipeline-http-nodejs|node ${JS_BIN} --engine=pipeline-http-nodejs --port=${PORT}")
-    fi
+    # JS (Node.js) server is appended at the top of build_engine_list above
+    # (see the ephemeral-port-exhaustion comment there). Do not also append
+    # it here.
 
     # Shuffle if requested
     if [ "$SHUFFLE" = "true" ]; then
