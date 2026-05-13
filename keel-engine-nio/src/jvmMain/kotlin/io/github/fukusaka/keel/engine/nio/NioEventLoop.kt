@@ -11,6 +11,7 @@ import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 
 /**
@@ -88,6 +89,22 @@ internal class NioEventLoop(
 
     /** Returns true if the current thread is this EventLoop's thread. */
     fun inEventLoop(): Boolean = Thread.currentThread() == thread
+
+    /**
+     * Verifies the caller is running on the EventLoop thread.
+     *
+     * Used as a contract on private helpers that mutate state owned by the
+     * EventLoop ([KeyCallbacks] fields, [SelectionKey.interestOps]) without
+     * any other synchronisation. The public entry points funnel cross-thread
+     * callers through [dispatch] so that by the time the inner helper runs
+     * the assertion always holds. Matches the pattern established in
+     * `EpollEventLoop.assertInEventLoop` / `KqueueEventLoop.assertInEventLoop`.
+     */
+    internal fun assertInEventLoop(operation: String) {
+        check(inEventLoop()) {
+            "$operation must run on the EventLoop thread"
+        }
+    }
 
     // --- CoroutineDispatcher ---
 
@@ -211,20 +228,35 @@ internal class NioEventLoop(
      * @param callback Runnable to execute when the channel becomes ready.
      */
     fun setInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
+        // Funnel cross-thread mutations through the owning EventLoop. Both
+        // the [KeyCallbacks] fields and [SelectionKey.interestOps] are
+        // unsynchronised — they are only safe to read/write on the loop
+        // thread that owns the [Selector]. Same idiom as
+        // `EpollEventLoop.register` / `KqueueEventLoop.register`: enforce a
+        // single-writer invariant via dispatch so concurrent producers do
+        // not race the [processSelectedKeys] reader, and so the "set
+        // callback first, then set interest bit" ordering is naturally
+        // happens-before for the loop thread without volatile fences.
+        if (inEventLoop()) {
+            applySetInterestCallback(key, ops, callback)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { applySetInterestCallback(key, ops, callback) })
+        }
+    }
+
+    private fun applySetInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
+        assertInEventLoop("NioEventLoop.applySetInterestCallback")
         val callbacks = (key.attachment() as? KeyCallbacks) ?: KeyCallbacks().also { key.attach(it) }
         if ((ops and SelectionKey.OP_READ) != 0) callbacks.readCallback = callback
         if ((ops and SelectionKey.OP_WRITE) != 0) callbacks.writeCallback = callback
         if ((ops and SelectionKey.OP_ACCEPT) != 0) callbacks.acceptCallback = callback
         if ((ops and SelectionKey.OP_CONNECT) != 0) callbacks.connectCallback = callback
         key.interestOps(key.interestOps() or ops)
-        // Skip wakeup when already on the EventLoop thread — the next
-        // select() iteration will pick up the new interest mask without
-        // needing the wakeup pipe write. Same rationale as dispatch();
-        // saves a syscall on the per-frame `armRead` / `registerWriteCallback`
-        // hot path (K31).
-        if (!inEventLoop()) {
-            selector.wakeup()
-        }
+        // No selector.wakeup() needed — we are on the EL thread, so the next
+        // select() iteration (after drainTasks / drainRegistrations) picks
+        // up the new interest mask. Cross-thread callers go through
+        // [dispatch] above, which performs the wakeup as part of enqueueing
+        // the task.
     }
 
     /**
@@ -234,8 +266,20 @@ internal class NioEventLoop(
      * OP_WRITE (flush) or OP_READ is cancelled. Clears only the
      * specified ops and the matching callback without affecting other
      * interest bits or the other-direction callback.
+     *
+     * Same single-writer invariant as [setInterestCallback]: callers from
+     * outside the EventLoop thread are funnelled through [dispatch].
      */
     fun removeInterest(key: SelectionKey, ops: Int) {
+        if (inEventLoop()) {
+            applyRemoveInterest(key, ops)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { applyRemoveInterest(key, ops) })
+        }
+    }
+
+    private fun applyRemoveInterest(key: SelectionKey, ops: Int) {
+        assertInEventLoop("NioEventLoop.applyRemoveInterest")
         if (!key.isValid) return
         val callbacks = key.attachment() as? KeyCallbacks
         if (callbacks != null) {
