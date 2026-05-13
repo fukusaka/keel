@@ -15,7 +15,11 @@ import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
+import platform.posix.FD_CLOEXEC
+import platform.posix.F_GETFD
+import platform.posix.F_SETFD
 import platform.posix.errno
+import platform.posix.fcntl
 import posix_socket.keel_accept
 import posix_socket.keel_connect
 import posix_socket.keel_read
@@ -69,7 +73,18 @@ public object PosixNativeSocket : NativeSocket {
     override fun accept(serverFd: Int): AcceptResult {
         val fd = keel_accept(serverFd)
         return when {
-            fd >= 0 -> AcceptResult.Accepted(fd)
+            fd >= 0 -> {
+                // Set FD_CLOEXEC on the accepted client fd so it does not leak
+                // into any subprocess the host application later forks. Best
+                // effort: failure is non-fatal because the fd is still usable
+                // without CLOEXEC. macOS lacks accept4(SOCK_CLOEXEC) so we
+                // post-fcntl; Linux callers should preferably switch to
+                // accept4 for atomicity (TODO: requires keel_accept variant
+                // taking flags). See K52 + design.md §37.
+                val flags = fcntl(fd, F_GETFD, 0)
+                if (flags >= 0) fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+                AcceptResult.Accepted(fd)
+            }
             else -> {
                 val err = errno
                 if (err == EAGAIN || err == EWOULDBLOCK) AcceptResult.WouldBlock

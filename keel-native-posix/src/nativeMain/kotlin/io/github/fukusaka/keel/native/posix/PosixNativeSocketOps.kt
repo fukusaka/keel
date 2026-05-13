@@ -24,7 +24,10 @@ import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
 import platform.posix.AF_UNIX
+import platform.posix.FD_CLOEXEC
+import platform.posix.F_GETFD
 import platform.posix.F_GETFL
+import platform.posix.F_SETFD
 import platform.posix.F_SETFL
 import platform.posix.INADDR_ANY
 import platform.posix.O_NONBLOCK
@@ -108,6 +111,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
 
         try {
+            setCloexec(fd)
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
             setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1)
             if (reusePort) {
@@ -159,6 +163,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun openClientSocket(family: IpAddress): Int {
         val fd = socket(familyOf(family), SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
+        setCloexec(fd)
         setNonBlocking(fd)
         return fd
     }
@@ -250,6 +255,28 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         // Suppress SIGPIPE per-socket (macOS: SO_NOSIGPIPE; Linux: no-op,
         // MSG_NOSIGNAL is used in keel_write/keel_writev instead).
         keel_set_nosigpipe(fd)
+    }
+
+    /**
+     * Sets `FD_CLOEXEC` on [fd]. Best effort — failure is silently ignored
+     * because the fd is still usable without CLOEXEC; the only consequence
+     * is that the fd would leak into a child if the host application later
+     * `fork+exec`s a subprocess. We always set CLOEXEC on every socket /
+     * pipe / kqueue / epoll / io_uring / eventfd fd that keel opens
+     * internally, so even hostile callers cannot inadvertently leak keel's
+     * internal fds into their own subprocess fork chain. See K52 +
+     * design.md §37 for the broader inherited-fd hang class.
+     *
+     * Where the platform exposes an atomic CLOEXEC syscall variant
+     * (`pipe2(O_CLOEXEC)`, `accept4(SOCK_CLOEXEC)`, `socket(SOCK_CLOEXEC)`,
+     * `epoll_create1(EPOLL_CLOEXEC)`, `eventfd(EFD_CLOEXEC)`), callers
+     * SHOULD prefer that variant — the post-fcntl path here is a fallback
+     * for macOS where no atomic variant exists.
+     */
+    internal fun setCloexec(fd: Int) {
+        val flags = fcntl(fd, F_GETFD, 0)
+        if (flags < 0) return
+        fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
     }
 
     /**
@@ -390,6 +417,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
 
         try {
+            setCloexec(fd)
             setNonBlocking(fd)
 
             val kernelBytes = address.unixKernelBytes()
@@ -424,6 +452,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun openUnixClientSocket(): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
+        setCloexec(fd)
         setNonBlocking(fd)
         return fd
     }

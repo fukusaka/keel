@@ -7,6 +7,7 @@ import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toLong
+import platform.linux.EPOLL_CLOEXEC
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.EPOLL_CTL_MOD
 import platform.linux.epoll_create1
@@ -33,7 +34,10 @@ import posix_inet.keel_eventfd_write
 internal object PosixEpollSyscallOps : EpollSyscallOps {
 
     override fun epollCreate(): Int {
-        val fd = epoll_create1(0)
+        // EPOLL_CLOEXEC: atomic close-on-exec flag so the epoll fd does not
+        // leak into any subprocess the host application later fork+exec's.
+        // See K52 + keel design.md §37 (inherited-fd hang class).
+        val fd = epoll_create1(EPOLL_CLOEXEC)
         return if (fd < 0) -errno else fd
     }
 

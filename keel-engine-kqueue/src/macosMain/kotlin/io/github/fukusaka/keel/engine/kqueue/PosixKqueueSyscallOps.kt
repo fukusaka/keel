@@ -19,7 +19,9 @@ import platform.darwin.kevent
 import platform.darwin.kqueue
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import platform.posix.EAGAIN
+import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFL
+import platform.posix.F_SETFD
 import platform.posix.F_SETFL
 import platform.posix.O_NONBLOCK
 import platform.posix.errno
@@ -45,12 +47,41 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
 
     override fun kqueueCreate(): Int {
         val fd = kqueue()
-        return if (fd < 0) -errno else fd
+        if (fd < 0) return -errno
+        // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
+        // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
+        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so the
+        // best we can do is post-fcntl. Failure is non-fatal — log via the
+        // caller if it cares; the kqueue is still usable, just leaks into
+        // children. See design.md §37 for the broader CLOEXEC policy.
+        setCloexec(fd)
+        return fd
     }
 
     override fun makePipe(fds: IntArray): Int {
         val rc = pipe(fds.refTo(0))
-        return if (rc != 0) errno else 0
+        if (rc != 0) return errno
+        // Same FD_CLOEXEC rationale as kqueueCreate(). macOS lacks pipe2() so
+        // we post-fcntl both ends. The wakeup pipe is purely in-process; any
+        // child inheriting it would be a leak with no legitimate use case.
+        setCloexec(fds[0])
+        setCloexec(fds[1])
+        return 0
+    }
+
+    /**
+     * Sets `FD_CLOEXEC` on [fd] via `fcntl(F_GETFD)` + `fcntl(F_SETFD)`. Best
+     * effort: failures are silently ignored because the fd is still usable
+     * without CLOEXEC — leakage into a `fork+exec` child is a defensive
+     * concern, not a correctness one. The cost of a missing CLOEXEC only
+     * surfaces if the host application later spawns a subprocess and that
+     * subprocess interacts adversely with the inherited fd (see K52, the
+     * mirror-image case where keel was the *recipient* of an inherited fd).
+     */
+    private fun setCloexec(fd: Int) {
+        val flags = fcntl(fd, platform.posix.F_GETFD, 0)
+        if (flags < 0) return
+        fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
     }
 
     override fun setNonBlocking(fd: Int) {
