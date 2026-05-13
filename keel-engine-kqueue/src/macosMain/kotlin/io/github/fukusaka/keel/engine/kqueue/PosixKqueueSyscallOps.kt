@@ -50,10 +50,10 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         if (fd < 0) return -errno
         // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
         // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
-        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so the
-        // best we can do is post-fcntl. Failure is non-fatal: the kqueue is
-        // still usable, but a subsequent fork+exec in the host application
-        // would inherit it.
+        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so we
+        // post-fcntl. `setCloexec` fail-fasts on fcntl errors — on a fd
+        // kqueue() just returned, F_GETFD / F_SETFD can only fail with
+        // EBADF, which would indicate a corrupt kernel state.
         setCloexec(fd)
         return fd
     }
