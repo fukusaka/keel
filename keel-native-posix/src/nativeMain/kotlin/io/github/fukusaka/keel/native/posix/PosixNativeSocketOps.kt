@@ -258,25 +258,31 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     }
 
     /**
-     * Sets `FD_CLOEXEC` on [fd]. Best effort — failure is silently ignored
-     * because the fd is still usable without CLOEXEC; the only consequence
-     * is that the fd would leak into a child if the host application later
-     * `fork+exec`s a subprocess. We always set CLOEXEC on every socket /
-     * pipe / kqueue / epoll / io_uring / eventfd fd that keel opens
-     * internally, so even hostile callers cannot inadvertently leak keel's
-     * internal fds into their own subprocess fork chain. See K52 +
-     * design.md §37 for the broader inherited-fd hang class.
+     * Sets `FD_CLOEXEC` on [fd] so the fd does not leak into any subprocess
+     * the host application later `fork+exec`s. The same pattern is applied
+     * to every socket / pipe / kqueue / epoll / io_uring / eventfd fd that
+     * keel opens internally, so even hostile or careless callers cannot
+     * inherit keel's internal fds into their own subprocess fork chain.
+     * This is the symmetric counterpart of the bug fixed in #510, where
+     * keel was the *recipient* of an inherited fd from a bash compound
+     * command.
      *
      * Where the platform exposes an atomic CLOEXEC syscall variant
      * (`pipe2(O_CLOEXEC)`, `accept4(SOCK_CLOEXEC)`, `socket(SOCK_CLOEXEC)`,
      * `epoll_create1(EPOLL_CLOEXEC)`, `eventfd(EFD_CLOEXEC)`), callers
      * SHOULD prefer that variant — the post-fcntl path here is a fallback
      * for macOS where no atomic variant exists.
+     *
+     * Fail-fast (`check()`) matches [setNonBlocking]: on a just-opened fd,
+     * `fcntl(F_GETFD)` / `fcntl(F_SETFD)` can only fail with `EBADF`, which
+     * would mean the fd we just opened is invalid — a pathological kernel
+     * state, not a recoverable runtime condition.
      */
     internal fun setCloexec(fd: Int) {
         val flags = fcntl(fd, F_GETFD, 0)
-        if (flags < 0) return
-        fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+        check(flags >= 0) { "fcntl(F_GETFD, fd=$fd) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+        check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(errno)}" }
     }
 
     /**

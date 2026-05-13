@@ -35,8 +35,8 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
 
     override fun epollCreate(): Int {
         // EPOLL_CLOEXEC: atomic close-on-exec flag so the epoll fd does not
-        // leak into any subprocess the host application later fork+exec's.
-        // See K52 + keel design.md §37 (inherited-fd hang class).
+        // leak into any subprocess the host application later fork+exec's
+        // (symmetric counterpart of the inherited-fd hang fixed in #510).
         val fd = epoll_create1(EPOLL_CLOEXEC)
         return if (fd < 0) -errno else fd
     }

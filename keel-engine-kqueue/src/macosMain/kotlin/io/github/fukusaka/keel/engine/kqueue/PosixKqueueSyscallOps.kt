@@ -51,9 +51,9 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
         // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
         // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so the
-        // best we can do is post-fcntl. Failure is non-fatal — log via the
-        // caller if it cares; the kqueue is still usable, just leaks into
-        // children. See design.md §37 for the broader CLOEXEC policy.
+        // best we can do is post-fcntl. Failure is non-fatal: the kqueue is
+        // still usable, but a subsequent fork+exec in the host application
+        // would inherit it.
         setCloexec(fd)
         return fd
     }
@@ -70,18 +70,20 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
     }
 
     /**
-     * Sets `FD_CLOEXEC` on [fd] via `fcntl(F_GETFD)` + `fcntl(F_SETFD)`. Best
-     * effort: failures are silently ignored because the fd is still usable
-     * without CLOEXEC — leakage into a `fork+exec` child is a defensive
-     * concern, not a correctness one. The cost of a missing CLOEXEC only
-     * surfaces if the host application later spawns a subprocess and that
-     * subprocess interacts adversely with the inherited fd (see K52, the
-     * mirror-image case where keel was the *recipient* of an inherited fd).
+     * Sets `FD_CLOEXEC` on [fd] via `fcntl(F_GETFD)` + `fcntl(F_SETFD)` so
+     * the fd does not leak into any subprocess the host application later
+     * `fork+exec`s — the symmetric counterpart of the bug fixed in #510,
+     * where keel was the *recipient* of an inherited fd from a bash compound
+     * command. Fail-fast (`check()`) matches [setNonBlocking]: on a
+     * just-opened fd, `fcntl(F_GETFD)` / `fcntl(F_SETFD)` can only fail
+     * with `EBADF`, which would mean the fd we just opened is invalid —
+     * a pathological kernel state, not a recoverable runtime condition.
      */
     private fun setCloexec(fd: Int) {
         val flags = fcntl(fd, platform.posix.F_GETFD, 0)
-        if (flags < 0) return
-        fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+        check(flags >= 0) { "fcntl(F_GETFD, fd=$fd) failed: ${errnoMessage(errno)}" }
+        val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+        check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(errno)}" }
     }
 
     override fun setNonBlocking(fd: Int) {

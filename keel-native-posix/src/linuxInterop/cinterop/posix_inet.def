@@ -16,8 +16,8 @@ headers = sys/eventfd.h
  */
 static int keel_eventfd_create(void) {
     /* EFD_CLOEXEC: do not leak this internal eventfd into any subprocess the
-     * host application later fork+exec's. See K52 + keel design.md §37
-     * (inherited-fd hang class). EFD_NONBLOCK so EventLoop can drain
+     * host application later fork+exec's (symmetric counterpart of the
+     * inherited-fd hang fixed in #510). EFD_NONBLOCK so EventLoop can drain
      * without blocking. */
     return eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 }

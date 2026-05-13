@@ -75,14 +75,18 @@ public object PosixNativeSocket : NativeSocket {
         return when {
             fd >= 0 -> {
                 // Set FD_CLOEXEC on the accepted client fd so it does not leak
-                // into any subprocess the host application later forks. Best
-                // effort: failure is non-fatal because the fd is still usable
-                // without CLOEXEC. macOS lacks accept4(SOCK_CLOEXEC) so we
-                // post-fcntl; Linux callers should preferably switch to
-                // accept4 for atomicity (TODO: requires keel_accept variant
-                // taking flags). See K52 + design.md §37.
+                // into any subprocess the host application later forks
+                // (symmetric counterpart of the bug fixed in #510). macOS
+                // lacks accept4(SOCK_CLOEXEC) so we post-fcntl; on Linux a
+                // future keel_accept variant taking flags could close the
+                // TOCTOU window atomically. Fail-fast matches the pattern
+                // in PosixNativeSocketOps.setCloexec / setNonBlocking:
+                // F_GETFD / F_SETFD on a just-accepted fd can only fail
+                // with EBADF, which would indicate a corrupt kernel state.
                 val flags = fcntl(fd, F_GETFD, 0)
-                if (flags >= 0) fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+                check(flags >= 0) { "fcntl(F_GETFD, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+                check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
                 AcceptResult.Accepted(fd)
             }
             else -> {
