@@ -101,6 +101,17 @@ static int keel_cqe_has_more(unsigned int cqe_flags) {
     return (cqe_flags & IORING_CQE_F_MORE) != 0;
 }
 
+/*
+ * Peek the next CQE without blocking. Returns the CQE pointer, or NULL
+ * when the completion queue is empty. Wraps io_uring_peek_cqe so callers
+ * do not need a `struct io_uring_cqe **` out-parameter cell.
+ */
+static struct io_uring_cqe *keel_peek_cqe(struct io_uring *ring) {
+    struct io_uring_cqe *cqe;
+    if (io_uring_peek_cqe(ring, &cqe) != 0) return NULL;
+    return cqe;
+}
+
 /* Set IOSQE_BUFFER_SELECT flag and buf_group on an SQE for provided buffers. */
 static void keel_sqe_set_buffer_select(struct io_uring_sqe *sqe, unsigned short bgid) {
     sqe->flags |= IOSQE_BUFFER_SELECT;

@@ -15,16 +15,12 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * Part of the io_uring native API seam effort (sibling of
  * `IoUringSyscallOps` and the register-class `*Ops` seams).
  *
- * **Scope note**: this interface currently covers the ring lifecycle
- * and SQE acquisition ([getSqe]). The `io_uring_prep_*` SQE field
- * writers and the CQE drain API (`io_uring_submit_and_wait` /
- * `io_uring_peek_cqe` / ...) operate on the same `io_uring` struct and
- * are a natural extension; the CQE side is deferred to a follow-up PR
- * whose fake has to emulate kernel CQE delivery — a meaningfully larger
- * design than the per-call outcomes this seam needs. The `prep_*`
- * writers stay as direct calls on the [getSqe]-returned pointer (the
- * fake hands back a scratch `io_uring_sqe`, so they write harmless
- * memory) — the "Option A" approach that keeps this migration small.
+ * **Scope note**: this interface covers the ring lifecycle, SQE
+ * acquisition ([getSqe]) and the CQE drain ([submitAndWait] / [nextCqe]).
+ * The `io_uring_prep_*` SQE field writers stay as direct calls on the
+ * [getSqe]-returned pointer (the fake hands back a scratch `io_uring_sqe`,
+ * so they write harmless memory) — the "Option A" approach that keeps
+ * the SQE migration small.
  *
  * **Convention**: [queueInit] returns the native liburing encoding
  * directly — `0` on success, negative `-errno` on failure.
@@ -32,6 +28,31 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * Thread safety: the production implementation is stateless and safe to
  * share; a fake is single-threaded (driven by the test thread).
  */
+/**
+ * Mutable carrier for one drained completion queue entry. Reused across
+ * drain iterations — [IoUringRing.nextCqe] fills it in place — so the
+ * loop allocates nothing per CQE, the same pattern `EpEvent` uses for
+ * `epoll_wait`. A plain `class` with `var` fields, not a `data class`:
+ * reuse semantics conflict with the value-type equality a `data class`
+ * implies.
+ */
+internal class Cqe {
+    /** SQE `user_data` echoed back by the kernel — a slot index plus base, or a reserved token. */
+    var userData: ULong = 0u
+
+    /** Operation result: bytes transferred (`>= 0`) or a negative `-errno`. */
+    var res: Int = 0
+
+    /** CQE flag bitmask (e.g. `IORING_CQE_F_BUFFER`, `IORING_CQE_F_MORE`). */
+    var flags: UInt = 0u
+
+    /**
+     * `true` when `IORING_CQE_F_MORE` is set — the originating SQE is
+     * multishot and will produce further CQEs, so its slot must be kept.
+     */
+    var hasMore: Boolean = false
+}
+
 @OptIn(ExperimentalForeignApi::class)
 internal interface IoUringRing {
 
@@ -74,4 +95,28 @@ internal interface IoUringRing {
      *   the submission.
      */
     fun getSqe(ring: CPointer<io_uring>): CPointer<io_uring_sqe>?
+
+    /**
+     * Submits all queued SQEs and blocks until at least [minComplete]
+     * CQEs are available, in a single `io_uring_enter` syscall, via
+     * `io_uring_submit_and_wait`.
+     *
+     * @return the number of SQEs submitted (`>= 0`) on success; a
+     *   negative `-errno` on failure. `-EINTR` means a signal
+     *   interrupted the wait and the caller should retry; any other
+     *   negative value is fatal.
+     */
+    fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int
+
+    /**
+     * Drains the next available completion queue entry into [out] and
+     * marks it consumed (`io_uring_peek_cqe` + `io_uring_cqe_seen`).
+     * [out] is a caller-owned carrier reused across calls so the drain
+     * loop allocates nothing.
+     *
+     * @return `true` if a CQE was drained — [out] now holds its
+     *   `user_data` / `res` / `flags` / `hasMore`; `false` when the
+     *   completion queue is empty.
+     */
+    fun nextCqe(ring: CPointer<io_uring>, out: Cqe): Boolean
 }
