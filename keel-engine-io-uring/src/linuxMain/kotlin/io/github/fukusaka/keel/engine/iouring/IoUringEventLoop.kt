@@ -331,9 +331,12 @@ internal class IoUringEventLoop(
      * [MSG_RING_WAKEUP_TOKEN] and is also discarded — the task itself was
      * already pushed to the target's [taskQueue] by [dispatch].
      *
+     * `internal` (not `private`) so MSG_RING seam tests can drive the
+     * fallback branches directly.
+     *
      * @return true if MSG_RING was successfully queued on the source ring.
      */
-    private fun submitMsgRingTo(target: IoUringEventLoop): Boolean {
+    internal fun submitMsgRingTo(target: IoUringEventLoop): Boolean {
         assertInEventLoop("submitMsgRingTo")
         val sqe = ioUringRing.getSqe(ring.ptr) ?: return false
         val targetFd = target.ringFd
