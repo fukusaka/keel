@@ -20,6 +20,9 @@ import kotlinx.cinterop.ptr
  * were folded in. [getSqe] returns a single reusable scratch
  * `io_uring_sqe` (so the caller's `io_uring_prep_*` writes land on valid
  * memory) unless a `null` (SQ-ring-full) outcome is scripted.
+ * [submitAndWait] returns a scripted value (default `0`); [nextCqe]
+ * drains a FIFO of CQEs enqueued via [enqueueCqe] — manual scripting
+ * only, no auto-generation of CQEs from submitted SQEs.
  *
  * The native `ring` argument is accepted to satisfy the interface but
  * ignored. The fake owns a native [Arena] for the scratch SQE; the test
@@ -45,6 +48,8 @@ internal class FakeIoUringRing : IoUringRing {
         private set
     var getSqeCalls: Int = 0
         private set
+    var submitAndWaitCalls: Int = 0
+        private set
 
     /** Arguments of the most recent [setupFlags] call, or `null` if never called. */
     var lastSetupFlagsArgs: SetupFlagsArgs? = null
@@ -62,6 +67,7 @@ internal class FakeIoUringRing : IoUringRing {
 
     private val queueInitResults = ArrayDeque<Int>()
     private val getSqeResults = ArrayDeque<Boolean>()
+    private val submitAndWaitResults = ArrayDeque<Int>()
 
     /** Scripts the next [queueInit] call to fail with [errno] (encoded `-errno`). */
     fun scriptQueueInitFailure(errno: Int) {
@@ -75,6 +81,30 @@ internal class FakeIoUringRing : IoUringRing {
      */
     fun scriptSqRingFull() {
         getSqeResults.addLast(false)
+    }
+
+    /**
+     * Scripts the next [submitAndWait] return value. Use `0` (or any
+     * non-negative count) for success and a negative `-errno`
+     * (`-EINTR` to drive the retry path, any other for a fatal exit)
+     * for failure. Unscripted calls return `0`.
+     */
+    fun scriptSubmitAndWait(ret: Int) {
+        submitAndWaitResults.addLast(ret)
+    }
+
+    // --- Scripted CQEs (FIFO) ---
+
+    private data class ScriptedCqe(val userData: ULong, val res: Int, val flags: UInt, val hasMore: Boolean)
+
+    private val cqeQueue = ArrayDeque<ScriptedCqe>()
+
+    /**
+     * Enqueues a CQE for [nextCqe] to drain. The drain loop in
+     * `runIteration` consumes the queue in FIFO order until it is empty.
+     */
+    fun enqueueCqe(userData: ULong, res: Int, flags: UInt = 0u, hasMore: Boolean = false) {
+        cqeQueue.addLast(ScriptedCqe(userData, res, flags, hasMore))
     }
 
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
@@ -101,6 +131,20 @@ internal class FakeIoUringRing : IoUringRing {
         getSqeCalls++
         val full = getSqeResults.removeFirstOrNull() == false
         return if (full) null else scratchSqe.ptr
+    }
+
+    override fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int {
+        submitAndWaitCalls++
+        return submitAndWaitResults.removeFirstOrNull() ?: 0
+    }
+
+    override fun nextCqe(ring: CPointer<io_uring>, out: Cqe): Boolean {
+        val c = cqeQueue.removeFirstOrNull() ?: return false
+        out.userData = c.userData
+        out.res = c.res
+        out.flags = c.flags
+        out.hasMore = c.hasMore
+        return true
     }
 
     /** Frees the native [Arena] backing the scratch SQE. Call once per test. */

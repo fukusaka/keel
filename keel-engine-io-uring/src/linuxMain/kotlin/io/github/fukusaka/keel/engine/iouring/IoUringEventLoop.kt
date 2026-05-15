@@ -1,10 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring
-import io_uring.io_uring_cqe
-import io_uring.io_uring_cqe_get_data64
-import io_uring.io_uring_cqe_seen
-import io_uring.io_uring_peek_cqe
 import io_uring.io_uring_prep_cancel64
 import io_uring.io_uring_prep_read
 import io_uring.io_uring_prep_accept
@@ -12,8 +8,6 @@ import io_uring.io_uring_prep_writev
 import io_uring.iovec
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
-import io_uring.io_uring_submit_and_wait
-import io_uring.keel_cqe_has_more
 import io_uring.keel_prep_msg_ring
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
@@ -29,14 +23,12 @@ import io_uring.keel_unregister_ring_fd
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
@@ -925,11 +917,9 @@ internal class IoUringEventLoop(
         // in-flight operation.
         submitWakeupSqe()
 
-        memScoped {
-            val cqePtrVar = alloc<CPointerVar<io_uring_cqe>>()
-            while (running.value != 0) {
-                if (!runIteration(cqePtrVar)) break
-            }
+        val cqe = Cqe()
+        while (running.value != 0) {
+            if (!runIteration(cqe)) break
         }
 
         // Run the exit hook (register-class teardown) on this pthread while
@@ -972,20 +962,20 @@ internal class IoUringEventLoop(
      *
      * Extracted from [loop] so seam tests can drive the loop one iteration
      * at a time on the test thread without spawning the EventLoop pthread.
-     * Behaviour is identical to the former inline loop body — the only
-     * change is that the former `continue` / `break` on the
-     * `io_uring_submit_and_wait` error path are now `return true` /
-     * `return false`.
+     * Behaviour matches the former inline loop body, with two shape
+     * changes: the former `continue` / `break` on the submit error path
+     * are now `return true` / `return false`, and the errno is taken from
+     * the negative `submitAndWait` return (`-errno`, the documented
+     * liburing contract) rather than the thread-global `errno`.
      *
      * Must be called on the EventLoop pthread.
      *
-     * @param cqePtrVar caller-owned scratch cell for `io_uring_peek_cqe`,
-     *   allocated once and reused across iterations so the loop stays
-     *   allocation-free.
+     * @param cqe caller-owned drained-CQE carrier, reused across
+     *   iterations so the drain loop stays allocation-free.
      * @return `true` to continue looping; `false` if `io_uring_submit_and_wait`
      *   returned a fatal (non-`EINTR`) error and the loop must stop.
      */
-    internal fun runIteration(cqePtrVar: CPointerVar<io_uring_cqe>): Boolean {
+    internal fun runIteration(cqe: Cqe): Boolean {
         drainTasks()
 
         // Retry wakeup SQE submission if it was deferred in a prior
@@ -998,9 +988,9 @@ internal class IoUringEventLoop(
         // single io_uring_enter syscall. This halves the per-iteration
         // kernel entry count compared to separate submit + wait calls,
         // following the pattern used by tokio-uring and monoio.
-        val ret = io_uring_submit_and_wait(ring.ptr, 1u)
+        val ret = ioUringRing.submitAndWait(ring.ptr, 1)
         if (ret < 0) {
-            val err = errno
+            val err = -ret
             if (err == EINTR) return true
             logger.error { "io_uring_submit_and_wait() fatal error: errno=$err" }
             return false
@@ -1009,12 +999,10 @@ internal class IoUringEventLoop(
         // Drain all available CQEs without blocking.
         // Resumed continuations may prepare new SQEs inline (fast path);
         // those SQEs are submitted on the next io_uring_submit_and_wait().
-        while (io_uring_peek_cqe(ring.ptr, cqePtrVar.ptr) == 0) {
-            val cqe = cqePtrVar.value ?: break
-            val userData = io_uring_cqe_get_data64(cqe)
-            val res = cqe.pointed.res
-            val cqeFlags = cqe.pointed.flags
-            io_uring_cqe_seen(ring.ptr, cqe)
+        while (ioUringRing.nextCqe(ring.ptr, cqe)) {
+            val userData = cqe.userData
+            val res = cqe.res
+            val cqeFlags = cqe.flags
 
             if (userData == WAKEUP_TOKEN) {
                 // Wakeup fired — re-submit for the next round.
@@ -1066,7 +1054,7 @@ internal class IoUringEventLoop(
                         "io_uring CQE callback threw: slot=$slot res=$res flags=$cqeFlags"
                     }
                 }
-                if (keel_cqe_has_more(cqeFlags) == 0) {
+                if (!cqe.hasMore) {
                     callbackSlots[slot] = null
                     releaseSlot(slot)
                 }
@@ -1081,7 +1069,7 @@ internal class IoUringEventLoop(
                 if (zcPending == SEND_ZC_UNUSED + 1) {
                     // First CQE: store send result
                     sendZcPendingResult[slot] = res
-                    if (keel_cqe_has_more(cqeFlags) == 0) {
+                    if (!cqe.hasMore) {
                         // No notification CQE — complete immediately
                         sendZcPendingResult[slot] = SEND_ZC_UNUSED
                         completeZcSlot(slot, res)
