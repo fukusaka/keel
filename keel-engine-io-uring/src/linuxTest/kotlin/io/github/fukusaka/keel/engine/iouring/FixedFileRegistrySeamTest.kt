@@ -189,6 +189,19 @@ class FixedFileRegistrySeamTest {
         }
     }
 
+    @Test
+    fun `claim on an out-of-range index returns false`() {
+        val fake = FakeIoUringFileOps()
+        withRegistry(fake, maxFiles = 4) { registry ->
+            registry.initOnEventLoop()
+            // The kernel should never direct-allocate an index beyond the
+            // registered table size; the bounds guard rejects it rather than
+            // indexing past the free-slot bitmap.
+            assertFalse(registry.claim(index = 4), "index == maxFiles is out of range")
+            assertFalse(registry.claim(index = 99), "index well past maxFiles is out of range")
+        }
+    }
+
     // --- close ---
 
     @Test

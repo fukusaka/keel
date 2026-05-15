@@ -1,7 +1,11 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import platform.posix.EINTR
 import platform.posix.ENOMEM
 import kotlin.test.Test
@@ -131,6 +135,78 @@ class IoUringCqeSeamTest {
             // safety skip, never indexed into the slot pool.
             fake.enqueueCqe(userData = 0u, res = 0)
             assertTrue(el.runIteration(Cqe()), "a reserved-range user_data is skipped safely")
+        }
+    }
+
+    // --- callback exception isolation ---
+
+    @Test
+    fun `runIteration keeps the loop alive when a slot callback throws`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            val slot = el.submitCallback(prepare = { }, onCqe = { _, _ -> error("callback boom") })
+            fake.enqueueCqe(userData = slot.toULong() + IoUringEventLoop.SLOT_BASE, res = 1, hasMore = false)
+            // A throwing callback must be caught — the loop continues and the
+            // slot is still released (a crash here would strand the EL thread).
+            assertTrue(el.runIteration(Cqe()), "a throwing CQE callback must not stop the loop")
+            val reused = el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            assertEquals(slot, reused, "the slot must be released even when the callback threw")
+        }
+    }
+
+    // --- SEND_ZC two-CQE completion ---
+
+    @Test
+    fun `runIteration completes a SEND_ZC operation across both CQEs`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            var completed: Int? = null
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { completed = it }
+            }
+            val userData = fake.lastSqeUserData()
+            // First CQE carries the send result + F_MORE (notification follows);
+            // second CQE is the buffer-release notification.
+            fake.enqueueCqe(userData = userData, res = 64, hasMore = true)
+            fake.enqueueCqe(userData = userData, res = 0, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(64, completed, "onComplete must fire once with the send result after both CQEs")
+        }
+    }
+
+    @Test
+    fun `runIteration completes a SEND_ZC operation when the notification CQE is omitted`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            var completed: Int? = null
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { completed = it }
+            }
+            // A single CQE without F_MORE: the kernel produced no separate
+            // notification, so the operation completes on the first CQE.
+            fake.enqueueCqe(userData = fake.lastSqeUserData(), res = 64, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(64, completed, "onComplete must fire on the first CQE when F_MORE is clear")
+        }
+    }
+
+    // --- wakeup SQE deferred retry ---
+
+    @Test
+    fun `runIteration retries a deferred wakeup SQE once the SQ ring drains`() {
+        val fake = FakeIoUringRing().apply { scriptSqRingFull() }
+        withEventLoop(fake) { el ->
+            // Iteration 1: a WAKEUP_TOKEN CQE drives submitWakeupSqe(), but the
+            // SQ ring is full (scripted) — submission is deferred.
+            fake.enqueueCqe(userData = IoUringEventLoop.WAKEUP_TOKEN, res = 8)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(1, fake.getSqeCalls, "iteration 1: the deferred wakeup SQE consumed one getSqe")
+            // Iteration 2: the SQ ring has drained — the deferred submission
+            // is retried at the top of the loop.
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(2, fake.getSqeCalls, "iteration 2: the deferred wakeup SQE is retried")
         }
     }
 }

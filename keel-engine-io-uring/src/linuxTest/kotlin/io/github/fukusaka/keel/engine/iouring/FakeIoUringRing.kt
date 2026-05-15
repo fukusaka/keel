@@ -107,6 +107,14 @@ internal class FakeIoUringRing : IoUringRing {
         cqeQueue.addLast(ScriptedCqe(userData, res, flags, hasMore))
     }
 
+    /**
+     * Returns the `user_data` field of the scratch SQE — the value the
+     * most recent `submit*` wrote via `io_uring_sqe_set_data64`. Lets a
+     * test recover the slot `user_data` for a submit path that does not
+     * return its slot index (e.g. `submitSendZcCallback`).
+     */
+    fun lastSqeUserData(): ULong = scratchSqe.user_data
+
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
         lastSetupFlagsArgs = SetupFlagsArgs(coopTaskrun, singleIssuer, deferTaskrun)
         var flags = 0u
