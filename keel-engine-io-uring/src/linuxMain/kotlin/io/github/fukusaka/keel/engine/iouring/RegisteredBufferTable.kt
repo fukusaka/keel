@@ -4,18 +4,9 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io_uring.keel_register_buffers
-import io_uring.keel_unregister_buffers
 import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.set
 import kotlinx.cinterop.toLong
 
 /**
@@ -40,12 +31,16 @@ import kotlinx.cinterop.toLong
  * @param eventLoop Owning EventLoop. Provides ring pointer and thread-affinity assertion target.
  * @param buffers Pairs of (native pointer, capacity) from [io.github.fukusaka.keel.buf.SlabAllocator.nativePooledBuffers].
  * @param logger Logger for warn-level diagnostics.
+ * @param bufferOps Registered-buffer syscall seam. Defaults to
+ *                  [PosixIoUringRegisteredBufferOps]; tests inject a fake to
+ *                  exercise the kernel registration failure branch.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class RegisteredBufferTable(
     private val eventLoop: IoUringEventLoop,
     private val buffers: List<Pair<CPointer<ByteVar>, Int>>,
     private val logger: Logger,
+    private val bufferOps: IoUringRegisteredBufferOps = PosixIoUringRegisteredBufferOps,
 ) {
     private val ring get() = eventLoop.ringPtr
 
@@ -72,16 +67,7 @@ internal class RegisteredBufferTable(
     fun initOnEventLoop() {
         eventLoop.assertInEventLoop("RegisteredBufferTable.initOnEventLoop")
         if (isActive || buffers.isEmpty()) return
-        val ret = memScoped {
-            val bases = allocArray<COpaquePointerVar>(buffers.size)
-            val lens = allocArray<ULongVar>(buffers.size)
-            for ((i, pair) in buffers.withIndex()) {
-                val (ptr, cap) = pair
-                bases[i] = ptr
-                lens[i] = cap.convert()
-            }
-            keel_register_buffers(ring, bases.reinterpret(), lens.reinterpret(), buffers.size)
-        }
+        val ret = bufferOps.registerBuffers(ring, buffers)
         isActive = ret >= 0
         if (!isActive) ptrToIndex.clear()
     }
@@ -101,7 +87,7 @@ internal class RegisteredBufferTable(
     fun close() {
         eventLoop.assertInEventLoop("RegisteredBufferTable.close")
         if (isActive) {
-            val ret = keel_unregister_buffers(ring)
+            val ret = bufferOps.unregisterBuffers(ring)
             if (ret < 0) {
                 logger.warn { "io_uring_unregister_buffers() failed: ${errnoMessage(-ret)}" }
             }
