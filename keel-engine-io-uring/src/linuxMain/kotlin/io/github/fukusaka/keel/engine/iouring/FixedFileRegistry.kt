@@ -4,14 +4,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io_uring.keel_register_files
-import io_uring.keel_register_files_update
-import io_uring.keel_unregister_files
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.set
 
 /**
  * Manages registered file descriptors for io_uring fixed files.
@@ -37,12 +30,16 @@ import kotlinx.cinterop.set
  *                  thread-affinity assertion target.
  * @param logger Logger for warn-level diagnostics.
  * @param maxFiles Maximum number of concurrent registered fds.
+ * @param fileOps Fixed-file registration syscall seam. Defaults to
+ *                [PosixIoUringFileOps]; tests inject a fake to exercise
+ *                kernel registration / update failure branches.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class FixedFileRegistry(
     private val eventLoop: IoUringEventLoop,
     private val logger: Logger,
     private val maxFiles: Int = DEFAULT_MAX_FILES,
+    private val fileOps: IoUringFileOps = PosixIoUringFileOps,
 ) {
     private val ring get() = eventLoop.ringPtr
 
@@ -75,16 +72,12 @@ internal class FixedFileRegistry(
     fun initOnEventLoop() {
         eventLoop.assertInEventLoop("FixedFileRegistry.initOnEventLoop")
         if (registered) return
-        memScoped {
-            val fds = allocArray<IntVar>(maxFiles)
-            for (i in 0 until maxFiles) fds[i] = -1
-            val ret = keel_register_files(ring, fds, maxFiles.toUInt())
-            if (ret >= 0) {
-                registered = true
-            }
-            // If registration fails (old kernel), fixed files are silently disabled.
-            // register() will return -1 and callers fall back to raw fd.
+        val ret = fileOps.registerEmptyTable(ring, maxFiles)
+        if (ret >= 0) {
+            registered = true
         }
+        // If registration fails (old kernel), fixed files are silently disabled.
+        // register() will return -1 and callers fall back to raw fd.
     }
 
     /**
@@ -97,15 +90,11 @@ internal class FixedFileRegistry(
         eventLoop.assertInEventLoop("FixedFileRegistry.register")
         if (!registered) return -1
         val index = acquireFreeSlot() ?: return -1
-        memScoped {
-            val fds = allocArray<IntVar>(1)
-            fds[0] = fd
-            val ret = keel_register_files_update(ring, index.toUInt(), fds, 1u)
-            if (ret < 0) {
-                // Update failed — return slot to the bitmap.
-                releaseSlot(index)
-                return -1
-            }
+        val ret = fileOps.updateSlot(ring, index, fd)
+        if (ret < 0) {
+            // Update failed — return slot to the bitmap.
+            releaseSlot(index)
+            return -1
         }
         return index
     }
@@ -150,14 +139,10 @@ internal class FixedFileRegistry(
     fun unregister(index: Int) {
         eventLoop.assertInEventLoop("FixedFileRegistry.unregister")
         if (!registered || index < 0) return
-        memScoped {
-            val fds = allocArray<IntVar>(1)
-            fds[0] = -1
-            val ret = keel_register_files_update(ring, index.toUInt(), fds, 1u)
-            if (ret < 0) {
-                logger.warn {
-                    "io_uring_register_files_update(unregister) failed: index=$index ${errnoMessage(-ret)}"
-                }
+        val ret = fileOps.updateSlot(ring, index, -1)
+        if (ret < 0) {
+            logger.warn {
+                "io_uring_register_files_update(unregister) failed: index=$index ${errnoMessage(-ret)}"
             }
         }
         releaseSlot(index)
@@ -176,7 +161,7 @@ internal class FixedFileRegistry(
     fun close() {
         eventLoop.assertInEventLoop("FixedFileRegistry.close")
         if (registered) {
-            val ret = keel_unregister_files(ring)
+            val ret = fileOps.unregisterTable(ring)
             if (ret < 0) {
                 logger.warn { "io_uring_unregister_files() failed: ${errnoMessage(-ret)}" }
             }
