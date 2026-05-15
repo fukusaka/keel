@@ -3,24 +3,13 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io_uring.io_uring_buf_ring
-import io_uring.io_uring_buf_ring_add
-import io_uring.io_uring_buf_ring_advance
-import io_uring.io_uring_buf_ring_mask
-import io_uring.io_uring_free_buf_ring
-import io_uring.io_uring_setup_buf_ring
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.plus
-import kotlinx.cinterop.ptr
 import kotlinx.cinterop.rawValue
-import kotlinx.cinterop.value
 
 /**
  * Manages a kernel-registered buffer ring for io_uring provided buffers.
@@ -50,6 +39,9 @@ import kotlinx.cinterop.value
  * @param bufferSize Size of each buffer in bytes.
  * @param bgid Buffer group ID. Each EventLoop should use a unique group ID if
  *             multiple rings are needed (currently one per EventLoop).
+ * @param bufferRingOps Provided-buffer-ring syscall seam. Defaults to
+ *             [PosixIoUringBufferRingOps]; tests inject a fake to exercise
+ *             setup / free failure branches and add / advance bookkeeping.
  * @throws IllegalStateException if bufferCount is not a power of 2.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -59,6 +51,7 @@ internal class ProvidedBufferRing(
     val bufferCount: Int = DEFAULT_BUFFER_COUNT,
     val bufferSize: Int = DEFAULT_BUFFER_SIZE,
     val bgid: Int = 0,
+    private val bufferRingOps: IoUringBufferRingOps = PosixIoUringBufferRingOps,
 ) {
     private val uring get() = eventLoop.ringPtr
 
@@ -67,11 +60,13 @@ internal class ProvidedBufferRing(
     private val basePtr: CPointer<ByteVar> =
         nativeHeap.allocArray<ByteVar>(bufferCount * bufferSize)
 
-    // Kernel-managed buffer ring structure (page-aligned, shared memory with kernel).
-    // Null until [initOnEventLoop] has been called.
-    private var bufRing: CPointer<io_uring_buf_ring>? = null
+    // Kernel-managed buffer ring handle. Null until [initOnEventLoop] has
+    // been called (or after [close]).
+    private var bufRing: BufRingHandle? = null
 
-    private val mask: Int = io_uring_buf_ring_mask(bufferCount.toUInt()).toInt()
+    // Guards [close] against a double `nativeHeap.free(basePtr)`: freeing
+    // the same native allocation twice is undefined behaviour.
+    private var closed = false
 
     init {
         check(bufferCount > 0 && (bufferCount and (bufferCount - 1)) == 0) {
@@ -87,30 +82,19 @@ internal class ProvidedBufferRing(
         eventLoop.assertInEventLoop("ProvidedBufferRing.initOnEventLoop")
         if (bufRing != null) return
 
-        // io_uring_setup_buf_ring allocates page-aligned memory, registers the ring
-        // with the kernel, and returns a pointer to the shared io_uring_buf_ring.
-        val ring = memScoped {
-            val ret = alloc<IntVar>()
-            io_uring_setup_buf_ring(
-                uring, bufferCount.toUInt(), bgid, 0u, ret.ptr,
-            ) ?: error("io_uring_setup_buf_ring failed: ret=${ret.value}")
+        // setupBufRing allocates page-aligned memory, registers the ring with
+        // the kernel, and returns a handle to the shared io_uring_buf_ring.
+        val handle = when (val setup = bufferRingOps.setupBufRing(uring, bufferCount, bgid)) {
+            is BufRingSetup.Ok -> setup.handle
+            is BufRingSetup.Failed -> error("io_uring_setup_buf_ring failed: ret=${setup.ret}")
         }
-        bufRing = ring
-        // io_uring_buf_ring_init is already called by io_uring_setup_buf_ring
-        // (see liburing src/setup.c), so we skip it here.
+        bufRing = handle
 
         // Add all buffers to the ring so the kernel can start selecting them.
         for (i in 0 until bufferCount) {
-            io_uring_buf_ring_add(
-                ring,
-                (basePtr + i * bufferSize)!!,
-                bufferSize.toUInt(),
-                i.toUShort(),
-                mask,
-                i,
-            )
+            bufferRingOps.addBuffer(handle, (basePtr + i * bufferSize)!!, bufferSize, bid = i, offset = i)
         }
-        io_uring_buf_ring_advance(ring, bufferCount)
+        bufferRingOps.advance(handle, bufferCount)
     }
 
     /**
@@ -127,26 +111,25 @@ internal class ProvidedBufferRing(
      * Must be called after the application has finished reading the data.
      */
     fun returnBuffer(bufId: Int) {
-        val ring = bufRing ?: error("ProvidedBufferRing not yet initialised")
-        io_uring_buf_ring_add(
-            ring,
-            (basePtr + bufId * bufferSize)!!,
-            bufferSize.toUInt(),
-            bufId.toUShort(),
-            mask,
-            0,
-        )
-        io_uring_buf_ring_advance(ring, 1)
+        val handle = bufRing ?: error("ProvidedBufferRing not yet initialised")
+        bufferRingOps.addBuffer(handle, (basePtr + bufId * bufferSize)!!, bufferSize, bid = bufId, offset = 0)
+        bufferRingOps.advance(handle, 1)
     }
 
     /**
      * Unregisters the buffer ring from the kernel and frees all memory.
      * Called on EventLoop shutdown via [IoUringEventLoop.onExitHook].
+     *
+     * Idempotent: a second call is a no-op. This guards the
+     * `nativeHeap.free(basePtr)` against a double free, which is
+     * undefined behaviour.
      */
     fun close() {
         eventLoop.assertInEventLoop("ProvidedBufferRing.close")
-        bufRing?.let { ring ->
-            val ret = io_uring_free_buf_ring(uring, ring, bufferCount.toUInt(), bgid)
+        if (closed) return
+        closed = true
+        bufRing?.let { handle ->
+            val ret = bufferRingOps.freeBufRing(uring, handle, bufferCount, bgid)
             if (ret < 0) {
                 logger.warn { "io_uring_free_buf_ring() failed: bgid=$bgid ${errnoMessage(-ret)}" }
             }
