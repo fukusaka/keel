@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring
+import io_uring.io_uring_get_sqe
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
+import io_uring.io_uring_sqe
 import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_setup_defer_taskrun
 import io_uring.keel_setup_single_issuer
@@ -31,4 +33,7 @@ internal object PosixIoUringRing : IoUringRing {
     override fun queueExit(ring: CPointer<io_uring>) {
         io_uring_queue_exit(ring)
     }
+
+    override fun getSqe(ring: CPointer<io_uring>): CPointer<io_uring_sqe>? =
+        io_uring_get_sqe(ring)
 }

@@ -46,6 +46,7 @@ class IoUringRingLifecycleSeamTest {
             block(el)
         } finally {
             el.close()
+            ring.dispose()
         }
     }
 
