@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring
+import io_uring.io_uring_sqe
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 
@@ -14,13 +15,16 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * Part of the io_uring native API seam effort (sibling of
  * `IoUringSyscallOps` and the register-class `*Ops` seams).
  *
- * **Scope note**: this interface currently covers only the ring
- * lifecycle. The SQE submission and CQE drain API (`io_uring_get_sqe`
- * / `io_uring_prep_*` / `io_uring_submit_and_wait` / `io_uring_peek_cqe`
- * / ...) operate on the same `io_uring` struct and are a natural
- * extension of this interface; they are deferred to follow-up PRs whose
- * fake has to emulate kernel CQE delivery — a meaningfully larger design
- * than the per-call outcomes this lifecycle seam needs.
+ * **Scope note**: this interface currently covers the ring lifecycle
+ * and SQE acquisition ([getSqe]). The `io_uring_prep_*` SQE field
+ * writers and the CQE drain API (`io_uring_submit_and_wait` /
+ * `io_uring_peek_cqe` / ...) operate on the same `io_uring` struct and
+ * are a natural extension; the CQE side is deferred to a follow-up PR
+ * whose fake has to emulate kernel CQE delivery — a meaningfully larger
+ * design than the per-call outcomes this seam needs. The `prep_*`
+ * writers stay as direct calls on the [getSqe]-returned pointer (the
+ * fake hands back a scratch `io_uring_sqe`, so they write harmless
+ * memory) — the "Option A" approach that keeps this migration small.
  *
  * **Convention**: [queueInit] returns the native liburing encoding
  * directly — `0` on success, negative `-errno` on failure.
@@ -58,4 +62,16 @@ internal interface IoUringRing {
      * successfully initialised.
      */
     fun queueExit(ring: CPointer<io_uring>)
+
+    /**
+     * Acquires the next free submission queue entry from [ring] via
+     * `io_uring_get_sqe`. The caller fills it with `io_uring_prep_*` and
+     * `io_uring_sqe_set_data64`.
+     *
+     * @return a pointer to the SQE, or `null` when the SQ ring is full
+     *   (all entries are in flight and not yet consumed by
+     *   `io_uring_submit_and_wait`). Callers either fail fast or defer
+     *   the submission.
+     */
+    fun getSqe(ring: CPointer<io_uring>): CPointer<io_uring_sqe>?
 }
