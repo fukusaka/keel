@@ -927,124 +927,8 @@ internal class IoUringEventLoop(
 
         memScoped {
             val cqePtrVar = alloc<CPointerVar<io_uring_cqe>>()
-
             while (running.value != 0) {
-                drainTasks()
-
-                // Retry wakeup SQE submission if it was deferred in a prior
-                // iteration due to a full SQ ring. Without this, an external
-                // dispatch() whose wakeup() write is not caught by any in-flight
-                // wakeup SQE would leave the EventLoop blocked indefinitely.
-                if (wakeupSqePending) submitWakeupSqe()
-
-                // Submit all pending SQEs and wait for at least 1 CQE in a
-                // single io_uring_enter syscall. This halves the per-iteration
-                // kernel entry count compared to separate submit + wait calls,
-                // following the pattern used by tokio-uring and monoio.
-                val ret = io_uring_submit_and_wait(ring.ptr, 1u)
-                if (ret < 0) {
-                    val err = errno
-                    if (err == EINTR) continue
-                    logger.error { "io_uring_submit_and_wait() fatal error: errno=$err" }
-                    break
-                }
-
-                // Drain all available CQEs without blocking.
-                // Resumed continuations may prepare new SQEs inline (fast path);
-                // those SQEs are submitted on the next io_uring_submit_and_wait().
-                while (io_uring_peek_cqe(ring.ptr, cqePtrVar.ptr) == 0) {
-                    val cqe = cqePtrVar.value ?: break
-                    val userData = io_uring_cqe_get_data64(cqe)
-                    val res = cqe.pointed.res
-                    val cqeFlags = cqe.pointed.flags
-                    io_uring_cqe_seen(ring.ptr, cqe)
-
-                    if (userData == WAKEUP_TOKEN) {
-                        // Wakeup fired — re-submit for the next round.
-                        // The new SQE is submitted at the next io_uring_submit_and_wait().
-                        submitWakeupSqe()
-                        continue
-                    }
-
-                    // MSG_RING wakeup (target side): a peer EL woke us.
-                    // The task itself was enqueued on taskQueue by the peer's
-                    // dispatch() call before the MSG_RING SQE was submitted,
-                    // so drainTasks() at the top of the next loop iteration
-                    // will pick it up. Nothing else to do for this CQE.
-                    if (userData == MSG_RING_WAKEUP_TOKEN) continue
-
-                    // MSG_RING completion (source side): discard. Source CQEs
-                    // arrive on the EL that submitted the MSG_RING SQE and
-                    // report the send result; res < 0 means the target ring
-                    // was closed or unreachable, which is benign at shutdown.
-                    if (userData == MSG_RING_SEND_TOKEN) {
-                        if (res < 0) {
-                            logger.debug { "MSG_RING send failed: ${errnoMessage(-res)}" }
-                        }
-                        continue
-                    }
-
-                    // ASYNC_CANCEL completion: discard. The original SQE's CQE (-ECANCELED)
-                    // arrives separately and is handled via the normal slot path below.
-                    if (userData == CANCEL_TOKEN) continue
-
-                    if (userData < SLOT_BASE) continue // safety: skip reserved values
-
-                    val slot = (userData - SLOT_BASE).toInt()
-
-                    // Callback path (multishot + single-shot fire-and-forget):
-                    // invoke callback, release slot when F_MORE drops.
-                    // Single-shot SQEs never set F_MORE, so slot is released on first CQE.
-                    val msCb = callbackSlots[slot]
-                    if (msCb != null) {
-                        // Catch callback exceptions to keep the EventLoop alive.
-                        // A throw here (e.g., `error(...)` in an onAccept path)
-                        // would otherwise crash the EL thread and leave worker
-                        // resources in a half-set-up state, producing opaque
-                        // ECONNRESET symptoms on the peer side with no trace.
-                        try {
-                            msCb(res, cqeFlags)
-                        } catch (t: Throwable) {
-                            logger.warn(t) {
-                                "io_uring CQE callback threw: slot=$slot res=$res flags=$cqeFlags"
-                            }
-                        }
-                        if (keel_cqe_has_more(cqeFlags) == 0) {
-                            callbackSlots[slot] = null
-                            releaseSlot(slot)
-                        }
-                        continue
-                    }
-
-                    // SEND_ZC path: two CQEs per operation.
-                    // First CQE: store send result, wait for second.
-                    // Second CQE: resume continuation or invoke callback with stored result.
-                    val zcPending = sendZcPendingResult[slot]
-                    if (zcPending != SEND_ZC_UNUSED) {
-                        if (zcPending == SEND_ZC_UNUSED + 1) {
-                            // First CQE: store send result
-                            sendZcPendingResult[slot] = res
-                            if (keel_cqe_has_more(cqeFlags) == 0) {
-                                // No notification CQE — complete immediately
-                                sendZcPendingResult[slot] = SEND_ZC_UNUSED
-                                completeZcSlot(slot, res)
-                            }
-                            // F_MORE set → wait for second CQE
-                        } else {
-                            // Second CQE: buffer release notification
-                            val sendResult = zcPending
-                            sendZcPendingResult[slot] = SEND_ZC_UNUSED
-                            completeZcSlot(slot, sendResult)
-                        }
-                        continue
-                    }
-
-                    // Single-shot path: retrieve continuation from slot, resume it.
-                    val cont = contSlots[slot] ?: continue // safety
-                    contSlots[slot] = null
-                    releaseSlot(slot)
-                    cont.resume(res)
-                }
+                if (!runIteration(cqePtrVar)) break
             }
         }
 
@@ -1079,6 +963,146 @@ internal class IoUringEventLoop(
         // Clear the pthread's current-EL pointer so subsequent code running
         // on this pthread (if any) does not misattribute itself to this EL.
         currentEventLoop = null
+    }
+
+    /**
+     * Runs one iteration of the event loop: drain the task queue, submit
+     * pending SQEs, wait for at least one CQE in a single `io_uring_enter`
+     * syscall, then drain every available CQE without blocking.
+     *
+     * Extracted from [loop] so seam tests can drive the loop one iteration
+     * at a time on the test thread without spawning the EventLoop pthread.
+     * Behaviour is identical to the former inline loop body — the only
+     * change is that the former `continue` / `break` on the
+     * `io_uring_submit_and_wait` error path are now `return true` /
+     * `return false`.
+     *
+     * Must be called on the EventLoop pthread.
+     *
+     * @param cqePtrVar caller-owned scratch cell for `io_uring_peek_cqe`,
+     *   allocated once and reused across iterations so the loop stays
+     *   allocation-free.
+     * @return `true` to continue looping; `false` if `io_uring_submit_and_wait`
+     *   returned a fatal (non-`EINTR`) error and the loop must stop.
+     */
+    internal fun runIteration(cqePtrVar: CPointerVar<io_uring_cqe>): Boolean {
+        drainTasks()
+
+        // Retry wakeup SQE submission if it was deferred in a prior
+        // iteration due to a full SQ ring. Without this, an external
+        // dispatch() whose wakeup() write is not caught by any in-flight
+        // wakeup SQE would leave the EventLoop blocked indefinitely.
+        if (wakeupSqePending) submitWakeupSqe()
+
+        // Submit all pending SQEs and wait for at least 1 CQE in a
+        // single io_uring_enter syscall. This halves the per-iteration
+        // kernel entry count compared to separate submit + wait calls,
+        // following the pattern used by tokio-uring and monoio.
+        val ret = io_uring_submit_and_wait(ring.ptr, 1u)
+        if (ret < 0) {
+            val err = errno
+            if (err == EINTR) return true
+            logger.error { "io_uring_submit_and_wait() fatal error: errno=$err" }
+            return false
+        }
+
+        // Drain all available CQEs without blocking.
+        // Resumed continuations may prepare new SQEs inline (fast path);
+        // those SQEs are submitted on the next io_uring_submit_and_wait().
+        while (io_uring_peek_cqe(ring.ptr, cqePtrVar.ptr) == 0) {
+            val cqe = cqePtrVar.value ?: break
+            val userData = io_uring_cqe_get_data64(cqe)
+            val res = cqe.pointed.res
+            val cqeFlags = cqe.pointed.flags
+            io_uring_cqe_seen(ring.ptr, cqe)
+
+            if (userData == WAKEUP_TOKEN) {
+                // Wakeup fired — re-submit for the next round.
+                // The new SQE is submitted at the next io_uring_submit_and_wait().
+                submitWakeupSqe()
+                continue
+            }
+
+            // MSG_RING wakeup (target side): a peer EL woke us.
+            // The task itself was enqueued on taskQueue by the peer's
+            // dispatch() call before the MSG_RING SQE was submitted,
+            // so drainTasks() at the top of the next loop iteration
+            // will pick it up. Nothing else to do for this CQE.
+            if (userData == MSG_RING_WAKEUP_TOKEN) continue
+
+            // MSG_RING completion (source side): discard. Source CQEs
+            // arrive on the EL that submitted the MSG_RING SQE and
+            // report the send result; res < 0 means the target ring
+            // was closed or unreachable, which is benign at shutdown.
+            if (userData == MSG_RING_SEND_TOKEN) {
+                if (res < 0) {
+                    logger.debug { "MSG_RING send failed: ${errnoMessage(-res)}" }
+                }
+                continue
+            }
+
+            // ASYNC_CANCEL completion: discard. The original SQE's CQE (-ECANCELED)
+            // arrives separately and is handled via the normal slot path below.
+            if (userData == CANCEL_TOKEN) continue
+
+            if (userData < SLOT_BASE) continue // safety: skip reserved values
+
+            val slot = (userData - SLOT_BASE).toInt()
+
+            // Callback path (multishot + single-shot fire-and-forget):
+            // invoke callback, release slot when F_MORE drops.
+            // Single-shot SQEs never set F_MORE, so slot is released on first CQE.
+            val msCb = callbackSlots[slot]
+            if (msCb != null) {
+                // Catch callback exceptions to keep the EventLoop alive.
+                // A throw here (e.g., `error(...)` in an onAccept path)
+                // would otherwise crash the EL thread and leave worker
+                // resources in a half-set-up state, producing opaque
+                // ECONNRESET symptoms on the peer side with no trace.
+                try {
+                    msCb(res, cqeFlags)
+                } catch (t: Throwable) {
+                    logger.warn(t) {
+                        "io_uring CQE callback threw: slot=$slot res=$res flags=$cqeFlags"
+                    }
+                }
+                if (keel_cqe_has_more(cqeFlags) == 0) {
+                    callbackSlots[slot] = null
+                    releaseSlot(slot)
+                }
+                continue
+            }
+
+            // SEND_ZC path: two CQEs per operation.
+            // First CQE: store send result, wait for second.
+            // Second CQE: resume continuation or invoke callback with stored result.
+            val zcPending = sendZcPendingResult[slot]
+            if (zcPending != SEND_ZC_UNUSED) {
+                if (zcPending == SEND_ZC_UNUSED + 1) {
+                    // First CQE: store send result
+                    sendZcPendingResult[slot] = res
+                    if (keel_cqe_has_more(cqeFlags) == 0) {
+                        // No notification CQE — complete immediately
+                        sendZcPendingResult[slot] = SEND_ZC_UNUSED
+                        completeZcSlot(slot, res)
+                    }
+                    // F_MORE set → wait for second CQE
+                } else {
+                    // Second CQE: buffer release notification
+                    val sendResult = zcPending
+                    sendZcPendingResult[slot] = SEND_ZC_UNUSED
+                    completeZcSlot(slot, sendResult)
+                }
+                continue
+            }
+
+            // Single-shot path: retrieve continuation from slot, resume it.
+            val cont = contSlots[slot] ?: continue // safety
+            contSlots[slot] = null
+            releaseSlot(slot)
+            cont.resume(res)
+        }
+        return true
     }
 
     private fun drainTasks() {
