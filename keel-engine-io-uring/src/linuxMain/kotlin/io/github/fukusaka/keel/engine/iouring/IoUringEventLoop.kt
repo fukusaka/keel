@@ -17,7 +17,6 @@ import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
-import posix_inet.keel_eventfd_create
 import io_uring.keel_prep_msg_ring
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
@@ -33,7 +32,6 @@ import io_uring.keel_setup_single_issuer
 import io_uring.keel_sqe_set_fixed_file
 import io_uring.keel_unregister_napi
 import io_uring.keel_unregister_ring_fd
-import posix_inet.keel_eventfd_write
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
@@ -141,12 +139,17 @@ import kotlin.coroutines.resume
  *
  * @param logger Logger for error reporting.
  * @param ringSize Number of SQE entries in the submission ring. Must be a power of 2.
+ * @param syscallOps Non-`io_uring` kernel surface seam (currently the wakeup
+ *   eventfd lifecycle). Defaults to [PosixIoUringSyscallOps]; tests inject a
+ *   `FakeIoUringSyscallOps` to exercise `eventfd(2)` create / write error
+ *   branches without a real Linux kernel.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
     internal val logger: Logger,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
+    private val syscallOps: IoUringSyscallOps = PosixIoUringSyscallOps,
 ) : CoroutineDispatcher() {
 
     // Arena for long-lived native allocations.
@@ -239,6 +242,12 @@ internal class IoUringEventLoop(
 
     private val wakeupFd: Int
     private val running = AtomicInt(1)
+
+    // Set inside [initRing] (runs on the EventLoop pthread). Gates
+    // `io_uring_queue_exit` in [close]: pre-start teardown (e.g. seam tests
+    // that never call [start]) must not invoke `queue_exit` on a
+    // zero-initialised ring, which would close fd 0 (stdin).
+    private var ringInitialized = false
     private val threadPtr = arena.alloc<pthread_tVar>()
 
     // True when submitWakeupSqe() was skipped because the SQ ring was full.
@@ -255,8 +264,8 @@ internal class IoUringEventLoop(
         // a precondition for `IORING_SETUP_SINGLE_ISSUER`, which records the
         // first `io_uring_register_*` or `io_uring_enter` caller as the
         // submitter task and rejects submissions from any other pthread.
-        wakeupFd = keel_eventfd_create()
-        check(wakeupFd >= 0) { "eventfd() failed" }
+        wakeupFd = syscallOps.eventfdCreate()
+        check(wakeupFd >= 0) { "eventfd() failed: ${errnoMessage(-wakeupFd)}" }
     }
 
     /**
@@ -273,6 +282,7 @@ internal class IoUringEventLoop(
         if (capabilities.deferTaskrun) flags = flags or keel_setup_defer_taskrun()
         val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, flags)
         check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
+        ringInitialized = true
     }
 
     // --- CoroutineDispatcher ---
@@ -417,7 +427,7 @@ internal class IoUringEventLoop(
                     logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
                 }
             }
-            io_uring_queue_exit(ring.ptr)
+            if (ringInitialized) io_uring_queue_exit(ring.ptr)
             closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             arena.clear()
         }
@@ -792,14 +802,13 @@ internal class IoUringEventLoop(
     // --- Wakeup ---
 
     private fun wakeup() {
-        val ret = keel_eventfd_write(wakeupFd)
-        if (ret < 0) {
+        val err = syscallOps.eventfdWakeupWrite(wakeupFd)
+        if (err != 0) {
             // EAGAIN means the eventfd counter would overflow (it has reached
             // UINT64_MAX - 1). The pending writes are sufficient to wake the
             // EventLoop; logging at debug level keeps the path quiet.
             // Other failures (EBADF, EINVAL) indicate a programming error and
             // are surfaced at warn level.
-            val err = errno
             if (err == EAGAIN) {
                 logger.debug { "eventfd_write skipped: counter at maximum (already woken)" }
             } else {
