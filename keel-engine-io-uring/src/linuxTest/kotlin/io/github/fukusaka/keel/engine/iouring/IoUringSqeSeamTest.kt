@@ -1,0 +1,109 @@
+package io.github.fukusaka.keel.engine.iouring
+
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/**
+ * Seam-level unit tests for [IoUringEventLoop]'s SQE acquisition via
+ * [FakeIoUringRing] injection. Covers the SQ-ring-full branch
+ * (`io_uring_get_sqe` returns `null`) — only reachable when every
+ * submission queue entry is in flight, which a loopback integration
+ * test never sustains — across the fire-and-forget submit paths.
+ *
+ * Part of the io_uring native API seam effort. The submit methods
+ * exercised here ([IoUringEventLoop.submitCallback] /
+ * [IoUringEventLoop.submitMultishot] / [IoUringEventLoop.cancelSqe])
+ * are non-suspending and issue no thread-affinity assertion, so the
+ * tests drive them directly on the test thread without spawning the
+ * EventLoop pthread — no timeout needed.
+ */
+@OptIn(ExperimentalForeignApi::class)
+class IoUringSqeSeamTest {
+
+    private val logger = NoopLoggerFactory.logger("IoUringSqeSeamTest")
+
+    /**
+     * Builds an [IoUringEventLoop] backed by [ring], runs [block], then
+     * tears the loop down and frees the fake's scratch-SQE arena.
+     */
+    private fun withEventLoop(ring: FakeIoUringRing, block: (IoUringEventLoop) -> Unit) {
+        val el = IoUringEventLoop(
+            logger,
+            syscallOps = FakeIoUringSyscallOps(),
+            ioUringRing = ring,
+        )
+        try {
+            block(el)
+        } finally {
+            el.close()
+            ring.dispose()
+        }
+    }
+
+    // --- submitCallback ---
+
+    @Test
+    fun `submitCallback acquires a slot on the happy path`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            val slot = el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            assertTrue(slot >= 0, "a successful submit must return a non-negative slot, got $slot")
+            assertEquals(1, fake.getSqeCalls)
+        }
+    }
+
+    @Test
+    fun `submitCallback throws when the SQ ring is full`() {
+        val fake = FakeIoUringRing().apply { scriptSqRingFull() }
+        withEventLoop(fake) { el ->
+            val ex = assertFailsWith<IllegalStateException> {
+                el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            }
+            assertTrue(
+                ex.message!!.contains("io_uring SQ ring full"),
+                "message should mention the full SQ ring, got: ${ex.message}",
+            )
+        }
+    }
+
+    // --- submitMultishot ---
+
+    @Test
+    fun `submitMultishot acquires a slot on the happy path`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            val slot = el.submitMultishot(prepare = { }, onCqe = { _, _ -> })
+            assertTrue(slot >= 0, "a successful multishot submit must return a non-negative slot, got $slot")
+        }
+    }
+
+    @Test
+    fun `submitMultishot throws when the SQ ring is full`() {
+        val fake = FakeIoUringRing().apply { scriptSqRingFull() }
+        withEventLoop(fake) { el ->
+            val ex = assertFailsWith<IllegalStateException> {
+                el.submitMultishot(prepare = { }, onCqe = { _, _ -> })
+            }
+            assertTrue(ex.message!!.contains("io_uring SQ ring full"), "got: ${ex.message}")
+        }
+    }
+
+    // --- cancelSqe ---
+
+    @Test
+    fun `cancelSqe on a full SQ ring is a silent no-op`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            // Acquire a real slot first so cancelSqe has a valid index.
+            val slot = el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            // The cancel SQE cannot be obtained — cancelSqe must swallow this:
+            // the original SQE completes on its own and frees the slot later.
+            fake.scriptSqRingFull()
+            el.cancelSqe(slot) // must not throw
+        }
+    }
+}
