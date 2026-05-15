@@ -1,11 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io_uring.IORING_OP_SENDMSG_ZC
-import io_uring.IORING_OP_SEND_ZC
 import io_uring.io_uring
-import io_uring.keel_get_probe_ring
-import io_uring.keel_opcode_supported
-import io_uring.keel_probe_free
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 
@@ -447,12 +442,21 @@ data class IoUringCapabilities(
          *
          * @param ring An initialised io_uring ring (used for opcode probing).
          */
-        fun detect(ring: CPointer<io_uring>): IoUringCapabilities {
-            val kv = KernelVersion.current()
-            val probe = keel_get_probe_ring(ring)
+        fun detect(ring: CPointer<io_uring>): IoUringCapabilities =
+            detect(ring, PosixIoUringProbe)
 
-            val sendZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SEND_ZC) != 0
-            val sendmsgZcSupported = probe != null && keel_opcode_supported(probe, IORING_OP_SENDMSG_ZC) != 0
+        /**
+         * Seam overload of [detect]: derives the capabilities from an
+         * injectable [IoUringProbe] instead of the real kernel. The public
+         * [detect] delegates here with [PosixIoUringProbe]; seam tests pass
+         * a fake to drive the kernel-version / opcode-probe matrix.
+         */
+        internal fun detect(ring: CPointer<io_uring>, probe: IoUringProbe): IoUringCapabilities {
+            val kv = probe.kernelVersion()
+            val opcodes = probe.probeOpcodes(ring)
+
+            val sendZcSupported = opcodes.sendZc
+            val sendmsgZcSupported = opcodes.sendmsgZc
             val caps = IoUringCapabilities(
                 multishotAccept = kv >= KernelVersion(5, 19),
                 multishotRecv = kv >= KernelVersion(6, 0),
@@ -509,7 +513,6 @@ data class IoUringCapabilities(
                 sendmsgZc = sendmsgZcSupported,
             )
 
-            if (probe != null) keel_probe_free(probe)
             return caps
         }
 
