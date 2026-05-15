@@ -11,8 +11,6 @@ import io_uring.io_uring_prep_read
 import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_writev
 import io_uring.iovec
-import io_uring.io_uring_queue_exit
-import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.io_uring_submit_and_wait
@@ -26,9 +24,6 @@ import io_uring.keel_register_iowq_max_workers
 import io_uring.keel_register_napi
 import io_uring.keel_register_ring_fd
 import io_uring.keel_ring_fd
-import io_uring.keel_setup_coop_taskrun
-import io_uring.keel_setup_defer_taskrun
-import io_uring.keel_setup_single_issuer
 import io_uring.keel_sqe_set_fixed_file
 import io_uring.keel_unregister_napi
 import io_uring.keel_unregister_ring_fd
@@ -143,6 +138,10 @@ import kotlin.coroutines.resume
  *   eventfd lifecycle). Defaults to [PosixIoUringSyscallOps]; tests inject a
  *   `FakeIoUringSyscallOps` to exercise `eventfd(2)` create / write error
  *   branches without a real Linux kernel.
+ * @param ioUringRing io_uring ring lifecycle seam (`queue_init` / `queue_exit`
+ *   + `IORING_SETUP_*` flag assembly). Defaults to [PosixIoUringRing]; tests
+ *   inject a fake to exercise the ring setup failure branch without a real
+ *   Linux kernel.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringEventLoop(
@@ -150,6 +149,7 @@ internal class IoUringEventLoop(
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
     private val syscallOps: IoUringSyscallOps = PosixIoUringSyscallOps,
+    private val ioUringRing: IoUringRing = PosixIoUringRing,
 ) : CoroutineDispatcher() {
 
     // Arena for long-lived native allocations.
@@ -271,16 +271,17 @@ internal class IoUringEventLoop(
     /**
      * Initialises the io_uring ring. Must be called on the EventLoop pthread —
      * invoked as the first action of [loop].
+     *
+     * `internal` (not `private`) so ring-lifecycle seam tests can drive it
+     * directly with a fake [IoUringRing].
      */
-    private fun initRing() {
-        var flags = 0u
-        if (capabilities.coopTaskrun) flags = flags or keel_setup_coop_taskrun()
-        if (capabilities.singleIssuer) flags = flags or keel_setup_single_issuer()
-        // DEFER_TASKRUN requires SINGLE_ISSUER per kernel; rely on detect()
-        // keeping them consistent and do not enforce at this layer (user override
-        // is intentional).
-        if (capabilities.deferTaskrun) flags = flags or keel_setup_defer_taskrun()
-        val ret = io_uring_queue_init(ringSize.toUInt(), ring.ptr, flags)
+    internal fun initRing() {
+        val flags = ioUringRing.setupFlags(
+            coopTaskrun = capabilities.coopTaskrun,
+            singleIssuer = capabilities.singleIssuer,
+            deferTaskrun = capabilities.deferTaskrun,
+        )
+        val ret = ioUringRing.queueInit(ringSize, ring.ptr, flags)
         check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
         ringInitialized = true
     }
@@ -427,7 +428,7 @@ internal class IoUringEventLoop(
                     logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
                 }
             }
-            if (ringInitialized) io_uring_queue_exit(ring.ptr)
+            if (ringInitialized) ioUringRing.queueExit(ring.ptr)
             closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             arena.clear()
         }
