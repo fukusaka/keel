@@ -30,6 +30,14 @@ public interface HttpCall {
     public val request: HttpRequest
 
     /**
+     * Path parameters bound by the [Router] for the matched route: each
+     * `:name` pattern segment maps to the corresponding request segment,
+     * and a trailing `*` wildcard maps the key `"*"` to the remaining
+     * path. Empty when the matched route has no parameters.
+     */
+    public val pathParameters: Map<String, String>
+
+    /**
      * Sends [response] as the reply to this call.
      *
      * Must be called at most once. A second call throws

@@ -9,8 +9,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
  *
  * [KeelHttpServer] binds a listening socket in Pipeline mode and installs
  * the HTTP/1.1 server codec plus an [HttpServerHandler] dispatch stage on
- * every accepted connection. Each request is routed to the single
- * [RouteHandler] supplied at construction time.
+ * every accepted connection. Each request is resolved through the
+ * [Router] supplied at construction time.
  *
  * Construct via the [keelHttpServer] DSL:
  *
@@ -18,16 +18,16 @@ import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
  * val server = keelHttpServer(engine) {
  *     host = "0.0.0.0"
  *     port = 8080
- *     handle { call -> call.respond(HttpResponse.ok("Hello")) }
+ *     get("/users/:id") { call -> call.respond(HttpResponse.ok(call.pathParameters["id"])) }
  * }
  * server.start()
  * // ...
  * server.stop()
  * ```
  *
- * Routing across multiple handlers, interceptors, and protocol upgrades
- * are layered on in later changes; this stage dispatches every request
- * to one fixed handler.
+ * Each request is resolved through the [Router] supplied at
+ * construction time; an unmatched request is answered `404 Not Found`.
+ * Interceptors and protocol upgrades are layered on in later changes.
  *
  * **Lifecycle**: [start] and [stop] are each idempotent in the sense
  * that a second [start] while running, or a [stop] while stopped, is
@@ -38,7 +38,7 @@ public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
     private val host: String,
     private val port: Int,
-    private val handler: RouteHandler,
+    private val router: Router,
 ) {
 
     private var server: PipelinedStreamServer? = null
@@ -63,7 +63,7 @@ public class KeelHttpServer internal constructor(
     public suspend fun start() {
         check(server == null) { "server is already started" }
         server = engine.bindPipeline(host, port) { channel ->
-            channel.installHttpServerPipeline(handler, engine)
+            channel.installHttpServerPipeline(router, engine)
         }
     }
 
