@@ -1,0 +1,142 @@
+package io.github.fukusaka.keel.server.http
+
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * Pipeline-level integration test for the keel-server-http server stack
+ * ([installHttpServerPipeline]): raw HTTP/1.1 request bytes in, encoded
+ * response bytes out.
+ *
+ * Drives the pipeline directly over a [TestIoTransport] so no real engine
+ * or socket is needed. The transport's `ioDispatcher` is
+ * [Dispatchers.Unconfined], so the request coroutine launched by
+ * [HttpServerHandler] runs inline on the test thread — the request /
+ * response round-trip completes synchronously within `notifyRead`, with
+ * no wall-clock wait to bound.
+ *
+ * `KeelHttpServer.start()` / `stop()` (the `bindPipeline` wiring) are
+ * exercised by per-engine tests; this test covers the request-handling
+ * pipeline that `start()` installs.
+ */
+class HttpServerHandlerTest {
+
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+    private val scope = CoroutineScope(Dispatchers.Unconfined)
+
+    @AfterTest
+    fun tearDown() {
+        transport.close()
+    }
+
+    private fun IoBuf.readString(): String {
+        val bytes = ByteArray(readableBytes)
+        readByteArray(bytes, 0, bytes.size)
+        return bytes.decodeToString()
+    }
+
+    private fun bufOf(text: String): IoBuf {
+        val bytes = text.encodeToByteArray()
+        val buf = DefaultAllocator.allocate(bytes.size)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
+    private fun responseText(): String =
+        transport.written.joinToString("") { it.readString() }
+
+    private fun feedGet(path: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "GET $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
+    @Test
+    fun `a handler that responds produces the response on the wire`() {
+        channel.installHttpServerPipeline(
+            handler = { call -> call.respond(HttpResponse.ok("Hello, World!")) },
+            scope = scope,
+        )
+
+        feedGet("/")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.endsWith("Hello, World!"), "body: $text")
+    }
+
+    @Test
+    fun `the request is delivered to the handler`() {
+        var seenPath: String? = null
+        channel.installHttpServerPipeline(
+            handler = { call ->
+                seenPath = call.request.path
+                call.respond(HttpResponse.ok("ok"))
+            },
+            scope = scope,
+        )
+
+        feedGet("/items/42")
+
+        assertEquals("/items/42", seenPath)
+    }
+
+    @Test
+    fun `a handler that never responds is completed with 500`() {
+        channel.installHttpServerPipeline(
+            handler = { /* never calls respond */ },
+            scope = scope,
+        )
+
+        feedGet("/")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 500"), "expected 500 guard: ${responseText()}")
+    }
+
+    @Test
+    fun `a handler that throws is completed with 500`() {
+        channel.installHttpServerPipeline(
+            handler = { error("handler boom") },
+            scope = scope,
+        )
+
+        feedGet("/")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 500"), "expected 500 guard: ${responseText()}")
+    }
+
+    @Test
+    fun `respond called twice throws IllegalStateException`() {
+        var secondCallFailed = false
+        channel.installHttpServerPipeline(
+            handler = { call ->
+                call.respond(HttpResponse.ok("first"))
+                try {
+                    call.respond(HttpResponse.ok("second"))
+                } catch (e: IllegalStateException) {
+                    secondCallFailed = true
+                }
+            },
+            scope = scope,
+        )
+
+        feedGet("/")
+
+        assertTrue(secondCallFailed, "second respond() must throw IllegalStateException")
+    }
+}
