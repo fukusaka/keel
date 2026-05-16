@@ -150,7 +150,16 @@ internal class Http1Call(
     override val queryString: String? get() = head.queryString
     override val headers: HttpHeaders get() = head.headers
 
-    /** True once a response has been issued (see the KDoc on the field below). */
+    /**
+     * True once [respond] / [respondText] / [respondStream] has been
+     * invoked — this tracks "a response was issued", not "bytes reached
+     * the wire".
+     *
+     * Set before the outbound write, so it stays `true` even if the write
+     * fails. That is deliberate: a failed write means the transport is
+     * already broken, and [HttpServerHandler]'s 500 guard keying off this
+     * flag must not then push a second response onto it.
+     */
     var responded: Boolean = false
         private set
 
