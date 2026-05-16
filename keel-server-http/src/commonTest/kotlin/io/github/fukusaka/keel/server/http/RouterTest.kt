@@ -78,6 +78,27 @@ class RouterTest {
     }
 
     @Test
+    fun `a wildcard matches zero remaining segments`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/static/*", handler)
+        // The wildcard is zero-or-more: /static/* answers the bare /static.
+        val match = router.resolve(HttpMethod.GET, "/static")
+        assertSame(handler, match?.handler)
+        assertEquals("", match?.pathParameters?.get("*"))
+    }
+
+    @Test
+    fun `an exact route takes precedence over a zero-segment wildcard`() {
+        val router = Router()
+        val exact: RouteHandler = { }
+        val wildcard: RouteHandler = { }
+        router.register(HttpMethod.GET, "/static", exact)
+        router.register(HttpMethod.GET, "/static/*", wildcard)
+        assertSame(exact, router.resolve(HttpMethod.GET, "/static")?.handler)
+        assertSame(wildcard, router.resolve(HttpMethod.GET, "/static/logo.png")?.handler)
+    }
+
+    @Test
     fun `a parameter takes precedence over a wildcard`() {
         val router = Router()
         val param: RouteHandler = { }

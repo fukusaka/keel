@@ -31,7 +31,9 @@ public class RouteMatch internal constructor(
  * - **path parameter** — `:id` matches any one segment and binds it to
  *   `id` in [RouteMatch.pathParameters].
  * - **wildcard** — `*`, only as the final segment, matches the entire
- *   remaining path and binds it to the key `"*"`.
+ *   remaining path — zero or more segments — and binds it to the key
+ *   `"*"` (the empty string when zero segments remain). A wildcard route
+ *   rooted at `/static` therefore also answers a bare `/static`.
  *
  * At each segment the match precedence is literal > parameter > wildcard,
  * with backtracking: if the literal branch dead-ends, the parameter and
@@ -108,23 +110,26 @@ public class Router {
         method: HttpMethod,
         params: HashMap<String, String>,
     ): RouteMatch? {
-        if (index == segments.size) {
-            val handler = node.handlers[method] ?: return null
-            return RouteMatch(handler, params.toMap())
+        if (index < segments.size) {
+            val segment = segments[index]
+            node.literalChildren[segment]?.let { child ->
+                resolveNode(child, segments, index + 1, method, params)?.let { return it }
+            }
+            node.paramChild?.let { slot ->
+                params[slot.name] = segment
+                resolveNode(slot.node, segments, index + 1, method, params)?.let { return it }
+                params.remove(slot.name)
+            }
+        } else {
+            node.handlers[method]?.let { return RouteMatch(it, params.toMap()) }
         }
-        val segment = segments[index]
-        node.literalChildren[segment]?.let { child ->
-            resolveNode(child, segments, index + 1, method, params)?.let { return it }
-        }
-        node.paramChild?.let { slot ->
-            params[slot.name] = segment
-            resolveNode(slot.node, segments, index + 1, method, params)?.let { return it }
-            params.remove(slot.name)
-        }
+        // A trailing wildcard is terminal and matches the remaining segments —
+        // zero or more — so a wildcard route also answers its bare prefix path.
         node.wildcardChild?.let { child ->
-            val handler = child.handlers[method] ?: return@let
-            params["*"] = segments.subList(index, segments.size).joinToString("/")
-            return RouteMatch(handler, params.toMap())
+            child.handlers[method]?.let { handler ->
+                params["*"] = segments.subList(index, segments.size).joinToString("/")
+                return RouteMatch(handler, params.toMap())
+            }
         }
         return null
     }
