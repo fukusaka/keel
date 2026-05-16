@@ -28,6 +28,14 @@ import platform.posix.getpid
 internal const val IO_OP_TIMEOUT_MS = 5_000L
 internal const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
 
+// A fixed port nothing listens on, for connection-refused tests.
+// Port 1 (tcpmux) is outside the ephemeral range and unassigned in
+// practice, so a loopback connect to it is reliably refused. A freed
+// ephemeral port must NOT be used: a loopback connect to one can win a
+// TCP simultaneous-open against the connecting socket's own auto-bound
+// local port and succeed (self-connect), flaking the test.
+internal const val REFUSED_PORT = 1
+
 // UDS path uniqueness counter — incremented per test that needs a
 // unique filesystem path. Single-threaded test execution makes the
 // non-atomic `var` safe; gradle test parallelism is per-class, not
