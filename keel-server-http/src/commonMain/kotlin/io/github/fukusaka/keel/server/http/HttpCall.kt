@@ -33,6 +33,15 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
  * [respondStream] must be called per call. A handler that returns
  * without responding is completed by the server with a `500 Internal
  * Server Error` guard so the client is never left hanging.
+ *
+ * **Dispatcher contract**: every member — body reads and response calls
+ * alike — must be invoked from the handler coroutine's original context.
+ * The server runs the handler on the connection's I/O thread so the
+ * whole request lives on one thread, lock-free; calling [receiveChunk] /
+ * [respond] / etc. after switching to another dispatcher (e.g. inside a
+ * `withContext(Dispatchers.IO)` block) without returning to the handler
+ * context first races the pipeline. Do off-thread work in a `withContext`
+ * block and finish it before touching the call.
  */
 public interface HttpCall {
 

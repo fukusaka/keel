@@ -17,9 +17,11 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.reflect.KClass
 
@@ -56,9 +58,9 @@ internal fun PipelinedChannel.installHttpServerPipeline(router: Router, scope: C
  * them). A request with no matching route is answered `404 Not Found`.
  *
  * The pipeline callbacks run on the EventLoop thread; the suspending
- * handler is launched on [scope] bound to the channel's `ioDispatcher`
- * (the EventLoop itself), so the handler — and the body conduit it pulls
- * from — runs on the owning thread, lock-free.
+ * handler is launched on a per-connection child of [scope], bound to the
+ * channel's `ioDispatcher` (the EventLoop itself), so the handler — and
+ * the body conduit it pulls from — runs on the owning thread, lock-free.
  *
  * If the handler returns without responding, or throws, a `500 Internal
  * Server Error` is emitted so the client is never left hanging.
@@ -72,6 +74,22 @@ internal class HttpServerHandler(
 
     /** Terminal inbound handler — produces no further inbound messages. */
     override val producedType: KClass<*> get() = Any::class
+
+    /**
+     * Per-connection child scope each request handler is launched on.
+     *
+     * Every `launch` attaches the new coroutine to its parent `Job`'s
+     * lock-free child list. Launching all requests of all connections on
+     * the shared engine [scope] makes that one list a per-request
+     * contention point (`LockFreeLinkedListNode.correctPrev` /
+     * `attachChild` show up in CPU profiles at saturation). A child `Job`
+     * per connection localises the list to one connection's in-flight
+     * requests — HTTP/1.1 is serial per connection, so the list holds at
+     * most one node. Cancelling it on [onInactive] tears down any handler
+     * still running when the peer disconnects.
+     */
+    private val connectionScope: CoroutineScope =
+        scope + Job(scope.coroutineContext[Job])
 
     /** The call currently consuming body chunks, or null between requests. */
     private var inFlight: Http1Call? = null
@@ -89,6 +107,12 @@ internal class HttpServerHandler(
         }
     }
 
+    /** Cancels any in-flight handler when the connection goes away. */
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        connectionScope.cancel()
+        ctx.propagateInactive()
+    }
+
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
         val match = router.resolve(head.method, head.path)
         if (match == null) {
@@ -97,7 +121,7 @@ internal class HttpServerHandler(
         }
         val call = Http1Call(head, ctx, match.pathParameters)
         inFlight = call
-        scope.launch(ctx.channel.ioDispatcher) {
+        connectionScope.launch(ctx.channel.ioDispatcher) {
             try {
                 match.handler(call)
                 if (!call.responded) {
@@ -245,9 +269,10 @@ internal class Http1Call(
 
     override suspend fun respond(response: HttpResponse) {
         markResponded()
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(response)
-        }
+        // The handler coroutine is launched on the channel's ioDispatcher
+        // (the EventLoop itself), so this already runs on the owning
+        // thread — no withContext hop needed.
+        ctx.propagateWriteAndFlush(response)
     }
 
     override suspend fun respondText(text: String, status: HttpStatus) {
@@ -259,13 +284,9 @@ internal class Http1Call(
         block: suspend (HttpResponseBodySink) -> Unit,
     ) {
         markResponded()
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWrite(head)
-        }
+        ctx.propagateWrite(head)
         block(Http1ResponseBodySink(ctx))
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
-        }
+        ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
     }
 
     private fun markResponded() {
@@ -288,8 +309,7 @@ private class Http1ResponseBodySink(
 ) : HttpResponseBodySink {
 
     override suspend fun write(chunk: IoBuf) {
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(HttpBody(chunk))
-        }
+        // Runs on the handler coroutine, already on the EventLoop thread.
+        ctx.propagateWriteAndFlush(HttpBody(chunk))
     }
 }
