@@ -214,16 +214,30 @@ internal class Http1Call(
     }
 
     override suspend fun receiveBytes(): ByteArray {
-        var acc = ByteArray(0)
-        while (true) {
-            val chunk = receiveChunk() ?: return acc
-            val n = chunk.readableBytes
-            if (n > 0) {
-                val grown = acc.copyOf(acc.size + n)
-                chunk.readByteArray(grown, acc.size, n)
-                acc = grown
+        // Collect every chunk first, then size the result array once and
+        // copy each chunk in exactly once: O(body) total copy. Growing an
+        // accumulator per chunk would be O(body * chunkCount) — quadratic
+        // in the chunk count, which a chunked-encoding client controls.
+        val chunks = ArrayList<IoBuf>()
+        try {
+            var total = 0
+            while (true) {
+                val chunk = receiveChunk() ?: break
+                chunks.add(chunk)
+                total += chunk.readableBytes
             }
-            chunk.release()
+            val acc = ByteArray(total)
+            var offset = 0
+            for (chunk in chunks) {
+                val n = chunk.readableBytes
+                if (n > 0) {
+                    chunk.readByteArray(acc, offset, n)
+                    offset += n
+                }
+            }
+            return acc
+        } finally {
+            for (chunk in chunks) chunk.release()
         }
     }
 
