@@ -89,16 +89,13 @@ public class Router {
             require(name.isNotEmpty()) { "path parameter must have a name: $path" }
             val existing = paramChild
             if (existing != null) {
-                require(paramName == name) {
+                require(existing.name == name) {
                     "conflicting path parameter names at the same position: " +
-                        "':$paramName' vs ':$name' in $path"
+                        "':${existing.name}' vs ':$name' in $path"
                 }
-                existing
+                existing.node
             } else {
-                Node().also {
-                    paramChild = it
-                    paramName = name
-                }
+                Node().also { paramChild = ParamSlot(name, it) }
             }
         }
         else -> literalChildren.getOrPut(segment) { Node() }
@@ -119,11 +116,10 @@ public class Router {
         node.literalChildren[segment]?.let { child ->
             resolveNode(child, segments, index + 1, method, params)?.let { return it }
         }
-        node.paramChild?.let { child ->
-            val name = node.paramName!!
-            params[name] = segment
-            resolveNode(child, segments, index + 1, method, params)?.let { return it }
-            params.remove(name)
+        node.paramChild?.let { slot ->
+            params[slot.name] = segment
+            resolveNode(slot.node, segments, index + 1, method, params)?.let { return it }
+            params.remove(slot.name)
         }
         node.wildcardChild?.let { child ->
             val handler = child.handlers[method] ?: return@let
@@ -136,11 +132,17 @@ public class Router {
     /** A segment trie node: literal children plus optional param / wildcard branches. */
     private class Node {
         val literalChildren: MutableMap<String, Node> = mutableMapOf()
-        var paramChild: Node? = null
-        var paramName: String? = null
+        var paramChild: ParamSlot? = null
         var wildcardChild: Node? = null
         val handlers: MutableMap<HttpMethod, RouteHandler> = mutableMapOf()
     }
+
+    /**
+     * A node's `:name` parameter branch. Bundling the parameter name with
+     * the child node keeps the two correlated values in one non-null
+     * object, so resolution reads `slot.name` without a null assertion.
+     */
+    private class ParamSlot(val name: String, val node: Node)
 
     private companion object {
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
