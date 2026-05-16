@@ -16,12 +16,17 @@ dokka {
 
 // Copy shorten-packages.js to Dokka scripts/ directory so all pages load it.
 tasks.named("dokkaGeneratePublicationHtml") {
+    // Resolved at configuration time — capturing project.file(...) inside the
+    // doLast action would serialize a Project reference and break the
+    // configuration cache.
+    val scriptSource = layout.projectDirectory.file("dokka/scripts/shorten-packages.js")
+    val htmlOutput = layout.buildDirectory.dir("dokka/html")
     doLast {
-        val scriptsDir = layout.buildDirectory.dir("dokka/html/scripts").get().asFile
-        val source = project.file("dokka/scripts/shorten-packages.js")
+        val scriptsDir = htmlOutput.get().dir("scripts").asFile
+        val source = scriptSource.asFile
         source.copyTo(scriptsDir.resolve("shorten-packages.js"), overwrite = true)
         // Inject script tag into all HTML files that reference navigation-loader.js
-        val htmlDir = layout.buildDirectory.dir("dokka/html").get().asFile
+        val htmlDir = htmlOutput.get().asFile
         htmlDir.walkTopDown().filter { it.extension == "html" }.forEach { file ->
             val content = file.readText()
             if ("shorten-packages.js" !in content && "navigation-loader.js" in content) {
