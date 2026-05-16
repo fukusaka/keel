@@ -101,12 +101,22 @@ internal class PipelineHttpCall(
     private val ctx: PipelineHandlerContext,
 ) : HttpCall {
 
-    /** True once [respond] has emitted a response. */
+    /**
+     * True once [respond] has been invoked — this tracks "a response was
+     * issued", not "bytes reached the wire".
+     *
+     * The flag is set before the outbound write, so it stays `true` even
+     * if the write fails. That is deliberate: a failed write means the
+     * transport is already broken, and the server's 500 guard keying off
+     * this flag must not then push a second response onto it.
+     */
     var responded: Boolean = false
         private set
 
     override suspend fun respond(response: HttpResponse) {
         check(!responded) { "respond() called more than once for the same request" }
+        // Set before the write — see the `responded` KDoc for why a failed
+        // write must still leave this flag `true`.
         responded = true
         withContext(ctx.channel.ioDispatcher) {
             ctx.propagateWriteAndFlush(response)
