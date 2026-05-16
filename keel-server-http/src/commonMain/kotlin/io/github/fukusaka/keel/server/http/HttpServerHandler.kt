@@ -19,7 +19,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.reflect.KClass
 
@@ -245,9 +244,10 @@ internal class Http1Call(
 
     override suspend fun respond(response: HttpResponse) {
         markResponded()
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(response)
-        }
+        // The handler coroutine is launched on the channel's ioDispatcher
+        // (the EventLoop itself), so this already runs on the owning
+        // thread — no withContext hop needed.
+        ctx.propagateWriteAndFlush(response)
     }
 
     override suspend fun respondText(text: String, status: HttpStatus) {
@@ -259,13 +259,9 @@ internal class Http1Call(
         block: suspend (HttpResponseBodySink) -> Unit,
     ) {
         markResponded()
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWrite(head)
-        }
+        ctx.propagateWrite(head)
         block(Http1ResponseBodySink(ctx))
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
-        }
+        ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
     }
 
     private fun markResponded() {
@@ -288,8 +284,7 @@ private class Http1ResponseBodySink(
 ) : HttpResponseBodySink {
 
     override suspend fun write(chunk: IoBuf) {
-        withContext(ctx.channel.ioDispatcher) {
-            ctx.propagateWriteAndFlush(HttpBody(chunk))
-        }
+        // Runs on the handler coroutine, already on the EventLoop thread.
+        ctx.propagateWriteAndFlush(HttpBody(chunk))
     }
 }
