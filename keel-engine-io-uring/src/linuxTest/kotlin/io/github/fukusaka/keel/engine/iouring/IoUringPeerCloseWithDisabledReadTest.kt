@@ -158,7 +158,13 @@ class IoUringPeerCloseWithDisabledReadTest {
 
     private companion object {
         private const val SETTLE_MS = 100L
-        private const val EOF_DETECT_TIMEOUT_S = 1
+
+        // Hang-detection bound for the peer-close EOF signal. The healthy
+        // path delivers the EOF within milliseconds; a generous budget
+        // keeps a starved CI runner's scheduling jitter from flaking the
+        // test while still catching a genuine missed-EOF regression.
+        private const val EOF_DETECT_TIMEOUT_S = 5
+
         private const val PAYLOAD_BYTES = 1024
     }
 }

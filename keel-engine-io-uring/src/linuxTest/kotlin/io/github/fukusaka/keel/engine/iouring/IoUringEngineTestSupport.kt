@@ -29,9 +29,14 @@ internal const val IO_OP_TIMEOUT_MS = 5_000L
 // Shorter variant for ops expected to complete quickly on the happy
 // path (e.g. a read that should already have data queued).
 internal const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
-// Tighter bound for dispatch-await latency — if the EL hasn't
-// picked the scheduled job up in 2 seconds, something is wrong.
-internal const val DISPATCH_AWAIT_TIMEOUT_MS = 2_000L
+// Hang-detection bound for dispatch-await regression tests: if the EL
+// has not processed a cross-thread dispatch within this window the test
+// is treated as a deadlock regression. The healthy path completes in
+// well under 10 ms; the budget matches IO_OP_TIMEOUT_MS so a starved CI
+// runner's scheduling jitter cannot push a healthy run past it (a 2 s
+// budget flaked exactly that way), while a true deadlock — which never
+// completes — is still caught.
+internal const val DISPATCH_AWAIT_TIMEOUT_MS = 5_000L
 
 // A fixed port nothing listens on, for connection-refused tests.
 // Port 1 (tcpmux) is outside the ephemeral range and unassigned in
