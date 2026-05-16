@@ -2,8 +2,12 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.codec.http.HttpResponseHead
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
@@ -69,6 +73,34 @@ class HttpServerHandlerTest {
                     "\r\n",
             ),
         )
+    }
+
+    private fun feedPost(path: String, body: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "POST $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "Content-Length: ${body.encodeToByteArray().size}\r\n" +
+                    "\r\n" +
+                    body,
+            ),
+        )
+    }
+
+    /** Feeds a chunked-transfer-encoding POST so the decoder emits one `HttpBody` per chunk. */
+    private fun feedPostChunked(path: String, vararg chunks: String) {
+        val sb = StringBuilder(
+            "POST $path HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n",
+        )
+        for (chunk in chunks) {
+            val size = chunk.encodeToByteArray().size
+            sb.append(size.toString(16)).append("\r\n").append(chunk).append("\r\n")
+        }
+        sb.append("0\r\n\r\n")
+        channel.pipeline.notifyRead(bufOf(sb.toString()))
     }
 
     @Test
@@ -140,6 +172,148 @@ class HttpServerHandlerTest {
         feedGet("/")
 
         assertTrue(responseText().startsWith("HTTP/1.1 500"), "expected 500 guard: ${responseText()}")
+    }
+
+    @Test
+    fun `receiveBytes aggregates the request body`() {
+        var received: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/echo") { call ->
+                    received = call.receiveBytes().decodeToString()
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPost("/echo", "hello world")
+
+        assertEquals("hello world", received)
+    }
+
+    @Test
+    fun `receiveBytes returns an empty array for a bodyless request`() {
+        var received: ByteArray? = null
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    received = call.receiveBytes()
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedGet("/")
+
+        assertEquals(0, received?.size)
+    }
+
+    @Test
+    fun `receiveBytes assembles a multi-chunk body in order`() {
+        var received: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/echo") { call ->
+                    received = call.receiveBytes().decodeToString()
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPostChunked("/echo", "alpha", "-", "beta", "-", "gamma")
+
+        assertEquals("alpha-beta-gamma", received)
+    }
+
+    @Test
+    fun `receiveChunk delivers each chunk of a multi-chunk body`() {
+        val chunks = mutableListOf<String>()
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    while (true) {
+                        val chunk = call.receiveChunk() ?: break
+                        val bytes = ByteArray(chunk.readableBytes)
+                        chunk.readByteArray(bytes, 0, bytes.size)
+                        chunks.add(bytes.decodeToString())
+                        chunk.release()
+                    }
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "one", "two", "three")
+
+        assertEquals(listOf("one", "two", "three"), chunks)
+    }
+
+    @Test
+    fun `receiveChunk streams the body chunks then null`() {
+        val chunks = mutableListOf<String>()
+        var endReached = false
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    while (true) {
+                        val chunk = call.receiveChunk() ?: break
+                        val bytes = ByteArray(chunk.readableBytes)
+                        chunk.readByteArray(bytes, 0, bytes.size)
+                        chunks.add(bytes.decodeToString())
+                        chunk.release()
+                    }
+                    endReached = true
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPost("/upload", "payload")
+
+        assertTrue(endReached, "receiveChunk must return null at end of body")
+        assertEquals("payload", chunks.joinToString(""))
+    }
+
+    @Test
+    fun `respondText sends a text plain response`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respondText("plain body") }
+            },
+        )
+
+        feedGet("/")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.endsWith("plain body"), "body: $text")
+        assertTrue(text.contains("text/plain", ignoreCase = true), "content-type: $text")
+    }
+
+    @Test
+    fun `respondStream emits a chunked streaming response`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.write(bufOf("beta"))
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.contains("alpha"), "first chunk: $text")
+        assertTrue(text.contains("beta"), "second chunk: $text")
     }
 
     @Test
