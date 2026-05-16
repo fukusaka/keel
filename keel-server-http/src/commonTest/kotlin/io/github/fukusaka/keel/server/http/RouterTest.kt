@@ -78,6 +78,21 @@ class RouterTest {
     }
 
     @Test
+    fun `a parameter takes precedence over a wildcard`() {
+        val router = Router()
+        val param: RouteHandler = { }
+        val wildcard: RouteHandler = { }
+        router.register(HttpMethod.GET, "/files/:name", param)
+        router.register(HttpMethod.GET, "/files/*", wildcard)
+        // Single segment: the parameter route matches.
+        assertSame(param, router.resolve(HttpMethod.GET, "/files/report")?.handler)
+        // Multiple segments: the parameter cannot span them, so the wildcard matches.
+        val deep = router.resolve(HttpMethod.GET, "/files/2026/may/report")
+        assertSame(wildcard, deep?.handler)
+        assertEquals("2026/may/report", deep?.pathParameters?.get("*"))
+    }
+
+    @Test
     fun `resolution backtracks from a dead-end literal branch to a parameter`() {
         val router = Router()
         val literalRoute: RouteHandler = { }
