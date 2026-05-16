@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: `server-http-epoll` / `server-http-io-uring` engine variants run a `KeelHttpServer` (the productized `keel-server-http` stack) serving `/hello` + `/large`, so its per-request overhead can be measured against the raw hand-wired `pipeline-http-*` pipeline (#534)
 - `server-http`: `HttpCall` gains a flat HTTP-version-agnostic typed API — request `method` / `path` / `query` / `headers`, request body via zero-copy `receiveChunk()` or aggregating `receiveBytes()`, and responses via `respond` / `respondText` / `respondStream` (chunked streaming). The server codec now runs in streaming mode so body chunks reach the handler incrementally (#533)
 - `server-http`: `Router` for `keel-server-http` — a segment-trie router matching method × path with `:name` path parameters and a trailing `*` wildcard. The `keelHttpServer { }` DSL gains `get` / `post` / `put` / `delete` / `patch` / `head` / `options` / `route` registration, and `HttpCall.pathParameters` exposes the captured parameters; unmatched requests are answered `404` (#530)
 - `server-http`: new `keel-server-http` module — a native HTTP server on a keel `StreamEngine`, runnable on every engine target (native / JVM / JS). This change is the module skeleton: `KeelHttpServer` start/stop lifecycle (Pipeline-mode bind + HTTP/1.1 server codec) and the `keelHttpServer(engine) { }` DSL (#528)
