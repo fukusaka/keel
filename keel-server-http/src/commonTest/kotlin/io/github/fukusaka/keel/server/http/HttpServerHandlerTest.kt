@@ -87,6 +87,22 @@ class HttpServerHandlerTest {
         )
     }
 
+    /** Feeds a chunked-transfer-encoding POST so the decoder emits one `HttpBody` per chunk. */
+    private fun feedPostChunked(path: String, vararg chunks: String) {
+        val sb = StringBuilder(
+            "POST $path HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n",
+        )
+        for (chunk in chunks) {
+            val size = chunk.encodeToByteArray().size
+            sb.append(size.toString(16)).append("\r\n").append(chunk).append("\r\n")
+        }
+        sb.append("0\r\n\r\n")
+        channel.pipeline.notifyRead(bufOf(sb.toString()))
+    }
+
     @Test
     fun `a matched route's handler produces the response on the wire`() {
         install(
@@ -190,6 +206,46 @@ class HttpServerHandlerTest {
         feedGet("/")
 
         assertEquals(0, received?.size)
+    }
+
+    @Test
+    fun `receiveBytes assembles a multi-chunk body in order`() {
+        var received: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/echo") { call ->
+                    received = call.receiveBytes().decodeToString()
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPostChunked("/echo", "alpha", "-", "beta", "-", "gamma")
+
+        assertEquals("alpha-beta-gamma", received)
+    }
+
+    @Test
+    fun `receiveChunk delivers each chunk of a multi-chunk body`() {
+        val chunks = mutableListOf<String>()
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    while (true) {
+                        val chunk = call.receiveChunk() ?: break
+                        val bytes = ByteArray(chunk.readableBytes)
+                        chunk.readByteArray(bytes, 0, bytes.size)
+                        chunks.add(bytes.decodeToString())
+                        chunk.release()
+                    }
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "one", "two", "three")
+
+        assertEquals(listOf("one", "two", "three"), chunks)
     }
 
     @Test
