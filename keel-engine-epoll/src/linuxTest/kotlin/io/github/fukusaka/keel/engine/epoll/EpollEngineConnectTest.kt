@@ -116,19 +116,17 @@ class EpollEngineConnectTest {
     }
 
     @Test
-    fun `connect to refused port throws`() = runBlocking {
+    fun `connect to a refused port throws`() = runBlocking {
         val engine = EpollEngine()
-        // Bind to get a port, then close the server so the port is refused
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        server.close()
-
+        // Connect straight to REFUSED_PORT — a fixed non-ephemeral port
+        // nothing listens on — so the refusal is deterministic (see the
+        // REFUSED_PORT KDoc for why a freed ephemeral port is unsafe here).
         val ex = assertFailsWith<IllegalStateException> {
             withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
-                engine.connect("127.0.0.1", port)
+                engine.connect("127.0.0.1", REFUSED_PORT)
             }
         }
-        assertTrue(ex.message!!.contains("connect"))
+        assertTrue(ex.message?.contains("connect") == true)
 
         engine.close()
     }

@@ -2,10 +2,11 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
-import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
+import java.net.ConnectException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -100,26 +101,17 @@ class NioEngineConnectTest {
     }
 
     @Test
-    fun `connect to refused port throws or succeeds`() = runTest {
+    fun `connect to a refused port throws`() = runTest {
         val engine = NioEngine()
-        // Bind to get a port, then close the server so the port is refused.
-        // On JVM, loopback connect may succeed if the OS hasn't fully
-        // released the port (TIME_WAIT). Both outcomes are valid.
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        server.close()
-
-        try {
-            val ch = withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
-                engine.connect("127.0.0.1", port)
+        // Connect straight to REFUSED_PORT — a fixed non-ephemeral port
+        // nothing listens on — so the refusal is deterministic (see the
+        // REFUSED_PORT KDoc for why a freed ephemeral port is unsafe here).
+        assertFailsWith<ConnectException> {
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
+                engine.connect("127.0.0.1", REFUSED_PORT)
             }
-            // Connect succeeded (OS race) — just close
-            ch.close()
-        } catch (_: Exception) {
-            // ConnectException — expected on most platforms
         }
 
         engine.close()
     }
-
 }
