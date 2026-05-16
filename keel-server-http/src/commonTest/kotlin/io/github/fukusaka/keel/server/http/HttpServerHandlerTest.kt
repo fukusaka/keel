@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -16,7 +17,7 @@ import kotlin.test.assertTrue
 /**
  * Pipeline-level integration test for the keel-server-http server stack
  * ([installHttpServerPipeline]): raw HTTP/1.1 request bytes in, encoded
- * response bytes out.
+ * response bytes out, via a [Router].
  *
  * Drives the pipeline directly over a [TestIoTransport] so no real engine
  * or socket is needed. The transport's `ioDispatcher` is
@@ -56,6 +57,10 @@ class HttpServerHandlerTest {
     private fun responseText(): String =
         transport.written.joinToString("") { it.readString() }
 
+    private fun install(router: Router) {
+        channel.installHttpServerPipeline(router, scope)
+    }
+
     private fun feedGet(path: String) {
         channel.pipeline.notifyRead(
             bufOf(
@@ -67,10 +72,11 @@ class HttpServerHandlerTest {
     }
 
     @Test
-    fun `a handler that responds produces the response on the wire`() {
-        channel.installHttpServerPipeline(
-            handler = { call -> call.respond(HttpResponse.ok("Hello, World!")) },
-            scope = scope,
+    fun `a matched route's handler produces the response on the wire`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respond(HttpResponse.ok("Hello, World!")) }
+            },
         )
 
         feedGet("/")
@@ -81,26 +87,41 @@ class HttpServerHandlerTest {
     }
 
     @Test
-    fun `the request is delivered to the handler`() {
-        var seenPath: String? = null
-        channel.installHttpServerPipeline(
-            handler = { call ->
-                seenPath = call.request.path
-                call.respond(HttpResponse.ok("ok"))
+    fun `an unmatched route is answered with 404`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/known") { call -> call.respond(HttpResponse.ok("ok")) }
             },
-            scope = scope,
         )
 
-        feedGet("/items/42")
+        feedGet("/unknown")
 
-        assertEquals("/items/42", seenPath)
+        assertTrue(responseText().startsWith("HTTP/1.1 404"), "expected 404: ${responseText()}")
+    }
+
+    @Test
+    fun `a path parameter is delivered to the handler`() {
+        var seenId: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/users/:id") { call ->
+                    seenId = call.pathParameters["id"]
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedGet("/users/42")
+
+        assertEquals("42", seenId)
     }
 
     @Test
     fun `a handler that never responds is completed with 500`() {
-        channel.installHttpServerPipeline(
-            handler = { /* never calls respond */ },
-            scope = scope,
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { /* never calls respond */ }
+            },
         )
 
         feedGet("/")
@@ -110,9 +131,10 @@ class HttpServerHandlerTest {
 
     @Test
     fun `a handler that throws is completed with 500`() {
-        channel.installHttpServerPipeline(
-            handler = { error("handler boom") },
-            scope = scope,
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { error("handler boom") }
+            },
         )
 
         feedGet("/")
@@ -123,16 +145,17 @@ class HttpServerHandlerTest {
     @Test
     fun `respond called twice throws IllegalStateException`() {
         var secondCallFailed = false
-        channel.installHttpServerPipeline(
-            handler = { call ->
-                call.respond(HttpResponse.ok("first"))
-                try {
-                    call.respond(HttpResponse.ok("second"))
-                } catch (e: IllegalStateException) {
-                    secondCallFailed = true
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    call.respond(HttpResponse.ok("first"))
+                    try {
+                        call.respond(HttpResponse.ok("second"))
+                    } catch (e: IllegalStateException) {
+                        secondCallFailed = true
+                    }
                 }
             },
-            scope = scope,
         )
 
         feedGet("/")

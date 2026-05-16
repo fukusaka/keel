@@ -25,32 +25,35 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  *
  * The first three stages are the standard `keel-codec-http` HTTP/1.1
  * server codec ([addHttp1ServerCodec]); [HttpServerHandler] is the
- * dispatch stage that runs the application [handler]. [scope] is the
- * coroutine scope each request's suspending [handler] is launched on —
- * the owning engine in production, a test scope in unit tests.
+ * dispatch stage that resolves each request through [router] and runs
+ * the matched [RouteHandler]. [scope] is the coroutine scope each
+ * request's suspending handler is launched on — the owning engine in
+ * production, a test scope in unit tests.
  */
-internal fun PipelinedChannel.installHttpServerPipeline(handler: RouteHandler, scope: CoroutineScope) {
+internal fun PipelinedChannel.installHttpServerPipeline(router: Router, scope: CoroutineScope) {
     addHttp1ServerCodec(aggregateBody = true)
-    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(handler, scope))
+    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, scope))
 }
 
 /**
- * Terminal inbound handler that dispatches each aggregated [HttpRequest]
- * to the application [RouteHandler].
+ * Terminal inbound handler that resolves each aggregated [HttpRequest]
+ * through the [Router] and dispatches it to the matched [RouteHandler].
  *
- * The pipeline callback ([onRead]) runs on the EventLoop thread and must
- * not suspend, so the suspending [handler] is launched as a coroutine on
+ * A request with no matching route is answered `404 Not Found` directly
+ * on the EventLoop thread — no handler runs. For a matched route the
+ * pipeline callback ([onRead]) runs on the EventLoop thread and must not
+ * suspend, so the suspending handler is launched as a coroutine on
  * [scope] bound to the channel's `ioDispatcher`. That dispatcher is the
  * EventLoop itself, so the coroutine — and any `respond` it issues —
  * resumes back on the owning thread, preserving the single-thread-per-
  * channel invariant.
  *
- * If the handler returns without calling [HttpCall.respond], or throws,
- * a `500 Internal Server Error` is emitted so the client is never left
+ * If the handler returns without calling [HttpCall.respond], or throws, a
+ * `500 Internal Server Error` is emitted so the client is never left
  * waiting on a half-open request.
  */
 internal class HttpServerHandler(
-    private val handler: RouteHandler,
+    private val router: Router,
     private val scope: CoroutineScope,
 ) : InboundHandler {
 
@@ -64,10 +67,15 @@ internal class HttpServerHandler(
             ctx.propagateRead(msg)
             return
         }
-        val call = PipelineHttpCall(msg, ctx)
+        val match = router.resolve(msg.method, msg.path)
+        if (match == null) {
+            ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
+            return
+        }
+        val call = PipelineHttpCall(msg, ctx, match.pathParameters)
         scope.launch(ctx.channel.ioDispatcher) {
             try {
-                handler(call)
+                match.handler(call)
                 if (!call.responded) {
                     ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
                 }
@@ -83,6 +91,8 @@ internal class HttpServerHandler(
     }
 
     private companion object {
+        val NOT_FOUND_RESPONSE: HttpResponse =
+            HttpResponse.of(HttpStatus.NOT_FOUND, "Not Found")
         val INTERNAL_ERROR_RESPONSE: HttpResponse =
             HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error")
     }
@@ -99,6 +109,7 @@ internal class HttpServerHandler(
 internal class PipelineHttpCall(
     override val request: HttpRequest,
     private val ctx: PipelineHandlerContext,
+    override val pathParameters: Map<String, String>,
 ) : HttpCall {
 
     /**

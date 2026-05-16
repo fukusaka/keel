@@ -1,14 +1,17 @@
 package io.github.fukusaka.keel.server.http
 
-import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
 
 /**
  * Configuration builder for [keelHttpServer].
  *
- * Set [host] / [port] and supply the request handler via [handle].
- * Routing, interceptors, and upgrade protocols are added by later
- * changes; this builder configures a single fixed handler.
+ * Set [host] / [port] and register routes with [route] or the
+ * method-specific shorthands ([get], [post], [put], [delete], [patch],
+ * [head], [options]). Each registers a [RouteHandler] against a path
+ * pattern in the server's [Router] (see [Router] for the pattern
+ * syntax). Interceptors and upgrade protocols are added by later
+ * changes.
  */
 public class KeelHttpServerBuilder internal constructor() {
 
@@ -18,15 +21,36 @@ public class KeelHttpServerBuilder internal constructor() {
     /** Bind port. */
     public var port: Int = DEFAULT_PORT
 
-    private var handler: RouteHandler = { call -> call.respond(HttpResponse.notFound()) }
+    private val router = Router()
 
-    /** Sets the handler invoked for every request. */
-    public fun handle(block: RouteHandler) {
-        handler = block
+    /** Registers [handler] for [method] requests matching the [path] pattern. */
+    public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
+        router.register(method, path, handler)
     }
 
+    /** Registers a `GET` route. */
+    public fun get(path: String, handler: RouteHandler): Unit = route(HttpMethod.GET, path, handler)
+
+    /** Registers a `POST` route. */
+    public fun post(path: String, handler: RouteHandler): Unit = route(HttpMethod.POST, path, handler)
+
+    /** Registers a `PUT` route. */
+    public fun put(path: String, handler: RouteHandler): Unit = route(HttpMethod.PUT, path, handler)
+
+    /** Registers a `DELETE` route. */
+    public fun delete(path: String, handler: RouteHandler): Unit = route(HttpMethod.DELETE, path, handler)
+
+    /** Registers a `PATCH` route. */
+    public fun patch(path: String, handler: RouteHandler): Unit = route(HttpMethod.PATCH, path, handler)
+
+    /** Registers a `HEAD` route. */
+    public fun head(path: String, handler: RouteHandler): Unit = route(HttpMethod.HEAD, path, handler)
+
+    /** Registers an `OPTIONS` route. */
+    public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
+
     internal fun build(engine: StreamEngine): KeelHttpServer =
-        KeelHttpServer(engine, host, port, handler)
+        KeelHttpServer(engine, host, port, router)
 
     private companion object {
         const val DEFAULT_HOST = "0.0.0.0"
@@ -43,7 +67,8 @@ public class KeelHttpServerBuilder internal constructor() {
  * ```
  * val server = keelHttpServer(engine) {
  *     port = 8080
- *     handle { call -> call.respond(HttpResponse.ok("Hello")) }
+ *     get("/hello") { call -> call.respond(HttpResponse.ok("Hello")) }
+ *     get("/users/:id") { call -> call.respond(HttpResponse.ok(call.pathParameters["id"])) }
  * }
  * server.start()
  * ```
