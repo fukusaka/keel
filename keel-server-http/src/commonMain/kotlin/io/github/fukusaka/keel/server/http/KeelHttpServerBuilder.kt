@@ -73,6 +73,74 @@ public class KeelHttpServerBuilder internal constructor() {
     public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
 
     /**
+     * Mounts [source] as a static-asset tree at [urlPath].
+     *
+     * Registers a `GET` and a `HEAD` route at `urlPath` plus a trailing
+     * `*` wildcard, so a request for `urlPath/foo/bar.css` resolves the
+     * asset `foo/bar.css` from [source] (see [StaticAssetHandler] for the
+     * serve semantics — `Content-Type`, conditional GET, `404`).
+     *
+     * This is the core static-serving primitive; [staticFiles] and
+     * [staticFile] are sugar over it. A caller-supplied [AssetSource]
+     * already carries its own content-type / ETag behaviour, so there is
+     * no per-mount configuration block here — use [staticFiles] when you
+     * want the [ContentTypeResolver] / [ETagGenerator] knobs. The path
+     * safety of a custom [source] is the implementer's responsibility.
+     */
+    public fun staticAssets(urlPath: String, source: AssetSource) {
+        val handler = StaticAssetHandler(source)
+        val wildcardPath = if (urlPath.endsWith("/")) "$urlPath*" else "$urlPath/*"
+        router.register(HttpMethod.GET, wildcardPath) { call -> handler.handle(call) }
+        router.register(HttpMethod.HEAD, wildcardPath) { call -> handler.handle(call) }
+    }
+
+    /**
+     * Serves the files under [directory] at [urlPath].
+     *
+     * Sugar for [staticAssets] with a [FilesystemAssetSource] over the
+     * default [kotlinx.io.files.SystemFileSystem]; the full 5-layer
+     * path-traversal defense applies. The [configure] block's
+     * [StaticFilesBuilder.mimeTypes] / [StaticFilesBuilder.etag] are
+     * applied to the filesystem source.
+     */
+    public fun staticFiles(
+        urlPath: String,
+        directory: String,
+        configure: StaticFilesBuilder.() -> Unit = {},
+    ) {
+        val options = StaticFilesBuilder().apply(configure)
+        val source = FilesystemAssetSource(
+            root = directory,
+            contentTypeResolver = options.mimeTypes,
+            etagGenerator = options.etag,
+        )
+        staticAssets(urlPath, source)
+    }
+
+    /**
+     * Serves the single file at [filePath] at the exact route [urlPath].
+     *
+     * Registers an exact `GET` + `HEAD` route — no wildcard, no
+     * traversal defense, since the served path is fixed by the server
+     * rather than derived from the request.
+     */
+    public fun staticFile(
+        urlPath: String,
+        filePath: String,
+        configure: StaticFilesBuilder.() -> Unit = {},
+    ) {
+        val options = StaticFilesBuilder().apply(configure)
+        val source = FilesystemAssetSource(
+            root = filePath,
+            contentTypeResolver = options.mimeTypes,
+            etagGenerator = options.etag,
+        )
+        val handler = StaticAssetHandler(source)
+        router.register(HttpMethod.GET, urlPath) { call -> handler.handle(call) }
+        router.register(HttpMethod.HEAD, urlPath) { call -> handler.handle(call) }
+    }
+
+    /**
      * Installs [middleware] as a stage of the request chain. Middleware
      * runs in installation order, the first installed being the
      * outermost, and wraps the dispatch of every request (see

@@ -19,6 +19,7 @@ kotlin {
                 api(project(":keel-codec-http"))
                 api(project(":keel-server"))
                 implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.io.core)
             }
         }
         commonTest {
