@@ -159,6 +159,8 @@ internal class DefaultPipeline(
         tail.prev = head
     }
 
+    override val isEmpty: Boolean get() = head.next === tail
+
     // --- Composition ---
 
     override fun addFirst(name: String, handler: PipelineHandler): Pipeline {

@@ -72,17 +72,24 @@ abstract class AbstractPipelinedChannel(
             pipeline.notifyRead(buf)
         }
         transport.onReadClosed = {
+            // Whether the connection already has a consumer that will see
+            // the upcoming `onInactive`: a wired [SuspendBridgeHandler], or
+            // any user handler in the pipeline (Pipeline mode). Captured
+            // before `notifyInactive` in case a handler removes itself
+            // while handling it.
+            val hasConsumer = bridge != null || !pipeline.isEmpty
             pipeline.notifyInactive()
             // Auto-close on peer-FIN matches keel's existing contract
-            // ("after EOF is observed, the channel is closed"). Defer the
-            // close when no [SuspendBridgeHandler] is installed yet — closing
-            // the transport before the bridge is wired would race with a
-            // user-initiated `read(buf)` call: the read would either throw
-            // `IllegalStateException` (`check(isOpen)`) or suspend forever
-            // because `armRead()` skips when `opened = false`. The pending
-            // close is replayed from [ensureBridge] once the bridge has
-            // observed the inactivation via the pipeline-level replay.
-            if (bridge != null) {
+            // ("after EOF is observed, the channel is closed"). With a
+            // consumer present the close runs now — it has just received
+            // `onInactive`. Defer only when the pipeline is still empty: a
+            // Coroutine-mode channel whose lazy [SuspendBridgeHandler] is
+            // not yet wired, where closing now would race a user-initiated
+            // `read(buf)` (`check(isOpen)` throw / `armRead` no-op suspend).
+            // The deferred close is replayed from [ensureBridge]. Deferring
+            // in Pipeline mode would instead leak the fd in CLOSE-WAIT
+            // forever, since `ensureBridge` is never called there.
+            if (hasConsumer) {
                 close()
             } else {
                 pendingClose = true
