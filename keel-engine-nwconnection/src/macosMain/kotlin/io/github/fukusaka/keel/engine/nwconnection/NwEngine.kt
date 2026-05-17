@@ -16,9 +16,11 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.ServerTlsProvider
 import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
 import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.asDer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -101,7 +103,7 @@ import kotlin.coroutines.CoroutineContext
 @OptIn(ExperimentalForeignApi::class)
 class NwEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
-) : StreamEngine {
+) : StreamEngine, ServerTlsProvider {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
@@ -220,6 +222,20 @@ class NwEngine(
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
+
+    /**
+     * Builds a [BindConfig] that terminates TLS at the NWListener level.
+     *
+     * Backs the `connector { tls { } }` `EngineNative` strategy: the
+     * returned [TlsServerConfig] has a `null` installer, which
+     * [bindPipeline] detects as the request to configure TLS on the
+     * listener's `nw_parameters_t` rather than per connection.
+     */
+    override fun nativeTlsBindConfig(
+        tls: TlsConfig,
+        backlog: Int,
+        socketOptions: SocketOptions,
+    ): BindConfig = TlsServerConfig(tls, installer = null, backlog = backlog, childSocketOptions = socketOptions)
 
     private fun bindPipelineInet(
         address: InetSocketAddress,
