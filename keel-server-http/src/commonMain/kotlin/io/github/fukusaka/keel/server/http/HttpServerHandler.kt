@@ -41,19 +41,22 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * `HttpBodyEnd` sequence and can offer both streaming and aggregated
  * body access. [middlewares] is the middleware chain wrapping every
  * request's dispatch (outermost first). [scope] is the coroutine scope
- * each request's suspending handler is launched on — the owning engine
- * in production, a test scope in unit tests.
+ * each request's suspending handler is launched on — the server scope in
+ * production, a test scope in unit tests. [connections] is the registry
+ * the handler joins for the duration of the connection so
+ * [KeelHttpServer.stop] can drain it.
  */
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
     middlewares: List<Middleware>,
     errorHandlers: ErrorHandlers,
     scope: CoroutineScope,
+    connections: ServerConnections = ServerConnections(),
 ) {
     addHttp1ServerCodec(aggregateBody = false)
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,
-        HttpServerHandler(router, middlewares, errorHandlers, scope, channel = this),
+        HttpServerHandler(router, middlewares, errorHandlers, scope, connections, channel = this),
     )
 }
 
@@ -81,12 +84,19 @@ internal fun PipelinedChannel.installHttpServerPipeline(
  * Error` is emitted so the client is never left hanging. If it throws, a
  * registered exception mapper ([ErrorHandlers]) answers it, falling back
  * to `500` when none matches.
+ *
+ * **Graceful shutdown**: the handler joins [connections] while the
+ * channel is active. [KeelHttpServer.stop] snapshots that registry and
+ * calls [requestDrain] on each connection — an idle one is closed at
+ * once, an active one finishes its in-flight request (whose response is
+ * tagged `Connection: close`) before the channel closes.
  */
 internal class HttpServerHandler(
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
     private val scope: CoroutineScope,
+    private val connections: ServerConnections,
     private val channel: PipelinedChannel,
 ) : InboundHandler {
 
@@ -114,6 +124,25 @@ internal class HttpServerHandler(
     /** The call currently consuming body chunks, or null between requests. */
     private var inFlight: Http1Call? = null
 
+    /**
+     * Set once [requestDrain] has run on this connection. Touched only on
+     * the EventLoop thread (the drain coroutine and [onRequestHead] both
+     * run there), so a plain `var` is enough — no atomic needed.
+     *
+     * While set, every completed request closes the channel and its
+     * response carries `Connection: close`.
+     */
+    private var draining: Boolean = false
+
+    /** The registry join, awaited before deregistering (see [onInactive]). */
+    private var registerJob: Job? = null
+
+    /** Joins the connection registry so [KeelHttpServer.stop] can drain it. */
+    override fun onActive(ctx: PipelineHandlerContext) {
+        registerJob = scope.launch { connections.register(this@HttpServerHandler) }
+        ctx.propagateActive()
+    }
+
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpRequestHead -> onRequestHead(ctx, msg)
@@ -130,7 +159,44 @@ internal class HttpServerHandler(
     /** Cancels any in-flight handler when the connection goes away. */
     override fun onInactive(ctx: PipelineHandlerContext) {
         connectionScope.cancel()
+        // Deregister on the server scope (not connectionScope, which was
+        // just cancelled). Joining registerJob first guarantees the
+        // unregister never races ahead of the register and leaks a dead
+        // handler into the set.
+        scope.launch {
+            registerJob?.join()
+            connections.unregister(this@HttpServerHandler)
+        }
         ctx.propagateInactive()
+    }
+
+    /**
+     * Begins draining this connection for [KeelHttpServer.stop]. Hops to
+     * the connection's EventLoop thread, then: an idle connection (no
+     * in-flight request) is closed at once; an active one is flagged so
+     * its in-flight request closes the channel once it has responded, and
+     * that response is tagged `Connection: close`.
+     */
+    fun requestDrain() {
+        connectionScope.launch(channel.ioDispatcher) {
+            draining = true
+            val active = inFlight
+            if (active == null) {
+                channel.close()
+            } else {
+                active.markConnectionClose()
+            }
+        }
+    }
+
+    /** Suspends until this connection's channel is fully closed. */
+    suspend fun awaitClosed() {
+        channel.awaitClosed()
+    }
+
+    /** Closes the channel unconditionally — the shutdown force phase. */
+    fun forceClose() {
+        channel.close()
     }
 
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
@@ -148,9 +214,11 @@ internal class HttpServerHandler(
         val noAsyncWork = middlewares.isEmpty() && errorHandlers.notFound == null
         if (unmatched && noAsyncWork) {
             ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
+            if (draining) channel.close()
             return
         }
         val call = Http1Call(head, ctx, match?.pathParameters ?: emptyMap())
+        if (draining) call.markConnectionClose()
         inFlight = call
         connectionScope.launch(ctx.channel.ioDispatcher) {
             try {
@@ -167,6 +235,10 @@ internal class HttpServerHandler(
                 // drain anything that arrived but was never consumed.
                 if (inFlight === call) inFlight = null
                 call.discardUnconsumedBody()
+                // Draining: the request has been answered, so close the
+                // keep-alive connection now (the response already carried
+                // `Connection: close`). Runs even on cancellation.
+                if (draining) channel.close()
             }
         }
     }
@@ -296,6 +368,19 @@ internal class Http1Call(
     var responded: Boolean = false
         private set
 
+    /**
+     * Set when the connection is draining (see [HttpServerHandler]). The
+     * response this call produces is then tagged `Connection: close` so
+     * the client does not reuse the keep-alive connection the server is
+     * about to close.
+     */
+    private var connectionClose: Boolean = false
+
+    /** Marks this call's response to carry `Connection: close`. */
+    fun markConnectionClose() {
+        connectionClose = true
+    }
+
     // --- body conduit ---
 
     private var pending: ArrayDeque<IoBuf>? = null
@@ -381,7 +466,7 @@ internal class Http1Call(
         // The handler coroutine is launched on the channel's ioDispatcher
         // (the EventLoop itself), so this already runs on the owning
         // thread — no withContext hop needed.
-        ctx.propagateWriteAndFlush(response)
+        ctx.propagateWriteAndFlush(if (connectionClose) response.withConnectionClose() else response)
     }
 
     override suspend fun respondText(text: String, status: HttpStatus) {
@@ -393,7 +478,7 @@ internal class Http1Call(
         block: suspend (HttpResponseBodySink) -> Unit,
     ) {
         markResponded()
-        ctx.propagateWrite(head)
+        ctx.propagateWrite(if (connectionClose) head.withConnectionClose() else head)
         block(Http1ResponseBodySink(ctx))
         ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
     }
@@ -426,3 +511,25 @@ private class Http1ResponseBodySink(
 /** Case-insensitive equality tolerant of a null receiver (an absent header). */
 private fun String?.equalsIgnoreCase(other: String): Boolean =
     this != null && this.equals(other, ignoreCase = true)
+
+/** Token written into the `Connection` header while a connection is draining. */
+private const val CONNECTION_CLOSE = "close"
+
+/**
+ * Builds a copy of [headers] with `Connection: close` set. The headers
+ * are copied rather than mutated in place because the source may be a
+ * shared constant (`NOT_FOUND_RESPONSE` and the like).
+ */
+private fun HttpHeaders.withConnectionClose(): HttpHeaders =
+    HttpHeaders.build {
+        this@withConnectionClose.forEach { name, value -> add(name, value) }
+        set(HttpHeaderName.CONNECTION, CONNECTION_CLOSE)
+    }
+
+/** [HttpResponse] copy whose headers carry `Connection: close`. */
+private fun HttpResponse.withConnectionClose(): HttpResponse =
+    copy(headers = headers.withConnectionClose())
+
+/** [HttpResponseHead] copy whose headers carry `Connection: close`. */
+private fun HttpResponseHead.withConnectionClose(): HttpResponseHead =
+    copy(headers = headers.withConnectionClose())
