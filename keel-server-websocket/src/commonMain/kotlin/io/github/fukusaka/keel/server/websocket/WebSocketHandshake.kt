@@ -4,7 +4,9 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.websocket.validateClientKey
 
-private const val SEC_WEBSOCKET_KEY = "Sec-WebSocket-Key"
+/** `Sec-WebSocket-Key` request header (RFC 6455 §4.1) — shared with [runWebSocketUpgrade]. */
+internal const val SEC_WEBSOCKET_KEY: String = "Sec-WebSocket-Key"
+
 private const val SEC_WEBSOCKET_VERSION = "Sec-WebSocket-Version"
 private const val WEBSOCKET_VERSION_13 = "13"
 

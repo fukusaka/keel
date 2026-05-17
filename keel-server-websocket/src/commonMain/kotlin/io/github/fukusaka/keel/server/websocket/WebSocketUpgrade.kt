@@ -57,7 +57,7 @@ public suspend fun runWebSocketUpgrade(
     requestHeaders: HttpHeaders,
     handler: WebSocketHandler,
 ) {
-    val clientKey = requestHeaders[SEC_WEBSOCKET_KEY_HEADER]
+    val clientKey = requestHeaders[SEC_WEBSOCKET_KEY]
         ?: error("Sec-WebSocket-Key missing — caller must validate via isWebSocketUpgrade()")
     val responseHead = HttpResponseHead(
         status = HttpStatus.SWITCHING_PROTOCOLS,
@@ -65,7 +65,7 @@ public suspend fun runWebSocketUpgrade(
         headers = HttpHeaders.of(
             HttpHeaderName.UPGRADE to "websocket",
             HttpHeaderName.CONNECTION to "Upgrade",
-            SEC_WEBSOCKET_ACCEPT_HEADER to computeAcceptKey(clientKey),
+            SEC_WEBSOCKET_ACCEPT to computeAcceptKey(clientKey),
         ),
     )
     val frameBridge = SuspendMessageBridge(WsFrame::class)
@@ -113,8 +113,8 @@ public suspend fun runWebSocketUpgrade(
     }
 }
 
-private const val SEC_WEBSOCKET_KEY_HEADER = "Sec-WebSocket-Key"
-private const val SEC_WEBSOCKET_ACCEPT_HEADER = "Sec-WebSocket-Accept"
+/** `Sec-WebSocket-Accept` response header (RFC 6455 §4.2.2). */
+private const val SEC_WEBSOCKET_ACCEPT = "Sec-WebSocket-Accept"
 
 /**
  * An [UpgradeProtocol] that takes over an `Upgrade: websocket` request and
