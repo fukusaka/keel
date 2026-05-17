@@ -51,18 +51,14 @@ public class KeelHttpServer internal constructor(
     private val errorHandlers: ErrorHandlers,
 ) {
 
-    private var server: PipelinedStreamServer? = null
-
     /**
-     * Scope every connection's handler coroutines run on, a child of the
-     * engine scope. Cancelling it tears down all in-flight handlers
-     * without touching the caller-owned engine. Recreated by each
-     * [start], cleared by [stop].
+     * State of the current run, or null when stopped. [start] installs a
+     * fresh instance; [stop] claims it (sets the field back to null) up
+     * front and then works only through its captured copy — so a [stop]
+     * still draining never corrupts a server that [start] has meanwhile
+     * brought back up.
      */
-    private var serverScope: CoroutineScope? = null
-
-    /** Registry of live connections, drained by [stop]. */
-    private val connections = ServerConnections()
+    private var run: ServerRun? = null
 
     /**
      * The address the server is bound to.
@@ -70,11 +66,11 @@ public class KeelHttpServer internal constructor(
      * @throws IllegalStateException if the server has not been started.
      */
     public val localAddress: SocketAddress
-        get() = checkNotNull(server) { "server has not been started" }.localAddress
+        get() = checkNotNull(run) { "server has not been started" }.server.localAddress
 
     /** True while the server is bound and accepting connections. */
     public val isActive: Boolean
-        get() = server?.isActive == true
+        get() = run?.server?.isActive == true
 
     /**
      * Binds the listening socket and begins accepting connections.
@@ -82,12 +78,13 @@ public class KeelHttpServer internal constructor(
      * @throws IllegalStateException if the server is already started.
      */
     public suspend fun start() {
-        check(server == null) { "server is already started" }
+        check(run == null) { "server is already started" }
         val scope = CoroutineScope(engine.coroutineContext + Job(engine.coroutineContext[Job]))
-        serverScope = scope
-        server = engine.bindPipeline(host, port) { channel ->
+        val connections = ServerConnections()
+        val server = engine.bindPipeline(host, port) { channel ->
             channel.installHttpServerPipeline(router, middlewares, errorHandlers, scope, connections)
         }
+        run = ServerRun(server, scope, connections)
     }
 
     /**
@@ -113,30 +110,33 @@ public class KeelHttpServer internal constructor(
      * are cancelled and force-closed immediately (an abrupt stop).
      *
      * The caller-owned [StreamEngine] is never closed. Calling [stop] on a
-     * server that was never started, or stopping twice, is a no-op.
+     * server that was never started, or stopping twice, is a no-op. A
+     * stopped server can be started again — a [stop] still draining works
+     * only through the run it claimed and never disturbs the new run.
      */
     public suspend fun stop(gracePeriodMillis: Long, timeoutMillis: Long) {
-        val srv = server ?: return
-        val scope = serverScope ?: return
+        // Claim the run up front: the field goes back to null now, so a
+        // concurrent / later stop() is a no-op and a start() may bring a
+        // fresh run up while this drain is still in flight.
+        val current = run ?: return
+        run = null
         // Phase 1: stop accepting, then drain live connections.
-        srv.close()
-        server = null
-        val draining = connections.snapshot()
+        current.server.close()
+        val draining = current.connections.snapshot()
         draining.forEach { it.requestDrain() }
         if (gracePeriodMillis > 0) {
             awaitAllClosed(draining, gracePeriodMillis)
         }
         // Phase 2: cancel handlers still running, await the remainder.
-        scope.cancel()
+        current.scope.cancel()
         val remaining = (timeoutMillis - gracePeriodMillis).coerceAtLeast(0)
         if (remaining > 0) {
             awaitAllClosed(draining, remaining)
         }
         // Phase 3: force-close anything still open. A fresh snapshot also
         // catches a connection that registered after the phase-1 snapshot.
-        connections.snapshot().forEach { it.forceClose() }
-        connections.clear()
-        serverScope = null
+        current.connections.snapshot().forEach { it.forceClose() }
+        current.connections.clear()
     }
 
     /** Awaits every connection's close, bounded by [budgetMillis]. */
@@ -147,6 +147,18 @@ public class KeelHttpServer internal constructor(
             }
         }
     }
+
+    /**
+     * Per-run state — the bound server, the scope its connection handlers
+     * run on, and the registry of those connections. A fresh instance is
+     * created by each [start]; [stop] captures the live one and discards
+     * the field, so its drain cannot outlive into the next run.
+     */
+    private class ServerRun(
+        val server: PipelinedStreamServer,
+        val scope: CoroutineScope,
+        val connections: ServerConnections,
+    )
 
     private companion object {
         /** Default time to wait for in-flight requests to finish (phase 1). */
