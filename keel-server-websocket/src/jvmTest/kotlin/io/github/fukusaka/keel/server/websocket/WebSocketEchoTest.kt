@@ -32,8 +32,7 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                host = "127.0.0.1"
-                port = 0
+                connector { host = "127.0.0.1"; port = 0 }
                 webSocket("/echo") {
                     for (frame in incoming) send(frame)
                 }
