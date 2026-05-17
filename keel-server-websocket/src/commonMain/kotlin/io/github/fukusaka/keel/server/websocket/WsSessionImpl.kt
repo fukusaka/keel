@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.server.ktor.websocket
+package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.codec.websocket.WsCloseCode
 import io.github.fukusaka.keel.codec.websocket.WsFrame
@@ -19,9 +19,9 @@ import kotlin.concurrent.Volatile
  * ([addWsServerCodec][io.github.fukusaka.keel.codec.websocket.addWsServerCodec]).
  *
  * The pump that filters control frames out of [bridge] before they
- * reach the user's [incoming] channel is started lazily by
- * [runForward]; the surrounding upgrade flow is responsible for
- * invoking it before handing the session to user code.
+ * reach the user's [incoming] channel is started by [runForward];
+ * [runWebSocketUpgrade] invokes it before handing the session to user
+ * code.
  */
 internal class WsSessionImpl(
     private val channel: PipelinedChannel,
@@ -36,13 +36,11 @@ internal class WsSessionImpl(
 
     /**
      * Serialises the CLOSE-once invariant. RFC 6455 §5.5.1 mandates
-     * exactly one CLOSE frame per direction. The configured Ktor
-     * [Configuration.applicationDispatcher][io.github.fukusaka.keel.server.ktor.KeelApplicationEngine.Configuration.applicationDispatcher]
-     * may be a multi-threaded pool (e.g. `Dispatchers.Default`), in
-     * which case a naive volatile check-and-set on [closed] would
-     * race two `close()` callers and put two CLOSE frames on the
-     * wire. The mutex makes the close-once decision atomic across
-     * dispatchers.
+     * exactly one CLOSE frame per direction. A WebSocket handler may run
+     * on a multi-threaded dispatcher, in which case a naive volatile
+     * check-and-set on [closed] would race two `close()` callers and put
+     * two CLOSE frames on the wire. The mutex makes the close-once
+     * decision atomic across dispatchers.
      */
     private val closeLock = Mutex()
 
@@ -55,10 +53,10 @@ internal class WsSessionImpl(
      * Reads frames from [bridge], handles control frames internally,
      * and forwards application data to [applicationFrames]. Returns
      * when the bridge closes (peer EOF / parse error) or after a CLOSE
-     * frame is observed. Does **not** echo the CLOSE — the surrounding
-     * upgrade flow does that after the user handler has finished
-     * draining any application frames already in the channel buffer,
-     * so a tail-end echo cannot race ahead of in-flight `send` calls.
+     * frame is observed. Does **not** echo the CLOSE — [runWebSocketUpgrade]
+     * does that after the user handler has finished draining any
+     * application frames already in the channel buffer, so a tail-end
+     * echo cannot race ahead of in-flight `send` calls.
      */
     suspend fun runForward() {
         try {
@@ -98,9 +96,9 @@ internal class WsSessionImpl(
     }
 
     /**
-     * Internal: emit a frame as the closing handshake. Used by the
-     * upgrade flow to echo the peer's CLOSE. No-op when the session
-     * has already initiated its own close — the user-driven
+     * Internal: emit a frame as the closing handshake. Used by
+     * [runWebSocketUpgrade] to echo the peer's CLOSE. No-op when the
+     * session has already initiated its own close — the user-driven
      * `session.close(...)` path always sends CLOSE first, so echoing
      * again would put two CLOSE frames on the wire if the peer's ACK
      * arrives before pump teardown (RFC 6455 §5.5.1: only one CLOSE

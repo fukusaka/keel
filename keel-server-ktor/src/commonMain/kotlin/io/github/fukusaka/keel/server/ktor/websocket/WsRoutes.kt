@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor.websocket
 
+import io.github.fukusaka.keel.server.websocket.WsSession
 import io.ktor.server.application.Application
 import io.ktor.util.AttributeKey
 

@@ -1,8 +1,11 @@
-package io.github.fukusaka.keel.server.ktor.websocket
+package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.codec.websocket.WsCloseCode
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import kotlinx.coroutines.channels.ReceiveChannel
+
+/** A WebSocket handler block — runs against an open [WsSession]. */
+public typealias WebSocketHandler = suspend WsSession.() -> Unit
 
 /**
  * A bidirectional WebSocket session driven by keel's
@@ -10,10 +13,10 @@ import kotlinx.coroutines.channels.ReceiveChannel
  * [WsFrameEncoder][io.github.fukusaka.keel.codec.websocket.WsFrameEncoder]
  * pipeline handlers.
  *
- * Handed to user code by [keelWebSocket] when an `Upgrade: websocket`
- * request matches a registered path. The session lives until the
- * handler returns or throws — at which point the implementation sends
- * the closing handshake and tears down the connection.
+ * Handed to user code by [runWebSocketUpgrade] once an `Upgrade: websocket`
+ * request has completed the RFC 6455 handshake. The session lives until
+ * the handler returns or throws — at which point the closing handshake is
+ * sent and the connection torn down.
  *
  * ### Receive ([incoming])
  *

@@ -17,8 +17,8 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.server.ktor.websocket.WsRoutesAttributeKey
-import io.github.fukusaka.keel.server.ktor.websocket.isWebSocketUpgrade
-import io.github.fukusaka.keel.server.ktor.websocket.runWebSocketUpgrade
+import io.github.fukusaka.keel.server.websocket.isWebSocketUpgrade
+import io.github.fukusaka.keel.server.websocket.runWebSocketUpgrade
 import io.ktor.util.pipeline.execute
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.discard
@@ -118,12 +118,12 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
                 // Drain the zero-byte HttpBodyEnd emitted for GET-style upgrade
                 // requests, then hand off to runWebSocketUpgrade which hijacks
                 // the codec stack for the duration of the connection.
-                if (head.isWebSocketUpgrade()) {
+                if (head.headers.isWebSocketUpgrade()) {
                     val routes = engine.application().attributes.getOrNull(WsRoutesAttributeKey)
                     val handler = routes?.lookup(head.uri)
                     if (handler != null) {
                         drainBodyMessages(bridge)
-                        runWebSocketUpgrade(channel, head, scope, handler)
+                        runWebSocketUpgrade(channel, head.headers, handler)
                         break
                     }
                 }
