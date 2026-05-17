@@ -20,6 +20,9 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.ServerTlsProvider
+import io.github.fukusaka.keel.server.TlsServerConfig
+import io.github.fukusaka.keel.tls.TlsConfig
 import io.netty.bootstrap.Bootstrap
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelFuture
@@ -87,7 +90,7 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
 class NettyEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     nettyTransport: NettyTransport = NettyTransport.Auto,
-) : StreamEngine {
+) : StreamEngine, ServerTlsProvider {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
@@ -400,6 +403,20 @@ class NettyEngine(
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
+
+    /**
+     * Builds a [BindConfig] that terminates TLS with Netty's native
+     * `SslHandler` on every accepted connection (see [NettySslInstaller]).
+     *
+     * Backs the `connector { tls { } }` `EngineNative` strategy: the
+     * returned [TlsServerConfig] carries a [NettySslInstaller] so
+     * [bindPipeline] installs Netty's `SslHandler` per connection.
+     */
+    override fun nativeTlsBindConfig(
+        tls: TlsConfig,
+        backlog: Int,
+        socketOptions: SocketOptions,
+    ): BindConfig = TlsServerConfig(tls, NettySslInstaller(), backlog, socketOptions)
 
     private fun bindPipelineUnix(
         address: UnixSocketAddress,
