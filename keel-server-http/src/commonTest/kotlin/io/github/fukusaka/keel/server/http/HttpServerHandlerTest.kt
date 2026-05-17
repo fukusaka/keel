@@ -62,8 +62,12 @@ class HttpServerHandlerTest {
     private fun responseText(): String =
         transport.written.joinToString("") { it.readString() }
 
-    private fun install(router: Router, middlewares: List<Middleware> = emptyList()) {
-        channel.installHttpServerPipeline(router, middlewares, scope)
+    private fun install(
+        router: Router,
+        middlewares: List<Middleware> = emptyList(),
+        errorHandlers: ErrorHandlers = ErrorHandlers.DEFAULT,
+    ) {
+        channel.installHttpServerPipeline(router, middlewares, errorHandlers, scope)
     }
 
     private fun feedGet(path: String) {
@@ -530,6 +534,120 @@ class HttpServerHandlerTest {
 
         assertTrue(!protocol.invoked, "short-circuiting middleware must prevent the upgrade")
         assertTrue(responseText().endsWith("blocked"), "response: ${responseText()}")
+    }
+
+    @Test
+    fun `a custom notFound handler replaces the default 404`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/known") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            errorHandlers = ErrorHandlers(
+                notFound = { call -> call.respondText("custom not found", HttpStatus.NOT_FOUND) },
+                exceptionMappers = emptyList(),
+            ),
+        )
+
+        feedGet("/missing")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 404"), "status: $text")
+        assertTrue(text.endsWith("custom not found"), "body: $text")
+    }
+
+    @Test
+    fun `an exception mapper turns a thrown exception into a response`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { throw IllegalArgumentException("bad input") }
+            },
+            errorHandlers = ErrorHandlers(
+                notFound = null,
+                exceptionMappers = listOf(
+                    ExceptionMapper(IllegalArgumentException::class) { call, cause ->
+                        call.respondText("mapped: ${cause.message}", HttpStatus.BAD_REQUEST)
+                    },
+                ),
+            ),
+        )
+
+        feedGet("/")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 400"), "status: $text")
+        assertTrue(text.endsWith("mapped: bad input"), "body: $text")
+    }
+
+    @Test
+    fun `exception mappers are matched in registration order`() {
+        val hit = mutableListOf<String>()
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { error("boom") }
+            },
+            errorHandlers = ErrorHandlers(
+                notFound = null,
+                exceptionMappers = listOf(
+                    ExceptionMapper(IllegalStateException::class) { call, _ ->
+                        hit.add("specific")
+                        call.respond(HttpResponse.ok("specific"))
+                    },
+                    ExceptionMapper(RuntimeException::class) { call, _ ->
+                        hit.add("general")
+                        call.respond(HttpResponse.ok("general"))
+                    },
+                ),
+            ),
+        )
+
+        feedGet("/")
+
+        assertEquals(listOf("specific"), hit)
+    }
+
+    @Test
+    fun `an unmapped exception falls back to the default 500`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { throw IllegalStateException("boom") }
+            },
+            errorHandlers = ErrorHandlers(
+                notFound = null,
+                exceptionMappers = listOf(
+                    ExceptionMapper(IllegalArgumentException::class) { call, _ ->
+                        call.respond(HttpResponse.ok("should not run"))
+                    },
+                ),
+            ),
+        )
+
+        feedGet("/")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 500"), "expected 500 fallback: ${responseText()}")
+    }
+
+    @Test
+    fun `an exception after a response is not handled by a mapper`() {
+        var mapperRan = false
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    call.respond(HttpResponse.ok("partial"))
+                    throw IllegalArgumentException("late")
+                }
+            },
+            errorHandlers = ErrorHandlers(
+                notFound = null,
+                exceptionMappers = listOf(
+                    ExceptionMapper(IllegalArgumentException::class) { _, _ -> mapperRan = true },
+                ),
+            ),
+        )
+
+        feedGet("/")
+
+        assertTrue(!mapperRan, "mapper must not run once the handler has responded")
+        assertTrue(responseText().endsWith("partial"), "the first response stands: ${responseText()}")
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
