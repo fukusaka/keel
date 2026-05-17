@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-websocket`: `WsSession.pathParameters` exposes the matched route's `:name` / `*` parameters to the `webSocket { }` handler (#549)
 - `server-http`: static file serving — `staticFiles` / `staticFile` / `staticAssets` on `keelHttpServer { }`, with content-type, conditional GET (ETag / Last-Modified → 304), and 5-layer path-traversal defense (#547)
 - `engine-netty` / `engine-nwconnection` / `engine-nodejs`: implement `ServerTlsProvider`, so the `connector { }` `EngineNative` TLS strategy resolves to engine-native TLS (#545)
 - `server`: protocol-neutral `connector { }` DSL building a `ServerConnector` (endpoint + transport + TLS) shared by HTTP / ktor / future protocol servers (#543)

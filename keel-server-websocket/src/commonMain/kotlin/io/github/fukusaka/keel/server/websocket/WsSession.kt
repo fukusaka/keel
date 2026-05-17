@@ -53,6 +53,19 @@ public typealias WebSocketHandler = suspend WsSession.() -> Unit
 public interface WsSession {
 
     /**
+     * Path parameters bound by the `Router` for the matched WebSocket
+     * route: each `:name` pattern segment maps to the corresponding
+     * request segment, and a trailing `*` wildcard maps the key `"*"`
+     * to the remaining path. Empty when the route pattern has no
+     * parameters.
+     *
+     * For `webSocket("/chat/:room")` matched by a request to
+     * `/chat/general`, `pathParameters["room"]` is `"general"`. Mirrors
+     * [HttpCall.pathParameters][io.github.fukusaka.keel.server.http.HttpCall.pathParameters].
+     */
+    public val pathParameters: Map<String, String>
+
+    /**
      * Channel of inbound application-data frames (TEXT / BINARY /
      * CONTINUATION). Closes when the peer sends CLOSE, the connection
      * drops, or [close] is invoked.

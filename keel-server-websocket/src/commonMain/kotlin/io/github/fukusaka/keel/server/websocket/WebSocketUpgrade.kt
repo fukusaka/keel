@@ -51,11 +51,16 @@ private val HTTP_CODEC_HANDLER_NAMES = listOf("http-server", "bridge", "aggregat
  * Precondition: [requestHeaders] is a valid handshake — see
  * [isWebSocketUpgrade]. This function returns only when the session ends,
  * so it takes over [channel] for its whole lifetime.
+ *
+ * @param pathParameters route path parameters to expose on
+ *   [WsSession.pathParameters]; defaults to empty for callers (such as
+ *   the ktor adapter) that route WebSockets without `Router` parameters.
  */
 public suspend fun runWebSocketUpgrade(
     channel: PipelinedChannel,
     requestHeaders: HttpHeaders,
     handler: WebSocketHandler,
+    pathParameters: Map<String, String> = emptyMap(),
 ) {
     val clientKey = requestHeaders[SEC_WEBSOCKET_KEY]
         ?: error("Sec-WebSocket-Key missing — caller must validate via isWebSocketUpgrade()")
@@ -87,7 +92,7 @@ public suspend fun runWebSocketUpgrade(
     // child coroutine, cancelled once the handler returns.
     try {
         coroutineScope {
-            val session = WsSessionImpl(channel, frameBridge)
+            val session = WsSessionImpl(channel, frameBridge, pathParameters)
             val pump = launch { session.runForward() }
             try {
                 session.handler()
@@ -133,6 +138,6 @@ public class WebSocketUpgrade(private val handler: WebSocketHandler) : UpgradePr
             call.respond(HttpResponse.of(HttpStatus.BAD_REQUEST, "Invalid WebSocket handshake"))
             return
         }
-        runWebSocketUpgrade(channel, call.headers, handler)
+        runWebSocketUpgrade(channel, call.headers, handler, call.pathParameters)
     }
 }
