@@ -13,8 +13,10 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.ServerTlsProvider
 import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.asPem
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -69,7 +71,7 @@ import io.github.fukusaka.keel.core.StreamServer as KeelStreamServer
  */
 class NodeEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
-) : StreamEngine {
+) : StreamEngine, ServerTlsProvider {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
@@ -178,6 +180,21 @@ class NodeEngine(
         is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
         is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
     }
+
+    /**
+     * Builds a [BindConfig] that terminates TLS at the listener level via
+     * Node's `tls.createServer()`.
+     *
+     * Backs the `connector { tls { } }` `EngineNative` strategy: the
+     * returned [TlsServerConfig] has a `null` installer, which
+     * [bindPipeline] detects as the request to create a TLS listener
+     * rather than configure TLS per connection.
+     */
+    override fun nativeTlsBindConfig(
+        tls: TlsConfig,
+        backlog: Int,
+        socketOptions: SocketOptions,
+    ): BindConfig = TlsServerConfig(tls, installer = null, backlog = backlog, childSocketOptions = socketOptions)
 
     private fun bindPipelineUnix(
         address: UnixSocketAddress,
