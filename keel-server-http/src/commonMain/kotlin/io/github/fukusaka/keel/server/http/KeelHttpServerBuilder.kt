@@ -10,8 +10,8 @@ import io.github.fukusaka.keel.core.StreamEngine
  * method-specific shorthands ([get], [post], [put], [delete], [patch],
  * [head], [options]). Each registers a [RouteHandler] against a path
  * pattern in the server's [Router] (see [Router] for the pattern
- * syntax). Interceptors and upgrade protocols are added by later
- * changes.
+ * syntax). Middleware is added with [install]. Upgrade protocols are
+ * added by later changes.
  */
 public class KeelHttpServerBuilder internal constructor() {
 
@@ -22,6 +22,7 @@ public class KeelHttpServerBuilder internal constructor() {
     public var port: Int = DEFAULT_PORT
 
     private val router = Router()
+    private val middlewares = mutableListOf<Middleware>()
 
     /** Registers [handler] for [method] requests matching the [path] pattern. */
     public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
@@ -49,8 +50,18 @@ public class KeelHttpServerBuilder internal constructor() {
     /** Registers an `OPTIONS` route. */
     public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
 
+    /**
+     * Installs [middleware] as a stage of the request chain. Middleware
+     * runs in installation order, the first installed being the
+     * outermost, and wraps the dispatch of every request (see
+     * [Middleware]).
+     */
+    public fun install(middleware: Middleware) {
+        middlewares.add(middleware)
+    }
+
     internal fun build(engine: StreamEngine): KeelHttpServer =
-        KeelHttpServer(engine, host, port, router)
+        KeelHttpServer(engine, host, port, router, middlewares.toList())
 
     private companion object {
         const val DEFAULT_HOST = "0.0.0.0"
@@ -67,6 +78,7 @@ public class KeelHttpServerBuilder internal constructor() {
  * ```
  * val server = keelHttpServer(engine) {
  *     port = 8080
+ *     install { call, next -> next() }
  *     get("/hello") { call -> call.respond(HttpResponse.ok("Hello")) }
  *     get("/users/:id") { call -> call.respond(HttpResponse.ok(call.pathParameters["id"])) }
  * }

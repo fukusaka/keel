@@ -38,13 +38,18 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * The codec is installed in **streaming mode** (`aggregateBody = false`)
  * so [HttpServerHandler] sees the `HttpRequestHead` → `HttpBody`* →
  * `HttpBodyEnd` sequence and can offer both streaming and aggregated
- * body access. [scope] is the coroutine scope each request's suspending
- * handler is launched on — the owning engine in production, a test scope
- * in unit tests.
+ * body access. [middlewares] is the middleware chain wrapping every
+ * request's dispatch (outermost first). [scope] is the coroutine scope
+ * each request's suspending handler is launched on — the owning engine
+ * in production, a test scope in unit tests.
  */
-internal fun PipelinedChannel.installHttpServerPipeline(router: Router, scope: CoroutineScope) {
+internal fun PipelinedChannel.installHttpServerPipeline(
+    router: Router,
+    middlewares: List<Middleware>,
+    scope: CoroutineScope,
+) {
     addHttp1ServerCodec(aggregateBody = false)
-    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, scope))
+    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, middlewares, scope))
 }
 
 /**
@@ -52,10 +57,12 @@ internal fun PipelinedChannel.installHttpServerPipeline(router: Router, scope: C
  * [Router] and dispatches it to the matched [RouteHandler].
  *
  * Receives the streaming codec's `HttpRequestHead` → `HttpBody`* →
- * `HttpBodyEnd` sequence. On `HttpRequestHead` the route is resolved and
- * the handler coroutine launched; body chunks that follow are fed to the
- * in-flight call's body conduit (or released if no call is consuming
- * them). A request with no matching route is answered `404 Not Found`.
+ * `HttpBodyEnd` sequence. On `HttpRequestHead` the route is resolved, the
+ * handler coroutine launched, and the [middlewares] chain run around the
+ * dispatch; body chunks that follow are fed to the in-flight call's body
+ * conduit (or released if no call is consuming them). A request with no
+ * matching route is answered `404 Not Found` — still through the
+ * middleware chain, so middleware observes it.
  *
  * The pipeline callbacks run on the EventLoop thread; the suspending
  * handler is launched on a per-connection child of [scope], bound to the
@@ -67,6 +74,7 @@ internal fun PipelinedChannel.installHttpServerPipeline(router: Router, scope: C
  */
 internal class HttpServerHandler(
     private val router: Router,
+    private val middlewares: List<Middleware>,
     private val scope: CoroutineScope,
 ) : InboundHandler {
 
@@ -115,15 +123,17 @@ internal class HttpServerHandler(
 
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
         val match = router.resolve(head.method, head.path)
-        if (match == null) {
+        // Fast path: no middleware and no route — answer 404 synchronously,
+        // without spinning up a handler coroutine.
+        if (match == null && middlewares.isEmpty()) {
             ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
             return
         }
-        val call = Http1Call(head, ctx, match.pathParameters)
+        val call = Http1Call(head, ctx, match?.pathParameters ?: emptyMap())
         inFlight = call
         connectionScope.launch(ctx.channel.ioDispatcher) {
             try {
-                match.handler(call)
+                dispatch(call, match)
                 if (!call.responded) {
                     ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
                 }
@@ -140,6 +150,40 @@ internal class HttpServerHandler(
                 if (inFlight === call) inFlight = null
                 call.discardUnconsumedBody()
             }
+        }
+    }
+
+    /**
+     * Runs the [middlewares] chain (if any) around the dispatch terminal.
+     * With no middleware registered the terminal is invoked directly, so
+     * the common path keeps the pre-middleware cost.
+     */
+    private suspend fun dispatch(call: Http1Call, match: RouteMatch?) {
+        if (middlewares.isEmpty()) {
+            invokeTerminal(call, match)
+        } else {
+            runChain(0, call, match)
+        }
+    }
+
+    /**
+     * Runs middleware [index]; its `next` continuation recurses into
+     * [index] + 1, and the terminal runs once the chain is exhausted.
+     */
+    private suspend fun runChain(index: Int, call: Http1Call, match: RouteMatch?) {
+        if (index < middlewares.size) {
+            middlewares[index](call) { runChain(index + 1, call, match) }
+        } else {
+            invokeTerminal(call, match)
+        }
+    }
+
+    /** Chain terminal: the matched handler, or `404` when nothing matched. */
+    private suspend fun invokeTerminal(call: Http1Call, match: RouteMatch?) {
+        if (match != null) {
+            match.handler(call)
+        } else {
+            call.respond(NOT_FOUND_RESPONSE)
         }
     }
 
