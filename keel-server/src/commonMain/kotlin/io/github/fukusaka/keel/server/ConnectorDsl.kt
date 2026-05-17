@@ -27,6 +27,7 @@ public fun connector(configure: ServerConnectorBuilder.() -> Unit): ServerConnec
     ServerConnectorBuilder().apply(configure).build()
 
 /** Configuration builder for [connector]. */
+@KeelServerDsl
 public class ServerConnectorBuilder internal constructor() {
 
     /** Bind address. Defaults to [ServerConnector.DEFAULT_HOST]. */
@@ -56,6 +57,7 @@ public class ServerConnectorBuilder internal constructor() {
 }
 
 /** Configuration builder for the [ServerConnectorBuilder.tls] block. */
+@KeelServerDsl
 public class ServerTlsBuilder internal constructor() {
 
     /** TLS settings (certificates, trust, verify mode, ALPN, SNI). Required. */

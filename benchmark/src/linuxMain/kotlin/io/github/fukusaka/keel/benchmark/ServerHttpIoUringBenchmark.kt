@@ -25,8 +25,7 @@ object ServerHttpIoUringBenchmark : EngineBenchmark {
             ),
         )
         val server = keelHttpServer(engine) {
-            host = "0.0.0.0"
-            port = config.port
+            connector { host = "0.0.0.0"; port = config.port }
             get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }
             get("/large") { call -> call.respond(PipelineHttpResponses.large) }
         }
