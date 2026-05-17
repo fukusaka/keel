@@ -8,8 +8,10 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
 import platform.posix.EINTR
+import platform.posix.SHUT_WR
 import platform.posix.SOCK_STREAM
 import platform.posix.errno
+import platform.posix.shutdown
 import platform.posix.socket
 import posix_testing.keel_connect_inet_loopback
 import posix_testing.keel_set_rcvtimeo
@@ -105,6 +107,17 @@ public object PosixRawClient {
 
     /** Convenience overload: writes [data] encoded as UTF-8. */
     public fun rawWrite(fd: Int, data: String): Unit = rawWrite(fd, data.encodeToByteArray())
+
+    /**
+     * Half-closes the write side of [fd] via `shutdown(SHUT_WR)`: a FIN is
+     * sent to the peer (which then observes EOF on its read side) while
+     * this client's read side stays open to receive a final response.
+     */
+    public fun rawShutdownWrite(fd: Int) {
+        if (shutdown(fd, SHUT_WR) != 0) {
+            error("shutdown(SHUT_WR) failed: ${errnoMessage(errno)}")
+        }
+    }
 
     /**
      * Reads exactly [size] bytes into a new [ByteArray]. Loops on

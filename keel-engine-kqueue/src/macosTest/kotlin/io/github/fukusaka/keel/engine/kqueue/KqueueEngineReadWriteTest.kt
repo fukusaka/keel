@@ -355,6 +355,66 @@ class KqueueEngineReadWriteTest {
         }
     }
 
+    @Test
+    fun `peer half-close lets the server still write a final response`() = runBlocking {
+        // End-to-end guard for the Coroutine-mode auto-close removal. The
+        // client half-closes its write side (shutdown(SHUT_WR)); the
+        // server reads EOF (-1) and then writes a final response that the
+        // client — read side still open — receives.
+        //
+        // keel has no half-close-vs-full-close branching: a peer FIN
+        // always surfaces as `onReadClosed`. So this is not a test of
+        // "half-close logic" — it guards an emergent property of the
+        // *whole real engine stack* that the seam tests cannot reach:
+        //
+        //  - No layer (KqueueIoTransport / KqueueEventLoop / the core
+        //    AbstractPipelinedChannel) closes the channel's write side on
+        //    a peer read-EOF. AbstractPipelinedChannelTest pins this for
+        //    the core channel alone, over a fake transport; only a
+        //    real-engine test catches an engine-layer regression that
+        //    closes the fd on EV_EOF.
+        //  - The real race between this first `read()` (which installs
+        //    the bridge) and the EventLoop's `onPeerClosed` dispatch — the
+        //    always-armed read of PR #467 — resolves correctly. The seam
+        //    test fires `onReadClosed` synchronously and never runs that
+        //    race; removing the `pendingClose` deferral relies on it being
+        //    benign.
+        //
+        // Before the auto-close removal the accept()ed channel closed on
+        // the EOF and this server write threw IllegalStateException.
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+
+            // Client half-closes — FIN sent, client read side stays open.
+            PosixRawClient.rawShutdownWrite(clientFd)
+
+            // Server observes EOF on the read side.
+            val buf = DefaultAllocator.allocate(64)
+            assertEquals(-1, ch.read(buf))
+            buf.release()
+
+            // The channel is still open: the server writes a final response.
+            val response = DefaultAllocator.allocate(2)
+            response.writeByte('o'.code.toByte())
+            response.writeByte('k'.code.toByte())
+            assertEquals(2, ch.write(response))
+            ch.flush()
+
+            // The client's read side is open — it receives the response.
+            assertEquals("ok", rawRead(clientFd, 2))
+
+            ch.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
     // --- asSuspendSource/asSuspendSink ---
 
     @Test

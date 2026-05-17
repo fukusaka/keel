@@ -8,20 +8,20 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for [AbstractPipelinedChannel]'s deferred close-on-peer-FIN
- * lifecycle.
+ * Unit tests for [AbstractPipelinedChannel]'s peer-FIN close lifecycle.
  *
- * The engine-driven peer-close path (`transport.onReadClosed`) auto-closes
- * the channel after surfacing inactivation through the pipeline. When the
- * lazy [SuspendBridgeHandler] is not yet installed, the close is deferred
- * to [AbstractPipelinedChannel.ensureBridge] so a pending suspend reader
- * has a chance to observe `-1` from the bridge before the channel becomes
- * `isOpen = false`. These tests pin that contract.
+ * On peer-FIN the engine fires `transport.onReadClosed`; the channel
+ * surfaces inactivation through the pipeline and then auto-closes the fd
+ * **only in Pipeline mode** — a pipeline with user handlers and no
+ * [SuspendBridgeHandler], where keel owns the connection lifecycle. A
+ * Coroutine-mode channel (a bridge is wired, or the pipeline is empty
+ * before the lazy bridge) is the caller's resource and is left open for
+ * the caller to close. These tests pin that contract.
  *
  * Engine integration tests (e.g. `KqueueEngineReadWriteTest.readReturnsMinusOneOnEof`)
  * exercise the same path through real sockets; this file covers the
  * behaviour at the abstraction level so all engines benefit from the
- * single core fix without per-engine assertions.
+ * single core change without per-engine assertions.
  */
 internal class AbstractPipelinedChannelTest {
 
@@ -39,43 +39,15 @@ internal class AbstractPipelinedChannelTest {
     private fun makeChannel(transport: CountingTransport = CountingTransport()) =
         Pair(transport, object : AbstractPipelinedChannel(transport, logger) {})
 
-    // --- Peer-FIN deferred close ---
+    // --- Peer-FIN close: Pipeline mode only ---
 
     @Test
-    fun `peer-FIN before bridge is installed leaves channel open until ensureBridge`() {
-        val (transport, channel) = makeChannel()
-
-        // Simulate engine-driven peer-FIN dispatch.
-        transport.onReadClosed?.invoke()
-
-        // Channel stays open: the deferred close waits for the bridge to be
-        // wired so a pending suspend reader can observe EOF.
-        assertTrue(channel.isOpen, "channel must stay open until bridge is installed")
-        assertEquals(0, transport.closeCount, "close() must not run yet")
-    }
-
-    @Test
-    fun `ensureBridge runs the deferred close after replaying onInactive`() {
-        val (transport, channel) = makeChannel()
-        transport.onReadClosed?.invoke()
-        assertTrue(channel.isOpen)
-
-        // First read in the user code installs the bridge.
-        val bridge = channel.ensureBridge()
-
-        // The replayed [PipelineHandler.onInactive] fired by [DefaultPipeline]
-        // sets bridge.eof, then the deferred close runs.
-        assertTrue(bridge.isEof, "bridge must observe EOF via replay")
-        assertFalse(channel.isOpen, "channel closes after bridge replay")
-        assertEquals(1, transport.closeCount, "close() runs exactly once")
-    }
-
-    @Test
-    fun `peer-FIN on a pipeline-mode channel closes immediately without waiting for a bridge`() {
+    fun `peer-FIN on a pipeline-mode channel closes it`() {
         val (transport, channel) = makeChannel()
         // Pipeline mode: a user handler is installed and no lazy
-        // SuspendBridgeHandler will ever be created (ensureBridge is never
-        // called). The handler is the connection's consumer.
+        // SuspendBridgeHandler. keel owns the connection lifecycle (no
+        // Channel handle is exposed to a caller), so the fd is closed here
+        // — deferring would leak it in CLOSE-WAIT.
         channel.pipeline.addLast(
             "consumer",
             object : InboundHandler {
@@ -85,43 +57,67 @@ internal class AbstractPipelinedChannelTest {
 
         transport.onReadClosed?.invoke()
 
-        // The handler received onInactive; there is no bridge to wait for,
-        // so the fd must be closed now. Deferring would leak it in
-        // CLOSE_WAIT forever, since ensureBridge is never called.
         assertFalse(channel.isOpen, "a pipeline-mode channel must close on peer-FIN")
         assertEquals(1, transport.closeCount, "close() must run on peer-FIN")
     }
 
     @Test
-    fun `peer-FIN after bridge is installed closes the channel synchronously`() {
+    fun `peer-FIN on a coroutine-mode channel before any read does not auto-close it`() {
         val (transport, channel) = makeChannel()
-        // Bridge installed before peer-FIN (the standard active-reader case).
+
+        // Empty pipeline: a Coroutine-mode channel before its lazy bridge.
+        transport.onReadClosed?.invoke()
+
+        // The channel is the caller's resource — left open for them to close.
+        assertTrue(channel.isOpen, "a coroutine-mode channel is not auto-closed")
+        assertEquals(0, transport.closeCount, "close() must not run on peer-FIN")
+    }
+
+    @Test
+    fun `peer-FIN with a bridge installed does not auto-close the channel`() {
+        val (transport, channel) = makeChannel()
         val bridge = channel.ensureBridge()
         assertTrue(channel.isOpen)
         assertFalse(bridge.isEof)
 
         transport.onReadClosed?.invoke()
 
-        // Bridge is wired, so [transport.onReadClosed] closes immediately.
-        assertTrue(bridge.isEof)
+        // The bridge observes EOF so `read()` returns -1, but the channel
+        // stays open — the caller closes their Channel.
+        assertTrue(bridge.isEof, "bridge observes EOF")
+        assertTrue(channel.isOpen, "a coroutine-mode channel is not auto-closed")
+        assertEquals(0, transport.closeCount)
+    }
+
+    @Test
+    fun `ensureBridge after peer-FIN replays EOF and leaves the channel open`() {
+        val (transport, channel) = makeChannel()
+        // Peer-FIN before the bridge is installed.
+        transport.onReadClosed?.invoke()
+
+        val bridge = channel.ensureBridge()
+
+        // DefaultPipeline replays onInactive to the late-installed bridge,
+        // so a pending read resolves with -1; the channel is not closed.
+        assertTrue(bridge.isEof, "bridge observes EOF via replay")
+        assertTrue(channel.isOpen, "the channel is left open for the caller")
+        assertEquals(0, transport.closeCount)
+    }
+
+    @Test
+    fun `a coroutine-mode channel peer-FIN then a local close closes it once`() {
+        val (transport, channel) = makeChannel()
+        transport.onReadClosed?.invoke()
+        assertEquals(0, transport.closeCount, "peer-FIN did not auto-close")
+
+        // The caller closes their Channel.
+        channel.close()
         assertFalse(channel.isOpen)
         assertEquals(1, transport.closeCount)
     }
 
     @Test
-    fun `multiple ensureBridge calls do not double-close after deferred peer-FIN`() {
-        val (transport, channel) = makeChannel()
-        transport.onReadClosed?.invoke()
-
-        channel.ensureBridge()
-        channel.ensureBridge()
-        channel.ensureBridge()
-
-        assertEquals(1, transport.closeCount, "deferred close must not re-run")
-    }
-
-    @Test
-    fun `local close without prior peer-FIN does not propagate notifyInactive twice`() {
+    fun `local close without prior peer-FIN does not propagate notifyInactive`() {
         val (transport, channel) = makeChannel()
         val handler = object : InboundHandler {
             var inactiveCount = 0
@@ -136,39 +132,9 @@ internal class AbstractPipelinedChannelTest {
         channel.close()
 
         // [AbstractPipelinedChannel.close] only delegates to transport.close();
-        // it does not synthesise a [pipeline.notifyInactive]. The contract is
-        // preserved: pipeline-level inactivation only fires through the engine
-        // peer-close path.
+        // it does not synthesise a [pipeline.notifyInactive]. Pipeline-level
+        // inactivation only fires through the engine peer-close path.
         assertEquals(0, handler.inactiveCount)
-        assertFalse(channel.isOpen)
-        assertEquals(1, transport.closeCount)
-    }
-
-    @Test
-    fun `peer-FIN then local close runs close exactly once via deferred path`() {
-        val (transport, channel) = makeChannel()
-        transport.onReadClosed?.invoke()
-        // Channel stays open with pendingClose latched.
-
-        // User-initiated close arrives before any read — close runs now.
-        channel.close()
-        assertFalse(channel.isOpen)
-        assertEquals(1, transport.closeCount)
-
-        // Subsequent ensureBridge must not re-trigger the deferred close.
-        channel.ensureBridge()
-        assertEquals(1, transport.closeCount)
-    }
-
-    @Test
-    fun `bridge installed via ensureBridge before peer-FIN — pending close path is unused`() {
-        val (transport, channel) = makeChannel()
-        channel.ensureBridge() // bridge != null
-        assertEquals(0, transport.closeCount)
-
-        transport.onReadClosed?.invoke()
-
-        // Synchronous close path: pendingClose is never set.
         assertFalse(channel.isOpen)
         assertEquals(1, transport.closeCount)
     }
