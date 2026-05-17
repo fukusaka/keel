@@ -12,11 +12,13 @@ import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -37,7 +39,26 @@ import kotlin.test.assertTrue
  */
 class HttpServerHandlerTest {
 
-    private val transport = TestIoTransport()
+    /**
+     * Snapshots the encoded response bytes the instant the channel closes,
+     * before [TestIoTransport.close] releases and clears [TestIoTransport.written].
+     * Drain tests close the channel as part of the request lifecycle, so
+     * the response would otherwise be unobservable afterwards.
+     */
+    private var responseAtClose: String? = null
+
+    private val transport = object : TestIoTransport() {
+        override fun close() {
+            if (!closed) {
+                responseAtClose = written.joinToString("") { buf ->
+                    val bytes = ByteArray(buf.readableBytes)
+                    buf.readByteArray(bytes, 0, bytes.size)
+                    bytes.decodeToString()
+                }
+            }
+            super.close()
+        }
+    }
     private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
     private val scope = CoroutineScope(Dispatchers.Unconfined)
 
@@ -648,6 +669,68 @@ class HttpServerHandlerTest {
 
         assertTrue(!mapperRan, "mapper must not run once the handler has responded")
         assertTrue(responseText().endsWith("partial"), "the first response stands: ${responseText()}")
+    }
+
+    /** The installed dispatch handler — the connection drained by [KeelHttpServer.stop]. */
+    private fun handler(): HttpServerHandler =
+        channel.pipeline.get(HTTP_SERVER_HANDLER_NAME) as HttpServerHandler
+
+    @Test
+    fun `draining an idle connection closes the channel`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+        )
+
+        handler().requestDrain()
+
+        assertTrue(transport.closed, "an idle connection should be closed at once by drain")
+    }
+
+    @Test
+    fun `draining a connection mid-request tags the response Connection close then closes`() {
+        val gate = CompletableDeferred<Unit>()
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/slow") { call ->
+                    gate.await()
+                    call.respond(HttpResponse.ok("done"))
+                }
+            },
+        )
+
+        feedGet("/slow")
+        assertFalse(transport.closed, "the connection stays open while the request is in flight")
+
+        handler().requestDrain()
+        // The in-flight handler is still suspended — drain must not close it yet.
+        assertFalse(transport.closed, "an active connection is not closed until its request finishes")
+
+        gate.complete(Unit)
+
+        assertTrue(transport.closed, "the connection closes once the in-flight request has responded")
+        val response = responseAtClose ?: error("no response captured at close")
+        assertTrue(response.startsWith("HTTP/1.1 200"), "status line: $response")
+        assertTrue(
+            response.contains("connection: close", ignoreCase = true),
+            "the response should carry `Connection: close`: $response",
+        )
+    }
+
+    @Test
+    fun `requestDrain on an already drained connection is a no-op`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+        )
+
+        handler().requestDrain()
+        // A second drain after the channel is already closed must not throw.
+        handler().requestDrain()
+
+        assertTrue(transport.closed)
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
