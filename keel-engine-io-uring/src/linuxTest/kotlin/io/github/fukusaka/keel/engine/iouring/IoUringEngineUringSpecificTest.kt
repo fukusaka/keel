@@ -111,18 +111,33 @@ class IoUringEngineUringSpecificTest {
      * 3. Leave the EventLoop in a functional state for subsequent operations.
      *
      * The test blocks a submitAndAwait() on a pipe read with no data, cancels
-     * the coroutine, then verifies EventLoop functionality by completing a
-     * second pipe read successfully.
+     * the coroutine, then verifies EventLoop functionality with a read on a
+     * **separate** pipe.
+     *
+     * The verification pipe must be independent of the cancelled read's pipe:
+     * ASYNC_CANCEL is asynchronous, so when `cancelAndJoin()` returns the
+     * original read SQE may still be live in the kernel. A byte written to
+     * the shared pipe would then race between the doomed original read and
+     * the verification read — and if the cancelled read won the byte, the
+     * verification read would starve and time out (the historical flake).
+     * A dedicated pipe removes the race entirely.
      */
     @Test
     fun `cancelled submitAndAwait submits ASYNC_CANCEL and leaves EventLoop functional`() {
         val loop = IoUringEventLoop(IoEngineConfig().loggerFactory.logger("test"))
         loop.start()
 
+        // Pipe 1: the read that will be cancelled — never fed any data.
         val fds = IntArray(2)
         fds.usePinned { pipe(it.addressOf(0).reinterpret()) }
         val readFd = fds[0]
         val writeFd = fds[1]
+        // Pipe 2: an independent pipe for the post-cancel verification read,
+        // so it never contends with the possibly-still-live cancelled read.
+        val verifyFds = IntArray(2)
+        verifyFds.usePinned { pipe(it.addressOf(0).reinterpret()) }
+        val verifyReadFd = verifyFds[0]
+        val verifyWriteFd = verifyFds[1]
         val buf = DefaultAllocator.allocate(1)
         val buf2 = DefaultAllocator.allocate(1)
 
@@ -144,12 +159,13 @@ class IoUringEngineUringSpecificTest {
             // Cancel the job; ASYNC_CANCEL is dispatched to the EventLoop.
             job.cancelAndJoin()
 
-            // EventLoop must still be functional: write + read on the same pipe.
-            ByteArray(1) { 0x42 }.usePinned { write(writeFd, it.addressOf(0), 1uL) }
+            // EventLoop must still be functional: a fresh read on the
+            // independent pipe, with no contention from the cancelled read.
+            ByteArray(1) { 0x42 }.usePinned { write(verifyWriteFd, it.addressOf(0), 1uL) }
             val n = withTimeout(DISPATCH_AWAIT_TIMEOUT_MS) {
                 withContext(loop) {
                     loop.submitAndAwait { sqe ->
-                        io_uring_prep_read(sqe, readFd, buf2.unsafePointer, 1u, 0u)
+                        io_uring_prep_read(sqe, verifyReadFd, buf2.unsafePointer, 1u, 0u)
                     }
                 }
             }
@@ -158,6 +174,8 @@ class IoUringEngineUringSpecificTest {
 
         close(readFd)
         close(writeFd)
+        close(verifyReadFd)
+        close(verifyWriteFd)
         buf.release()
         buf2.release()
         loop.close()
