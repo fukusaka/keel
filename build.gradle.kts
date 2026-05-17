@@ -96,6 +96,8 @@ dependencies {
     dokka(project(":keel-codec-http"))
     dokka(project(":keel-codec-websocket"))
     dokka(project(":keel-server"))
+    dokka(project(":keel-server-http"))
+    dokka(project(":keel-server-websocket"))
     dokka(project(":keel-server-ktor-base"))
     dokka(project(":keel-server-ktor"))
     dokka(project(":keel-server-ktor-cio"))
