@@ -26,6 +26,7 @@ import kotlin.concurrent.Volatile
 internal class WsSessionImpl(
     private val channel: PipelinedChannel,
     private val bridge: SuspendMessageBridge<WsFrame>,
+    override val pathParameters: Map<String, String>,
 ) : WsSession {
 
     private val applicationFrames = Channel<WsFrame>(Channel.UNLIMITED)
