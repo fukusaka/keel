@@ -36,7 +36,8 @@ public class KeelHttpServerBuilder internal constructor() {
      * transport options, and TLS (see [ServerConnector]).
      *
      * When omitted, the server binds an OS-assigned ephemeral port on
-     * all interfaces. May be called at most once.
+     * all interfaces. May be called at most once. The bind host must be
+     * an IP literal — the Pipeline-mode bind cannot resolve hostnames.
      *
      * @throws IllegalStateException if a connector is already configured.
      */
