@@ -139,7 +139,13 @@ internal class HttpServerHandler(
 
     /** Joins the connection registry so [KeelHttpServer.stop] can drain it. */
     override fun onActive(ctx: PipelineHandlerContext) {
-        registerJob = scope.launch { connections.register(this@HttpServerHandler) }
+        // Explicit ioDispatcher: the server scope carries no dispatcher
+        // (IoEngine invariant), so an unqualified launch would silently
+        // fall back to Dispatchers.Default. Running on the connection's
+        // EventLoop thread keeps registry mutations on the owning thread.
+        registerJob = scope.launch(channel.ioDispatcher) {
+            connections.register(this@HttpServerHandler)
+        }
         ctx.propagateActive()
     }
 
@@ -162,8 +168,9 @@ internal class HttpServerHandler(
         // Deregister on the server scope (not connectionScope, which was
         // just cancelled). Joining registerJob first guarantees the
         // unregister never races ahead of the register and leaks a dead
-        // handler into the set.
-        scope.launch {
+        // handler into the set. Explicit ioDispatcher for the same reason
+        // as onActive — the server scope carries no dispatcher.
+        scope.launch(channel.ioDispatcher) {
             registerJob?.join()
             connections.unregister(this@HttpServerHandler)
         }
