@@ -37,6 +37,8 @@ include(
     ":keel-server-ktor",
     ":keel-server-ktor-cio",
     ":keel-testing-internal",
+    ":keel-testing-engine",
+    ":keel-testing-server-http",
     ":detekt-rules",
 )
 
