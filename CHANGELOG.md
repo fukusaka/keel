@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`server`): `connector { tls { } }` now requires an explicit `strategy` — no default, since no `ServerTlsStrategy` is correct for every engine (#546)
 - **BREAKING** (`server-http`): `keelHttpServer { }` replaces the `host` / `port` properties with a `connector { }` block, enabling HTTPS via `connector { tls { } }` (#544)
 - `core`: Coroutine-mode channels are no longer auto-closed on peer-FIN — the caller closes the `Channel`; auto-close stays for Pipeline-mode channels (#541)
 - `server-http`: run request handlers on a per-connection child scope and skip a redundant dispatcher hop on response writes, recovering ~6% throughput at saturation; in-flight handlers are now cancelled when the peer disconnects (#535)

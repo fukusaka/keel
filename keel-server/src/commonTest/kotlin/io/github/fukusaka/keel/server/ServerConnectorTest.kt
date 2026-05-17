@@ -84,9 +84,10 @@ class ServerConnectorTest {
     }
 
     @Test
-    fun `tls block defaults the strategy to EngineNative`() {
-        val c = connector { tls { config = TlsConfig() } }
-        assertSame(ServerTlsStrategy.EngineNative, c.tls?.strategy)
+    fun `tls block without a strategy fails fast`() {
+        assertFailsWith<IllegalStateException> {
+            connector { tls { config = TlsConfig() } }
+        }
     }
 
     @Test
@@ -115,7 +116,7 @@ class ServerConnectorTest {
 
     @Test
     fun `resolveBindConfig EngineNative rejects an engine without native TLS`() {
-        val c = connector { tls { config = TlsConfig() } }
+        val c = connector { tls { config = TlsConfig(); strategy = ServerTlsStrategy.EngineNative } }
         val ex = assertFailsWith<IllegalStateException> { c.resolveBindConfig(FakeEngine()) }
         assertTrue(ex.message?.contains("KeelCodec") == true)
     }

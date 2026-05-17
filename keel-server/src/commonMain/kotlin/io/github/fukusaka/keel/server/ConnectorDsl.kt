@@ -45,9 +45,8 @@ public class ServerConnectorBuilder internal constructor() {
     private var tls: ServerTls? = null
 
     /**
-     * Enables TLS on this connector. The block must set
-     * [ServerTlsBuilder.config]; [ServerTlsBuilder.strategy] defaults to
-     * [ServerTlsStrategy.EngineNative].
+     * Enables TLS on this connector. The block must set both
+     * [ServerTlsBuilder.config] and [ServerTlsBuilder.strategy].
      */
     public fun tls(configure: ServerTlsBuilder.() -> Unit) {
         tls = ServerTlsBuilder().apply(configure).build()
@@ -63,11 +62,16 @@ public class ServerTlsBuilder internal constructor() {
     /** TLS settings (certificates, trust, verify mode, ALPN, SNI). Required. */
     public var config: TlsConfig? = null
 
-    /** TLS mechanism. Defaults to [ServerTlsStrategy.EngineNative]. */
-    public var strategy: ServerTlsStrategy = ServerTlsStrategy.EngineNative
+    /**
+     * TLS mechanism. Required — there is no default, since the right
+     * strategy depends on the engine the connector is bound to (see
+     * [ServerTls]).
+     */
+    public var strategy: ServerTlsStrategy? = null
 
     internal fun build(): ServerTls {
         val tlsConfig = checkNotNull(config) { "tls { } requires a TlsConfig — set `config = ...`" }
-        return ServerTls(tlsConfig, strategy)
+        val tlsStrategy = checkNotNull(strategy) { "tls { } requires a ServerTlsStrategy — set `strategy = ...`" }
+        return ServerTls(tlsConfig, tlsStrategy)
     }
 }
