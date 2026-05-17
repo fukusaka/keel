@@ -21,7 +21,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  *
  * AbstractPipelinedChannel wires:
  *   transport.onRead        → pipeline.notifyRead(buf)
- *   transport.onReadClosed  → pipeline.notifyInactive() + close()
+ *   transport.onReadClosed  → pipeline.notifyInactive() + (Pipeline-mode) close()
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
  *   ensureBridge()          → installs SuspendBridgeHandler (no read arming)
  *   readEnabled             → transport.readEnabled
@@ -50,20 +50,6 @@ abstract class AbstractPipelinedChannel(
 
     private var bridge: SuspendBridgeHandler? = null
 
-    /**
-     * Tracks an `onReadClosed` event that arrived before [SuspendBridgeHandler]
-     * was lazily installed. When `true`, [ensureBridge] runs the deferred
-     * `close()` after the bridge has had a chance to receive the replayed
-     * `onInactive` from [io.github.fukusaka.keel.pipeline.internal.DefaultPipeline]
-     * (see its `inactiveObserved` flag), so a pending suspend reader resolves
-     * with `-1` instead of dying on the engine-driven peer-close auto-close.
-     *
-     * Single-threaded read/write on the EventLoop thread; no `@Volatile`
-     * required (callbacks and `ensureBridge` are dispatched onto the same
-     * `ioDispatcher`).
-     */
-    private var pendingClose: Boolean = false
-
     init {
         transport.onWritabilityChanged = { writable ->
             pipeline.notifyWritabilityChanged(writable)
@@ -72,28 +58,21 @@ abstract class AbstractPipelinedChannel(
             pipeline.notifyRead(buf)
         }
         transport.onReadClosed = {
-            // Whether the connection already has a consumer that will see
-            // the upcoming `onInactive`: a wired [SuspendBridgeHandler], or
-            // any user handler in the pipeline (Pipeline mode). Captured
-            // before `notifyInactive` in case a handler removes itself
-            // while handling it.
-            val hasConsumer = bridge != null || !pipeline.isEmpty
+            // Auto-close on peer-FIN only in Pipeline mode — a pipeline
+            // with user handlers and no [SuspendBridgeHandler]. There keel
+            // owns the connection lifecycle (no [Channel] handle is given
+            // to the caller), so the fd must be released here or it leaks
+            // in CLOSE-WAIT. A Coroutine-mode channel — a bridge is wired,
+            // or the pipeline is still empty before the lazy bridge — is
+            // the caller's resource: `read()` reports EOF as `-1` and the
+            // caller closes the [Channel]. Auto-closing it would be
+            // redundant, and would also sever a peer half-close (peer did
+            // `shutdown(SHUT_WR)` but can still receive a final response).
+            // Captured before `notifyInactive` in case a handler removes
+            // itself while handling it.
+            val pipelineMode = !pipeline.isEmpty && bridge == null
             pipeline.notifyInactive()
-            // Auto-close on peer-FIN matches keel's existing contract
-            // ("after EOF is observed, the channel is closed"). With a
-            // consumer present the close runs now — it has just received
-            // `onInactive`. Defer only when the pipeline is still empty: a
-            // Coroutine-mode channel whose lazy [SuspendBridgeHandler] is
-            // not yet wired, where closing now would race a user-initiated
-            // `read(buf)` (`check(isOpen)` throw / `armRead` no-op suspend).
-            // The deferred close is replayed from [ensureBridge]. Deferring
-            // in Pipeline mode would instead leak the fd in CLOSE-WAIT
-            // forever, since `ensureBridge` is never called there.
-            if (hasConsumer) {
-                close()
-            } else {
-                pendingClose = true
-            }
+            if (pipelineMode) close()
         }
         // Notify the transport that all callbacks are wired up. Engines
         // that pre-arm their read primitive (IdleReadPolicy.DETECT_PEER_CLOSE)
@@ -108,18 +87,12 @@ abstract class AbstractPipelinedChannel(
         val handler = SuspendBridgeHandler()
         pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
-        // Replay a peer-close that arrived before the bridge was installed.
-        // [DefaultPipeline] has already called [SuspendBridgeHandler.onInactive]
-        // from `callHandlerAdded` (so `bridge.eof = true`); the deferred
-        // `close()` here matches the pre-existing "auto-close on EOF" contract
-        // without losing the EOF event. Subsequent `read(buf)` calls observe
-        // `-1` from the bridge and then throw on `check(isOpen)`, mirroring
-        // the behaviour of a peer-close that was detected during an active
-        // `read`.
-        if (pendingClose) {
-            pendingClose = false
-            close()
-        }
+        // A peer-close that arrived before the bridge was installed is not
+        // lost: [DefaultPipeline] replays [SuspendBridgeHandler.onInactive]
+        // from `callHandlerAdded` (its `inactiveObserved` flag), so the
+        // bridge observes EOF and the next `read(buf)` returns `-1`. The
+        // channel is left open for the caller to close — Coroutine-mode
+        // channels are not auto-closed (see the `onReadClosed` wiring).
         return handler
     }
 
@@ -136,12 +109,6 @@ abstract class AbstractPipelinedChannel(
     }
 
     override fun close() {
-        // Clear any pending peer-FIN-triggered close: this active close
-        // already disposes the transport, so a later [ensureBridge] must
-        // not run a second [transport.close]. Idempotent transports are
-        // assumed but the redundant call is wasteful and shows up as an
-        // unexpected side effect in pipeline-handler unit tests.
-        pendingClose = false
         transport.close()
     }
 }
