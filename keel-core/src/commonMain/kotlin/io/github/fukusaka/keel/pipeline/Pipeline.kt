@@ -25,6 +25,17 @@ interface Pipeline {
     /** The channel this pipeline belongs to. */
     val channel: PipelinedChannel
 
+    /**
+     * True when no user handlers are installed — only the internal HEAD
+     * and TAIL sentinels are present.
+     *
+     * A non-empty pipeline means the channel has a Pipeline-mode consumer
+     * (the installed handlers); an empty one means either an unused
+     * channel or a Coroutine-mode channel before its lazy
+     * [SuspendBridgeHandler] is wired.
+     */
+    val isEmpty: Boolean
+
     // --- Pipeline composition ---
 
     /** Adds a handler at the beginning of the pipeline (after HEAD). */

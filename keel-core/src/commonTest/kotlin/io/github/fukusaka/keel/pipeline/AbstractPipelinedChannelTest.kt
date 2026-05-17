@@ -71,6 +71,28 @@ internal class AbstractPipelinedChannelTest {
     }
 
     @Test
+    fun `peer-FIN on a pipeline-mode channel closes immediately without waiting for a bridge`() {
+        val (transport, channel) = makeChannel()
+        // Pipeline mode: a user handler is installed and no lazy
+        // SuspendBridgeHandler will ever be created (ensureBridge is never
+        // called). The handler is the connection's consumer.
+        channel.pipeline.addLast(
+            "consumer",
+            object : InboundHandler {
+                override fun onInactive(ctx: PipelineHandlerContext) = ctx.propagateInactive()
+            },
+        )
+
+        transport.onReadClosed?.invoke()
+
+        // The handler received onInactive; there is no bridge to wait for,
+        // so the fd must be closed now. Deferring would leak it in
+        // CLOSE_WAIT forever, since ensureBridge is never called.
+        assertFalse(channel.isOpen, "a pipeline-mode channel must close on peer-FIN")
+        assertEquals(1, transport.closeCount, "close() must run on peer-FIN")
+    }
+
+    @Test
     fun `peer-FIN after bridge is installed closes the channel synchronously`() {
         val (transport, channel) = makeChannel()
         // Bridge installed before peer-FIN (the standard active-reader case).
