@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server`: protocol-neutral `connector { }` DSL building a `ServerConnector` (endpoint + transport + TLS) shared by HTTP / ktor / future protocol servers (#543)
 - `server-websocket`: new `keel-server-websocket` module — `keelHttpServer { }` gains `webSocket("/path") { }`, running the handler against a `WsSession` (RFC 6455, `incoming` frame channel + `send` / `close`, auto PING-PONG). The shared session core is also used by the ktor adapter (#542)
 - `server-http`: `KeelHttpServer.stop(gracePeriodMillis, timeoutMillis)` shuts down gracefully — idle keep-alive connections close at once, in-flight requests finish with a `Connection: close` response, then any survivors are force-closed (#539)
 - `server-http`: error handling on the `keelHttpServer { }` builder — `notFound { }` replaces the default `404`, and `exception<T> { call, cause -> }` maps a thrown exception type to a response (registration-order match, fallback `500`) (#538)
