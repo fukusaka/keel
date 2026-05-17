@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: `UpgradeProtocol` — a connection-takeover hook for protocol upgrades (WebSocket etc.). Registered with `KeelHttpServerBuilder.upgrade(path, protocol)`, resolved by the `Router` (sharing `:name` path matching), and dispatched as the terminal of the middleware chain so middleware runs before the handshake (#537)
 - `server-http`: `Middleware` chain — a `fun interface` registered with `install` on the `keelHttpServer { }` builder, wrapping every request's dispatch (unmatched `404`s included) and able to short-circuit (#536)
 - `benchmark`: `server-http-epoll` / `server-http-io-uring` engine variants run a `KeelHttpServer` (the productized `keel-server-http` stack) serving `/hello` + `/large`, so its per-request overhead can be measured against the raw hand-wired `pipeline-http-*` pipeline (#534)
 - `server-http`: `HttpCall` gains a flat HTTP-version-agnostic typed API — request `method` / `path` / `query` / `headers`, request body via zero-copy `receiveChunk()` or aggregating `receiveBytes()`, and responses via `respond` / `respondText` / `respondStream` (chunked streaming). The server codec now runs in streaming mode so body chunks reach the handler incrementally (#533)

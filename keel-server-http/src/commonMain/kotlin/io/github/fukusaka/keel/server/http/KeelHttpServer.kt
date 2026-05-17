@@ -27,8 +27,9 @@ import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
  *
  * Each request is resolved through the [Router] supplied at
  * construction time; an unmatched request is answered `404 Not Found`.
- * The supplied [Middleware] chain wraps the dispatch of every request.
- * Protocol upgrades are layered on in later changes.
+ * The supplied [Middleware] chain wraps the dispatch of every request,
+ * and a request resolving to an upgrade route is handed to its
+ * [UpgradeProtocol].
  *
  * **Lifecycle**: [start] and [stop] are each idempotent in the sense
  * that a second [start] while running, or a [stop] while stopped, is

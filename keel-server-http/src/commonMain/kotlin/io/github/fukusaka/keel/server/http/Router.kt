@@ -5,13 +5,21 @@ import io.github.fukusaka.keel.codec.http.HttpMethod
 /**
  * Result of a successful [Router.resolve].
  *
- * Carries the matched [RouteHandler] and the path parameters bound from
- * the pattern's `:name` and `*` segments. Only [Router] produces a
- * [RouteMatch] — the constructor is internal.
+ * Carries whatever the matched path node offers — a [RouteHandler] for
+ * the request method, an [UpgradeProtocol], or both — plus the path
+ * parameters bound from the pattern's `:name` and `*` segments. Only
+ * [Router] produces a [RouteMatch] — the constructor is internal. At
+ * least one of [handler] / [upgrade] is non-null.
  */
 public class RouteMatch internal constructor(
-    /** The handler registered for the matched route. */
-    public val handler: RouteHandler,
+    /** The handler registered for the matched route and request method, or null. */
+    public val handler: RouteHandler?,
+    /**
+     * The [UpgradeProtocol] registered at the matched path, or null. A
+     * request whose `Upgrade` header token equals [UpgradeProtocol.name]
+     * is dispatched here instead of [handler].
+     */
+    public val upgrade: UpgradeProtocol?,
     /**
      * Path parameters bound during the match: each `:name` segment maps
      * its name to the request segment, and a trailing `*` wildcard maps
@@ -74,9 +82,37 @@ public class Router {
     }
 
     /**
+     * Registers [protocol] as the upgrade endpoint for the [path]
+     * pattern. A request whose path matches [path] and whose `Upgrade`
+     * header token equals [protocol]'s [UpgradeProtocol.name] resolves to
+     * this protocol (see [RouteMatch.upgrade]).
+     *
+     * The pattern syntax is the same as [register] — `:name` parameters
+     * and a trailing `*` are honoured — so `webSocket("/chat/:room")`
+     * style routes get path-parameter matching for free.
+     *
+     * @throws IllegalArgumentException if `*` is not the final segment, a
+     *   `:` parameter has no name or conflicts with an existing one, or
+     *   [path] already has an upgrade protocol registered.
+     */
+    public fun registerUpgrade(path: String, protocol: UpgradeProtocol) {
+        var node = root
+        val segments = segmentsOf(path)
+        for ((index, segment) in segments.withIndex()) {
+            node = node.childFor(segment, isLast = index == segments.lastIndex, path = path)
+        }
+        require(node.upgrade == null) { "duplicate upgrade route: $path" }
+        node.upgrade = protocol
+    }
+
+    /**
      * Resolves [method] × [path] to a [RouteMatch], or `null` when no
-     * registered route matches (unknown path, or path matched but not for
-     * this [method]).
+     * registered route matches.
+     *
+     * A match is produced when the matched path node has a handler for
+     * [method] **or** an [UpgradeProtocol] registered. The caller decides
+     * between the two — an upgrade request (matching `Upgrade` header)
+     * takes [RouteMatch.upgrade], otherwise [RouteMatch.handler].
      */
     public fun resolve(method: HttpMethod, path: String): RouteMatch? =
         resolveNode(root, segmentsOf(path), 0, method, HashMap())
@@ -121,14 +157,18 @@ public class Router {
                 params.remove(slot.name)
             }
         } else {
-            node.handlers[method]?.let { return RouteMatch(it, params.toMap()) }
+            val handler = node.handlers[method]
+            val upgrade = node.upgrade
+            if (handler != null || upgrade != null) return RouteMatch(handler, upgrade, params.toMap())
         }
         // A trailing wildcard is terminal and matches the remaining segments —
         // zero or more — so a wildcard route also answers its bare prefix path.
         node.wildcardChild?.let { child ->
-            child.handlers[method]?.let { handler ->
+            val handler = child.handlers[method]
+            val upgrade = child.upgrade
+            if (handler != null || upgrade != null) {
                 params["*"] = segments.subList(index, segments.size).joinToString("/")
-                return RouteMatch(handler, params.toMap())
+                return RouteMatch(handler, upgrade, params.toMap())
             }
         }
         return null
@@ -140,6 +180,9 @@ public class Router {
         var paramChild: ParamSlot? = null
         var wildcardChild: Node? = null
         val handlers: MutableMap<HttpMethod, RouteHandler> = mutableMapOf()
+
+        /** The upgrade protocol bound to this path, or null. */
+        var upgrade: UpgradeProtocol? = null
     }
 
     /**
