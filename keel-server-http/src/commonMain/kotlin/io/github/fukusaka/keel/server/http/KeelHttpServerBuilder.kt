@@ -2,9 +2,11 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.KeelServerDsl
 import io.github.fukusaka.keel.server.ServerConnector
 import io.github.fukusaka.keel.server.ServerConnectorBuilder
+import kotlinx.coroutines.CoroutineScope
 import kotlin.reflect.KClass
 import io.github.fukusaka.keel.server.connector as buildConnector
 
@@ -208,6 +210,44 @@ public class KeelHttpServerBuilder internal constructor() {
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
         )
+
+    /**
+     * Installs the routing / middleware / error-handling stack this
+     * builder has accumulated onto [channel], with no engine and no bound
+     * socket. Backs [installTestHttpServerPipeline].
+     */
+    internal fun installPipeline(channel: PipelinedChannel, scope: CoroutineScope) {
+        channel.installHttpServerPipeline(
+            router,
+            middlewares.toList(),
+            ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
+            scope,
+        )
+    }
+}
+
+/**
+ * Installs the HTTP server pipeline configured by [configure] — the same
+ * routing, middleware, and error-handling stack [keelHttpServer] builds —
+ * directly onto [channel], with no [StreamEngine] and no bound socket.
+ *
+ * This is the engine-free hook for `keel-testing-server-http`: its
+ * in-process test client drives a [KeelHttpServerBuilder]-configured
+ * server over a fake transport. It exists so that module — a separate
+ * artifact that cannot see this package's `internal` declarations — can
+ * install the server pipeline without an engine. It is not intended for
+ * application code; build a [KeelHttpServer] with [keelHttpServer] to
+ * serve real traffic.
+ *
+ * [scope] is the coroutine scope each request's suspending handler is
+ * launched on.
+ */
+public fun installTestHttpServerPipeline(
+    channel: PipelinedChannel,
+    scope: CoroutineScope,
+    configure: KeelHttpServerBuilder.() -> Unit,
+) {
+    KeelHttpServerBuilder().apply(configure).installPipeline(channel, scope)
 }
 
 /**
