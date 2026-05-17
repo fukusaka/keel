@@ -61,8 +61,8 @@ class HttpServerHandlerTest {
     private fun responseText(): String =
         transport.written.joinToString("") { it.readString() }
 
-    private fun install(router: Router) {
-        channel.installHttpServerPipeline(router, scope)
+    private fun install(router: Router, middlewares: List<Middleware> = emptyList()) {
+        channel.installHttpServerPipeline(router, middlewares, scope)
     }
 
     private fun feedGet(path: String) {
@@ -314,6 +314,106 @@ class HttpServerHandlerTest {
         assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
         assertTrue(text.contains("alpha"), "first chunk: $text")
         assertTrue(text.contains("beta"), "second chunk: $text")
+    }
+
+    @Test
+    fun `a middleware runs around the handler`() {
+        val events = mutableListOf<String>()
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    events.add("handler")
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+            listOf(
+                Middleware { _, next ->
+                    events.add("before")
+                    next()
+                    events.add("after")
+                },
+            ),
+        )
+
+        feedGet("/")
+
+        assertEquals(listOf("before", "handler", "after"), events)
+    }
+
+    @Test
+    fun `middleware runs outermost-first in registration order`() {
+        val events = mutableListOf<String>()
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            listOf(
+                Middleware { _, next -> events.add("A-in"); next(); events.add("A-out") },
+                Middleware { _, next -> events.add("B-in"); next(); events.add("B-out") },
+            ),
+        )
+
+        feedGet("/")
+
+        assertEquals(listOf("A-in", "B-in", "B-out", "A-out"), events)
+    }
+
+    @Test
+    fun `a middleware short-circuits by not calling next`() {
+        var handlerRan = false
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    handlerRan = true
+                    call.respond(HttpResponse.ok("handler"))
+                }
+            },
+            listOf(
+                Middleware { call, _ -> call.respondText("blocked") },
+            ),
+        )
+
+        feedGet("/")
+
+        assertTrue(!handlerRan, "handler must not run when the middleware short-circuits")
+        assertTrue(responseText().endsWith("blocked"), "middleware response: ${responseText()}")
+    }
+
+    @Test
+    fun `the middleware chain wraps an unmatched request`() {
+        var sawUnmatched = false
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/known") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            listOf(
+                Middleware { _, next ->
+                    sawUnmatched = true
+                    next()
+                },
+            ),
+        )
+
+        feedGet("/unknown")
+
+        assertTrue(sawUnmatched, "middleware must run for an unmatched request")
+        assertTrue(responseText().startsWith("HTTP/1.1 404"), "expected 404: ${responseText()}")
+    }
+
+    @Test
+    fun `a middleware that throws is completed with 500`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            listOf(
+                Middleware { _, _ -> error("middleware boom") },
+            ),
+        )
+
+        feedGet("/")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 500"), "expected 500 guard: ${responseText()}")
     }
 
     @Test
