@@ -11,13 +11,21 @@ private const val CRLF = "\r\n"
 private const val HEX_RADIX = 16
 
 /**
- * Parses a raw HTTP/1.1 response — the bytes [KeelHttpTestClient] captured
- * from the fake transport — into a [TestHttpResponse].
+ * Parses a raw HTTP/1.1 response — the bytes [KeelHttpTestClient] read off
+ * the in-memory loopback — into a [TestHttpResponse].
  *
  * Handles the status line, the header block, and a body framed either by
  * `Content-Length` or by `chunked` transfer-encoding (both of which the
  * keel-server-http response paths emit). A response with neither framing
  * header — `204`, `304`, a `HEAD` response — is treated as bodyless.
+ *
+ * **Interim implementation.** This is a deliberately minimal hand-rolled
+ * HTTP/1.1 response decoder: keel-codec-http currently ships only the
+ * server-side codec (`HttpRequestDecoder` / `HttpResponseEncoder`), so
+ * there is no client-side `HttpResponseDecoder` to reuse. When
+ * keel-codec-http gains a client-side codec (Phase 12 — the keel HTTP
+ * client), [KeelHttpTestClient] should install it on the loopback channel
+ * and read a typed response instead, retiring this parser.
  *
  * @throws IllegalStateException if [raw] is not a well-formed response.
  */

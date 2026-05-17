@@ -26,6 +26,14 @@ private const val READ_BUFFER_SIZE = 8192
  *
  * Obtained from [KeelHttpTestScope.client]; not constructed directly.
  *
+ * **Interim implementation.** The request encoding here and the
+ * [parseHttpResponse] decoder are a deliberately minimal hand-rolled
+ * HTTP/1.1 client: keel-codec-http ships only the server-side codec
+ * today, so there is no client-side codec to reuse. When the keel HTTP
+ * client lands (Phase 12), this client should install the real
+ * client-side codec on the loopback channel — or be replaced outright by
+ * the production keel HTTP client pointed at the in-memory engine.
+ *
  * @param engine the in-memory engine the server is bound on.
  * @param serverProvider lazily starts (on the first request) and returns
  *   the [KeelHttpServer] this client targets.
