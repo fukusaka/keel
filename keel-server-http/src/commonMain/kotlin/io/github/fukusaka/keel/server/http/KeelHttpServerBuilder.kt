@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
+import kotlin.reflect.KClass
 
 /**
  * Configuration builder for [keelHttpServer].
@@ -10,8 +11,10 @@ import io.github.fukusaka.keel.core.StreamEngine
  * method-specific shorthands ([get], [post], [put], [delete], [patch],
  * [head], [options]). Each registers a [RouteHandler] against a path
  * pattern in the server's [Router] (see [Router] for the pattern
- * syntax). Middleware is added with [install], and protocol-upgrade
- * endpoints (such as WebSocket) with [upgrade].
+ * syntax). Middleware is added with [install], protocol-upgrade
+ * endpoints (such as WebSocket) with [upgrade], and error handling — a
+ * custom `404` via [notFound], exception-to-response mapping via
+ * [exception].
  */
 public class KeelHttpServerBuilder internal constructor() {
 
@@ -23,6 +26,8 @@ public class KeelHttpServerBuilder internal constructor() {
 
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
+    private var notFoundHandler: RouteHandler? = null
+    private val exceptionMappers = mutableListOf<ExceptionMapper>()
 
     /** Registers [handler] for [method] requests matching the [path] pattern. */
     public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
@@ -73,8 +78,52 @@ public class KeelHttpServerBuilder internal constructor() {
         router.registerUpgrade(path, protocol)
     }
 
+    /**
+     * Sets the handler invoked when no route matches, replacing the
+     * built-in `404 Not Found`. The handler runs as the terminal of the
+     * middleware chain, so middleware still observes the request.
+     *
+     * @throws IllegalStateException if a `notFound` handler is already set.
+     */
+    public fun notFound(handler: RouteHandler) {
+        check(notFoundHandler == null) { "notFound handler is already registered" }
+        notFoundHandler = handler
+    }
+
+    /**
+     * Registers [handler] to turn a thrown [T] — escaping the route
+     * handler and the middleware chain — into a response, replacing the
+     * built-in `500` for that exception type.
+     *
+     * Mappers are consulted in registration order, the first whose type
+     * matches the thrown exception winning; register more specific
+     * exception types first. An exception matching no mapper falls back
+     * to the built-in `500`.
+     */
+    public inline fun <reified T : Throwable> exception(
+        noinline handler: suspend (call: HttpCall, cause: T) -> Unit,
+    ) {
+        addExceptionMapper(T::class) { call, cause -> handler(call, cause as T) }
+    }
+
+    /** Backs the inline [exception]; not part of the public API. */
+    @PublishedApi
+    internal fun addExceptionMapper(
+        type: KClass<out Throwable>,
+        handler: suspend (HttpCall, Throwable) -> Unit,
+    ) {
+        exceptionMappers.add(ExceptionMapper(type, handler))
+    }
+
     internal fun build(engine: StreamEngine): KeelHttpServer =
-        KeelHttpServer(engine, host, port, router, middlewares.toList())
+        KeelHttpServer(
+            engine,
+            host,
+            port,
+            router,
+            middlewares.toList(),
+            ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
+        )
 
     private companion object {
         const val DEFAULT_HOST = "0.0.0.0"

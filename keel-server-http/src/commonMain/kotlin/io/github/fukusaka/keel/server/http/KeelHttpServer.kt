@@ -42,6 +42,7 @@ public class KeelHttpServer internal constructor(
     private val port: Int,
     private val router: Router,
     private val middlewares: List<Middleware>,
+    private val errorHandlers: ErrorHandlers,
 ) {
 
     private var server: PipelinedStreamServer? = null
@@ -66,7 +67,7 @@ public class KeelHttpServer internal constructor(
     public suspend fun start() {
         check(server == null) { "server is already started" }
         server = engine.bindPipeline(host, port) { channel ->
-            channel.installHttpServerPipeline(router, middlewares, engine)
+            channel.installHttpServerPipeline(router, middlewares, errorHandlers, engine)
         }
     }
 

@@ -47,10 +47,14 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
     middlewares: List<Middleware>,
+    errorHandlers: ErrorHandlers,
     scope: CoroutineScope,
 ) {
     addHttp1ServerCodec(aggregateBody = false)
-    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, middlewares, scope, channel = this))
+    pipeline.addLast(
+        HTTP_SERVER_HANDLER_NAME,
+        HttpServerHandler(router, middlewares, errorHandlers, scope, channel = this),
+    )
 }
 
 /**
@@ -73,12 +77,15 @@ internal fun PipelinedChannel.installHttpServerPipeline(
  * channel's `ioDispatcher` (the EventLoop itself), so the handler — and
  * the body conduit it pulls from — runs on the owning thread, lock-free.
  *
- * If the handler returns without responding, or throws, a `500 Internal
- * Server Error` is emitted so the client is never left hanging.
+ * If the handler returns without responding, a `500 Internal Server
+ * Error` is emitted so the client is never left hanging. If it throws, a
+ * registered exception mapper ([ErrorHandlers]) answers it, falling back
+ * to `500` when none matches.
  */
 internal class HttpServerHandler(
     private val router: Router,
     private val middlewares: List<Middleware>,
+    private val errorHandlers: ErrorHandlers,
     private val scope: CoroutineScope,
     private val channel: PipelinedChannel,
 ) : InboundHandler {
@@ -134,10 +141,12 @@ internal class HttpServerHandler(
         // [invokeTerminal]), so middleware runs before the handshake —
         // auth / CORS / logging observe the upgrade request.
         val isUpgrade = upgradeFor(head.headers, match) != null
-        // Fast path: no middleware and nothing to dispatch (no route, or a
-        // route node with no handler for this method and no matching
-        // upgrade) — answer 404 synchronously, without a handler coroutine.
-        if (match?.handler == null && !isUpgrade && middlewares.isEmpty()) {
+        // Fast path: a 404 with nothing that needs a handler coroutine —
+        // no route handler for this method and no matching upgrade, and no
+        // middleware / custom notFound to run through. Answer synchronously.
+        val unmatched = match?.handler == null && !isUpgrade
+        val noAsyncWork = middlewares.isEmpty() && errorHandlers.notFound == null
+        if (unmatched && noAsyncWork) {
             ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
             return
         }
@@ -152,10 +161,7 @@ internal class HttpServerHandler(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                ctx.propagateError(e)
-                if (!call.responded) {
-                    ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
-                }
+                handleException(ctx, call, e)
             } finally {
                 // The handler is done — stop feeding it body chunks and
                 // drain anything that arrived but was never consumed.
@@ -192,9 +198,10 @@ internal class HttpServerHandler(
 
     /**
      * Chain terminal: the upgrade hand-off when the request resolved to an
-     * `Upgrade`-matching protocol, otherwise the matched route handler, or
-     * `404` when nothing matched. Reached after the middleware chain, so
-     * middleware runs before an upgrade handshake.
+     * `Upgrade`-matching protocol, otherwise the matched route handler,
+     * the configured `notFound` handler, or the built-in `404` when
+     * nothing matched. Reached after the middleware chain, so middleware
+     * runs before an upgrade handshake and observes a `404`.
      */
     private suspend fun invokeTerminal(call: Http1Call, match: RouteMatch?) {
         val upgrade = upgradeFor(call.headers, match)
@@ -202,12 +209,38 @@ internal class HttpServerHandler(
             upgrade.upgrade(call, channel)
             return
         }
-        val handler = match?.handler
+        val handler = match?.handler ?: errorHandlers.notFound
         if (handler != null) {
             handler(call)
         } else {
             call.respond(NOT_FOUND_RESPONSE)
         }
+    }
+
+    /**
+     * Completes a request whose handler threw. A registered exception
+     * mapper turns the throwable into a response; with no mapper (or once
+     * the handler had already responded — a second response would fail)
+     * it is propagated and answered with the built-in `500`.
+     */
+    private suspend fun handleException(ctx: PipelineHandlerContext, call: Http1Call, cause: Throwable) {
+        val mapper = if (call.responded) null else errorHandlers.mapperFor(cause)
+        if (mapper != null) {
+            try {
+                mapper.handler(call, cause)
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (mapperFailure: Throwable) {
+                // The exception mapper itself failed — fall back to the
+                // built-in 500, reporting the mapper's failure.
+                ctx.propagateError(mapperFailure)
+                if (!call.responded) ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
+                return
+            }
+        }
+        ctx.propagateError(cause)
+        if (!call.responded) ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
     }
 
     /**
