@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.engine.nio.NioEngine
@@ -87,6 +88,70 @@ class WebSocketEchoTest {
                     assertEquals("hi", echoed.decodeToString())
 
                     // Masked CLOSE frame ends the session.
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `webSocket route exposes path parameters to the session`() = runBlocking {
+        withTimeout(10.seconds) {
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                connector { host = "127.0.0.1"; port = 0 }
+                webSocket("/chat/:room") {
+                    // Send the captured :room path parameter, then drain
+                    // inbound frames until the peer's CLOSE.
+                    send(WsFrame.text(pathParameters["room"] ?: "(none)"))
+                    for (frame in incoming) { /* drain */ }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+
+                    val key = "dGhlIHNhbXBsZSBub25jZQ=="
+                    out.write(
+                        (
+                            "GET /chat/general HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+
+                    val response = readHttpResponse(inp)
+                    assertTrue(response.startsWith("HTTP/1.1 101"), "expected 101: $response")
+
+                    // Server sends the :room parameter ("general") as an
+                    // unmasked TEXT frame.
+                    assertEquals(0x81, inp.read(), "frame must be FIN + TEXT")
+                    val len = inp.read()
+                    assertEquals("general".length, len, "unmasked payload length")
+                    val payload = ByteArray(len)
+                    var read = 0
+                    while (read < payload.size) {
+                        val n = inp.read(payload, read, payload.size - read)
+                        check(n >= 0) { "stream closed before the payload" }
+                        read += n
+                    }
+                    assertEquals("general", payload.decodeToString())
+
+                    // Masked CLOSE frame ends the session.
+                    val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
                     out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
                     out.write(mask)
                     out.flush()
