@@ -101,13 +101,16 @@ class ServerConnectorTest {
 
     @Test
     fun `resolveBindConfig EngineNative delegates to a ServerTlsProvider engine`() {
+        val opts = SocketOptions(tcpNoDelay = false)
         val c = connector {
             backlog = 99
+            socketOptions = opts
             tls { config = TlsConfig(); strategy = ServerTlsStrategy.EngineNative }
         }
         val config = c.resolveBindConfig(FakeNativeTlsEngine())
         assertIs<NativeTlsMarkerConfig>(config)
         assertEquals(99, config.backlog)
+        assertEquals(opts, config.childSocketOptions)
     }
 
     @Test
@@ -120,14 +123,17 @@ class ServerConnectorTest {
     @Test
     fun `resolveBindConfig KeelCodec yields a TlsServerConfig with a codec installer`() {
         val factory = FakeTlsCodecFactory()
+        val opts = SocketOptions(tcpNoDelay = false)
         val c = connector {
             backlog = 32
+            socketOptions = opts
             tls { config = TlsConfig(); strategy = ServerTlsStrategy.KeelCodec(factory) }
         }
         val config = c.resolveBindConfig(FakeEngine())
         assertIs<TlsServerConfig>(config)
         assertIs<TlsCodecServerInstaller>(config.installer)
         assertEquals(32, config.backlog)
+        assertEquals(opts, config.childSocketOptions)
     }
 
     @Test
