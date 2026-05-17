@@ -10,8 +10,8 @@ import io.github.fukusaka.keel.core.StreamEngine
  * method-specific shorthands ([get], [post], [put], [delete], [patch],
  * [head], [options]). Each registers a [RouteHandler] against a path
  * pattern in the server's [Router] (see [Router] for the pattern
- * syntax). Middleware is added with [install]. Upgrade protocols are
- * added by later changes.
+ * syntax). Middleware is added with [install], and protocol-upgrade
+ * endpoints (such as WebSocket) with [upgrade].
  */
 public class KeelHttpServerBuilder internal constructor() {
 
@@ -58,6 +58,19 @@ public class KeelHttpServerBuilder internal constructor() {
      */
     public fun install(middleware: Middleware) {
         middlewares.add(middleware)
+    }
+
+    /**
+     * Registers [protocol] as the upgrade endpoint for the [path] pattern.
+     * A request to [path] whose `Upgrade` header token names the protocol
+     * is handed to it instead of a route handler (see [UpgradeProtocol]).
+     *
+     * The [path] pattern shares [Router] syntax — `:name` parameters and a
+     * trailing `*` work. Higher-level DSLs, such as `webSocket(path) { }`
+     * in `keel-server-websocket`, build on this.
+     */
+    public fun upgrade(path: String, protocol: UpgradeProtocol) {
+        router.registerUpgrade(path, protocol)
     }
 
     internal fun build(engine: StreamEngine): KeelHttpServer =

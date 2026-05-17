@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,6 +71,18 @@ class HttpServerHandlerTest {
             bufOf(
                 "GET $path HTTP/1.1\r\n" +
                     "Host: localhost\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
+    /** Feeds a `GET` carrying an `Upgrade: <token>` header. */
+    private fun feedUpgrade(path: String, upgradeToken: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "GET $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "Upgrade: $upgradeToken\r\n" +
                     "\r\n",
             ),
         )
@@ -435,5 +448,99 @@ class HttpServerHandlerTest {
         feedGet("/")
 
         assertTrue(secondCallFailed, "second respond() must throw IllegalStateException")
+    }
+
+    @Test
+    fun `an upgrade route with a matching Upgrade header dispatches to the protocol`() {
+        val protocol = RecordingUpgrade("websocket")
+        install(Router().apply { registerUpgrade("/ws", protocol) })
+
+        feedUpgrade("/ws", "websocket")
+
+        assertTrue(protocol.invoked, "upgrade protocol must be invoked")
+        assertTrue(responseText().endsWith("upgraded"), "upgrade response: ${responseText()}")
+    }
+
+    @Test
+    fun `an upgrade route without the Upgrade header is answered 404`() {
+        val protocol = RecordingUpgrade("websocket")
+        install(Router().apply { registerUpgrade("/ws", protocol) })
+
+        feedGet("/ws")
+
+        assertTrue(!protocol.invoked, "upgrade protocol must not run without the Upgrade header")
+        assertTrue(responseText().startsWith("HTTP/1.1 404"), "expected 404: ${responseText()}")
+    }
+
+    @Test
+    fun `an Upgrade header naming a different protocol does not dispatch`() {
+        val protocol = RecordingUpgrade("websocket")
+        install(Router().apply { registerUpgrade("/ws", protocol) })
+
+        feedUpgrade("/ws", "h2c")
+
+        assertTrue(!protocol.invoked, "an unrelated Upgrade token must not match")
+    }
+
+    @Test
+    fun `path parameters reach the upgrade protocol`() {
+        val protocol = RecordingUpgrade("websocket")
+        install(Router().apply { registerUpgrade("/chat/:room", protocol) })
+
+        feedUpgrade("/chat/lobby", "websocket")
+
+        assertEquals("lobby", protocol.seenParams?.get("room"))
+    }
+
+    @Test
+    fun `middleware runs before the upgrade handshake`() {
+        val events = mutableListOf<String>()
+        val protocol = object : UpgradeProtocol {
+            override val name: String = "websocket"
+            override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {
+                events.add("upgrade")
+                call.respond(HttpResponse.ok("ok"))
+            }
+        }
+        install(
+            Router().apply { registerUpgrade("/ws", protocol) },
+            listOf(
+                Middleware { _, next ->
+                    events.add("before")
+                    next()
+                    events.add("after")
+                },
+            ),
+        )
+
+        feedUpgrade("/ws", "websocket")
+
+        assertEquals(listOf("before", "upgrade", "after"), events)
+    }
+
+    @Test
+    fun `a middleware short-circuit prevents the upgrade`() {
+        val protocol = RecordingUpgrade("websocket")
+        install(
+            Router().apply { registerUpgrade("/ws", protocol) },
+            listOf(Middleware { call, _ -> call.respondText("blocked") }),
+        )
+
+        feedUpgrade("/ws", "websocket")
+
+        assertTrue(!protocol.invoked, "short-circuiting middleware must prevent the upgrade")
+        assertTrue(responseText().endsWith("blocked"), "response: ${responseText()}")
+    }
+
+    /** An [UpgradeProtocol] test double that records its dispatch and replies. */
+    private class RecordingUpgrade(override val name: String) : UpgradeProtocol {
+        var invoked: Boolean = false
+        var seenParams: Map<String, String>? = null
+
+        override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {
+            invoked = true
+            seenParams = call.pathParameters
+            call.respond(HttpResponse.ok("upgraded"))
+        }
     }
 }

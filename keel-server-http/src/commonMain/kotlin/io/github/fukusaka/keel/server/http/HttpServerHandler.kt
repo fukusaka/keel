@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.http
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMessage
 import io.github.fukusaka.keel.codec.http.HttpMethod
@@ -49,7 +50,7 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     scope: CoroutineScope,
 ) {
     addHttp1ServerCodec(aggregateBody = false)
-    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, middlewares, scope))
+    pipeline.addLast(HTTP_SERVER_HANDLER_NAME, HttpServerHandler(router, middlewares, scope, channel = this))
 }
 
 /**
@@ -62,7 +63,10 @@ internal fun PipelinedChannel.installHttpServerPipeline(
  * dispatch; body chunks that follow are fed to the in-flight call's body
  * conduit (or released if no call is consuming them). A request with no
  * matching route is answered `404 Not Found` — still through the
- * middleware chain, so middleware observes it.
+ * middleware chain, so middleware observes it. A request resolving to an
+ * upgrade route whose `Upgrade` header names the route's
+ * [UpgradeProtocol] is handed to it as the chain terminal, so middleware
+ * runs before the handshake.
  *
  * The pipeline callbacks run on the EventLoop thread; the suspending
  * handler is launched on a per-connection child of [scope], bound to the
@@ -76,6 +80,7 @@ internal class HttpServerHandler(
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val scope: CoroutineScope,
+    private val channel: PipelinedChannel,
 ) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = HttpMessage::class
@@ -123,9 +128,16 @@ internal class HttpServerHandler(
 
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
         val match = router.resolve(head.method, head.path)
-        // Fast path: no middleware and no route — answer 404 synchronously,
-        // without spinning up a handler coroutine.
-        if (match == null && middlewares.isEmpty()) {
+        // An upgrade request: the resolved route carries an UpgradeProtocol
+        // and the request's `Upgrade` header names it. The upgrade is
+        // dispatched as the terminal of the middleware chain (see
+        // [invokeTerminal]), so middleware runs before the handshake —
+        // auth / CORS / logging observe the upgrade request.
+        val isUpgrade = upgradeFor(head.headers, match) != null
+        // Fast path: no middleware and nothing to dispatch (no route, or a
+        // route node with no handler for this method and no matching
+        // upgrade) — answer 404 synchronously, without a handler coroutine.
+        if (match?.handler == null && !isUpgrade && middlewares.isEmpty()) {
             ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
             return
         }
@@ -178,13 +190,33 @@ internal class HttpServerHandler(
         }
     }
 
-    /** Chain terminal: the matched handler, or `404` when nothing matched. */
+    /**
+     * Chain terminal: the upgrade hand-off when the request resolved to an
+     * `Upgrade`-matching protocol, otherwise the matched route handler, or
+     * `404` when nothing matched. Reached after the middleware chain, so
+     * middleware runs before an upgrade handshake.
+     */
     private suspend fun invokeTerminal(call: Http1Call, match: RouteMatch?) {
-        if (match != null) {
-            match.handler(call)
+        val upgrade = upgradeFor(call.headers, match)
+        if (upgrade != null) {
+            upgrade.upgrade(call, channel)
+            return
+        }
+        val handler = match?.handler
+        if (handler != null) {
+            handler(call)
         } else {
             call.respond(NOT_FOUND_RESPONSE)
         }
+    }
+
+    /**
+     * The [UpgradeProtocol] to dispatch to — non-null only when [match]'s
+     * route carries one and [headers]' `Upgrade` token names it.
+     */
+    private fun upgradeFor(headers: HttpHeaders, match: RouteMatch?): UpgradeProtocol? {
+        val upgrade = match?.upgrade ?: return null
+        return if (headers[HttpHeaderName.UPGRADE].equalsIgnoreCase(upgrade.name)) upgrade else null
     }
 
     private companion object {
@@ -357,3 +389,7 @@ private class Http1ResponseBodySink(
         ctx.propagateWriteAndFlush(HttpBody(chunk))
     }
 }
+
+/** Case-insensitive equality tolerant of a null receiver (an absent header). */
+private fun String?.equalsIgnoreCase(other: String): Boolean =
+    this != null && this.equals(other, ignoreCase = true)

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -16,6 +17,11 @@ import kotlin.test.assertSame
 class RouterTest {
 
     private val handler: RouteHandler = { }
+
+    private val upgrade: UpgradeProtocol = object : UpgradeProtocol {
+        override val name: String = "websocket"
+        override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {}
+    }
 
     @Test
     fun `a literal route resolves to its handler with no parameters`() {
@@ -175,6 +181,43 @@ class RouterTest {
         val router = Router()
         assertFailsWith<IllegalArgumentException> {
             router.register(HttpMethod.GET, "/static/*/x", handler)
+        }
+    }
+
+    @Test
+    fun `registerUpgrade binds a protocol resolvable as the RouteMatch upgrade`() {
+        val router = Router()
+        router.registerUpgrade("/ws", upgrade)
+        val match = router.resolve(HttpMethod.GET, "/ws")
+        assertSame(upgrade, match?.upgrade)
+        assertNull(match?.handler)
+    }
+
+    @Test
+    fun `an upgrade route resolves with path parameters`() {
+        val router = Router()
+        router.registerUpgrade("/chat/:room", upgrade)
+        val match = router.resolve(HttpMethod.GET, "/chat/lobby")
+        assertSame(upgrade, match?.upgrade)
+        assertEquals("lobby", match?.pathParameters?.get("room"))
+    }
+
+    @Test
+    fun `a handler and an upgrade protocol can share one path`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/chat", handler)
+        router.registerUpgrade("/chat", upgrade)
+        val match = router.resolve(HttpMethod.GET, "/chat")
+        assertSame(handler, match?.handler)
+        assertSame(upgrade, match?.upgrade)
+    }
+
+    @Test
+    fun `registering a duplicate upgrade route throws`() {
+        val router = Router()
+        router.registerUpgrade("/ws", upgrade)
+        assertFailsWith<IllegalArgumentException> {
+            router.registerUpgrade("/ws", upgrade)
         }
     }
 }
