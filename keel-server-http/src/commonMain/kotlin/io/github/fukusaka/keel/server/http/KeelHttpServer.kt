@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.http
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
+import io.github.fukusaka.keel.server.ServerConnector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -22,8 +23,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * ```
  * val server = keelHttpServer(engine) {
- *     host = "0.0.0.0"
- *     port = 8080
+ *     connector { host = "0.0.0.0"; port = 8080 }
  *     get("/users/:id") { call -> call.respond(HttpResponse.ok(call.pathParameters["id"])) }
  * }
  * server.start()
@@ -44,8 +44,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
-    private val host: String,
-    private val port: Int,
+    private val connector: ServerConnector,
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
@@ -81,7 +80,10 @@ public class KeelHttpServer internal constructor(
         check(run == null) { "server is already started" }
         val scope = CoroutineScope(engine.coroutineContext + Job(engine.coroutineContext[Job]))
         val connections = ServerConnections()
-        val server = engine.bindPipeline(host, port) { channel ->
+        val server = engine.bindPipeline(
+            connector.address,
+            connector.resolveBindConfig(engine),
+        ) { channel ->
             channel.installHttpServerPipeline(router, middlewares, errorHandlers, scope, connections)
         }
         run = ServerRun(server, scope, connections)

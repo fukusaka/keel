@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`server-http`): `keelHttpServer { }` replaces the `host` / `port` properties with a `connector { }` block, enabling HTTPS via `connector { tls { } }` (#544)
 - `core`: Coroutine-mode channels are no longer auto-closed on peer-FIN — the caller closes the `Channel`; auto-close stays for Pipeline-mode channels (#541)
 - `server-http`: run request handlers on a per-connection child scope and skip a redundant dispatcher hop on response writes, recovering ~6% throughput at saturation; in-flight handlers are now cancelled when the peer disconnects (#535)
 - `benchmark`: migrate `ws-echo.js` / `ws-large.js` / `ws-slow-consumer.js` from legacy `k6/ws` to stable `k6/websockets`. The legacy module's `socket.sendBinary` blocked the JS event loop and ignored SIGTERM during partial-write to a closed socket (5+ min hang against zig-bench's MessageOversize 1003-close pattern); `k6/websockets`' async `ws.send` clears the hang (verified: zig-bench 4 s clean exit vs 5+ min legacy hang). Bench-result column: `ws_msg_rtt_ms` is now the sole RTT source (`k6/websockets` does not auto-populate the legacy `ws_ping` Trend); ms granularity is unchanged. `bench-stream-one.sh` parser updated accordingly (#504)

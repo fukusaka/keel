@@ -2,32 +2,48 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.server.KeelServerDsl
+import io.github.fukusaka.keel.server.ServerConnector
+import io.github.fukusaka.keel.server.ServerConnectorBuilder
 import kotlin.reflect.KClass
+import io.github.fukusaka.keel.server.connector as buildConnector
 
 /**
  * Configuration builder for [keelHttpServer].
  *
- * Set [host] / [port] and register routes with [route] or the
- * method-specific shorthands ([get], [post], [put], [delete], [patch],
- * [head], [options]). Each registers a [RouteHandler] against a path
- * pattern in the server's [Router] (see [Router] for the pattern
+ * Configure the listening endpoint (bind address, port, transport
+ * options, TLS) with [connector], and register routes with [route] or
+ * the method-specific shorthands ([get], [post], [put], [delete],
+ * [patch], [head], [options]). Each registers a [RouteHandler] against a
+ * path pattern in the server's [Router] (see [Router] for the pattern
  * syntax). Middleware is added with [install], protocol-upgrade
  * endpoints (such as WebSocket) with [upgrade], and error handling — a
  * custom `404` via [notFound], exception-to-response mapping via
  * [exception].
  */
+@KeelServerDsl
 public class KeelHttpServerBuilder internal constructor() {
 
-    /** Bind host. Must be an IP literal — Pipeline-mode bind cannot resolve hostnames. */
-    public var host: String = DEFAULT_HOST
-
-    /** Bind port. */
-    public var port: Int = DEFAULT_PORT
-
+    private var connector: ServerConnector? = null
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
     private val exceptionMappers = mutableListOf<ExceptionMapper>()
+
+    /**
+     * Configures the listening endpoint via the protocol-neutral
+     * `connector { }` DSL of `:keel-server` — bind address, port,
+     * transport options, and TLS (see [ServerConnector]).
+     *
+     * When omitted, the server binds an OS-assigned ephemeral port on
+     * all interfaces. May be called at most once.
+     *
+     * @throws IllegalStateException if a connector is already configured.
+     */
+    public fun connector(configure: ServerConnectorBuilder.() -> Unit) {
+        check(connector == null) { "connector is already configured" }
+        connector = buildConnector(configure)
+    }
 
     /** Registers [handler] for [method] requests matching the [path] pattern. */
     public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
@@ -118,17 +134,11 @@ public class KeelHttpServerBuilder internal constructor() {
     internal fun build(engine: StreamEngine): KeelHttpServer =
         KeelHttpServer(
             engine,
-            host,
-            port,
+            connector ?: ServerConnector(),
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
         )
-
-    private companion object {
-        const val DEFAULT_HOST = "0.0.0.0"
-        const val DEFAULT_PORT = 8080
-    }
 }
 
 /**
@@ -139,7 +149,7 @@ public class KeelHttpServerBuilder internal constructor() {
  *
  * ```
  * val server = keelHttpServer(engine) {
- *     port = 8080
+ *     connector { port = 8080 }
  *     install { call, next -> next() }
  *     get("/hello") { call -> call.respond(HttpResponse.ok("Hello")) }
  *     get("/users/:id") { call -> call.respond(HttpResponse.ok(call.pathParameters["id"])) }

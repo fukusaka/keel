@@ -17,6 +17,7 @@ kotlin {
             dependencies {
                 api(project(":keel-core"))
                 api(project(":keel-codec-http"))
+                api(project(":keel-server"))
                 implementation(libs.kotlinx.coroutines.core)
             }
         }
@@ -26,6 +27,13 @@ kotlin {
                 implementation(project(":keel-testing-internal"))
                 implementation(libs.kotlinx.coroutines.core)
                 implementation(libs.kotlinx.coroutines.test)
+            }
+        }
+        jvmTest {
+            dependencies {
+                // Real-engine HTTPS integration test for the connector layer.
+                implementation(project(":keel-engine-nio"))
+                implementation(project(":keel-tls-jsse"))
             }
         }
     }
