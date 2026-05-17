@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -731,6 +732,18 @@ class HttpServerHandlerTest {
         handler().requestDrain()
 
         assertTrue(transport.closed)
+    }
+
+    @Test
+    fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest {
+        val connections = ServerConnections()
+        channel.installHttpServerPipeline(Router(), emptyList(), ErrorHandlers.DEFAULT, scope, connections)
+
+        channel.pipeline.notifyActive()
+        assertEquals(1, connections.snapshot().size, "the connection joins its shard on onActive")
+
+        channel.pipeline.notifyInactive()
+        assertEquals(0, connections.snapshot().size, "the connection leaves its shard on onInactive")
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
