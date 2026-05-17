@@ -225,13 +225,17 @@ internal class HttpServerHandler(
         connectionScope.launch(ctx.channel.ioDispatcher) {
             try {
                 dispatch(call, match)
-                if (!call.responded) {
+                // The 500 guard does not apply to an upgrade: a successful
+                // upgrade takes over the connection (sends `101`, swaps the
+                // pipeline codec) without going through `call.respond`, so
+                // `responded` stays false by design.
+                if (!isUpgrade && !call.responded) {
                     ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                handleException(ctx, call, e)
+                handleException(ctx, call, e, isUpgrade)
             } finally {
                 // The handler is done — stop feeding it body chunks and
                 // drain anything that arrived but was never consumed.
@@ -296,8 +300,21 @@ internal class HttpServerHandler(
      * mapper turns the throwable into a response; with no mapper (or once
      * the handler had already responded — a second response would fail)
      * it is propagated and answered with the built-in `500`.
+     *
+     * An [isUpgrade] request that threw is reported but not answered: the
+     * upgrade may already have swapped the pipeline codec, so injecting an
+     * HTTP response would corrupt the new protocol's byte stream.
      */
-    private suspend fun handleException(ctx: PipelineHandlerContext, call: Http1Call, cause: Throwable) {
+    private suspend fun handleException(
+        ctx: PipelineHandlerContext,
+        call: Http1Call,
+        cause: Throwable,
+        isUpgrade: Boolean,
+    ) {
+        if (isUpgrade) {
+            ctx.propagateError(cause)
+            return
+        }
         val mapper = if (call.responded) null else errorHandlers.mapperFor(cause)
         if (mapper != null) {
             try {

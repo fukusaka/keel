@@ -545,6 +545,25 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `an upgrade that takes over the connection without responding does not trigger the 500 guard`() {
+        // A real upgrade (WebSocket etc.) takes over the connection — it
+        // sends `101` and swaps the codec directly, never calling
+        // call.respond — so `responded` stays false by design. The 500
+        // guard must not fire for it.
+        val protocol = object : UpgradeProtocol {
+            override val name: String = "websocket"
+            override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {
+                // Connection taken over; deliberately no call.respond.
+            }
+        }
+        install(Router().apply { registerUpgrade("/ws", protocol) })
+
+        feedUpgrade("/ws", "websocket")
+
+        assertEquals("", responseText(), "an upgrade must not trigger the 500 guard")
+    }
+
+    @Test
     fun `a middleware short-circuit prevents the upgrade`() {
         val protocol = RecordingUpgrade("websocket")
         install(
