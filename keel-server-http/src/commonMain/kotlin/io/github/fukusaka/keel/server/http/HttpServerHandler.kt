@@ -134,18 +134,17 @@ internal class HttpServerHandler(
      */
     private var draining: Boolean = false
 
-    /** The registry join, awaited before deregistering (see [onInactive]). */
-    private var registerJob: Job? = null
+    /** This connection's registry shard, joined on [onActive]. */
+    private var shard: Shard? = null
 
-    /** Joins the connection registry so [KeelHttpServer.stop] can drain it. */
+    /** Joins this connection's EventLoop-thread registry shard. */
     override fun onActive(ctx: PipelineHandlerContext) {
-        // Explicit ioDispatcher: the server scope carries no dispatcher
-        // (IoEngine invariant), so an unqualified launch would silently
-        // fall back to Dispatchers.Default. Running on the connection's
-        // EventLoop thread keeps registry mutations on the owning thread.
-        registerJob = scope.launch(channel.ioDispatcher) {
-            connections.register(this@HttpServerHandler)
-        }
+        // onActive runs on the connection's owning EventLoop thread, and a
+        // shard's handler set is mutated only by that thread — so this is
+        // a direct, lock-free add: no coroutine launch, no mutex.
+        val joined = connections.shardFor(channel.ioDispatcher)
+        shard = joined
+        joined.handlers.add(this)
         ctx.propagateActive()
     }
 
@@ -165,15 +164,11 @@ internal class HttpServerHandler(
     /** Cancels any in-flight handler when the connection goes away. */
     override fun onInactive(ctx: PipelineHandlerContext) {
         connectionScope.cancel()
-        // Deregister on the server scope (not connectionScope, which was
-        // just cancelled). Joining registerJob first guarantees the
-        // unregister never races ahead of the register and leaks a dead
-        // handler into the set. Explicit ioDispatcher for the same reason
-        // as onActive — the server scope carries no dispatcher.
-        scope.launch(channel.ioDispatcher) {
-            registerJob?.join()
-            connections.unregister(this@HttpServerHandler)
-        }
+        // Leave the registry shard. onInactive runs on the same EventLoop
+        // thread as onActive, so the remove is direct and lock-free; the
+        // shard was assigned synchronously in onActive, so no ordering
+        // gate is needed.
+        shard?.handlers?.remove(this)
         ctx.propagateInactive()
     }
 

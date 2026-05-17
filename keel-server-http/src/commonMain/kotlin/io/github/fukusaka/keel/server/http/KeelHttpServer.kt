@@ -135,8 +135,8 @@ public class KeelHttpServer internal constructor(
         }
         // Phase 3: force-close anything still open. A fresh snapshot also
         // catches a connection that registered after the phase-1 snapshot.
+        // The run's registry is discarded with `current`, so no clear.
         current.connections.snapshot().forEach { it.forceClose() }
-        current.connections.clear()
     }
 
     /** Awaits every connection's close, bounded by [budgetMillis]. */
