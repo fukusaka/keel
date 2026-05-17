@@ -27,7 +27,8 @@ import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
  *
  * Each request is resolved through the [Router] supplied at
  * construction time; an unmatched request is answered `404 Not Found`.
- * Interceptors and protocol upgrades are layered on in later changes.
+ * The supplied [Middleware] chain wraps the dispatch of every request.
+ * Protocol upgrades are layered on in later changes.
  *
  * **Lifecycle**: [start] and [stop] are each idempotent in the sense
  * that a second [start] while running, or a [stop] while stopped, is
@@ -39,6 +40,7 @@ public class KeelHttpServer internal constructor(
     private val host: String,
     private val port: Int,
     private val router: Router,
+    private val middlewares: List<Middleware>,
 ) {
 
     private var server: PipelinedStreamServer? = null
@@ -63,7 +65,7 @@ public class KeelHttpServer internal constructor(
     public suspend fun start() {
         check(server == null) { "server is already started" }
         server = engine.bindPipeline(host, port) { channel ->
-            channel.installHttpServerPipeline(router, engine)
+            channel.installHttpServerPipeline(router, middlewares, engine)
         }
     }
 

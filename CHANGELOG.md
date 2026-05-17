@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: `Middleware` chain — a `fun interface` registered with `install` on the `keelHttpServer { }` builder, wrapping every request's dispatch (unmatched `404`s included) and able to short-circuit (#536)
 - `benchmark`: `server-http-epoll` / `server-http-io-uring` engine variants run a `KeelHttpServer` (the productized `keel-server-http` stack) serving `/hello` + `/large`, so its per-request overhead can be measured against the raw hand-wired `pipeline-http-*` pipeline (#534)
 - `server-http`: `HttpCall` gains a flat HTTP-version-agnostic typed API — request `method` / `path` / `query` / `headers`, request body via zero-copy `receiveChunk()` or aggregating `receiveBytes()`, and responses via `respond` / `respondText` / `respondStream` (chunked streaming). The server codec now runs in streaming mode so body chunks reach the handler incrementally (#533)
 - `server-http`: `Router` for `keel-server-http` — a segment-trie router matching method × path with `:name` path parameters and a trailing `*` wildcard. The `keelHttpServer { }` DSL gains `get` / `post` / `put` / `delete` / `patch` / `head` / `options` / `route` registration, and `HttpCall.pathParameters` exposes the captured parameters; unmatched requests are answered `404` (#530)

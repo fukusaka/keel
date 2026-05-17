@@ -22,7 +22,7 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
  * statement about framing, multiplexing, or flow control. HTTP/2 and
  * HTTP/3 supply their own implementations (`Http2Call` / `Http3Call`)
  * backed by their codec's stream object; the same `Router` /
- * [RouteHandler] / `Interceptor` surface carries forward unchanged.
+ * [RouteHandler] / `Middleware` surface carries forward unchanged.
  *
  * **Request body** is exposed in two layers (see [receiveChunk] /
  * [receiveBytes]): a zero-copy primary that hands the decoder's native
