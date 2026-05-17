@@ -32,6 +32,7 @@ include(
     ":keel-tls-jsse",
     ":keel-server",
     ":keel-server-http",
+    ":keel-server-websocket",
     ":keel-server-ktor-base",
     ":keel-server-ktor",
     ":keel-server-ktor-cio",
