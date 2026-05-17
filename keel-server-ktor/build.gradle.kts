@@ -32,6 +32,10 @@ kotlin {
                 // `WsSession` whose methods expose `WsFrame` / `WsCloseCode`
                 // from `:keel-codec-websocket` — consumers see those types.
                 api(project(":keel-codec-websocket"))
+                // `api` because `keelWebSocket` exposes `WsSession` from the
+                // shared `:keel-server-websocket` module (the WS session core
+                // + RFC 6455 upgrade, reused by `:keel-server-http` too).
+                api(project(":keel-server-websocket"))
                 implementation(libs.ktor.server.core)
                 implementation(libs.kotlinx.coroutines.core)
             }
