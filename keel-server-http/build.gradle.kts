@@ -31,8 +31,9 @@ kotlin {
         }
         jvmTest {
             dependencies {
-                // Real-engine HTTPS integration test for the connector layer.
+                // Real-engine HTTPS integration tests for the connector layer.
                 implementation(project(":keel-engine-nio"))
+                implementation(project(":keel-engine-netty"))
                 implementation(project(":keel-tls-jsse"))
             }
         }

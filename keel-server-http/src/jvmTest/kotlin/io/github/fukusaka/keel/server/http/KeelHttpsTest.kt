@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.ServerTlsStrategy
 import io.github.fukusaka.keel.tls.TlsCertificateSource
@@ -21,16 +22,27 @@ import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Real-engine HTTPS integration test for the connector layer.
+ * Real-engine HTTPS integration tests for the connector layer.
  *
- * Drives `keelHttpServer { connector { tls { } } }` end to end: the
- * `connector` DSL's `ServerTlsStrategy.KeelCodec` strategy resolves —
- * through `ServerConnector.resolveBindConfig` — to a `TlsServerConfig`
- * that installs keel's `TlsHandler` per connection. `KeelCodec` works on
- * every engine, so this exercises the full path on [NioEngine] without
- * needing engine-native TLS support.
+ * Drive `keelHttpServer { connector { tls { } } }` end to end, one test
+ * per `ServerTlsStrategy`:
+ *
+ * - `KeelCodec` on [NioEngine] — `ServerConnector.resolveBindConfig`
+ *   yields a `TlsServerConfig` installing keel's `TlsHandler` per
+ *   connection. `KeelCodec` works on every engine.
+ * - `EngineNative` on [NettyEngine] — resolution delegates to
+ *   `NettyEngine.nativeTlsBindConfig`, which terminates TLS with Netty's
+ *   native `SslHandler`.
  */
 class KeelHttpsTest {
+
+    private val tlsConfig = TlsConfig(
+        certificates = TlsCertificateSource.Pem(
+            TestCertificates.SERVER_CERT,
+            TestCertificates.SERVER_KEY,
+        ),
+        verifyMode = TlsVerifyMode.NONE,
+    )
 
     @Test
     fun `keelHttpServer with a TLS connector serves HTTPS over the KeelCodec strategy`() = runBlocking {
@@ -38,13 +50,6 @@ class KeelHttpsTest {
         withTimeout(15.seconds) {
             val engine = NioEngine()
             val factory = JsseTlsCodecFactory()
-            val tlsConfig = TlsConfig(
-                certificates = TlsCertificateSource.Pem(
-                    TestCertificates.SERVER_CERT,
-                    TestCertificates.SERVER_KEY,
-                ),
-                verifyMode = TlsVerifyMode.NONE,
-            )
             val server = keelHttpServer(engine) {
                 connector {
                     host = "127.0.0.1"
@@ -65,6 +70,35 @@ class KeelHttpsTest {
             } finally {
                 server.stop()
                 factory.close()
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `keelHttpServer with a TLS connector serves HTTPS over the EngineNative strategy`() = runBlocking {
+        // Budget covers TLS handshake + a loopback request round-trip.
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = keelHttpServer(engine) {
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                    tls {
+                        config = tlsConfig
+                        strategy = ServerTlsStrategy.EngineNative
+                    }
+                }
+                get("/hello") { call -> call.respondText("secure hello") }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                val (status, body) = httpsGet(port, "/hello")
+                assertEquals(200, status)
+                assertEquals("secure hello", body)
+            } finally {
+                server.stop()
                 engine.close()
             }
         }
