@@ -52,6 +52,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -283,23 +284,32 @@ func runDeflate(name, urlStr string, dialer *websocket.Dialer, vus int, duration
 	emit(name, stats, duration)
 }
 
-// compressiblePayload builds an `n`-byte blob of repeated structured
-// text so DEFLATE achieves a realistic ~3:1 ratio. A single repeated
-// byte would compress ~1000:1, which is not representative of real
-// WebSocket traffic (JSON / log lines / chat). The block below is a
-// small JSON-like record with enough field variety to defeat trivial
-// run-length collapse while still being highly redundant across
-// repetitions — close to what a real chat / telemetry stream looks
-// like on the wire.
+// compressiblePayload builds an `n`-byte blob of JSON-like records with
+// per-record variation — incrementing ids / sequence numbers /
+// timestamps and a rotating set of message bodies. The shared structure
+// (field names, braces, quoting) gives DEFLATE redundancy to exploit,
+// while the varying values keep the ratio realistic — ~6:1 at the 4 KiB
+// default, representative of structured JSON / telemetry traffic, rather
+// than the ~20:1+ a single repeated block would collapse to. This
+// approximates real WebSocket traffic — chat / telemetry / log lines.
 func compressiblePayload(n int) []byte {
-	const block = `{"id":4815162342,"user":"benchmark-client","event":"message",` +
-		`"channel":"general","ts":1700000000,"body":"the quick brown fox ` +
-		`jumps over the lazy dog","seq":1,"ok":true},`
-	out := make([]byte, n)
-	for i := range out {
-		out[i] = block[i%len(block)]
+	bodies := []string{
+		"the quick brown fox jumps over the lazy dog",
+		"lorem ipsum dolor sit amet consectetur adipiscing elit",
+		"connection established and the handshake completed",
+		"user joined the channel and started a new session",
+		"telemetry sample recorded at the current interval",
 	}
-	return out
+	var b strings.Builder
+	b.Grow(n + 256)
+	for seq := 1; b.Len() < n; seq++ {
+		fmt.Fprintf(&b,
+			`{"id":%d,"user":"client-%d","event":"message","channel":"room-%d",`+
+				`"ts":%d,"body":"%s","seq":%d,"ok":true},`,
+			4815162342+int64(seq), seq%97, seq%13,
+			1700000000+seq, bodies[seq%len(bodies)], seq)
+	}
+	return []byte(b.String()[:n])
 }
 
 // writeFragmented sends a logical text message split into multiple
