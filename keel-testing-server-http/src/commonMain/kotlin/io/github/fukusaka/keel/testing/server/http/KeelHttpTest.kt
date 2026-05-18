@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.testing.server.http
 
 import io.github.fukusaka.keel.server.http.KeelHttpServer
-import io.github.fukusaka.keel.server.http.KeelHttpServerBuilder
-import io.github.fukusaka.keel.server.http.keelHttpServer
+import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
+import io.github.fukusaka.keel.server.http.dsl.keelHttpServer
 import io.github.fukusaka.keel.testing.engine.InMemoryEngine
 
 /**

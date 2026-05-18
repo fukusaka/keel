@@ -1,11 +1,12 @@
-package io.github.fukusaka.keel.server.http
+package io.github.fukusaka.keel.server.http.dsl
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
-import io.github.fukusaka.keel.server.KeelServerDsl
 import io.github.fukusaka.keel.server.ServerConnector
-import io.github.fukusaka.keel.server.ServerTlsBuilder
-import io.github.fukusaka.keel.server.connector as buildServerConnector
+import io.github.fukusaka.keel.server.dsl.KeelServerDsl
+import io.github.fukusaka.keel.server.dsl.ServerTlsBuilder
+import io.github.fukusaka.keel.server.http.QueryParameterConfig
+import io.github.fukusaka.keel.server.dsl.connector as buildServerConnector
 
 /**
  * HTTP-aware connector builder for [keelHttpServer].

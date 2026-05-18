@@ -1,7 +1,10 @@
-package io.github.fukusaka.keel.server
+package io.github.fukusaka.keel.server.dsl
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
+import io.github.fukusaka.keel.server.ServerConnector
+import io.github.fukusaka.keel.server.ServerTls
+import io.github.fukusaka.keel.server.ServerTlsStrategy
 import io.github.fukusaka.keel.tls.TlsConfig
 
 /**
