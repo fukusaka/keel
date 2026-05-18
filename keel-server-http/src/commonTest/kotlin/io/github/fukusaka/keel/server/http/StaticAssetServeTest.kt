@@ -17,6 +17,7 @@ import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -41,12 +42,15 @@ class StaticAssetServeTest {
         rootDir = Path(SystemTemporaryDirectory, "keel-serve-${Random.nextLong()}")
         SystemFileSystem.createDirectories(rootDir)
         SystemFileSystem.sink(Path(rootDir, "page.html")).buffered().use { it.writeString("<h1>hi</h1>") }
+        // A 10-byte file with distinct bytes makes range offsets verifiable.
+        SystemFileSystem.sink(Path(rootDir, "data.txt")).buffered().use { it.writeString(RANGE_DATA) }
     }
 
     @AfterTest
     fun tearDown() {
         transport.close()
         SystemFileSystem.delete(Path(rootDir, "page.html"), mustExist = false)
+        SystemFileSystem.delete(Path(rootDir, "data.txt"), mustExist = false)
         SystemFileSystem.delete(rootDir, mustExist = false)
     }
 
@@ -144,5 +148,151 @@ class StaticAssetServeTest {
     private fun etagOf(response: String): String {
         val line = response.lineSequence().first { it.startsWith("ETag:", ignoreCase = true) }
         return line.substringAfter(':').trim()
+    }
+
+    /** The response body — everything after the blank line ending the headers. */
+    private fun bodyOf(response: String): String = response.substringAfter("\r\n\r\n", "")
+
+    /** The value of [name] in the response header block, or null when absent. */
+    private fun headerOf(response: String, name: String): String? {
+        val headerBlock = response.substringBefore("\r\n\r\n")
+        val line = headerBlock.lineSequence().firstOrNull { it.startsWith("$name:", ignoreCase = true) }
+        return line?.substringAfter(':')?.trim()
+    }
+
+    @Test
+    fun `a Range request returns 206 with the requested bytes`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=0-3\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 0-3/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(0, 4), bodyOf(text))
+    }
+
+    @Test
+    fun `an open-ended Range returns 206 from the offset to the end`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=2-\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 2-9/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(2), bodyOf(text))
+    }
+
+    @Test
+    fun `a suffix Range returns 206 with the last bytes`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=-3\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 7-9/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(7), bodyOf(text))
+    }
+
+    @Test
+    fun `a single-byte Range for the last byte returns 206`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=9-9\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 9-9/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(9), bodyOf(text))
+    }
+
+    @Test
+    fun `a Range whose end is past the file is clamped`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=5-999\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 5-9/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(5), bodyOf(text))
+    }
+
+    @Test
+    fun `a Range starting past the file returns 416`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=20-30\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 416"), "expected 416: $text")
+        assertEquals("bytes */10", headerOf(text, "Content-Range"))
+        assertEquals("", bodyOf(text), "416 must not carry a body: $text")
+    }
+
+    @Test
+    fun `a malformed Range is ignored and the full file is served`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=5-2\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "expected 200: $text")
+        assertEquals(RANGE_DATA, bodyOf(text))
+    }
+
+    @Test
+    fun `a multi-range request is ignored and the full file is served`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=0-1,3-4\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "expected 200: $text")
+        assertEquals(RANGE_DATA, bodyOf(text))
+    }
+
+    @Test
+    fun `a normal 200 response advertises Accept-Ranges`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt")
+
+        assertEquals("bytes", headerOf(responseText(), "Accept-Ranges"))
+    }
+
+    @Test
+    fun `a HEAD with a Range returns 206 headers without a body`() {
+        installStaticFiles()
+
+        feed("HEAD", "/assets/data.txt", "Range: bytes=0-3\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 0-3/10", headerOf(text, "Content-Range"))
+        assertEquals("", bodyOf(text), "HEAD must not carry a body: $text")
+    }
+
+    @Test
+    fun `a Range request that also matches the ETag returns 304`() {
+        installStaticFiles()
+        feed("GET", "/assets/data.txt")
+        val etag = etagOf(responseText())
+        transport.written.forEach { it.release() }
+        transport.written.clear()
+
+        feed("GET", "/assets/data.txt", "If-None-Match: $etag\r\nRange: bytes=0-3\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 304"), "conditional GET wins over Range: $text")
+        assertEquals("", bodyOf(text), "304 must not carry a body: $text")
+    }
+
+    private companion object {
+
+        /** A 10-byte fixture with distinct bytes so range offsets are verifiable. */
+        const val RANGE_DATA = "0123456789"
     }
 }

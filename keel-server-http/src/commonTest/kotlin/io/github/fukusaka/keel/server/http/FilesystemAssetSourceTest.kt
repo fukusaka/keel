@@ -78,6 +78,28 @@ class FilesystemAssetSourceTest {
     }
 
     @Test
+    fun `opening with an offset and length yields exactly that window`() {
+        val asset = assertNotNull(source.resolve("hello.txt"))
+        // "hello world" — bytes [6, 6+5) is "world".
+        val bytes = asset.open(6, 5).buffered().use { it.readByteArray() }
+        assertEquals("world", bytes.decodeToString())
+    }
+
+    @Test
+    fun `opening with a length shorter than the file stops at that length`() {
+        val asset = assertNotNull(source.resolve("hello.txt"))
+        val bytes = asset.open(0, 5).buffered().use { it.readByteArray() }
+        assertEquals("hello", bytes.decodeToString())
+    }
+
+    @Test
+    fun `opening a single byte at an offset yields one byte`() {
+        val asset = assertNotNull(source.resolve("hello.txt"))
+        val bytes = asset.open(10, 1).buffered().use { it.readByteArray() }
+        assertEquals("d", bytes.decodeToString())
+    }
+
+    @Test
     fun `a missing file resolves to null`() {
         assertNull(source.resolve("nope.txt"))
     }
