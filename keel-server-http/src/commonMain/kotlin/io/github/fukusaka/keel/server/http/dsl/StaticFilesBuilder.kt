@@ -1,6 +1,8 @@
-package io.github.fukusaka.keel.server.http
+package io.github.fukusaka.keel.server.http.dsl
 
-import io.github.fukusaka.keel.server.KeelServerDsl
+import io.github.fukusaka.keel.server.dsl.KeelServerDsl
+import io.github.fukusaka.keel.server.http.ContentTypeResolver
+import io.github.fukusaka.keel.server.http.ETagGenerator
 
 /**
  * Per-mount configuration for the `staticAssets` / `staticFiles` /

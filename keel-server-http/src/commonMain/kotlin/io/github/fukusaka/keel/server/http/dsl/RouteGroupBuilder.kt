@@ -1,8 +1,14 @@
-package io.github.fukusaka.keel.server.http
+package io.github.fukusaka.keel.server.http.dsl
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.server.KeelServerDsl
+import io.github.fukusaka.keel.server.dsl.KeelServerDsl
+import io.github.fukusaka.keel.server.http.HttpCall
+import io.github.fukusaka.keel.server.http.Middleware
+import io.github.fukusaka.keel.server.http.RouteHandler
+import io.github.fukusaka.keel.server.http.RoutePredicate
+import io.github.fukusaka.keel.server.http.Router
+import io.github.fukusaka.keel.server.http.UpgradeProtocol
 
 /**
  * Builder for a group of routes sharing a path prefix and, optionally,

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.server.http.dsl.QueryParameterConfigBuilder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

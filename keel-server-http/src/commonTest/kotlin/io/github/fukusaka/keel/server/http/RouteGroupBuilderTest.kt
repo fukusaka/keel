@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.server.http.dsl.RouteGroupBuilder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
