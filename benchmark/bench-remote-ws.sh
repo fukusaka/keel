@@ -60,7 +60,7 @@
 #                        image), or "auto" (default — probe native Go
 #                        first, then docker).
 #   BENCH_GOLANG_IMAGE   Image used in wsbench "docker" mode for both the
-#                        `go build` and the run (default: golang:1.22).
+#                        `go build` and the run (default: golang:1.24).
 #   BENCH_PORT           Server port (default: 18090). Also overridden by a
 #                        --port=N token in <args>.
 #   BENCH_SERVER_IP      IP or hostname the client uses in the ws:// URL;
@@ -127,7 +127,7 @@ SERVER_IP="${BENCH_SERVER_IP:-$REMOTE_HOST}"
 TC_MODE="${BENCH_TC_MODE:-auto}"
 TC_IMAGE="${BENCH_TC_IMAGE:-alpine:latest}"
 WSBENCH_MODE="${BENCH_WSBENCH_MODE:-auto}"
-GOLANG_IMAGE="${BENCH_GOLANG_IMAGE:-golang:1.22}"
+GOLANG_IMAGE="${BENCH_GOLANG_IMAGE:-golang:1.24}"
 
 PORT=${BENCH_PORT:-18090}
 WS_VUS=${BENCH_WS_VUS:-16}
