@@ -45,6 +45,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
     private val connector: ServerConnector,
+    private val queryParameterConfig: QueryParameterConfig,
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
@@ -84,7 +85,14 @@ public class KeelHttpServer internal constructor(
             connector.address,
             connector.resolveBindConfig(engine),
         ) { channel ->
-            channel.installHttpServerPipeline(router, middlewares, errorHandlers, scope, connections)
+            channel.installHttpServerPipeline(
+                router = router,
+                middlewares = middlewares,
+                errorHandlers = errorHandlers,
+                queryParameterConfig = queryParameterConfig,
+                scope = scope,
+                connections = connections,
+            )
         }
         run = ServerRun(server, scope, connections)
     }
