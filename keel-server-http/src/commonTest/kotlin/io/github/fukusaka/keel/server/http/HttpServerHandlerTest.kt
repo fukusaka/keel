@@ -88,8 +88,9 @@ class HttpServerHandlerTest {
         router: Router,
         middlewares: List<Middleware> = emptyList(),
         errorHandlers: ErrorHandlers = ErrorHandlers.DEFAULT,
+        queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT,
     ) {
-        channel.installHttpServerPipeline(router, middlewares, errorHandlers, scope)
+        channel.installHttpServerPipeline(router, middlewares, errorHandlers, queryParameterConfig, scope)
     }
 
     private fun feedGet(path: String) {
@@ -212,19 +213,86 @@ class HttpServerHandlerTest {
 
     @Test
     fun `query parameters are parsed and delivered to the handler`() {
-        var seen: Map<String, String>? = null
+        var single: String? = null
+        var all: List<String>? = null
         install(
             Router().apply {
                 register(HttpMethod.GET, "/search") { call ->
-                    seen = call.queryParameters
+                    single = call.queryParameters["q"]
+                    all = call.queryParameters.getAll("tag")
                     call.respond(HttpResponse.ok("ok"))
                 }
             },
         )
 
-        feedGet("/search?q=hello+world&page=2")
+        feedGet("/search?q=hello+world&tag=a&tag=b")
 
-        assertEquals(mapOf("q" to "hello world", "page" to "2"), seen)
+        assertEquals("hello world", single)
+        assertEquals(listOf("a", "b"), all)
+    }
+
+    @Test
+    fun `a query string exceeding maxParameterCount is answered 400`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/search") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            queryParameterConfig = QueryParameterConfigBuilder().apply { maxParameterCount = 3 }.build(),
+        )
+
+        feedGet("/search?a=1&b=2&c=3&d=4")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 400"), "expected 400: ${responseText()}")
+    }
+
+    @Test
+    fun `a control character is answered 400 when rejectControlCharacters is set`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/search") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            queryParameterConfig = QueryParameterConfigBuilder().apply {
+                rejectControlCharacters = true
+            }.build(),
+        )
+
+        feedGet("/search?q=bad%00value")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 400"), "expected 400: ${responseText()}")
+    }
+
+    @Test
+    fun `a malformed percent escape is answered 400 when rejectMalformedEncoding is set`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/search") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+            queryParameterConfig = QueryParameterConfigBuilder().apply {
+                rejectMalformedEncoding = true
+            }.build(),
+        )
+
+        feedGet("/search?q=100%")
+
+        assertTrue(responseText().startsWith("HTTP/1.1 400"), "expected 400: ${responseText()}")
+    }
+
+    @Test
+    fun `the lenient default accepts a control character and a malformed percent escape`() {
+        var responded = false
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/search") { call ->
+                    responded = true
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedGet("/search?q=raw%00here&p=100%")
+
+        assertTrue(responded, "the lenient default must dispatch the request")
+        assertTrue(responseText().startsWith("HTTP/1.1 200"), "expected 200: ${responseText()}")
     }
 
     @Test
@@ -847,7 +915,9 @@ class HttpServerHandlerTest {
     @Test
     fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest {
         val connections = ServerConnections()
-        channel.installHttpServerPipeline(Router(), emptyList(), ErrorHandlers.DEFAULT, scope, connections)
+        channel.installHttpServerPipeline(
+            Router(), emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, connections,
+        )
 
         channel.pipeline.notifyActive()
         assertEquals(1, connections.snapshot().size, "the connection joins its shard on onActive")
