@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import kotlinx.io.Buffer
 import kotlinx.io.RawSource
 import kotlinx.io.buffered
 import kotlinx.io.files.FileSystem
@@ -101,9 +102,10 @@ private class FilesystemAsset(
 
     override fun open(offset: Long, length: Long): RawSource {
         val source = fileSystem.source(path)
-        if (offset <= 0) return source
+        // Whole-asset open from the start: no skipping or bounding needed.
+        if (offset <= 0 && length >= size) return source
         // Naive offset support: discard the leading bytes. A seek-based
-        // fast path is a Range-request (G-2b) optimisation.
+        // fast path is a future optimisation.
         val buffered = source.buffered()
         var remaining = offset
         while (remaining > 0) {
@@ -112,6 +114,31 @@ private class FilesystemAsset(
             buffered.skip(step)
             remaining -= step
         }
-        return buffered
+        // Bound the result to exactly [length] bytes so a partial-range
+        // open never streams past the requested window.
+        return BoundedRawSource(buffered, length)
     }
+}
+
+/**
+ * A [RawSource] that exposes at most [limit] bytes of [delegate], then
+ * reports end-of-input. Used to confine a partial-range asset open to
+ * the requested byte window.
+ */
+private class BoundedRawSource(
+    private val delegate: RawSource,
+    private val limit: Long,
+) : RawSource {
+
+    private var remaining: Long = limit
+
+    override fun readAtMostTo(sink: Buffer, byteCount: Long): Long {
+        if (remaining <= 0L) return -1L
+        val want = minOf(byteCount, remaining)
+        val read = delegate.readAtMostTo(sink, want)
+        if (read > 0L) remaining -= read
+        return read
+    }
+
+    override fun close() = delegate.close()
 }

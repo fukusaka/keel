@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import kotlinx.io.Buffer
+import kotlinx.io.RawSource
 import kotlinx.io.readByteArray
 
 /** Fallback content type when the asset's provider could not resolve one. */
@@ -15,6 +16,9 @@ private const val DEFAULT_CONTENT_TYPE = "application/octet-stream"
 
 /** Copy chunk size for streaming an asset body into response buffers. */
 private const val STREAM_CHUNK_SIZE = 16_384
+
+/** `Accept-Ranges` field value advertising that `bytes` ranges are supported. */
+private const val ACCEPT_RANGES_BYTES = "bytes"
 
 /**
  * Serves a single [AssetSource] as a [RouteHandler].
@@ -28,11 +32,15 @@ private const val STREAM_CHUNK_SIZE = 16_384
  * - otherwise streams the body with `200 OK`, emitting `Content-Type`,
  *   `Content-Length`, and — when available — `ETag` / `Last-Modified`.
  *
+ * A `Range: bytes=` request that survives the conditional-GET check
+ * (i.e. would have been a `200`) is answered as a single-range
+ * `206 Partial Content` with `Content-Range`, or `416 Range Not
+ * Satisfiable` when the range cannot be met. Multi-range requests and
+ * non-`bytes` units fall back to the full `200`. Both the `200` and the
+ * `206` carry `Accept-Ranges: bytes`.
+ *
  * `GET` and `HEAD` are both handled; a `HEAD` reply carries the same
  * headers as the corresponding `GET` but no body.
- *
- * Range handling (`206` / `Content-Range`) is intentionally out of
- * scope here — see the G-2b milestone.
  */
 internal class StaticAssetHandler(private val assetSource: AssetSource) {
 
@@ -57,9 +65,27 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
             return
         }
 
+        // The conditional-GET check has passed; a Range header (if any)
+        // now decides between a 206, a 416, or the full 200.
+        val rangeHeader = call.headers[HttpHeaderName.RANGE]
+        val range = if (rangeHeader != null) {
+            parseByteRange(rangeHeader, asset.size)
+        } else {
+            RangeResult.FullResponse
+        }
+        when (range) {
+            is RangeResult.Satisfiable -> respondPartial(call, asset, range.start, range.end)
+            RangeResult.Unsatisfiable -> respondUnsatisfiable(call, asset.size)
+            RangeResult.FullResponse -> respondFull(call, asset)
+        }
+    }
+
+    /** Streams the whole asset body with `200 OK`. */
+    private suspend fun respondFull(call: HttpCall, asset: Asset) {
         val headers = HttpHeaders()
         headers[HttpHeaderName.CONTENT_TYPE] = asset.contentType ?: DEFAULT_CONTENT_TYPE
         headers[HttpHeaderName.CONTENT_LENGTH] = asset.size.toString()
+        headers[HttpHeaderName.ACCEPT_RANGES] = ACCEPT_RANGES_BYTES
         asset.etag?.let { headers[HttpHeaderName.ETAG] = it }
         asset.lastModified?.let { headers[HttpHeaderName.LAST_MODIFIED] = formatHttpDate(it) }
 
@@ -69,7 +95,41 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
             call.respondStream(head) { }
             return
         }
-        call.respondStream(head) { sink -> streamBody(asset, sink) }
+        call.respondStream(head) { sink -> streamBody(asset.open(), asset.size, sink) }
+    }
+
+    /**
+     * Streams the inclusive byte range `[start, end]` with
+     * `206 Partial Content` and a `Content-Range` header.
+     */
+    private suspend fun respondPartial(call: HttpCall, asset: Asset, start: Long, end: Long) {
+        val length = end - start + 1
+        val headers = HttpHeaders()
+        headers[HttpHeaderName.CONTENT_TYPE] = asset.contentType ?: DEFAULT_CONTENT_TYPE
+        headers[HttpHeaderName.CONTENT_LENGTH] = length.toString()
+        headers[HttpHeaderName.CONTENT_RANGE] = "$ACCEPT_RANGES_BYTES $start-$end/${asset.size}"
+        headers[HttpHeaderName.ACCEPT_RANGES] = ACCEPT_RANGES_BYTES
+        asset.etag?.let { headers[HttpHeaderName.ETAG] = it }
+        asset.lastModified?.let { headers[HttpHeaderName.LAST_MODIFIED] = formatHttpDate(it) }
+
+        val head = HttpResponseHead(HttpStatus.PARTIAL_CONTENT, headers = headers)
+        if (call.method == HttpMethod.HEAD) {
+            // HEAD: identical headers, empty body.
+            call.respondStream(head) { }
+            return
+        }
+        call.respondStream(head) { sink -> streamBody(asset.open(start, length), length, sink) }
+    }
+
+    /**
+     * Answers `416 Range Not Satisfiable` with `Content-Range: bytes * /N`
+     * and no body — the requested range cannot be met for size [assetSize].
+     */
+    private suspend fun respondUnsatisfiable(call: HttpCall, assetSize: Long) {
+        val headers = HttpHeaders()
+        headers[HttpHeaderName.CONTENT_RANGE] = "$ACCEPT_RANGES_BYTES */$assetSize"
+        headers[HttpHeaderName.CONTENT_LENGTH] = "0"
+        call.respondStream(HttpResponseHead(HttpStatus.RANGE_NOT_SATISFIABLE, headers = headers)) { }
     }
 
     /** Headers echoed back on a `304` reply — the validators the client matched on. */
@@ -80,18 +140,23 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
         return headers
     }
 
-    /** Streams the whole asset body into [sink] in [STREAM_CHUNK_SIZE]-sized chunks. */
-    private suspend fun streamBody(asset: Asset, sink: HttpResponseBodySink) {
-        val source = asset.open()
+    /**
+     * Streams up to [length] bytes from [source] into [sink] in
+     * [STREAM_CHUNK_SIZE]-sized chunks, closing [source] when done.
+     */
+    private suspend fun streamBody(source: RawSource, length: Long, sink: HttpResponseBodySink) {
         try {
             val buffer = Buffer()
-            while (true) {
-                val read = source.readAtMostTo(buffer, STREAM_CHUNK_SIZE.toLong())
+            var remaining = length
+            while (remaining > 0L) {
+                val want = minOf(remaining, STREAM_CHUNK_SIZE.toLong())
+                val read = source.readAtMostTo(buffer, want)
                 if (read <= 0L) break
                 val bytes = buffer.readByteArray()
                 val ioBuf = DefaultAllocator.allocate(bytes.size)
                 ioBuf.writeByteArray(bytes, 0, bytes.size)
                 sink.write(ioBuf)
+                remaining -= read
             }
         } finally {
             source.close()
