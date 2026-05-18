@@ -58,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: the pooled buffer allocators (`SlabAllocator` / `PooledDirectAllocator`) now round allocations up to jemalloc-style 4-per-octave size classes so every request up to 32 KiB hits a pool instead of producing un-pooled garbage (#567)
 - **BREAKING** (`server*`): the DSL builder classes and DSL entry functions of `keel-server` / `keel-server-http` / `keel-server-websocket` moved to dedicated `.dsl` sub-packages (`connector` / `keelHttpServer` / `webSockets` and their builders) (#566)
 - **BREAKING** (`server-http`): `Router.resolve` now takes the request head and returns a sealed `RouteResolution`; `register` / `registerUpgrade` take an optional `RoutePredicate` — direct `Router` callers must adapt, the `keelHttpServer { }` DSL is unaffected (#561)
 - `server-http`: a request to a registered path with an unregistered method now answers `405 Method Not Allowed` with an `Allow` header, instead of `404 Not Found` (#561)
