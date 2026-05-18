@@ -79,7 +79,9 @@ class StaticAssetServeTest {
         val router = Router()
         router.register(HttpMethod.GET, "/assets/*") { call -> handler.handle(call) }
         router.register(HttpMethod.HEAD, "/assets/*") { call -> handler.handle(call) }
-        channel.installHttpServerPipeline(router, emptyList(), ErrorHandlers.DEFAULT, scope)
+        channel.installHttpServerPipeline(
+            router, emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope,
+        )
     }
 
     private fun feed(method: String, path: String, extraHeaders: String = "") {

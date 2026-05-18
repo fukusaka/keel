@@ -44,19 +44,29 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * each request's suspending handler is launched on — the server scope in
  * production, a test scope in unit tests. [connections] is the registry
  * the handler joins for the duration of the connection so
- * [KeelHttpServer.stop] can drain it.
+ * [KeelHttpServer.stop] can drain it. [queryParameterConfig] bounds the
+ * query-string parsing of every request (see [QueryParameterConfig]).
  */
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
     middlewares: List<Middleware>,
     errorHandlers: ErrorHandlers,
+    queryParameterConfig: QueryParameterConfig,
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
 ) {
     addHttp1ServerCodec(aggregateBody = false)
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,
-        HttpServerHandler(router, middlewares, errorHandlers, scope, connections, channel = this),
+        HttpServerHandler(
+            router,
+            middlewares,
+            errorHandlers,
+            queryParameterConfig,
+            scope,
+            connections,
+            channel = this,
+        ),
     )
 }
 
@@ -95,6 +105,7 @@ internal class HttpServerHandler(
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
+    private val queryParameterConfig: QueryParameterConfig,
     private val scope: CoroutineScope,
     private val connections: ServerConnections,
     private val channel: PipelinedChannel,
@@ -202,6 +213,20 @@ internal class HttpServerHandler(
     }
 
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
+        // Parse the query string eagerly, at the water's edge: an
+        // oversized / malformed query is answered `400 Bad Request`
+        // synchronously, before route resolution, middleware, or the
+        // handler coroutine — the same shape as the unmatched fast path.
+        val queryParameters = try {
+            parseQueryParameters(head.queryString, queryParameterConfig)
+        } catch (@Suppress("SwallowedException") e: MalformedQueryStringException) {
+            // The rejection is by design — the request is answered `400`
+            // and not propagated; the cause carries no further detail the
+            // client should see.
+            ctx.propagateWriteAndFlush(BAD_REQUEST_RESPONSE)
+            if (draining) channel.close()
+            return
+        }
         val resolution = router.resolve(head.method, head.path, head)
         val match = (resolution as? RouteResolution.Matched)?.match
         // An upgrade request: the resolved route carries an UpgradeProtocol
@@ -221,7 +246,7 @@ internal class HttpServerHandler(
             if (draining) channel.close()
             return
         }
-        val call = Http1Call(head, ctx, match?.pathParameters ?: emptyMap())
+        val call = Http1Call(head, ctx, queryParameters, match?.pathParameters ?: emptyMap())
         if (draining) call.markConnectionClose()
         inFlight = call
         connectionScope.launch(ctx.channel.ioDispatcher) {
@@ -363,6 +388,14 @@ internal class HttpServerHandler(
             HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error")
 
         /**
+         * The synchronous response for a request whose query string is
+         * rejected — oversized (`maxParameterCount`) or, with the strict
+         * options on, malformed. Answered at the edge, before dispatch.
+         */
+        val BAD_REQUEST_RESPONSE: HttpResponse =
+            HttpResponse.of(HttpStatus.BAD_REQUEST, "Bad Request")
+
+        /**
          * The synchronous fast-path error response for an unmatched
          * request: a `405 Method Not Allowed` carrying an `Allow` header
          * when the path is registered for other methods, otherwise a
@@ -406,6 +439,7 @@ internal class HttpServerHandler(
 internal class Http1Call(
     private val head: HttpRequestHead,
     private val ctx: PipelineHandlerContext,
+    override val queryParameters: QueryParameters,
     override val pathParameters: Map<String, String>,
 ) : HttpCall {
 

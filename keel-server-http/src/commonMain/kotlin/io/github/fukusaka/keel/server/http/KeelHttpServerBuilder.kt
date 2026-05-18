@@ -4,9 +4,7 @@ import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.server.KeelServerDsl
 import io.github.fukusaka.keel.server.ServerConnector
-import io.github.fukusaka.keel.server.ServerConnectorBuilder
 import kotlin.reflect.KClass
-import io.github.fukusaka.keel.server.connector as buildConnector
 
 /**
  * Configuration builder for [keelHttpServer].
@@ -25,25 +23,31 @@ import io.github.fukusaka.keel.server.connector as buildConnector
 public class KeelHttpServerBuilder internal constructor() {
 
     private var connector: ServerConnector? = null
+    private var queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
     private val exceptionMappers = mutableListOf<ExceptionMapper>()
 
     /**
-     * Configures the listening endpoint via the protocol-neutral
-     * `connector { }` DSL of `:keel-server` — bind address, port,
-     * transport options, and TLS (see [ServerConnector]).
+     * Configures the listening endpoint — bind address, port, transport
+     * options, and TLS (see [ServerConnector]) — plus the HTTP-specific
+     * `queryParameters { }` block (see [QueryParameterConfig]), via the
+     * [HttpConnectorBuilder] DSL.
      *
      * When omitted, the server binds an OS-assigned ephemeral port on
-     * all interfaces. May be called at most once. The bind host must be
-     * an IP literal — the Pipeline-mode bind cannot resolve hostnames.
+     * all interfaces and parses query strings with
+     * [QueryParameterConfig.DEFAULT]. May be called at most once. The
+     * bind host must be an IP literal — the Pipeline-mode bind cannot
+     * resolve hostnames.
      *
      * @throws IllegalStateException if a connector is already configured.
      */
-    public fun connector(configure: ServerConnectorBuilder.() -> Unit) {
+    public fun connector(configure: HttpConnectorBuilder.() -> Unit) {
         check(connector == null) { "connector is already configured" }
-        connector = buildConnector(configure)
+        val builder = HttpConnectorBuilder().apply(configure)
+        connector = builder.buildConnector()
+        queryParameterConfig = builder.buildQueryConfig()
     }
 
     /**
@@ -250,6 +254,7 @@ public class KeelHttpServerBuilder internal constructor() {
         KeelHttpServer(
             engine,
             connector ?: ServerConnector(),
+            queryParameterConfig,
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
