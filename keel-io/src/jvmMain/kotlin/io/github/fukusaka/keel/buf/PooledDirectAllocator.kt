@@ -49,8 +49,11 @@ class PooledDirectAllocator(
 
     override fun createForEventLoop(): BufferAllocator =
         PooledDirectAllocator(maxTotalBytes).also { child ->
-            for ((size, pool) in pools) {
-                child.registerPoolSize(size, pool.maxSlots.coerceAtMost(LOCAL_POOL_SLOTS))
+            // Set (not bump) each child pool's cap to the parent's, clamped to
+            // LOCAL_POOL_SLOTS. registerPoolSize only raises a cap, so it
+            // cannot apply this clamp; write the child pools directly.
+            for ((cls, pool) in pools) {
+                child.pools[cls]?.maxSlots = pool.maxSlots.coerceAtMost(LOCAL_POOL_SLOTS)
             }
         }
 

@@ -144,6 +144,22 @@ class PoolAllocatorTest {
     }
 
     @Test
+    fun createForEventLoopClampsPerClassSlotsToTheLocalCap() {
+        if (!isPoolAllocator()) return
+        // The parent's 4096 class keeps the default 16 slots; the per-EventLoop
+        // child must clamp every class to the local cap of 8.
+        val child = createPoolAllocator().createForEventLoop()
+        val bufs = (0 until 12).map { child.allocate(4096) }
+        bufs.forEach { it.release() }
+
+        var reusedCount = 0
+        val reused = (0 until 12).map { child.allocate(4096) }
+        reused.forEach { r -> if (bufs.contains(r)) reusedCount++ }
+        assertEquals(8, reusedCount, "a per-EventLoop child pool must retain at most the local cap of 8")
+        reused.forEach { it.release() }
+    }
+
+    @Test
     fun trackingAllocatorWorksWithPoolAllocator() {
         val pool = createPoolAllocator()
         val tracker = TrackingAllocator(pool)
