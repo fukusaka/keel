@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: trailing optional path parameter — `:id?` / `:id(int)?` makes the final segment optional on HTTP and WebSocket routes, so `/users/:id?` answers both `/users` and `/users/42` (#559)
 - `server-http`: constrained path parameters — `:id(int)` / `:id(uuid)` / `:id(^regex$)` on HTTP and WebSocket routes; typed built-ins plus regex, and differently-constrained parameters coexist at one position (#558)
 - `benchmark`: WS `permessage-deflate` real-network bench — `wsbench` `deflate` scenario + `bench-remote-ws.sh` harness (`tc tbf` bandwidth cap), wired into the `server-http-*` / `pipeline-http-*` bench servers (#556)
 - `server-websocket`: `permessage-deflate` (RFC 7692) — `webSockets(DeflateCodec) { }` negotiates and applies WebSocket message compression, with `contextTakeover` / `threshold` / `level` knobs and per-endpoint override (#555)

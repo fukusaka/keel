@@ -47,6 +47,11 @@ public class RouteMatch internal constructor(
  *   coexist at the same position as backtracking siblings, all sharing
  *   one parameter name. The constraint is evaluated when the segment is
  *   reached; a failure backtracks exactly as a literal mismatch does.
+ * - **optional path parameter** — a trailing `:id?` (or `:id(int)?`)
+ *   makes the final segment optional: the route is registered both with
+ *   and without it, so `/users/:id?` answers `/users` and `/users/42`
+ *   alike. Only the final segment may be optional — an interior `?` is a
+ *   registration error; register the two explicit routes instead.
  * - **wildcard** — `*`, only as the final segment, matches the entire
  *   remaining path — zero or more segments — and binds it to the key
  *   `"*"` (the empty string when zero segments remain). A wildcard route
@@ -91,19 +96,21 @@ public class Router {
      * Registers [handler] for [method] requests whose path matches the
      * [path] pattern.
      *
+     * A trailing optional parameter — `:id?` — registers the [handler]
+     * both with and without that segment, so `/users/:id?` answers
+     * `/users` and `/users/42` alike.
+     *
      * @throws IllegalArgumentException if `*` is not the final segment, a
      *   `:` parameter has no name, a parameter at an already-used trie
-     *   position has a different name, or [method] × [path] is already
-     *   registered.
+     *   position has a different name, an optional `?` parameter is not
+     *   the final segment, or [method] × [path] is already registered.
      */
     public fun register(method: HttpMethod, path: String, handler: RouteHandler) {
-        var node = root
-        val segments = segmentsOf(path)
-        for ((index, segment) in segments.withIndex()) {
-            node = node.childFor(segment, isLast = index == segments.lastIndex, path = path)
+        for (segments in registrationSegments(path)) {
+            val node = walkTo(segments, path)
+            require(node.handlers[method] == null) { "duplicate route: $method $path" }
+            node.handlers[method] = handler
         }
-        require(node.handlers[method] == null) { "duplicate route: $method $path" }
-        node.handlers[method] = handler
     }
 
     /**
@@ -113,21 +120,30 @@ public class Router {
      * this protocol (see [RouteMatch.upgrade]).
      *
      * The pattern syntax is the same as [register] — `:name` parameters
-     * and a trailing `*` are honoured — so `webSocket("/chat/:room")`
-     * style routes get path-parameter matching for free.
+     * (optionally constrained or trailing-optional) and a trailing `*` are
+     * honoured — so `webSocket("/chat/:room")` style routes get
+     * path-parameter matching for free.
      *
      * @throws IllegalArgumentException if `*` is not the final segment, a
-     *   `:` parameter has no name or conflicts with an existing one, or
-     *   [path] already has an upgrade protocol registered.
+     *   `:` parameter has no name or conflicts with an existing one, an
+     *   optional `?` parameter is not the final segment, or [path] already
+     *   has an upgrade protocol registered.
      */
     public fun registerUpgrade(path: String, protocol: UpgradeProtocol) {
+        for (segments in registrationSegments(path)) {
+            val node = walkTo(segments, path)
+            require(node.upgrade == null) { "duplicate upgrade route: $path" }
+            node.upgrade = protocol
+        }
+    }
+
+    /** Walks (creating as needed) the trie path for [segments], returning the leaf node. */
+    private fun walkTo(segments: List<String>, path: String): Node {
         var node = root
-        val segments = segmentsOf(path)
         for ((index, segment) in segments.withIndex()) {
             node = node.childFor(segment, isLast = index == segments.lastIndex, path = path)
         }
-        require(node.upgrade == null) { "duplicate upgrade route: $path" }
-        node.upgrade = protocol
+        return node
     }
 
     /**
@@ -269,6 +285,49 @@ public class Router {
     private companion object {
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
         fun segmentsOf(path: String): List<String> = path.split('/').filter { it.isNotEmpty() }
+
+        /**
+         * Expands [path] into the concrete segment lists to register.
+         *
+         * Normally one list. When the final segment is a trailing
+         * optional parameter (`:id?`), two lists are returned — the path
+         * without that segment and the path with it (the `?` stripped) —
+         * so the same route answers both. An optional `?` parameter that
+         * is not the final segment is rejected: interior optionality
+         * multiplies paths combinatorially, so the caller registers the
+         * two explicit routes instead.
+         *
+         * @throws IllegalArgumentException if a non-final segment is an
+         *   optional `?` parameter.
+         */
+        fun registrationSegments(path: String): List<List<String>> {
+            val segments = segmentsOf(path)
+            for (i in 0 until segments.size - 1) {
+                require(!isOptionalParam(segments[i])) {
+                    "optional '?' parameter must be the last segment: $path"
+                }
+            }
+            val last = segments.lastOrNull()
+            return if (last != null && isOptionalParam(last)) {
+                listOf(segments.dropLast(1), segments.dropLast(1) + last.removeSuffix("?"))
+            } else {
+                listOf(segments)
+            }
+        }
+
+        /**
+         * True when [segment] is a trailing-optional parameter — a `:name`
+         * whose final `?` is the optionality marker, not a `?` inside a
+         * regex constraint. The marker `?` follows the closing `)` of a
+         * constraint (`:id(int)?`) or the bare name (`:id?`); a trailing
+         * `?` of a token that still ends with `)` — `:id(\d?)` — is part
+         * of the regex and does not mark the parameter optional.
+         */
+        fun isOptionalParam(segment: String): Boolean {
+            if (!segment.startsWith(":") || !segment.endsWith("?")) return false
+            val open = segment.indexOf('(')
+            return open < 0 || segment[segment.length - 2] == ')'
+        }
 
         /** UUID (RFC 4122 textual form) constraint pattern, used by the `uuid` built-in. */
         private val UUID_REGEX =
