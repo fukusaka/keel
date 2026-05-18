@@ -23,6 +23,13 @@ const sidebars: SidebarsConfig = {
         'codecs/websocket',
       ],
     },
+    {
+      type: 'category',
+      label: 'Server',
+      items: [
+        'server/http-server',
+      ],
+    },
   ],
 };
 
