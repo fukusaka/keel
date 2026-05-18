@@ -398,6 +398,47 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `a route group dispatches its routes at the prefixed path`() {
+        val events = mutableListOf<String>()
+        val router = Router()
+        RouteGroupBuilder("/api").apply {
+            get("/users") { call ->
+                events.add("handler")
+                call.respond(HttpResponse.ok("users"))
+            }
+        }.flush(emptyList(), "") { method, path, handler -> router.register(method, path, handler) }
+        install(router)
+
+        feedGet("/api/users")
+
+        assertEquals(listOf("handler"), events)
+        assertTrue(responseText().endsWith("users"), "group route response: ${responseText()}")
+    }
+
+    @Test
+    fun `nested route groups compose the prefix and the middleware order`() {
+        val events = mutableListOf<String>()
+        val router = Router()
+        RouteGroupBuilder("/api").apply {
+            install { _, next -> events.add("api-in"); next(); events.add("api-out") }
+            route("/v1") {
+                install { _, next -> events.add("v1-in"); next(); events.add("v1-out") }
+                get("/users") { call ->
+                    events.add("handler")
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            }
+        }.flush(emptyList(), "") { method, path, handler -> router.register(method, path, handler) }
+        install(router)
+
+        // The route resolves at the composed prefix, and the parent group's
+        // middleware wraps the nested group's, which wraps the handler.
+        feedGet("/api/v1/users")
+
+        assertEquals(listOf("api-in", "v1-in", "handler", "v1-out", "api-out"), events)
+    }
+
+    @Test
     fun `a middleware short-circuits by not calling next`() {
         var handlerRan = false
         install(
