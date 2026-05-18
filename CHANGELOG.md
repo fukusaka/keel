@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: nested route groups — `route(prefix) { }` on the `keelHttpServer { }` builder prefixes its routes and scopes `install`ed middleware to the group, with nesting that composes both (#560)
 - `server-http`: trailing optional path parameter — `:id?` / `:id(int)?` makes the final segment optional on HTTP and WebSocket routes, so `/users/:id?` answers both `/users` and `/users/42` (#559)
 - `server-http`: constrained path parameters — `:id(int)` / `:id(uuid)` / `:id(^regex$)` on HTTP and WebSocket routes; typed built-ins plus regex, and differently-constrained parameters coexist at one position (#558)
 - `benchmark`: WS `permessage-deflate` real-network bench — `wsbench` `deflate` scenario + `bench-remote-ws.sh` harness (`tc tbf` bandwidth cap), wired into the `server-http-*` / `pipeline-http-*` bench servers (#556)
