@@ -3,8 +3,8 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.epoll.EpollEngine
-import io.github.fukusaka.keel.server.http.keelHttpServer
-import io.github.fukusaka.keel.server.websocket.webSockets
+import io.github.fukusaka.keel.server.http.dsl.keelHttpServer
+import io.github.fukusaka.keel.server.websocket.dsl.webSockets
 import kotlinx.coroutines.runBlocking
 
 /**

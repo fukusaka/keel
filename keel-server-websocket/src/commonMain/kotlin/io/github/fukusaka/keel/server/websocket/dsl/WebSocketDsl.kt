@@ -1,9 +1,14 @@
-package io.github.fukusaka.keel.server.websocket
+package io.github.fukusaka.keel.server.websocket.dsl
 
 import io.github.fukusaka.keel.compression.CompressionCodec
-import io.github.fukusaka.keel.server.KeelServerDsl
-import io.github.fukusaka.keel.server.http.KeelHttpServerBuilder
-import io.github.fukusaka.keel.server.http.RouteGroupBuilder
+import io.github.fukusaka.keel.server.dsl.KeelServerDsl
+import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
+import io.github.fukusaka.keel.server.http.dsl.RouteGroupBuilder
+import io.github.fukusaka.keel.server.websocket.WebSocketHandler
+import io.github.fukusaka.keel.server.websocket.WebSocketUpgrade
+import io.github.fukusaka.keel.server.websocket.WsDeflateConfig
+import io.github.fukusaka.keel.server.websocket.WsDeflateOptions
+import io.github.fukusaka.keel.server.websocket.WsSession
 
 /**
  * Per-endpoint `permessage-deflate` override inside a `webSockets { }`
