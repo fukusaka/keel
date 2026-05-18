@@ -6,12 +6,24 @@ import kotlinx.io.readByteArray
 /**
  * Reads one WebSocket frame from [source] (RFC 6455 §5.2).
  *
- * Masked payloads are automatically unmasked. Reserved bits (RSV1–3) must be
- * zero; a non-zero value causes [IllegalArgumentException].
+ * Masked payloads are automatically unmasked.
  *
+ * **Reserved bits**: RSV2 and RSV3 must always be zero — keel negotiates
+ * no extension that uses them, so a non-zero value is a protocol error
+ * ([IllegalArgumentException]). RSV1 is rejected the same way *unless*
+ * [allowRsv1] is true: the `permessage-deflate` extension (RFC 7692
+ * §7.2) sets RSV1=1 on the first frame of a compressed message, so a
+ * server that negotiated that extension passes `allowRsv1 = true` to
+ * accept the bit. RSV1 stays rejected by default to keep callers that
+ * negotiated nothing strict.
+ *
+ * @param source the byte source to read one frame from.
+ * @param allowRsv1 when true, permit RSV1=1 on the frame (a
+ *   `permessage-deflate` compressed-message marker). RSV2/RSV3 stay
+ *   rejected regardless. Defaults to false (current strict behaviour).
  * @throws IllegalArgumentException if the frame is malformed.
  */
-fun parseFrame(source: Source): WsFrame {
+fun parseFrame(source: Source, allowRsv1: Boolean = false): WsFrame {
     val byte0 = source.readByte().toInt() and 0xFF
     val byte1 = source.readByte().toInt() and 0xFF
 
@@ -20,8 +32,9 @@ fun parseFrame(source: Source): WsFrame {
     val rsv2 = (byte0 and 0x20) != 0
     val rsv3 = (byte0 and 0x10) != 0
 
-    require(!rsv1 && !rsv2 && !rsv3) {
-        "Reserved bits must be 0 (no extension negotiated): rsv1=$rsv1, rsv2=$rsv2, rsv3=$rsv3"
+    require((allowRsv1 || !rsv1) && !rsv2 && !rsv3) {
+        "Reserved bits invalid (rsv1=$rsv1, rsv2=$rsv2, rsv3=$rsv3): " +
+            "RSV2/RSV3 must be 0; RSV1 is permitted only when permessage-deflate is negotiated"
     }
 
     val opcode = WsOpcode.fromCode(byte0 and 0x0F)

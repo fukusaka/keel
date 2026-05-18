@@ -135,6 +135,36 @@ class WsFrameParserTest {
     }
 
     @Test
+    fun `rsv1 is accepted when allowRsv1 is true`() {
+        // byte0 = 0xC1 (FIN=1, RSV1=1, opcode=TEXT) — permessage-deflate marker.
+        val src = buf(byteArrayOf(0xC1.b, 0x03, 'a'.code.b, 'b'.code.b, 'c'.code.b))
+        val f = parseFrame(src, allowRsv1 = true)
+        assertTrue(f.rsv1)
+        assertEquals(WsOpcode.TEXT, f.opcode)
+        assertContentEquals("abc".encodeToByteArray(), f.payload)
+    }
+
+    @Test
+    fun `rsv1 is still rejected when allowRsv1 is false`() {
+        val src = buf(byteArrayOf(0xC1.b, 0x00))
+        assertFailsWith<IllegalArgumentException> { parseFrame(src, allowRsv1 = false) }
+    }
+
+    @Test
+    fun `rsv2 is rejected even when allowRsv1 is true`() {
+        // byte0 = 0xA1 (FIN=1, RSV2=1, opcode=TEXT).
+        val src = buf(byteArrayOf(0xA1.b, 0x00))
+        assertFailsWith<IllegalArgumentException> { parseFrame(src, allowRsv1 = true) }
+    }
+
+    @Test
+    fun `rsv3 is rejected even when allowRsv1 is true`() {
+        // byte0 = 0x91 (FIN=1, RSV3=1, opcode=TEXT).
+        val src = buf(byteArrayOf(0x91.b, 0x00))
+        assertFailsWith<IllegalArgumentException> { parseFrame(src, allowRsv1 = true) }
+    }
+
+    @Test
     fun roundTripUnmasked() {
         val original = WsFrame.text("round-trip")
         val buf = Buffer()

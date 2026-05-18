@@ -31,10 +31,14 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * @param requireClientMasking when true (default), inbound unmasked
  *   frames trigger [WsCodecException]. RFC 6455 §5.1 mandates client
  *   frames be masked.
+ * @param allowRsv1 when true, the decoder accepts RSV1=1 frames — the
+ *   `permessage-deflate` compressed-message marker (RFC 7692 §7.2).
+ *   Pass true only when the handshake negotiated `permessage-deflate`.
  */
 public fun PipelinedChannel.addWsServerCodec(
     maxFramePayloadSize: Long = WsFrameDecoder.DEFAULT_MAX_FRAME_PAYLOAD_SIZE,
     requireClientMasking: Boolean = true,
+    allowRsv1: Boolean = false,
 ) {
     pipeline.addLast("ws-encoder", WsFrameEncoder())
     pipeline.addLast(
@@ -42,6 +46,7 @@ public fun PipelinedChannel.addWsServerCodec(
         WsFrameDecoder(
             maxFramePayloadSize = maxFramePayloadSize,
             requireClientMasking = requireClientMasking,
+            allowRsv1 = allowRsv1,
         ),
     )
 }

@@ -46,10 +46,15 @@ import kotlinx.io.Buffer
  * @property requireClientMasking when true (default), unmasked inbound
  *   frames trigger [WsCodecException]. RFC 6455 §5.1 mandates client
  *   frames be masked; servers must close the connection on violation.
+ * @property allowRsv1 when true, accept frames with RSV1=1 — the
+ *   `permessage-deflate` compressed-message marker (RFC 7692 §7.2).
+ *   Set true only when the handshake negotiated `permessage-deflate`;
+ *   defaults to false so a server with no extension stays strict.
  */
 public class WsFrameDecoder(
     private val maxFramePayloadSize: Long = DEFAULT_MAX_FRAME_PAYLOAD_SIZE,
     private val requireClientMasking: Boolean = true,
+    private val allowRsv1: Boolean = false,
 ) : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease = true) {
 
     /**
@@ -145,7 +150,7 @@ public class WsFrameDecoder(
         // Full frame available — parseFrame consumes from `buffer`,
         // advancing past this frame's bytes and leaving any subsequent
         // chunk in place for the next iteration.
-        return parseFrame(buffer)
+        return parseFrame(buffer, allowRsv1)
     }
 
     public companion object {
