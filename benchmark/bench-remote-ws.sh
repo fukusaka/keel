@@ -19,22 +19,48 @@
 # get the A/B: under the bandwidth cap, compression-on should win on
 # msgs/sec.
 #
+# ## Docker fallback modes
+#
+# Two host capabilities the bench needs are often unavailable as native
+# tools: a Go toolchain on the client host (to build `wsbench`) and
+# passwordless `sudo tc` on the server host (to apply the bandwidth cap).
+# Both fall back to Docker, mirroring bench-remote.sh's `BENCH_WRK_MODE`:
+#
+#   - wsbench: `BENCH_WSBENCH_MODE=docker` builds + runs `wsbench` inside a
+#     `golang` image on the client host (no native Go toolchain needed).
+#   - tc: `BENCH_TC_MODE=docker` applies the qdisc from a
+#     `--privileged --network=host` container on the server host, which
+#     shares the host network namespace so `tc` shapes the real interface
+#     (no passwordless `sudo tc` needed).
+#
+# Both default to `auto` — native is probed first, Docker second. The
+# Docker invocation itself is probed per host (`docker` vs `sudo -n docker`).
+#
 # Usage: ./benchmark/bench-remote-ws.sh <name> <command> [args...]
 #
 # Required environment variables:
 #   BENCH_REMOTE_HOST    Server host (ssh target that runs <command>).
 #   BENCH_CLIENT_HOST    wsbench client host (ssh target that drives load).
-#                        Must have a Go toolchain on PATH — wsbench is built
-#                        there from source (the binary is platform-specific
-#                        and .gitignore'd).
 #   BENCH_TC_INTERFACE   Server interface to apply the tc tbf qdisc on
-#                        (e.g. eth0). Passwordless sudo for `tc` on the
-#                        server host is required.
+#                        (e.g. eth0).
 #
 # Optional environment variables:
 #   BENCH_NETEM_RATE     tbf rate cap applied at the qdisc root
 #                        (default: 50mbit). This is the bandwidth ceiling
 #                        the A/B is measured against.
+#   BENCH_TC_MODE        How to run `tc` on the server: "sudo" (passwordless
+#                        `sudo -n tc`), "docker" (a `--privileged
+#                        --network=host` container), or "auto" (default —
+#                        probe sudo first, then docker).
+#   BENCH_TC_IMAGE       Alpine-based image used in tc "docker" mode;
+#                        `iproute2` is installed into it at run time
+#                        (default: alpine:latest).
+#   BENCH_WSBENCH_MODE   How to build/run wsbench on the client: "native"
+#                        (a Go toolchain on PATH), "docker" (a `golang`
+#                        image), or "auto" (default — probe native Go
+#                        first, then docker).
+#   BENCH_GOLANG_IMAGE   Image used in wsbench "docker" mode for both the
+#                        `go build` and the run (default: golang:1.24).
 #   BENCH_PORT           Server port (default: 18090). Also overridden by a
 #                        --port=N token in <args>.
 #   BENCH_SERVER_IP      IP or hostname the client uses in the ws:// URL;
@@ -63,9 +89,9 @@
 #   <name>|<msgs/sec>|<p50>|<p99>
 #
 # Cleanup: the tc qdisc on the server is removed via `trap EXIT` regardless
-# of exit status. If this script is killed by SIGKILL (uncatchable), run
-# manually:
-#   ssh "$BENCH_REMOTE_HOST" "sudo tc qdisc del dev <iface> root"
+# of exit status. If this script is killed by SIGKILL (uncatchable), remove
+# it manually with the same mode the run used (sudo or a privileged
+# container): `tc qdisc del dev <iface> root`.
 #
 # Example (A/B over a 50 Mbit cap):
 #   for c in true false; do
@@ -98,6 +124,11 @@ WORKDIR="${BENCH_REMOTE_WORKDIR:-~/prj/keel-work/keel}"
 CLIENT_WORKDIR="${BENCH_CLIENT_WORKDIR:-~/prj/keel-work/keel-wsbench}"
 SERVER_IP="${BENCH_SERVER_IP:-$REMOTE_HOST}"
 
+TC_MODE="${BENCH_TC_MODE:-auto}"
+TC_IMAGE="${BENCH_TC_IMAGE:-alpine:latest}"
+WSBENCH_MODE="${BENCH_WSBENCH_MODE:-auto}"
+GOLANG_IMAGE="${BENCH_GOLANG_IMAGE:-golang:1.24}"
+
 PORT=${BENCH_PORT:-18090}
 WS_VUS=${BENCH_WS_VUS:-16}
 WS_DURATION=${BENCH_WS_DURATION:-15s}
@@ -108,10 +139,31 @@ SCHEME=${BENCH_SCHEME:-ws}
 TC_HANDLE="1:"
 READY_TIMEOUT=60
 
+# Docker invocation per host, resolved lazily by resolve_docker(): either
+# "docker", "sudo -n docker", or "" when Docker is unavailable.
+SERVER_DOCKER=""
+CLIENT_DOCKER=""
+
 case "$SCHEME" in
     ws|wss) ;;
     *)
         echo "ERROR: BENCH_SCHEME must be 'ws' or 'wss' (got '$SCHEME')" >&2
+        exit 2
+        ;;
+esac
+
+case "$TC_MODE" in
+    sudo|docker|auto) ;;
+    *)
+        echo "ERROR: BENCH_TC_MODE must be 'sudo', 'docker' or 'auto' (got '$TC_MODE')" >&2
+        exit 2
+        ;;
+esac
+
+case "$WSBENCH_MODE" in
+    native|docker|auto) ;;
+    *)
+        echo "ERROR: BENCH_WSBENCH_MODE must be 'native', 'docker' or 'auto' (got '$WSBENCH_MODE')" >&2
         exit 2
         ;;
 esac
@@ -126,26 +178,99 @@ done
 LOG_PATH="/tmp/bench-remote-ws-${NAME}.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --- Capability resolution ---
+
+# Prints the working Docker invocation on $1 — "docker" when the ssh user
+# can run it directly, "sudo -n docker" when only passwordless sudo works,
+# or "" when neither does.
+resolve_docker() {
+    local host="$1"
+    if ssh -n "$host" 'docker ps >/dev/null 2>&1'; then
+        echo "docker"
+    elif ssh -n "$host" 'sudo -n docker ps >/dev/null 2>&1'; then
+        echo "sudo -n docker"
+    else
+        echo ""
+    fi
+}
+
+# Resolves TC_MODE (auto → sudo|docker) and WSBENCH_MODE (auto → native|docker),
+# probing host capabilities. Populates SERVER_DOCKER / CLIENT_DOCKER when a
+# docker mode is selected. Exits with a clear error when neither path works.
+resolve_modes() {
+    if [ "$TC_MODE" = auto ]; then
+        if ssh -n "$REMOTE_HOST" "sudo -n tc qdisc show dev ${TC_IFACE} >/dev/null 2>&1"; then
+            TC_MODE=sudo
+        else
+            SERVER_DOCKER="$(resolve_docker "$REMOTE_HOST")"
+            if [ -n "$SERVER_DOCKER" ]; then
+                TC_MODE=docker
+            else
+                echo "ERROR: cannot apply tc on ${REMOTE_HOST} — neither passwordless 'sudo tc'" >&2
+                echo "       nor Docker is available. Configure one, or set BENCH_TC_MODE." >&2
+                exit 1
+            fi
+        fi
+    elif [ "$TC_MODE" = docker ]; then
+        SERVER_DOCKER="$(resolve_docker "$REMOTE_HOST")"
+        [ -n "$SERVER_DOCKER" ] || { echo "ERROR: BENCH_TC_MODE=docker but no Docker on ${REMOTE_HOST}" >&2; exit 1; }
+    fi
+
+    if [ "$WSBENCH_MODE" = auto ]; then
+        if ssh -n "$CLIENT_HOST" 'command -v go >/dev/null 2>&1'; then
+            WSBENCH_MODE=native
+        else
+            CLIENT_DOCKER="$(resolve_docker "$CLIENT_HOST")"
+            if [ -n "$CLIENT_DOCKER" ]; then
+                WSBENCH_MODE=docker
+            else
+                echo "ERROR: cannot build wsbench on ${CLIENT_HOST} — neither a Go toolchain" >&2
+                echo "       nor Docker is available. Install one, or set BENCH_WSBENCH_MODE." >&2
+                exit 1
+            fi
+        fi
+    elif [ "$WSBENCH_MODE" = docker ]; then
+        CLIENT_DOCKER="$(resolve_docker "$CLIENT_HOST")"
+        [ -n "$CLIENT_DOCKER" ] || { echo "ERROR: BENCH_WSBENCH_MODE=docker but no Docker on ${CLIENT_HOST}" >&2; exit 1; }
+    fi
+
+    echo "[bench-remote-ws] tc mode: ${TC_MODE}, wsbench mode: ${WSBENCH_MODE}" >&2
+}
+
 # --- tc tbf qdisc lifecycle on the server ---
+
+# Runs `tc $*` on the server. In sudo mode via `sudo -n tc`; in docker mode
+# inside a --privileged --network=host container that shares the host
+# network namespace, so the qdisc lands on the real host interface.
+# iproute2 is installed into the (Alpine-based) image at run time.
+run_tc() {
+    local tc_args="$*"
+    case "$TC_MODE" in
+        sudo)
+            ssh -n "$REMOTE_HOST" "sudo -n tc ${tc_args}"
+            ;;
+        docker)
+            ssh -n "$REMOTE_HOST" \
+                "${SERVER_DOCKER} run --rm --privileged --network=host ${TC_IMAGE} \
+                 sh -c 'apk add -q --no-cache iproute2 >/dev/null 2>&1 && tc ${tc_args}'"
+            ;;
+    esac
+}
 
 apply_tc() {
     # rate-only tbf at root — netem delay/loss are not needed here, the
     # bandwidth cap alone is what makes permessage-deflate's wire-byte
-    # reduction observable. `sudo -n` fails fast when passwordless sudo is
-    # not configured for `tc` on the server.
-    ssh -n "$REMOTE_HOST" \
-        "sudo -n tc qdisc add dev ${TC_IFACE} root handle ${TC_HANDLE} tbf rate ${NETEM_RATE} burst 32kbit latency 400ms" \
+    # reduction observable.
+    run_tc "qdisc add dev ${TC_IFACE} root handle ${TC_HANDLE} tbf rate ${NETEM_RATE} burst 32kbit latency 400ms" \
         || { echo "ERROR: tc qdisc add tbf failed on ${REMOTE_HOST}:${TC_IFACE}" >&2; exit 1; }
-    echo "[bench-remote-ws] tc tbf rate ${NETEM_RATE} applied on ${REMOTE_HOST}:${TC_IFACE}" >&2
+    echo "[bench-remote-ws] tc tbf rate ${NETEM_RATE} applied on ${REMOTE_HOST}:${TC_IFACE} (${TC_MODE} mode)" >&2
 }
 
 cleanup_tc() {
     # Idempotent — `del root` removes whatever is at root, no-op if nothing.
-    ssh -n "$REMOTE_HOST" "sudo -n tc qdisc del dev ${TC_IFACE} root 2>/dev/null || true" >/dev/null 2>&1 || true
+    run_tc "qdisc del dev ${TC_IFACE} root" >/dev/null 2>&1 || true
     echo "[bench-remote-ws] tc qdisc cleanup done on ${REMOTE_HOST}:${TC_IFACE}" >&2
 }
-
-trap cleanup_tc EXIT INT TERM
 
 # --- Server lifecycle on the remote host ---
 
@@ -185,11 +310,8 @@ wait_for_ready() {
 build_wsbench() {
     # wsbench is platform-specific and .gitignore'd, so it cannot be
     # transferred prebuilt. rsync the Go sources to the client host and
-    # build there. Fail clearly if the client has no Go toolchain.
-    if ! ssh -n "$CLIENT_HOST" 'command -v go >/dev/null 2>&1'; then
-        echo "ERROR: no Go toolchain on ${CLIENT_HOST}. Install Go, then retry." >&2
-        exit 1
-    fi
+    # build there — natively when a Go toolchain is present, otherwise
+    # inside a `golang` image.
     ssh -n "$CLIENT_HOST" "mkdir -p ${CLIENT_WORKDIR}" \
         || { echo "ERROR: cannot create ${CLIENT_WORKDIR} on ${CLIENT_HOST}" >&2; exit 1; }
     rsync -az \
@@ -198,9 +320,22 @@ build_wsbench() {
         "${SCRIPT_DIR}"/wsbench/*.go \
         "${CLIENT_HOST}:${CLIENT_WORKDIR}/" \
         || { echo "ERROR: rsync of wsbench sources to ${CLIENT_HOST} failed" >&2; exit 1; }
-    ssh -n "$CLIENT_HOST" "cd ${CLIENT_WORKDIR} && go build -o wsbench ." \
-        || { echo "ERROR: 'go build' of wsbench on ${CLIENT_HOST} failed" >&2; exit 1; }
-    echo "[bench-remote-ws] wsbench built on ${CLIENT_HOST}:${CLIENT_WORKDIR}" >&2
+
+    case "$WSBENCH_MODE" in
+        native)
+            ssh -n "$CLIENT_HOST" "cd ${CLIENT_WORKDIR} && go build -o wsbench ." \
+                || { echo "ERROR: 'go build' of wsbench on ${CLIENT_HOST} failed" >&2; exit 1; }
+            ;;
+        docker)
+            # CGO_ENABLED=0 yields a static binary; the bind mount lands it
+            # back in CLIENT_WORKDIR for the run step.
+            ssh -n "$CLIENT_HOST" \
+                "${CLIENT_DOCKER} run --rm -e CGO_ENABLED=0 -v ${CLIENT_WORKDIR}:/src -w /src \
+                 ${GOLANG_IMAGE} go build -o wsbench ." \
+                || { echo "ERROR: dockerized 'go build' of wsbench on ${CLIENT_HOST} failed" >&2; exit 1; }
+            ;;
+    esac
+    echo "[bench-remote-ws] wsbench built on ${CLIENT_HOST}:${CLIENT_WORKDIR} (${WSBENCH_MODE} mode)" >&2
 }
 
 run_wsbench() {
@@ -208,10 +343,23 @@ run_wsbench() {
     # re-parse intact (matches the bench-remote.sh idiom).
     local quoted
     printf -v quoted '%q ' "$@"
-    ssh -n "$CLIENT_HOST" "cd ${CLIENT_WORKDIR} && ./wsbench ${quoted}"
+    case "$WSBENCH_MODE" in
+        native)
+            ssh -n "$CLIENT_HOST" "cd ${CLIENT_WORKDIR} && ./wsbench ${quoted}"
+            ;;
+        docker)
+            # --network=host so the container reaches the capped server link.
+            ssh -n "$CLIENT_HOST" \
+                "${CLIENT_DOCKER} run --rm --network=host -v ${CLIENT_WORKDIR}:/w -w /w \
+                 ${GOLANG_IMAGE} ./wsbench ${quoted}"
+            ;;
+    esac
 }
 
 # --- Main ---
+
+resolve_modes
+trap cleanup_tc EXIT INT TERM
 
 apply_tc
 build_wsbench
