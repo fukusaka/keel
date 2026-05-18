@@ -49,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`server-websocket`): `WsSession.incoming` delivers whole `WsMessage`s — `CONTINUATION` fragments reassembled (RFC 6455 §5.4), TEXT UTF-8 validated, protocol errors fail with `1002` / `1007` / `1009` (#554)
 - **BREAKING** (`server`): `connector { tls { } }` now requires an explicit `strategy` — no default, since no `ServerTlsStrategy` is correct for every engine (#546)
 - **BREAKING** (`server-http`): `keelHttpServer { }` replaces the `host` / `port` properties with a `connector { }` block, enabling HTTPS via `connector { tls { } }` (#544)
 - `core`: Coroutine-mode channels are no longer auto-closed on peer-FIN — the caller closes the `Channel`; auto-close stays for Pipeline-mode channels (#541)

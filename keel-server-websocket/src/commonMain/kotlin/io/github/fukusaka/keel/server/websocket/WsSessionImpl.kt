@@ -29,8 +29,11 @@ internal class WsSessionImpl(
     override val pathParameters: Map<String, String>,
 ) : WsSession {
 
-    private val applicationFrames = Channel<WsFrame>(Channel.UNLIMITED)
-    override val incoming: ReceiveChannel<WsFrame> get() = applicationFrames
+    private val applicationFrames = Channel<WsMessage>(Channel.UNLIMITED)
+    override val incoming: ReceiveChannel<WsMessage> get() = applicationFrames
+
+    /** Reassembles inbound data fragments into whole messages (RFC 6455 §5.4). */
+    private val aggregator = WsFrameAggregator()
 
     @Volatile
     private var closed = false
@@ -52,12 +55,21 @@ internal class WsSessionImpl(
 
     /**
      * Reads frames from [bridge], handles control frames internally,
-     * and forwards application data to [applicationFrames]. Returns
-     * when the bridge closes (peer EOF / parse error) or after a CLOSE
-     * frame is observed. Does **not** echo the CLOSE — [runWebSocketUpgrade]
-     * does that after the user handler has finished draining any
-     * application frames already in the channel buffer, so a tail-end
-     * echo cannot race ahead of in-flight `send` calls.
+     * reassembles data fragments into whole messages, and forwards
+     * completed [WsMessage]s to [applicationFrames]. Returns when the
+     * bridge closes (peer EOF / parse error), after a CLOSE frame is
+     * observed, or after a fragmentation / UTF-8 protocol error fails
+     * the connection.
+     *
+     * Control frames (`PING` / `PONG` / `CLOSE`) interleave fragments
+     * freely (RFC 6455 §5.4) and bypass [aggregator] entirely, so the
+     * in-progress message state is never disturbed.
+     *
+     * Does **not** echo a peer CLOSE — [runWebSocketUpgrade] does that
+     * after the user handler has finished draining any messages already
+     * buffered, so a tail-end echo cannot race ahead of in-flight `send`
+     * calls. A protocol error, however, is fatal and is failed here
+     * immediately by sending a CLOSE with the RFC 6455 §7.4.1 code.
      */
     suspend fun runForward() {
         try {
@@ -72,12 +84,44 @@ internal class WsSessionImpl(
                         peerCloseFrame = frame
                         break
                     }
-                    else -> applicationFrames.send(frame)
+                    else -> if (!handleDataFrame(frame)) break
                 }
             }
         } finally {
             applicationFrames.close()
         }
+    }
+
+    /**
+     * Feeds one data frame to [aggregator], forwarding a completed
+     * [WsMessage] to [applicationFrames]. On a protocol error, fails
+     * the connection with the matching CLOSE code (RFC 6455 §7.4.1)
+     * and returns false to stop the pump.
+     *
+     * @return true to continue the pump, false to stop after a fatal
+     *   protocol error.
+     */
+    private suspend fun handleDataFrame(frame: WsFrame): Boolean =
+        when (val outcome = aggregator.feed(frame)) {
+            is WsAggregateResult.Incomplete -> true
+            is WsAggregateResult.Completed -> {
+                applicationFrames.send(outcome.message)
+                true
+            }
+            is WsAggregateResult.ProtocolError -> {
+                failConnection(outcome.closeCode, outcome.reason)
+                false
+            }
+        }
+
+    /**
+     * Fails the connection per RFC 6455 §7.4.1 by sending a CLOSE with
+     * [code]. Best-effort — a write failure is ignored since the pump
+     * is tearing down regardless.
+     */
+    private suspend fun failConnection(code: Int, reason: String) {
+        if (!claimClose()) return
+        runCatching { sendInternal(WsFrame.close(WsCloseCode(code), reason)) }
     }
 
     override suspend fun send(frame: WsFrame) {
@@ -88,6 +132,21 @@ internal class WsSessionImpl(
         // such code does not need to know about the rule.
         val outgoing = if (frame.maskKey != null) frame.copy(maskKey = null) else frame
         sendInternal(outgoing)
+    }
+
+    override suspend fun send(message: WsMessage) {
+        when (message) {
+            is WsMessage.Text -> send(message.text)
+            is WsMessage.Binary -> send(message.bytes)
+        }
+    }
+
+    override suspend fun send(text: String) {
+        send(WsFrame.text(text))
+    }
+
+    override suspend fun send(bytes: ByteArray) {
+        send(WsFrame.binary(bytes))
     }
 
     override suspend fun close(code: WsCloseCode, reason: String) {

@@ -19,11 +19,11 @@ import io.github.fukusaka.keel.server.http.KeelHttpServerBuilder
  * ```
  * val server = keelHttpServer(engine) {
  *     webSocket("/echo") {
- *         for (frame in incoming) send(frame)
+ *         for (message in incoming) send(message)
  *     }
  *     webSocket("/chat/:room") {
  *         val room = pathParameters["room"]
- *         for (frame in incoming) send(frame)
+ *         for (message in incoming) send(message)
  *     }
  * }
  * ```
