@@ -59,6 +59,15 @@ public interface HttpCall {
     /** Query string of [uri] without the leading `?`, or null if absent. */
     public val queryString: String?
 
+    /**
+     * Query parameters parsed from [queryString]: each `name=value` pair
+     * split on `&`, with `name` and `value` percent-decoded and `+`
+     * decoded to a space. A repeated key keeps its first value; a key
+     * with no `=` maps to the empty string. Empty when there is no query
+     * string.
+     */
+    public val queryParameters: Map<String, String>
+
     /** Request headers. */
     public val headers: HttpHeaders
 

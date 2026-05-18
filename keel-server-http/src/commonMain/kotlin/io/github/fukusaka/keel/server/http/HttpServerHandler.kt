@@ -413,6 +413,10 @@ internal class Http1Call(
     override val uri: String get() = head.uri
     override val path: String get() = head.path
     override val queryString: String? get() = head.queryString
+
+    /** Parsed lazily — a handler that never reads query parameters pays nothing. */
+    override val queryParameters: Map<String, String> by lazy { parseQueryParameters(head.queryString) }
+
     override val headers: HttpHeaders get() = head.headers
 
     /**
