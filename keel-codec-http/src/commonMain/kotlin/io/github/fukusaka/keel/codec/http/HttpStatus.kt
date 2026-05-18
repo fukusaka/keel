@@ -55,6 +55,7 @@ data class HttpStatus(val code: Int) {
         val LENGTH_REQUIRED = HttpStatus(411)
         val CONTENT_TOO_LARGE = HttpStatus(413)
         val UNSUPPORTED_MEDIA_TYPE = HttpStatus(415)
+        val RANGE_NOT_SATISFIABLE = HttpStatus(416)
         val EXPECTATION_FAILED = HttpStatus(417)
         val IM_A_TEAPOT = HttpStatus(418)
         val TOO_MANY_REQUESTS = HttpStatus(429)
@@ -94,6 +95,7 @@ data class HttpStatus(val code: Int) {
             411 to "Length Required",
             413 to "Content Too Large",
             415 to "Unsupported Media Type",
+            416 to "Range Not Satisfiable",
             417 to "Expectation Failed",
             418 to "I'm a Teapot",
             429 to "Too Many Requests",
