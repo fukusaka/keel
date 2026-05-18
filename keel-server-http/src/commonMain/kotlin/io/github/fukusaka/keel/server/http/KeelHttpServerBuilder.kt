@@ -205,7 +205,7 @@ public class KeelHttpServerBuilder internal constructor() {
      * predicate to precede.
      */
     public fun upgrade(path: String, protocol: UpgradeProtocol, predicate: RoutePredicate? = null) {
-        router.registerUpgrade(path, predicate, protocol)
+        router.registerUpgrade(path, protocol, predicate)
     }
 
     /**

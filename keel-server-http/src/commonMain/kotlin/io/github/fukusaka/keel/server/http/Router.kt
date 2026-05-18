@@ -203,8 +203,8 @@ public class Router {
      */
     public fun registerUpgrade(
         path: String,
-        predicate: RoutePredicate? = null,
         protocol: UpgradeProtocol,
+        predicate: RoutePredicate? = null,
     ) {
         for (segments in registrationSegments(path)) {
             val node = walkTo(segments, path)

@@ -508,7 +508,7 @@ class RouterTest {
     @Test
     fun `a predicated upgrade route is selected by its predicate`() {
         val router = Router()
-        router.registerUpgrade("/ws", header("X-Proto", "v2"), upgrade)
+        router.registerUpgrade("/ws", upgrade, header("X-Proto", "v2"))
         assertSame(upgrade, router.match(HttpMethod.GET, "/ws", HttpHeaders.of("X-Proto" to "v2"))?.upgrade)
         // The predicate rejects a request lacking the header — no match.
         assertNull(router.match(HttpMethod.GET, "/ws"))
