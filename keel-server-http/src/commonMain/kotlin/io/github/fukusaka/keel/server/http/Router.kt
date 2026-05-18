@@ -54,11 +54,17 @@ public class RouteMatch internal constructor(
  *
  * At each segment the match precedence is literal > parameter > wildcard,
  * with backtracking: if the literal branch dead-ends, each parameter
- * branch (in registration order, constraint-tested) and then the
- * wildcard branch are tried. So `/users/me` and `/users/:id` can
- * coexist — `/users/me` takes the literal route, `/users/alice` the
- * parameter route — and `/items/:id(int)` and `/items/:id(uuid)` route
- * `/items/42` and `/items/<uuid>` to different handlers.
+ * branch — constrained ones (in registration order) before the
+ * unconstrained fallback, each constraint-tested — and then the wildcard
+ * branch are tried. So `/users/me` and `/users/:id` can coexist —
+ * `/users/me` takes the literal route, `/users/alice` the parameter
+ * route — and `/items/:id(int)` and `/items/:id(uuid)` route `/items/42`
+ * and `/items/<uuid>` to different handlers.
+ *
+ * A constrained parameter is always tried before an unconstrained one at
+ * the same position — most-specific-first, as chi / find-my-way / ASP.NET
+ * Core route — so registration order cannot make the universal
+ * unconstrained `:id` shadow a constrained `:id(int)` sibling.
  *
  * **Thread safety**: [register] mutates the trie and must complete before
  * the server starts serving. [resolve] is read-only — the trie is treated
@@ -146,8 +152,18 @@ public class Router {
             if (existing != null) {
                 existing.node
             } else {
-                Node().also {
-                    paramChildren.add(ParamSlot(parsed.name, parsed.constraintToken, parsed.constraint, it))
+                Node().also { child ->
+                    val slot = ParamSlot(parsed.name, parsed.constraintToken, parsed.constraint, child)
+                    // Keep paramChildren ordered [constrained..., unconstrained]
+                    // so resolution is most-specific-first regardless of
+                    // registration order: a constrained slot is inserted
+                    // ahead of the (single) unconstrained one.
+                    val unconstrainedAt = paramChildren.indexOfFirst { it.constraint == null }
+                    if (parsed.constraint != null && unconstrainedAt >= 0) {
+                        paramChildren.add(unconstrainedAt, slot)
+                    } else {
+                        paramChildren.add(slot)
+                    }
                 }
             }
         }
@@ -166,9 +182,10 @@ public class Router {
             node.literalChildren[segment]?.let { child ->
                 resolveNode(child, segments, index + 1, method, params)?.let { return it }
             }
-            // Each parameter branch is tried in registration order; a
-            // branch with a constraint the segment fails is skipped just
-            // like a literal mismatch, and a dead-end deeper down
+            // paramChildren is ordered constrained-first, unconstrained
+            // last (see childFor), so the most specific branch is tried
+            // first. A branch whose constraint the segment fails is
+            // skipped like a literal mismatch, and a dead-end deeper down
             // backtracks to the next branch.
             for (slot in node.paramChildren) {
                 if (slot.constraint != null && !slot.constraint.matches(segment)) continue
@@ -201,8 +218,9 @@ public class Router {
         /**
          * Parameter branches at this position. A position holds at most
          * one unconstrained `:name` plus any number of constrained ones,
-         * all sharing one name; resolution tries them in registration
-         * order. Most nodes have zero or one.
+         * all sharing one name. The list is kept ordered constrained-first
+         * (in registration order) with the unconstrained slot last, so
+         * resolution is most-specific-first. Most nodes have zero or one.
          */
         val paramChildren: MutableList<ParamSlot> = mutableListOf()
         var wildcardChild: Node? = null

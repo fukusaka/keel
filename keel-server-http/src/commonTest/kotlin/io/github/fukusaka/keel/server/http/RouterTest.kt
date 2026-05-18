@@ -265,6 +265,19 @@ class RouterTest {
     }
 
     @Test
+    fun `a constrained parameter wins even when registered after the unconstrained one`() {
+        val router = Router()
+        val anyRoute: RouteHandler = { }
+        val intRoute: RouteHandler = { }
+        // Unconstrained registered first: it must NOT shadow the constrained
+        // sibling — resolution is most-specific-first, not registration order.
+        router.register(HttpMethod.GET, "/items/:id", anyRoute)
+        router.register(HttpMethod.GET, "/items/:id(int)", intRoute)
+        assertSame(intRoute, router.resolve(HttpMethod.GET, "/items/42")?.handler)
+        assertSame(anyRoute, router.resolve(HttpMethod.GET, "/items/abc")?.handler)
+    }
+
+    @Test
     fun `a regex constraint matches only the whole segment`() {
         val router = Router()
         router.register(HttpMethod.GET, "/sku/:code(^[A-Z]{3}[0-9]+$)", handler)
