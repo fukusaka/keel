@@ -18,11 +18,11 @@ class RouteGroupBuilderTest {
 
     private val handler: RouteHandler = { }
 
-    /** Collects what a group [RouteGroupBuilder.flush]es. */
+    /** Collects what a group [RouteGroupBuilder.flush]es (the predicate is dropped — unused here). */
     private fun flushOf(prefix: String, configure: RouteGroupBuilder.() -> Unit):
         List<Triple<HttpMethod, String, RouteHandler>> {
         val registered = mutableListOf<Triple<HttpMethod, String, RouteHandler>>()
-        RouteGroupBuilder(prefix).apply(configure).flush(emptyList(), "") { method, path, h ->
+        RouteGroupBuilder(prefix).apply(configure).flush(emptyList(), "") { method, path, _, h ->
             registered.add(Triple(method, path, h))
         }
         return registered
@@ -31,8 +31,8 @@ class RouteGroupBuilderTest {
     @Test
     fun `a group prefixes the paths of its routes`() {
         val registered = flushOf("/api") {
-            get("/users", handler)
-            post("/orders", handler)
+            get("/users", handler = handler)
+            post("/orders", handler = handler)
         }
         assertEquals(
             listOf(HttpMethod.GET to "/api/users", HttpMethod.POST to "/api/orders"),
@@ -44,7 +44,7 @@ class RouteGroupBuilderTest {
     fun `a nested group concatenates the prefixes`() {
         val registered = flushOf("/api") {
             route("/v1") {
-                get("/users", handler)
+                get("/users", handler = handler)
             }
         }
         assertEquals(HttpMethod.GET to "/api/v1/users", registered.single().let { it.first to it.second })
@@ -54,7 +54,7 @@ class RouteGroupBuilderTest {
     fun `prefix joining tolerates leading and trailing slashes`() {
         val registered = flushOf("/api/") {
             route("v1") {
-                get("users", handler)
+                get("users", handler = handler)
             }
         }
         assertEquals("/api/v1/users", registered.single().second)
@@ -63,7 +63,7 @@ class RouteGroupBuilderTest {
     @Test
     fun `a group with no middleware registers the handler verbatim`() {
         val registered = flushOf("/api") {
-            get("/users", handler)
+            get("/users", handler = handler)
         }
         assertSame(handler, registered.single().third)
     }
@@ -72,7 +72,7 @@ class RouteGroupBuilderTest {
     fun `group middleware wraps the handler`() {
         val registered = flushOf("/api") {
             install { call, next -> next() }
-            get("/users", handler)
+            get("/users", handler = handler)
         }
         assertNotSame(handler, registered.single().third, "the handler must be middleware-wrapped")
     }
@@ -82,7 +82,7 @@ class RouteGroupBuilderTest {
         // Registration is deferred to flush, so install/route order in the
         // group block does not matter — the middleware covers the route.
         val registered = flushOf("/api") {
-            get("/users", handler)
+            get("/users", handler = handler)
             install { call, next -> next() }
         }
         assertNotSame(handler, registered.single().third)
@@ -94,7 +94,7 @@ class RouteGroupBuilderTest {
             install { call, next -> next() }
             route("/v1") {
                 // No middleware of its own — still wrapped by the parent's.
-                get("/users", handler)
+                get("/users", handler = handler)
             }
         }
         assertNotSame(handler, registered.single().third)
@@ -103,7 +103,7 @@ class RouteGroupBuilderTest {
     @Test
     fun `a group at the root prefix registers bare paths`() {
         val registered = flushOf("") {
-            get("/health", handler)
+            get("/health", handler = handler)
         }
         assertEquals("/health", registered.single().second)
     }

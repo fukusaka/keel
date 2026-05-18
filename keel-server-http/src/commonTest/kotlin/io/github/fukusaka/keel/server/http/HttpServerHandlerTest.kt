@@ -102,6 +102,29 @@ class HttpServerHandlerTest {
         )
     }
 
+    /** Feeds a request with [method] and an extra `X-Format: <value>` header. */
+    private fun feedWithFormat(method: String, path: String, format: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "$method $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "X-Format: $format\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
+    /** Feeds a bodyless request with an arbitrary [method] (for method-mismatch tests). */
+    private fun feedMethod(method: String, path: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "$method $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
     /** Feeds a `GET` carrying an `Upgrade: <token>` header. */
     private fun feedUpgrade(path: String, upgradeToken: String) {
         channel.pipeline.notifyRead(
@@ -406,7 +429,7 @@ class HttpServerHandlerTest {
                 events.add("handler")
                 call.respond(HttpResponse.ok("users"))
             }
-        }.flush(emptyList(), "") { method, path, handler -> router.register(method, path, handler) }
+        }.flush(emptyList(), "") { method, path, predicate, handler -> router.register(method, path, predicate, handler) }
         install(router)
 
         feedGet("/api/users")
@@ -428,7 +451,7 @@ class HttpServerHandlerTest {
                     call.respond(HttpResponse.ok("ok"))
                 }
             }
-        }.flush(emptyList(), "") { method, path, handler -> router.register(method, path, handler) }
+        }.flush(emptyList(), "") { method, path, predicate, handler -> router.register(method, path, predicate, handler) }
         install(router)
 
         // The route resolves at the composed prefix, and the parent group's
@@ -520,7 +543,7 @@ class HttpServerHandlerTest {
     @Test
     fun `an upgrade route with a matching Upgrade header dispatches to the protocol`() {
         val protocol = RecordingUpgrade("websocket")
-        install(Router().apply { registerUpgrade("/ws", protocol) })
+        install(Router().apply { registerUpgrade("/ws", protocol = protocol) })
 
         feedUpgrade("/ws", "websocket")
 
@@ -531,7 +554,7 @@ class HttpServerHandlerTest {
     @Test
     fun `an upgrade route without the Upgrade header is answered 404`() {
         val protocol = RecordingUpgrade("websocket")
-        install(Router().apply { registerUpgrade("/ws", protocol) })
+        install(Router().apply { registerUpgrade("/ws", protocol = protocol) })
 
         feedGet("/ws")
 
@@ -542,7 +565,7 @@ class HttpServerHandlerTest {
     @Test
     fun `an Upgrade header naming a different protocol does not dispatch`() {
         val protocol = RecordingUpgrade("websocket")
-        install(Router().apply { registerUpgrade("/ws", protocol) })
+        install(Router().apply { registerUpgrade("/ws", protocol = protocol) })
 
         feedUpgrade("/ws", "h2c")
 
@@ -552,7 +575,7 @@ class HttpServerHandlerTest {
     @Test
     fun `path parameters reach the upgrade protocol`() {
         val protocol = RecordingUpgrade("websocket")
-        install(Router().apply { registerUpgrade("/chat/:room", protocol) })
+        install(Router().apply { registerUpgrade("/chat/:room", protocol = protocol) })
 
         feedUpgrade("/chat/lobby", "websocket")
 
@@ -570,7 +593,7 @@ class HttpServerHandlerTest {
             }
         }
         install(
-            Router().apply { registerUpgrade("/ws", protocol) },
+            Router().apply { registerUpgrade("/ws", protocol = protocol) },
             listOf(
                 Middleware { _, next ->
                     events.add("before")
@@ -597,7 +620,7 @@ class HttpServerHandlerTest {
                 // Connection taken over; deliberately no call.respond.
             }
         }
-        install(Router().apply { registerUpgrade("/ws", protocol) })
+        install(Router().apply { registerUpgrade("/ws", protocol = protocol) })
 
         feedUpgrade("/ws", "websocket")
 
@@ -608,7 +631,7 @@ class HttpServerHandlerTest {
     fun `a middleware short-circuit prevents the upgrade`() {
         val protocol = RecordingUpgrade("websocket")
         install(
-            Router().apply { registerUpgrade("/ws", protocol) },
+            Router().apply { registerUpgrade("/ws", protocol = protocol) },
             listOf(Middleware { call, _ -> call.respondText("blocked") }),
         )
 
@@ -804,6 +827,41 @@ class HttpServerHandlerTest {
 
         channel.pipeline.notifyInactive()
         assertEquals(0, connections.snapshot().size, "the connection leaves its shard on onInactive")
+    }
+
+    @Test
+    fun `a wrong-method request to a registered path is answered with 405 and an Allow header`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/users") { call -> call.respond(HttpResponse.ok("ok")) }
+                register(HttpMethod.POST, "/users") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+        )
+
+        feedMethod("DELETE", "/users")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 405"), "expected 405: $text")
+        // The Allow header lists the registered methods, sorted, comma-space joined.
+        assertTrue(text.contains("Allow: GET, POST"), "expected Allow header: $text")
+    }
+
+    @Test
+    fun `a predicate-routed request reaches the matching handler`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", header("X-Format", "json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+                register(HttpMethod.GET, "/data", header("X-Format", "xml")) { call ->
+                    call.respond(HttpResponse.ok("xml-body"))
+                }
+            },
+        )
+
+        feedWithFormat("GET", "/data", "xml")
+
+        assertTrue(responseText().endsWith("xml-body"), "expected the xml handler: ${responseText()}")
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
