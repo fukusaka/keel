@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.server
+package io.github.fukusaka.keel.server.dsl
 
 /**
  * [DslMarker] for keel server configuration DSLs.

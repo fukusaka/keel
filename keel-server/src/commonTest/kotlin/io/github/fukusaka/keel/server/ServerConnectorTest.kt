@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
+import io.github.fukusaka.keel.server.dsl.connector
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
