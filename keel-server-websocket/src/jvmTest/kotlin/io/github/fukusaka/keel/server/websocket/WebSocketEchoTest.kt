@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
+import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.http.keelHttpServer
@@ -9,6 +10,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.io.InputStream
 import java.net.Socket
+import java.util.zip.Deflater
+import java.util.zip.Inflater
 import java.net.InetSocketAddress as JavaInetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,7 +19,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Real-engine integration test for the `keelHttpServer { webSocket(...) }`
+ * Real-engine integration test for the `keelHttpServer { webSockets { } }`
  * DSL: a [NioEngine]-backed server with an echo WebSocket route, driven
  * by a raw TCP client that performs the RFC 6455 handshake and exchanges
  * masked frames.
@@ -34,8 +37,10 @@ class WebSocketEchoTest {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
                 connector { host = "127.0.0.1"; port = 0 }
-                webSocket("/echo") {
-                    for (message in incoming) send(message)
+                webSockets {
+                    webSocket("/echo") {
+                        for (message in incoming) send(message)
+                    }
                 }
             }
             server.start()
@@ -105,11 +110,13 @@ class WebSocketEchoTest {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
                 connector { host = "127.0.0.1"; port = 0 }
-                webSocket("/chat/:room") {
-                    // Send the captured :room path parameter, then drain
-                    // inbound messages until the peer's CLOSE.
-                    send(WsFrame.text(pathParameters["room"] ?: "(none)"))
-                    for (message in incoming) { /* drain */ }
+                webSockets {
+                    webSocket("/chat/:room") {
+                        // Send the captured :room path parameter, then drain
+                        // inbound messages until the peer's CLOSE.
+                        send(WsFrame.text(pathParameters["room"] ?: "(none)"))
+                        for (message in incoming) { /* drain */ }
+                    }
                 }
             }
             server.start()
@@ -169,8 +176,10 @@ class WebSocketEchoTest {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
                 connector { host = "127.0.0.1"; port = 0 }
-                webSocket("/echo") {
-                    for (message in incoming) send(message)
+                webSockets {
+                    webSocket("/echo") {
+                        for (message in incoming) send(message)
+                    }
                 }
             }
             server.start()
@@ -217,8 +226,10 @@ class WebSocketEchoTest {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
                 connector { host = "127.0.0.1"; port = 0 }
-                webSocket("/echo") {
-                    for (message in incoming) send(message)
+                webSockets {
+                    webSocket("/echo") {
+                        for (message in incoming) send(message)
+                    }
                 }
             }
             server.start()
@@ -252,6 +263,177 @@ class WebSocketEchoTest {
                 engine.close()
             }
         }
+    }
+
+    @Test
+    fun `webSocket route negotiates permessage-deflate and echoes a compressible message`() = runBlocking {
+        withTimeout(10.seconds) {
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                connector { host = "127.0.0.1"; port = 0 }
+                webSockets(DeflateCodec) {
+                    deflate { threshold = 0 }
+                    webSocket("/echo") {
+                        for (message in incoming) send(message)
+                    }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+
+                    val key = "dGhlIHNhbXBsZSBub25jZQ=="
+                    // Handshake offering permessage-deflate.
+                    out.write(
+                        (
+                            "GET /echo HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Extensions: permessage-deflate\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+
+                    val response = readHttpResponse(inp)
+                    assertTrue(response.startsWith("HTTP/1.1 101"), "expected 101: $response")
+                    assertTrue(
+                        response.contains("Sec-WebSocket-Extensions: permessage-deflate"),
+                        "server must accept permessage-deflate: $response",
+                    )
+
+                    // Compress a repetitive (highly compressible) message.
+                    val text = "compress me ".repeat(64)
+                    val compressed = rawDeflate(text.encodeToByteArray())
+                    val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+                    // TEXT frame with RSV1=1: byte0 = 0xC1.
+                    writeMaskedFrame(out, opcodeByte = 0xC1.toByte(), mask, compressed)
+                    out.flush()
+
+                    // Server echoes a compressed (RSV1=1) TEXT frame.
+                    assertEquals(0xC1, inp.read(), "echoed frame must be FIN + RSV1 + TEXT")
+                    val len = inp.read()
+                    assertTrue(len in 1..125, "echoed compressed payload length")
+                    val echoedCompressed = readFully(inp, len)
+                    assertEquals(text, rawInflate(echoedCompressed).decodeToString())
+
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `webSocket route sends a below-threshold message uncompressed`() = runBlocking {
+        withTimeout(10.seconds) {
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                connector { host = "127.0.0.1"; port = 0 }
+                webSockets(DeflateCodec) {
+                    deflate { threshold = 1024 }
+                    webSocket("/echo") {
+                        for (message in incoming) send(message)
+                    }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+
+                    val key = "dGhlIHNhbXBsZSBub25jZQ=="
+                    out.write(
+                        (
+                            "GET /echo HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Extensions: permessage-deflate\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+                    assertTrue(readHttpResponse(inp).startsWith("HTTP/1.1 101"))
+
+                    // A short (uncompressed, RSV1=0) TEXT message "hi".
+                    val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+                    writeMaskedFrame(out, opcodeByte = 0x81.toByte(), mask, "hi".encodeToByteArray())
+                    out.flush()
+
+                    // Server's echo is below the 1 KiB threshold → RSV1=0.
+                    assertEquals(0x81, inp.read(), "below-threshold echo must be uncompressed (RSV1=0)")
+                    val len = inp.read()
+                    assertEquals(2, len, "uncompressed payload length")
+                    assertEquals("hi", readFully(inp, len).decodeToString())
+
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    /**
+     * Raw-DEFLATE compresses [data] with the `Z_SYNC_FLUSH` tail removed —
+     * the on-wire form of a `permessage-deflate` compressed message
+     * (RFC 7692 §7.2.1).
+     */
+    private fun rawDeflate(data: ByteArray): ByteArray {
+        val deflater = Deflater(Deflater.DEFAULT_COMPRESSION, true)
+        deflater.setInput(data)
+        deflater.finish()
+        val out = ArrayList<Byte>()
+        val buf = ByteArray(256)
+        while (!deflater.finished()) {
+            val n = deflater.deflate(buf)
+            for (i in 0 until n) out.add(buf[i])
+        }
+        deflater.end()
+        // Drop the trailing 00 00 FF FF emitted by finish() so the bytes
+        // match what an RFC 7692 sender puts on the wire.
+        val full = ByteArray(out.size) { out[it] }
+        return if (full.size >= 4 &&
+            full[full.size - 1] == 0xFF.toByte() && full[full.size - 2] == 0xFF.toByte() &&
+            full[full.size - 3] == 0x00.toByte() && full[full.size - 4] == 0x00.toByte()
+        ) {
+            full.copyOf(full.size - 4)
+        } else {
+            full
+        }
+    }
+
+    /** Raw-DEFLATE inflates [data], re-appending the `00 00 FF FF` sync tail. */
+    private fun rawInflate(data: ByteArray): ByteArray {
+        val inflater = Inflater(true)
+        inflater.setInput(data + byteArrayOf(0x00, 0x00, 0xFF.toByte(), 0xFF.toByte()))
+        val out = ArrayList<Byte>()
+        val buf = ByteArray(256)
+        while (true) {
+            val n = inflater.inflate(buf)
+            if (n == 0) break
+            for (i in 0 until n) out.add(buf[i])
+        }
+        inflater.end()
+        return ByteArray(out.size) { out[it] }
     }
 
     /** RFC 6455 handshake request for [path] with client nonce [key]. */

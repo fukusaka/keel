@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-websocket`: `permessage-deflate` (RFC 7692) — `webSockets(DeflateCodec) { }` negotiates and applies WebSocket message compression, with `contextTakeover` / `threshold` / `level` knobs and per-endpoint override (#555)
 - `server-http`: static file `Range` requests support multiple ranges (`206 multipart/byteranges`, coalesced ascending) and `If-Range`, with a range-count cap and an amplification-DoS guard (#553)
 - `server-http`: static file serving honours `Range` requests — single-range `206 Partial Content` + `Content-Range`, `416` for unsatisfiable ranges, `Accept-Ranges: bytes` (#552)
 - `testing-server-http`: new `keel-testing-server-http` module — `keelHttpTest { server { } ; client.get(...) }` exercises `keelHttpServer` routes in-process over `InMemoryEngine` (#551)
@@ -49,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`server-websocket`): WebSocket endpoints are registered inside a `webSockets { }` group block instead of the flat `webSocket("/path") { }` — the group carries the shared `permessage-deflate` configuration (#555)
 - **BREAKING** (`server-websocket`): `WsSession.incoming` delivers whole `WsMessage`s — `CONTINUATION` fragments reassembled (RFC 6455 §5.4), TEXT UTF-8 validated, protocol errors fail with `1002` / `1007` / `1009` (#554)
 - **BREAKING** (`server`): `connector { tls { } }` now requires an explicit `strategy` — no default, since no `ServerTlsStrategy` is correct for every engine (#546)
 - **BREAKING** (`server-http`): `keelHttpServer { }` replaces the `host` / `port` properties with a `connector { }` block, enabling HTTPS via `connector { tls { } }` (#544)

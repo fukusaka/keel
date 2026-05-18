@@ -1,33 +1,178 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.compression.CompressionCodec
+import io.github.fukusaka.keel.server.KeelServerDsl
 import io.github.fukusaka.keel.server.http.KeelHttpServerBuilder
 
 /**
- * Registers a WebSocket endpoint at [path] on the `keelHttpServer { }`
+ * Per-endpoint `permessage-deflate` override inside a `webSockets { }`
+ * group.
+ *
+ * A `webSockets(codec) { }` group sets a default deflate configuration;
+ * each `webSocket(...)` endpoint may override it:
+ *
+ * - [Inherit] — use the group default (the param's own default).
+ * - [Disabled] — turn compression off for this one endpoint, even when
+ *   the group enabled it.
+ * - [Custom] — use endpoint-specific [WsDeflateOptions].
+ *
+ * A three-way type rather than a nullable `WsDeflateOptions?` because
+ * `null` cannot distinguish "inherit the group default" from "explicitly
+ * disabled" — both would collapse to the same value.
+ */
+public sealed interface WsDeflateOverride {
+
+    /** Inherit the group's deflate configuration (the default). */
+    public data object Inherit : WsDeflateOverride
+
+    /** Disable `permessage-deflate` for this endpoint only. */
+    public data object Disabled : WsDeflateOverride
+
+    /**
+     * Use endpoint-specific [options], overriding the group default.
+     *
+     * @property options the deflate options for this endpoint.
+     */
+    public data class Custom(val options: WsDeflateOptions) : WsDeflateOverride
+}
+
+/**
+ * Mutable builder for [WsDeflateOptions], used by the `deflate { }`
+ * sub-block of `webSockets { }`.
+ *
+ * @see WsDeflateOptions for the meaning of each field.
+ */
+@KeelServerDsl
+public class WsDeflateOptionsBuilder internal constructor() {
+
+    /** See [WsDeflateOptions.contextTakeover]. */
+    public var contextTakeover: Boolean = WsDeflateOptions.Default.contextTakeover
+
+    /** See [WsDeflateOptions.threshold]. */
+    public var threshold: Int = WsDeflateOptions.Default.threshold
+
+    /** See [WsDeflateOptions.level]. */
+    public var level: Int = WsDeflateOptions.Default.level
+
+    internal fun build(): WsDeflateOptions =
+        WsDeflateOptions(contextTakeover = contextTakeover, threshold = threshold, level = level)
+}
+
+/**
+ * Builder for a group of WebSocket endpoints, created by
+ * [webSockets].
+ *
+ * Endpoints registered with [webSocket] share the group's compression
+ * configuration: when [webSockets] was given a [CompressionCodec], the
+ * `deflate { }` sub-block tunes the group default and each endpoint may
+ * override it with its `deflate` parameter. Without a codec, the group
+ * runs no compression and `deflate { }` is a misuse error.
+ *
+ * @property compressionCodec the group's compression backend, or null
+ *   for a no-compression group.
+ */
+@KeelServerDsl
+public class WebSocketsBuilder internal constructor(
+    private val compressionCodec: CompressionCodec?,
+) {
+
+    /** Group-default deflate options; only meaningful with a codec. */
+    private var groupOptions: WsDeflateOptions = WsDeflateOptions.Default
+
+    /** Collected endpoint registrations: path → upgrade protocol. */
+    private val endpoints = mutableListOf<Pair<String, WebSocketUpgrade>>()
+
+    /**
+     * Tunes the group-default `permessage-deflate` options.
+     *
+     * Only valid when [webSockets] was given a [CompressionCodec] —
+     * calling it on a no-compression group is a builder misuse and
+     * throws [IllegalStateException], since the options would have no
+     * codec to apply to.
+     */
+    public fun deflate(configure: WsDeflateOptionsBuilder.() -> Unit) {
+        checkNotNull(compressionCodec) {
+            "deflate { } requires webSockets(codec) — no compression codec was provided to this group"
+        }
+        groupOptions = WsDeflateOptionsBuilder().apply(configure).build()
+    }
+
+    /**
+     * Registers a WebSocket endpoint at [path].
+     *
+     * A request to [path] whose `Upgrade` header names `websocket` is
+     * taken over by [handler], which runs against an open [WsSession]
+     * until it returns; the closing handshake and teardown are automatic.
+     *
+     * [path] shares the `Router` pattern syntax — `:name` parameters and
+     * a trailing `*` work — so a non-WebSocket request to the same path
+     * is still resolved as an ordinary route or answered `404`.
+     *
+     * @param path the route pattern.
+     * @param deflate per-endpoint compression override.
+     *   [WsDeflateOverride.Inherit] (the default) uses the group config;
+     *   [WsDeflateOverride.Disabled] turns compression off for this
+     *   endpoint; [WsDeflateOverride.Custom] supplies endpoint-specific
+     *   options. Ignored when the group has no codec.
+     * @param handler the session handler.
+     */
+    public fun webSocket(
+        path: String,
+        deflate: WsDeflateOverride = WsDeflateOverride.Inherit,
+        handler: WebSocketHandler,
+    ) {
+        endpoints.add(path to WebSocketUpgrade(handler, resolveDeflateConfig(deflate)))
+    }
+
+    /**
+     * Resolves the effective [WsDeflateConfig] for one endpoint given
+     * its [override] and the group's codec / default options. Returns
+     * null (no compression) when the group has no codec or the endpoint
+     * disabled compression.
+     */
+    private fun resolveDeflateConfig(override: WsDeflateOverride): WsDeflateConfig? {
+        val codec = compressionCodec ?: return null
+        return when (override) {
+            is WsDeflateOverride.Disabled -> null
+            is WsDeflateOverride.Inherit -> WsDeflateConfig(codec, groupOptions)
+            is WsDeflateOverride.Custom -> WsDeflateConfig(codec, override.options)
+        }
+    }
+
+    /** Snapshot of the collected endpoints for [webSockets] to register. */
+    internal fun endpoints(): List<Pair<String, WebSocketUpgrade>> = endpoints.toList()
+}
+
+/**
+ * Registers a group of WebSocket endpoints on the `keelHttpServer { }`
  * builder.
  *
- * A request to [path] whose `Upgrade` header names `websocket` is taken
- * over by [handler], which runs against an open [WsSession] until it
- * returns; the closing handshake and connection teardown are automatic
- * (see [WebSocketUpgrade]).
- *
- * [path] shares the `Router` pattern syntax — `:name` parameters and a
- * trailing `*` work — so a non-WebSocket request to the same path is
- * still resolved as an ordinary route or answered `404`. Parameters
- * bound by the pattern are exposed on [WsSession.pathParameters].
- *
  * ```
- * val server = keelHttpServer(engine) {
- *     webSocket("/echo") {
- *         for (message in incoming) send(message)
+ * keelHttpServer(engine) {
+ *     webSockets {                                  // no compression
+ *         webSocket("/echo") { for (m in incoming) send(m) }
  *     }
- *     webSocket("/chat/:room") {
- *         val room = pathParameters["room"]
- *         for (message in incoming) send(message)
+ *     webSockets(DeflateCodec) {                    // permessage-deflate
+ *         deflate { contextTakeover = false; threshold = 1024; level = -1 }
+ *         webSocket("/chat") { for (m in incoming) send(m) }
+ *         webSocket("/raw", deflate = WsDeflateOverride.Disabled) { ... }
  *     }
  * }
  * ```
+ *
+ * @param compressionCodec the compression backend shared by every
+ *   endpoint in the group, or null (the default) to run the group
+ *   without `permessage-deflate`. Pass e.g. `DeflateCodec` from
+ *   `keel-compression-zlib`.
+ * @param configure the group body — `deflate { }` to tune compression
+ *   and `webSocket(...)` to register endpoints.
  */
-public fun KeelHttpServerBuilder.webSocket(path: String, handler: WebSocketHandler) {
-    upgrade(path, WebSocketUpgrade(handler))
+public fun KeelHttpServerBuilder.webSockets(
+    compressionCodec: CompressionCodec? = null,
+    configure: WebSocketsBuilder.() -> Unit,
+) {
+    val builder = WebSocketsBuilder(compressionCodec).apply(configure)
+    for ((path, upgradeProtocol) in builder.endpoints()) {
+        upgrade(path, upgradeProtocol)
+    }
 }

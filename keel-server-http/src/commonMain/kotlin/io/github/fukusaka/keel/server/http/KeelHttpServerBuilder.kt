@@ -156,8 +156,8 @@ public class KeelHttpServerBuilder internal constructor() {
      * is handed to it instead of a route handler (see [UpgradeProtocol]).
      *
      * The [path] pattern shares [Router] syntax — `:name` parameters and a
-     * trailing `*` work. Higher-level DSLs, such as `webSocket(path) { }`
-     * in `keel-server-websocket`, build on this.
+     * trailing `*` work. Higher-level DSLs, such as the `webSockets { }`
+     * block in `keel-server-websocket`, build on this.
      */
     public fun upgrade(path: String, protocol: UpgradeProtocol) {
         router.registerUpgrade(path, protocol)
