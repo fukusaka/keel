@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `server-http`: `HttpCall.queryParameters` exposes the request query string parsed into a `name` → `value` map (`+` / `%XX` decoded, first value wins for a repeated key), parsed lazily per call (#565)
+- `server-http`: `HttpCall.queryParameters` exposes a multi-value `QueryParameters` (`get` / `getAll`) with a `maxParameterCount` DoS guard (400 on overflow) and opt-in `rejectControlCharacters` / `rejectMalformedEncoding` strict modes via `connector { queryParameters { } }` (#565)
 - `server-websocket`: `webSockets { }` can be nested inside a `route(prefix) { }` group — WebSocket endpoints inherit the group's path prefix and `install`ed middleware (auth / logging run before the handshake) (#563)
 - `io`: `IoBuf.parseDecLongAt(offset, length)` / `parseHexLongAt(offset, length)` — parse a decimal / hex `Long` directly from a buffer byte range, with no intermediate `String` allocation (#562)
 - `server-http`: predicate routing — routes take an optional `RoutePredicate` (`header` / `query` / `accept` / `host`) to select among handlers sharing one method × path, first accepting predicate winning (#561)
