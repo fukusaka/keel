@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-websocket`: `webSockets { }` can be nested inside a `route(prefix) { }` group — WebSocket endpoints inherit the group's path prefix and `install`ed middleware (auth / logging run before the handshake) (#563)
 - `io`: `IoBuf.parseDecLongAt(offset, length)` / `parseHexLongAt(offset, length)` — parse a decimal / hex `Long` directly from a buffer byte range, with no intermediate `String` allocation (#562)
 - `server-http`: predicate routing — routes take an optional `RoutePredicate` (`header` / `query` / `accept` / `host`) to select among handlers sharing one method × path, first accepting predicate winning (#561)
 - `server-http`: nested route groups — `route(prefix) { }` on the `keelHttpServer { }` builder prefixes its routes and scopes `install`ed middleware to the group, with nesting that composes both (#560)

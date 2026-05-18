@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.websocket
 import io.github.fukusaka.keel.compression.CompressionCodec
 import io.github.fukusaka.keel.server.KeelServerDsl
 import io.github.fukusaka.keel.server.http.KeelHttpServerBuilder
+import io.github.fukusaka.keel.server.http.RouteGroupBuilder
 
 /**
  * Per-endpoint `permessage-deflate` override inside a `webSockets { }`
@@ -168,6 +169,42 @@ public class WebSocketsBuilder internal constructor(
  *   and `webSocket(...)` to register endpoints.
  */
 public fun KeelHttpServerBuilder.webSockets(
+    compressionCodec: CompressionCodec? = null,
+    configure: WebSocketsBuilder.() -> Unit,
+) {
+    val builder = WebSocketsBuilder(compressionCodec).apply(configure)
+    for ((path, upgradeProtocol) in builder.endpoints()) {
+        upgrade(path, upgradeProtocol)
+    }
+}
+
+/**
+ * Registers a group of WebSocket endpoints inside a `route(prefix) { }`
+ * group, so the endpoints inherit the group's path prefix and its
+ * `install`ed middleware.
+ *
+ * The group counterpart of [KeelHttpServerBuilder.webSockets] — it builds
+ * the same [WebSocketsBuilder] and registers each endpoint through
+ * [RouteGroupBuilder.upgrade], which prefixes the path and wraps the
+ * upgrade hand-off with the group middleware (auth / logging run before
+ * the WebSocket handshake).
+ *
+ * ```
+ * keelHttpServer(engine) {
+ *     route("/api/v1") {
+ *         install { call, next -> /* auth */ next() }
+ *         webSockets(DeflateCodec) {
+ *             webSocket("/chat") { for (m in incoming) send(m) }   // /api/v1/chat
+ *         }
+ *     }
+ * }
+ * ```
+ *
+ * @param compressionCodec the compression backend shared by the group, or
+ *   null (the default) to run without `permessage-deflate`.
+ * @param configure the group body — see [WebSocketsBuilder].
+ */
+public fun RouteGroupBuilder.webSockets(
     compressionCodec: CompressionCodec? = null,
     configure: WebSocketsBuilder.() -> Unit,
 ) {
