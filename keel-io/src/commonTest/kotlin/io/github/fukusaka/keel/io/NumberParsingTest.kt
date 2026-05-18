@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.createDefaultIoBuf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -193,6 +195,94 @@ class NumberParsingTest {
         )
         for (s in samples) {
             assertEquals(s.toLongOrNull(16), s.toHexLongOrNull(), "input='$s'")
+        }
+    }
+
+    // --- IoBuf.parseDecLongAt / parseHexLongAt ---
+
+    /** Builds an [IoBuf] holding [content] as ASCII bytes from index 0. */
+    private fun bufOf(content: String): IoBuf {
+        val buf = createDefaultIoBuf(content.length.coerceAtLeast(1))
+        if (content.isNotEmpty()) buf.writeAscii(content, 0, content.length)
+        return buf
+    }
+
+    private inline fun withBuf(content: String, block: (IoBuf) -> Unit) {
+        val buf = bufOf(content)
+        try {
+            block(buf)
+        } finally {
+            buf.release()
+        }
+    }
+
+    @Test
+    fun `parseDecLongAt — parses the whole buffer`() {
+        withBuf("12345") { assertEquals(12345L, it.parseDecLongAt(0, 5)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — parses a byte range at an offset`() {
+        // Surrounding bytes are not part of the range and must be ignored.
+        withBuf("XX12345YY") { assertEquals(12345L, it.parseDecLongAt(2, 5)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — zero length returns null`() {
+        withBuf("12345") { assertNull(it.parseDecLongAt(0, 0)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — a negative sign parses`() {
+        withBuf("-42") { assertEquals(-42L, it.parseDecLongAt(0, 3)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — a non-digit byte in range returns null`() {
+        withBuf("12a45") { assertNull(it.parseDecLongAt(0, 5)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — overflow returns null`() {
+        withBuf("9223372036854775808") { assertNull(it.parseDecLongAt(0, 19)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — Long bounds parse`() {
+        withBuf("9223372036854775807") { assertEquals(Long.MAX_VALUE, it.parseDecLongAt(0, 19)) }
+        withBuf("-9223372036854775808") { assertEquals(Long.MIN_VALUE, it.parseDecLongAt(0, 20)) }
+    }
+
+    @Test
+    fun `parseDecLongAt — matches the CharSequence parser on a broad sample`() {
+        val samples = listOf("0", "7", "12345", "-42", "+99", "00010", "12a45", "9999999999999999999")
+        for (s in samples) {
+            withBuf(s) { assertEquals(s.toDecLongOrNull(), it.parseDecLongAt(0, s.length), "input='$s'") }
+        }
+    }
+
+    @Test
+    fun `parseHexLongAt — parses hex bytes`() {
+        withBuf("ff") { assertEquals(255L, it.parseHexLongAt(0, 2)) }
+        withBuf("1A2b") { assertEquals(0x1A2bL, it.parseHexLongAt(0, 4)) }
+    }
+
+    @Test
+    fun `parseHexLongAt — parses a byte range at an offset`() {
+        // The chunked transfer-encoding use case: a chunk-size token mid-buffer.
+        withBuf("\r\ndeadbeef\r\n") { assertEquals(0xdeadbeefL, it.parseHexLongAt(2, 8)) }
+    }
+
+    @Test
+    fun `parseHexLongAt — a non-hex byte returns null`() {
+        withBuf("12g4") { assertNull(it.parseHexLongAt(0, 4)) }
+    }
+
+    @Test
+    fun `parseHexLongAt — matches the CharSequence parser on a broad sample`() {
+        val samples = listOf("0", "ff", "FF", "deadbeef", "DEADBEEF", "AbCdEf", "g")
+        for (s in samples) {
+            withBuf(s) { assertEquals(s.toHexLongOrNull(), it.parseHexLongAt(0, s.length), "input='$s'") }
         }
     }
 }

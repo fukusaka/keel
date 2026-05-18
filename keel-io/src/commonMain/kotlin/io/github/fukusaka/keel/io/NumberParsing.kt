@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.io
 
+import io.github.fukusaka.keel.buf.IoBuf
+
 /**
  * Parses this character sequence as a decimal [Long] value.
  *
@@ -15,7 +17,8 @@ package io.github.fukusaka.keel.io
  * Intended for parsing numeric HTTP header values (e.g. `Content-Length`) from
  * byte-backed [CharSequence] views without forcing a `String` allocation.
  */
-public fun CharSequence.toDecLongOrNull(): Long? = parseLongOrNull(radix = DEC_RADIX)
+public fun CharSequence.toDecLongOrNull(): Long? =
+    parseLongOrNull(length, DEC_RADIX) { this[it] }
 
 /**
  * Parses this character sequence as a hexadecimal [Long] value.
@@ -32,21 +35,65 @@ public fun CharSequence.toDecLongOrNull(): Long? = parseLongOrNull(radix = DEC_R
  * Intended for parsing hex-encoded HTTP values (e.g. chunked transfer-encoding chunk
  * sizes per RFC 7230) from byte-backed [CharSequence] views.
  */
-public fun CharSequence.toHexLongOrNull(): Long? = parseLongOrNull(radix = HEX_RADIX)
+public fun CharSequence.toHexLongOrNull(): Long? =
+    parseLongOrNull(length, HEX_RADIX) { this[it] }
 
 /**
- * Generic parser shared by [toDecLongOrNull] and [toHexLongOrNull].
+ * Parses [length] bytes of this buffer, starting at absolute index [offset],
+ * as a decimal [Long] value — without materialising a `String` or `CharSequence`.
+ *
+ * Each byte is read with [IoBuf.getByte] and interpreted as a single ASCII
+ * character (the low 8 bits); the digit grammar and overflow handling match
+ * [CharSequence.toDecLongOrNull]. This is the zero-copy counterpart: an HTTP
+ * codec that knows a `Content-Length` value spans bytes `[offset, offset+length)`
+ * of a receive buffer parses it in place, with no intermediate allocation.
+ *
+ * Returns `null` for `length == 0`, a non-digit byte, or [Long] overflow.
+ * Whitespace is **not** trimmed.
+ *
+ * **Precondition**: caller must ensure `offset >= 0`, `length >= 0`, and
+ * `offset + length <= capacity`. Out-of-range access has the
+ * platform-dependent behaviour of [IoBuf.getByte] (JVM throws, Native is
+ * undefined).
+ */
+public fun IoBuf.parseDecLongAt(offset: Int, length: Int): Long? =
+    parseLongOrNull(length, DEC_RADIX) { (getByte(offset + it).toInt() and BYTE_MASK).toChar() }
+
+/**
+ * Parses [length] bytes of this buffer, starting at absolute index [offset],
+ * as a hexadecimal [Long] value — without materialising a `String` or
+ * `CharSequence`.
+ *
+ * The zero-copy counterpart of [CharSequence.toHexLongOrNull]: each byte is
+ * read with [IoBuf.getByte] and interpreted as a single ASCII character. The
+ * digit grammar (`0`-`9`, `a`-`f`, `A`-`F`, no `0x` prefix) and overflow
+ * handling match [CharSequence.toHexLongOrNull]. Intended for parsing a
+ * chunked transfer-encoding chunk size in place from a receive buffer.
+ *
+ * Returns `null` for `length == 0`, an invalid byte, or [Long] overflow.
+ *
+ * **Precondition**: see [parseDecLongAt].
+ */
+public fun IoBuf.parseHexLongAt(offset: Int, length: Int): Long? =
+    parseLongOrNull(length, HEX_RADIX) { (getByte(offset + it).toInt() and BYTE_MASK).toChar() }
+
+/**
+ * Generic parser shared by the [CharSequence] and [IoBuf] entry points.
+ *
+ * [charAt] supplies the character at logical position `0 until length` — a
+ * direct `CharSequence` index, or an ASCII-decoded buffer byte. Declared
+ * `inline` so the lambda is erased at each call site, keeping the byte-range
+ * parser allocation-free on the codec hot path.
  *
  * Uses a negative accumulator so that [Long.MIN_VALUE] is representable
  * (|Long.MIN_VALUE| > [Long.MAX_VALUE], so accumulating positively would overflow on
  * exactly the minimum value). Mirrors the JDK / Kotlin stdlib parseLong algorithm.
  */
-private fun CharSequence.parseLongOrNull(radix: Int): Long? {
-    val len = length
-    if (len == 0) return null
+private inline fun parseLongOrNull(length: Int, radix: Int, charAt: (Int) -> Char): Long? {
+    if (length == 0) return null
     var start = 0
     val negative: Boolean
-    when (this[0]) {
+    when (charAt(0)) {
         '-' -> {
             negative = true
             start = 1
@@ -57,12 +104,12 @@ private fun CharSequence.parseLongOrNull(radix: Int): Long? {
         }
         else -> negative = false
     }
-    if (start == len) return null
+    if (start == length) return null
     val limit = if (negative) Long.MIN_VALUE else -Long.MAX_VALUE
     val limitBeforeMul = limit / radix
     var result = 0L
-    for (i in start until len) {
-        val digit = digitOf(this[i], radix)
+    for (i in start until length) {
+        val digit = digitOf(charAt(i), radix)
         if (digit < 0) return null
         if (result < limitBeforeMul) return null
         result *= radix
@@ -85,3 +132,6 @@ private fun digitOf(c: Char, radix: Int): Int {
 private const val DEC_RADIX = 10
 private const val HEX_RADIX = 16
 private const val DECIMAL_BASE = 10
+
+/** Masks a [Byte] widened to [Int] back to its unsigned 0-255 value. */
+private const val BYTE_MASK = 0xFF
