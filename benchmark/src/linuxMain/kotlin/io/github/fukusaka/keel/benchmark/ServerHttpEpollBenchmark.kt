@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.epoll.EpollEngine
 import io.github.fukusaka.keel.server.http.keelHttpServer
+import io.github.fukusaka.keel.server.websocket.webSockets
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -29,6 +31,13 @@ object ServerHttpEpollBenchmark : EngineBenchmark {
             connector { host = "0.0.0.0"; port = config.port }
             get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }
             get("/large") { call -> call.respond(PipelineHttpResponses.large) }
+            // `/ws-deflate` exercises the WS-3 permessage-deflate path:
+            // `webSockets(DeflateCodec)` routes the upgrade through the real
+            // `runWebSocketUpgrade` negotiation, so the bench measures the
+            // productized compression stack rather than a hand-wired one.
+            webSockets(DeflateCodec) {
+                webSocket("/ws-deflate") { for (m in incoming) send(m) }
+            }
         }
         runBlocking { server.start() }
 
