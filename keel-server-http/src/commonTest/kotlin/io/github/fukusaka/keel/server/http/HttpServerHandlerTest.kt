@@ -429,7 +429,12 @@ class HttpServerHandlerTest {
                 events.add("handler")
                 call.respond(HttpResponse.ok("users"))
             }
-        }.flush(emptyList(), "") { method, path, predicate, handler -> router.register(method, path, predicate, handler) }
+        }.flush(
+            inheritedMiddleware = emptyList(),
+            inheritedPrefix = "",
+            registerRoute = { method, path, predicate, handler -> router.register(method, path, predicate, handler) },
+            registerUpgrade = { path, protocol, predicate -> router.registerUpgrade(path, protocol, predicate) },
+        )
         install(router)
 
         feedGet("/api/users")
@@ -451,7 +456,12 @@ class HttpServerHandlerTest {
                     call.respond(HttpResponse.ok("ok"))
                 }
             }
-        }.flush(emptyList(), "") { method, path, predicate, handler -> router.register(method, path, predicate, handler) }
+        }.flush(
+            inheritedMiddleware = emptyList(),
+            inheritedPrefix = "",
+            registerRoute = { method, path, predicate, handler -> router.register(method, path, predicate, handler) },
+            registerUpgrade = { path, protocol, predicate -> router.registerUpgrade(path, protocol, predicate) },
+        )
         install(router)
 
         // The route resolves at the composed prefix, and the parent group's

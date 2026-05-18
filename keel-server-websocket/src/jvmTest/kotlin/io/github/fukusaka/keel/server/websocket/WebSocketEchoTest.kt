@@ -105,6 +105,77 @@ class WebSocketEchoTest {
     }
 
     @Test
+    fun `a webSocket inside a route group inherits the prefix and group middleware`() = runBlocking {
+        withTimeout(10.seconds) {
+            val events = mutableListOf<String>()
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                route("/api/v1") {
+                    install { _, next -> events.add("group-mw"); next() }
+                    webSockets {
+                        webSocket("/echo") {
+                            for (message in incoming) send(message)
+                        }
+                    }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+
+                    // The endpoint resolves at the group-composed prefix.
+                    val key = "dGhlIHNhbXBsZSBub25jZQ=="
+                    out.write(
+                        (
+                            "GET /api/v1/echo HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+
+                    val response = readHttpResponse(inp)
+                    assertTrue(response.startsWith("HTTP/1.1 101"), "expected 101 at /api/v1/echo: $response")
+                    // The group middleware ran before the handshake completed.
+                    assertEquals(listOf("group-mw"), events, "group middleware must wrap the upgrade")
+
+                    val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+                    val payload = "hi".encodeToByteArray()
+                    out.write(byteArrayOf(0x81.toByte(), (0x80 or payload.size).toByte()))
+                    out.write(mask)
+                    out.write(ByteArray(payload.size) { (payload[it].toInt() xor mask[it % 4].toInt()).toByte() })
+                    out.flush()
+
+                    assertEquals(0x81, inp.read(), "echoed frame must be FIN + TEXT")
+                    assertEquals(payload.size, inp.read())
+                    val echoed = ByteArray(payload.size)
+                    var read = 0
+                    while (read < echoed.size) {
+                        val n = inp.read(echoed, read, echoed.size - read)
+                        check(n >= 0) { "stream closed before the echoed payload" }
+                        read += n
+                    }
+                    assertEquals("hi", echoed.decodeToString())
+
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
     fun `webSocket route exposes path parameters to the session`() = runBlocking {
         withTimeout(10.seconds) {
             val engine = NioEngine()
