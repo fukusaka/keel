@@ -25,6 +25,55 @@ class PoolAllocatorTest {
     }
 
     @Test
+    fun offSizeRequestRoundsUpToSizeClass() {
+        if (!isPoolAllocator()) return
+        val allocator = createPoolAllocator()
+        // 100 B is not a size class; it rounds up to 112 (octave 64: 64,80,96,112).
+        val buf = allocator.allocate(100)
+        assertEquals(112, buf.capacity)
+        buf.release()
+    }
+
+    @Test
+    fun offSizeRequestIsPooledAndReused() {
+        if (!isPoolAllocator()) return
+        val allocator = createPoolAllocator()
+        val buf1 = allocator.allocate(100) // rounds to 112
+        buf1.release()
+        // Next request rounding to the same class reuses the pooled buffer.
+        val buf2 = allocator.allocate(110) // also rounds to 112
+        assertSame(buf1, buf2)
+        assertEquals(112, buf2.capacity)
+        buf2.release()
+    }
+
+    @Test
+    fun hugeRequestIsServedUnPooledAtExactSize() {
+        val allocator = createPoolAllocator()
+        // Above MAX_SIZE_CLASS (32768): un-pooled, exact capacity.
+        val buf = allocator.allocate(40000)
+        assertEquals(40000, buf.capacity)
+        buf.release()
+    }
+
+    @Test
+    fun budgetValveClosesBuffersPastMaxTotalBytes() {
+        if (!isPoolAllocator()) return
+        // 256 KiB budget. 32 KiB buffers => only 8 fit before the valve closes the rest.
+        val allocator = createPoolAllocator()
+        val bufs = (0 until 16).map { allocator.allocate(32768) }
+        bufs.forEach { it.release() }
+        // At most 8 buffers were retained; the rest were closed by the valve.
+        var reusedCount = 0
+        val reused = (0 until 16).map { allocator.allocate(32768) }
+        reused.forEach { r ->
+            if (bufs.contains(r)) reusedCount++
+        }
+        assertTrue(reusedCount <= 8, "budget valve must retain at most 8 of the 32 KiB buffers")
+        reused.forEach { it.release() }
+    }
+
+    @Test
     fun releasedBufferIsReusedOnNextAllocate() {
         if (!isPoolAllocator()) return
         val allocator = createPoolAllocator()
@@ -39,29 +88,51 @@ class PoolAllocatorTest {
     }
 
     @Test
-    fun nonMatchingSizeFallsBackToFreshAllocation() {
+    fun anySizeClassRequestIsPooled() {
+        if (!isPoolAllocator()) return
         val allocator = createPoolAllocator()
-        val buf = allocator.allocate(1024) // not 8192
-        assertEquals(1024, buf.capacity)
-        buf.release()
+        // 1024 is a size class distinct from the 8192 default; it is pooled.
+        val buf1 = allocator.allocate(1024)
+        assertEquals(1024, buf1.capacity)
+        buf1.release()
+        val buf2 = allocator.allocate(1024)
+        assertSame(buf1, buf2)
+        buf2.release()
     }
 
     @Test
-    fun poolDoesNotExceedMaxSize() {
+    fun poolDoesNotExceedMaxSlots() {
         if (!isPoolAllocator()) return
-        val allocator = createPoolAllocator(maxPoolSize = 2)
-        val bufs = (0 until 5).map { allocator.allocate(8192) }
+        // The 4096 class keeps its default maxSlots of 16 (only the bufferSize
+        // class is bumped by the helper). Release 20 buffers; 16 retained.
+        val allocator = createPoolAllocator()
+        val bufs = (0 until 20).map { allocator.allocate(4096) }
         bufs.forEach { it.release() }
 
-        val reused1 = allocator.allocate(8192)
-        val reused2 = allocator.allocate(8192)
-        val fresh = allocator.allocate(8192)
-        assertTrue(bufs.contains(reused1))
-        assertTrue(bufs.contains(reused2))
-        assertEquals(8192, fresh.capacity)
-        reused1.release()
-        reused2.release()
-        fresh.release()
+        var reusedCount = 0
+        val reused = (0 until 20).map { allocator.allocate(4096) }
+        reused.forEach { r ->
+            if (bufs.contains(r)) reusedCount++
+        }
+        assertEquals(16, reusedCount, "pool must retain exactly the default 16 buffers per class")
+        reused.forEach { it.release() }
+    }
+
+    @Test
+    fun registerPoolSizeBumpsMaxSlotsForCoveringClass() {
+        if (!isPoolAllocator()) return
+        // Bump the 4096 class to 24 slots via the bufferSize parameter.
+        val allocator = createPoolAllocator(bufferSize = 4096, maxPoolSize = 24)
+        val bufs = (0 until 24).map { allocator.allocate(4096) }
+        bufs.forEach { it.release() }
+
+        var reusedCount = 0
+        val reused = (0 until 24).map { allocator.allocate(4096) }
+        reused.forEach { r ->
+            if (bufs.contains(r)) reusedCount++
+        }
+        assertEquals(24, reusedCount, "registerPoolSize must raise retained slots to 24")
+        reused.forEach { it.release() }
     }
 
     @Test
