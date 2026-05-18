@@ -39,7 +39,7 @@ class KeelWebSocketTest {
     fun echoText() {
         withKeelServer({
             keelWebSocket("/echo") {
-                for (frame in incoming) send(frame)
+                for (message in incoming) send(message)
             }
         }) { port ->
             newTestHttpClient().use { client ->
@@ -59,7 +59,7 @@ class KeelWebSocketTest {
     fun echoBinary() {
         withKeelServer({
             keelWebSocket("/echo") {
-                for (frame in incoming) send(frame)
+                for (message in incoming) send(message)
             }
         }) { port ->
             newTestHttpClient().use { client ->
