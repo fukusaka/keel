@@ -51,6 +51,11 @@ kotlin {
                 // commonMain-wide, not per-target.
                 implementation(project(":keel-codec-http"))
                 implementation(project(":keel-codec-websocket"))
+                // server-http-* benchmarks wire a `/ws-deflate` endpoint via
+                // the `webSockets(codec) { }` DSL (WS-3 permessage-deflate).
+                // keel-server-websocket is `api(keel-server-http)`, so this
+                // does not conflict with the existing keel-server-http dep.
+                implementation(project(":keel-server-websocket"))
                 // K16 fix: pipeline-http engines wire `keel-compression-zlib`
                 // (gzip / deflate backend) when `--compression=true`.
                 implementation(project(":keel-compression-zlib"))

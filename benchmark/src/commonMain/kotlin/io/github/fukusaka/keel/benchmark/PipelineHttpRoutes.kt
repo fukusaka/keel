@@ -108,6 +108,13 @@ fun installPipelineHttpHandlers(pipeline: Pipeline, compression: Boolean = false
  * - `/ws-echo` — WebSocket (RFC 6455) echo server; swaps the pipeline codec
  *   from HTTP to WS frames after the handshake and echoes each received frame
  *   back (masking stripped per RFC 6455 §5.3).
+ * - `/ws-deflate` — WebSocket echo server with bench-only frame-level
+ *   `permessage-deflate` (RFC 7692). When the client offers the extension,
+ *   the 101 response advertises it, the WS decoder is installed with
+ *   `allowRsv1 = true`, and each inbound RSV1=1 frame is genuinely
+ *   decompressed → recompressed before being echoed (see
+ *   [PipelineHttpWsDeflate]). This is the `pipeline-http-*` counterpart of
+ *   the `server-http-*` `webSockets(DeflateCodec)` path.
  * - others   — 404 Not Found
  *
  * Instantiated per-connection because [currentPath] / [echoStreaming] /
@@ -130,10 +137,19 @@ private class BenchmarkRoutingHandler : InboundHandler {
     private var methodEchoMethod: String? = null
     private var itemEchoId: String? = null
 
-    // WebSocket state — active only after a successful /ws-echo upgrade.
+    // WebSocket state — active only after a successful /ws-echo or
+    // /ws-deflate upgrade.
     private var wsUpgradePending: Boolean = false
     private var wsClientKey: String? = null
     private var wsEchoMode: Boolean = false
+
+    // permessage-deflate state for the /ws-deflate route. `wsDeflateOffered`
+    // records whether the upgrade request offered the extension; the
+    // [PipelineHttpWsDeflate] engine is created only once the handshake
+    // completes with the offer accepted.
+    private var wsUpgradePath: String? = null
+    private var wsDeflateOffered: Boolean = false
+    private var wsDeflate: PipelineHttpWsDeflate? = null
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
@@ -147,10 +163,15 @@ private class BenchmarkRoutingHandler : InboundHandler {
                 // WS upgrade: stash the client key and defer the handshake to
                 // HttpBodyEnd (the request body is empty for GET/upgrade
                 // requests but the decoder still emits HttpBodyEnd to close
-                // the message).
-                if (msg.path == "/ws-echo" && msg.isWebSocketUpgrade()) {
+                // the message). /ws-deflate additionally records whether the
+                // request offered permessage-deflate so the 101 response can
+                // accept it.
+                if ((msg.path == "/ws-echo" || msg.path == "/ws-deflate") && msg.isWebSocketUpgrade()) {
                     wsUpgradePending = true
+                    wsUpgradePath = msg.path
                     wsClientKey = msg.headers["Sec-WebSocket-Key"]
+                    wsDeflateOffered = msg.path == "/ws-deflate" &&
+                        PipelineHttpWsDeflate.offersPermessageDeflate(msg.headers["Sec-WebSocket-Extensions"])
                     return
                 }
                 when {
@@ -211,15 +232,25 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         // The HTTP encoder is still installed so we can write
                         // the 101 head through the normal pipeline path.
                         val acceptKey = computeAcceptKey(wsClientKey!!)
+                        // Accept permessage-deflate only when /ws-deflate was
+                        // offered the extension. The response then advertises
+                        // keel's no-context-takeover policy and the WS decoder
+                        // is installed with allowRsv1 = true so RSV1=1
+                        // (compressed) frames are not rejected.
+                        val acceptDeflate = wsDeflateOffered
+                        val headerPairs = buildList {
+                            add(HttpHeaderName.UPGRADE to "websocket")
+                            add(HttpHeaderName.CONNECTION to "Upgrade")
+                            add("Sec-WebSocket-Accept" to acceptKey)
+                            if (acceptDeflate) {
+                                add("Sec-WebSocket-Extensions" to PipelineHttpWsDeflate.RESPONSE_EXTENSION_HEADER)
+                            }
+                        }
                         ctx.propagateWrite(
                             HttpResponseHead(
                                 status = HttpStatus(101),
                                 version = HttpVersion.HTTP_1_1,
-                                headers = HttpHeaders.of(
-                                    HttpHeaderName.UPGRADE to "websocket",
-                                    HttpHeaderName.CONNECTION to "Upgrade",
-                                    "Sec-WebSocket-Accept" to acceptKey,
-                                ),
+                                headers = HttpHeaders.of(*headerPairs.toTypedArray()),
                             ),
                         )
                         ctx.propagateWrite(HttpBodyEnd.EMPTY)
@@ -230,9 +261,20 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         ctx.channel.pipeline.remove("decoder")
                         ctx.channel.pipeline.remove("encoder")
                         ctx.channel.pipeline.addBefore(ctx.name, "ws-encoder", WsFrameEncoder())
-                        ctx.channel.pipeline.addBefore(ctx.name, "ws-decoder", WsFrameDecoder())
+                        // allowRsv1 = true only when permessage-deflate was
+                        // negotiated; the plain /ws-echo path stays strict.
+                        ctx.channel.pipeline.addBefore(
+                            ctx.name,
+                            "ws-decoder",
+                            WsFrameDecoder(allowRsv1 = acceptDeflate),
+                        )
+                        if (acceptDeflate) {
+                            wsDeflate = PipelineHttpWsDeflate()
+                        }
                         wsUpgradePending = false
+                        wsUpgradePath = null
                         wsClientKey = null
+                        wsDeflateOffered = false
                         wsEchoMode = true
                     }
                     echoStreaming -> {
@@ -287,12 +329,37 @@ private class BenchmarkRoutingHandler : InboundHandler {
                             )
                             ctx.propagateFlush()
                             wsEchoMode = false
+                            wsDeflate?.close()
+                            wsDeflate = null
                         }
                         else -> {
                             // TEXT / BINARY / CONTINUATION: echo back.
                             // RFC 6455 §5.3 forbids the server from masking;
                             // strip the client mask key before sending.
-                            val outgoing = if (msg.maskKey != null) msg.copy(maskKey = null) else msg
+                            val deflate = wsDeflate
+                            val outgoing = when {
+                                // RSV1=1 — a permessage-deflate compressed
+                                // frame. Genuinely decompress then recompress
+                                // for the echo: passing the compressed bytes
+                                // through verbatim would not exercise the
+                                // server-side deflate path. The bench workload
+                                // uses single-frame messages, so a per-frame
+                                // round-trip is sufficient.
+                                msg.rsv1 && deflate != null -> {
+                                    val inflated = deflate.decompress(msg.payload)
+                                    val recompressed = deflate.compress(inflated)
+                                    WsFrame(
+                                        fin = true,
+                                        rsv1 = true,
+                                        opcode = msg.opcode,
+                                        payload = recompressed,
+                                    )
+                                }
+                                // RSV1=0 — client sent the message
+                                // uncompressed; echo it uncompressed.
+                                msg.maskKey != null -> msg.copy(maskKey = null)
+                                else -> msg
+                            }
                             ctx.propagateWrite(outgoing)
                             ctx.propagateFlush()
                         }
@@ -321,6 +388,17 @@ private class BenchmarkRoutingHandler : InboundHandler {
             }
             else -> ctx.propagateRead(msg)
         }
+    }
+
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        // Release the permessage-deflate sessions on a TCP-level teardown
+        // (a client that drops the connection without a CLOSE handshake).
+        // The CLOSE-frame path already releases them; this guards the
+        // no-handshake case so the native Deflater / Inflater contexts are
+        // not leaked.
+        wsDeflate?.close()
+        wsDeflate = null
+        ctx.propagateInactive()
     }
 
     private fun emitResponse(ctx: PipelineHandlerContext) {

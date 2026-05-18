@@ -25,11 +25,21 @@
 //     server's SEND-side fragment emission. (Bench is over the same
 //     /ws-echo route by default — server picks fragmented send if it
 //     opts in.)
+//   - deflate: each VU opens a permessage-deflate (RFC 7692) connection
+//     and echoes a synthetic compressible text payload. gorilla
+//     negotiates the extension via Dialer.EnableCompression and
+//     auto-compresses sent / auto-decompresses received messages. The
+//     `-compression` flag turns the negotiation off so the same server
+//     endpoint can be A/B-tested compressed vs uncompressed. permessage-
+//     deflate only wins under a bandwidth cap (see bench-remote-ws.sh) —
+//     on an unconstrained link compression is pure CPU cost. Default
+//     path is /ws-deflate.
 //
 // Usage:
-//   wsbench -name=<engine> -scenario=<fragment-recv|fragment-send> \
-//       -host=<host> -port=<port> [-vus=N] [-duration=15s] \
-//       [-bytes=4096] [-fragments=4] [-path=/ws-echo]
+//
+//	wsbench -name=<engine> -scenario=<fragment-recv|fragment-send|deflate> \
+//	    -host=<host> -port=<port> [-vus=N] [-duration=15s] \
+//	    [-bytes=4096] [-fragments=4] [-path=/ws-echo] [-compression=true]
 package main
 
 import (
@@ -51,16 +61,17 @@ import (
 
 func main() {
 	var (
-		name      = flag.String("name", "wsbench", "engine name for the output row")
-		scenario  = flag.String("scenario", "fragment-recv", "fragment-recv | fragment-send")
-		host      = flag.String("host", "127.0.0.1", "WebSocket host")
-		port      = flag.Int("port", 18090, "WebSocket port")
-		path      = flag.String("path", "/ws-echo", "WebSocket path")
-		vus       = flag.Int("vus", 16, "concurrent virtual users (sessions)")
-		duration  = flag.Duration("duration", 15*time.Second, "bench wall-clock duration")
-		bytes     = flag.Int("bytes", 4096, "single-message size in bytes (split across fragments for fragment-recv)")
-		fragments = flag.Int("fragments", 4, "number of frames the message is split into (fragment-recv)")
-		scheme    = flag.String("scheme", "ws", "WebSocket URL scheme: 'ws' or 'wss'. When 'wss', the dialer skips TLS cert verification (bench cert is self-signed).")
+		name        = flag.String("name", "wsbench", "engine name for the output row")
+		scenario    = flag.String("scenario", "fragment-recv", "fragment-recv | fragment-send | deflate")
+		host        = flag.String("host", "127.0.0.1", "WebSocket host")
+		port        = flag.Int("port", 18090, "WebSocket port")
+		path        = flag.String("path", "", "WebSocket path (default: /ws-echo, or /ws-deflate for the deflate scenario)")
+		vus         = flag.Int("vus", 16, "concurrent virtual users (sessions)")
+		duration    = flag.Duration("duration", 15*time.Second, "bench wall-clock duration")
+		bytes       = flag.Int("bytes", 4096, "single-message size in bytes (split across fragments for fragment-recv)")
+		fragments   = flag.Int("fragments", 4, "number of frames the message is split into (fragment-recv)")
+		scheme      = flag.String("scheme", "ws", "WebSocket URL scheme: 'ws' or 'wss'. When 'wss', the dialer skips TLS cert verification (bench cert is self-signed).")
+		compression = flag.Bool("compression", true, "deflate scenario: negotiate permessage-deflate (RFC 7692). Set false for the uncompressed A/B leg.")
 	)
 	flag.Parse()
 
@@ -79,7 +90,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown scheme %q (expected ws|wss)\n", *scheme)
 		os.Exit(1)
 	}
-	u := url.URL{Scheme: *scheme, Host: fmt.Sprintf("%s:%d", *host, *port), Path: *path}
+	// Resolve the default path per scenario: the deflate scenario targets
+	// the /ws-deflate route (which negotiates permessage-deflate), every
+	// other scenario uses the plain /ws-echo route.
+	resolvedPath := *path
+	if resolvedPath == "" {
+		if *scenario == "deflate" {
+			resolvedPath = "/ws-deflate"
+		} else {
+			resolvedPath = "/ws-echo"
+		}
+	}
+	u := url.URL{Scheme: *scheme, Host: fmt.Sprintf("%s:%d", *host, *port), Path: resolvedPath}
 
 	// TCP_NODELAY is required for fragment-recv correctness: wsbench writes
 	// each fragment as a separate Write() to the underlying TCP connection.
@@ -115,8 +137,15 @@ func main() {
 		runFragmentRecv(*name, u.String(), dialer, *vus, *duration, *bytes, *fragments)
 	case "fragment-send":
 		runFragmentSend(*name, u.String(), dialer, *vus, *duration, *bytes)
+	case "deflate":
+		// EnableCompression makes gorilla offer `permessage-deflate` in
+		// the handshake. The dialer is cloned so the compressed and
+		// uncompressed A/B legs do not share mutable state.
+		deflateDialer := *dialer
+		deflateDialer.EnableCompression = *compression
+		runDeflate(*name, u.String(), &deflateDialer, *vus, *duration, *bytes)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown scenario %q (expected fragment-recv|fragment-send)\n", *scenario)
+		fmt.Fprintf(os.Stderr, "unknown scenario %q (expected fragment-recv|fragment-send|deflate)\n", *scenario)
 		os.Exit(1)
 	}
 }
@@ -202,6 +231,75 @@ func runFragmentSend(name, urlStr string, dialer *websocket.Dialer, vus int, dur
 	wg.Wait()
 
 	emit(name, stats, duration)
+}
+
+// runDeflate: each VU opens a WebSocket connection (with permessage-
+// deflate negotiated when the dialer's EnableCompression is set) and
+// repeatedly echoes a synthetic compressible text payload. gorilla
+// transparently compresses the sent message and decompresses the echo,
+// so the per-iteration cost reflects the server's permessage-deflate
+// decompress→recompress path under whatever bandwidth cap the harness
+// applied. The payload length of the echo is verified against the sent
+// length so a corrupt round-trip is not counted as throughput.
+func runDeflate(name, urlStr string, dialer *websocket.Dialer, vus int, duration time.Duration, totalBytes int) {
+	stats := newStatsAggregator()
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+
+	payload := compressiblePayload(totalBytes)
+
+	var wg sync.WaitGroup
+	for i := 0; i < vus; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, _, err := dialer.DialContext(ctx, urlStr, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			for ctx.Err() == nil {
+				start := time.Now()
+				if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+					return
+				}
+				_, echo, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+				if len(echo) != len(payload) {
+					// Length mismatch means the decompress→recompress
+					// round-trip corrupted the message; abort this VU
+					// rather than count a bad iteration.
+					return
+				}
+				stats.add(time.Since(start))
+			}
+		}()
+	}
+	wg.Wait()
+
+	emit(name, stats, duration)
+}
+
+// compressiblePayload builds an `n`-byte blob of repeated structured
+// text so DEFLATE achieves a realistic ~3:1 ratio. A single repeated
+// byte would compress ~1000:1, which is not representative of real
+// WebSocket traffic (JSON / log lines / chat). The block below is a
+// small JSON-like record with enough field variety to defeat trivial
+// run-length collapse while still being highly redundant across
+// repetitions — close to what a real chat / telemetry stream looks
+// like on the wire.
+func compressiblePayload(n int) []byte {
+	const block = `{"id":4815162342,"user":"benchmark-client","event":"message",` +
+		`"channel":"general","ts":1700000000,"body":"the quick brown fox ` +
+		`jumps over the lazy dog","seq":1,"ok":true},`
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = block[i%len(block)]
+	}
+	return out
 }
 
 // writeFragmented sends a logical text message split into multiple
