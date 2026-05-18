@@ -46,31 +46,52 @@ public class KeelHttpServerBuilder internal constructor() {
         connector = buildConnector(configure)
     }
 
-    /** Registers [handler] for [method] requests matching the [path] pattern. */
-    public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
-        router.register(method, path, handler)
+    /**
+     * Registers [handler] for [method] requests matching the [path]
+     * pattern, optionally guarded by [predicate].
+     *
+     * When [predicate] is non-null the handler runs only for requests it
+     * accepts; several predicated handlers may share one method × path,
+     * the first whose predicate accepts the request winning (see
+     * [RoutePredicate] and [Router]). A null [predicate] registers an
+     * unconditional catch-all.
+     */
+    public fun route(
+        method: HttpMethod,
+        path: String,
+        predicate: RoutePredicate? = null,
+        handler: RouteHandler,
+    ) {
+        router.register(method, path, predicate, handler)
     }
 
-    /** Registers a `GET` route. */
-    public fun get(path: String, handler: RouteHandler): Unit = route(HttpMethod.GET, path, handler)
+    /** Registers a `GET` route, optionally guarded by [predicate]. */
+    public fun get(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.GET, path, predicate, handler)
 
-    /** Registers a `POST` route. */
-    public fun post(path: String, handler: RouteHandler): Unit = route(HttpMethod.POST, path, handler)
+    /** Registers a `POST` route, optionally guarded by [predicate]. */
+    public fun post(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.POST, path, predicate, handler)
 
-    /** Registers a `PUT` route. */
-    public fun put(path: String, handler: RouteHandler): Unit = route(HttpMethod.PUT, path, handler)
+    /** Registers a `PUT` route, optionally guarded by [predicate]. */
+    public fun put(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.PUT, path, predicate, handler)
 
-    /** Registers a `DELETE` route. */
-    public fun delete(path: String, handler: RouteHandler): Unit = route(HttpMethod.DELETE, path, handler)
+    /** Registers a `DELETE` route, optionally guarded by [predicate]. */
+    public fun delete(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.DELETE, path, predicate, handler)
 
-    /** Registers a `PATCH` route. */
-    public fun patch(path: String, handler: RouteHandler): Unit = route(HttpMethod.PATCH, path, handler)
+    /** Registers a `PATCH` route, optionally guarded by [predicate]. */
+    public fun patch(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.PATCH, path, predicate, handler)
 
-    /** Registers a `HEAD` route. */
-    public fun head(path: String, handler: RouteHandler): Unit = route(HttpMethod.HEAD, path, handler)
+    /** Registers a `HEAD` route, optionally guarded by [predicate]. */
+    public fun head(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.HEAD, path, predicate, handler)
 
-    /** Registers an `OPTIONS` route. */
-    public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
+    /** Registers an `OPTIONS` route, optionally guarded by [predicate]. */
+    public fun options(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.OPTIONS, path, predicate, handler)
 
     /**
      * Opens a route group at [prefix] (see [RouteGroupBuilder]).
@@ -85,7 +106,7 @@ public class KeelHttpServerBuilder internal constructor() {
         RouteGroupBuilder(prefix).apply(configure).flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            register = { method, path, handler -> route(method, path, handler) },
+            register = { method, path, predicate, handler -> route(method, path, predicate, handler) },
         )
     }
 
@@ -168,16 +189,23 @@ public class KeelHttpServerBuilder internal constructor() {
     }
 
     /**
-     * Registers [protocol] as the upgrade endpoint for the [path] pattern.
-     * A request to [path] whose `Upgrade` header token names the protocol
-     * is handed to it instead of a route handler (see [UpgradeProtocol]).
+     * Registers [protocol] as an upgrade endpoint for the [path] pattern,
+     * optionally guarded by [predicate]. A request to [path] whose
+     * `Upgrade` header token names the protocol — and which satisfies
+     * [predicate] — is handed to it instead of a route handler (see
+     * [UpgradeProtocol]).
      *
      * The [path] pattern shares [Router] syntax — `:name` parameters and a
      * trailing `*` work. Higher-level DSLs, such as the `webSockets { }`
      * block in `keel-server-websocket`, build on this.
+     *
+     * [predicate] is the trailing parameter so a positional
+     * `upgrade(path, protocol)` call keeps compiling — unlike the route
+     * shorthands, an upgrade has no trailing handler lambda for a
+     * predicate to precede.
      */
-    public fun upgrade(path: String, protocol: UpgradeProtocol) {
-        router.registerUpgrade(path, protocol)
+    public fun upgrade(path: String, protocol: UpgradeProtocol, predicate: RoutePredicate? = null) {
+        router.registerUpgrade(path, protocol, predicate)
     }
 
     /**

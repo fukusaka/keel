@@ -202,20 +202,22 @@ internal class HttpServerHandler(
     }
 
     private fun onRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
-        val match = router.resolve(head.method, head.path)
+        val resolution = router.resolve(head.method, head.path, head)
+        val match = (resolution as? RouteResolution.Matched)?.match
         // An upgrade request: the resolved route carries an UpgradeProtocol
         // and the request's `Upgrade` header names it. The upgrade is
         // dispatched as the terminal of the middleware chain (see
         // [invokeTerminal]), so middleware runs before the handshake —
         // auth / CORS / logging observe the upgrade request.
         val isUpgrade = upgradeFor(head.headers, match) != null
-        // Fast path: a 404 with nothing that needs a handler coroutine —
-        // no route handler for this method and no matching upgrade, and no
-        // middleware / custom notFound to run through. Answer synchronously.
+        // Fast path: an error response (404 / 405) with nothing that needs
+        // a handler coroutine — no route handler for this method and no
+        // matching upgrade, and no middleware / custom notFound to run
+        // through. Answer synchronously.
         val unmatched = match?.handler == null && !isUpgrade
         val noAsyncWork = middlewares.isEmpty() && errorHandlers.notFound == null
         if (unmatched && noAsyncWork) {
-            ctx.propagateWriteAndFlush(NOT_FOUND_RESPONSE)
+            ctx.propagateWriteAndFlush(errorResponseFor(resolution))
             if (draining) channel.close()
             return
         }
@@ -224,7 +226,7 @@ internal class HttpServerHandler(
         inFlight = call
         connectionScope.launch(ctx.channel.ioDispatcher) {
             try {
-                dispatch(call, match)
+                dispatch(call, resolution)
                 // The 500 guard does not apply to an upgrade: a successful
                 // upgrade takes over the connection (sends `101`, swaps the
                 // pipeline codec) without going through `call.respond`, so
@@ -254,11 +256,11 @@ internal class HttpServerHandler(
      * With no middleware registered the terminal is invoked directly, so
      * the common path keeps the pre-middleware cost.
      */
-    private suspend fun dispatch(call: Http1Call, match: RouteMatch?) {
+    private suspend fun dispatch(call: Http1Call, resolution: RouteResolution) {
         if (middlewares.isEmpty()) {
-            invokeTerminal(call, match)
+            invokeTerminal(call, resolution)
         } else {
-            runChain(0, call, match)
+            runChain(0, call, resolution)
         }
     }
 
@@ -266,32 +268,43 @@ internal class HttpServerHandler(
      * Runs middleware [index]; its `next` continuation recurses into
      * [index] + 1, and the terminal runs once the chain is exhausted.
      */
-    private suspend fun runChain(index: Int, call: Http1Call, match: RouteMatch?) {
+    private suspend fun runChain(index: Int, call: Http1Call, resolution: RouteResolution) {
         if (index < middlewares.size) {
-            middlewares[index](call) { runChain(index + 1, call, match) }
+            middlewares[index](call) { runChain(index + 1, call, resolution) }
         } else {
-            invokeTerminal(call, match)
+            invokeTerminal(call, resolution)
         }
     }
 
     /**
      * Chain terminal: the upgrade hand-off when the request resolved to an
-     * `Upgrade`-matching protocol, otherwise the matched route handler,
-     * the configured `notFound` handler, or the built-in `404` when
-     * nothing matched. Reached after the middleware chain, so middleware
-     * runs before an upgrade handshake and observes a `404`.
+     * `Upgrade`-matching protocol, otherwise the matched route handler, or
+     * an error terminal — the configured `notFound` handler / built-in
+     * `404` when nothing matched, or a `405 Method Not Allowed` when the
+     * path is registered for other methods. Reached after the middleware
+     * chain, so middleware runs before an upgrade handshake and observes
+     * the `404` / `405`.
      */
-    private suspend fun invokeTerminal(call: Http1Call, match: RouteMatch?) {
+    private suspend fun invokeTerminal(call: Http1Call, resolution: RouteResolution) {
+        val match = (resolution as? RouteResolution.Matched)?.match
         val upgrade = upgradeFor(call.headers, match)
         if (upgrade != null) {
             upgrade.upgrade(call, channel)
             return
         }
-        val handler = match?.handler ?: errorHandlers.notFound
+        val handler = match?.handler
         if (handler != null) {
             handler(call)
+            return
+        }
+        // No route handler. A 405 routes straight to the built-in
+        // response — the `notFound` handler answers a genuine miss only,
+        // not a method mismatch. A 404 prefers the custom `notFound`.
+        if (resolution is RouteResolution.MethodNotAllowed) {
+            call.respond(methodNotAllowedResponse(resolution.allowedMethods))
         } else {
-            call.respond(NOT_FOUND_RESPONSE)
+            val notFound = errorHandlers.notFound
+            if (notFound != null) notFound(call) else call.respond(NOT_FOUND_RESPONSE)
         }
     }
 
@@ -348,6 +361,34 @@ internal class HttpServerHandler(
             HttpResponse.of(HttpStatus.NOT_FOUND, "Not Found")
         val INTERNAL_ERROR_RESPONSE: HttpResponse =
             HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error")
+
+        /**
+         * The synchronous fast-path error response for an unmatched
+         * request: a `405 Method Not Allowed` carrying an `Allow` header
+         * when the path is registered for other methods, otherwise a
+         * `404 Not Found`. Used only when no middleware / `notFound` runs.
+         */
+        fun errorResponseFor(resolution: RouteResolution): HttpResponse =
+            if (resolution is RouteResolution.MethodNotAllowed) {
+                methodNotAllowedResponse(resolution.allowedMethods)
+            } else {
+                NOT_FOUND_RESPONSE
+            }
+
+        /**
+         * Builds a `405 Method Not Allowed` response whose `Allow` header
+         * lists [allowedMethods], sorted by name and comma-space joined
+         * (RFC 7231 §7.4.1).
+         */
+        fun methodNotAllowedResponse(allowedMethods: Set<HttpMethod>): HttpResponse {
+            val allow = allowedMethods.map { it.name }.sorted().joinToString(", ")
+            val base = HttpResponse.of(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed")
+            val headers = HttpHeaders.build {
+                base.headers.forEach { name, value -> add(name, value) }
+                set(HttpHeaderName.ALLOW, allow)
+            }
+            return base.copy(headers = headers)
+        }
     }
 }
 
