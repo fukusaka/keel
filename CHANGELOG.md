@@ -55,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`server-http`): `Router.resolve` now takes the request head and returns a sealed `RouteResolution`; `register` / `registerUpgrade` take an optional `RoutePredicate` — direct `Router` callers must adapt, the `keelHttpServer { }` DSL is unaffected (#561)
 - `server-http`: a request to a registered path with an unregistered method now answers `405 Method Not Allowed` with an `Allow` header, instead of `404 Not Found` (#561)
 - `benchmark`: `bench-remote-ws.sh` gains Docker fallback modes for the `wsbench` build and `tc` shaping; the WS deflate payload now compresses at a realistic ~6:1 (#557)
 - **BREAKING** (`server-websocket`): WebSocket endpoints are registered inside a `webSockets { }` group block instead of the flat `webSocket("/path") { }` — the group carries the shared `permessage-deflate` configuration (#555)
