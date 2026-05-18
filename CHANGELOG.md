@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: static file serving honours `Range` requests — single-range `206 Partial Content` + `Content-Range`, `416` for unsatisfiable ranges, `Accept-Ranges: bytes` (#552)
 - `testing-server-http`: new `keel-testing-server-http` module — `keelHttpTest { server { } ; client.get(...) }` exercises `keelHttpServer` routes in-process over `InMemoryEngine` (#551)
 - `testing-engine`: new `keel-testing-engine` module — `InMemoryEngine`, an in-memory `StreamEngine` with a `bindPipeline` / `connect` loopback for socket-free testing (#551)
 - `server-websocket`: `WsSession.pathParameters` exposes the matched route's `:name` / `*` parameters to the `webSocket { }` handler (#549)
