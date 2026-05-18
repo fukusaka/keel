@@ -7,32 +7,44 @@ import kotlinx.cinterop.plus
 import kotlin.concurrent.AtomicReference
 
 /**
- * Pool-based [BufferAllocator] for Native targets with multi-size-class support.
+ * Pool-based [BufferAllocator] for Native targets with size-class pooling.
  *
- * Maintains spin-lock-protected freelists of [NativeIoBuf] instances,
- * one per registered size class. Size classes are registered dynamically
- * via [registerPoolSize]. The default 8 KiB class is registered at
- * construction for backward compatibility.
+ * Maintains a static table of spin-lock-protected freelists of [NativeIoBuf]
+ * instances, one (initially empty) freelist per jemalloc-style size class
+ * (see [sizeClasses]). Every [allocate] request is rounded up to a size class
+ * via [normalizeToSizeClass], so every request up to [MAX_SIZE_CLASS] hits a
+ * pool; requests above the ceiling are served un-pooled at their exact size.
  *
- * **Thread safety**: spin lock per pool. EventLoop-based engines
- * (kqueue/epoll) access from a single thread (always uncontended).
+ * **Thread safety**: a single spin lock guards the freelists and the
+ * [pooledBytes] accounting. EventLoop-based engines (kqueue/epoll) access from
+ * a single thread (always uncontended).
  *
  * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh child
- * allocator with the parent's size classes propagated but per-pool capacity
- * capped at `LOCAL_POOL_SLOTS` (8), so each EventLoop owns its own pool
- * confined to a single thread. The parent allocator (the instance passed
- * to `IoEngineConfig`) is used only for size-class registration at startup;
- * the per-EL children perform the actual allocations.
+ * allocator that builds its own size-class table and copies the parent's
+ * per-class [Pool.maxSlots], capped at `LOCAL_POOL_SLOTS` (8), so each
+ * EventLoop owns its own pool confined to a single thread. The parent
+ * allocator (the instance passed to `IoEngineConfig`) is used only for
+ * per-class capacity tuning at startup; the per-EL children perform the
+ * actual allocations.
  *
- * @param maxTotalBytes Maximum total bytes across all pool classes.
- *   Acts as a safety valve. Default: 256 KiB.
+ * @param maxTotalBytes Maximum total bytes retained across all pool classes.
+ *   Acts as a soft valve enforced at release time via [pooledBytes].
+ *   Default: 256 KiB.
  */
 class SlabAllocator(
     private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
 ) : BufferAllocator {
 
-    private val pools = HashMap<Int, Pool>()
+    // Static table: one (initially empty) pool per size class. An empty pool
+    // holds zero buffers and costs only a freelist head.
+    private val pools: HashMap<Int, Pool> = HashMap<Int, Pool>().apply {
+        for (cls in sizeClasses()) put(cls, Pool(DEFAULT_POOL_SLOTS))
+    }
     private val lock = AtomicReference(false)
+
+    // Running total of bytes retained across all pools. Mutated only under
+    // the spin lock; the soft maxTotalBytes valve is enforced in returnToPool.
+    private var pooledBytes: Long = 0
 
     private inline fun <T> withSpinLock(block: () -> T): T {
         while (!lock.compareAndSet(false, true)) { /* spin */ }
@@ -41,10 +53,6 @@ class SlabAllocator(
         } finally {
             lock.value = false
         }
-    }
-
-    init {
-        registerPoolSize(DEFAULT_BUFFER_SIZE, DEFAULT_POOL_SLOTS)
     }
 
     override fun createForEventLoop(): BufferAllocator =
@@ -56,17 +64,21 @@ class SlabAllocator(
             }
         }
 
-    // Atomic under spin lock: containsKey + budget + insert is a single critical section.
+    /**
+     * Bumps the retained-buffer capacity of the size class covering [size].
+     *
+     * The size-class table is static, so every class already exists; this
+     * call only raises the [Pool.maxSlots] of the class that [size] rounds up
+     * to via [normalizeToSizeClass] (never lowers it). The global
+     * [maxTotalBytes] valve remains the real ceiling. Callers that previously
+     * "registered" a size now simply hint that more buffers of that class
+     * should be retained.
+     */
     override fun registerPoolSize(size: Int, maxSlots: Int) {
+        val cls = normalizeToSizeClass(size)
         withSpinLock {
-            if (pools.containsKey(size)) return
-            val currentBudget = pools.entries.sumOf { (s, p) -> s.toLong() * p.maxSlots }
-            val effectiveMaxSlots = if (currentBudget + size.toLong() * maxSlots > maxTotalBytes) {
-                ((maxTotalBytes - currentBudget) / size).toInt().coerceAtLeast(1)
-            } else {
-                maxSlots
-            }
-            pools[size] = Pool(effectiveMaxSlots)
+            val pool = pools[cls] ?: return
+            if (maxSlots > pool.maxSlots) pool.maxSlots = maxSlots
         }
     }
 
@@ -74,15 +86,25 @@ class SlabAllocator(
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
-        val buf: NativeIoBuf = withSpinLock {
-            val pool = pools[capacity]
+        val cls = normalizeToSizeClass(capacity)
+        if (cls > MAX_SIZE_CLASS) {
+            // Huge request: un-pooled, served at the exact requested capacity.
+            // It still carries poolOwner so release routes to returnToPool,
+            // which finds no matching pool and closes it.
+            return NativeIoBuf(capacity, poolOwner)
+        }
+        val pooled: NativeIoBuf? = withSpinLock {
+            val pool = pools[cls]
             if (pool != null && pool.list.isNotEmpty()) {
-                pool.list.removeLast().also { it.resetForReuse() }
+                pool.list.removeLast().also {
+                    it.resetForReuse()
+                    pooledBytes -= it.capacity.toLong()
+                }
             } else {
                 null
             }
-        } ?: NativeIoBuf(capacity, poolOwner)
-        return buf
+        }
+        return pooled ?: NativeIoBuf(cls, poolOwner)
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -104,10 +126,12 @@ class SlabAllocator(
     }
 
     private fun returnToPool(buf: IoBuf) {
+        val capacity = buf.capacity.toLong()
         val closed = withSpinLock {
             val pool = pools[buf.capacity]
-            if (pool != null && pool.list.size < pool.maxSlots) {
+            if (pool != null && pool.list.size < pool.maxSlots && pooledBytes + capacity <= maxTotalBytes) {
                 pool.list.addLast(buf as NativeIoBuf)
+                pooledBytes += capacity
                 false
             } else {
                 true
@@ -120,8 +144,9 @@ class SlabAllocator(
      * Returns the native pointers and capacities of all pooled buffers.
      *
      * Used by io_uring to register buffers with the kernel for SEND_ZC_FIXED.
-     * Each pair is (CPointer<ByteVar>, capacity). Returns empty list if no
-     * buffers are currently pooled.
+     * Each pair is (CPointer<ByteVar>, capacity). Pooled buffers always have a
+     * size-class capacity. Returns empty list if no buffers are currently
+     * pooled.
      */
     @OptIn(ExperimentalForeignApi::class)
     fun nativePooledBuffers(): List<Pair<kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>, Int>> {
@@ -136,12 +161,11 @@ class SlabAllocator(
         }
     }
 
-    private class Pool(val maxSlots: Int) {
+    private class Pool(var maxSlots: Int) {
         val list = ArrayDeque<NativeIoBuf>(maxSlots)
     }
 
     companion object {
-        private const val DEFAULT_BUFFER_SIZE = 8192
         private const val DEFAULT_POOL_SLOTS = 16
         private const val LOCAL_POOL_SLOTS = 8
         private const val DEFAULT_MAX_TOTAL_BYTES = 256L * 1024 // 256 KiB

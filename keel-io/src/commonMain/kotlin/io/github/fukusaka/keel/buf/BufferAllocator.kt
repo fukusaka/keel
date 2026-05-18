@@ -52,21 +52,24 @@ interface BufferAllocator {
     fun slice(source: IoBuf, offset: Int, length: Int): IoBuf
 
     /**
-     * Registers a pool slot for buffers of exactly [size] bytes.
+     * Hints that more buffers of the size class covering [size] should be
+     * retained in the pool.
      *
-     * When [allocate] is called with a capacity matching a registered
-     * size, the allocator attempts to reuse a previously released buffer
-     * from the pool instead of allocating fresh memory. [maxSlots]
-     * limits how many buffers of this size are retained in the pool;
-     * excess buffers are freed on release.
+     * Pooled allocators ([SlabAllocator], [PooledDirectAllocator]) round
+     * every allocation to a jemalloc-style size class, so a freelist already
+     * exists for every size. This call raises the per-class slot count of the
+     * class that [size] rounds up to, up to [maxSlots] (it never lowers it).
+     * The global per-allocator byte budget remains the real ceiling.
      *
-     * Duplicate registrations for the same [size] are no-ops.
-     * Pool-less allocators (e.g. [DefaultAllocator]) ignore this call.
+     * Calling this is optional: a request for any size is already pooled at
+     * its rounded class. It is a tuning hint for sizes a caller knows it will
+     * allocate in bursts. Pool-less allocators (e.g. [DefaultAllocator])
+     * ignore this call.
      *
-     * **Important**: registrations are not propagated retroactively to
-     * child allocators already created by [createForEventLoop]. Callers
-     * must invoke this on the per-EventLoop allocator instance (typically
-     * via `ctx.allocator`) rather than the parent engine-wide allocator.
+     * **Important**: hints are not propagated retroactively to child
+     * allocators already created by [createForEventLoop]. Callers must invoke
+     * this on the per-EventLoop allocator instance (typically via
+     * `ctx.allocator`) rather than the parent engine-wide allocator.
      *
      * Typical callers:
      * - Engine: `registerPoolSize(READ_BUFFER_SIZE, 16)` at bind time
