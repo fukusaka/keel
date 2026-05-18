@@ -66,6 +66,14 @@ public class RouteMatch internal constructor(
  * Core route — so registration order cannot make the universal
  * unconstrained `:id` shadow a constrained `:id(int)` sibling.
  *
+ * Registration order is significant in exactly one case: when two
+ * constrained parameters at the same position have constraints that can
+ * both accept the same segment (e.g. the overlapping regexes
+ * `:id(^\d+$)` and `:id(^\d{3}$)`), the one registered first wins.
+ * Constraint subset-checking is undecidable in general, so the [Router]
+ * does not detect or reorder such an overlap — register the more
+ * specific pattern first.
+ *
  * **Thread safety**: [register] mutates the trie and must complete before
  * the server starts serving. [resolve] is read-only — the trie is treated
  * as immutable once built — and is safe for the concurrent calls made by
