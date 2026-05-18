@@ -62,11 +62,24 @@ public interface HttpCall {
     /**
      * Query parameters parsed from [queryString]: each `name=value` pair
      * split on `&`, with `name` and `value` percent-decoded and `+`
-     * decoded to a space. A repeated key keeps its first value; a key
-     * with no `=` maps to the empty string. Empty when there is no query
-     * string.
+     * decoded to a space. A repeated name keeps every value —
+     * [QueryParameters.get] returns the first, [QueryParameters.getAll]
+     * the full list — and a name with no `=` maps to the empty string.
+     * Empty when there is no query string.
+     *
+     * The number of pairs is capped: a query string exceeding the
+     * connector's `maxParameterCount` is answered `400 Bad Request` by
+     * the server before the handler runs, never reaching this property.
+     * With the connector's strict options on, a malformed query
+     * (control characters / bad percent-encoding) is likewise answered
+     * `400` (see [QueryParameterConfig]).
+     *
+     * Decoded names and values may still contain control bytes (`NUL`,
+     * `CR`, `LF`, …) unless `rejectControlCharacters` is enabled —
+     * feeding raw query values into response headers, file paths, or log
+     * lines without sanitising them is the application's responsibility.
      */
-    public val queryParameters: Map<String, String>
+    public val queryParameters: QueryParameters
 
     /** Request headers. */
     public val headers: HttpHeaders
