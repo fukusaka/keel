@@ -73,6 +73,23 @@ public class KeelHttpServerBuilder internal constructor() {
     public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
 
     /**
+     * Opens a route group at [prefix] (see [RouteGroupBuilder]).
+     *
+     * Routes registered inside [configure] are prefixed with [prefix] and
+     * wrapped with any middleware the group `install`s; nested `route`
+     * blocks compose prefixes and middleware further. The group is pure
+     * registration sugar — once [configure] has run it registers ordinary
+     * routes on the [Router], so the trie and the resolver are unchanged.
+     */
+    public fun route(prefix: String, configure: RouteGroupBuilder.() -> Unit) {
+        RouteGroupBuilder(prefix).apply(configure).flush(
+            inheritedMiddleware = emptyList(),
+            inheritedPrefix = "",
+            register = { method, path, handler -> route(method, path, handler) },
+        )
+    }
+
+    /**
      * Mounts [source] as a static-asset tree at [urlPath].
      *
      * Registers a `GET` and a `HEAD` route at `urlPath` plus a trailing
