@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
+import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -146,6 +147,115 @@ class WsFrameAggregatorTest {
     fun `feeding a control frame is a programming error`() {
         assertFailsWith<IllegalArgumentException> {
             WsFrameAggregator().feed(WsFrame.ping())
+        }
+    }
+
+    // --- permessage-deflate (RFC 7692 §7.2) ---
+
+    /** A `permessage-deflate` engine wired as the aggregator's inflater. */
+    private fun deflateEngine(): WsPermessageDeflate =
+        WsPermessageDeflate(
+            DeflateCodec,
+            WsDeflateOptions(contextTakeover = false, threshold = 0),
+            serverMaxWindowBits = null,
+            clientMaxWindowBits = null,
+        )
+
+    @Test
+    fun `a compressed single-frame text message is inflated`() {
+        val engine = deflateEngine()
+        try {
+            val original = "permessage-deflate ".repeat(32)
+            val compressed = engine.compress(original.encodeToByteArray())
+            assertTrue(compressed.compressed)
+            val aggregator = WsFrameAggregator(WsMessageInflater { engine.decompress(it) })
+            val result = aggregator.feed(
+                WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.TEXT, payload = compressed.bytes),
+            )
+            val completed = assertIs<WsAggregateResult.Completed>(result)
+            assertEquals(WsMessage.Text(original), completed.message)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `a compressed fragmented binary message is inflated`() {
+        val engine = deflateEngine()
+        try {
+            val original = ByteArray(2048) { (it and 0x3F).toByte() }
+            val compressed = engine.compress(original).bytes
+            // Split the compressed bytes across an opening frame (rsv1=1)
+            // and a CONTINUATION frame (rsv1=0, fin=1).
+            val mid = compressed.size / 2
+            val aggregator = WsFrameAggregator(WsMessageInflater { engine.decompress(it) })
+            assertIs<WsAggregateResult.Incomplete>(
+                aggregator.feed(
+                    WsFrame(
+                        fin = false,
+                        rsv1 = true,
+                        opcode = WsOpcode.BINARY,
+                        payload = compressed.copyOfRange(0, mid),
+                    ),
+                ),
+            )
+            val result = aggregator.feed(
+                WsFrame.continuation(compressed.copyOfRange(mid, compressed.size), fin = true),
+            )
+            val completed = assertIs<WsAggregateResult.Completed>(result)
+            val message = assertIs<WsMessage.Binary>(completed.message)
+            assertTrue(original.contentEquals(message.bytes))
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun `an rsv1 frame with no inflater configured is a protocol error 1002`() {
+        val result = WsFrameAggregator().feed(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.TEXT, payload = byteArrayOf(1, 2, 3)),
+        )
+        val error = assertIs<WsAggregateResult.ProtocolError>(result)
+        assertEquals(WsFrameAggregator.PROTOCOL_ERROR_CODE, error.closeCode)
+    }
+
+    @Test
+    fun `a decompressed message over the size cap is message too big 1009`() {
+        // A test inflater that expands any input past MAX_WS_MESSAGE_SIZE.
+        val bombInflater = WsMessageInflater { ByteArray(MAX_WS_MESSAGE_SIZE + 1) }
+        val aggregator = WsFrameAggregator(bombInflater)
+        val result = aggregator.feed(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.BINARY, payload = byteArrayOf(0x42)),
+        )
+        val error = assertIs<WsAggregateResult.ProtocolError>(result)
+        assertEquals(WsFrameAggregator.MESSAGE_TOO_BIG_CODE, error.closeCode)
+    }
+
+    @Test
+    fun `a decompressed text message with invalid UTF-8 is a protocol error 1007`() {
+        // The inflater yields a lone 0xFF byte — not valid UTF-8.
+        val badUtf8Inflater = WsMessageInflater { byteArrayOf(0xFF.toByte()) }
+        val aggregator = WsFrameAggregator(badUtf8Inflater)
+        val result = aggregator.feed(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.TEXT, payload = byteArrayOf(0x01)),
+        )
+        val error = assertIs<WsAggregateResult.ProtocolError>(result)
+        assertEquals(WsFrameAggregator.INVALID_PAYLOAD_CODE, error.closeCode)
+    }
+
+    @Test
+    fun `a decompression failure is a protocol error 1002`() {
+        val engine = deflateEngine()
+        try {
+            val aggregator = WsFrameAggregator(WsMessageInflater { engine.decompress(it) })
+            // Garbage bytes that are not a valid raw-DEFLATE stream.
+            val result = aggregator.feed(
+                WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.BINARY, payload = byteArrayOf(-1, -1, -1, -1)),
+            )
+            val error = assertIs<WsAggregateResult.ProtocolError>(result)
+            assertEquals(WsFrameAggregator.PROTOCOL_ERROR_CODE, error.closeCode)
+        } finally {
+            engine.close()
         }
     }
 }
