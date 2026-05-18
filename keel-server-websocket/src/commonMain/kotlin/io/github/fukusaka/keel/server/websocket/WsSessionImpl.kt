@@ -22,18 +22,34 @@ import kotlin.concurrent.Volatile
  * reach the user's [incoming] channel is started by [runForward];
  * [runWebSocketUpgrade] invokes it before handing the session to user
  * code.
+ *
+ * When [deflate] is non-null the connection negotiated
+ * `permessage-deflate` (RFC 7692): outbound data messages at or above
+ * the threshold are compressed and emitted with RSV1=1, and inbound
+ * compressed messages are inflated by the [aggregator]. Control frames
+ * are never compressed (RFC 7692 §6.1).
+ *
+ * @param deflate the per-session compression engine, or null when no
+ *   extension was negotiated.
  */
 internal class WsSessionImpl(
     private val channel: PipelinedChannel,
     private val bridge: SuspendMessageBridge<WsFrame>,
     override val pathParameters: Map<String, String>,
+    private val deflate: WsPermessageDeflate? = null,
 ) : WsSession {
 
     private val applicationFrames = Channel<WsMessage>(Channel.UNLIMITED)
     override val incoming: ReceiveChannel<WsMessage> get() = applicationFrames
 
-    /** Reassembles inbound data fragments into whole messages (RFC 6455 §5.4). */
-    private val aggregator = WsFrameAggregator()
+    /**
+     * Reassembles inbound data fragments into whole messages
+     * (RFC 6455 §5.4), inflating `permessage-deflate` messages when
+     * [deflate] is configured.
+     */
+    private val aggregator = WsFrameAggregator(
+        inflater = deflate?.let { engine -> WsMessageInflater { engine.decompress(it) } },
+    )
 
     @Volatile
     private var closed = false
@@ -142,11 +158,30 @@ internal class WsSessionImpl(
     }
 
     override suspend fun send(text: String) {
-        send(WsFrame.text(text))
+        sendData(WsOpcode.TEXT, text.encodeToByteArray())
     }
 
     override suspend fun send(bytes: ByteArray) {
-        send(WsFrame.binary(bytes))
+        sendData(WsOpcode.BINARY, bytes)
+    }
+
+    /**
+     * Sends one unfragmented data message of [opcode] carrying
+     * [payload]. When `permessage-deflate` is active and [payload] is at
+     * or above the threshold, the payload is compressed (RFC 7692
+     * §7.2.1) and the frame's RSV1 bit set; otherwise it is sent
+     * verbatim with RSV1=0.
+     */
+    private suspend fun sendData(opcode: WsOpcode, payload: ByteArray) {
+        if (closed) return
+        val engine = deflate
+        val frame = if (engine != null) {
+            val result = engine.compress(payload)
+            WsFrame(fin = true, rsv1 = result.compressed, opcode = opcode, payload = result.bytes)
+        } else {
+            WsFrame(fin = true, opcode = opcode, payload = payload)
+        }
+        sendInternal(frame)
     }
 
     override suspend fun close(code: WsCloseCode, reason: String) {
@@ -190,5 +225,14 @@ internal class WsSessionImpl(
             channel.pipeline.requestWrite(frame)
             channel.pipeline.requestFlush()
         }
+    }
+
+    /**
+     * Releases the `permessage-deflate` engine's native resources.
+     * Invoked by [runWebSocketUpgrade] once the session has fully ended.
+     * No-op when no extension was negotiated.
+     */
+    fun releaseDeflate() {
+        deflate?.close()
     }
 }
