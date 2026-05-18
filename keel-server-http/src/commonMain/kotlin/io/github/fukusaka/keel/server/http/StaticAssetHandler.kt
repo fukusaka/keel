@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
@@ -10,6 +11,7 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
 import kotlinx.io.Buffer
 import kotlinx.io.RawSource
 import kotlinx.io.readByteArray
+import kotlin.random.Random
 
 /** Fallback content type when the asset's provider could not resolve one. */
 private const val DEFAULT_CONTENT_TYPE = "application/octet-stream"
@@ -19,6 +21,15 @@ private const val STREAM_CHUNK_SIZE = 16_384
 
 /** `Accept-Ranges` field value advertising that `bytes` ranges are supported. */
 private const val ACCEPT_RANGES_BYTES = "bytes"
+
+/** CRLF line terminator — the line break used throughout a `multipart/byteranges` body. */
+private const val CRLF = "\r\n"
+
+/** Number of random bytes in a generated multipart boundary token. */
+private const val BOUNDARY_RANDOM_BYTES = 24
+
+/** Hex alphabet for rendering the random multipart boundary token. */
+private const val HEX_DIGITS = "0123456789abcdef"
 
 /**
  * Serves a single [AssetSource] as a [RouteHandler].
@@ -34,10 +45,14 @@ private const val ACCEPT_RANGES_BYTES = "bytes"
  *
  * A `Range: bytes=` request that survives the conditional-GET check
  * (i.e. would have been a `200`) is answered as a single-range
- * `206 Partial Content` with `Content-Range`, or `416 Range Not
- * Satisfiable` when the range cannot be met. Multi-range requests and
- * non-`bytes` units fall back to the full `200`. Both the `200` and the
- * `206` carry `Accept-Ranges: bytes`.
+ * `206 Partial Content` with `Content-Range`, a multi-range `206` with a
+ * `multipart/byteranges` body (RFC 9110 §14.6) when two or more disjoint
+ * ranges remain after coalescing, or `416 Range Not Satisfiable` when no
+ * range can be met. A non-`bytes` unit, a syntactically invalid set, an
+ * over-cap range count, or a satisfiable-byte sum exceeding the asset all
+ * fall back to the full `200`. An `If-Range` precondition (RFC 9110
+ * §13.1.5) gates whether the `Range` header is honoured at all. Both the
+ * `200` and the `206` carry `Accept-Ranges: bytes`.
  *
  * `GET` and `HEAD` are both handled; a `HEAD` reply carries the same
  * headers as the corresponding `GET` but no body.
@@ -68,16 +83,40 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
         // The conditional-GET check has passed; a Range header (if any)
         // now decides between a 206, a 416, or the full 200.
         val rangeHeader = call.headers[HttpHeaderName.RANGE]
-        val range = if (rangeHeader != null) {
+        val range = if (rangeHeader != null && rangeApplies(call, asset)) {
             parseByteRange(rangeHeader, asset.size)
         } else {
             RangeResult.FullResponse
         }
         when (range) {
-            is RangeResult.Satisfiable -> respondPartial(call, asset, range.start, range.end)
+            is RangeResult.Single -> respondPartial(call, asset, range.start, range.end)
+            is RangeResult.Multiple -> respondMultipart(call, asset, range.ranges)
             RangeResult.Unsatisfiable -> respondUnsatisfiable(call, asset.size)
             RangeResult.FullResponse -> respondFull(call, asset)
         }
+    }
+
+    /**
+     * Evaluates the `If-Range` precondition (RFC 9110 §13.1.5): when the
+     * header is present the `Range` request is honoured only if the
+     * validator still matches, otherwise the asset is served whole.
+     *
+     * An entity-tag `If-Range` uses the strong comparison (§13.1.5,
+     * §8.8.3.2) — keel's ETags are weak (`W/"…"`), so an entity-tag
+     * `If-Range` never strong-matches and the range is dropped. An
+     * HTTP-date `If-Range` is compared against the asset's
+     * `Last-Modified`; an exact match honours the range.
+     */
+    private fun rangeApplies(call: HttpCall, asset: Asset): Boolean {
+        val ifRange = call.headers[HttpHeaderName.IF_RANGE]?.trim() ?: return true
+        val date = parseHttpDate(ifRange)
+        if (date != null) {
+            val lastModified = asset.lastModified ?: return false
+            return lastModified.epochSeconds == date.epochSeconds
+        }
+        // An entity-tag form: strong comparison only — a weak tag (and
+        // keel emits only weak tags) can never strong-match.
+        return false
     }
 
     /** Streams the whole asset body with `200 OK`. */
@@ -122,6 +161,52 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
     }
 
     /**
+     * Answers `206 Partial Content` with a `multipart/byteranges` body
+     * (RFC 9110 §14.6) covering two or more coalesced [ranges].
+     *
+     * Each part is `--boundary` CRLF, `Content-Type:` CRLF,
+     * `Content-Range:` CRLF, CRLF, the part bytes, CRLF; the body closes
+     * with `--boundary--` CRLF. No top-level `Content-Range` is emitted on
+     * a multipart response. The `Content-Length` is the exact total body
+     * length, computable up front because every part is fixed-length.
+     */
+    private suspend fun respondMultipart(call: HttpCall, asset: Asset, ranges: List<ByteRange>) {
+        val contentType = asset.contentType ?: DEFAULT_CONTENT_TYPE
+        val boundary = generateBoundary()
+        val parts = ranges.map { partPreamble(boundary, contentType, it, asset.size) }
+        val closing = "--$boundary--$CRLF"
+
+        var bodyLength = closing.length.toLong()
+        for (i in ranges.indices) {
+            bodyLength += parts[i].encodeToByteArray().size.toLong()
+            bodyLength += ranges[i].length
+            bodyLength += CRLF.length.toLong()
+        }
+
+        val headers = HttpHeaders()
+        headers[HttpHeaderName.CONTENT_TYPE] = "multipart/byteranges; boundary=$boundary"
+        headers[HttpHeaderName.CONTENT_LENGTH] = bodyLength.toString()
+        headers[HttpHeaderName.ACCEPT_RANGES] = ACCEPT_RANGES_BYTES
+        asset.etag?.let { headers[HttpHeaderName.ETAG] = it }
+        asset.lastModified?.let { headers[HttpHeaderName.LAST_MODIFIED] = formatHttpDate(it) }
+
+        val head = HttpResponseHead(HttpStatus.PARTIAL_CONTENT, headers = headers)
+        if (call.method == HttpMethod.HEAD) {
+            // HEAD: identical headers, empty body.
+            call.respondStream(head) { }
+            return
+        }
+        call.respondStream(head) { sink ->
+            for (i in ranges.indices) {
+                sink.write(bufferOf(parts[i].encodeToByteArray()))
+                streamBody(asset.open(ranges[i].start, ranges[i].length), ranges[i].length, sink)
+                sink.write(bufferOf(CRLF.encodeToByteArray()))
+            }
+            sink.write(bufferOf(closing.encodeToByteArray()))
+        }
+    }
+
+    /**
      * Answers `416 Range Not Satisfiable` with `Content-Range: bytes * /N`
      * and no body — the requested range cannot be met for size [assetSize].
      */
@@ -153,9 +238,7 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
                 val read = source.readAtMostTo(buffer, want)
                 if (read <= 0L) break
                 val bytes = buffer.readByteArray()
-                val ioBuf = DefaultAllocator.allocate(bytes.size)
-                ioBuf.writeByteArray(bytes, 0, bytes.size)
-                sink.write(ioBuf)
+                sink.write(bufferOf(bytes))
                 remaining -= read
             }
         } finally {
@@ -164,6 +247,40 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
     }
 
     private companion object {
+
+        /**
+         * The fixed part-preamble text preceding the bytes of one
+         * `multipart/byteranges` part: the boundary delimiter, the
+         * part `Content-Type` and `Content-Range` headers, and the blank
+         * line that ends the part header block (RFC 9110 §14.6).
+         */
+        fun partPreamble(boundary: String, contentType: String, range: ByteRange, assetSize: Long): String =
+            "--$boundary$CRLF" +
+                "${HttpHeaderName.CONTENT_TYPE}: $contentType$CRLF" +
+                "${HttpHeaderName.CONTENT_RANGE}: $ACCEPT_RANGES_BYTES ${range.start}-${range.end}/$assetSize$CRLF" +
+                CRLF
+
+        /**
+         * Generates a `multipart/byteranges` boundary token: a long
+         * random hex string that cannot collide with the asset bytes.
+         */
+        fun generateBoundary(): String {
+            val bytes = Random.nextBytes(BOUNDARY_RANDOM_BYTES)
+            val sb = StringBuilder("keelpart")
+            for (b in bytes) {
+                val v = b.toInt() and 0xFF
+                sb.append(HEX_DIGITS[v ushr 4])
+                sb.append(HEX_DIGITS[v and 0x0F])
+            }
+            return sb.toString()
+        }
+
+        /** Wraps [bytes] in a freshly allocated [IoBuf]. */
+        fun bufferOf(bytes: ByteArray): IoBuf {
+            val ioBuf = DefaultAllocator.allocate(bytes.size)
+            ioBuf.writeByteArray(bytes, 0, bytes.size)
+            return ioBuf
+        }
 
         /**
          * Evaluates the conditional-GET preconditions against [asset].
