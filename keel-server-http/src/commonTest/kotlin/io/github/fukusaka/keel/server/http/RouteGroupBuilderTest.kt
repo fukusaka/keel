@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
@@ -18,13 +19,34 @@ class RouteGroupBuilderTest {
 
     private val handler: RouteHandler = { }
 
-    /** Collects what a group [RouteGroupBuilder.flush]es (the predicate is dropped — unused here). */
+    private val upgradeProtocol: UpgradeProtocol = object : UpgradeProtocol {
+        override val name: String = "websocket"
+        override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {}
+    }
+
+    /** Collects the routes a group [RouteGroupBuilder.flush]es (the predicate is dropped — unused here). */
     private fun flushOf(prefix: String, configure: RouteGroupBuilder.() -> Unit):
         List<Triple<HttpMethod, String, RouteHandler>> {
         val registered = mutableListOf<Triple<HttpMethod, String, RouteHandler>>()
-        RouteGroupBuilder(prefix).apply(configure).flush(emptyList(), "") { method, path, _, h ->
-            registered.add(Triple(method, path, h))
-        }
+        RouteGroupBuilder(prefix).apply(configure).flush(
+            inheritedMiddleware = emptyList(),
+            inheritedPrefix = "",
+            registerRoute = { method, path, _, h -> registered.add(Triple(method, path, h)) },
+            registerUpgrade = { _, _, _ -> },
+        )
+        return registered
+    }
+
+    /** Collects the upgrades a group [RouteGroupBuilder.flush]es. */
+    private fun flushUpgradesOf(prefix: String, configure: RouteGroupBuilder.() -> Unit):
+        List<Pair<String, UpgradeProtocol>> {
+        val registered = mutableListOf<Pair<String, UpgradeProtocol>>()
+        RouteGroupBuilder(prefix).apply(configure).flush(
+            inheritedMiddleware = emptyList(),
+            inheritedPrefix = "",
+            registerRoute = { _, _, _, _ -> },
+            registerUpgrade = { path, protocol, _ -> registered.add(path to protocol) },
+        )
         return registered
     }
 
@@ -106,5 +128,42 @@ class RouteGroupBuilderTest {
             get("/health", handler = handler)
         }
         assertEquals("/health", registered.single().second)
+    }
+
+    @Test
+    fun `a group prefixes an upgrade route`() {
+        val registered = flushUpgradesOf("/api") {
+            upgrade("/ws", upgradeProtocol)
+        }
+        assertEquals("/api/ws", registered.single().first)
+    }
+
+    @Test
+    fun `a nested group composes the prefix for an upgrade route`() {
+        val registered = flushUpgradesOf("/api") {
+            route("/v1") {
+                upgrade("/ws", upgradeProtocol)
+            }
+        }
+        assertEquals("/api/v1/ws", registered.single().first)
+    }
+
+    @Test
+    fun `a group with no middleware registers the upgrade protocol verbatim`() {
+        val registered = flushUpgradesOf("/api") {
+            upgrade("/ws", upgradeProtocol)
+        }
+        assertSame(upgradeProtocol, registered.single().second)
+    }
+
+    @Test
+    fun `group middleware wraps the upgrade protocol but keeps its name`() {
+        val registered = flushUpgradesOf("/api") {
+            install { call, next -> next() }
+            upgrade("/ws", upgradeProtocol)
+        }
+        val wrapped = registered.single().second
+        assertNotSame(upgradeProtocol, wrapped, "the protocol must be middleware-wrapped")
+        assertEquals(upgradeProtocol.name, wrapped.name, "the Upgrade token must survive wrapping")
     }
 }

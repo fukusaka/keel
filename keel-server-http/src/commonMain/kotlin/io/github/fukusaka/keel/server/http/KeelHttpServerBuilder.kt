@@ -106,7 +106,8 @@ public class KeelHttpServerBuilder internal constructor() {
         RouteGroupBuilder(prefix).apply(configure).flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            register = { method, path, predicate, handler -> route(method, path, predicate, handler) },
+            registerRoute = { method, path, predicate, handler -> route(method, path, predicate, handler) },
+            registerUpgrade = { path, protocol, predicate -> upgrade(path, protocol, predicate) },
         )
     }
 

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.KeelServerDsl
 
 /**
@@ -44,6 +45,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
 
     private val middlewares = mutableListOf<Middleware>()
     private val routes = mutableListOf<RouteEntry>()
+    private val upgrades = mutableListOf<UpgradeEntry>()
     private val children = mutableListOf<RouteGroupBuilder>()
 
     /**
@@ -98,6 +100,21 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
         route(HttpMethod.OPTIONS, path, predicate, handler)
 
     /**
+     * Registers [protocol] as the upgrade endpoint for `prefix` + [path],
+     * optionally guarded by [predicate] (see [UpgradeProtocol]).
+     *
+     * This is the group counterpart of [KeelHttpServerBuilder.upgrade] —
+     * the generic hook higher-level DSLs build on. `keel-server-websocket`
+     * provides `webSockets { }` on [RouteGroupBuilder] over it, so a
+     * WebSocket endpoint inside a `route { }` group inherits the group's
+     * prefix and middleware. Group middleware wraps the upgrade hand-off
+     * exactly as it wraps a route handler.
+     */
+    public fun upgrade(path: String, protocol: UpgradeProtocol, predicate: RoutePredicate? = null) {
+        upgrades.add(UpgradeEntry(path, protocol, predicate))
+    }
+
+    /**
      * Opens a nested route group at [prefix] (joined onto this group's
      * prefix). The nested group inherits this group's middleware and may
      * add its own.
@@ -107,28 +124,37 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
     }
 
     /**
-     * Registers every collected route — its own and its nested groups' —
-     * onto [register], joining prefixes and wrapping each [RouteHandler]
+     * Registers every collected route and upgrade — its own and its
+     * nested groups' — joining prefixes and wrapping each [RouteHandler]
+     * (via [registerRoute]) or [UpgradeProtocol] (via [registerUpgrade])
      * with the effective middleware ([inheritedMiddleware] from enclosing
      * groups followed by this group's own).
      */
     internal fun flush(
         inheritedMiddleware: List<Middleware>,
         inheritedPrefix: String,
-        register: (HttpMethod, String, RoutePredicate?, RouteHandler) -> Unit,
+        registerRoute: (HttpMethod, String, RoutePredicate?, RouteHandler) -> Unit,
+        registerUpgrade: (String, UpgradeProtocol, RoutePredicate?) -> Unit,
     ) {
         val effectiveMiddleware = inheritedMiddleware + middlewares
         val effectivePrefix = joinPrefix(inheritedPrefix, prefix)
         for (entry in routes) {
-            register(
+            registerRoute(
                 entry.method,
                 joinPrefix(effectivePrefix, entry.path),
                 entry.predicate,
                 effectiveMiddleware.wrapHandler(entry.handler),
             )
         }
+        for (entry in upgrades) {
+            registerUpgrade(
+                joinPrefix(effectivePrefix, entry.path),
+                effectiveMiddleware.wrapUpgrade(entry.protocol),
+                entry.predicate,
+            )
+        }
         for (child in children) {
-            child.flush(effectiveMiddleware, effectivePrefix, register)
+            child.flush(effectiveMiddleware, effectivePrefix, registerRoute, registerUpgrade)
         }
     }
 
@@ -138,6 +164,13 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
         val path: String,
         val predicate: RoutePredicate?,
         val handler: RouteHandler,
+    )
+
+    /** One collected upgrade registration, applied by [flush]. */
+    private class UpgradeEntry(
+        val path: String,
+        val protocol: UpgradeProtocol,
+        val predicate: RoutePredicate?,
     )
 }
 
@@ -169,4 +202,27 @@ private fun List<Middleware>.wrapHandler(handler: RouteHandler): RouteHandler {
         wrapped = { call -> middleware(call) { next(call) } }
     }
     return wrapped
+}
+
+/**
+ * Wraps [protocol] so the group's middleware runs around the upgrade
+ * hand-off, with the same outermost-first ordering as [wrapHandler].
+ * Returns [protocol] unchanged when the list is empty. [name] is delegated
+ * to [protocol] so route resolution still matches the `Upgrade` token.
+ */
+private fun List<Middleware>.wrapUpgrade(protocol: UpgradeProtocol): UpgradeProtocol {
+    if (isEmpty()) return protocol
+    val middlewares = this
+    return object : UpgradeProtocol {
+        override val name: String get() = protocol.name
+
+        override suspend fun upgrade(call: HttpCall, channel: PipelinedChannel) {
+            var next: suspend () -> Unit = { protocol.upgrade(call, channel) }
+            for (middleware in middlewares.asReversed()) {
+                val downstream = next
+                next = { middleware(call, downstream) }
+            }
+            next()
+        }
+    }
 }
