@@ -171,6 +171,95 @@ class WebSocketEchoTest {
     }
 
     @Test
+    fun `a constrained webSocket route matches a numeric segment and rejects others`() = runBlocking {
+        withTimeout(10.seconds) {
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                connector { host = "127.0.0.1"; port = 0 }
+                webSockets {
+                    webSocket("/chat/:room(int)") {
+                        // Reached only when the :room(int) constraint passed;
+                        // echo the captured value, then drain until CLOSE.
+                        send(WsFrame.text(pathParameters["room"] ?: "(none)"))
+                        for (message in incoming) { /* drain */ }
+                    }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            val key = "dGhlIHNhbXBsZSBub25jZQ=="
+            try {
+                // Numeric segment: the int constraint passes — the route
+                // upgrades and binds :room.
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+                    out.write(
+                        (
+                            "GET /chat/42 HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+
+                    val response = readHttpResponse(inp)
+                    assertTrue(response.startsWith("HTTP/1.1 101"), "expected 101 for /chat/42: $response")
+
+                    assertEquals(0x81, inp.read(), "frame must be FIN + TEXT")
+                    val len = inp.read()
+                    val payload = ByteArray(len)
+                    var read = 0
+                    while (read < payload.size) {
+                        val n = inp.read(payload, read, payload.size - read)
+                        check(n >= 0) { "stream closed before the payload" }
+                        read += n
+                    }
+                    assertEquals("42", payload.decodeToString())
+
+                    val mask = byteArrayOf(0x12, 0x34, 0x56, 0x78)
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+
+                // Non-numeric segment: the int constraint fails, so the
+                // upgrade route does not match and the server answers a
+                // non-101 (404) response rather than switching protocols.
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+                    out.write(
+                        (
+                            "GET /chat/lobby HTTP/1.1\r\n" +
+                                "Host: localhost\r\n" +
+                                "Upgrade: websocket\r\n" +
+                                "Connection: Upgrade\r\n" +
+                                "Sec-WebSocket-Key: $key\r\n" +
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                            ).encodeToByteArray(),
+                    )
+                    out.flush()
+
+                    val response = readHttpResponse(inp)
+                    assertTrue(
+                        !response.startsWith("HTTP/1.1 101"),
+                        "/chat/lobby must NOT upgrade — the int constraint rejects it: $response",
+                    )
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
     fun `webSocket route reassembles a fragmented text message`() = runBlocking {
         withTimeout(10.seconds) {
             val engine = NioEngine()
