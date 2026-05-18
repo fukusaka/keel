@@ -211,6 +211,23 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `query parameters are parsed and delivered to the handler`() {
+        var seen: Map<String, String>? = null
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/search") { call ->
+                    seen = call.queryParameters
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedGet("/search?q=hello+world&page=2")
+
+        assertEquals(mapOf("q" to "hello world", "page" to "2"), seen)
+    }
+
+    @Test
     fun `a handler that never responds is completed with 500`() {
         install(
             Router().apply {
