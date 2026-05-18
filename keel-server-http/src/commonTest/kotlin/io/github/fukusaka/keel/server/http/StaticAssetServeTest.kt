@@ -244,14 +244,174 @@ class StaticAssetServeTest {
     }
 
     @Test
-    fun `a multi-range request is ignored and the full file is served`() {
+    fun `a multi-range request returns a 206 multipart byteranges body`() {
         installStaticFiles()
 
-        feed("GET", "/assets/data.txt", "Range: bytes=0-1,3-4\r\n")
+        feed("GET", "/assets/data.txt", "Range: bytes=0-1,5-6\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        val contentType = headerOf(text, "Content-Type") ?: ""
+        assertTrue(contentType.startsWith("multipart/byteranges; boundary="), "content-type: $text")
+        val boundary = contentType.substringAfter("boundary=")
+
+        // RFC 9110 §14.6: byte-exact body for the two parts plus the closing delimiter.
+        val expected =
+            "--$boundary\r\n" +
+                "Content-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Range: bytes 0-1/10\r\n\r\n" +
+                RANGE_DATA.substring(0, 2) + "\r\n" +
+                "--$boundary\r\n" +
+                "Content-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Range: bytes 5-6/10\r\n\r\n" +
+                RANGE_DATA.substring(5, 7) + "\r\n" +
+                "--$boundary--\r\n"
+        assertEquals(expected, bodyOf(text), "multipart body must be byte-exact: $text")
+        assertEquals(
+            expected.encodeToByteArray().size.toString(),
+            headerOf(text, "Content-Length"),
+            "Content-Length must equal the multipart body length",
+        )
+        assertEquals(null, headerOf(text, "Content-Range"), "no top-level Content-Range on a multipart 206")
+    }
+
+    @Test
+    fun `out-of-order multi-range parts are sorted ascending in the multipart body`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=6-7,0-1\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        val body = bodyOf(text)
+        assertTrue(
+            body.indexOf("bytes 0-1/10") < body.indexOf("bytes 6-7/10"),
+            "coalesced ranges must be ascending: $body",
+        )
+    }
+
+    @Test
+    fun `coalescing overlapping ranges yields a single-range 206`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=0-3,2-5\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 0-5/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(0, 6), bodyOf(text))
+    }
+
+    @Test
+    fun `a HEAD with a multi-range returns multipart headers without a body`() {
+        installStaticFiles()
+
+        feed("HEAD", "/assets/data.txt", "Range: bytes=0-1,5-6\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        val contentType = headerOf(text, "Content-Type") ?: ""
+        assertTrue(contentType.startsWith("multipart/byteranges; boundary="), "content-type: $text")
+        assertTrue(headerOf(text, "Content-Length") != null, "Content-Length present: $text")
+        assertEquals("", bodyOf(text), "HEAD must not carry a body: $text")
+    }
+
+    @Test
+    fun `a multi-range with all parts unsatisfiable returns 416`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=20-30,40-50\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 416"), "expected 416: $text")
+        assertEquals("bytes */10", headerOf(text, "Content-Range"))
+        assertEquals("", bodyOf(text), "416 must not carry a body: $text")
+    }
+
+    @Test
+    fun `a partly-satisfiable multi-range serves only the satisfiable ranges`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "Range: bytes=0-2,50-60\r\n")
+
+        val text = responseText()
+        // 50-60 is dropped; only 0-2 remains, so a single-range 206.
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 0-2/10", headerOf(text, "Content-Range"))
+        assertEquals(RANGE_DATA.substring(0, 3), bodyOf(text))
+    }
+
+    @Test
+    fun `an If-Range with a non-matching entity tag serves the full 200`() {
+        installStaticFiles()
+
+        feed("GET", "/assets/data.txt", "If-Range: \"nomatch\"\r\nRange: bytes=0-3\r\n")
+
+        val text = responseText()
+        // keel ETags are weak, so an entity-tag If-Range never strong-matches.
+        assertTrue(text.startsWith("HTTP/1.1 200"), "expected 200: $text")
+        assertEquals(RANGE_DATA, bodyOf(text))
+    }
+
+    @Test
+    fun `an If-Range with the asset's own weak ETag still serves the full 200`() {
+        installStaticFiles()
+        feed("GET", "/assets/data.txt")
+        val etag = etagOf(responseText())
+        transport.written.forEach { it.release() }
+        transport.written.clear()
+
+        feed("GET", "/assets/data.txt", "If-Range: $etag\r\nRange: bytes=0-3\r\n")
+
+        val text = responseText()
+        // A weak tag fails the strong comparison required by RFC 9110 §13.1.5.
+        assertTrue(text.startsWith("HTTP/1.1 200"), "expected 200: $text")
+        assertEquals(RANGE_DATA, bodyOf(text))
+    }
+
+    @Test
+    fun `an If-Range with the matching Last-Modified date honours the Range`() {
+        installStaticFiles()
+        feed("GET", "/assets/data.txt")
+        val lastModified = headerOf(responseText(), "Last-Modified")
+        assertTrue(lastModified != null, "asset must expose Last-Modified for this test")
+        transport.written.forEach { it.release() }
+        transport.written.clear()
+
+        feed("GET", "/assets/data.txt", "If-Range: $lastModified\r\nRange: bytes=0-3\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 206"), "expected 206: $text")
+        assertEquals("bytes 0-3/10", headerOf(text, "Content-Range"))
+    }
+
+    @Test
+    fun `an If-Range with a non-matching date serves the full 200`() {
+        installStaticFiles()
+
+        feed(
+            "GET", "/assets/data.txt",
+            "If-Range: Sun, 06 Nov 1994 08:49:37 GMT\r\nRange: bytes=0-3\r\n",
+        )
 
         val text = responseText()
         assertTrue(text.startsWith("HTTP/1.1 200"), "expected 200: $text")
         assertEquals(RANGE_DATA, bodyOf(text))
+    }
+
+    @Test
+    fun `a multi-range request that also matches the ETag returns 304`() {
+        installStaticFiles()
+        feed("GET", "/assets/data.txt")
+        val etag = etagOf(responseText())
+        transport.written.forEach { it.release() }
+        transport.written.clear()
+
+        feed("GET", "/assets/data.txt", "If-None-Match: $etag\r\nRange: bytes=0-1,5-6\r\n")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 304"), "conditional GET wins over a multi-range: $text")
+        assertEquals("", bodyOf(text), "304 must not carry a body: $text")
     }
 
     @Test
