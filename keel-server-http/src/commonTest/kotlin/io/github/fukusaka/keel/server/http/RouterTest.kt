@@ -220,4 +220,134 @@ class RouterTest {
             router.registerUpgrade("/ws", upgrade)
         }
     }
+
+    @Test
+    fun `an int-constrained parameter matches a numeric segment`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/items/:id(int)", handler)
+        val match = router.resolve(HttpMethod.GET, "/items/42")
+        assertSame(handler, match?.handler)
+        assertEquals("42", match?.pathParameters?.get("id"))
+    }
+
+    @Test
+    fun `an int-constrained parameter rejects a non-numeric segment`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/items/:id(int)", handler)
+        assertNull(router.resolve(HttpMethod.GET, "/items/abc"))
+    }
+
+    @Test
+    fun `parameters with different constraints route to different handlers`() {
+        val router = Router()
+        val intRoute: RouteHandler = { }
+        val uuidRoute: RouteHandler = { }
+        router.register(HttpMethod.GET, "/items/:id(int)", intRoute)
+        router.register(HttpMethod.GET, "/items/:id(uuid)", uuidRoute)
+        assertSame(intRoute, router.resolve(HttpMethod.GET, "/items/7")?.handler)
+        val uuid = "550e8400-e29b-41d4-a716-446655440000"
+        assertSame(uuidRoute, router.resolve(HttpMethod.GET, "/items/$uuid")?.handler)
+    }
+
+    @Test
+    fun `a constrained parameter falls back to an unconstrained sibling`() {
+        val router = Router()
+        val intRoute: RouteHandler = { }
+        val anyRoute: RouteHandler = { }
+        router.register(HttpMethod.GET, "/items/:id(int)", intRoute)
+        router.register(HttpMethod.GET, "/items/:id", anyRoute)
+        // Numeric segment takes the int-constrained route (registered first).
+        assertSame(intRoute, router.resolve(HttpMethod.GET, "/items/42")?.handler)
+        // Non-numeric fails the constraint and backtracks to the unconstrained route.
+        val match = router.resolve(HttpMethod.GET, "/items/abc")
+        assertSame(anyRoute, match?.handler)
+        assertEquals("abc", match?.pathParameters?.get("id"))
+    }
+
+    @Test
+    fun `a regex constraint matches only the whole segment`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/sku/:code(^[A-Z]{3}[0-9]+$)", handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/sku/ABC12")?.handler)
+        // Partial match is rejected — the constraint matches the full segment.
+        assertNull(router.resolve(HttpMethod.GET, "/sku/ABC12x"))
+        assertNull(router.resolve(HttpMethod.GET, "/sku/abc12"))
+    }
+
+    @Test
+    fun `resolution backtracks from a dead-end constrained parameter to a wildcard`() {
+        val router = Router()
+        val intRoute: RouteHandler = { }
+        val wildcard: RouteHandler = { }
+        router.register(HttpMethod.GET, "/n/:id(int)", intRoute)
+        router.register(HttpMethod.GET, "/n/*", wildcard)
+        // Non-numeric single segment: the constrained param fails, the wildcard matches.
+        val match = router.resolve(HttpMethod.GET, "/n/abc")
+        assertSame(wildcard, match?.handler)
+        assertEquals("abc", match?.pathParameters?.get("*"))
+    }
+
+    @Test
+    fun `the same constrained route reuses one node across methods`() {
+        val router = Router()
+        val getHandler: RouteHandler = { }
+        val postHandler: RouteHandler = { }
+        router.register(HttpMethod.GET, "/items/:id(int)", getHandler)
+        router.register(HttpMethod.POST, "/items/:id(int)", postHandler)
+        assertSame(getHandler, router.resolve(HttpMethod.GET, "/items/1")?.handler)
+        assertSame(postHandler, router.resolve(HttpMethod.POST, "/items/1")?.handler)
+    }
+
+    @Test
+    fun `a long-constrained parameter accepts values beyond the int range`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/big/:id(long)", handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/big/9999999999")?.handler)
+        assertNull(router.resolve(HttpMethod.GET, "/big/nope"))
+    }
+
+    @Test
+    fun `a parameter constraint with a different name than its sibling throws`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/items/:id(int)", handler)
+        assertFailsWith<IllegalArgumentException> {
+            router.register(HttpMethod.POST, "/items/:name(uuid)", handler)
+        }
+    }
+
+    @Test
+    fun `an unbalanced constraint parenthesis throws`() {
+        val router = Router()
+        assertFailsWith<IllegalArgumentException> {
+            router.register(HttpMethod.GET, "/items/:id(int", handler)
+        }
+    }
+
+    @Test
+    fun `an empty constraint token throws`() {
+        val router = Router()
+        assertFailsWith<IllegalArgumentException> {
+            router.register(HttpMethod.GET, "/items/:id()", handler)
+        }
+    }
+
+    @Test
+    fun `an invalid constraint regex throws at registration`() {
+        val router = Router()
+        assertFailsWith<IllegalArgumentException> {
+            router.register(HttpMethod.GET, "/items/:id([unclosed)", handler)
+        }
+    }
+
+    @Test
+    fun `a parameter constraint applies to an upgrade route`() {
+        val router = Router()
+        // registerUpgrade shares the segment trie, so :room(int) constrains
+        // the WebSocket upgrade route exactly as it would an HTTP route.
+        router.registerUpgrade("/chat/:room(int)", upgrade)
+        val match = router.resolve(HttpMethod.GET, "/chat/7")
+        assertSame(upgrade, match?.upgrade)
+        assertEquals("7", match?.pathParameters?.get("room"))
+        assertNull(router.resolve(HttpMethod.GET, "/chat/lobby"))
+    }
 }
