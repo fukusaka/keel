@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`: `IoBuf.parseDecLongAt(offset, length)` / `parseHexLongAt(offset, length)` — parse a decimal / hex `Long` directly from a buffer byte range, with no intermediate `String` allocation (#562)
 - `server-http`: predicate routing — routes take an optional `RoutePredicate` (`header` / `query` / `accept` / `host`) to select among handlers sharing one method × path, first accepting predicate winning (#561)
 - `server-http`: nested route groups — `route(prefix) { }` on the `keelHttpServer { }` builder prefixes its routes and scopes `install`ed middleware to the group, with nesting that composes both (#560)
 - `server-http`: trailing optional path parameter — `:id?` / `:id(int)?` makes the final segment optional on HTTP and WebSocket routes, so `/users/:id?` answers both `/users` and `/users/42` (#559)
