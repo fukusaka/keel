@@ -38,16 +38,27 @@ public class RouteMatch internal constructor(
  * - **literal** — `users` matches exactly that segment.
  * - **path parameter** — `:id` matches any one segment and binds it to
  *   `id` in [RouteMatch.pathParameters].
+ * - **constrained path parameter** — `:id(int)` matches one segment only
+ *   when it satisfies the constraint, and binds it like `:id`. The token
+ *   in parentheses is either a built-in constraint name (`int`, `long`,
+ *   `uuid`) or, when it is not a known name, a regular expression the
+ *   whole segment must match (`:id(^[a-f0-9]+$)`). A constrained and an
+ *   unconstrained parameter — and parameters with different constraints —
+ *   coexist at the same position as backtracking siblings, all sharing
+ *   one parameter name. The constraint is evaluated when the segment is
+ *   reached; a failure backtracks exactly as a literal mismatch does.
  * - **wildcard** — `*`, only as the final segment, matches the entire
  *   remaining path — zero or more segments — and binds it to the key
  *   `"*"` (the empty string when zero segments remain). A wildcard route
  *   rooted at `/static` therefore also answers a bare `/static`.
  *
  * At each segment the match precedence is literal > parameter > wildcard,
- * with backtracking: if the literal branch dead-ends, the parameter and
- * then the wildcard branch are tried. So `/users/me` and `/users/:id`
- * can coexist — `/users/me` takes the literal route, `/users/alice` the
- * parameter route.
+ * with backtracking: if the literal branch dead-ends, each parameter
+ * branch (in registration order, constraint-tested) and then the
+ * wildcard branch are tried. So `/users/me` and `/users/:id` can
+ * coexist — `/users/me` takes the literal route, `/users/alice` the
+ * parameter route — and `/items/:id(int)` and `/items/:id(uuid)` route
+ * `/items/42` and `/items/<uuid>` to different handlers.
  *
  * **Thread safety**: [register] mutates the trie and must complete before
  * the server starts serving. [resolve] is read-only — the trie is treated
@@ -123,17 +134,21 @@ public class Router {
             wildcardChild ?: Node().also { wildcardChild = it }
         }
         segment.startsWith(":") -> {
-            val name = segment.substring(1)
-            require(name.isNotEmpty()) { "path parameter must have a name: $path" }
-            val existing = paramChild
-            if (existing != null) {
-                require(existing.name == name) {
+            val parsed = parseParamSegment(segment, path)
+            val sibling = paramChildren.firstOrNull()
+            if (sibling != null) {
+                require(sibling.name == parsed.name) {
                     "conflicting path parameter names at the same position: " +
-                        "':${existing.name}' vs ':$name' in $path"
+                        "':${sibling.name}' vs ':${parsed.name}' in $path"
                 }
+            }
+            val existing = paramChildren.firstOrNull { it.constraintToken == parsed.constraintToken }
+            if (existing != null) {
                 existing.node
             } else {
-                Node().also { paramChild = ParamSlot(name, it) }
+                Node().also {
+                    paramChildren.add(ParamSlot(parsed.name, parsed.constraintToken, parsed.constraint, it))
+                }
             }
         }
         else -> literalChildren.getOrPut(segment) { Node() }
@@ -151,7 +166,12 @@ public class Router {
             node.literalChildren[segment]?.let { child ->
                 resolveNode(child, segments, index + 1, method, params)?.let { return it }
             }
-            node.paramChild?.let { slot ->
+            // Each parameter branch is tried in registration order; a
+            // branch with a constraint the segment fails is skipped just
+            // like a literal mismatch, and a dead-end deeper down
+            // backtracks to the next branch.
+            for (slot in node.paramChildren) {
+                if (slot.constraint != null && !slot.constraint.matches(segment)) continue
                 params[slot.name] = segment
                 resolveNode(slot.node, segments, index + 1, method, params)?.let { return it }
                 params.remove(slot.name)
@@ -177,7 +197,14 @@ public class Router {
     /** A segment trie node: literal children plus optional param / wildcard branches. */
     private class Node {
         val literalChildren: MutableMap<String, Node> = mutableMapOf()
-        var paramChild: ParamSlot? = null
+
+        /**
+         * Parameter branches at this position. A position holds at most
+         * one unconstrained `:name` plus any number of constrained ones,
+         * all sharing one name; resolution tries them in registration
+         * order. Most nodes have zero or one.
+         */
+        val paramChildren: MutableList<ParamSlot> = mutableListOf()
         var wildcardChild: Node? = null
         val handlers: MutableMap<HttpMethod, RouteHandler> = mutableMapOf()
 
@@ -186,14 +213,86 @@ public class Router {
     }
 
     /**
-     * A node's `:name` parameter branch. Bundling the parameter name with
-     * the child node keeps the two correlated values in one non-null
-     * object, so resolution reads `slot.name` without a null assertion.
+     * A node's `:name` parameter branch. Bundling the parameter name,
+     * its constraint, and the child node keeps the correlated values in
+     * one non-null object.
+     *
+     * @property name the bound parameter name.
+     * @property constraintToken the raw token from `:name(token)`, or
+     *   null for an unconstrained `:name`. Identifies the slot so the
+     *   same constrained pattern reuses one node across registrations.
+     * @property constraint the compiled constraint, or null when
+     *   unconstrained.
+     * @property node the subtree rooted at this parameter segment.
      */
-    private class ParamSlot(val name: String, val node: Node)
+    private class ParamSlot(
+        val name: String,
+        val constraintToken: String?,
+        val constraint: ParamConstraint?,
+        val node: Node,
+    )
+
+    /** A compiled path-parameter constraint — a predicate on the captured segment. */
+    private class ParamConstraint(private val matcher: (String) -> Boolean) {
+        fun matches(value: String): Boolean = matcher(value)
+    }
+
+    /** A parsed `:name` / `:name(token)` segment. */
+    private class ParsedParam(val name: String, val constraintToken: String?, val constraint: ParamConstraint?)
 
     private companion object {
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
         fun segmentsOf(path: String): List<String> = path.split('/').filter { it.isNotEmpty() }
+
+        /** UUID (RFC 4122 textual form) constraint pattern, used by the `uuid` built-in. */
+        private val UUID_REGEX =
+            Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+        /**
+         * Parses a `:name` or `:name(token)` parameter [segment].
+         *
+         * @throws IllegalArgumentException if the name is empty, the
+         *   parentheses are unbalanced, or a regex token does not compile.
+         */
+        fun parseParamSegment(segment: String, path: String): ParsedParam {
+            val body = segment.substring(1)
+            val open = body.indexOf('(')
+            if (open < 0) {
+                require(body.isNotEmpty()) { "path parameter must have a name: $path" }
+                return ParsedParam(body, null, null)
+            }
+            require(body.endsWith(")")) { "unbalanced '(' in path parameter '$segment': $path" }
+            val name = body.substring(0, open)
+            require(name.isNotEmpty()) { "path parameter must have a name: $path" }
+            val token = body.substring(open + 1, body.length - 1)
+            require(token.isNotEmpty()) { "empty path parameter constraint in '$segment': $path" }
+            return ParsedParam(name, token, compileConstraint(token, path))
+        }
+
+        /**
+         * Compiles a constraint [token] — a built-in name (`int`, `long`,
+         * `uuid`) or, otherwise, a regular expression the whole segment
+         * must match.
+         */
+        fun compileConstraint(token: String, path: String): ParamConstraint = when (token) {
+            "int" -> ParamConstraint { it.toIntOrNull() != null }
+            "long" -> ParamConstraint { it.toLongOrNull() != null }
+            "uuid" -> ParamConstraint { UUID_REGEX.matches(it) }
+            else -> {
+                // A malformed regex throws a platform-specific type with
+                // no common supertype below Throwable — JVM
+                // PatternSyntaxException (an IllegalArgumentException),
+                // Kotlin/JS a JS SyntaxError. Catch broadly and normalise
+                // to IllegalArgumentException so registration fails the
+                // same way on every target.
+                @Suppress("TooGenericExceptionCaught")
+                val regex = try {
+                    Regex(token)
+                } catch (e: Throwable) {
+                    throw IllegalArgumentException("invalid path parameter constraint regex '$token': $path", e)
+                }
+                ParamConstraint { regex.matches(it) }
+            }
+        }
     }
 }
