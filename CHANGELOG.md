@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: WS `permessage-deflate` real-network throughput scenario — `wsbench` `deflate` scenario (Go gorilla, negotiates RFC 7692) + `bench-remote-ws.sh` harness (`tc tbf` bandwidth cap), with the extension wired into the `server-http-*` and `pipeline-http-*` bench servers (#556)
 - `server-websocket`: `permessage-deflate` (RFC 7692) — `webSockets(DeflateCodec) { }` negotiates and applies WebSocket message compression, with `contextTakeover` / `threshold` / `level` knobs and per-endpoint override (#555)
 - `server-http`: static file `Range` requests support multiple ranges (`206 multipart/byteranges`, coalesced ascending) and `If-Range`, with a range-count cap and an amplification-DoS guard (#553)
 - `server-http`: static file serving honours `Range` requests — single-range `206 Partial Content` + `Content-Range`, `416` for unsatisfiable ranges, `Accept-Ranges: bytes` (#552)

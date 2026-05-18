@@ -27,6 +27,15 @@
 #                                       BENCH_WSBENCH_AUTOBUILD=false and pre-
 #                                       build manually with
 #                                       `cd benchmark/wsbench && go build`)
+#   ws-deflate    GET  /ws-deflate     (permessage-deflate echo bench via the
+#                                       custom Go client at benchmark/wsbench/.
+#                                       gorilla negotiates RFC 7692 (k6 cannot),
+#                                       echoes a synthetic compressible payload.
+#                                       This loopback run is a functional smoke
+#                                       test only — the compression win needs a
+#                                       bandwidth-capped real network, see
+#                                       bench-remote-ws.sh. Same wsbench
+#                                       auto-build plumbing as ws-fragment.)
 #
 # Environment variables (HTTP-level):
 #   BENCH_RUNS                    Number of runs; median is reported (default: 1)
@@ -75,10 +84,15 @@
 #                            default: false)
 #   BENCH_WS_LARGE_BYTES    ws-large.js single-message payload bytes
 #                            (default: 1048576 = 1 MB)
-#   BENCH_WS_FRAG_BYTES     ws-fragment.go single-message payload bytes
+#   BENCH_WS_FRAG_BYTES     wsbench single-message payload bytes for the
+#                            ws-fragment / ws-deflate scenarios
 #                            (default: 4096)
 #   BENCH_WS_FRAG_COUNT     ws-fragment.go frame count per message
 #                            (default: 4)
+#   BENCH_WS_COMPRESSION    ws-deflate scenario: negotiate permessage-deflate
+#                            (true | false, default: true). Forwarded to
+#                            wsbench as `-compression=`; set false for the
+#                            uncompressed A/B leg.
 #   BENCH_MULTIPART_PARTS   multipart.js part count   (default: 5)
 #   BENCH_MULTIPART_PART_BYTES  multipart.js per-part bytes (default: 4096)
 #   BENCH_METHODS           method-mix.js comma-list of HTTP methods to
@@ -273,8 +287,17 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="wsbench"
         ;;
+    ws-deflate)
+        # The Go-based wsbench client negotiates RFC 7692 permessage-
+        # deflate (k6's k6/websockets cannot). Same wsbench plumbing as
+        # ws-fragment — the `wsbench` parser path is used; the bench is
+        # driven with `-scenario=deflate` below.
+        SCRIPT="benchmark/wsbench/wsbench"
+        READY_ENDPOINT="/hello"
+        PARSER="wsbench"
+        ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment|ws-deflate)" >&2
         exit 1
         ;;
 esac
@@ -614,18 +637,37 @@ for run in $(seq 1 "$RUNS"); do
         # Custom Go client. Already emits the canonical
         # `<name>|<rps>|<p50>|<p99>` row, so no parsing needed —
         # capture stdout straight as the bench output.
+        #
+        # The wsbench scenario name is derived from the bench-stream-one
+        # scenario: ws-fragment → fragment-recv, ws-deflate → deflate.
+        # The deflate scenario picks its own default path (/ws-deflate)
+        # so no -path is passed; -compression toggles the A/B leg.
+        WSBENCH_ARGS=(
+            -name="$NAME"
+            -scheme="$WS_SCHEME"
+            -host=127.0.0.1
+            -port="$PORT"
+            -vus="$K6_VUS"
+            -duration="$K6_DURATION"
+        )
+        case "$SCENARIO" in
+            ws-deflate)
+                WSBENCH_ARGS+=(
+                    -scenario=deflate
+                    -bytes="${BENCH_WS_FRAG_BYTES:-4096}"
+                    -compression="${BENCH_WS_COMPRESSION:-true}"
+                )
+                ;;
+            *)
+                WSBENCH_ARGS+=(
+                    -scenario=fragment-recv
+                    -bytes="${BENCH_WS_FRAG_BYTES:-4096}"
+                    -fragments="${BENCH_WS_FRAG_COUNT:-4}"
+                )
+                ;;
+        esac
         K6_OUT=$(
-            run_k6_with_timeout "$SCRIPT" \
-                -name="$NAME" \
-                -scenario=fragment-recv \
-                -scheme="$WS_SCHEME" \
-                -host=127.0.0.1 \
-                -port="$PORT" \
-                -vus="$K6_VUS" \
-                -duration="$K6_DURATION" \
-                -bytes="${BENCH_WS_FRAG_BYTES:-4096}" \
-                -fragments="${BENCH_WS_FRAG_COUNT:-4}" \
-                2>&1
+            run_k6_with_timeout "$SCRIPT" "${WSBENCH_ARGS[@]}" 2>&1
         )
         K6_EXIT=$?
         # 124 = SIGTERM-induced timeout exit (child responded to TERM).
