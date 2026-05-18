@@ -56,31 +56,46 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
         middlewares.add(middleware)
     }
 
-    /** Registers [handler] for [method] requests matching `prefix` + [path]. */
-    public fun route(method: HttpMethod, path: String, handler: RouteHandler) {
-        routes.add(RouteEntry(method, path, handler))
+    /**
+     * Registers [handler] for [method] requests matching `prefix` +
+     * [path], optionally guarded by [predicate] (see [RoutePredicate]).
+     */
+    public fun route(
+        method: HttpMethod,
+        path: String,
+        predicate: RoutePredicate? = null,
+        handler: RouteHandler,
+    ) {
+        routes.add(RouteEntry(method, path, predicate, handler))
     }
 
-    /** Registers a `GET` route within the group. */
-    public fun get(path: String, handler: RouteHandler): Unit = route(HttpMethod.GET, path, handler)
+    /** Registers a `GET` route within the group, optionally guarded by [predicate]. */
+    public fun get(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.GET, path, predicate, handler)
 
-    /** Registers a `POST` route within the group. */
-    public fun post(path: String, handler: RouteHandler): Unit = route(HttpMethod.POST, path, handler)
+    /** Registers a `POST` route within the group, optionally guarded by [predicate]. */
+    public fun post(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.POST, path, predicate, handler)
 
-    /** Registers a `PUT` route within the group. */
-    public fun put(path: String, handler: RouteHandler): Unit = route(HttpMethod.PUT, path, handler)
+    /** Registers a `PUT` route within the group, optionally guarded by [predicate]. */
+    public fun put(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.PUT, path, predicate, handler)
 
-    /** Registers a `DELETE` route within the group. */
-    public fun delete(path: String, handler: RouteHandler): Unit = route(HttpMethod.DELETE, path, handler)
+    /** Registers a `DELETE` route within the group, optionally guarded by [predicate]. */
+    public fun delete(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.DELETE, path, predicate, handler)
 
-    /** Registers a `PATCH` route within the group. */
-    public fun patch(path: String, handler: RouteHandler): Unit = route(HttpMethod.PATCH, path, handler)
+    /** Registers a `PATCH` route within the group, optionally guarded by [predicate]. */
+    public fun patch(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.PATCH, path, predicate, handler)
 
-    /** Registers a `HEAD` route within the group. */
-    public fun head(path: String, handler: RouteHandler): Unit = route(HttpMethod.HEAD, path, handler)
+    /** Registers a `HEAD` route within the group, optionally guarded by [predicate]. */
+    public fun head(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.HEAD, path, predicate, handler)
 
-    /** Registers an `OPTIONS` route within the group. */
-    public fun options(path: String, handler: RouteHandler): Unit = route(HttpMethod.OPTIONS, path, handler)
+    /** Registers an `OPTIONS` route within the group, optionally guarded by [predicate]. */
+    public fun options(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
+        route(HttpMethod.OPTIONS, path, predicate, handler)
 
     /**
      * Opens a nested route group at [prefix] (joined onto this group's
@@ -100,7 +115,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
     internal fun flush(
         inheritedMiddleware: List<Middleware>,
         inheritedPrefix: String,
-        register: (HttpMethod, String, RouteHandler) -> Unit,
+        register: (HttpMethod, String, RoutePredicate?, RouteHandler) -> Unit,
     ) {
         val effectiveMiddleware = inheritedMiddleware + middlewares
         val effectivePrefix = joinPrefix(inheritedPrefix, prefix)
@@ -108,6 +123,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
             register(
                 entry.method,
                 joinPrefix(effectivePrefix, entry.path),
+                entry.predicate,
                 effectiveMiddleware.wrapHandler(entry.handler),
             )
         }
@@ -117,7 +133,12 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
     }
 
     /** One collected route registration, applied by [flush]. */
-    private class RouteEntry(val method: HttpMethod, val path: String, val handler: RouteHandler)
+    private class RouteEntry(
+        val method: HttpMethod,
+        val path: String,
+        val predicate: RoutePredicate?,
+        val handler: RouteHandler,
+    )
 }
 
 /**

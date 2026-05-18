@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpMethod
+import io.github.fukusaka.keel.codec.http.HttpRequestHead
 
 /**
  * Result of a successful [Router.resolve].
@@ -10,6 +11,10 @@ import io.github.fukusaka.keel.codec.http.HttpMethod
  * parameters bound from the pattern's `:name` and `*` segments. Only
  * [Router] produces a [RouteMatch] — the constructor is internal. At
  * least one of [handler] / [upgrade] is non-null.
+ *
+ * A path may register several handlers (or upgrades) for one method, each
+ * guarded by a [RoutePredicate]; [Router.resolve] picks the first whose
+ * predicate accepts the request and puts the chosen one here.
  */
 public class RouteMatch internal constructor(
     /** The handler registered for the matched route and request method, or null. */
@@ -28,6 +33,43 @@ public class RouteMatch internal constructor(
      */
     public val pathParameters: Map<String, String>,
 )
+
+/**
+ * Outcome of a [Router.resolve] call — a sealed result distinguishing a
+ * match, a method mismatch on an otherwise-registered path, and a total
+ * miss (design.md §38.9.5).
+ *
+ * Modelled on keel's other sealed-result types (such as
+ * `WsAggregateResult`): the caller exhaustively branches on the variant
+ * rather than threading a nullable [RouteMatch] plus an out-of-band
+ * "allowed methods" channel.
+ */
+public sealed interface RouteResolution {
+
+    /** A handler or upgrade matched the request method, path, and predicates. */
+    public class Matched internal constructor(
+        /** The matched route — its handler / upgrade and bound path parameters. */
+        public val match: RouteMatch,
+    ) : RouteResolution
+
+    /**
+     * The path reached a registered trie leaf, but no route there serves
+     * the request method. The caller answers `405 Method Not Allowed`
+     * with an `Allow` header listing [allowedMethods].
+     */
+    public class MethodNotAllowed internal constructor(
+        /** The methods registered at the resolved path — never empty, never contains the request method. */
+        public val allowedMethods: Set<HttpMethod>,
+    ) : RouteResolution
+
+    /**
+     * No route matched. Either the path reaches no trie leaf at all, or it
+     * does but every candidate handler's predicate rejected the request
+     * (design §38.9.4 routes a predicate-only miss here, as WebFlux does).
+     * The caller answers `404 Not Found`.
+     */
+    public data object Unmatched : RouteResolution
+}
 
 /**
  * Routes a request's method × path to a registered [RouteHandler].
@@ -71,13 +113,22 @@ public class RouteMatch internal constructor(
  * Core route — so registration order cannot make the universal
  * unconstrained `:id` shadow a constrained `:id(int)` sibling.
  *
- * Registration order is significant in exactly one case: when two
- * constrained parameters at the same position have constraints that can
- * both accept the same segment (e.g. the overlapping regexes
- * `:id(^\d+$)` and `:id(^\d{3}$)`), the one registered first wins.
- * Constraint subset-checking is undecidable in general, so the [Router]
- * does not detect or reorder such an overlap — register the more
- * specific pattern first.
+ * **Predicate routing**: a method × path may carry several handlers, each
+ * guarded by a [RoutePredicate] (design §38.9.4). [resolve] reaches the
+ * trie leaf, then scans that method's handler list in order — the first
+ * handler whose predicate accepts the request wins; a `null`-predicate
+ * handler is a catch-all. The list is kept predicate-first, catch-all
+ * last (see [register]), so registration order cannot let a catch-all
+ * shadow a later predicated route. Upgrades are predicated the same way.
+ *
+ * Registration order is significant in exactly two cases: among multiple
+ * predicated handlers for one method × path (first accepting predicate
+ * wins, the WebFlux registration-order rule), and when two constrained
+ * parameters at the same position have constraints that can both accept
+ * the same segment (e.g. the overlapping regexes `:id(^\d+$)` and
+ * `:id(^\d{3}$)`). Constraint subset-checking is undecidable in general,
+ * so the [Router] does not detect or reorder such an overlap — register
+ * the more specific pattern first.
  *
  * **Thread safety**: [register] mutates the trie and must complete before
  * the server starts serving. [resolve] is read-only — the trie is treated
@@ -94,46 +145,74 @@ public class Router {
 
     /**
      * Registers [handler] for [method] requests whose path matches the
-     * [path] pattern.
+     * [path] pattern, optionally guarded by [predicate].
      *
      * A trailing optional parameter — `:id?` — registers the [handler]
      * both with and without that segment, so `/users/:id?` answers
      * `/users` and `/users/42` alike.
      *
+     * A method × path may carry several handlers as long as at most one is
+     * a catch-all (`predicate == null`). Predicated handlers stack freely
+     * — that is the predicate-routing feature. The handler list is kept
+     * predicate-first (in registration order) with the catch-all last, so
+     * a later predicated route cannot be shadowed by an earlier catch-all.
+     * Registering a **second** catch-all for the same method × path is the
+     * genuine duplicate and is rejected.
+     *
      * @throws IllegalArgumentException if `*` is not the final segment, a
      *   `:` parameter has no name, a parameter at an already-used trie
      *   position has a different name, an optional `?` parameter is not
-     *   the final segment, or [method] × [path] is already registered.
+     *   the final segment, or [method] × [path] already has a catch-all
+     *   handler and [predicate] is null.
      */
-    public fun register(method: HttpMethod, path: String, handler: RouteHandler) {
+    public fun register(
+        method: HttpMethod,
+        path: String,
+        predicate: RoutePredicate? = null,
+        handler: RouteHandler,
+    ) {
         for (segments in registrationSegments(path)) {
             val node = walkTo(segments, path)
-            require(node.handlers[method] == null) { "duplicate route: $method $path" }
-            node.handlers[method] = handler
+            val list = node.handlers.getOrPut(method) { mutableListOf() }
+            insertCandidate(
+                list,
+                PredicatedHandler(predicate, handler),
+                predicate,
+            ) { "duplicate route: $method $path" }
         }
     }
 
     /**
-     * Registers [protocol] as the upgrade endpoint for the [path]
-     * pattern. A request whose path matches [path] and whose `Upgrade`
-     * header token equals [protocol]'s [UpgradeProtocol.name] resolves to
-     * this protocol (see [RouteMatch.upgrade]).
+     * Registers [protocol] as an upgrade endpoint for the [path] pattern,
+     * optionally guarded by [predicate].
+     *
+     * A request whose path matches [path], whose `Upgrade` header token
+     * equals [protocol]'s [UpgradeProtocol.name], and which satisfies
+     * [predicate] resolves to this protocol (see [RouteMatch.upgrade]).
      *
      * The pattern syntax is the same as [register] — `:name` parameters
      * (optionally constrained or trailing-optional) and a trailing `*` are
-     * honoured — so `webSocket("/chat/:room")` style routes get
-     * path-parameter matching for free.
+     * honoured. Upgrades stack under predicates exactly as handlers do: a
+     * path may carry several predicated upgrades plus at most one
+     * catch-all, kept predicate-first with the catch-all last.
      *
      * @throws IllegalArgumentException if `*` is not the final segment, a
      *   `:` parameter has no name or conflicts with an existing one, an
      *   optional `?` parameter is not the final segment, or [path] already
-     *   has an upgrade protocol registered.
+     *   has a catch-all upgrade and [predicate] is null.
      */
-    public fun registerUpgrade(path: String, protocol: UpgradeProtocol) {
+    public fun registerUpgrade(
+        path: String,
+        predicate: RoutePredicate? = null,
+        protocol: UpgradeProtocol,
+    ) {
         for (segments in registrationSegments(path)) {
             val node = walkTo(segments, path)
-            require(node.upgrade == null) { "duplicate upgrade route: $path" }
-            node.upgrade = protocol
+            insertCandidate(
+                node.upgrades,
+                PredicatedUpgrade(predicate, protocol),
+                predicate,
+            ) { "duplicate upgrade route: $path" }
         }
     }
 
@@ -147,16 +226,31 @@ public class Router {
     }
 
     /**
-     * Resolves [method] × [path] to a [RouteMatch], or `null` when no
-     * registered route matches.
+     * Resolves [method] × [path] against the trie, evaluating any
+     * [RoutePredicate]s against [head].
      *
-     * A match is produced when the matched path node has a handler for
-     * [method] **or** an [UpgradeProtocol] registered. The caller decides
-     * between the two — an upgrade request (matching `Upgrade` header)
-     * takes [RouteMatch.upgrade], otherwise [RouteMatch.handler].
+     * Returns [RouteResolution.Matched] when a handler or an upgrade at
+     * the matched path serves [method] and its predicate (if any) accepts
+     * [head]; the first such candidate, in registration order, wins.
+     *
+     * When nothing matched, a second walk collects every method
+     * registered along the same literal/param/wildcard paths: if that set
+     * is non-empty and lacks [method] the result is
+     * [RouteResolution.MethodNotAllowed] (a `405`), otherwise
+     * [RouteResolution.Unmatched] (a `404`) — which also covers a path
+     * registered for [method] whose predicates all rejected [head].
      */
-    public fun resolve(method: HttpMethod, path: String): RouteMatch? =
-        resolveNode(root, segmentsOf(path), 0, method, HashMap())
+    public fun resolve(method: HttpMethod, path: String, head: HttpRequestHead): RouteResolution {
+        val segments = segmentsOf(path)
+        val matched = resolveNode(root, segments, 0, method, head, HashMap())
+        if (matched != null) return RouteResolution.Matched(matched)
+        val allowed = collectAllowedMethods(root, segments, 0)
+        return if (allowed.isNotEmpty() && method !in allowed) {
+            RouteResolution.MethodNotAllowed(allowed)
+        } else {
+            RouteResolution.Unmatched
+        }
+    }
 
     private fun Node.childFor(segment: String, isLast: Boolean, path: String): Node = when {
         segment == "*" -> {
@@ -199,12 +293,13 @@ public class Router {
         segments: List<String>,
         index: Int,
         method: HttpMethod,
+        head: HttpRequestHead,
         params: HashMap<String, String>,
     ): RouteMatch? {
         if (index < segments.size) {
             val segment = segments[index]
             node.literalChildren[segment]?.let { child ->
-                resolveNode(child, segments, index + 1, method, params)?.let { return it }
+                resolveNode(child, segments, index + 1, method, head, params)?.let { return it }
             }
             // paramChildren is ordered constrained-first, unconstrained
             // last (see childFor), so the most specific branch is tried
@@ -214,25 +309,78 @@ public class Router {
             for (slot in node.paramChildren) {
                 if (slot.constraint != null && !slot.constraint.matches(segment)) continue
                 params[slot.name] = segment
-                resolveNode(slot.node, segments, index + 1, method, params)?.let { return it }
+                resolveNode(slot.node, segments, index + 1, method, head, params)?.let { return it }
                 params.remove(slot.name)
             }
         } else {
-            val handler = node.handlers[method]
-            val upgrade = node.upgrade
-            if (handler != null || upgrade != null) return RouteMatch(handler, upgrade, params.toMap())
+            node.matchAt(method, head, params)?.let { return it }
         }
         // A trailing wildcard is terminal and matches the remaining segments —
         // zero or more — so a wildcard route also answers its bare prefix path.
         node.wildcardChild?.let { child ->
-            val handler = child.handlers[method]
-            val upgrade = child.upgrade
-            if (handler != null || upgrade != null) {
-                params["*"] = segments.subList(index, segments.size).joinToString("/")
-                return RouteMatch(handler, upgrade, params.toMap())
-            }
+            params["*"] = segments.subList(index, segments.size).joinToString("/")
+            child.matchAt(method, head, params)?.let { return it }
+            params.remove("*")
         }
         return null
+    }
+
+    /**
+     * Scans this node's predicated handlers / upgrades for [method],
+     * returning a [RouteMatch] for the first whose predicate accepts
+     * [head], or null when none does.
+     */
+    private fun Node.matchAt(method: HttpMethod, head: HttpRequestHead, params: HashMap<String, String>): RouteMatch? {
+        val handler = handlers[method]?.firstOrNull { it.predicate.acceptsOrNull(head) }?.handler
+        val upgrade = upgrades.firstOrNull { it.predicate.acceptsOrNull(head) }?.protocol
+        return if (handler != null || upgrade != null) {
+            RouteMatch(handler, upgrade, params.toMap())
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Unions the methods registered at every path-end node reachable by
+     * the same literal/param/wildcard traversal as [resolveNode], without
+     * evaluating predicates. Backs the `405` decision in [resolve].
+     */
+    private fun collectAllowedMethods(node: Node, segments: List<String>, index: Int): Set<HttpMethod> {
+        val allowed = mutableSetOf<HttpMethod>()
+        if (index < segments.size) {
+            val segment = segments[index]
+            node.literalChildren[segment]?.let { allowed += collectAllowedMethods(it, segments, index + 1) }
+            for (slot in node.paramChildren) {
+                if (slot.constraint != null && !slot.constraint.matches(segment)) continue
+                allowed += collectAllowedMethods(slot.node, segments, index + 1)
+            }
+        } else {
+            allowed += node.handlers.keys
+        }
+        node.wildcardChild?.let { allowed += it.handlers.keys }
+        return allowed
+    }
+
+    /**
+     * Inserts [candidate] into a method's candidate [list], keeping it
+     * ordered predicate-first with the single null-predicate catch-all
+     * last. A predicated candidate is inserted ahead of an existing
+     * catch-all; a catch-all is appended. A second catch-all is the
+     * genuine duplicate and is rejected with [duplicateMessage].
+     */
+    private fun <T> insertCandidate(
+        list: MutableList<T>,
+        candidate: T,
+        predicate: RoutePredicate?,
+        duplicateMessage: () -> String,
+    ) where T : PredicatedRoute {
+        if (predicate == null) {
+            require(list.none { it.predicate == null }, duplicateMessage)
+            list.add(candidate)
+        } else {
+            val catchAllAt = list.indexOfFirst { it.predicate == null }
+            if (catchAllAt >= 0) list.add(catchAllAt, candidate) else list.add(candidate)
+        }
     }
 
     /** A segment trie node: literal children plus optional param / wildcard branches. */
@@ -248,11 +396,39 @@ public class Router {
          */
         val paramChildren: MutableList<ParamSlot> = mutableListOf()
         var wildcardChild: Node? = null
-        val handlers: MutableMap<HttpMethod, RouteHandler> = mutableMapOf()
 
-        /** The upgrade protocol bound to this path, or null. */
-        var upgrade: UpgradeProtocol? = null
+        /**
+         * Predicated handlers per method. Each list is kept predicate-first
+         * (in registration order) with the single catch-all last, so the
+         * first accepting candidate found by a forward scan is the correct
+         * winner. Most nodes hold zero or one method, each with one handler.
+         */
+        val handlers: MutableMap<HttpMethod, MutableList<PredicatedHandler>> = mutableMapOf()
+
+        /**
+         * Predicated upgrade protocols bound to this path, ordered like
+         * [handlers] — predicate-first, catch-all last.
+         */
+        val upgrades: MutableList<PredicatedUpgrade> = mutableListOf()
     }
+
+    /** A trie candidate guarded by an optional [predicate] — a handler or an upgrade. */
+    private interface PredicatedRoute {
+        /** The guard; `null` means a catch-all that always matches. */
+        val predicate: RoutePredicate?
+    }
+
+    /** A [RouteHandler] guarded by an optional [predicate]. */
+    private class PredicatedHandler(
+        override val predicate: RoutePredicate?,
+        val handler: RouteHandler,
+    ) : PredicatedRoute
+
+    /** An [UpgradeProtocol] guarded by an optional [predicate]. */
+    private class PredicatedUpgrade(
+        override val predicate: RoutePredicate?,
+        val protocol: UpgradeProtocol,
+    ) : PredicatedRoute
 
     /**
      * A node's `:name` parameter branch. Bundling the parameter name,
@@ -285,6 +461,9 @@ public class Router {
     private companion object {
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
         fun segmentsOf(path: String): List<String> = path.split('/').filter { it.isNotEmpty() }
+
+        /** True when this predicate is null (a catch-all) or accepts [head]. */
+        fun RoutePredicate?.acceptsOrNull(head: HttpRequestHead): Boolean = this == null || test(head)
 
         /**
          * Expands [path] into the concrete segment lists to register.

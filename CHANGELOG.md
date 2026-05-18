@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: predicate routing — routes take an optional `RoutePredicate` (`header` / `query` / `accept` / `host`) to select among handlers sharing one method × path, first accepting predicate winning (#561)
 - `server-http`: nested route groups — `route(prefix) { }` on the `keelHttpServer { }` builder prefixes its routes and scopes `install`ed middleware to the group, with nesting that composes both (#560)
 - `server-http`: trailing optional path parameter — `:id?` / `:id(int)?` makes the final segment optional on HTTP and WebSocket routes, so `/users/:id?` answers both `/users` and `/users/42` (#559)
 - `server-http`: constrained path parameters — `:id(int)` / `:id(uuid)` / `:id(^regex$)` on HTTP and WebSocket routes; typed built-ins plus regex, and differently-constrained parameters coexist at one position (#558)
@@ -54,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `server-http`: a request to a registered path with an unregistered method now answers `405 Method Not Allowed` with an `Allow` header, instead of `404 Not Found` (#561)
 - `benchmark`: `bench-remote-ws.sh` gains Docker fallback modes for the `wsbench` build and `tc` shaping; the WS deflate payload now compresses at a realistic ~6:1 (#557)
 - **BREAKING** (`server-websocket`): WebSocket endpoints are registered inside a `webSockets { }` group block instead of the flat `webSocket("/path") { }` — the group carries the shared `permessage-deflate` configuration (#555)
 - **BREAKING** (`server-websocket`): `WsSession.incoming` delivers whole `WsMessage`s — `CONTINUATION` fragments reassembled (RFC 6455 §5.4), TEXT UTF-8 validated, protocol errors fail with `1002` / `1007` / `1009` (#554)
