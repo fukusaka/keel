@@ -363,4 +363,65 @@ class RouterTest {
         assertEquals("7", match?.pathParameters?.get("room"))
         assertNull(router.resolve(HttpMethod.GET, "/chat/lobby"))
     }
+
+    @Test
+    fun `a trailing optional parameter matches with and without the segment`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/users/:id?", handler)
+        // Without the optional segment: no parameter bound.
+        val bare = router.resolve(HttpMethod.GET, "/users")
+        assertSame(handler, bare?.handler)
+        assertEquals(emptyMap<String, String>(), bare?.pathParameters)
+        // With it: the parameter is captured.
+        val withId = router.resolve(HttpMethod.GET, "/users/42")
+        assertSame(handler, withId?.handler)
+        assertEquals("42", withId?.pathParameters?.get("id"))
+    }
+
+    @Test
+    fun `a constrained optional parameter applies the constraint when present`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/items/:id(int)?", handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/items")?.handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/items/5")?.handler)
+        // Present but failing the constraint: no match.
+        assertNull(router.resolve(HttpMethod.GET, "/items/abc"))
+    }
+
+    @Test
+    fun `an interior optional parameter throws`() {
+        val router = Router()
+        assertFailsWith<IllegalArgumentException> {
+            router.register(HttpMethod.GET, "/users/:id?/posts", handler)
+        }
+    }
+
+    @Test
+    fun `a trailing optional parameter applies to an upgrade route`() {
+        val router = Router()
+        router.registerUpgrade("/chat/:room?", upgrade)
+        assertSame(upgrade, router.resolve(HttpMethod.GET, "/chat")?.upgrade)
+        val withRoom = router.resolve(HttpMethod.GET, "/chat/lobby")
+        assertSame(upgrade, withRoom?.upgrade)
+        assertEquals("lobby", withRoom?.pathParameters?.get("room"))
+    }
+
+    @Test
+    fun `a question mark inside a regex constraint does not make the parameter optional`() {
+        val router = Router()
+        // The constraint regex is `\d?` (zero-or-one digit); the trailing
+        // `?` belongs to the regex, so :id is a required parameter.
+        router.register(HttpMethod.GET, "/x/:id(\\d?)", handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/x/5")?.handler)
+        // The segment is required — a bare /x does not match.
+        assertNull(router.resolve(HttpMethod.GET, "/x"))
+    }
+
+    @Test
+    fun `an optional parameter at the root resolves the bare root`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/:id?", handler)
+        assertSame(handler, router.resolve(HttpMethod.GET, "/")?.handler)
+        assertEquals("v1", router.resolve(HttpMethod.GET, "/v1")?.pathParameters?.get("id"))
+    }
 }
