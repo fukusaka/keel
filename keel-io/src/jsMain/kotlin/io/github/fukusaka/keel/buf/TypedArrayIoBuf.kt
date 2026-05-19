@@ -177,3 +177,11 @@ val IoBuf.unsafeArray: Int8Array
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = TypedArrayIoBuf(capacity)
+
+@Suppress("IoBufLeak") // Slice returns ownership to caller
+internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
+    if (length == 0) return EmptyIoBuf
+    source.retain()
+    val view = (source as TypedArrayIoBuf).unsafeArray.subarray(offset, offset + length)
+    return TypedArrayIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
+}

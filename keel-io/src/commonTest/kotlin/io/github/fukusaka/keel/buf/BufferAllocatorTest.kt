@@ -84,4 +84,48 @@ class BufferAllocatorTest {
         assertEquals(0, leaks.size)
         tracker.assertNoLeaks()
     }
+
+    // --- slice ---
+
+    @Test
+    fun `DefaultAllocator slice is a zero-copy view sharing the source backing`() {
+        val src = DefaultAllocator.allocate(16)
+        src.writeByteArray(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), 0, 8)
+
+        val slice = DefaultAllocator.slice(src, 2, 4) // bytes at index 2..5 -> 3,4,5,6
+        assertEquals(4, slice.capacity)
+        assertEquals(4, slice.readableBytes)
+        assertEquals(3.toByte(), slice.getByte(0))
+        assertEquals(6.toByte(), slice.getByte(3))
+
+        // Zero-copy: overwriting the source region shows through the slice.
+        src.clear()
+        src.writeByteArray(byteArrayOf(0, 0, 99), 0, 3) // index 2 = slice[0]
+        assertEquals(99.toByte(), slice.getByte(0))
+
+        slice.release()
+        src.release()
+    }
+
+    @Test
+    fun `DefaultAllocator slice retains the source until the slice is released`() {
+        val src = DefaultAllocator.allocate(8)
+        src.writeByteArray(byteArrayOf(10, 20, 30, 40), 0, 4)
+        val slice = DefaultAllocator.slice(src, 0, 4)
+
+        // slice retained src (refCount 2); releasing src once leaves it alive.
+        assertEquals(false, src.release())
+        assertEquals(10.toByte(), slice.getByte(0))
+
+        // Releasing the slice drops the retained reference, freeing src.
+        assertTrue(slice.release())
+    }
+
+    @Test
+    fun `DefaultAllocator slice of zero length is EmptyIoBuf`() {
+        val src = DefaultAllocator.allocate(8)
+        val slice = DefaultAllocator.slice(src, 0, 0)
+        assertEquals(EmptyIoBuf, slice)
+        src.release()
+    }
 }

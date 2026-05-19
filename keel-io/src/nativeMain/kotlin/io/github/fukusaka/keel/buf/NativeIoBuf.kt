@@ -224,3 +224,13 @@ class NativeIoBuf private constructor(
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = NativeIoBuf(capacity)
+
+@Suppress("IoBufLeak") // Slice returns ownership to caller
+@OptIn(ExperimentalForeignApi::class)
+internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
+    if (length == 0) return EmptyIoBuf
+    source.retain()
+    @Suppress("UnsafeCallOnNullableType")
+    val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
+    return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = SliceOwner(source))
+}

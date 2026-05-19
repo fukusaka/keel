@@ -108,14 +108,8 @@ object DefaultAllocator : BufferAllocator {
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
 
-    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
-        val copy = allocate(length)
-        val saved = source.readerIndex
-        source.readerIndex = offset
-        source.copyTo(copy, length)
-        source.readerIndex = saved
-        return copy
-    }
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+        sliceDefaultIoBuf(source, offset, length)
 }
 
 /**

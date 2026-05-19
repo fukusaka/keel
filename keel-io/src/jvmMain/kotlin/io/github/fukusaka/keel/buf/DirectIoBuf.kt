@@ -228,3 +228,15 @@ val IoBuf.unsafeBuffer: ByteBuffer
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = DirectIoBuf(capacity)
+
+@Suppress("IoBufLeak") // Slice returns ownership to caller
+@OptIn(UnsafeIoBufApi::class)
+internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
+    if (length == 0) return EmptyIoBuf
+    source.retain()
+    val view = (source as DirectIoBuf).unsafeBuffer.duplicate().apply {
+        position(offset)
+        limit(offset + length)
+    }.slice()
+    return DirectIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
+}

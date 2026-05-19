@@ -108,16 +108,8 @@ class PooledDirectAllocator(
         return DirectIoBuf.wrapExternal(heapBuffer, bytesWritten = length)
     }
 
-    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
-        if (length == 0) return EmptyIoBuf
-        source.retain()
-        val srcBuf = (source as DirectIoBuf).unsafeBuffer
-        val view = srcBuf.duplicate().apply {
-            position(offset)
-            limit(offset + length)
-        }.slice()
-        return DirectIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
-    }
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+        sliceDefaultIoBuf(source, offset, length)
 
     private fun returnToPool(buf: IoBuf) {
         val pool = pools[buf.capacity]
