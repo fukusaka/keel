@@ -58,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: `BufferAllocator.slice()` of a pooled (`Segment`-backed) buffer now returns a same-`Segment` window view, eliminating the per-slice wrapper allocation (#576)
 - `io`: `IoBuf` is now internally a view over a fixed-size `Segment`, whose raw memory is obtained through a pluggable `RawMemorySource` — an internal restructuring with no public API change (#570)
 - **BREAKING** (`io`): the `IoBuf` raw-memory escape hatches (`unsafePointer` / `unsafeBuffer` / `unsafeNioByteBuffer`) now require opting in to the new `@UnsafeIoBufApi` marker — external callers must add `@OptIn(UnsafeIoBufApi::class)` (#568)
 - **BREAKING** (`server*`): the DSL builder classes and DSL entry functions of `keel-server` / `keel-server-http` / `keel-server-websocket` moved to dedicated `.dsl` sub-packages (`connector` / `keelHttpServer` / `webSockets` and their builders) (#566)
