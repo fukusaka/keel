@@ -176,15 +176,6 @@ interface IoBuf : Releasable {
     fun getByte(index: Int): Byte
 
     /**
-     * Discards already-read bytes by moving readable data to the beginning
-     * of the buffer, maximizing writable space.
-     *
-     * After compact: `readerIndex = 0`, `writerIndex = readableBytes`.
-     * No-op if `readerIndex` is already 0.
-     */
-    fun compact()
-
-    /**
      * Resets both [readerIndex] and [writerIndex] to 0, making the entire
      * buffer writable. Does not zero the memory.
      */

@@ -114,31 +114,6 @@ class NettyByteBufIoBufTest {
     }
 
     @Test
-    fun `compact shifts readable bytes to start`() {
-        val buf = newBuf()
-        buf.writeByteArray(byteArrayOf(1, 2, 3, 4, 5), 0, 5)
-        buf.readByte(); buf.readByte()
-        assertEquals(2, buf.readerIndex)
-        assertEquals(3, buf.readableBytes)
-        buf.compact()
-        assertEquals(0, buf.readerIndex)
-        assertEquals(3, buf.writerIndex)
-        assertEquals(3.toByte(), buf.getByte(0))
-        assertEquals(5.toByte(), buf.getByte(2))
-        buf.release()
-    }
-
-    @Test
-    fun `compact is no-op when readerIndex is 0`() {
-        val buf = newBuf()
-        buf.writeByte(1); buf.writeByte(2)
-        buf.compact()
-        assertEquals(0, buf.readerIndex)
-        assertEquals(2, buf.writerIndex)
-        buf.release()
-    }
-
-    @Test
     fun `clear resets indices`() {
         val buf = newBuf()
         buf.writeByte(1); buf.writeByte(2); buf.readByte()

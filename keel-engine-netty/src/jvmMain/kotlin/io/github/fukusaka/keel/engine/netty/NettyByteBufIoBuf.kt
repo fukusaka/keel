@@ -115,19 +115,6 @@ internal class NettyByteBufIoBuf(
 
     override fun getByte(index: Int): Byte = byteBuf.getByte(index)
 
-    override fun compact() {
-        if (readerIndex > 0) {
-            val readable = readableBytes
-            if (readable > 0) {
-                val tmp = ByteArray(readable)
-                byteBuf.getBytes(readerIndex, tmp, 0, readable)
-                byteBuf.setBytes(0, tmp, 0, readable)
-            }
-            readerIndex = 0
-            writerIndex = readable
-        }
-    }
-
     override fun clear() {
         readerIndex = 0
         writerIndex = 0

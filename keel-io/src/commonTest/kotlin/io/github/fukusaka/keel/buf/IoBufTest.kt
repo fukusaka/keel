@@ -114,52 +114,6 @@ class IoBufTest {
         buf.release()
     }
 
-    // --- compact ---
-
-    @Test
-    fun compactMovesReadableBytesToBeginning() {
-        val buf = createDefaultIoBuf(8)
-        buf.writeByte(0x41)
-        buf.writeByte(0x42)
-        buf.writeByte(0x43)
-        buf.readByte() // discard 0x41
-
-        assertEquals(1, buf.readerIndex)
-        assertEquals(3, buf.writerIndex)
-        assertEquals(2, buf.readableBytes)
-
-        buf.compact()
-
-        assertEquals(0, buf.readerIndex)
-        assertEquals(2, buf.writerIndex)
-        assertEquals(2, buf.readableBytes)
-        assertEquals(6, buf.writableBytes)
-        assertEquals(0x42, buf.readByte())
-        assertEquals(0x43, buf.readByte())
-        buf.release()
-    }
-
-    @Test
-    fun compactNoOpWhenReaderIndexIsZero() {
-        val buf = createDefaultIoBuf(8)
-        buf.writeByte(0x41)
-        buf.compact()
-        assertEquals(0, buf.readerIndex)
-        assertEquals(1, buf.writerIndex)
-        buf.release()
-    }
-
-    @Test
-    fun compactWithEmptyBuffer() {
-        val buf = createDefaultIoBuf(8)
-        buf.writeByte(0x41)
-        buf.readByte() // empty
-        buf.compact()
-        assertEquals(0, buf.readerIndex)
-        assertEquals(0, buf.writerIndex)
-        buf.release()
-    }
-
     // --- writeByteArray ---
 
     @Test

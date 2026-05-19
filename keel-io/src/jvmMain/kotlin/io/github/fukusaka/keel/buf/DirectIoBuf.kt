@@ -123,23 +123,6 @@ class DirectIoBuf private constructor(
 
     override fun getByte(index: Int): Byte = buf.get(index)
 
-    override fun compact() {
-        if (readerIndex > 0) {
-            val readable = readableBytes
-            if (readable > 0) {
-                // Use ByteBuffer.compact(): copies bytes between position and
-                // limit to the beginning, then sets position = remaining.
-                buf.position(readerIndex)
-                buf.limit(writerIndex)
-                buf.compact()
-                // Reset limit to capacity (compact sets it to capacity already)
-                buf.limit(capacity)
-            }
-            readerIndex = 0
-            writerIndex = readable
-        }
-    }
-
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
