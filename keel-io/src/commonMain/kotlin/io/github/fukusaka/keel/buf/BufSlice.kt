@@ -27,7 +27,7 @@ package io.github.fukusaka.keel.buf
  * ```
  *
  * **Lifetime**: a BufSlice does not retain the underlying [IoBuf].
- * The caller must ensure the IoBuf is not released or compacted
+ * The caller must ensure the IoBuf is not released or overwritten
  * while the BufSlice is in use. In practice, BufSlice instances live
  * within a single parse step (between [BufferedSuspendSource.scanLine]
  * calls) and are discarded before the next buffer refill.

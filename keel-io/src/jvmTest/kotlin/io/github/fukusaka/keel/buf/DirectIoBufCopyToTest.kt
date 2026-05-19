@@ -39,7 +39,6 @@ class DirectIoBufCopyToTest {
         override fun copyTo(dest: IoBuf, length: Int) {
             val tmp = ByteArray(length); readByteArray(tmp, 0, length); dest.writeByteArray(tmp, 0, length)
         }
-        override fun compact() { throw UnsupportedOperationException() }
         override fun clear() { readerIndex = 0; writerIndex = 0 }
         override fun retain(): IoBuf = this
         override fun release(): Boolean = true

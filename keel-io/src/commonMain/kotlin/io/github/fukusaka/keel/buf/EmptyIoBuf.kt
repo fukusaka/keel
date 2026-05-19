@@ -59,7 +59,6 @@ object EmptyIoBuf : IoBuf {
         throw IndexOutOfBoundsException("EmptyIoBuf has no bytes (index=$index)")
     }
 
-    override fun compact() {} // no-op
     override fun clear() {} // no-op
 
     override fun retain(): IoBuf = this // singleton — no ref count

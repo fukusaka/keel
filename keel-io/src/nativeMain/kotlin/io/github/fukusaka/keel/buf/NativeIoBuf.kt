@@ -11,7 +11,6 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
-import platform.posix.memmove
 
 /**
  * Native [IoBuf] implementation — a *view* over a [Segment].
@@ -119,18 +118,6 @@ class NativeIoBuf private constructor(
 
     // No bounds check — raw pointer read. Caller must ensure 0 <= index < capacity.
     override fun getByte(index: Int): Byte = cachedBase[index]
-
-    override fun compact() {
-        if (readerIndex > 0) {
-            val readable = readableBytes
-            if (readable > 0) {
-                // memmove handles overlapping regions safely
-                memmove(cachedBase, cachedBase + readerIndex, readable.toULong())
-            }
-            readerIndex = 0
-            writerIndex = readable
-        }
-    }
 
     override fun clear() {
         readerIndex = 0

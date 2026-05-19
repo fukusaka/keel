@@ -15,7 +15,6 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.set
 import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
-import platform.posix.memmove
 
 /**
  * [IoBufMemoryOwner] for a [ProvidedBufferRing] slot.
@@ -121,17 +120,6 @@ internal class RingBufferIoBuf(
     override fun readByte(): Byte = ptr[readerIndex++]
 
     override fun getByte(index: Int): Byte = ptr[index]
-
-    override fun compact() {
-        if (readerIndex > 0) {
-            val readable = readableBytes
-            if (readable > 0) {
-                memmove(ptr, ptr + readerIndex, readable.toULong())
-            }
-            readerIndex = 0
-            writerIndex = readable
-        }
-    }
 
     override fun clear() {
         readerIndex = 0

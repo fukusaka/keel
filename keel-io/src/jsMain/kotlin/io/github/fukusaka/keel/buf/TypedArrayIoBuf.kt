@@ -91,18 +91,6 @@ class TypedArrayIoBuf private constructor(
 
     override fun getByte(index: Int): Byte = (buf.asDynamic()[index] as Int).toByte()
 
-    override fun compact() {
-        if (readerIndex > 0) {
-            val readable = readableBytes
-            if (readable > 0) {
-                // Int8Array.copyWithin(target, start, end)
-                buf.asDynamic().copyWithin(0, readerIndex, writerIndex)
-            }
-            readerIndex = 0
-            writerIndex = readable
-        }
-    }
-
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
