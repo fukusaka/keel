@@ -3,12 +3,15 @@ package io.github.fukusaka.keel.buf
 import org.khronos.webgl.Int8Array
 
 /**
- * JS/Node.js [IoBuf] implementation backed by [Int8Array].
+ * JS/Node.js [IoBuf] implementation — a *view* over a [Segment].
  *
- * Uses a typed array from the Web/Node.js platform. V8's garbage collector
- * manages the underlying ArrayBuffer, so [close] and [release] do not
- * free memory — they only update the reference count for API compatibility
- * with Native/JVM implementations.
+ * The buffer holds a [Segment] reference; the segment's
+ * [RawSegmentBacking] carries the [Int8Array]. At construction the view
+ * reads the [Int8Array] out of the backing once and caches it in
+ * [cachedBase]; all access uses the cached array directly. V8's garbage
+ * collector manages the underlying `ArrayBuffer`, so [close] and
+ * [release] do not free memory — they only update the reference count
+ * for API compatibility with Native/JVM implementations.
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
  * [Int8Array] without allocation. Pass an [IoBufMemoryOwner] if recycling
@@ -18,21 +21,23 @@ import org.khronos.webgl.Int8Array
  * type casts, ensuring type safety in Kotlin/JS IR mode.
  */
 class TypedArrayIoBuf private constructor(
-    private val buf: Int8Array,
-    override val capacity: Int,
+    private val segment: Segment,
     override var memoryOwner: IoBufMemoryOwner,
 ) : IoBuf, PoolableIoBuf, HeapManagedBacking {
 
     /**
-     * Creates a heap-owned [TypedArrayIoBuf]. V8 reclaims the backing
-     * [Int8Array] via GC; [memoryOwner] is [HeapOwner] with a no-op
-     * backing free.
+     * Creates a heap-owned [TypedArrayIoBuf] backed by a freshly-allocated
+     * [Segment]. V8 reclaims the backing [Int8Array] via GC;
+     * [memoryOwner] is [HeapOwner] with a no-op backing free.
      */
-    constructor(capacity: Int) : this(
-        Int8Array(capacity),
-        capacity,
-        HeapOwner,
-    )
+    constructor(capacity: Int) : this(allocSegment(capacity), HeapOwner)
+
+    /** Cached [Int8Array] read once out of the [Segment]'s backing. */
+    private val cachedBase: Int8Array = segment.backing.base
+
+    private val buf: Int8Array get() = cachedBase
+
+    override val capacity: Int get() = segment.capacity
 
     private var refCount = 1
     override var nextLink: IoBuf? = null
@@ -127,13 +132,17 @@ class TypedArrayIoBuf private constructor(
 
     override fun close() {
         refCount = 0
-        // Int8Array is GC-managed; escape-hatch path bypasses memoryOwner
-        // so pool slots / external handles leak (intentional).
+        // Int8Array is GC-managed so routing the raw-memory free through
+        // the Segment's backing is a no-op. Escape-hatch path bypasses
+        // memoryOwner so pool slots / external handles leak (intentional).
+        segment.backing.free()
     }
 
     /** @see HeapManagedBacking */
     override fun freeHeapBacking() {
-        // Int8Array is GC-managed; nothing to do.
+        // Routes through the Segment's backing; a no-op on JS because the
+        // Int8Array is GC-managed.
+        segment.backing.free()
     }
 
     /** The backing [Int8Array] for engine-layer I/O. */
@@ -156,9 +165,16 @@ class TypedArrayIoBuf private constructor(
             array: Int8Array,
             bytesWritten: Int,
             memoryOwner: IoBufMemoryOwner = HeapOwner,
-        ): TypedArrayIoBuf = TypedArrayIoBuf(array, array.length, memoryOwner).also {
-            it.writerIndex = bytesWritten
+        ): TypedArrayIoBuf {
+            val segment = Segment(RawSegmentBacking(array), array.length)
+            return TypedArrayIoBuf(segment, memoryOwner).also {
+                it.writerIndex = bytesWritten
+            }
         }
+
+        /** Allocates a heap-owned [Segment] of [capacity] bytes. */
+        private fun allocSegment(capacity: Int): Segment =
+            Segment(JsRawMemorySource(capacity).acquire(), capacity)
     }
 }
 
