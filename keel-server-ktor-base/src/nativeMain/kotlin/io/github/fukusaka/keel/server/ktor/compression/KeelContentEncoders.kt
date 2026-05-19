@@ -104,7 +104,10 @@ private suspend fun keelEncodePump(
                 )
                 break
             }
-            input.compact()
+            // The drive loop exits only once input is fully drained
+            // (CodecStatus.NEED_INPUT means the codec consumed all of it),
+            // so a reset is sufficient — no unconsumed bytes to preserve.
+            input.clear()
             input.writeByteArray(scratchIn, 0, n)
             // Drive update until input is consumed or encoder asks for more.
             while (input.readableBytes > 0) {
@@ -163,7 +166,10 @@ private suspend fun keelDecodePump(
                 )
                 break
             }
-            input.compact()
+            // The drive loop exits only once input is fully drained
+            // (CodecStatus.NEED_INPUT means the codec consumed all of it),
+            // so a reset is sufficient — no unconsumed bytes to preserve.
+            input.clear()
             input.writeByteArray(scratchIn, 0, n)
             while (input.readableBytes > 0) {
                 output.clear()
@@ -318,7 +324,10 @@ private suspend fun keelDecodeWithLimitsPump(
                 )
                 break
             }
-            input.compact()
+            // The drive loop exits only once input is fully drained
+            // (CodecStatus.NEED_INPUT means the codec consumed all of it),
+            // so a reset is sufficient — no unconsumed bytes to preserve.
+            input.clear()
             input.writeByteArray(scratchIn, 0, n)
             bytesIn += n
             while (input.readableBytes > 0) {
