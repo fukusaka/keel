@@ -58,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: `IoBuf` is now internally a view over a fixed-size `Segment`, whose raw memory is obtained through a pluggable `RawMemorySource` — an internal restructuring with no public API change (#570)
 - **BREAKING** (`io`): the `IoBuf` raw-memory escape hatches (`unsafePointer` / `unsafeBuffer` / `unsafeNioByteBuffer`) now require opting in to the new `@UnsafeIoBufApi` marker — external callers must add `@OptIn(UnsafeIoBufApi::class)` (#568)
 - **BREAKING** (`server*`): the DSL builder classes and DSL entry functions of `keel-server` / `keel-server-http` / `keel-server-websocket` moved to dedicated `.dsl` sub-packages (`connector` / `keelHttpServer` / `webSockets` and their builders) (#566)
 - **BREAKING** (`server-http`): `Router.resolve` now takes the request head and returns a sealed `RouteResolution`; `register` / `registerUpgrade` take an optional `RoutePredicate` — direct `Router` callers must adapt, the `keelHttpServer { }` DSL is unaffected (#561)
