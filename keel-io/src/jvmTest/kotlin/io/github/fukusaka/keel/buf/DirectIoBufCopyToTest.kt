@@ -25,7 +25,8 @@ class DirectIoBufCopyToTest {
         override val memoryOwner: IoBufMemoryOwner = HeapOwner
         override fun writeByte(value: Byte) { data[writerIndex++] = value }
         override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
-            src.copyInto(data, writerIndex, offset, offset + length); writerIndex += length
+            src.copyInto(data, writerIndex, offset, offset + length)
+            writerIndex += length
         }
         override fun writeAscii(src: String, srcOffset: Int, length: Int) {
             for (i in 0 until length) data[writerIndex + i] = src[srcOffset + i].code.toByte()
@@ -33,13 +34,19 @@ class DirectIoBufCopyToTest {
         }
         override fun readByte(): Byte = data[readerIndex++]
         override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
-            data.copyInto(dest, offset, readerIndex, readerIndex + length); readerIndex += length
+            data.copyInto(dest, offset, readerIndex, readerIndex + length)
+            readerIndex += length
         }
         override fun getByte(index: Int): Byte = data[index]
         override fun copyTo(dest: IoBuf, length: Int) {
-            val tmp = ByteArray(length); readByteArray(tmp, 0, length); dest.writeByteArray(tmp, 0, length)
+            val tmp = ByteArray(length)
+            readByteArray(tmp, 0, length)
+            dest.writeByteArray(tmp, 0, length)
         }
-        override fun clear() { readerIndex = 0; writerIndex = 0 }
+        override fun clear() {
+            readerIndex = 0
+            writerIndex = 0
+        }
         override fun retain(): IoBuf = this
         override fun release(): Boolean = true
         override fun close() {}
@@ -70,7 +77,8 @@ class DirectIoBufCopyToTest {
         val out = ByteArray(4)
         dest.readByteArray(out, 0, 4)
         assertContentEquals(byteArrayOf(9, 8, 7, 6), out)
-        src.release(); dest.release()
+        src.release()
+        dest.release()
     }
 
     @Test
