@@ -67,6 +67,13 @@ class PooledDirectAllocator(
 
     private val poolOwner: IoBufMemoryOwner = PoolOwner(::returnToPool)
 
+    /**
+     * Pluggable source of raw memory for the standard pooled size class.
+     * Larger requests bypass it with a one-off [Segment] of exactly the
+     * requested capacity (the "huge bypass" path).
+     */
+    private val standardMemorySource: RawMemorySource = JvmRawMemorySource(SEGMENT_SIZE)
+
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
         val pool = pools[capacity]
@@ -74,9 +81,22 @@ class PooledDirectAllocator(
             pool.pop()?.also { it.resetForReuse() }
         } else {
             null
-        } ?: DirectIoBuf(capacity, poolOwner)
+        } ?: DirectIoBuf.overSegment(newSegment(capacity), poolOwner)
         return buf
     }
+
+    /**
+     * Acquires a [Segment] of [capacity] bytes. The standard pooled size
+     * is served through [standardMemorySource]; any other size (a "huge"
+     * request larger than the pooled class) gets a one-off [Segment] of
+     * exactly that capacity.
+     */
+    private fun newSegment(capacity: Int): Segment =
+        if (capacity == SEGMENT_SIZE) {
+            Segment(standardMemorySource.acquire(), SEGMENT_SIZE)
+        } else {
+            Segment(JvmRawMemorySource(capacity).acquire(), capacity)
+        }
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
@@ -142,7 +162,9 @@ class PooledDirectAllocator(
     }
 
     companion object {
-        private const val DEFAULT_BUFFER_SIZE = 8192
+        /** Standard pooled segment size served through [standardMemorySource]. */
+        private const val SEGMENT_SIZE = 8192
+        private const val DEFAULT_BUFFER_SIZE = SEGMENT_SIZE
         private const val DEFAULT_POOL_SLOTS = 16
         private const val LOCAL_POOL_SLOTS = 8
         private const val DEFAULT_MAX_TOTAL_BYTES = 256L * 1024 // 256 KiB
