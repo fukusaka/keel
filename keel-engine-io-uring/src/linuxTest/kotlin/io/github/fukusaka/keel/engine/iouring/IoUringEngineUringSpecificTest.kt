@@ -1,9 +1,12 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io_uring.io_uring_prep_read
 import kotlinx.cinterop.ExperimentalForeignApi

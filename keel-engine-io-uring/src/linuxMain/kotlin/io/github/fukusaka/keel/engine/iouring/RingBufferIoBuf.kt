@@ -1,8 +1,11 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufMemoryOwner
 import io.github.fukusaka.keel.buf.NativePointerAccess
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -58,6 +61,7 @@ internal class RingBufferIoBuf(
     // Cached pointer to the buffer slot. Pointer arithmetic (basePtr + bufId * bufferSize)
     // is computed once at construction and on reset(), not on every property access.
     private var ptr: CPointer<ByteVar> = bufferRing.getPointer(bufId)
+    @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     override val capacity: Int get() = bufferRing.bufferSize
     override val memoryOwner: IoBufMemoryOwner = RingSlotOwner(bufferRing, bufId)
