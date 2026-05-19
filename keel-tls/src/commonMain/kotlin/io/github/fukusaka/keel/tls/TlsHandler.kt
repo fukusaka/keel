@@ -149,9 +149,9 @@ class TlsHandler(
     /**
      * Saves unconsumed input bytes to accumulate buffer for the next onRead.
      *
-     * If [input] is the original cipherBuf (fast path), copies remaining bytes
-     * into a new accumulate buffer. If [input] is already the accumulate buffer,
-     * compacts it in place.
+     * Relocates the remaining bytes into a fresh accumulate buffer. If
+     * [input] was already the accumulate buffer, it is released once its
+     * unconsumed tail has been moved.
      */
     private fun saveAccumulate(ctx: PipelineHandlerContext, input: IoBuf) {
         val remaining = input.readableBytes
@@ -159,16 +159,16 @@ class TlsHandler(
             releaseAccumulate()
             return
         }
+        // Relocate the unconsumed bytes into a fresh accumulate buffer.
+        // copyTo advances both input.readerIndex and acc.writerIndex.
+        val acc = ctx.allocator.allocate(remaining)
+        input.copyTo(acc, remaining)
         if (input === accumulate) {
-            // Already in accumulate — compact in place.
-            input.compact()
-        } else {
-            // Fast path → slow path transition: copy remaining bytes.
-            // copyTo advances both input.readerIndex and acc.writerIndex.
-            val acc = ctx.allocator.allocate(remaining)
-            input.copyTo(acc, remaining)
-            accumulate = acc
+            // input was the previous accumulate buffer — release it now
+            // that its unconsumed tail has been relocated into acc.
+            input.release()
         }
+        accumulate = acc
     }
 
     private fun releaseAccumulate() {
