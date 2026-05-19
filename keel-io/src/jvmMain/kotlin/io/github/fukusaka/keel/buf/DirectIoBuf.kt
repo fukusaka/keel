@@ -30,9 +30,19 @@ import java.nio.ByteBuffer
  */
 class DirectIoBuf private constructor(
     private val segment: Segment,
+    private val windowStart: Int,
+    private val windowLength: Int,
 ) : IoBuf, PoolableIoBuf, NioByteBufferBacking {
 
-    init {
+    /**
+     * Primary-view constructor: a full-window view over [segment] that
+     * registers itself as the segment's [Segment.view].
+     *
+     * The windowed constructor `(segment, windowStart, windowLength)` is
+     * used for slices; it deliberately does NOT touch [Segment.view] so
+     * the primary view remains the segment's canonical owner-facing view.
+     */
+    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
         segment.view = this
     }
 
@@ -43,12 +53,25 @@ class DirectIoBuf private constructor(
      */
     constructor(capacity: Int) : this(allocSegment(capacity))
 
-    /** Cached direct [ByteBuffer] read once out of the [Segment]'s backing. */
-    private val cachedBase: ByteBuffer = segment.backing.base
+    /**
+     * Cached direct [ByteBuffer] windowed to `[windowStart, windowStart +
+     * windowLength)`. A full-window primary view caches the backing
+     * buffer directly (no extra object); a slice caches a `slice()` view
+     * so absolute indexing stays a single window-relative indexed access.
+     */
+    private val cachedBase: ByteBuffer =
+        if (windowStart == 0 && windowLength == segment.capacity) {
+            segment.backing.base
+        } else {
+            segment.backing.base.duplicate().apply {
+                position(windowStart)
+                limit(windowStart + windowLength)
+            }.slice()
+        }
 
     private val buf: ByteBuffer get() = cachedBase
 
-    override val capacity: Int get() = segment.capacity
+    override val capacity: Int get() = windowLength
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     @UnsafeIoBufApi
@@ -135,6 +158,32 @@ class DirectIoBuf private constructor(
         // to throw IndexOutOfBoundsException (index >= limit).
         buf.position(0)
         buf.limit(capacity)
+    }
+
+    /**
+     * Returns a same-[Segment] window view of [length] bytes at [offset]
+     * within this buffer's window.
+     *
+     * This is the same-[Segment] window-view slice path: the returned
+     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
+     * needs no throwaway wrapper segment. The caller owns the returned
+     * handle and must [release] it; when the segment's refcount reaches
+     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
+     *
+     * The view starts with `readerIndex = 0` and `writerIndex = length`.
+     * A zero [length] yields [EmptyIoBuf].
+     */
+    @Suppress("IoBufLeak") // Slice returns ownership to caller
+    internal fun sliceWindow(offset: Int, length: Int): IoBuf {
+        require(offset >= 0 && length >= 0 && offset + length <= capacity) {
+            "slice out of range: offset=$offset length=$length capacity=$capacity"
+        }
+        if (length == 0) return EmptyIoBuf
+        segment.retain()
+        return DirectIoBuf(segment, windowStart + offset, length).also {
+            it.readerIndex = 0
+            it.writerIndex = length
+        }
     }
 
     override fun resetForReuse() {
@@ -224,8 +273,13 @@ internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = DirectIoBuf(capac
 @OptIn(UnsafeIoBufApi::class)
 internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
     if (length == 0) return EmptyIoBuf
+    // Segment-backed source: slice as a same-Segment window view, no wrapper.
+    if (source is DirectIoBuf) return source.sliceWindow(offset, length)
+    // Engine-direct source (no Segment, e.g. NettyByteBufIoBuf): wrap a
+    // window of its NIO ByteBuffer and release the source through a
+    // SliceOwner at refcount-zero.
     source.retain()
-    val view = (source as DirectIoBuf).unsafeBuffer.duplicate().apply {
+    val view = source.unsafeBuffer.duplicate().apply {
         position(offset)
         limit(offset + length)
     }.slice()
