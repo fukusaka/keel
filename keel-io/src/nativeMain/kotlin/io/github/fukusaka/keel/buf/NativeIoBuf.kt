@@ -224,6 +224,14 @@ class NativeIoBuf private constructor(
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
             Segment(NativeRawMemorySource(capacity).acquire(), capacity)
+
+        /**
+         * Wraps an already-allocated heap-owned [Segment] as a
+         * [NativeIoBuf]. Used by pool-backed allocators that obtain raw
+         * memory through a [RawMemorySource] themselves.
+         */
+        internal fun overSegment(segment: Segment, memoryOwner: IoBufMemoryOwner): NativeIoBuf =
+            NativeIoBuf(segment, memoryOwner)
     }
 }
 
