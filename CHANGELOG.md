@@ -154,7 +154,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
-- **BREAKING** (`io`): the `IoBuf` reference count and memory owner move onto the shared `Segment`; the public `IoBufMemoryOwner` interface and `IoBuf.memoryOwner` property are removed (#575)
+- **BREAKING** (`io`): the `IoBuf` reference count and owner move onto the shared `Segment`; `IoBufMemoryOwner` and `IoBuf.memoryOwner` are removed (#575)
 - **BREAKING** (`io`): `IoBuf.compact()` is removed from the interface and every implementation — buffer accumulation now uses a segment chain or an explicit `allocate` + `copyTo` in the caller (#573)
 - **BREAKING** (`keel-ktor-engine`): the platform-default `StreamEngine` factory (`DefaultEngine` `expect`/`actual` returning `NioEngine` / `KqueueEngine` / `EpollEngine`) is removed; `KeelApplicationEngine.Configuration.engine` must be set explicitly (e.g. `engine = NioEngine()`). Avoids pulling every keel engine module into the adapter just to pick one at runtime; consumers depend only on the engine they actually use. `start()` throws `IllegalStateException` if `engine` is left unset (#391)
 
