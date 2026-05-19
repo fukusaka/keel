@@ -42,9 +42,19 @@ import platform.posix.memcpy
 @OptIn(ExperimentalForeignApi::class)
 class NativeIoBuf private constructor(
     private val segment: Segment,
+    private val windowStart: Int,
+    private val windowLength: Int,
 ) : IoBuf, PoolableIoBuf, NativePointerAccess {
 
-    init {
+    /**
+     * Primary-view constructor: a full-window view over [segment] that
+     * registers itself as the segment's [Segment.view].
+     *
+     * The windowed constructor `(segment, windowStart, windowLength)` is
+     * used for slices; it deliberately does NOT touch [Segment.view] so
+     * the primary view remains the segment's canonical owner-facing view.
+     */
+    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
         segment.view = this
     }
 
@@ -55,10 +65,15 @@ class NativeIoBuf private constructor(
      */
     constructor(capacity: Int) : this(allocSegment(capacity))
 
-    /** Cached native base pointer read once out of the [Segment]'s backing. */
-    private val cachedBase: CPointer<ByteVar> = segment.backing.base
+    /**
+     * Cached native base pointer to the window start, read once out of
+     * the [Segment]'s backing. All per-byte access uses this directly so
+     * windowed slices stay a single indexed load.
+     */
+    @Suppress("UnsafeCallOnNullableType")
+    private val cachedBase: CPointer<ByteVar> = (segment.backing.base + windowStart)!!
 
-    override val capacity: Int get() = segment.capacity
+    override val capacity: Int get() = windowLength
 
     @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = cachedBase
@@ -126,6 +141,32 @@ class NativeIoBuf private constructor(
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
+    }
+
+    /**
+     * Returns a same-[Segment] window view of [length] bytes at [offset]
+     * within this buffer's window.
+     *
+     * This is the same-[Segment] window-view slice path: the returned
+     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
+     * needs no throwaway wrapper segment. The caller owns the returned
+     * handle and must [release] it; when the segment's refcount reaches
+     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
+     *
+     * The view starts with `readerIndex = 0` and `writerIndex = length`.
+     * A zero [length] yields [EmptyIoBuf].
+     */
+    @Suppress("IoBufLeak") // Slice returns ownership to caller
+    internal fun sliceWindow(offset: Int, length: Int): IoBuf {
+        require(offset >= 0 && length >= 0 && offset + length <= capacity) {
+            "slice out of range: offset=$offset length=$length capacity=$capacity"
+        }
+        if (length == 0) return EmptyIoBuf
+        segment.retain()
+        return NativeIoBuf(segment, windowStart + offset, length).also {
+            it.readerIndex = 0
+            it.writerIndex = length
+        }
     }
 
     /**
@@ -216,6 +257,10 @@ internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = NativeIoBuf(capac
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
     if (length == 0) return EmptyIoBuf
+    // Segment-backed source: slice as a same-Segment window view, no wrapper.
+    if (source is NativeIoBuf) return source.sliceWindow(offset, length)
+    // Engine-direct source (no Segment): wrap a window of its native memory
+    // and release the source through a SliceOwner at refcount-zero.
     source.retain()
     @Suppress("UnsafeCallOnNullableType")
     val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
