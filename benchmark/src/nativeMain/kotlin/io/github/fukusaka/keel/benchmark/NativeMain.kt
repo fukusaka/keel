@@ -28,6 +28,10 @@ fun main(args: Array<String>) {
         runLongMapVariantBench()
         return
     }
+    if (args.any { it == "--bench=segment-access" }) {
+        runSegmentAccessBench()
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
