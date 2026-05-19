@@ -48,8 +48,10 @@ class DirectIoBuf private constructor(
     )
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
+    @UnsafeIoBufApi
     val unsafeBuffer: ByteBuffer get() = buf
 
+    @UnsafeIoBufApi
     override val unsafeNioByteBuffer: ByteBuffer get() = buf
 
     private var refCount = 1
@@ -214,6 +216,7 @@ class DirectIoBuf private constructor(
  * for Netty). The buffer covers the full [IoBuf.capacity] range; callers
  * must set [ByteBuffer.position] and [ByteBuffer.limit] before use.
  */
+@UnsafeIoBufApi
 val IoBuf.unsafeBuffer: ByteBuffer
     get() = (this as NioByteBufferBacking).unsafeNioByteBuffer
 

@@ -1,3 +1,5 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.buf
 
 import java.nio.ByteBuffer

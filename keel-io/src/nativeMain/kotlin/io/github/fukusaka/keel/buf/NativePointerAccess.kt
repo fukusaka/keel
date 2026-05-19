@@ -17,6 +17,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 @OptIn(ExperimentalForeignApi::class)
 interface NativePointerAccess {
     /** Raw pointer to the underlying native memory. */
+    @UnsafeIoBufApi
     val unsafePointer: CPointer<ByteVar>
 }
 
@@ -27,6 +28,7 @@ interface NativePointerAccess {
  * implements [NativePointerAccess]. Engine modules use this to pass
  * buffer memory directly to POSIX syscalls.
  */
+@UnsafeIoBufApi
 @OptIn(ExperimentalForeignApi::class)
 val IoBuf.unsafePointer: CPointer<ByteVar>
     get() = (this as NativePointerAccess).unsafePointer
