@@ -265,3 +265,18 @@ internal interface PoolableIoBuf : IoBuf {
  * [BufferAllocator.allocate] over calling this directly.
  */
 internal expect fun createDefaultIoBuf(capacity: Int): IoBuf
+
+/**
+ * Creates a zero-copy [IoBuf] view of [length] bytes starting at [offset]
+ * in [source], using the platform-native backing type.
+ *
+ * The view shares [source]'s backing memory — no bytes are copied.
+ * [source] is [retained][IoBuf.retain]; the returned view's
+ * [memoryOwner][IoBuf.memoryOwner] is a [SliceOwner] that releases
+ * [source] when the view's reference count reaches zero. A zero [length]
+ * yields [EmptyIoBuf].
+ *
+ * Backs [DefaultAllocator.slice] and the per-EventLoop pooled allocators'
+ * `slice`, so every platform produces a true zero-copy slice.
+ */
+internal expect fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf

@@ -116,14 +116,8 @@ class SlabAllocator(
         return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = ExternalWrapOwner { pinned.unpin() })
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
-        if (length == 0) return EmptyIoBuf
-        source.retain()
-        @Suppress("UnsafeCallOnNullableType")
-        val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
-        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = SliceOwner(source))
-    }
+    override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+        sliceDefaultIoBuf(source, offset, length)
 
     private fun returnToPool(buf: IoBuf) {
         val closed = withSpinLock {
