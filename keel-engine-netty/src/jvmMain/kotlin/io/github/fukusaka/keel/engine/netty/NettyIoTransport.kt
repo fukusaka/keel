@@ -193,7 +193,7 @@ internal class NettyIoTransport(
                 val buf = DirectIoBuf.wrapExternal(
                     buffer = nio,
                     bytesWritten = readable,
-                    memoryOwner = NettyByteBufOwner(byteBuf),
+                    owner = NettyByteBufOwner(byteBuf),
                 )
                 try {
                     onRead?.invoke(buf)

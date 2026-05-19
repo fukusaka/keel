@@ -76,23 +76,6 @@ interface IoBuf : Releasable {
     val writableBytes: Int
 
     /**
-     * Strategy object that decides what happens to the backing memory
-     * when this buffer's refcount reaches zero.
-     *
-     * Set once at construction; never changes for a given [IoBuf]
-     * instance (pool reuse keeps the same owner — the same instance is
-     * handed out again, so its owner naturally matches the pool).
-     *
-     * Engines that need to dispatch based on memory provenance (e.g.
-     * io_uring picking `WRITE_FIXED` vs `WRITE`) use a direct type check
-     * such as `owner is FixedBufferOwner` and read the strategy-specific
-     * state off the concrete owner type.
-     *
-     * See [IoBufMemoryOwner] for the taxonomy of concrete owners.
-     */
-    val memoryOwner: IoBufMemoryOwner
-
-    /**
      * Writes [value] at the current write position and advances [writerIndex].
      *
      * **Precondition**: caller must ensure `writableBytes > 0`. Behaviour when
@@ -199,15 +182,15 @@ interface IoBuf : Releasable {
 
     /**
      * Teardown escape hatch: forces the reference count to zero without
-     * invoking [memoryOwner]'s normal release path.
+     * invoking the segment's normal owner release path.
      *
      * **Prefer [release] for normal lifecycle management.** [close] is
      * an escape for engine shutdown / emergency teardown scenarios where
      * holding a pool slot or kernel-registered index is acceptable to
      * leak (the whole allocator or engine is going away anyway). It
-     * intentionally bypasses [memoryOwner] so pool returns and kernel
-     * slot returns do not happen; for heap-backed buffers, backing
-     * memory is freed directly via the concrete IoBuf type.
+     * intentionally bypasses the segment owner so pool returns and
+     * kernel slot returns do not happen; for heap-backed buffers,
+     * backing memory is freed directly via the concrete IoBuf type.
      *
      * Safe to call multiple times (idempotent).
      */
@@ -218,22 +201,22 @@ interface IoBuf : Releasable {
  * Extended [IoBuf] interface for pool-managed buffers.
  *
  * Adds [nextLink] for intrusive freelist, [resetForReuse] for pool
- * recycling, and a widened [memoryOwner] (var) that internal
+ * recycling, and a mutable [segmentOwner] hook that internal
  * decorators such as [TrackingAllocator] / [LeakDetectingAllocator]
- * can wrap. Public [IoBuf.memoryOwner] stays `val` so external
- * callers cannot mutate the owner mid-life; only engine-internal
- * tooling in keel-io reaches here. Used internally by
+ * use to intercept the release path. Used internally by
  * [BufferAllocator] implementations within io-core.
  */
 internal interface PoolableIoBuf : IoBuf {
 
     /**
-     * Internal-mutable owner slot. Default construction assigns an
-     * immutable owner (matches the [IoBuf.memoryOwner] contract from
-     * the caller's perspective); decorators that need to intercept the
-     * release path replace it in-place.
+     * The [SegmentOwner] of the buffer's backing [Segment].
+     *
+     * Reads and writes go straight through to [Segment.owner].
+     * Decorators (leak detection, allocate/release counting) replace
+     * the owner in-place so the release path can be intercepted
+     * without changing the public [IoBuf] surface.
      */
-    override var memoryOwner: IoBufMemoryOwner
+    var segmentOwner: SegmentOwner
 
     /**
      * Intrusive link for lock-free pool freelists (Treiber stack).
@@ -248,7 +231,7 @@ internal interface PoolableIoBuf : IoBuf {
      * Resets the buffer for reuse without freeing the underlying memory.
      *
      * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
-     * and [nextLink] to null. [memoryOwner] is preserved across reuses.
+     * and [nextLink] to null. The segment owner is preserved across reuses.
      */
     fun resetForReuse()
 }
@@ -271,10 +254,9 @@ internal expect fun createDefaultIoBuf(capacity: Int): IoBuf
  * in [source], using the platform-native backing type.
  *
  * The view shares [source]'s backing memory — no bytes are copied.
- * [source] is [retained][IoBuf.retain]; the returned view's
- * [memoryOwner][IoBuf.memoryOwner] is a [SliceOwner] that releases
- * [source] when the view's reference count reaches zero. A zero [length]
- * yields [EmptyIoBuf].
+ * [source] is [retained][IoBuf.retain]; the returned view's backing
+ * [Segment] is owned by a [SliceOwner] that releases [source] when the
+ * view's reference count reaches zero. A zero [length] yields [EmptyIoBuf].
  *
  * Backs [DefaultAllocator.slice] and the per-EventLoop pooled allocators'
  * `slice`, so every platform produces a true zero-copy slice.

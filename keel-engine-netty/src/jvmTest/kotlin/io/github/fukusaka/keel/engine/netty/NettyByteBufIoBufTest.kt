@@ -6,7 +6,6 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class NettyByteBufIoBufTest {
@@ -177,14 +176,12 @@ class NettyByteBufIoBufTest {
     }
 
     @Test
-    fun `memoryOwner is NettyByteBufOwner bound to backing ByteBuf`() {
+    fun `release at refcount zero releases backing ByteBuf`() {
         val buf = newBuf()
         val nativeRef = buf.byteBuf
         assertEquals(1, nativeRef.refCnt())
-        // memoryOwner.release is the single path that decrements the native ref.
-        buf.memoryOwner.release(buf)
+        // release() at refcount zero is the single path that decrements the native ref.
+        assertTrue(buf.release())
         assertEquals(0, nativeRef.refCnt())
-        // Owner type is not a public concern; sanity check via reflection-free behaviour.
-        assertNotEquals(io.github.fukusaka.keel.buf.HeapOwner, buf.memoryOwner)
     }
 }

@@ -9,16 +9,16 @@ package io.github.fukusaka.keel.buf
  * singleton sentinels like [EmptyIoBuf]) may treat [release] as a no-op and
  * always return `false`.
  *
- * **Distinction from [IoBufMemoryOwner]**: [Releasable] is implemented by the
+ * **Distinction from [SegmentOwner]**: [Releasable] is implemented by the
  * *resource itself* — it is the holder's handle for relinquishing ownership.
- * [IoBufMemoryOwner] is the *strategy object* embedded inside an [IoBuf] that
+ * [SegmentOwner] is the *strategy object* carried by a [Segment] that
  * decides what happens when the refcount reaches zero (free heap memory, return
- * to pool, release a kernel-registered slot, …). The two roles are separate:
+ * to pool, release a parent slice, …). The two roles are separate:
  * `IoBuf.release()` decrements the count ([Releasable] side) and, only at
- * zero, delegates to `IoBuf.memoryOwner.release(buf)` ([IoBufMemoryOwner] side).
+ * zero, delegates to `Segment.owner.release(segment)` ([SegmentOwner] side).
  *
  * @see IoBuf for the primary implementation
- * @see IoBufMemoryOwner for the complementary release-strategy interface
+ * @see SegmentOwner for the complementary release-strategy interface
  */
 interface Releasable {
 

@@ -14,7 +14,7 @@ import org.khronos.webgl.Int8Array
  * for API compatibility with Native/JVM implementations.
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
- * [Int8Array] without allocation. Pass an [IoBufMemoryOwner] if recycling
+ * [Int8Array] without allocation. Pass a [SegmentOwner] if recycling
  * is required.
  *
  * Note: [Int8Array] provides direct byte-level access without `dynamic`
@@ -22,15 +22,18 @@ import org.khronos.webgl.Int8Array
  */
 class TypedArrayIoBuf private constructor(
     private val segment: Segment,
-    override var memoryOwner: IoBufMemoryOwner,
-) : IoBuf, PoolableIoBuf, HeapManagedBacking {
+) : IoBuf, PoolableIoBuf {
+
+    init {
+        segment.view = this
+    }
 
     /**
      * Creates a heap-owned [TypedArrayIoBuf] backed by a freshly-allocated
-     * [Segment]. V8 reclaims the backing [Int8Array] via GC;
-     * [memoryOwner] is [HeapOwner] with a no-op backing free.
+     * [Segment]. V8 reclaims the backing [Int8Array] via GC; the
+     * segment's owner defaults to [HeapOwner] with a no-op backing free.
      */
-    constructor(capacity: Int) : this(allocSegment(capacity), HeapOwner)
+    constructor(capacity: Int) : this(allocSegment(capacity))
 
     /** Cached [Int8Array] read once out of the [Segment]'s backing. */
     private val cachedBase: Int8Array = segment.backing.base
@@ -39,7 +42,10 @@ class TypedArrayIoBuf private constructor(
 
     override val capacity: Int get() = segment.capacity
 
-    private var refCount = 1
+    override var segmentOwner: SegmentOwner
+        get() = segment.owner
+        set(value) { segment.owner = value }
+
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -99,37 +105,22 @@ class TypedArrayIoBuf private constructor(
     override fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
-        refCount = 1
+        segment.resetForReuse()
         nextLink = null
     }
 
     override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released buffer" }
-        refCount++
+        segment.retain()
         return this
     }
 
-    override fun release(): Boolean {
-        check(refCount > 0) { "Buffer already released" }
-        if (--refCount == 0) {
-            memoryOwner.release(this)
-            return true
-        }
-        return false
-    }
+    override fun release(): Boolean = segment.release()
 
     override fun close() {
-        refCount = 0
         // Int8Array is GC-managed so routing the raw-memory free through
         // the Segment's backing is a no-op. Escape-hatch path bypasses
-        // memoryOwner so pool slots / external handles leak (intentional).
-        segment.backing.free()
-    }
-
-    /** @see HeapManagedBacking */
-    override fun freeHeapBacking() {
-        // Routes through the Segment's backing; a no-op on JS because the
-        // Int8Array is GC-managed.
+        // the segment owner so pool slots / external handles leak
+        // (intentional). RawSegmentBacking.free() is idempotent.
         segment.backing.free()
     }
 
@@ -142,20 +133,21 @@ class TypedArrayIoBuf private constructor(
          * without allocation.
          *
          * The returned buffer does NOT own the array; the supplied
-         * [memoryOwner] handles cleanup on refcount-zero.
+         * [owner] handles cleanup on refcount-zero.
          *
          * @param array         The external [Int8Array] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @param memoryOwner   Strategy invoked at refcount-zero.
+         * @param owner         Strategy invoked at refcount-zero.
          * @return A [TypedArrayIoBuf] wrapping the external array.
          */
         internal fun wrapExternal(
             array: Int8Array,
             bytesWritten: Int,
-            memoryOwner: IoBufMemoryOwner = HeapOwner,
+            owner: SegmentOwner = HeapOwner,
         ): TypedArrayIoBuf {
             val segment = Segment(RawSegmentBacking(array), array.length)
-            return TypedArrayIoBuf(segment, memoryOwner).also {
+            segment.owner = owner
+            return TypedArrayIoBuf(segment).also {
                 it.writerIndex = bytesWritten
             }
         }
@@ -183,5 +175,5 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
     if (length == 0) return EmptyIoBuf
     source.retain()
     val view = (source as TypedArrayIoBuf).unsafeArray.subarray(offset, offset + length)
-    return TypedArrayIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
+    return TypedArrayIoBuf.wrapExternal(view, bytesWritten = length, owner = SliceOwner(source))
 }
