@@ -3,11 +3,15 @@ package io.github.fukusaka.keel.buf
 import java.nio.ByteBuffer
 
 /**
- * JVM [IoBuf] implementation backed by a direct [ByteBuffer].
+ * JVM [IoBuf] implementation — a *view* over a [Segment].
  *
- * Uses `ByteBuffer.allocateDirect(capacity)` for off-heap memory that
- * can be passed directly to NIO `SocketChannel.read/write` without
- * copying. The [unsafeBuffer] property exposes the underlying [ByteBuffer].
+ * The buffer holds a [Segment] reference; the segment's
+ * [RawSegmentBacking] carries the direct [ByteBuffer]. At construction
+ * the view reads the [ByteBuffer] out of the backing once and caches it
+ * in [cachedBase]; all access uses the cached buffer directly. The
+ * direct [ByteBuffer] is off-heap memory that can be passed to NIO
+ * `SocketChannel.read/write` without copying. The [unsafeBuffer]
+ * property exposes the cached [ByteBuffer].
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
  * [ByteBuffer] without allocation. The caller supplies an
@@ -16,7 +20,7 @@ import java.nio.ByteBuffer
  *
  * **Reference counting**: non-atomic (single-threaded EventLoop model).
  * [close] is a teardown escape hatch; the direct [ByteBuffer] is
- * GC-managed so there is no native memory to free here, and the normal
+ * GC-managed so the [Segment]'s backing free is a no-op, and the normal
  * release path goes through [memoryOwner] instead.
  *
  * **position/limit management**: [clear] resets both `position` and `limit`
@@ -25,27 +29,26 @@ import java.nio.ByteBuffer
  * to throw [IndexOutOfBoundsException] if index >= limit.
  */
 class DirectIoBuf private constructor(
-    private val buf: ByteBuffer,
-    override val capacity: Int,
+    private val segment: Segment,
     override var memoryOwner: IoBufMemoryOwner,
 ) : IoBuf, PoolableIoBuf, HeapManagedBacking, NioByteBufferBacking {
 
     /**
-     * Creates a heap-owned [DirectIoBuf]. The backing direct
-     * [ByteBuffer] is GC-reclaimed, so the owner is [HeapOwner].
+     * Creates a heap-owned [DirectIoBuf] backed by a freshly-allocated
+     * [Segment]. The backing direct [ByteBuffer] is GC-reclaimed, so the
+     * owner is [HeapOwner].
      */
-    constructor(capacity: Int) : this(
-        ByteBuffer.allocateDirect(capacity),
-        capacity,
-        HeapOwner,
-    )
+    constructor(capacity: Int) : this(allocSegment(capacity), HeapOwner)
 
     /** Used by pool-backed allocators to install a custom [memoryOwner]. */
-    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(
-        ByteBuffer.allocateDirect(capacity),
-        capacity,
-        memoryOwner,
-    )
+    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(allocSegment(capacity), memoryOwner)
+
+    /** Cached direct [ByteBuffer] read once out of the [Segment]'s backing. */
+    private val cachedBase: ByteBuffer = segment.backing.base
+
+    private val buf: ByteBuffer get() = cachedBase
+
+    override val capacity: Int get() = segment.capacity
 
     /** Direct ByteBuffer for engine-layer zero-copy I/O. */
     @UnsafeIoBufApi
@@ -174,14 +177,19 @@ class DirectIoBuf private constructor(
 
     override fun close() {
         refCount = 0
-        // Escape hatch. ByteBuffer is GC-managed; intentionally does NOT
-        // call memoryOwner so pool slots / external handles leak. Normal
-        // lifecycle is [release]; use this only for teardown paths.
+        // Escape hatch. The direct ByteBuffer is GC-managed so routing
+        // the raw-memory free through the Segment's backing is a no-op.
+        // Intentionally does NOT call memoryOwner so pool slots /
+        // external handles leak. Normal lifecycle is [release]; use this
+        // only for teardown paths.
+        segment.backing.free()
     }
 
     /** @see HeapManagedBacking */
     override fun freeHeapBacking() {
-        // ByteBuffer is GC-managed; nothing to do.
+        // Routes through the Segment's backing; a no-op on JVM because
+        // the direct ByteBuffer is GC-managed.
+        segment.backing.free()
     }
 
     companion object {
@@ -202,9 +210,16 @@ class DirectIoBuf private constructor(
             buffer: ByteBuffer,
             bytesWritten: Int,
             memoryOwner: IoBufMemoryOwner = HeapOwner,
-        ): DirectIoBuf = DirectIoBuf(buffer, buffer.capacity(), memoryOwner).also {
-            it.writerIndex = bytesWritten
+        ): DirectIoBuf {
+            val segment = Segment(RawSegmentBacking(buffer), buffer.capacity())
+            return DirectIoBuf(segment, memoryOwner).also {
+                it.writerIndex = bytesWritten
+            }
         }
+
+        /** Allocates a heap-owned [Segment] of [capacity] bytes. */
+        private fun allocSegment(capacity: Int): Segment =
+            Segment(JvmRawMemorySource(capacity).acquire(), capacity)
     }
 }
 
