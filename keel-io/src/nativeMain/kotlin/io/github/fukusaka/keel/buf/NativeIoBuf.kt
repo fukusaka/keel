@@ -1,3 +1,5 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.buf
 
 import kotlinx.cinterop.CPointer
@@ -60,6 +62,7 @@ class NativeIoBuf private constructor(
         memoryOwner = memoryOwner,
     )
 
+    @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     private var refCount = 1
     private var freed = false

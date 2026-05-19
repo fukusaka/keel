@@ -28,5 +28,6 @@ interface NioByteBufferBacking {
      * than zero. Accessing this buffer after the [IoBuf] is released is
      * undefined behaviour (use-after-free for off-heap implementations).
      */
+    @UnsafeIoBufApi
     val unsafeNioByteBuffer: ByteBuffer
 }

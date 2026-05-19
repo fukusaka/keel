@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufMemoryOwner
 import io.github.fukusaka.keel.buf.NioByteBufferBacking
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.netty.buffer.ByteBuf
 import java.nio.ByteBuffer
 
@@ -65,6 +66,7 @@ internal class NettyByteBufIoBuf(
      * be reused for a different allocation. Accessing this [ByteBuffer] after
      * [release] is a use-after-free.
      */
+    @UnsafeIoBufApi
     override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(0, capacity)
 
     private var refCount: Int = 1

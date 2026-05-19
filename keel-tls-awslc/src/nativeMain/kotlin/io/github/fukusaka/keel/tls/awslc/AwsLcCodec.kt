@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalForeignApi::class)
+@file:OptIn(ExperimentalForeignApi::class, UnsafeIoBufApi::class)
 
 package io.github.fukusaka.keel.tls.awslc
 
@@ -18,6 +18,7 @@ import awslc.keel_awslc_bio_ctx
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_get_alpn
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecResult

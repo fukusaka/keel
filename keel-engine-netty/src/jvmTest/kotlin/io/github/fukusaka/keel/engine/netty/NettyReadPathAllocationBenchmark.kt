@@ -1,9 +1,12 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.engine.netty
 
 import com.sun.management.ThreadMXBean
 import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
