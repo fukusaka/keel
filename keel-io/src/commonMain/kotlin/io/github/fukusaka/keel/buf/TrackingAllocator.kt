@@ -3,9 +3,9 @@ package io.github.fukusaka.keel.buf
 /**
  * Delegating [BufferAllocator] that counts allocate/release calls.
  *
- * Wraps the delegate's [IoBuf.memoryOwner] with a decorator that
- * intercepts release events, so `buf.release()` is correctly counted
- * regardless of where it is called.
+ * Wraps the delegate's segment owner ([PoolableIoBuf.segmentOwner]) with
+ * a decorator that intercepts release events, so `buf.release()` is
+ * correctly counted regardless of where it is called.
  *
  * Used for testing (asserting allocate/release symmetry) and profiling
  * (measuring allocation frequency during benchmarks).
@@ -47,19 +47,19 @@ class TrackingAllocator(
                 "TrackingAllocator requires a PoolableIoBuf-compatible allocator, " +
                     "but delegate returned ${buf::class.simpleName}",
             )
-        poolable.memoryOwner = TrackingOwner(poolable.memoryOwner)
+        poolable.segmentOwner = TrackingOwner(poolable.segmentOwner)
         return buf
     }
 
     private inner class TrackingOwner(
-        private val delegate: IoBufMemoryOwner,
-    ) : IoBufMemoryOwner {
-        override fun release(buf: IoBuf) {
+        private val delegate: SegmentOwner,
+    ) : SegmentOwner {
+        override fun release(segment: Segment) {
             releaseCount++
             check(releaseCount <= allocateCount) {
                 "Double release detected: releaseCount ($releaseCount) > allocateCount ($allocateCount)"
             }
-            delegate.release(buf)
+            delegate.release(segment)
         }
     }
 

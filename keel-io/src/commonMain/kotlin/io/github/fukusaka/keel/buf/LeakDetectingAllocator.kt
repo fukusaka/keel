@@ -105,7 +105,7 @@ class LeakDetectingAllocator(
 /**
  * Installs platform-specific leak detection on [buf].
  *
- * Decorates the buffer's [IoBuf.memoryOwner] (via [PoolableIoBuf.memoryOwner])
+ * Decorates the buffer's segment owner (via [PoolableIoBuf.segmentOwner])
  * so the release path flips a `released` flag before the real owner runs:
  * - **Released path**: decorator fires → marks as released → no leak.
  * - **Leaked path**: buffer becomes unreachable → GC reclaims → platform

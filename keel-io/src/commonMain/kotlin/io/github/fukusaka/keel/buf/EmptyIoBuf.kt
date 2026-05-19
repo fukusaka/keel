@@ -23,14 +23,6 @@ object EmptyIoBuf : IoBuf {
     override val readableBytes: Int get() = 0
     override val writableBytes: Int get() = 0
 
-    /**
-     * [EmptyIoBuf] has no backing memory and never fires a release path;
-     * exposing an owner here would never be invoked. Reports [HeapOwner]
-     * as a stand-in so callers that query [memoryOwner] for diagnostics
-     * get a well-typed result.
-     */
-    override val memoryOwner: IoBufMemoryOwner get() = HeapOwner
-
     override fun writeByte(value: Byte) {
         throw UnsupportedOperationException("EmptyIoBuf is immutable")
     }

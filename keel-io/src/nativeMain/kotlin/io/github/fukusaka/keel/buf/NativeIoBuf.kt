@@ -23,36 +23,37 @@ import platform.posix.memcpy
  * indirection per access is materially slower).
  *
  * **Owned memory** (primary constructor): the [Segment] wraps a
- * `nativeHeap`-owned backing and is freed by [HeapOwner] (via
- * [freeHeapBacking]) when the refcount reaches zero.
+ * `nativeHeap`-owned backing whose [Segment.owner] is [HeapOwner],
+ * which frees the backing when the refcount reaches zero.
  *
  * **External memory** ([wrapExternal] factory): the [Segment] wraps a
  * non-owning backing over caller-provided memory. The view does NOT own
- * the memory; the supplied [memoryOwner] handles cleanup on
- * refcount-zero (e.g. an [ExternalWrapOwner] to drop a pinned hold, or a
- * ring-specific owner to return a slot).
+ * the memory; the segment's owner handles cleanup on refcount-zero
+ * (e.g. an [ExternalWrapOwner] to drop a pinned hold, or a slice owner
+ * to release the parent).
  *
  * The [unsafePointer] property exposes the cached `CPointer<ByteVar>`
  * for zero-copy I/O with POSIX syscalls (read/write/writev).
  *
- * **Reference counting**: non-atomic (single-threaded EventLoop model).
- * A `freed` flag guards [freeHeapBacking] / [close] against double-free.
+ * **Reference counting**: the refcount lives on the [Segment]; this
+ * view delegates [retain] / [release] to it. Non-atomic
+ * (single-threaded EventLoop model).
  */
 @OptIn(ExperimentalForeignApi::class)
 class NativeIoBuf private constructor(
     private val segment: Segment,
-    override var memoryOwner: IoBufMemoryOwner,
-) : IoBuf, PoolableIoBuf, NativePointerAccess, HeapManagedBacking {
+) : IoBuf, PoolableIoBuf, NativePointerAccess {
+
+    init {
+        segment.view = this
+    }
 
     /**
      * Creates a heap-owned [NativeIoBuf] backed by a freshly-allocated
-     * [Segment]. The [memoryOwner] is [HeapOwner], which frees the
-     * backing via [freeHeapBacking] on refcount-zero.
+     * [Segment]. The segment's owner defaults to [HeapOwner], which
+     * frees the backing on refcount-zero.
      */
-    constructor(capacity: Int) : this(allocSegment(capacity), HeapOwner)
-
-    /** Used by pool-backed allocators to install a custom [memoryOwner]. */
-    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(allocSegment(capacity), memoryOwner)
+    constructor(capacity: Int) : this(allocSegment(capacity))
 
     /** Cached native base pointer read once out of the [Segment]'s backing. */
     private val cachedBase: CPointer<ByteVar> = segment.backing.base
@@ -61,8 +62,11 @@ class NativeIoBuf private constructor(
 
     @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = cachedBase
-    private var refCount = 1
-    private var freed = false
+
+    override var segmentOwner: SegmentOwner
+        get() = segment.owner
+        set(value) { segment.owner = value }
+
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -134,45 +138,25 @@ class NativeIoBuf private constructor(
     override fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
-        refCount = 1
-        freed = false
+        segment.resetForReuse()
         nextLink = null
     }
 
     override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released buffer" }
-        refCount++
+        segment.retain()
         return this
     }
 
-    override fun release(): Boolean {
-        check(refCount > 0) { "Buffer already released" }
-        if (--refCount == 0) {
-            memoryOwner.release(this)
-            return true
-        }
-        return false
-    }
+    override fun release(): Boolean = segment.release()
 
     override fun close() {
-        if (!freed) {
-            freed = true
-            refCount = 0
-            // Escape hatch: intentionally does NOT invoke memoryOwner —
-            // pool returns and kernel-slot handoffs are skipped. The raw
-            // memory free still routes through the Segment's backing so
-            // teardown does not leak the nativeHeap allocation; an
-            // external (wrapExternal) backing frees nothing here.
-            segment.backing.free()
-        }
-    }
-
-    /** @see HeapManagedBacking */
-    override fun freeHeapBacking() {
-        if (!freed) {
-            freed = true
-            segment.backing.free()
-        }
+        // Escape hatch: intentionally does NOT invoke the segment owner —
+        // pool returns and kernel-slot handoffs are skipped. The raw
+        // memory free routes through the Segment's backing so teardown
+        // does not leak the nativeHeap allocation; an external
+        // (wrapExternal) backing frees nothing here. RawSegmentBacking.free()
+        // is idempotent, so repeated calls are safe.
+        segment.backing.free()
     }
 
     companion object {
@@ -182,10 +166,9 @@ class NativeIoBuf private constructor(
          *
          * The external memory is wrapped as a non-owning
          * [RawSegmentBacking] inside a [Segment]; the returned view does
-         * NOT own the memory. The supplied [memoryOwner] handles cleanup
-         * on refcount-zero (for instance, [ExternalWrapOwner] to drop a
-         * pinned [ByteArray] hold, or a ring-specific owner to return a
-         * slot to the source pool).
+         * NOT own the memory. The supplied [owner] handles cleanup on
+         * refcount-zero (for instance, [ExternalWrapOwner] to drop a
+         * pinned [ByteArray] hold, or a slice owner to release a parent).
          *
          * For hot-path usage, pre-allocate wrappers at startup and reuse
          * them via [resetForReuse] to avoid object creation overhead.
@@ -193,17 +176,18 @@ class NativeIoBuf private constructor(
          * @param ptr           Pointer to the external memory region.
          * @param capacity      Size of the memory region in bytes.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @param memoryOwner   Strategy invoked at refcount-zero.
+         * @param owner         Strategy invoked at refcount-zero.
          * @return A [NativeIoBuf] wrapping the external memory.
          */
         internal fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
-            memoryOwner: IoBufMemoryOwner,
+            owner: SegmentOwner,
         ): NativeIoBuf {
             val segment = Segment(RawSegmentBacking(ptr, ownsMemory = false), capacity)
-            return NativeIoBuf(segment, memoryOwner).also {
+            segment.owner = owner
+            return NativeIoBuf(segment).also {
                 it.writerIndex = bytesWritten
             }
         }
@@ -214,11 +198,14 @@ class NativeIoBuf private constructor(
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a
-         * [NativeIoBuf]. Used by pool-backed allocators that obtain raw
-         * memory through a [RawMemorySource] themselves.
+         * [NativeIoBuf], installing [owner] on the segment. Used by
+         * pool-backed allocators that obtain raw memory through a
+         * [RawMemorySource] themselves.
          */
-        internal fun overSegment(segment: Segment, memoryOwner: IoBufMemoryOwner): NativeIoBuf =
-            NativeIoBuf(segment, memoryOwner)
+        internal fun overSegment(segment: Segment, owner: SegmentOwner): NativeIoBuf {
+            segment.owner = owner
+            return NativeIoBuf(segment)
+        }
     }
 }
 
@@ -232,5 +219,5 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
     source.retain()
     @Suppress("UnsafeCallOnNullableType")
     val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
-    return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = SliceOwner(source))
+    return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = SliceOwner(source))
 }

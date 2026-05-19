@@ -80,7 +80,7 @@ class NettyReadPathAllocationBenchmark {
         val buf = DirectIoBuf.wrapExternal(
             buffer = nio,
             bytesWritten = readable,
-            memoryOwner = NettyByteBufOwner(byteBuf),
+            owner = NettyByteBufOwner(byteBuf),
         )
         // Pipeline consumed — owner releases byteBuf transitively.
         buf.release()

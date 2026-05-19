@@ -72,7 +72,7 @@ class SlabAllocator(
         }
     }
 
-    private val poolOwner: IoBufMemoryOwner = PoolOwner(::returnToPool)
+    private val poolOwner: SegmentOwner = PoolOwner(::returnToPool)
 
     /**
      * Pluggable source of raw memory for the standard pooled size class.
@@ -113,7 +113,7 @@ class SlabAllocator(
         val pinned = bytes.pin()
         @Suppress("UnsafeCallOnNullableType")
         val ptr = pinned.addressOf(offset)!!
-        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, memoryOwner = ExternalWrapOwner { pinned.unpin() })
+        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = ExternalWrapOwner { pinned.unpin() })
     }
 
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =

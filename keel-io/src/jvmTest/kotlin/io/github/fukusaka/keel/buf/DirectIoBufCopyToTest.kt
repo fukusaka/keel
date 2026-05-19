@@ -22,7 +22,6 @@ class DirectIoBufCopyToTest {
         override var writerIndex: Int = 0
         override val readableBytes: Int get() = writerIndex - readerIndex
         override val writableBytes: Int get() = capacity - writerIndex
-        override val memoryOwner: IoBufMemoryOwner = HeapOwner
         override fun writeByte(value: Byte) { data[writerIndex++] = value }
         override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
             src.copyInto(data, writerIndex, offset, offset + length)

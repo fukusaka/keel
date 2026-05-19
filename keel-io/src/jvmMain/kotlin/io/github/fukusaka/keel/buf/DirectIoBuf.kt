@@ -14,14 +14,14 @@ import java.nio.ByteBuffer
  * property exposes the cached [ByteBuffer].
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
- * [ByteBuffer] without allocation. The caller supplies an
- * [IoBufMemoryOwner] that handles cleanup (for example,
- * [ExternalWrapOwner] to unpin or [PoolOwner] to return to a pool).
+ * [ByteBuffer] without allocation. The caller supplies a [SegmentOwner]
+ * that handles cleanup (for example, [ExternalWrapOwner] to unpin or a
+ * pool owner to return to a pool).
  *
- * **Reference counting**: non-atomic (single-threaded EventLoop model).
- * [close] is a teardown escape hatch; the direct [ByteBuffer] is
- * GC-managed so the [Segment]'s backing free is a no-op, and the normal
- * release path goes through [memoryOwner] instead.
+ * **Reference counting**: the refcount lives on the [Segment]; this view
+ * delegates [retain] / [release] to it. Non-atomic (single-threaded
+ * EventLoop model). [close] is a teardown escape hatch; the direct
+ * [ByteBuffer] is GC-managed so the [Segment]'s backing free is a no-op.
  *
  * **position/limit management**: [clear] resets both `position` and `limit`
  * on the underlying [ByteBuffer] because NIO `SocketChannel.write` may
@@ -30,18 +30,18 @@ import java.nio.ByteBuffer
  */
 class DirectIoBuf private constructor(
     private val segment: Segment,
-    override var memoryOwner: IoBufMemoryOwner,
-) : IoBuf, PoolableIoBuf, HeapManagedBacking, NioByteBufferBacking {
+) : IoBuf, PoolableIoBuf, NioByteBufferBacking {
+
+    init {
+        segment.view = this
+    }
 
     /**
      * Creates a heap-owned [DirectIoBuf] backed by a freshly-allocated
-     * [Segment]. The backing direct [ByteBuffer] is GC-reclaimed, so the
-     * owner is [HeapOwner].
+     * [Segment]. The backing direct [ByteBuffer] is GC-reclaimed; the
+     * segment's owner defaults to [HeapOwner].
      */
-    constructor(capacity: Int) : this(allocSegment(capacity), HeapOwner)
-
-    /** Used by pool-backed allocators to install a custom [memoryOwner]. */
-    internal constructor(capacity: Int, memoryOwner: IoBufMemoryOwner) : this(allocSegment(capacity), memoryOwner)
+    constructor(capacity: Int) : this(allocSegment(capacity))
 
     /** Cached direct [ByteBuffer] read once out of the [Segment]'s backing. */
     private val cachedBase: ByteBuffer = segment.backing.base
@@ -57,7 +57,10 @@ class DirectIoBuf private constructor(
     @UnsafeIoBufApi
     override val unsafeNioByteBuffer: ByteBuffer get() = buf
 
-    private var refCount = 1
+    override var segmentOwner: SegmentOwner
+        get() = segment.owner
+        set(value) { segment.owner = value }
+
     override var nextLink: IoBuf? = null
 
     override var readerIndex: Int = 0
@@ -137,41 +140,25 @@ class DirectIoBuf private constructor(
     override fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
-        refCount = 1
+        segment.resetForReuse()
         nextLink = null
         buf.position(0)
         buf.limit(capacity)
     }
 
     override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released buffer" }
-        refCount++
+        segment.retain()
         return this
     }
 
-    override fun release(): Boolean {
-        check(refCount > 0) { "Buffer already released" }
-        if (--refCount == 0) {
-            memoryOwner.release(this)
-            return true
-        }
-        return false
-    }
+    override fun release(): Boolean = segment.release()
 
     override fun close() {
-        refCount = 0
         // Escape hatch. The direct ByteBuffer is GC-managed so routing
         // the raw-memory free through the Segment's backing is a no-op.
-        // Intentionally does NOT call memoryOwner so pool slots /
+        // Intentionally does NOT invoke the segment owner so pool slots /
         // external handles leak. Normal lifecycle is [release]; use this
-        // only for teardown paths.
-        segment.backing.free()
-    }
-
-    /** @see HeapManagedBacking */
-    override fun freeHeapBacking() {
-        // Routes through the Segment's backing; a no-op on JVM because
-        // the direct ByteBuffer is GC-managed.
+        // only for teardown paths. RawSegmentBacking.free() is idempotent.
         segment.backing.free()
     }
 
@@ -180,22 +167,23 @@ class DirectIoBuf private constructor(
          * Wraps an externally-owned [ByteBuffer] as a [DirectIoBuf] without allocation.
          *
          * The returned buffer does NOT own the [ByteBuffer]; the supplied
-         * [memoryOwner] handles cleanup on refcount-zero (e.g.,
+         * [owner] handles cleanup on refcount-zero (e.g.,
          * [ExternalWrapOwner] to drop the hold on the external resource,
-         * or [PoolOwner] to return a pooled Netty `ByteBuf`).
+         * or an engine owner to return a pooled native `ByteBuf`).
          *
          * @param buffer        The external [ByteBuffer] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @param memoryOwner   Strategy invoked at refcount-zero.
+         * @param owner         Strategy invoked at refcount-zero.
          * @return A [DirectIoBuf] wrapping the external buffer.
          */
         fun wrapExternal(
             buffer: ByteBuffer,
             bytesWritten: Int,
-            memoryOwner: IoBufMemoryOwner = HeapOwner,
+            owner: SegmentOwner = HeapOwner,
         ): DirectIoBuf {
             val segment = Segment(RawSegmentBacking(buffer), buffer.capacity())
-            return DirectIoBuf(segment, memoryOwner).also {
+            segment.owner = owner
+            return DirectIoBuf(segment).also {
                 it.writerIndex = bytesWritten
             }
         }
@@ -206,11 +194,14 @@ class DirectIoBuf private constructor(
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a
-         * [DirectIoBuf]. Used by pool-backed allocators that obtain raw
-         * memory through a [RawMemorySource] themselves.
+         * [DirectIoBuf], installing [owner] on the segment. Used by
+         * pool-backed allocators that obtain raw memory through a
+         * [RawMemorySource] themselves.
          */
-        internal fun overSegment(segment: Segment, memoryOwner: IoBufMemoryOwner): DirectIoBuf =
-            DirectIoBuf(segment, memoryOwner)
+        internal fun overSegment(segment: Segment, owner: SegmentOwner): DirectIoBuf {
+            segment.owner = owner
+            return DirectIoBuf(segment)
+        }
     }
 }
 
@@ -238,5 +229,5 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
         position(offset)
         limit(offset + length)
     }.slice()
-    return DirectIoBuf.wrapExternal(view, bytesWritten = length, memoryOwner = SliceOwner(source))
+    return DirectIoBuf.wrapExternal(view, bytesWritten = length, owner = SliceOwner(source))
 }

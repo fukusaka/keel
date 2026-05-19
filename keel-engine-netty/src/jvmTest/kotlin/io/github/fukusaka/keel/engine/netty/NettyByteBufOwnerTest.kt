@@ -20,7 +20,7 @@ class NettyByteBufOwnerTest {
             val buf = DirectIoBuf.wrapExternal(
                 buffer = nio,
                 bytesWritten = readable,
-                memoryOwner = NettyByteBufOwner(pooled),
+                owner = NettyByteBufOwner(pooled),
             )
             assertEquals(readable, buf.readableBytes)
             assertEquals('H'.code.toByte(), buf.readByte())

@@ -65,7 +65,7 @@ class PooledDirectAllocator(
         pools.putIfAbsent(size, Pool(effectiveMaxSlots))
     }
 
-    private val poolOwner: IoBufMemoryOwner = PoolOwner(::returnToPool)
+    private val poolOwner: SegmentOwner = PoolOwner(::returnToPool)
 
     /**
      * Pluggable source of raw memory for the standard pooled size class.

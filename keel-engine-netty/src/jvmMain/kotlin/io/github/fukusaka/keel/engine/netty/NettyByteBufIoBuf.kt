@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.buf.IoBufMemoryOwner
 import io.github.fukusaka.keel.buf.NioByteBufferBacking
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.netty.buffer.ByteBuf
@@ -22,9 +21,10 @@ import java.nio.ByteBuffer
  * pool safety); keel [IoBuf] refcount is non-atomic (EventLoop-confined).
  * keel's refcount is the logical ref count; the underlying `ByteBuf`
  * carries one reserve that is released when keel's refcount drops to
- * zero (via [NettyByteBufOwner]). Explicit extra holds on the
- * `ByteBuf` (e.g. `retainedSlice` during flush) are independent of the
- * keel-side count.
+ * zero (this class is engine-direct — it has no [io.github.fukusaka.keel.buf.Segment]
+ * and self-manages the `ByteBuf` reserve in [release]). Explicit extra
+ * holds on the `ByteBuf` (e.g. `retainedSlice` during flush) are
+ * independent of the keel-side count.
  *
  * **`close()` semantics**: escape hatch — drops the refcount to zero
  * and does NOT release the underlying ByteBuf (matches the contract
@@ -61,7 +61,7 @@ internal class NettyByteBufIoBuf(
      * remains valid for the lifetime of this object.
      *
      * **Lifetime**: valid only while this [IoBuf]'s keel refcount is greater than
-     * zero. Once [release] drops the refcount to zero, [NettyByteBufOwner] releases
+     * zero. Once [release] drops the refcount to zero, [release] releases
      * the underlying [ByteBuf] back to the Netty pool and the off-heap memory may
      * be reused for a different allocation. Accessing this [ByteBuffer] after
      * [release] is a use-after-free.
@@ -70,8 +70,6 @@ internal class NettyByteBufIoBuf(
     override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(0, capacity)
 
     private var refCount: Int = 1
-
-    override val memoryOwner: IoBufMemoryOwner = NettyByteBufOwner(byteBuf)
 
     override fun writeByte(value: Byte) {
         byteBuf.setByte(writerIndex, value.toInt())
@@ -129,7 +127,9 @@ internal class NettyByteBufIoBuf(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            memoryOwner.release(this)
+            // Engine-direct: no Segment. Release the backing Netty ByteBuf
+            // reserve directly. ByteBuf.release() is thread-safe (atomic CAS).
+            byteBuf.release()
             return true
         }
         return false
