@@ -1,6 +1,9 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
 package io.github.fukusaka.keel.tls.jsse
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecResult
