@@ -155,9 +155,8 @@ private const val TRIAL_MS = 5_000L
 
 /** Runs warmup + 3-trial median for a single variant and reports it. */
 private inline fun benchVariant(variant: String, notes: String, body: () -> Unit) {
-    val mark = TimeSource.Monotonic.markNow()
     warmup(body)
-    val nsPerOp = trialMedian(warmupElapsed = mark.elapsedNow().toDouble(DurationUnit.SECONDS), body)
+    val nsPerOp = trialMedian(body)
     report(variant, nsPerOp, "$notes (1 op = ${REGION_SIZE}B scan)")
 }
 
@@ -179,7 +178,7 @@ private inline fun warmup(body: () -> Unit) {
  * Counts iterations achieved in the trial window and derives ns/op, avoiding
  * per-op timing syscall overhead.
  */
-private inline fun trialMedian(warmupElapsed: Double, body: () -> Unit): Double {
+private inline fun trialMedian(body: () -> Unit): Double {
     val nsPerRun = DoubleArray(3)
     for (i in 0 until 3) {
         var iters = 0L
