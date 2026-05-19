@@ -32,6 +32,10 @@ fun main(args: Array<String>) {
         runSegmentAccessBench()
         return
     }
+    if (args.any { it == "--bench=chain-scan" }) {
+        runChainScanBench()
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
