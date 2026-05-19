@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.io
 import io.github.fukusaka.keel.buf.BufSlice
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -190,9 +191,10 @@ class BufferedSuspendSourceTest {
     }
 
     @Test
-    fun pullMode_scanLine_lineSpansCompact() = runTest {
-        // First line consumes most of the buffer. Second line starts near
-        // the end and requires compact + refill.
+    fun pullMode_scanLine_secondLineSpansRefill() = runTest {
+        // First line consumes most of the first refill buffer. The second
+        // line starts near the buffer end and continues into the next
+        // refill, exercising the cross-buffer BufSlice path in pull mode.
         val line1 = "A".repeat(8000) + "\n"
         val line2 = "B".repeat(500) + "\n"
         val source = BufferedSuspendSource(sourceOf(line1 + line2), DefaultAllocator)
@@ -200,6 +202,46 @@ class BufferedSuspendSourceTest {
         assertEquals("B".repeat(500), source.scanLine()?.decodeToString())
         assertNull(source.scanLine())
         source.close()
+    }
+
+    @Test
+    fun pullMode_scanLine_crossBuffer_multiSegment() = runTest {
+        // A single line longer than BUFFER_SIZE (8192): the LF lands in the
+        // second refill buffer, so scanLine returns a multi-segment BufSlice.
+        val line = "C".repeat(10000) + "\r\n"
+        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
+        val slice = source.scanLine()
+        assertNotNull(slice)
+        assertEquals("C".repeat(10000), slice.decodeToString())
+        assertEquals(10000, slice.totalLength)
+        assertNotNull(slice.next) // spans two refill buffers
+        assertNull(source.scanLine())
+        source.close()
+    }
+
+    @Test
+    fun pullMode_scanLine_crossBuffer_crAtBoundary() = runTest {
+        // CR is the last byte of the first refill buffer (8192 bytes),
+        // LF is the first byte of the next refill buffer.
+        val line = "z".repeat(8191) + "\r\n"
+        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
+        assertEquals("z".repeat(8191), source.scanLine()?.decodeToString())
+        assertNull(source.scanLine())
+        source.close()
+    }
+
+    @Test
+    fun pullMode_releasesAllRefillBuffersAfterConsume() = runTest {
+        // Consuming a multi-refill stream and closing must leave no
+        // outstanding refill buffers — each drained buffer is released
+        // back to the allocator, none are leaked.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val source = BufferedSuspendSource(chunkedSourceOf("D".repeat(20000), 4096), tracker)
+        val result = source.readByteArray(20000)
+        assertEquals(20000, result.size)
+        source.close()
+        assertTrue(tracker.allocateCount >= 2, "expected multiple refills, got ${tracker.allocateCount}")
+        tracker.assertNoLeaks()
     }
 
     @Test
