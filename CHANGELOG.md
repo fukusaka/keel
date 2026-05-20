@@ -58,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: `RawSegmentBacking` is now an `interface` with one impl per provenance; the `ownsMemory` flag is gone, `free()` is polymorphic (#579)
 - `io`: drop `RawMemorySource` — allocators now construct `RawSegmentBacking` directly; the speculative seam had no real consumer (#578)
 - **BREAKING** (`io`): `BufSlice` is renamed to `IoBufView` — it is a read-only view over one or more `IoBuf`s, not a buffer slice (#577)
 - `io`: `BufferAllocator.slice()` of a pooled (`Segment`-backed) buffer now returns a same-`Segment` window view, eliminating the per-slice wrapper allocation (#576)
