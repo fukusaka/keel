@@ -50,9 +50,9 @@ class WsHotPathAllocationBenchmark {
 
     private fun measure(iterations: Int, scenario: Scenario): Long {
         repeat(WARMUP) { scenario.runOnce() }
-        val start = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
+        val start = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
         repeat(iterations) { scenario.runOnce() }
-        val end = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
+        val end = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
         return (end - start) / iterations
     }
 
@@ -131,18 +131,23 @@ class WsHotPathAllocationBenchmark {
             "E ($BATCH × text ${SMALL_PAYLOAD}B, pipelined)" to PipelinedTextFrames(BATCH, SMALL_PAYLOAD),
         )
 
-        println("=== WsHotPath allocation (bytes / frame, iters=$ITERS × $TRIALS trials) ===")
-        for ((name, scenario) in scenarios) {
-            val trials = LongArray(TRIALS) { measure(ITERS, scenario) }
-            trials.sort()
-            val median = trials[TRIALS / 2]
-            val perFrame = if (scenario is PipelinedTextFrames) median / BATCH else median
-            val suffix = if (scenario is PipelinedTextFrames) "  (per-frame, batch=$BATCH)" else ""
-            println("  $name median=$perFrame bytes  samples=${trials.toList()}$suffix")
-        }
-
-        for ((_, scenario) in scenarios) {
-            scenario.ctx.close()
+        try {
+            println("=== WsHotPath allocation (bytes / frame, iters=$ITERS × $TRIALS trials) ===")
+            for ((name, scenario) in scenarios) {
+                val trials = LongArray(TRIALS) { measure(ITERS, scenario) }
+                trials.sort()
+                val median = trials[TRIALS / 2]
+                val perFrame = if (scenario is PipelinedTextFrames) median / BATCH else median
+                val suffix = if (scenario is PipelinedTextFrames) "  (per-frame, batch=$BATCH)" else ""
+                println("  $name median=$perFrame bytes  samples=${trials.toList()}$suffix")
+            }
+        } finally {
+            // Close every WsSeamContext even when one scenario throws — the
+            // remaining tracker + transport + channel triples would
+            // otherwise leak their pipeline state until JVM teardown.
+            for ((_, scenario) in scenarios) {
+                runCatching { scenario.ctx.close() }
+            }
         }
     }
 
