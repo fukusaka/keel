@@ -3,8 +3,12 @@ package io.github.fukusaka.keel.server.http
 import com.sun.management.ThreadMXBean
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.codec.http.HttpResponseHead
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
@@ -43,6 +47,14 @@ import kotlin.test.Test
  * - **E (10 × /hello GET on a warm connection)**: amortises per-request
  *   alloc over a keep-alive sequence — useful to isolate the
  *   per-connection setup tail from the steady-state per-request cost.
+ * - **F (/stream GET, 10 × 100B chunked)**: SSE-shaped streaming
+ *   response via `respondStream` — exercises the chunked
+ *   transfer-encoding emit path and `HttpResponseBodySink.write`. Each
+ *   chunk allocates a fresh `IoBuf`, so this scenario surfaces the
+ *   per-chunk overhead on top of the per-request baseline.
+ * - **G (/stream-large GET, 100 × 1000B chunked)**: same streaming
+ *   path as F at a larger chunk count and size — drives a more
+ *   realistic streaming workload (NDJSON / 100 KB SSE).
  *
  * Uses `com.sun.management.ThreadMXBean.getThreadAllocatedBytes` (same
  * primitive as [io.github.fukusaka.keel.engine.netty.NettyReadPathAllocationBenchmark]).
@@ -229,6 +241,48 @@ class HttpServerHotPathAllocationBenchmark {
         }
     }
 
+    private inner class ChunkedStream(
+        private val chunkCount: Int,
+        private val chunkSize: Int,
+    ) : Scenario() {
+        private val request = (
+            "GET /stream HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "\r\n"
+            ).encodeToByteArray()
+        private val chunkPayload = ByteArray(chunkSize) { 0x78 } // 'x' filler
+
+        override fun install() {
+            channel.installHttpServerPipeline(
+                Router().apply {
+                    register(HttpMethod.GET, "/stream") { call ->
+                        call.respondStream(
+                            HttpResponseHead(
+                                status = HttpStatus.OK,
+                                headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                            ),
+                        ) { sink ->
+                            repeat(chunkCount) {
+                                val chunk = DefaultAllocator.allocate(chunkSize)
+                                chunk.writeByteArray(chunkPayload, 0, chunkSize)
+                                sink.write(chunk)
+                            }
+                        }
+                    }
+                },
+                emptyList(),
+                ErrorHandlers.DEFAULT,
+                QueryParameterConfig.DEFAULT,
+                scope,
+            )
+        }
+
+        override fun runOnce() {
+            channel.pipeline.notifyRead(bufOf(request))
+            drainResponse()
+        }
+    }
+
     @Test
     fun `per-request allocation across hot-path scenarios`() {
         val scenarios = listOf(
@@ -237,6 +291,8 @@ class HttpServerHotPathAllocationBenchmark {
             "C (POST /echo, 100B req body)" to PostEcho(SMALL_BODY_SIZE),
             "D (POST /echo, ${LARGE_BODY_SIZE}B req body)" to PostEcho(LARGE_BODY_SIZE),
             "E (10 × /hello GET, pipelined)" to HelloGetPipelined(BATCH),
+            "F (/stream GET, 10 × 100B chunked)" to ChunkedStream(STREAM_SMALL_CHUNK_COUNT, SMALL_BODY_SIZE),
+            "G (/stream GET, 100 × 1000B chunked)" to ChunkedStream(STREAM_LARGE_CHUNK_COUNT, MEDIUM_CHUNK_SIZE),
         )
 
         // Each scenario gets a fresh pipeline; install once per scenario.
@@ -265,6 +321,9 @@ class HttpServerHotPathAllocationBenchmark {
         private const val SMALL_BODY_SIZE = 100
         private const val LARGE_BODY_SIZE = 10_000
         private const val BATCH = 10
+        private const val STREAM_SMALL_CHUNK_COUNT = 10
+        private const val STREAM_LARGE_CHUNK_COUNT = 100
+        private const val MEDIUM_CHUNK_SIZE = 1_000
         private const val WARMUP = 2_000
         private const val ITERS = 10_000
         private const val TRIALS = 5
