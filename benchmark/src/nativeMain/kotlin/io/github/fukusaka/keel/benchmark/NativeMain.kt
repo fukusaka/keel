@@ -36,6 +36,13 @@ fun main(args: Array<String>) {
         runChainScanBench()
         return
     }
+    if (args.any { it == "--bench=nw-recv-cost" }) {
+        if (!runNwRecvCostBench()) {
+            printErr("--bench=nw-recv-cost is macOS-only (NW engine is not available on this target)")
+            benchmarkExit(1)
+        }
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
