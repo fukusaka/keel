@@ -5,13 +5,13 @@ import java.lang.management.ManagementFactory
 import kotlin.test.Test
 
 /**
- * Measures per-operation cost of [IoBufByteCharSequence] across the 7
+ * Measures per-operation cost of [IoBufAsciiText] across the 7
  * operation axes (C1-C7) that L7 hot-path consumers will exercise.
  *
  * Compared against [String] direct access as the baseline (the type
  * keel currently returns from `HttpHeaders.get(name)`).
  *
- * - **C1 — construct alloc**: bytes per `IoBufByteCharSequence(buf, start, length)` call.
+ * - **C1 — construct alloc**: bytes per `IoBufAsciiText(buf, start, length)` call.
  * - **C2 — length getter**: latency of `.length`. Expected near-zero
  *   (final field read).
  * - **C3 — `get(i): Char`**: per-char latency (byte read + mask + Char
@@ -30,14 +30,14 @@ import kotlin.test.Test
  * (`ThreadMXBean.getThreadAllocatedBytes` for alloc, `System.nanoTime`
  * for latency, median over `TRIALS` trials).
  */
-class IoBufByteCharSequenceBenchmark {
+class IoBufAsciiTextBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean
     private val payloadBytes = PAYLOAD.encodeToByteArray()
     private val buf = DefaultAllocator.allocate(payloadBytes.size).apply {
         writeByteArray(payloadBytes, 0, payloadBytes.size)
     }
-    private val view = IoBufByteCharSequence(buf, 0, payloadBytes.size)
+    private val view = IoBufAsciiText(buf, 0, payloadBytes.size)
 
     private fun measureBytesPerIter(iterations: Int, body: () -> Unit): Long {
         repeat(WARMUP) { body() }
@@ -63,11 +63,11 @@ class IoBufByteCharSequenceBenchmark {
     private var sink = 0   // dead-code-elimination guard
 
     @Test
-    fun `IoBufByteCharSequence vs String — 7 axes`() {
+    fun `IoBufAsciiText vs String — 7 axes`() {
         // C1 — construct alloc
         val c1View = median(TRIALS) {
             measureBytesPerIter(ITERS) {
-                val v = IoBufByteCharSequence(buf, 0, payloadBytes.size)
+                val v = IoBufAsciiText(buf, 0, payloadBytes.size)
                 sink += v.length // prevent EE
             }
         }
@@ -151,7 +151,7 @@ class IoBufByteCharSequenceBenchmark {
             measureNsPerOp(ITERS_NS) { sink += PAYLOAD.hashCode() }
         }
 
-        println("=== IoBufByteCharSequence vs String (payload='$PAYLOAD', ${payloadBytes.size} bytes, iters=$ITERS × $TRIALS) ===")
+        println("=== IoBufAsciiText vs String (payload='$PAYLOAD', ${payloadBytes.size} bytes, iters=$ITERS × $TRIALS) ===")
         println("  C1 construct      view=$c1View B   string(decode)=$c1String B")
         println("  C2 length         view=$c2View ns  string=$c2String ns")
         println("  C3 get(i)         view=$c3View ns  string=$c3String ns")

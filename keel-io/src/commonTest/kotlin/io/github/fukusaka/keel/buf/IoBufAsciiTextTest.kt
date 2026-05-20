@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-class IoBufByteCharSequenceTest {
+class IoBufAsciiTextTest {
 
     private fun bufOf(ascii: String): IoBuf {
         val bytes = ascii.encodeToByteArray()
@@ -17,7 +17,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `view exposes the byte range as ascii chars`() {
         val buf = bufOf("Hello, World!")
-        val seq = IoBufByteCharSequence(buf, 0, 13)
+        val seq = IoBufAsciiText(buf, 0, 13)
         assertEquals(13, seq.length)
         assertEquals('H', seq[0])
         assertEquals('W', seq[7])
@@ -28,7 +28,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `view sub-range starts at the requested offset`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 12, 4)
+        val seq = IoBufAsciiText(buf, 12, 4)
         assertEquals(4, seq.length)
         assertEquals('j', seq[0])
         assertEquals('s', seq[1])
@@ -40,7 +40,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `subSequence returns a sub-range over the same backing`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 0, 16)
+        val seq = IoBufAsciiText(buf, 0, 16)
         val sub = seq.subSequence(12, 16)
         assertEquals(4, sub.length)
         assertEquals('j', sub[0])
@@ -52,7 +52,7 @@ class IoBufByteCharSequenceTest {
     fun `toString uses ISO-8859-1 byte-as-char semantics`() {
         // Pure ASCII case: every encoding agrees, sanity check.
         val buf = bufOf("text/plain")
-        val seq = IoBufByteCharSequence(buf, 0, 10)
+        val seq = IoBufAsciiText(buf, 0, 10)
         assertEquals("text/plain", seq.toString())
         buf.release()
     }
@@ -68,7 +68,7 @@ class IoBufByteCharSequenceTest {
         val backing = DefaultAllocator.allocate(2)
         backing.writeByte(highByte)
         backing.writeByte(anotherHigh)
-        val seq = IoBufByteCharSequence(backing, 0, 2)
+        val seq = IoBufAsciiText(backing, 0, 2)
         assertEquals(2, seq.length)
         // get(i) == ISO-8859-1 codepoint
         assertEquals(0xC3.toChar(), seq[0])
@@ -84,7 +84,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `toString of empty view is empty`() {
         val buf = bufOf("anything")
-        val seq = IoBufByteCharSequence(buf, 0, 0)
+        val seq = IoBufAsciiText(buf, 0, 0)
         assertEquals("", seq.toString())
         buf.release()
     }
@@ -93,7 +93,7 @@ class IoBufByteCharSequenceTest {
     fun `hashCode matches the ascii String hashCode`() {
         val text = "Content-Type"
         val buf = bufOf(text)
-        val seq = IoBufByteCharSequence(buf, 0, text.length)
+        val seq = IoBufAsciiText(buf, 0, text.length)
         assertEquals(text.hashCode(), seq.hashCode())
         buf.release()
     }
@@ -101,12 +101,12 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `contentEquals matches Kotlin stdlib comparison`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 0, 16)
+        val seq = IoBufAsciiText(buf, 0, 16)
         assertTrue(seq.contentEquals("application/json"))
         assertTrue(!seq.contentEquals("application/jsonX"))
         assertTrue(!seq.contentEquals("application/jso"))
         // CharSequence.contentEquals uses per-char compare, so view <-> view works too
-        val other = IoBufByteCharSequence(buf, 0, 16)
+        val other = IoBufAsciiText(buf, 0, 16)
         assertTrue(seq.contentEquals(other))
         buf.release()
     }
@@ -115,8 +115,8 @@ class IoBufByteCharSequenceTest {
     fun `equals true for two views over identical bytes`() {
         val buf1 = bufOf("text/plain")
         val buf2 = bufOf("text/plain")
-        val a = IoBufByteCharSequence(buf1, 0, 10)
-        val b = IoBufByteCharSequence(buf2, 0, 10)
+        val a = IoBufAsciiText(buf1, 0, 10)
+        val b = IoBufAsciiText(buf2, 0, 10)
         assertEquals(a, b)
         buf1.release()
         buf2.release()
@@ -125,9 +125,9 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `equals false for differing length or bytes`() {
         val buf = bufOf("text/plain")
-        val a = IoBufByteCharSequence(buf, 0, 10)
-        val b = IoBufByteCharSequence(buf, 0, 9)
-        val c = IoBufByteCharSequence(buf, 1, 9)
+        val a = IoBufAsciiText(buf, 0, 10)
+        val b = IoBufAsciiText(buf, 0, 9)
+        val c = IoBufAsciiText(buf, 1, 9)
         assertTrue(a != b, "length differs")
         assertTrue(a != c, "bytes differ")
         buf.release()
@@ -136,7 +136,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `get out-of-bounds throws IndexOutOfBoundsException`() {
         val buf = bufOf("abc")
-        val seq = IoBufByteCharSequence(buf, 0, 3)
+        val seq = IoBufAsciiText(buf, 0, 3)
         assertFailsWith<IndexOutOfBoundsException> { seq[-1] }
         assertFailsWith<IndexOutOfBoundsException> { seq[3] }
         buf.release()
@@ -145,7 +145,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `subSequence out-of-bounds throws IndexOutOfBoundsException`() {
         val buf = bufOf("abc")
-        val seq = IoBufByteCharSequence(buf, 0, 3)
+        val seq = IoBufAsciiText(buf, 0, 3)
         assertFailsWith<IndexOutOfBoundsException> { seq.subSequence(-1, 2) }
         assertFailsWith<IndexOutOfBoundsException> { seq.subSequence(0, 4) }
         assertFailsWith<IndexOutOfBoundsException> { seq.subSequence(2, 1) }
@@ -156,7 +156,7 @@ class IoBufByteCharSequenceTest {
     fun `hashCode is cached after first call`() {
         val text = "Content-Type"
         val buf = bufOf(text)
-        val seq = IoBufByteCharSequence(buf, 0, text.length)
+        val seq = IoBufAsciiText(buf, 0, text.length)
         val first = seq.hashCode()
         val second = seq.hashCode()
         assertEquals(first, second, "cached call must return the same hash")
@@ -167,7 +167,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `hashCode of empty view is zero`() {
         val buf = bufOf("anything")
-        val seq = IoBufByteCharSequence(buf, 0, 0)
+        val seq = IoBufAsciiText(buf, 0, 0)
         assertEquals(0, seq.hashCode())
         buf.release()
     }
@@ -175,7 +175,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `contentEquals member overload matches stdlib semantics for String`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 0, 16)
+        val seq = IoBufAsciiText(buf, 0, 16)
         assertTrue(seq.contentEquals("application/json"))
         assertTrue(!seq.contentEquals("application/jsonX"))
         assertTrue(!seq.contentEquals("application/jso"))
@@ -186,10 +186,10 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `contentEquals member overload matches stdlib semantics for CharSequence`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 0, 16)
+        val seq = IoBufAsciiText(buf, 0, 16)
         val sb: CharSequence = StringBuilder("application/json")
         assertTrue(seq.contentEquals(sb))
-        val other = IoBufByteCharSequence(buf, 0, 16)
+        val other = IoBufAsciiText(buf, 0, 16)
         assertTrue(seq.contentEquals(other as CharSequence))
         buf.release()
     }
@@ -197,12 +197,12 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `contentEqualsAscii compares bytes byte-for-byte`() {
         val buf = bufOf("application/json")
-        val seq = IoBufByteCharSequence(buf, 0, 16)
+        val seq = IoBufAsciiText(buf, 0, 16)
         assertTrue(seq.contentEqualsAscii("application/json".encodeToByteArray()))
         assertTrue(!seq.contentEqualsAscii("application/jsonX".encodeToByteArray()))
         assertTrue(!seq.contentEqualsAscii("application/jso".encodeToByteArray()))
         // empty
-        val empty = IoBufByteCharSequence(buf, 0, 0)
+        val empty = IoBufAsciiText(buf, 0, 0)
         assertTrue(empty.contentEqualsAscii(ByteArray(0)))
         assertTrue(!empty.contentEqualsAscii("a".encodeToByteArray()))
         buf.release()
@@ -211,7 +211,7 @@ class IoBufByteCharSequenceTest {
     @Test
     fun `contentEqualsAscii is byte-equal, not case-insensitive`() {
         val buf = bufOf("Content-Type")
-        val seq = IoBufByteCharSequence(buf, 0, 12)
+        val seq = IoBufAsciiText(buf, 0, 12)
         assertTrue(seq.contentEqualsAscii("Content-Type".encodeToByteArray()))
         // case mismatch must NOT match (caller is responsible for case
         // normalisation if they want case-insensitive compare)
@@ -225,10 +225,10 @@ class IoBufByteCharSequenceTest {
         // buf capacity is at least 3 (depends on allocator backing); the
         // strict guard is against passing a window past capacity.
         assertFailsWith<IllegalArgumentException> {
-            IoBufByteCharSequence(buf, 0, buf.capacity + 1)
+            IoBufAsciiText(buf, 0, buf.capacity + 1)
         }
-        assertFailsWith<IllegalArgumentException> { IoBufByteCharSequence(buf, -1, 1) }
-        assertFailsWith<IllegalArgumentException> { IoBufByteCharSequence(buf, 0, -1) }
+        assertFailsWith<IllegalArgumentException> { IoBufAsciiText(buf, -1, 1) }
+        assertFailsWith<IllegalArgumentException> { IoBufAsciiText(buf, 0, -1) }
         buf.release()
     }
 }

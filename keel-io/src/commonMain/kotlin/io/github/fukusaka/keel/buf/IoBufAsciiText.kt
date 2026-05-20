@@ -8,7 +8,7 @@ package io.github.fukusaka.keel.buf
  * values are wire-level ASCII byte sequences (per RFC 7230 §3.2.6 token
  * grammar) and materialising them into [String] instances on every
  * `headers["X"]` access is the dominant per-request alloc source.
- * `IoBufByteCharSequence(buf, start, end)` lets the caller hold a
+ * `IoBufAsciiText(buf, start, end)` lets the caller hold a
  * zero-copy view over the parsed header value and only pay a [String]
  * allocation when [toString] is actually called.
  *
@@ -49,7 +49,7 @@ package io.github.fukusaka.keel.buf
  * @param length Number of bytes the view covers.
  */
 @OptIn(UnsafeIoBufApi::class)
-class IoBufByteCharSequence(
+class IoBufAsciiText(
     private val buf: IoBuf,
     private val start: Int,
     override val length: Int,
@@ -84,7 +84,7 @@ class IoBufByteCharSequence(
 
     /**
      * Returns a sub-range view over the same backing [IoBuf]. Allocates
-     * a fresh `IoBufByteCharSequence` (~32 bytes); does not copy bytes.
+     * a fresh `IoBufAsciiText` (~32 bytes); does not copy bytes.
      * The sub-view shares the same lifetime constraint as `this`.
      */
     override fun subSequence(startIndex: Int, endIndex: Int): CharSequence {
@@ -93,7 +93,7 @@ class IoBufByteCharSequence(
                 "subSequence($startIndex, $endIndex) out of bounds for length $length",
             )
         }
-        return IoBufByteCharSequence(buf, start + startIndex, endIndex - startIndex)
+        return IoBufAsciiText(buf, start + startIndex, endIndex - startIndex)
     }
 
     /**
@@ -116,7 +116,7 @@ class IoBufByteCharSequence(
 
     /**
      * Per-char [hashCode] using the same algorithm as [String.hashCode]
-     * so `IoBufByteCharSequence.hashCode() == toString().hashCode()`
+     * so `IoBufAsciiText.hashCode() == toString().hashCode()`
      * holds for pure-ASCII content (the JVM `String.hashCode()` is
      * defined to iterate `chars`, not bytes; for ASCII bytes the two
      * agree since `(byte.toInt() and 0xFF)` equals the `char` code).
@@ -201,12 +201,12 @@ class IoBufByteCharSequence(
      * have the same length and identical char-by-char content under
      * this view's ISO-8859-1 interpretation. Comparable with [String]
      * via Kotlin's `contentEquals`, but the inherited [Any.equals]
-     * contract requires the other side to be an `IoBufByteCharSequence`
+     * contract requires the other side to be an `IoBufAsciiText`
      * — use [contentEquals] explicitly for cross-type compares.
      */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
-        if (other !is IoBufByteCharSequence) return false
+        if (other !is IoBufAsciiText) return false
         if (length != other.length) return false
         for (i in 0 until length) {
             if (buf.getByte(start + i) != other.buf.getByte(other.start + i)) return false
