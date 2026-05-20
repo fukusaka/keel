@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `codec-http`: `HttpHeaders` internal storage refactored from `LinkedHashMap × 2` to a flat `IntArray` slot table + heap `ByteArray` backing. Public String API unchanged; single-thread saturation throughput +11.2 % (337 k → 375 k req/s) at the cost of +1.4 pt GC fraction (15.93 → 17.37 %) from the per-access String materialise (zero per-access alloc is the L7-a-ii follow-up's job) (#5XX)
+
 ### Added
 
 - `io`: `IntArrayPool` (per-EventLoop reuse of fixed-size `IntArray`s) and `IoBufAsciiText` (zero-copy `CharSequence` view over an `IoBuf` byte range, ISO-8859-1 semantics) — enabling primitives for the HTTP/1.1 headers slot-table refactor (#588)
