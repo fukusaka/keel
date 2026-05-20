@@ -43,6 +43,17 @@ class HelloGcPressureAudit {
     @Test
     fun `gc pressure under hello path saturation`() {
         val transport = TestIoTransport()
+        try {
+            runAudit(transport)
+        } finally {
+            // Ensure the in-memory pipeline state + pooled IoBufs are
+            // released even if any of the measurement / reporting steps
+            // throw.
+            runCatching { transport.close() }
+        }
+    }
+
+    private fun runAudit(transport: TestIoTransport) {
         val channel = object : AbstractPipelinedChannel(transport, PrintLogger("audit")) {}
         val scope = CoroutineScope(Dispatchers.Unconfined)
         channel.installHttpServerPipeline(
@@ -127,8 +138,6 @@ class HelloGcPressureAudit {
         println("  ms / 1k req in GC:    ${"%.3f".format(totalGcTime * 1000.0 / iterations)} ms")
         println()
         println("  heap: ${ManagementFactory.getMemoryMXBean().heapMemoryUsage}")
-
-        transport.close()
     }
 
     companion object {

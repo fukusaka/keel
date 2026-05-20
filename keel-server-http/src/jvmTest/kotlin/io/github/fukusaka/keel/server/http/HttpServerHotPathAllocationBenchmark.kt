@@ -80,9 +80,9 @@ class HttpServerHotPathAllocationBenchmark {
         // already traversed, codec state machine settled).
         repeat(WARMUP) { scenario.runOnce() }
 
-        val start = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
+        val start = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
         repeat(iterations) { scenario.runOnce() }
-        val end = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
+        val end = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
         return (end - start) / iterations
     }
 
@@ -300,20 +300,25 @@ class HttpServerHotPathAllocationBenchmark {
             scenario.install()
         }
 
-        println("=== HttpServerHotPath allocation (bytes / request, iters=$ITERS × $TRIALS trials) ===")
-        for ((name, scenario) in scenarios) {
-            val trials = LongArray(TRIALS) { measure(ITERS, scenario) }
-            trials.sort()
-            val median = trials[TRIALS / 2]
-            // For scenario E, normalise across the batch so the printed
-            // value is comparable to A on a per-request basis.
-            val perRequest = if (scenario is HelloGetPipelined) median / BATCH else median
-            val suffix = if (scenario is HelloGetPipelined) "  (per-request, batch=$BATCH)" else ""
-            println("  $name median=$perRequest bytes  samples=${trials.toList()}$suffix")
-        }
-
-        for ((_, scenario) in scenarios) {
-            scenario.transport.close()
+        try {
+            println("=== HttpServerHotPath allocation (bytes / request, iters=$ITERS × $TRIALS trials) ===")
+            for ((name, scenario) in scenarios) {
+                val trials = LongArray(TRIALS) { measure(ITERS, scenario) }
+                trials.sort()
+                val median = trials[TRIALS / 2]
+                // For scenario E, normalise across the batch so the
+                // printed value is comparable to A on a per-request basis.
+                val perRequest = if (scenario is HelloGetPipelined) median / BATCH else median
+                val suffix = if (scenario is HelloGetPipelined) "  (per-request, batch=$BATCH)" else ""
+                println("  $name median=$perRequest bytes  samples=${trials.toList()}$suffix")
+            }
+        } finally {
+            // Close every scenario even when one of them throws — the
+            // remaining transports / channels would otherwise leak their
+            // pooled IoBufs and pipeline handlers until JVM teardown.
+            for ((_, scenario) in scenarios) {
+                runCatching { scenario.transport.close() }
+            }
         }
     }
 

@@ -46,6 +46,16 @@ class HelloAllocBreakdownAudit {
     @Test
     fun `breakdown of per-class allocations on the hello path`() {
         val transport = TestIoTransport()
+        try {
+            runAudit(transport)
+        } finally {
+            // Ensure the in-memory pipeline state + pooled IoBufs are
+            // released even if recording / parsing / reporting throws.
+            runCatching { transport.close() }
+        }
+    }
+
+    private fun runAudit(transport: TestIoTransport) {
         val channel = object : AbstractPipelinedChannel(transport, PrintLogger("audit")) {}
         val scope = CoroutineScope(Dispatchers.Unconfined)
         channel.installHttpServerPipeline(
@@ -135,8 +145,6 @@ class HelloAllocBreakdownAudit {
             .forEach { (cls, acc) ->
                 println("  ${acc[0].toString().padStart(12)}  ${acc[1].toString().padStart(8)}  $cls")
             }
-
-        transport.close()
     }
 
     companion object {
