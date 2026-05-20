@@ -58,6 +58,13 @@ class IoBufByteCharSequence(
     }
 
     /**
+     * Cached `hashCode` result. `0` means "not yet computed" (or the
+     * value genuinely hashes to `0`, in which case we recompute every
+     * call — same trade-off `java.lang.String` makes).
+     */
+    private var cachedHashCode: Int = 0
+
+    /**
      * Returns the byte at byte offset [index] in the view, interpreted
      * as an ISO-8859-1 [Char]. Use [toString] for Unicode-decoded
      * conversion.
@@ -103,13 +110,80 @@ class IoBufByteCharSequence(
      * holds for pure-ASCII content (the JVM `String.hashCode()` is
      * defined to iterate `chars`, not bytes; for ASCII bytes the two
      * agree since `(byte.toInt() and 0xFF)` equals the `char` code).
+     *
+     * Result is **cached** in [cachedHashCode] after the first call —
+     * subsequent calls are a single field read. The same algorithm as
+     * `java.lang.String` uses (compute lazily, recompute when the
+     * cached value is `0`).
      */
     override fun hashCode(): Int {
-        var h = 0
-        for (i in 0 until length) {
-            h = 31 * h + (buf.getByte(start + i).toInt() and 0xFF)
+        var h = cachedHashCode
+        if (h == 0 && length > 0) {
+            for (i in 0 until length) {
+                h = 31 * h + (buf.getByte(start + i).toInt() and 0xFF)
+            }
+            cachedHashCode = h
         }
         return h
+    }
+
+    /**
+     * `contentEquals` against another [CharSequence] — member overload
+     * that shadows the Kotlin stdlib extension `CharSequence.contentEquals`.
+     * Inlines the per-char compare so `this` side avoids interface
+     * dispatch on every access.
+     *
+     * For pure-ASCII / pre-encoded byte literal comparisons, prefer
+     * [contentEqualsAscii] which skips the per-char `byte → Char`
+     * conversion entirely.
+     */
+    fun contentEquals(other: CharSequence): Boolean {
+        if (length != other.length) return false
+        val n = length
+        var i = 0
+        while (i < n) {
+            if ((buf.getByte(start + i).toInt() and 0xFF) != other[i].code) return false
+            i++
+        }
+        return true
+    }
+
+    /**
+     * `contentEquals` specialised for [String] — Kotlin overload
+     * resolution picks this over [contentEquals]`(CharSequence)` when
+     * the caller passes a [String] literal, letting the JIT specialise
+     * `other[i]` to `String.charAt` intrinsic.
+     */
+    fun contentEquals(other: String): Boolean = contentEquals(other as CharSequence)
+
+    /**
+     * Compares the view's bytes against [other] directly **without**
+     * the per-char `byte → Char` conversion that [contentEquals] /
+     * [equals] perform. Designed for keel internal hot paths that
+     * compare a parsed header value against a pre-encoded constant
+     * (`"application/json".encodeToByteArray()` etc.), where
+     * byte-level equality is the actual semantic.
+     *
+     * **Caveats**:
+     *
+     * - The comparison is **byte-for-byte**. There is no case folding,
+     *   no ASCII normalisation, no UTF-8 decoding. Callers wanting
+     *   case-insensitive ASCII compare should encode both sides in the
+     *   same case (e.g. all lower-case) before calling.
+     * - This method does not assume ASCII per se — any byte 0x00-0xFF
+     *   matches its byte-equal counterpart on [other]. "ASCII" in the
+     *   name documents the typical caller intent (pre-encoded ASCII
+     *   header constants) rather than enforcing a byte-range check.
+     */
+    fun contentEqualsAscii(other: ByteArray): Boolean {
+        if (length != other.size) return false
+        val n = length
+        var i = 0
+        while (i < n) {
+            if (buf.getByte(start + i) != other[i]) return false
+            i++
+        }
+        return true
     }
 
     /**

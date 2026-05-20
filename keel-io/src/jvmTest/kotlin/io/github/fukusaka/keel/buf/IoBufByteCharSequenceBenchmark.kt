@@ -126,7 +126,7 @@ class IoBufByteCharSequenceBenchmark {
             }
         }
 
-        // C6 — contentEquals
+        // C6 — contentEquals (member overload, char-vs-byte loop)
         val c6View = median(TRIALS) {
             measureNsPerOp(ITERS_NS) { if (view.contentEquals(PAYLOAD)) sink++ }
         }
@@ -134,8 +134,16 @@ class IoBufByteCharSequenceBenchmark {
             measureNsPerOp(ITERS_NS) { if (PAYLOAD.contentEquals(PAYLOAD)) sink++ }
         }
 
-        // C7 — hashCode. View recomputes every call (no cache).
-        // String caches after first call → only the first compute is paid.
+        // C6-ascii — contentEqualsAscii (byte-vs-byte, no char conversion)
+        val payloadBytesConst = PAYLOAD.encodeToByteArray()
+        val c6ViewAscii = median(TRIALS) {
+            measureNsPerOp(ITERS_NS) { if (view.contentEqualsAscii(payloadBytesConst)) sink++ }
+        }
+
+        // C7 — hashCode. View caches after first call (same as String).
+        // Each measurement here is a steady-state call: both view and
+        // String have already computed once during warmup, so we are
+        // comparing cached-vs-cached.
         val c7View = median(TRIALS) {
             measureNsPerOp(ITERS_NS) { sink += view.hashCode() }
         }
@@ -149,8 +157,9 @@ class IoBufByteCharSequenceBenchmark {
         println("  C3 get(i)         view=$c3View ns  string=$c3String ns")
         println("  C4 subSequence    view=$c4View B   substring=$c4String B")
         println("  C5 toString       view=$c5View B   string(identity)=$c5String B")
-        println("  C6 contentEquals  view=$c6View ns  string=$c6String ns")
-        println("  C7 hashCode       view=$c7View ns  string(cached)=$c7String ns")
+        println("  C6 contentEquals       view=$c6View ns       string=$c6String ns")
+        println("  C6-ascii contentEqualsAscii(byte[])  view=$c6ViewAscii ns  (byte-vs-byte, no Char convert)")
+        println("  C7 hashCode (cached)   view=$c7View ns       string(cached)=$c7String ns")
         println("  (sink=$sink — DCE guard)")
     }
 
