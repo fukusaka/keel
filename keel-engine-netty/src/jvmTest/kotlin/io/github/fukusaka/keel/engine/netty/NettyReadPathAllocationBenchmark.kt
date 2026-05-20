@@ -6,6 +6,8 @@ import com.sun.management.ThreadMXBean
 import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
+import io.github.fukusaka.keel.buf.Segment
+import io.github.fukusaka.keel.buf.SegmentOwner
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.netty.buffer.ByteBuf
@@ -14,10 +16,22 @@ import java.lang.management.ManagementFactory
 import kotlin.test.Test
 
 /**
- * Measures per-iteration JVM allocation for the two channelRead paths.
+ * Measures per-iteration JVM allocation for the Netty `channelRead`
+ * receive paths.
  *
- * - **A (baseline)**: `allocator.allocate(cap) + getBytes(ByteBuf → ByteBuffer)`
- * - **B (zero-copy wrap)**: `wrapExternal(nioBuffer) + NettyByteBufOwner`
+ * Three variants compared in the same JVM:
+ *
+ * - **A (copy baseline)**: `allocator.allocate(cap) + ByteBuf.getBytes`.
+ *   Hides per-receive object cost via pool reuse — sets the floor for
+ *   bytes-per-packet attributable to bookkeeping outside the wrap path.
+ * - **B (engine-direct wrap, current)**: [NettyByteBufIoBuf.wrapInbound].
+ *   1 [NettyByteBufIoBuf] allocation + 1 cached `nioBuffer` view, no
+ *   [Segment] / [SegmentOwner] / `DirectIoBuf` wrapping.
+ * - **C (segment-backed wrap, pre-2026-05-20)**: the historical path,
+ *   inlined here for A/B confirmation. `DirectIoBuf.wrapExternal` builds
+ *   `DirectByteBufferBacking` + `Segment` + `DirectIoBuf`, plus an
+ *   ad-hoc [SegmentOwner] that forwards `release` to `ByteBuf.release`
+ *   (the role played by the removed `NettyByteBufOwner`).
  *
  * Uses `com.sun.management.ThreadMXBean.getThreadAllocatedBytes` to
  * count current-thread allocation deltas. Excludes the initial warmup
@@ -34,29 +48,17 @@ class NettyReadPathAllocationBenchmark {
         it.registerPoolSize(POOL_CAP, 16)
     }.createForEventLoop()
 
-    private fun measureA(iterations: Int): Long {
-        // Warmup + steady state outside measurement.
+    private fun measure(iterations: Int, path: (ByteArray) -> Unit): Long {
         val payload = ByteArray(PAYLOAD) { it.toByte() }
-        // Warmup
-        for (i in 0 until WARMUP) pathA(payload)
+        for (i in 0 until WARMUP) path(payload)
 
         val start = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
-        for (i in 0 until iterations) pathA(payload)
+        for (i in 0 until iterations) path(payload)
         val end = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
         return (end - start) / iterations
     }
 
-    private fun measureB(iterations: Int): Long {
-        val payload = ByteArray(PAYLOAD) { it.toByte() }
-        for (i in 0 until WARMUP) pathB(payload)
-
-        val start = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
-        for (i in 0 until iterations) pathB(payload)
-        val end = tmx.getThreadAllocatedBytes(Thread.currentThread().id)
-        return (end - start) / iterations
-    }
-
-    /** Mirrors the old channelRead body: allocate + getBytes copy + release. */
+    /** A: allocate + copy (pool-warm). */
     private fun pathA(payload: ByteArray) {
         val byteBuf: ByteBuf = nettyAlloc.directBuffer(payload.size).writeBytes(payload)
         val readable = byteBuf.readableBytes()
@@ -67,39 +69,50 @@ class NettyReadPathAllocationBenchmark {
         bb.limit(buf.writerIndex + readable)
         byteBuf.getBytes(byteBuf.readerIndex(), bb)
         buf.writerIndex += readable
-        // Pipeline consumed — release both refs.
         buf.release()
         byteBuf.release()
     }
 
-    /** Mirrors the new channelRead body: wrap via nioBuffer + NettyByteBufOwner. */
+    /** B: engine-direct wrap via [NettyByteBufIoBuf.wrapInbound] (current production path). */
     private fun pathB(payload: ByteArray) {
+        val byteBuf: ByteBuf = nettyAlloc.directBuffer(payload.size).writeBytes(payload)
+        val buf = NettyByteBufIoBuf.wrapInbound(byteBuf)
+        buf.release()
+    }
+
+    /** C: segment-backed wrap via `DirectIoBuf.wrapExternal` + ad-hoc owner (pre-2026-05-20 path). */
+    private fun pathC(payload: ByteArray) {
         val byteBuf: ByteBuf = nettyAlloc.directBuffer(payload.size).writeBytes(payload)
         val readable = byteBuf.readableBytes()
         val nio = byteBuf.nioBuffer(byteBuf.readerIndex(), readable)
         val buf = DirectIoBuf.wrapExternal(
             buffer = nio,
             bytesWritten = readable,
-            owner = NettyByteBufOwner(byteBuf),
+            owner = object : SegmentOwner {
+                override fun release(segment: Segment) {
+                    byteBuf.release()
+                }
+            },
         )
-        // Pipeline consumed — owner releases byteBuf transitively.
         buf.release()
     }
 
     @Test
-    fun `per-packet allocation A vs B`() {
-        val trialsA = LongArray(TRIALS) { measureA(ITERS) }
-        val trialsB = LongArray(TRIALS) { measureB(ITERS) }
-        trialsA.sort()
-        trialsB.sort()
+    fun `per-packet allocation A vs B vs C`() {
+        val trialsA = LongArray(TRIALS) { measure(ITERS, ::pathA) }
+        val trialsB = LongArray(TRIALS) { measure(ITERS, ::pathB) }
+        val trialsC = LongArray(TRIALS) { measure(ITERS, ::pathC) }
+        trialsA.sort(); trialsB.sort(); trialsC.sort()
         val medA = trialsA[TRIALS / 2]
         val medB = trialsB[TRIALS / 2]
-        val delta = medB - medA
+        val medC = trialsC[TRIALS / 2]
 
         println("=== NettyReadPath allocation (bytes / packet, payload=${PAYLOAD}B, iters=$ITERS × $TRIALS trials) ===")
-        println("  A (alloc+copy)  median=$medA bytes  samples=${trialsA.toList()}")
-        println("  B (wrap+owner)  median=$medB bytes  samples=${trialsB.toList()}")
-        println("  Δ (B-A)         $delta bytes / packet")
+        println("  A (alloc+copy, pool-warm)        median=$medA bytes  samples=${trialsA.toList()}")
+        println("  B (engine-direct wrap, current)  median=$medB bytes  samples=${trialsB.toList()}")
+        println("  C (segment-backed wrap, old)     median=$medC bytes  samples=${trialsC.toList()}")
+        println("  Δ (B-C)                          ${medB - medC} bytes / packet (engine-direct vs segment-backed)")
+        println("  Δ (B-A)                          ${medB - medA} bytes / packet (wrap vs copy baseline)")
     }
 
     companion object {
