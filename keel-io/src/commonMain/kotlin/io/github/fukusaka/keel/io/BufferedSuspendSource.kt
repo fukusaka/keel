@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.io
 
-import io.github.fukusaka.keel.buf.BufSlice
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufView
 
 /**
  * Buffered wrapper providing readLine/readByte utilities over either a
@@ -208,19 +208,19 @@ class BufferedSuspendSource : AutoCloseable {
 
     /**
      * Scans for a line terminated by `\n` or `\r\n` and returns it as a
-     * [BufSlice] pointing directly into the buffer chain (zero-copy).
+     * [IoBufView] pointing directly into the buffer chain (zero-copy).
      *
-     * Returns a single-segment [BufSlice] when the line fits in one buffer
-     * (99% of cases), or a multi-segment [BufSlice] chain when the line
+     * Returns a single-segment [IoBufView] when the line fits in one buffer
+     * (99% of cases), or a multi-segment [IoBufView] chain when the line
      * spans two buffers (< 1%).
      *
-     * The returned BufSlice is valid until the next [scanLine], [readLine],
+     * The returned IoBufView is valid until the next [scanLine], [readLine],
      * [readByte], [readByteArray], [readAtMostTo], or [close] call.
      *
      * @return the line without the line terminator, or null on EOF.
      * @throws IllegalStateException if this source has been [close]d.
      */
-    suspend fun scanLine(): BufSlice? {
+    suspend fun scanLine(): IoBufView? {
         check(!closed) { "BufferedSuspendSource is closed" }
         val chain = mode.chain
         releaseConsumedBuffers()
@@ -234,7 +234,7 @@ class BufferedSuspendSource : AutoCloseable {
             if (head.getByte(i) == LF) {
                 var lineEnd = i
                 if (lineEnd > start && head.getByte(lineEnd - 1) == CR) lineEnd--
-                val slice = BufSlice(head, start, lineEnd - start)
+                val slice = IoBufView(head, start, lineEnd - start)
                 head.readerIndex = i + 1
                 return slice
             }
@@ -244,7 +244,7 @@ class BufferedSuspendSource : AutoCloseable {
         if (fillAndGet() == null) {
             // EOF: return the trailing partial line, if any.
             return if (head.readableBytes > 0) {
-                val slice = BufSlice(head, head.readerIndex, head.readableBytes)
+                val slice = IoBufView(head, head.readerIndex, head.readableBytes)
                 head.readerIndex = head.writerIndex
                 slice
             } else {
@@ -252,12 +252,12 @@ class BufferedSuspendSource : AutoCloseable {
             }
         }
 
-        // Line spans head and the next buffer(s) — build a chained BufSlice.
+        // Line spans head and the next buffer(s) — build a chained IoBufView.
         return crossBufferScanLine(head, start)
     }
 
     /**
-     * Builds a multi-segment [BufSlice] for a line that spans the buffer
+     * Builds a multi-segment [IoBufView] for a line that spans the buffer
      * boundary. The first segment covers the remaining bytes in [firstBuf],
      * the second covers bytes up to LF in the next buffer.
      *
@@ -265,11 +265,11 @@ class BufferedSuspendSource : AutoCloseable {
      * three or more buffers (a header line larger than two refill buffers)
      * is not supported and is left to upstream header-size limits.
      */
-    private suspend fun crossBufferScanLine(firstBuf: IoBuf, startOffset: Int): BufSlice? {
+    private suspend fun crossBufferScanLine(firstBuf: IoBuf, startOffset: Int): IoBufView? {
         val firstLength = firstBuf.writerIndex - startOffset
         firstBuf.readerIndex = firstBuf.writerIndex // consume first segment
         // Note: firstBuf is now fully consumed (readableBytes=0) but must NOT
-        // be released yet — the returned BufSlice will reference it. It is
+        // be released yet — the returned IoBufView will reference it. It is
         // released on the next scanLine/readLine/close call via
         // releaseConsumedBuffers. We do NOT call releaseConsumedBuffers here.
 
@@ -277,7 +277,7 @@ class BufferedSuspendSource : AutoCloseable {
         while (true) {
             if (chain.size <= 1 && fillAndGet() == null) {
                 // EOF: return first segment only.
-                return if (firstLength > 0) BufSlice(firstBuf, startOffset, firstLength) else null
+                return if (firstLength > 0) IoBufView(firstBuf, startOffset, firstLength) else null
             }
 
             val cur = chain.last() // most recently added buffer
@@ -298,9 +298,9 @@ class BufferedSuspendSource : AutoCloseable {
                     }
 
                     val secondLength = secondEnd - curStart
-                    val second = if (secondLength > 0) BufSlice(cur, curStart, secondLength) else null
+                    val second = if (secondLength > 0) IoBufView(cur, curStart, secondLength) else null
                     return if (adjFirstLength > 0) {
-                        BufSlice(firstBuf, startOffset, adjFirstLength, second)
+                        IoBufView(firstBuf, startOffset, adjFirstLength, second)
                     } else {
                         second
                     }

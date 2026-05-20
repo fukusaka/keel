@@ -26,9 +26,9 @@ package io.github.fukusaka.keel.buf
  *   totalLength = 12, represents "Conte" + "nt-Type"
  * ```
  *
- * **Lifetime**: a BufSlice does not retain the underlying [IoBuf].
+ * **Lifetime**: an IoBufView does not retain the underlying [IoBuf].
  * The caller must ensure the IoBuf is not released or overwritten
- * while the BufSlice is in use. In practice, BufSlice instances live
+ * while the IoBufView is in use. In practice, IoBufView instances live
  * within a single parse step (between [BufferedSuspendSource.scanLine]
  * calls) and are discarded before the next buffer refill.
  *
@@ -37,11 +37,11 @@ package io.github.fukusaka.keel.buf
  * @param length Number of bytes in this segment.
  * @param next   Continuation segment in the next [IoBuf], or null.
  */
-class BufSlice(
+class IoBufView(
     val buf: IoBuf,
     val offset: Int,
     val length: Int,
-    val next: BufSlice? = null,
+    val next: IoBufView? = null,
 ) {
     /** Total bytes across all segments. Computed once at construction. */
     val totalLength: Int = length + (next?.totalLength ?: 0)
@@ -55,7 +55,7 @@ class BufSlice(
         require(index in 0 until totalLength) { "index $index out of bounds (totalLength=$totalLength)" }
         if (index < length) return buf.getByte(offset + index)
         return checkNotNull(next) {
-            "BufSlice chain corrupted: index $index >= segment length $length but next is null"
+            "IoBufView chain corrupted: index $index >= segment length $length but next is null"
         }.get(index - length)
     }
 
@@ -69,12 +69,12 @@ class BufSlice(
      * @param to   End index (exclusive), relative to this slice.
      * @throws IllegalArgumentException if [from] or [to] is out of range.
      */
-    fun slice(from: Int, to: Int): BufSlice {
+    fun slice(from: Int, to: Int): IoBufView {
         require(from in 0..totalLength) { "from $from out of bounds (totalLength=$totalLength)" }
         require(to in from..totalLength) { "to $to out of bounds (from=$from, totalLength=$totalLength)" }
         val newLength = to - from
-        if (newLength == 0) return BufSlice(buf, offset, 0)
-        if (next == null) return BufSlice(buf, offset + from, newLength)
+        if (newLength == 0) return IoBufView(buf, offset, 0)
+        if (next == null) return IoBufView(buf, offset + from, newLength)
 
         // Multi-segment: find starting segment
         if (from >= length) {
@@ -84,10 +84,10 @@ class BufSlice(
         val thisPartLength = minOf(length - from, newLength)
         if (thisPartLength == newLength) {
             // Entirely in this segment
-            return BufSlice(buf, offset + from, newLength)
+            return IoBufView(buf, offset + from, newLength)
         }
         // Spans this and next
-        return BufSlice(buf, offset + from, thisPartLength, next.slice(0, newLength - thisPartLength))
+        return IoBufView(buf, offset + from, thisPartLength, next.slice(0, newLength - thisPartLength))
     }
 
     /**
@@ -97,7 +97,7 @@ class BufSlice(
      * Traverses segments at segment granularity — no per-byte branch.
      */
     fun indexOf(byte: Byte, fromIndex: Int = 0): Int {
-        var seg: BufSlice? = this
+        var seg: IoBufView? = this
         var segStart = 0
         while (seg != null) {
             val start = maxOf(fromIndex - segStart, 0)
@@ -111,7 +111,7 @@ class BufSlice(
     }
 
     /** Returns `true` if this slice has the same bytes as [other]. */
-    fun contentEquals(other: BufSlice): Boolean {
+    fun contentEquals(other: IoBufView): Boolean {
         if (totalLength != other.totalLength) return false
         // Parallel segment traversal. Advances through both chains in
         // chunk-sized steps (min of remaining bytes in each segment).
@@ -156,7 +156,7 @@ class BufSlice(
      */
     fun contentEquals(string: String): Boolean {
         if (totalLength != string.length) return false
-        var seg: BufSlice? = this
+        var seg: IoBufView? = this
         var i = 0
         while (seg != null) {
             for (j in 0 until seg.length) {
@@ -176,7 +176,7 @@ class BufSlice(
      */
     fun contentEqualsIgnoreCase(string: String): Boolean {
         if (totalLength != string.length) return false
-        var seg: BufSlice? = this
+        var seg: IoBufView? = this
         var i = 0
         while (seg != null) {
             for (j in 0 until seg.length) {
@@ -197,7 +197,7 @@ class BufSlice(
      * Returns a sub-slice with leading and trailing ASCII whitespace
      * (space and horizontal tab) removed.
      */
-    fun trim(): BufSlice {
+    fun trim(): IoBufView {
         var start = 0
         while (start < totalLength && isWhitespace(get(start))) start++
         var end = totalLength
@@ -219,7 +219,7 @@ class BufSlice(
     /** Copies this slice into a new [ByteArray]. */
     fun toByteArray(): ByteArray {
         val bytes = ByteArray(totalLength)
-        var seg: BufSlice? = this
+        var seg: IoBufView? = this
         var pos = 0
         while (seg != null) {
             for (i in 0 until seg.length) {
@@ -241,9 +241,9 @@ class BufSlice(
      */
     @Suppress("ThrowsCount") // Three distinct error cases: empty, non-digit, overflow
     fun toInt(): Int {
-        if (totalLength == 0) throw NumberFormatException("empty BufSlice")
+        if (totalLength == 0) throw NumberFormatException("empty IoBufView")
         var result = 0L
-        var seg: BufSlice? = this
+        var seg: IoBufView? = this
         var globalIndex = 0
         while (seg != null) {
             for (i in 0 until seg.length) {
@@ -268,9 +268,9 @@ class BufSlice(
 
     override fun toString(): String =
         if (next == null) {
-            "BufSlice(offset=$offset, length=$length)"
+            "IoBufView(offset=$offset, length=$length)"
         } else {
-            "BufSlice(offset=$offset, length=$length, totalLength=$totalLength)"
+            "IoBufView(offset=$offset, length=$length, totalLength=$totalLength)"
         }
 
     companion object {

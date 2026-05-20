@@ -6,12 +6,12 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-class BufSliceTest {
+class IoBufViewTest {
 
-    private fun sliceOf(text: String): BufSlice {
+    private fun sliceOf(text: String): IoBufView {
         val buf = DefaultAllocator.allocate(text.length)
         for (b in text.encodeToByteArray()) buf.writeByte(b)
-        return BufSlice(buf, 0, text.length)
+        return IoBufView(buf, 0, text.length)
     }
 
     // -- byte access --
@@ -36,7 +36,7 @@ class BufSliceTest {
     @Test
     fun isEmptyForZeroLength() {
         val buf = DefaultAllocator.allocate(8)
-        assertTrue(BufSlice(buf, 0, 0).isEmpty())
+        assertTrue(IoBufView(buf, 0, 0).isEmpty())
         buf.release()
     }
 
@@ -94,7 +94,7 @@ class BufSliceTest {
     }
 
     @Test
-    fun contentEqualsWithBufSlice() {
+    fun contentEqualsWithIoBufView() {
         val a = sliceOf("HTTP/1.1")
         val b = sliceOf("HTTP/1.1")
         assertTrue(a.contentEquals(b))
@@ -141,7 +141,7 @@ class BufSliceTest {
     @Test
     fun decodeToStringEmptySlice() {
         val buf = DefaultAllocator.allocate(8)
-        assertEquals("", BufSlice(buf, 0, 0).decodeToString())
+        assertEquals("", IoBufView(buf, 0, 0).decodeToString())
         buf.release()
     }
 
@@ -178,7 +178,7 @@ class BufSliceTest {
         val buf = DefaultAllocator.allocate(16)
         for (b in "GET /hello HTTP/".encodeToByteArray()) buf.writeByte(b)
         // Slice starting at offset 4 (the URI)
-        val uri = BufSlice(buf, 4, 6) // "/hello"
+        val uri = IoBufView(buf, 4, 6) // "/hello"
         assertEquals("/hello", uri.decodeToString())
         assertTrue(uri.contentEquals("/hello"))
         buf.release()
@@ -188,12 +188,12 @@ class BufSliceTest {
     // Multi-segment (next chain) tests
     // ============================================================
 
-    private fun chainSlice(first: String, second: String): Triple<BufSlice, IoBuf, IoBuf> {
+    private fun chainSlice(first: String, second: String): Triple<IoBufView, IoBuf, IoBuf> {
         val buf1 = DefaultAllocator.allocate(first.length)
         for (b in first.encodeToByteArray()) buf1.writeByte(b)
         val buf2 = DefaultAllocator.allocate(second.length)
         for (b in second.encodeToByteArray()) buf2.writeByte(b)
-        val slice = BufSlice(buf1, 0, first.length, BufSlice(buf2, 0, second.length))
+        val slice = IoBufView(buf1, 0, first.length, IoBufView(buf2, 0, second.length))
         return Triple(slice, buf1, buf2)
     }
 
@@ -248,7 +248,7 @@ class BufSliceTest {
         val (slice1, buf1a, buf1b) = chainSlice("He", "llo")
         val buf2 = DefaultAllocator.allocate(5)
         for (b in "Hello".encodeToByteArray()) buf2.writeByte(b)
-        val slice2 = BufSlice(buf2, 0, 5)
+        val slice2 = IoBufView(buf2, 0, 5)
         assertTrue(slice1.contentEquals(slice2))
         buf1a.release(); buf1b.release(); buf2.release()
     }
@@ -313,7 +313,7 @@ class BufSliceTest {
     fun chain_isEmpty() {
         val buf = DefaultAllocator.allocate(4)
         buf.writeByte(0)
-        val empty = BufSlice(buf, 0, 0, null)
+        val empty = IoBufView(buf, 0, 0, null)
         assertTrue(empty.isEmpty())
         val (nonEmpty, buf1, buf2) = chainSlice("A", "B")
         assertFalse(nonEmpty.isEmpty())
