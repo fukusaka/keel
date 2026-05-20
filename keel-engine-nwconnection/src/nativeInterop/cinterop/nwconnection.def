@@ -559,3 +559,84 @@ void keel_nw_test_dispatch_single(const void *bytes, uint32_t len,
         dispatch_get_global_queue(0, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     keel_nw_dispatch_received(d, buf, buf_len, is_complete, 0, callback, ctx);
 }
+
+/*
+ * --- Investigation bench helpers (kept for future re-validation) ---
+ *
+ * These functions support the in-process micro-bench
+ * `runNwRecvCostBench` in the `benchmark` module — they let the
+ * benchmark create a `dispatch_data_t` once and drive [keel_nw_dispatch_received]
+ * (or a copy-only variant) on the SAME handle many times to amortise
+ * dispatch_data_t creation cost out of the per-iter measurement.
+ *
+ * Not used by production code paths (engine read path
+ * [keel_nw_read_async] receives its `dispatch_data_t` from the
+ * framework). KDoc'd here so future readers can find them when
+ * re-validating the design decisions captured in
+ * `benchmark/results-summary/2026-05-20-nw-zerocopy-recv-ab.md`.
+ */
+
+/*
+ * Creates a single-region `dispatch_data_t` from [bytes] of length
+ * [len] (via `dispatch_data_create` with the default destructor —
+ * bytes are copied into framework-managed memory at creation). Returns
+ * an opaque, retained handle suitable for [keel_nw_test_dispatch_handle]
+ * + [keel_nw_dispatch_data_release].
+ */
+void *keel_nw_test_make_data_single(const void *bytes, uint32_t len) {
+    dispatch_data_t d = dispatch_data_create(bytes, len,
+        dispatch_get_global_queue(0, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    return (__bridge_retained void *)d;
+}
+
+/*
+ * Drives [keel_nw_dispatch_received] with a caller-provided opaque
+ * `dispatch_data_t` handle (typically obtained from
+ * [keel_nw_test_make_data_single]). The handle is *borrowed* — the
+ * caller retains ownership and must release it via
+ * [keel_nw_dispatch_data_release] when done. The single-region branch
+ * inside [keel_nw_dispatch_received] takes its own +1 retain via
+ * `__bridge_retained` and exposes that as the `zc_handle` callback
+ * argument, so the wrap path's lifetime stays correct even with a
+ * borrowed input handle.
+ */
+void keel_nw_test_dispatch_handle(void *handle,
+                                    void *buf, uint32_t buf_len,
+                                    int is_complete,
+                                    keel_nw_read_callback callback,
+                                    void *ctx) {
+    dispatch_data_t d = (__bridge dispatch_data_t)handle;
+    keel_nw_dispatch_received(d, buf, buf_len, is_complete, 0, callback, ctx);
+}
+
+/*
+ * Forces the multi-region copy path on a single-region handle.
+ *
+ * This is the "always memcpy" baseline against which the dual-path
+ * zero-copy implementation is compared. Bypasses [keel_nw_dispatch_received]
+ * entirely and inlines the memcpy loop that the multi-region branch
+ * uses, so that the caller's callback receives `zc_handle == NULL` +
+ * `len` bytes in [buf] regardless of the actual region count.
+ *
+ * Production [keel_nw_read_async] never calls this — it is bench-only.
+ */
+void keel_nw_test_dispatch_handle_copyonly(void *handle,
+                                             void *buf, uint32_t buf_len,
+                                             int is_complete,
+                                             keel_nw_read_callback callback,
+                                             void *ctx) {
+    dispatch_data_t d = (__bridge dispatch_data_t)handle;
+    __block uint32_t copied = 0;
+    dispatch_data_apply(d,
+        ^(dispatch_data_t region, size_t offset,
+          const void *ptr, size_t size)
+        {
+            if (copied + size > buf_len) {
+                size = buf_len - copied;
+            }
+            memcpy((uint8_t *)buf + copied, ptr, size);
+            copied += (uint32_t)size;
+            return (bool)(copied < buf_len);
+        });
+    callback(NULL, NULL, copied, is_complete, 0, ctx);
+}
