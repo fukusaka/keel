@@ -240,7 +240,8 @@ internal class NwStreamServer(
          */
         private val startCallback = staticCFunction {
                 result: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
-            val ref = ctx!!.asStableRef<CallbackContext<Int>>()
+            val ref = checkNotNull(ctx) { "ctx must be non-null in start callback" }
+                .asStableRef<CallbackContext<Int>>()
             ref.get().tryResume(result)
             ref.dispose()
         }

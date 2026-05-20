@@ -60,14 +60,14 @@ class NwReadDualPathTest {
                 )
             }
         }
-        assertNotNull(result.zcHandle, "expected zero-copy handle on single-region path")
-        assertNotNull(result.zcPtr, "expected non-null region pointer")
+        val zcHandle = assertNotNull(result.zcHandle, "expected zero-copy handle on single-region path")
+        val zcPtr = assertNotNull(result.zcPtr, "expected non-null region pointer")
         assertEquals(payload.size, result.bytesReported)
         // Verify bytes are readable through the handle-retained pointer.
-        val readBack = ByteArray(payload.size) { result.zcPtr!![it] }
+        val readBack = ByteArray(payload.size) { zcPtr[it] }
         assertEquals(payload.toList(), readBack.toList(), "bytes mismatch on zero-copy path")
         // Release the handle.
-        keel_nw_dispatch_data_release(result.zcHandle)
+        keel_nw_dispatch_data_release(zcHandle)
     }
 
     @Test
@@ -92,7 +92,8 @@ class NwReadDualPathTest {
         assertNull(result.zcPtr, "multi-region must signal copy path via null zc_ptr")
         assertEquals(expected.size, result.bytesReported)
         // Verify bytes are in the fallback buffer.
-        val readBack = ByteArray(expected.size) { result.fallbackBytes!![it] }
+        val fallbackBytes = assertNotNull(result.fallbackBytes, "fallback bytes must be populated on copy path")
+        val readBack = ByteArray(expected.size) { fallbackBytes[it] }
         assertEquals(expected.toList(), readBack.toList(), "bytes mismatch on fallback copy path")
     }
 
@@ -120,11 +121,12 @@ class NwReadDualPathTest {
         assertNull(result.zcHandle)
         assertEquals(fallbackCapacity, result.bytesReported)
         // First 40 bytes should be 'A', remaining 10 bytes 'B'.
+        val fallbackBytes = assertNotNull(result.fallbackBytes, "fallback bytes must be populated on copy path")
         for (i in 0 until 40) {
-            assertEquals(0x41.toByte(), result.fallbackBytes!![i], "byte $i should be 'A'")
+            assertEquals(0x41.toByte(), fallbackBytes[i], "byte $i should be 'A'")
         }
         for (i in 40 until 50) {
-            assertEquals(0x42.toByte(), result.fallbackBytes!![i], "byte $i should be 'B'")
+            assertEquals(0x42.toByte(), fallbackBytes[i], "byte $i should be 'B'")
         }
     }
 

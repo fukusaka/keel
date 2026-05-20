@@ -226,7 +226,9 @@ internal class NwIoTransport(
             ?.also { spareFallbackBuf = null }
             ?: allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         pendingReadBuf = buf
-        val ptr = (buf.unsafePointer + buf.writerIndex)!!
+        val ptr = checkNotNull(buf.unsafePointer + buf.writerIndex) {
+            "buf.unsafePointer + writerIndex returned null; IoBuf pointer must be valid"
+        }
         val ref = StableRef.create(ReadContext(this, buf))
         keel_nw_read_async(conn, ptr, buf.writableBytes.toUInt(), readCallback, ref.asCPointer())
     }
@@ -235,44 +237,38 @@ internal class NwIoTransport(
      * Receive completion handler invoked from the dispatch queue via the
      * C wrapper's read callback.
      *
-     * Dual-path semantics matching [keel_nw_read_async]'s callback:
+     * The raw callback parameters are classified into [NwReceiveOutcome]
+     * at the C-callback boundary so this method consumes a single
+     * fully-typed value:
      *
-     * - `zcHandle != null`: **zero-copy single-region path**. The
-     *   region pointer in [zcPtr] is valid until
-     *   [keel_nw_dispatch_data_release] is called on [zcHandle]. The
+     * - [NwReceiveOutcome.ZeroCopy] — single-region zero-copy. The
+     *   region pointer is valid until
+     *   `keel_nw_dispatch_data_release` is called on `handle`. The
      *   pre-allocated [fallbackBuf] is unused and is recycled via
      *   [spareFallbackBuf]; the framework memory is wrapped as a
-     *   [DispatchDataIoBuf] (engine-direct, 1 allocation per
-     *   receive) whose [DispatchDataIoBuf.release] releases [zcHandle]
-     *   at refcount zero.
-     * - `zcHandle == null` and `bytesRead > 0`: **multi-region copy
-     *   path**. [bytesRead] bytes have been memcpy'd into [fallbackBuf]
-     *   by the C wrapper; it is delivered to [onRead] like before.
-     * - All other cases (failed, EOF, spurious 0-byte non-complete):
-     *   identical to the copy-only legacy path.
+     *   [DispatchDataIoBuf] (engine-direct, 1 allocation per receive)
+     *   whose [DispatchDataIoBuf.release] releases `handle` at
+     *   refcount zero.
+     * - [NwReceiveOutcome.Copied] — multi-region copy. Bytes have been
+     *   memcpy'd into [fallbackBuf] by the C wrapper; the same buffer
+     *   is delivered to [onRead] as before zero-copy support existed.
+     * - [NwReceiveOutcome.Closed] — failed or EOF. Fallback buffer is
+     *   released and [onReadClosed] is invoked.
+     * - [NwReceiveOutcome.Spurious] — 0 bytes, not complete. Fallback
+     *   is released and the read is re-armed without delivery.
      */
-    internal fun onReadComplete(
-        fallbackBuf: IoBuf,
-        zcHandle: COpaquePointer?,
-        zcPtr: CPointer<ByteVar>?,
-        bytesRead: Int,
-        isComplete: Boolean,
-        failed: Boolean,
-    ) {
+    internal fun onReadComplete(fallbackBuf: IoBuf, outcome: NwReceiveOutcome) {
         assertOnConnQueue("NwIoTransport.onReadComplete")
         pendingReadBuf = null
         if (!opened) {
             fallbackBuf.release()
-            if (zcHandle != null) keel_nw_dispatch_data_release(zcHandle)
+            if (outcome is NwReceiveOutcome.ZeroCopy) {
+                keel_nw_dispatch_data_release(outcome.handle)
+            }
             return
         }
-        when {
-            failed || (bytesRead == 0 && isComplete) -> {
-                fallbackBuf.release()
-                if (zcHandle != null) keel_nw_dispatch_data_release(zcHandle)
-                onReadClosed?.invoke()
-            }
-            zcHandle != null && bytesRead > 0 -> {
+        when (outcome) {
+            is NwReceiveOutcome.ZeroCopy -> {
                 // Zero-copy single-region path: the framework-managed
                 // memory is wrapped as an engine-direct IoBuf; the
                 // pre-allocated fallback buffer was unused — recycle
@@ -280,24 +276,26 @@ internal class NwIoTransport(
                 // a pool allocate+release pair.
                 fallbackBuf.clear()
                 spareFallbackBuf = fallbackBuf
-                @Suppress("UnsafeCallOnNullableType")
-                val zcBuf = DispatchDataIoBuf(zcPtr!!, bytesRead, zcHandle)
+                val zcBuf = DispatchDataIoBuf(outcome.ptr, outcome.bytesRead, outcome.handle)
                 // Same delivery semantics as the copy path. See the
                 // KDoc above on idle-read policies for how this
                 // interacts with `readEnabled`.
                 onRead?.invoke(zcBuf)
                 armRead()
             }
-            bytesRead > 0 -> {
+            is NwReceiveOutcome.Copied -> {
                 // Multi-region copy path: bytes already memcpy'd into
                 // fallbackBuf by the C wrapper. Identical to the
                 // pre-zero-copy implementation.
-                fallbackBuf.writerIndex += bytesRead
+                fallbackBuf.writerIndex += outcome.bytesRead
                 onRead?.invoke(fallbackBuf)
                 armRead()
             }
-            else -> {
-                // 0 bytes, not complete — re-arm.
+            NwReceiveOutcome.Closed -> {
+                fallbackBuf.release()
+                onReadClosed?.invoke()
+            }
+            NwReceiveOutcome.Spurious -> {
                 fallbackBuf.release()
                 armRead()
             }
@@ -370,7 +368,9 @@ internal class NwIoTransport(
 
         if (writes.size == 1) {
             val pw = writes[0]
-            val ptr = (pw.buf.unsafePointer + pw.offset)!!
+            val ptr = checkNotNull(pw.buf.unsafePointer + pw.offset) {
+                "buf.unsafePointer + offset returned null; IoBuf pointer must be valid"
+            }
             val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
                 transport.updatePendingBytes(delta)
             })
@@ -380,7 +380,10 @@ internal class NwIoTransport(
                 val bufs = allocArray<CPointerVar<ByteVar>>(writes.size)
                 val lens = allocArray<UIntVar>(writes.size)
                 for (i in writes.indices) {
-                    bufs[i] = (writes[i].buf.unsafePointer + writes[i].offset)!!.reinterpret()
+                    val p = checkNotNull(writes[i].buf.unsafePointer + writes[i].offset) {
+                        "buf.unsafePointer + offset returned null at index $i; IoBuf pointer must be valid"
+                    }
+                    bufs[i] = p.reinterpret()
                     lens[i] = writes[i].length.toUInt()
                 }
                 val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
@@ -472,14 +475,44 @@ internal class NwIoTransport(
             val ref = checkNotNull(ctx) { "read callback ctx is null" }.asStableRef<ReadContext>()
             val readCtx = ref.get()
             ref.dispose()
-            readCtx.transport.onReadComplete(
-                fallbackBuf = readCtx.buf,
+            val outcome = classifyReceive(
                 zcHandle = zcHandle,
-                zcPtr = zcPtr?.reinterpret<ByteVar>(),
+                zcPtr = zcPtr,
                 bytesRead = len.toInt(),
                 isComplete = isComplete != 0,
                 failed = error != 0,
             )
+            readCtx.transport.onReadComplete(readCtx.buf, outcome)
+        }
+
+        /**
+         * Maps the raw `keel_nw_dispatch_received` callback parameters
+         * to a fully-typed [NwReceiveOutcome] variant. Performed once
+         * at the C-callback boundary so the rest of the engine code
+         * gets exhaustive `when` smart-casting instead of correlated
+         * nullable bookkeeping.
+         *
+         * Branch ordering matches the original flat `when` in
+         * [onReadComplete] before the sealed refactor: terminal
+         * conditions (failed / EOF) first, then zero-copy, then
+         * multi-region copy, then spurious 0-byte.
+         */
+        private fun classifyReceive(
+            zcHandle: COpaquePointer?,
+            zcPtr: COpaquePointer?,
+            bytesRead: Int,
+            isComplete: Boolean,
+            failed: Boolean,
+        ): NwReceiveOutcome = when {
+            failed || (bytesRead == 0 && isComplete) -> NwReceiveOutcome.Closed
+            zcHandle != null && bytesRead > 0 -> {
+                val ptr = checkNotNull(zcPtr) {
+                    "zcPtr must be non-null when zcHandle is non-null (zero-copy single-region contract)"
+                }.reinterpret<ByteVar>()
+                NwReceiveOutcome.ZeroCopy(zcHandle, ptr, bytesRead)
+            }
+            bytesRead > 0 -> NwReceiveOutcome.Copied(bytesRead)
+            else -> NwReceiveOutcome.Spurious
         }
 
         private val flushCallback = staticCFunction { error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
