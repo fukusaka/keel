@@ -52,9 +52,11 @@ import kotlin.test.Test
  * `jvmTest` task; inspect stdout for the numbers. Does not assert.
  *
  * Pair with `:keel-engine-netty:NettyReadPathAllocationBenchmark` (engine
- * layer per-receive alloc) for full-stack alloc accounting. design.md
- * §6216 sets per-request alloc as a design constraint for this module;
- * this benchmark is the gate.
+ * layer per-receive alloc) for full-stack alloc accounting. The
+ * keel-server-http hot path targets sub-millisecond latency at 1 M+
+ * rps, so per-request alloc has to stay bounded — this benchmark is
+ * the measurement gate against which future PRs touching the hot path
+ * can A/B.
  */
 class HttpServerHotPathAllocationBenchmark {
 
