@@ -25,8 +25,16 @@ package io.github.fukusaka.keel.benchmark
  * - **wrap-path**: drives `keel_nw_test_dispatch_handle` (production
  *   `keel_nw_dispatch_received` with a pre-made single-region handle),
  *   the callback wraps the region as an IoBuf via
- *   `wrapExternalNativePtr`, releases the IoBuf (which fires the
- *   handle release through `keel_nw_dispatch_data_release`), and loops.
+ *   `wrapExternalNativePtr` (the Segment-backed wrap as of PR #581),
+ *   releases the IoBuf (which fires the handle release through
+ *   `keel_nw_dispatch_data_release`), and loops. After PR (α)
+ *   replaced the production wrap with the engine-direct
+ *   `DispatchDataIoBuf`, this measurement still represents the
+ *   Kotlin-side allocation + release cost class — both implementations
+ *   pay `dispatch_data_release` at refcount-zero, both allocate per
+ *   receive (Segment-backed = 4 allocations / engine-direct = 1),
+ *   and the wrap-vs-copy comparison answers the larger design
+ *   question (is zero-copy faster than memcpy at this byte size).
  *
  * - **copy-path**: drives `keel_nw_test_dispatch_handle_copyonly`
  *   (bench-only helper that forces the multi-region memcpy branch on

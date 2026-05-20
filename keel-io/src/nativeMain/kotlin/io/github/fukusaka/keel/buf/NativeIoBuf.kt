@@ -255,13 +255,18 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
 }
 
 /**
- * Wraps an externally-owned native memory region as an [IoBuf].
+ * Wraps an externally-owned native memory region as a Segment-backed [IoBuf].
  *
- * Public engine-direct seam for buffers whose backing memory comes from
- * a foreign source — kernel-provided ring slots (io_uring's provided
- * buffer ring on Linux), framework-managed regions (NWConnection's
- * `dispatch_data_t` on macOS), pinned `ByteArray`s, etc. — and whose
- * release semantics differ from the keel allocator's heap pooling.
+ * Public seam for engines that prefer the Segment-backed wrap shape
+ * (`Segment` + `ExternalNativeBacking` + `NativeIoBuf` view + `unpin`
+ * via [SegmentOwner]) over building their own engine-direct IoBuf
+ * class. The Segment-backed shape pays 4 allocations per wrap but
+ * slices via the same-Segment window view (1 allocation per slice
+ * via [DefaultAllocator.slice]). Engine-direct wraps (e.g.
+ * `RingBufferIoBuf` in keel-engine-io-uring, `DispatchDataIoBuf` in
+ * keel-engine-nwconnection) pay 1 allocation per wrap but 4 per slice
+ * (slice goes through `sliceDefaultIoBuf`'s engine-direct branch).
+ * Pick the shape that matches the engine's slice / receive ratio.
  *
  * The returned [IoBuf] has `readerIndex = 0`, `writerIndex = [length]`,
  * and `capacity = [length]`. When its reference count reaches zero
