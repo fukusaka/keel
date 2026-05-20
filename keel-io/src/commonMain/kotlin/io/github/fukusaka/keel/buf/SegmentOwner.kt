@@ -5,7 +5,7 @@ package io.github.fukusaka.keel.buf
  *
  * Every [Segment] carries a [Segment.owner] that decides what happens
  * when the segment's reference count reaches zero: freeing native
- * memory, returning the recycled [IoBuf] view to an allocator pool,
+ * memory, returning the recycled segment to an allocator pool,
  * unpinning an externally-wrapped array, or releasing a parent slice.
  * The [release] method encodes that strategy; all other state (pool
  * reference, parent ref, …) is held on the concrete implementation.
@@ -13,7 +13,7 @@ package io.github.fukusaka.keel.buf
  * keel-io provides the common set of owners:
  *
  * - [HeapOwner] — frees the segment's backing directly.
- * - [PoolOwner] — returns the segment's [IoBuf] view to its allocator pool.
+ * - [PoolOwner] — returns the segment to its allocator pool.
  * - [SliceOwner] — releases the parent buffer a slice borrows from.
  * - [ExternalWrapOwner] — unpins an externally-wrapped resource.
  *
@@ -53,20 +53,20 @@ internal object HeapOwner : SegmentOwner {
 }
 
 /**
- * Strategy that returns a pooled [IoBuf] view to its originating pool
- * when the segment's refcount reaches zero. The [returnToPool] lambda
- * closes over the specific pool instance (keyed by size class, per-EventLoop
- * local stack, …) without needing further state on the owner itself.
+ * Strategy that returns a pooled [Segment] to its originating pool when
+ * the refcount reaches zero. The [returnToPool] lambda closes over the
+ * specific pool instance (keyed by size class, per-EventLoop local
+ * stack, …) without needing further state on the owner itself.
  *
  * Instance count: typically one per pool (per size class × per
  * EventLoop). Zero per-allocation closure cost: the owner is reused
  * across every allocation of the same pool.
  */
 internal class PoolOwner(
-    private val returnToPool: (IoBuf) -> Unit,
+    private val returnToPool: (Segment) -> Unit,
 ) : SegmentOwner {
     override fun release(segment: Segment) {
-        returnToPool(checkNotNull(segment.view) { "pooled segment has no view" })
+        returnToPool(segment)
     }
 }
 

@@ -58,6 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: pooled allocators now recycle `Segment`s (the lifetime unit) instead of `IoBuf` views; `nextLink` / pool reset live on `Segment` (#580)
 - `io`: `RawSegmentBacking` is now an `interface` with one impl per provenance; the `ownsMemory` flag is gone, `free()` is polymorphic (#579)
 - `io`: drop `RawMemorySource` — allocators now construct `RawSegmentBacking` directly; the speculative seam had no real consumer (#578)
 - **BREAKING** (`io`): `BufSlice` is renamed to `IoBufView` — it is a read-only view over one or more `IoBuf`s, not a buffer slice (#577)

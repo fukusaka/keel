@@ -15,6 +15,12 @@ package io.github.fukusaka.keel.buf
  * "huge" segment (a request larger than the pooled size class) is
  * larger than the standard pooled allocator's segment size.
  *
+ * **Pool unit**: pooled allocators ([SlabAllocator] /
+ * [PooledDirectAllocator]) recycle [Segment]s (the lifetime unit), not
+ * views. A pool retains the [Segment]; on pop the cached primary [view]
+ * is reset (`readerIndex` / `writerIndex` to 0, [refCount] to 1) and
+ * returned to the caller. [nextLink] is the intrusive freelist link.
+ *
  * @property backing  The opaque platform memory region.
  * @property capacity Size of the region in bytes.
  */
@@ -28,8 +34,23 @@ class Segment internal constructor(
     /** Strategy invoked when [refCount] reaches 0. */
     internal var owner: SegmentOwner = HeapOwner
 
-    /** The primary IoBuf view — the unit a pool recycles. Set when the view is constructed. */
+    /**
+     * Cached primary [IoBuf] view over this segment.
+     *
+     * Set when the primary view is constructed and re-used for the
+     * lifetime of the segment, including across pool recycles — the
+     * segment and its primary view are recycled as a pair.
+     */
     internal var view: IoBuf? = null
+
+    /**
+     * Intrusive freelist link for lock-free pool freelists (Treiber stack)
+     * and ArrayDeque-based freelists.
+     *
+     * Non-null only while this segment resides in a pool's freelist.
+     * Allows pools to chain segments without wrapper-node allocations.
+     */
+    internal var nextLink: Segment? = null
 
     internal fun retain() {
         check(refCount > 0) { "Cannot retain a released segment" }
@@ -46,8 +67,14 @@ class Segment internal constructor(
         return false
     }
 
-    /** Restores [refCount] to 1 for pool reuse. */
+    /**
+     * Restores this segment to a fresh-from-allocator state for pool
+     * reuse: [refCount] back to 1 and [nextLink] cleared. The primary
+     * [view]'s `readerIndex` / `writerIndex` are reset separately by the
+     * allocator on pop.
+     */
     internal fun resetForReuse() {
         refCount = 1
+        nextLink = null
     }
 }

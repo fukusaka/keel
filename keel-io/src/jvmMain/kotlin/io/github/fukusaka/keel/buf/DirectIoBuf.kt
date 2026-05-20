@@ -86,8 +86,6 @@ class DirectIoBuf private constructor(
         get() = segment.owner
         set(value) { segment.owner = value }
 
-    override var nextLink: IoBuf? = null
-
     override var readerIndex: Int = 0
     override var writerIndex: Int = 0
 
@@ -186,15 +184,6 @@ class DirectIoBuf private constructor(
             it.readerIndex = 0
             it.writerIndex = length
         }
-    }
-
-    override fun resetForReuse() {
-        readerIndex = 0
-        writerIndex = 0
-        segment.resetForReuse()
-        nextLink = null
-        buf.position(0)
-        buf.limit(capacity)
     }
 
     override fun retain(): IoBuf {

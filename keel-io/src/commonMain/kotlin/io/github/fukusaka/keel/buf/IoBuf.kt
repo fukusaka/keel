@@ -198,13 +198,15 @@ interface IoBuf : Releasable {
 }
 
 /**
- * Extended [IoBuf] interface for pool-managed buffers.
+ * Extended [IoBuf] interface for [Segment]-backed buffers — exposes a
+ * mutable [segmentOwner] hook that internal decorators such as
+ * [TrackingAllocator] / [LeakDetectingAllocator] use to intercept the
+ * release path.
  *
- * Adds [nextLink] for intrusive freelist, [resetForReuse] for pool
- * recycling, and a mutable [segmentOwner] hook that internal
- * decorators such as [TrackingAllocator] / [LeakDetectingAllocator]
- * use to intercept the release path. Used internally by
- * [BufferAllocator] implementations within io-core.
+ * The freelist link and recycle reset now live on the [Segment] itself
+ * (the pool unit); pooled allocators retain segments and reset the
+ * primary view's `readerIndex` / `writerIndex` on pop. This interface
+ * therefore carries only the decorator hook.
  */
 internal interface PoolableIoBuf : IoBuf {
 
@@ -217,23 +219,6 @@ internal interface PoolableIoBuf : IoBuf {
      * without changing the public [IoBuf] surface.
      */
     var segmentOwner: SegmentOwner
-
-    /**
-     * Intrusive link for lock-free pool freelists (Treiber stack).
-     *
-     * Non-null only while this buffer resides in a pool's freelist.
-     * Used by pool-based allocators to build freelists without wrapper
-     * node allocations.
-     */
-    var nextLink: IoBuf?
-
-    /**
-     * Resets the buffer for reuse without freeing the underlying memory.
-     *
-     * Restores [readerIndex], [writerIndex] to 0, reference count to 1,
-     * and [nextLink] to null. The segment owner is preserved across reuses.
-     */
-    fun resetForReuse()
 }
 
 /**

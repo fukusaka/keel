@@ -79,15 +79,21 @@ class SlabAllocator(
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
-        val buf: NativeIoBuf = withSpinLock {
+        val seg: Segment? = withSpinLock {
             val pool = pools[capacity]
             if (pool != null && pool.list.isNotEmpty()) {
-                pool.list.removeLast().also { it.resetForReuse() }
+                pool.list.removeLast()
             } else {
                 null
             }
-        } ?: NativeIoBuf.overSegment(newSegment(capacity), poolOwner)
-        return buf
+        }
+        if (seg != null) {
+            seg.resetForReuse()
+            val view = checkNotNull(seg.view as? NativeIoBuf) { "pooled segment has no NativeIoBuf view" }
+            view.clear()
+            return view
+        }
+        return NativeIoBuf.overSegment(newSegment(capacity), poolOwner)
     }
 
     /**
@@ -113,17 +119,20 @@ class SlabAllocator(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    private fun returnToPool(buf: IoBuf) {
-        val closed = withSpinLock {
-            val pool = pools[buf.capacity]
+    private fun returnToPool(seg: Segment) {
+        val rejected = withSpinLock {
+            val pool = pools[seg.capacity]
             if (pool != null && pool.list.size < pool.maxSlots) {
-                pool.list.addLast(buf as NativeIoBuf)
+                pool.list.addLast(seg)
                 false
             } else {
                 true
             }
         }
-        if (closed) buf.close()
+        // Pool full or no class for this size: free the backing directly.
+        // The segment's refCount is already zero (we are inside PoolOwner.release),
+        // so there is no view-side teardown to do beyond releasing the memory.
+        if (rejected) seg.backing.free()
     }
 
     /**
@@ -138,8 +147,8 @@ class SlabAllocator(
         return withSpinLock {
             val result = mutableListOf<Pair<kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>, Int>>()
             for ((_, pool) in pools) {
-                for (buf in pool.list) {
-                    result.add(buf.unsafePointer to buf.capacity)
+                for (seg in pool.list) {
+                    result.add((seg.backing as NativeBacking).base to seg.capacity)
                 }
             }
             result
@@ -147,7 +156,7 @@ class SlabAllocator(
     }
 
     private class Pool(val maxSlots: Int) {
-        val list = ArrayDeque<NativeIoBuf>(maxSlots)
+        val list = ArrayDeque<Segment>(maxSlots)
     }
 
     companion object {
