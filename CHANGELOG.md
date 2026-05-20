@@ -59,6 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-nwconnection`: receive zero-copy wrap is now engine-direct `DispatchDataIoBuf` (1 alloc/receive); /hello +7.8% (#583)
 - `engine-nwconnection`: receive path is zero-copy for single-region `dispatch_data_t`; multi-region falls back to memcpy (#581)
 - `io`: new `wrapExternalNativePtr(ptr, length, unpin)` — public engine-direct seam to wrap externally-owned native memory as an `IoBuf` (#581)
 - `io`: pooled allocators now recycle `Segment`s (the lifetime unit) instead of `IoBuf` views; `nextLink` / pool reset live on `Segment` (#580)
