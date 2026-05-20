@@ -22,9 +22,19 @@ import org.khronos.webgl.Int8Array
  */
 class TypedArrayIoBuf private constructor(
     private val segment: Segment,
+    private val windowStart: Int,
+    private val windowLength: Int,
 ) : IoBuf, PoolableIoBuf {
 
-    init {
+    /**
+     * Primary-view constructor: a full-window view over [segment] that
+     * registers itself as the segment's [Segment.view].
+     *
+     * The windowed constructor `(segment, windowStart, windowLength)` is
+     * used for slices; it deliberately does NOT touch [Segment.view] so
+     * the primary view remains the segment's canonical owner-facing view.
+     */
+    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
         segment.view = this
     }
 
@@ -35,12 +45,22 @@ class TypedArrayIoBuf private constructor(
      */
     constructor(capacity: Int) : this(allocSegment(capacity))
 
-    /** Cached [Int8Array] read once out of the [Segment]'s backing. */
-    private val cachedBase: Int8Array = segment.backing.base
+    /**
+     * Cached [Int8Array] windowed to `[windowStart, windowStart +
+     * windowLength)`. `subarray` shares the underlying `ArrayBuffer`, so
+     * a windowed slice stays a single indexed load with no copy; a
+     * full-window primary view caches the backing array directly.
+     */
+    private val cachedBase: Int8Array =
+        if (windowStart == 0 && windowLength == segment.capacity) {
+            segment.backing.base
+        } else {
+            segment.backing.base.subarray(windowStart, windowStart + windowLength)
+        }
 
     private val buf: Int8Array get() = cachedBase
 
-    override val capacity: Int get() = segment.capacity
+    override val capacity: Int get() = windowLength
 
     override var segmentOwner: SegmentOwner
         get() = segment.owner
@@ -100,6 +120,32 @@ class TypedArrayIoBuf private constructor(
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
+    }
+
+    /**
+     * Returns a same-[Segment] window view of [length] bytes at [offset]
+     * within this buffer's window.
+     *
+     * This is the same-[Segment] window-view slice path: the returned
+     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
+     * needs no throwaway wrapper segment. The caller owns the returned
+     * handle and must [release] it; when the segment's refcount reaches
+     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
+     *
+     * The view starts with `readerIndex = 0` and `writerIndex = length`.
+     * A zero [length] yields [EmptyIoBuf].
+     */
+    @Suppress("IoBufLeak") // Slice returns ownership to caller
+    internal fun sliceWindow(offset: Int, length: Int): IoBuf {
+        require(offset >= 0 && length >= 0 && offset + length <= capacity) {
+            "slice out of range: offset=$offset length=$length capacity=$capacity"
+        }
+        if (length == 0) return EmptyIoBuf
+        segment.retain()
+        return TypedArrayIoBuf(segment, windowStart + offset, length).also {
+            it.readerIndex = 0
+            it.writerIndex = length
+        }
     }
 
     override fun resetForReuse() {
@@ -173,7 +219,11 @@ internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = TypedArrayIoBuf(c
 @Suppress("IoBufLeak") // Slice returns ownership to caller
 internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
     if (length == 0) return EmptyIoBuf
+    // Segment-backed source: slice as a same-Segment window view, no wrapper.
+    if (source is TypedArrayIoBuf) return source.sliceWindow(offset, length)
+    // Engine-direct source (no Segment): wrap a window of its Int8Array
+    // and release the source through a SliceOwner at refcount-zero.
     source.retain()
-    val view = (source as TypedArrayIoBuf).unsafeArray.subarray(offset, offset + length)
+    val view = source.unsafeArray.subarray(offset, offset + length)
     return TypedArrayIoBuf.wrapExternal(view, bytesWritten = length, owner = SliceOwner(source))
 }
