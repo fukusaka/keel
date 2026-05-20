@@ -12,8 +12,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * Maintains lock-free freelists of [IoBuf] instances backed by
  * [java.nio.ByteBuffer.allocateDirect], one per registered size class.
- * Each freelist is an intrusive Treiber stack using [IoBuf.nextLink],
- * eliminating wrapper node allocations.
+ * Each freelist is an intrusive Treiber stack of [Segment]s linked via
+ * [Segment.nextLink], eliminating wrapper node allocations.
  *
  * Size classes are registered dynamically via [registerPoolSize].
  * The default 8 KiB class is registered at construction for backward
@@ -70,12 +70,14 @@ class PooledDirectAllocator(
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
         val pool = pools[capacity]
-        val buf: DirectIoBuf = if (pool != null) {
-            pool.pop()?.also { it.resetForReuse() }
-        } else {
-            null
-        } ?: DirectIoBuf.overSegment(newSegment(capacity), poolOwner)
-        return buf
+        val seg: Segment? = pool?.pop()
+        if (seg != null) {
+            seg.resetForReuse()
+            val view = checkNotNull(seg.view as? DirectIoBuf) { "pooled segment has no DirectIoBuf view" }
+            view.clear()
+            return view
+        }
+        return DirectIoBuf.overSegment(newSegment(capacity), poolOwner)
     }
 
     /**
@@ -101,26 +103,31 @@ class PooledDirectAllocator(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    private fun returnToPool(buf: IoBuf) {
-        val pool = pools[buf.capacity]
+    private fun returnToPool(seg: Segment) {
+        val pool = pools[seg.capacity]
         if (pool != null) {
-            pool.push(buf as DirectIoBuf)
+            pool.push(seg)
         } else {
-            buf.close()
+            // No class for this size: free the backing directly.
+            // The segment's refCount is already zero (we are inside PoolOwner.release).
+            seg.backing.free()
         }
     }
 
     /**
-     * Lock-free Treiber stack for a single size class.
+     * Lock-free Treiber stack of [Segment]s for a single size class.
+     *
+     * Uses [Segment.nextLink] as the intrusive freelist link, avoiding
+     * wrapper node allocations.
      */
     private class Pool(val maxSlots: Int) {
-        val head = AtomicReference<DirectIoBuf?>(null)
+        val head = AtomicReference<Segment?>(null)
         val size = AtomicInteger(0)
 
-        fun pop(): DirectIoBuf? {
+        fun pop(): Segment? {
             while (true) {
                 val cur = head.get() ?: return null
-                if (head.compareAndSet(cur, cur.nextLink as DirectIoBuf?)) {
+                if (head.compareAndSet(cur, cur.nextLink)) {
                     cur.nextLink = null
                     size.decrementAndGet()
                     return cur
@@ -128,17 +135,18 @@ class PooledDirectAllocator(
             }
         }
 
-        fun push(buf: DirectIoBuf) {
+        fun push(seg: Segment) {
             val newSize = size.incrementAndGet()
             if (newSize <= maxSlots) {
                 while (true) {
                     val cur = head.get()
-                    buf.nextLink = cur
-                    if (head.compareAndSet(cur, buf)) return
+                    seg.nextLink = cur
+                    if (head.compareAndSet(cur, seg)) return
                 }
             } else {
                 size.decrementAndGet()
-                buf.close()
+                // Pool full: free the backing directly. refCount is already 0.
+                seg.backing.free()
             }
         }
     }

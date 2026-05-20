@@ -85,8 +85,6 @@ class NativeIoBuf private constructor(
         get() = segment.owner
         set(value) { segment.owner = value }
 
-    override var nextLink: IoBuf? = null
-
     override var readerIndex: Int = 0
     override var writerIndex: Int = 0
 
@@ -170,20 +168,6 @@ class NativeIoBuf private constructor(
             it.readerIndex = 0
             it.writerIndex = length
         }
-    }
-
-    /**
-     * Resets this buffer for pool recycling.
-     *
-     * The [Segment] (and its backing) is preserved so external-memory
-     * wrappers created via [wrapExternal] can be safely reused without
-     * re-wrapping.
-     */
-    override fun resetForReuse() {
-        readerIndex = 0
-        writerIndex = 0
-        segment.resetForReuse()
-        nextLink = null
     }
 
     override fun retain(): IoBuf {
