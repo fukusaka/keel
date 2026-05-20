@@ -3,7 +3,6 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
@@ -33,12 +32,11 @@ import io.netty.channel.Channel as NettyNativeChannel
  * **Read path**: Netty delivers data asynchronously via [channelRead]
  * before the user provides a buffer. When the inbound [ByteBuf] has a
  * single NIO backing (`nioBufferCount() == 1`), the transport wraps
- * [ByteBuf.nioBuffer] via [DirectIoBuf.wrapExternal] + a
- * [NettyByteBufOwner] — zero copy, pool pressure shifted to Netty's
- * arena. Composite buffers fall back to the allocate-and-copy path.
- * The other push-mode engine (NWConnection) still has the structural
- * constraint of `dispatch_data_t` copy; zero-copy for that engine is
- * future work.
+ * it via [NettyByteBufIoBuf.wrapInbound] — zero copy + engine-direct
+ * (1 allocation per receive, mirrors the engine-direct
+ * `DispatchDataIoBuf` path on the NWConnection engine). Pool pressure
+ * is shifted to Netty's arena. Composite buffers
+ * (`nioBufferCount() > 1`) fall back to the allocate-and-copy path.
  *
  * **auto-read**: Pipeline mode uses `autoRead = true` (Netty delivers data
  * continuously). Coroutine mode starts with `autoRead = false` and switches
@@ -153,16 +151,17 @@ internal class NettyIoTransport(
      *
      * **Zero-copy path**: when the inbound [ByteBuf] is backed by a
      * single NIO [ByteBuffer] (`nioBufferCount() == 1`), the transport
-     * wraps [ByteBuf.nioBuffer] via [DirectIoBuf.wrapExternal] and
-     * installs a [NettyByteBufOwner]. Ownership of the Netty [ByteBuf]
-     * is transferred to the wrapping `IoBuf`; the pooled buffer is
+     * wraps it directly via [NettyByteBufIoBuf.wrapInbound] (engine-direct,
+     * 1 allocation per receive). Ownership of the Netty [ByteBuf] is
+     * transferred to the wrapping `IoBuf`; the pooled buffer is
      * returned to Netty's arena when the keel pipeline releases the
      * `IoBuf`. No memory copy occurs.
      *
      * **Copy fallback**: composite buffers (`nioBufferCount() > 1`) fall
-     * back to allocating a keel [DirectIoBuf] and copying into it via
-     * [ByteBuf.getBytes]. The allocation size is rounded up to
-     * [POOL_FRIENDLY_CAPACITY] so the keel [PooledDirectAllocator]
+     * back to allocating a keel [IoBuf] from the configured [allocator]
+     * (typically [NettyByteBufAllocator] returning [NettyByteBufIoBuf])
+     * and copying into it via [ByteBuf.getBytes]. The allocation size is
+     * rounded up to [POOL_FRIENDLY_CAPACITY] so the underlying pool
      * freelist can serve it.
      */
     internal val handler = object : ChannelInboundHandlerAdapter() {
@@ -188,13 +187,10 @@ internal class NettyIoTransport(
 
             val readable = byteBuf.readableBytes()
             if (byteBuf.nioBufferCount() == 1) {
-                // Zero-copy wrap: ownership of byteBuf transfers to the owner.
-                val nio = byteBuf.nioBuffer(byteBuf.readerIndex(), readable)
-                val buf = DirectIoBuf.wrapExternal(
-                    buffer = nio,
-                    bytesWritten = readable,
-                    owner = NettyByteBufOwner(byteBuf),
-                )
+                // Engine-direct zero-copy wrap: ownership of byteBuf
+                // transfers to the wrapper; refcount-zero release frees
+                // the pooled ByteBuf inline.
+                val buf = NettyByteBufIoBuf.wrapInbound(byteBuf)
                 try {
                     onRead?.invoke(buf)
                 } catch (t: Throwable) {
