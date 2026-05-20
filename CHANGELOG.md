@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `codec-http`: `HttpHeaders` internal storage refactored from `LinkedHashMap × 2` to a flat `IntArray` slot table + heap `ByteArray` backing. Public String API unchanged; single-thread saturation throughput +11.2 % (337 k → 375 k req/s) at the cost of +1.4 pt GC fraction (15.93 → 17.37 %) from the per-access String materialise (zero per-access alloc is the L7-a-ii follow-up's job) (#5XX)
+- `codec-http`: `HttpHeaders` internal storage refactored from `LinkedHashMap × 2` to a flat `IntArray` slot table + heap `ByteArray` backing. Public String API unchanged; single-thread saturation throughput +11.2 % (337 k → 375 k req/s) at the cost of +1.4 pt GC fraction (15.93 → 17.37 %) from the per-access String materialise (zero per-access alloc is the L7-a-ii follow-up's job) (#589)
 
 ### Added
 
