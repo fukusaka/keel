@@ -39,16 +39,16 @@ actual fun runNwRecvCostBench(): Boolean {
     println("Includes Kotlin-side IoBuf wrap allocation and release in the wrap-path —")
     println("the cost component that the original investigation micro-bench missed.")
     println()
-    println("size_bytes  wrap_ns   copy_ns   delta_ns  wrap_ratio")
+    println("size_bytes  segwrap_ns  engdir_ns  copy_ns   eng_vs_copy")
 
     for (size in sizes) {
-        val wrapNs = medianRun(5) { measureWrap(size, iters) }
+        val segWrapNs = medianRun(5) { measureSegmentBackedWrap(size, iters) }
+        val engDirNs = medianRun(5) { measureEngineDirect(size, iters) }
         val copyNs = medianRun(5) { measureCopy(size, iters) }
-        val delta = wrapNs - copyNs
-        val ratio = if (copyNs > 0.0) wrapNs / copyNs else Double.NaN
+        val engDelta = engDirNs - copyNs
         println(
-            "${pad(size.toString(), 10)}  ${oneDec(wrapNs, 7)}  ${oneDec(copyNs, 7)}" +
-                "  ${oneDecSigned(delta, 8)}  ${threeDec(ratio)}x",
+            "${pad(size.toString(), 10)}  ${oneDec(segWrapNs, 9)}  ${oneDec(engDirNs, 8)}" +
+                "  ${oneDec(copyNs, 7)}  ${oneDecSigned(engDelta, 9)}",
         )
     }
     println()
@@ -65,7 +65,7 @@ private fun medianRun(n: Int, action: () -> Double): Double {
     return samples[n / 2]
 }
 
-private fun measureWrap(size: Int, iters: Int): Double {
+private fun measureSegmentBackedWrap(size: Int, iters: Int): Double {
     val payload = ByteArray(size) { ((it + 1) and 0xFF).toByte() }
     return payload.usePinned { pinned ->
         val handle = checkNotNull(
@@ -85,14 +85,62 @@ private fun measureWrap(size: Int, iters: Int): Double {
                     repeat(2_000) {
                         keel_nw_test_dispatch_handle(
                             handle, ptr, fallbackBuf.writableBytes.toUInt(),
-                            0, wrapCallback, ref.asCPointer(),
+                            0, segmentBackedWrapCallback, ref.asCPointer(),
                         )
                     }
                     val mark = TimeSource.Monotonic.markNow()
                     repeat(iters) {
                         keel_nw_test_dispatch_handle(
                             handle, ptr, fallbackBuf.writableBytes.toUInt(),
-                            0, wrapCallback, ref.asCPointer(),
+                            0, segmentBackedWrapCallback, ref.asCPointer(),
+                        )
+                    }
+                    val elapsed = mark.elapsedNow()
+                    return elapsed.inWholeNanoseconds.toDouble() / iters
+                } finally {
+                    ref.dispose()
+                }
+            } finally {
+                fallbackBuf.release()
+            }
+        } finally {
+            keel_nw_dispatch_data_release(handle)
+        }
+    }
+}
+
+/**
+ * Measures the engine-direct wrap path used by production after
+ * PR #583 (engine-direct [DispatchDataIoBuf]). The callback
+ * allocates a tiny holder class and immediately runs the handle
+ * release — same allocation count + same cinterop release call as
+ * production, without needing to import `DispatchDataIoBuf`
+ * (`internal` to keel-engine-nwconnection).
+ */
+private fun measureEngineDirect(size: Int, iters: Int): Double {
+    val payload = ByteArray(size) { ((it + 1) and 0xFF).toByte() }
+    return payload.usePinned { pinned ->
+        val handle = checkNotNull(
+            keel_nw_test_make_data_single(pinned.addressOf(0), size.toUInt()),
+        ) { "make_data_single returned null" }
+        try {
+            val fallbackBuf = DefaultAllocator.allocate(maxOf(size, 8192))
+            try {
+                val ptr = (fallbackBuf.unsafePointer + fallbackBuf.writerIndex)!!
+                val ctx = EngineDirectCallbackCtx(0)
+                val ref = StableRef.create(ctx)
+                try {
+                    repeat(2_000) {
+                        keel_nw_test_dispatch_handle(
+                            handle, ptr, fallbackBuf.writableBytes.toUInt(),
+                            0, engineDirectCallback, ref.asCPointer(),
+                        )
+                    }
+                    val mark = TimeSource.Monotonic.markNow()
+                    repeat(iters) {
+                        keel_nw_test_dispatch_handle(
+                            handle, ptr, fallbackBuf.writableBytes.toUInt(),
+                            0, engineDirectCallback, ref.asCPointer(),
                         )
                     }
                     val elapsed = mark.elapsedNow()
@@ -152,9 +200,27 @@ private fun measureCopy(size: Int, iters: Int): Double {
 }
 
 private class WrapCallbackCtx(var counter: Int)
+private class EngineDirectCallbackCtx(var counter: Int)
 private class CopyCallbackCtx(var counter: Int)
 
-private val wrapCallback = staticCFunction {
+/**
+ * Holder class with the same shape as `DispatchDataIoBuf` —
+ * 3 reference fields + 1 int field — used by [engineDirectCallback]
+ * to simulate the engine-direct allocation cost without importing
+ * the internal `DispatchDataIoBuf` class. Allocation cost is
+ * structurally equivalent (small Kotlin/Native heap object).
+ */
+private class EngineDirectHolder(
+    val ptr: COpaquePointer,
+    val len: Int,
+    val handle: COpaquePointer,
+) {
+    fun release() {
+        keel_nw_dispatch_data_release(handle)
+    }
+}
+
+private val segmentBackedWrapCallback = staticCFunction {
         zcHandle: COpaquePointer?,
         zcPtr: COpaquePointer?,
         len: UInt,
@@ -173,6 +239,22 @@ private val wrapCallback = staticCFunction {
     // Bump counter so the compiler doesn't elide the callback.
     if (ctx != null) {
         val c = ctx.asStableRef<WrapCallbackCtx>().get()
+        c.counter++
+    }
+}
+
+private val engineDirectCallback = staticCFunction {
+        zcHandle: COpaquePointer?,
+        zcPtr: COpaquePointer?,
+        len: UInt,
+        _: Int, _: Int,
+        ctx: COpaquePointer? ->
+    if (zcHandle != null && zcPtr != null) {
+        val holder = EngineDirectHolder(zcPtr, len.toInt(), zcHandle)
+        holder.release()
+    }
+    if (ctx != null) {
+        val c = ctx.asStableRef<EngineDirectCallbackCtx>().get()
         c.counter++
     }
 }
