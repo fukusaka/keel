@@ -76,7 +76,7 @@ class HelloGcPressureAudit {
         }
 
         val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean
-        val tid = Thread.currentThread().id
+        val tid = Thread.currentThread().threadId()
         val gcs: List<GarbageCollectorMXBean> = ManagementFactory.getGarbageCollectorMXBeans()
 
         val gcCountBefore = gcs.associate { it.name to it.collectionCount }

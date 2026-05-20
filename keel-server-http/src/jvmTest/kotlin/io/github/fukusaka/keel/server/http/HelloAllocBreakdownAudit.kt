@@ -80,42 +80,47 @@ class HelloAllocBreakdownAudit {
         }
 
         val jfrPath = Files.createTempFile("hello-alloc-", ".jfr")
-        val recording = jdk.jfr.Recording().apply {
-            // Sample every allocation site. `jdk.ObjectAllocationSample`
-            // gives both TLAB-refill and outside-TLAB events with a
-            // weight approximating the allocated bytes.
-            enable("jdk.ObjectAllocationSample").withPeriod(Duration.ofMillis(1))
-        }
-        try {
-            recording.start()
-            repeat(ITERS) {
-                channel.pipeline.notifyRead(bufOf(request))
-                drain()
-            }
-            recording.stop()
-            recording.dump(jfrPath)
-        } finally {
-            recording.close()
-        }
-
         val byClass = HashMap<String, LongArray>() // [totalWeight, count]
         var totalEvents = 0L
         var totalWeight = 0L
-        RecordingFile(jfrPath).use { rf ->
-            while (rf.hasMoreEvents()) {
-                val ev = rf.readEvent()
-                if (ev.eventType.name != "jdk.ObjectAllocationSample") continue
-                totalEvents++
-                val w = ev.getLong("weight")
-                totalWeight += w
-                val objClass = ev.getClass("objectClass") ?: continue
-                val key = objClass.name
-                val acc = byClass.getOrPut(key) { LongArray(2) }
-                acc[0] += w
-                acc[1] += 1
+        try {
+            val recording = jdk.jfr.Recording().apply {
+                // Sample every allocation site. `jdk.ObjectAllocationSample`
+                // gives both TLAB-refill and outside-TLAB events with a
+                // weight approximating the allocated bytes.
+                enable("jdk.ObjectAllocationSample").withPeriod(Duration.ofMillis(1))
             }
+            try {
+                recording.start()
+                repeat(ITERS) {
+                    channel.pipeline.notifyRead(bufOf(request))
+                    drain()
+                }
+                recording.stop()
+                recording.dump(jfrPath)
+            } finally {
+                recording.close()
+            }
+
+            RecordingFile(jfrPath).use { rf ->
+                while (rf.hasMoreEvents()) {
+                    val ev = rf.readEvent()
+                    if (ev.eventType.name != "jdk.ObjectAllocationSample") continue
+                    totalEvents++
+                    val w = ev.getLong("weight")
+                    totalWeight += w
+                    val objClass = ev.getClass("objectClass") ?: continue
+                    val key = objClass.name
+                    val acc = byClass.getOrPut(key) { LongArray(2) }
+                    acc[0] += w
+                    acc[1] += 1
+                }
+            }
+        } finally {
+            // Best-effort cleanup of the temp .jfr file even if recording
+            // start/stop, dump, or RecordingFile parsing throws.
+            Files.deleteIfExists(jfrPath)
         }
-        Files.deleteIfExists(jfrPath)
 
         println("=== /hello GET allocation breakdown (JFR jdk.ObjectAllocationSample, iters=$ITERS) ===")
         println("  total events: $totalEvents")
