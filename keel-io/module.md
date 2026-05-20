@@ -75,10 +75,11 @@ report `IoBuf` instances that are never released.
 throw and `retain()`/`release()` are no-ops. Used as a placeholder where an `IoBuf`
 reference is structurally required but no data is present (e.g. `HttpBodyEnd.EMPTY`).
 
-## BufSlice
+## IoBufView
 
-`BufSlice` is a zero-copy read-only view into a region of an `IoBuf`.
-Holds a reference to the parent `IoBuf` and is released when closed.
+`IoBufView` is a zero-copy read-only view over a region of one or more
+`IoBuf`s. The caller is responsible for keeping the underlying `IoBuf`(s)
+alive; an `IoBufView` is parse-step scoped and not itself a counted handle.
 Used by codec parsers to expose parsed fields without copying bytes.
 
 ## Suspend I/O Layer
@@ -107,7 +108,7 @@ codec parsers (HTTP, WebSocket):
 
 # Package io.github.fukusaka.keel.buf
 
-`IoBuf` (reference-counted buffer), `BufferAllocator`, `BufSlice`,
+`IoBuf` (reference-counted buffer), `BufferAllocator`, `IoBufView`,
 `TrackingAllocator`, `LeakDetectingAllocator`, and platform-specific
 implementations (`NativeIoBuf`, `DirectIoBuf`, `TypedArrayIoBuf`, `SlabAllocator`,
 `PooledDirectAllocator`).

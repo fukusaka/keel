@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.io
 
-import io.github.fukusaka.keel.buf.BufSlice
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufView
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
 import kotlinx.coroutines.test.runTest
@@ -146,7 +146,7 @@ class BufferedSuspendSourceTest {
     fun scanLineReturnsZeroCopySlice() = runTest {
         val source = BufferedSuspendSource(sourceOf("GET /hello HTTP/1.1\r\n"), DefaultAllocator)
         val slice = source.scanLine()!!
-        // Verify it's a real BufSlice, not a copy
+        // Verify it's a real IoBufView, not a copy
         assertTrue(slice.contentEquals("GET /hello HTTP/1.1"))
         assertEquals(19, slice.length) // "GET /hello HTTP/1.1" = 19 bytes
         source.close()
@@ -194,7 +194,7 @@ class BufferedSuspendSourceTest {
     fun pullMode_scanLine_secondLineSpansRefill() = runTest {
         // First line consumes most of the first refill buffer. The second
         // line starts near the buffer end and continues into the next
-        // refill, exercising the cross-buffer BufSlice path in pull mode.
+        // refill, exercising the cross-buffer IoBufView path in pull mode.
         val line1 = "A".repeat(8000) + "\n"
         val line2 = "B".repeat(500) + "\n"
         val source = BufferedSuspendSource(sourceOf(line1 + line2), DefaultAllocator)
@@ -207,7 +207,7 @@ class BufferedSuspendSourceTest {
     @Test
     fun pullMode_scanLine_crossBuffer_multiSegment() = runTest {
         // A single line longer than BUFFER_SIZE (8192): the LF lands in the
-        // second refill buffer, so scanLine returns a multi-segment BufSlice.
+        // second refill buffer, so scanLine returns a multi-segment IoBufView.
         val line = "C".repeat(10000) + "\r\n"
         val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
         val slice = source.scanLine()
