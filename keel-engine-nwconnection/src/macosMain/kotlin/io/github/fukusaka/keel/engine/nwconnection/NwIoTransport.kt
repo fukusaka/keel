@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.buf.wrapExternalNativePtr
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -13,6 +14,8 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -25,6 +28,7 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CompletableDeferred
+import nwconnection.keel_nw_dispatch_data_release
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
 import nwconnection.keel_nw_write_async
@@ -40,11 +44,15 @@ import platform.darwin.dispatch_queue_t
  * Handles both read and write paths for NWConnection. Unlike kqueue/epoll
  * transports which use POSIX `read()` directly into [IoBuf], NWConnection
  * delivers data as `dispatch_data_t`. The C wrapper [keel_nw_read_async]
- * copies data segment-by-segment via `dispatch_data_apply` + `memcpy` —
- * copy is unavoidable.
+ * implements a **dual-path receive**: single-region `dispatch_data_t`
+ * (the empirical 100% case for loopback TCP, verified 2026-05-20) is
+ * wrapped zero-copy via [wrapExternalNativePtr], while multi-region
+ * data falls back to per-region memcpy into the pre-allocated buffer.
  *
  * **Read path**: [readEnabled] arms the async read loop via [keel_nw_read_async].
- * Each read callback allocates a buffer, fills it, and invokes [onRead].
+ * The dispatch callback delivers either (a) a retained `dispatch_data_t`
+ * handle + region pointer for the zero-copy branch, or (b) the
+ * pre-allocated buffer filled by memcpy for the multi-region branch.
  * EOF/error invokes [onReadClosed].
  *
  * **Idle-read trade-off** ([idleReadPolicy]): NWConnection has no
@@ -188,54 +196,111 @@ internal class NwIoTransport(
     private var pendingReadBuf: IoBuf? = null
 
     /**
+     * Recycled fallback buffer for the multi-region copy path.
+     *
+     * The zero-copy fast path does NOT use this buffer — it wraps the
+     * framework-managed memory as an IoBuf directly. But the C wrapper
+     * needs a destination for the multi-region branch, so a buffer is
+     * always supplied to `keel_nw_read_async`. Caching it across
+     * receives avoids per-iteration allocator pool churn on the
+     * zero-copy hot path (the buffer is allocated once on first arm
+     * and reused until the multi-region branch claims it).
+     *
+     * Lifecycle: allocated on demand in [armRead] when null; reused
+     * across all-zero-copy receives; consumed (handed to onRead and
+     * not reclaimed) when the multi-region branch fires.
+     */
+    @kotlin.concurrent.Volatile
+    private var spareFallbackBuf: IoBuf? = null
+
+    /**
      * Starts the async read loop via [keel_nw_read_async].
      *
-     * Allocates a buffer, creates a StableRef with a [ReadContext], and
-     * passes it to the C wrapper. The read callback re-arms automatically
-     * on each successful read.
+     * Allocates (or reuses) a fallback buffer, creates a StableRef
+     * with a [ReadContext], and passes it to the C wrapper. The read
+     * callback re-arms automatically on each successful read.
      */
     private fun armRead() {
         if (!opened) return
         if (pendingReadBuf != null) return
-        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val buf = spareFallbackBuf
+            ?.also { spareFallbackBuf = null }
+            ?: allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         pendingReadBuf = buf
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         val ref = StableRef.create(ReadContext(this, buf))
         keel_nw_read_async(conn, ptr, buf.writableBytes.toUInt(), readCallback, ref.asCPointer())
     }
 
-    internal fun onReadComplete(buf: IoBuf, bytesRead: Int, isComplete: Boolean, failed: Boolean) {
+    /**
+     * Receive completion handler invoked from the dispatch queue via the
+     * C wrapper's read callback.
+     *
+     * Dual-path semantics matching [keel_nw_read_async]'s callback:
+     *
+     * - `zcHandle != null`: **zero-copy single-region path**. The
+     *   region pointer in [zcPtr] is valid until
+     *   [keel_nw_dispatch_data_release] is called on [zcHandle]. The
+     *   pre-allocated [fallbackBuf] is unused and is released back to
+     *   the allocator; a fresh [IoBuf] is wrapped via
+     *   [wrapExternalNativePtr] with [zcHandle] released at refcount
+     *   zero.
+     * - `zcHandle == null` and `bytesRead > 0`: **multi-region copy
+     *   path**. [bytesRead] bytes have been memcpy'd into [fallbackBuf]
+     *   by the C wrapper; it is delivered to [onRead] like before.
+     * - All other cases (failed, EOF, spurious 0-byte non-complete):
+     *   identical to the copy-only legacy path.
+     */
+    internal fun onReadComplete(
+        fallbackBuf: IoBuf,
+        zcHandle: COpaquePointer?,
+        zcPtr: CPointer<ByteVar>?,
+        bytesRead: Int,
+        isComplete: Boolean,
+        failed: Boolean,
+    ) {
         assertOnConnQueue("NwIoTransport.onReadComplete")
         pendingReadBuf = null
         if (!opened) {
-            buf.release()
+            fallbackBuf.release()
+            if (zcHandle != null) keel_nw_dispatch_data_release(zcHandle)
             return
         }
         when {
             failed || (bytesRead == 0 && isComplete) -> {
-                buf.release()
+                fallbackBuf.release()
+                if (zcHandle != null) keel_nw_dispatch_data_release(zcHandle)
                 onReadClosed?.invoke()
             }
+            zcHandle != null && bytesRead > 0 -> {
+                // Zero-copy single-region path: the framework-managed
+                // memory is wrapped as an IoBuf; the pre-allocated
+                // fallback buffer was unused — recycle it via
+                // [spareFallbackBuf] so the next armRead skips a
+                // pool allocate+release pair.
+                fallbackBuf.clear()
+                spareFallbackBuf = fallbackBuf
+                @Suppress("UnsafeCallOnNullableType")
+                val zcBuf = wrapExternalNativePtr(zcPtr!!, bytesRead) {
+                    keel_nw_dispatch_data_release(zcHandle)
+                }
+                // Same delivery semantics as the copy path. See the
+                // KDoc above on idle-read policies for how this
+                // interacts with `readEnabled`.
+                onRead?.invoke(zcBuf)
+                armRead()
+            }
             bytesRead > 0 -> {
-                buf.writerIndex += bytesRead
-                // Always deliver via [onRead] in both modes. In
-                // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
-                // only reachable when the receive is armed (which only
-                // happens after `readEnabled = true`). In
-                // [IdleReadPolicy.DETECT_PEER_CLOSE] we deliver
-                // regardless of `readEnabled`; bytes that arrive while
-                // no user [InboundHandler] is installed are absorbed by
-                // `DefaultPipeline`'s pre-attach event journal and
-                // replayed when the first user handler is added — this
-                // trades engine-level data dropping for pipeline-level
-                // buffering, closing the data-loss caveat that
-                // DETECT_PEER_CLOSE previously documented.
-                onRead?.invoke(buf)
+                // Multi-region copy path: bytes already memcpy'd into
+                // fallbackBuf by the C wrapper. Identical to the
+                // pre-zero-copy implementation.
+                fallbackBuf.writerIndex += bytesRead
+                onRead?.invoke(fallbackBuf)
                 armRead()
             }
             else -> {
                 // 0 bytes, not complete — re-arm.
-                buf.release()
+                fallbackBuf.release()
                 armRead()
             }
         }
@@ -359,6 +424,8 @@ internal class NwIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
+        spareFallbackBuf?.release()
+        spareFallbackBuf = null
         nw_connection_cancel(conn)
     }
 
@@ -398,11 +465,23 @@ internal class NwIoTransport(
         private const val AWAIT_CLOSED_TIMEOUT_MS = 5000L
 
         private val readCallback = staticCFunction {
-                len: UInt, isComplete: Int, error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->
+                zcHandle: COpaquePointer?,
+                zcPtr: COpaquePointer?,
+                len: UInt,
+                isComplete: Int,
+                error: Int,
+                ctx: COpaquePointer? ->
             val ref = checkNotNull(ctx) { "read callback ctx is null" }.asStableRef<ReadContext>()
             val readCtx = ref.get()
             ref.dispose()
-            readCtx.transport.onReadComplete(readCtx.buf, len.toInt(), isComplete != 0, error != 0)
+            readCtx.transport.onReadComplete(
+                fallbackBuf = readCtx.buf,
+                zcHandle = zcHandle,
+                zcPtr = zcPtr?.reinterpret<ByteVar>(),
+                bytesRead = len.toInt(),
+                isComplete = isComplete != 0,
+                failed = error != 0,
+            )
         }
 
         private val flushCallback = staticCFunction { error: Int, ctx: kotlinx.cinterop.COpaquePointer? ->

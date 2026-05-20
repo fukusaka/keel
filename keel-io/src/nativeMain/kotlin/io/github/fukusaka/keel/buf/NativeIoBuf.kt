@@ -253,3 +253,38 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
     val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
     return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = SliceOwner(source))
 }
+
+/**
+ * Wraps an externally-owned native memory region as an [IoBuf].
+ *
+ * Public engine-direct seam for buffers whose backing memory comes from
+ * a foreign source — kernel-provided ring slots (io_uring's provided
+ * buffer ring on Linux), framework-managed regions (NWConnection's
+ * `dispatch_data_t` on macOS), pinned `ByteArray`s, etc. — and whose
+ * release semantics differ from the keel allocator's heap pooling.
+ *
+ * The returned [IoBuf] has `readerIndex = 0`, `writerIndex = [length]`,
+ * and `capacity = [length]`. When its reference count reaches zero
+ * [unpin] is invoked exactly once on the EventLoop / dispatch queue
+ * that owns the buffer; [unpin] is the foreign owner's release
+ * primitive (`bufferRing.returnBuffer(bufId)` / dispatch_data_t
+ * `__bridge_transfer` release / `Pinned.unpin` / …).
+ *
+ * **Lifetime contract**: [ptr] must remain valid until [unpin] is
+ * called. Slicing the returned buffer increments its reference count;
+ * each slice's release decrements; [unpin] runs only after all slices
+ * (and the original handle) are released.
+ *
+ * @param ptr    Pointer to the start of the externally-owned region.
+ * @param length Length of the region in bytes.
+ * @param unpin  Foreign-owner release primitive, invoked once at
+ *               refcount zero.
+ */
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@Suppress("IoBufLeak") // Wrap returns ownership to caller
+fun wrapExternalNativePtr(
+    ptr: kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>,
+    length: Int,
+    unpin: () -> Unit,
+): IoBuf =
+    NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = ExternalWrapOwner(unpin))

@@ -229,32 +229,137 @@ nw_parameters_t keel_nw_create_tcp_params_unix_listener_with_options(const char 
  * Used by Kotlin/Native staticCFunction + StableRef to bridge
  * NWConnection's dispatch callbacks to coroutine continuations.
  */
-typedef void (*keel_nw_read_callback)(uint32_t len, int is_complete, int error, void *ctx);
+/*
+ * Read callback with a dual-path delivery:
+ *
+ * - **Zero-copy single-region** (production fast path): [zc_handle] is a
+ *   retained, opaque dispatch_data_t handle and [zc_ptr] is a pointer
+ *   directly into the framework-managed memory. Both remain valid until
+ *   [keel_nw_dispatch_data_release] is called on the handle. [len] is
+ *   the byte count available at [zc_ptr]. The pre-supplied [buf] in
+ *   [keel_nw_read_async] is untouched and the caller must release it
+ *   (typically back to the pool) since the bytes are in the
+ *   framework-owned region instead.
+ *
+ * - **Multi-region copy** (rare fallback): [zc_handle] / [zc_ptr] are
+ *   NULL. [len] bytes have been memcpy'd into the [buf] originally
+ *   passed to [keel_nw_read_async]. Identical semantics to the
+ *   pre-zero-copy implementation.
+ *
+ * The empirical loopback-TCP distribution measured during the NW
+ * zero-copy investigation (2026-05-20) recorded 100% single-region
+ * across 1500+ receives, but Apple's documented dispatch_data_t
+ * contract does not guarantee single-region — so the fallback path
+ * remains a first-class case (TLS framework / future protocol
+ * additions / kernel version differences may produce multi-region).
+ */
+typedef void (*keel_nw_read_callback)(void *zc_handle,
+                                       const void *zc_ptr,
+                                       uint32_t len,
+                                       int is_complete,
+                                       int error,
+                                       void *ctx);
 typedef void (*keel_nw_write_callback)(int error, void *ctx);
 typedef void (*keel_nw_start_callback)(int result, void *ctx);
 
 /*
- * Async read via NWConnection.
+ * Async read via NWConnection with single-region zero-copy fast path.
  *
  * Schedules nw_connection_receive and invokes the callback when data
- * arrives. No blocking — the caller suspends via coroutine and is
- * resumed by the callback.
+ * arrives. The callback receives the data in one of two shapes:
  *
- * Data is copied from dispatch_data_t into the caller's buffer
- * segment-by-segment via dispatch_data_apply (same as blocking version).
+ * 1. **Single-region** (production hot path on loopback TCP): the
+ *    dispatch_data_t is retained, an opaque handle is passed to the
+ *    callback in [zc_handle] together with the region pointer in
+ *    [zc_ptr]. The caller wraps [zc_ptr]/[len] as an IoBuf and
+ *    invokes [keel_nw_dispatch_data_release] on [zc_handle] at
+ *    refcount-zero. [buf] is left untouched.
  *
- * Limitation: NWConnection does not provide a receive API that writes into
- * a pre-allocated buffer. The kernel delivers data as dispatch_data_t,
- * so a memcpy into NativeBuf is unavoidable. Measured cost: ~0.1-0.4 us
- * for small packets, ~1-2 us for 64 KB. Zero-copy wrapping is deferred
- * to a future change (requires the NativeBuf MemoryOwner abstraction).
+ * 2. **Multi-region** (fallback): the bytes are memcpy'd into [buf]
+ *    region-by-region, and [zc_handle]/[zc_ptr] are NULL. The caller
+ *    consumes the existing [buf] as before.
+ *
+ * The branch is decided by walking the dispatch_data_t once with
+ * dispatch_data_apply to count regions; single-region (>99% on
+ * loopback TCP per investigation 2026-05-20) returns after the first
+ * iteration without any byte copy.
  *
  * @param conn     NWConnection to read from.
- * @param buf      Destination buffer.
- * @param buf_len  Maximum bytes to read.
- * @param callback Invoked on completion with (bytes_copied, is_complete, error, ctx).
- * @param ctx      Opaque pointer passed to callback (StableRef to continuation).
+ * @param buf      Fallback destination buffer. Unused in the
+ *                 single-region path; written into in the multi-region
+ *                 path. The caller pre-allocates either way.
+ * @param buf_len  Capacity of [buf]; also used as `maximum_length` for
+ *                 nw_connection_receive.
+ * @param callback Invoked on completion.
+ * @param ctx      Opaque pointer passed to callback (StableRef to
+ *                 continuation).
  */
+/*
+ * Per-content dispatch: handles a single dispatch_data_t returned by
+ * nw_connection_receive (or a synthetic one supplied by tests).
+ * Decides between single-region zero-copy and multi-region copy
+ * fallback, then invokes [callback] with the appropriate parameters
+ * (see [keel_nw_read_callback] for the dual-path semantics).
+ *
+ * Factored out so the branching logic can be exercised in isolation by
+ * `keel_nw_test_dispatch_received` without standing up a real
+ * NWConnection.
+ */
+static void keel_nw_dispatch_received(dispatch_data_t content,
+                                       void *buf, uint32_t buf_len,
+                                       int is_complete,
+                                       int failed,
+                                       keel_nw_read_callback callback,
+                                       void *ctx) {
+    if (failed || !content) {
+        callback(NULL, NULL, 0, is_complete, failed, ctx);
+        return;
+    }
+    /* Single pass: count regions and snapshot the first one. */
+    __block uint32_t region_count = 0;
+    __block const void *first_ptr = NULL;
+    __block size_t first_size = 0;
+    dispatch_data_apply(content,
+        ^(dispatch_data_t region, size_t offset,
+          const void *ptr, size_t size)
+        {
+            region_count++;
+            if (region_count == 1) {
+                first_ptr = ptr;
+                first_size = size;
+            }
+            return (bool)true;
+        });
+    if (region_count == 1) {
+        /* Zero-copy fast path: retain the parent dispatch_data_t so
+         * the region pointer survives past this block. The caller
+         * receives a +1 retain via __bridge_retained and must release
+         * it through keel_nw_dispatch_data_release at IoBuf
+         * refcount-zero. */
+        void *zc_handle = (__bridge_retained void *)content;
+        uint32_t len = (first_size > buf_len) ? buf_len : (uint32_t)first_size;
+        callback(zc_handle, first_ptr, len, is_complete, 0, ctx);
+        return;
+    }
+    /* Multi-region fallback: memcpy each region into the pre-supplied
+     * buffer. Exercised when the framework hands us a non-contiguous
+     * dispatch_data_t (rare on loopback TCP, may occur under TLS /
+     * future protocols). */
+    __block uint32_t copied = 0;
+    dispatch_data_apply(content,
+        ^(dispatch_data_t region, size_t offset,
+          const void *ptr, size_t size)
+        {
+            if (copied + size > buf_len) {
+                size = buf_len - copied;
+            }
+            memcpy((uint8_t *)buf + copied, ptr, size);
+            copied += (uint32_t)size;
+            return (bool)(copied < buf_len);
+        });
+    callback(NULL, NULL, copied, is_complete, 0, ctx);
+}
+
 void keel_nw_read_async(nw_connection_t conn,
                          void *buf, uint32_t buf_len,
                          keel_nw_read_callback callback, void *ctx) {
@@ -262,23 +367,25 @@ void keel_nw_read_async(nw_connection_t conn,
         ^(dispatch_data_t content, nw_content_context_t context,
           bool is_complete, nw_error_t error)
         {
-            __block uint32_t copied = 0;
-            int failed = error ? 1 : 0;
-            if (!failed && content) {
-                dispatch_data_apply(content,
-                    ^(dispatch_data_t region, size_t offset,
-                      const void *ptr, size_t size)
-                    {
-                        if (copied + size > buf_len) {
-                            size = buf_len - copied;
-                        }
-                        memcpy((uint8_t *)buf + copied, ptr, size);
-                        copied += (uint32_t)size;
-                        return (bool)(copied < buf_len);
-                    });
-            }
-            callback(copied, is_complete ? 1 : 0, failed, ctx);
+            keel_nw_dispatch_received(content, buf, buf_len,
+                is_complete ? 1 : 0, error ? 1 : 0, callback, ctx);
         });
+}
+
+/*
+ * Releases a dispatch_data_t handle previously returned via the
+ * [keel_nw_read_callback]'s [zc_handle] parameter. After this call the
+ * handle is invalid and any pointers obtained from the read callback
+ * may be reused by the framework. Safe to call on a non-NULL handle
+ * only; passing NULL is a no-op for symmetry with the fallback path.
+ *
+ * Implemented via __bridge_transfer so the ARC runtime drops the +1
+ * retain installed by [keel_nw_read_async]'s single-region branch.
+ */
+void keel_nw_dispatch_data_release(void *zc_handle) {
+    if (!zc_handle) return;
+    dispatch_data_t data = (__bridge_transfer dispatch_data_t)zc_handle;
+    (void)data;
 }
 
 /*
@@ -394,4 +501,61 @@ void keel_nw_start_conn_async(nw_connection_t conn, dispatch_queue_t queue,
             }
         });
     nw_connection_start(conn);
+}
+
+/*
+ * --- Test-only helpers for verifying the production dual-path
+ *     dispatch logic in [keel_nw_dispatch_received] without standing
+ *     up a real NWConnection. ---
+ */
+
+/*
+ * Creates a 2-region dispatch_data_t by concatenating two separately-
+ * created chunks, then drives [keel_nw_dispatch_received] with it.
+ * The synthetic data uses DISPATCH_DATA_DESTRUCTOR_DEFAULT, so the
+ * bytes are copied at creation; framework-managed memory is not
+ * involved. After return, the synthetic dispatch_data_t is released
+ * (ARC drops the local reference); the zc_handle delivered to the
+ * callback retains a separate +1 that the caller must release through
+ * [keel_nw_dispatch_data_release] like in production.
+ *
+ * Used by `NwReadDualPathTest` to exercise the multi-region copy
+ * fallback branch — that branch is unreachable through the loopback
+ * test pattern because the NW framework empirically coalesces TCP
+ * receive buffers into single-region dispatch_data_t (verified by the
+ * region-count histogram investigation, 2026-05-20).
+ */
+void keel_nw_test_dispatch_concat(const void *bytes1, uint32_t len1,
+                                    const void *bytes2, uint32_t len2,
+                                    void *buf, uint32_t buf_len,
+                                    int is_complete,
+                                    keel_nw_read_callback callback,
+                                    void *ctx) {
+    dispatch_queue_t q = dispatch_get_global_queue(0, 0);
+    dispatch_data_t d1 = dispatch_data_create(bytes1, len1, q,
+        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    dispatch_data_t d2 = dispatch_data_create(bytes2, len2, q,
+        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    dispatch_data_t combined = dispatch_data_create_concat(d1, d2);
+    keel_nw_dispatch_received(combined, buf, buf_len,
+        is_complete, 0, callback, ctx);
+    /* ARC drops d1 / d2 / combined here; the zc_handle path's
+     * __bridge_retained gave the callback its own +1 retain. */
+}
+
+/*
+ * Drives [keel_nw_dispatch_received] with a single-region
+ * dispatch_data_t built from the supplied bytes. Verifies the
+ * zero-copy fast path: the callback receives a non-NULL zc_handle and
+ * a pointer that survives past this call until
+ * [keel_nw_dispatch_data_release] is invoked.
+ */
+void keel_nw_test_dispatch_single(const void *bytes, uint32_t len,
+                                    void *buf, uint32_t buf_len,
+                                    int is_complete,
+                                    keel_nw_read_callback callback,
+                                    void *ctx) {
+    dispatch_data_t d = dispatch_data_create(bytes, len,
+        dispatch_get_global_queue(0, 0), DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    keel_nw_dispatch_received(d, buf, buf_len, is_complete, 0, callback, ctx);
 }
