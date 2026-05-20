@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`: `IntArrayPool` (per-EventLoop reuse of fixed-size `IntArray`s) and `IoBufAsciiText` (zero-copy `CharSequence` view over an `IoBuf` byte range, ISO-8859-1 semantics) — enabling primitives for the HTTP/1.1 headers slot-table refactor (#588)
 - `benchmark`: new `--bench=nw-recv-cost` in-process micro-bench compares wrap vs copy NW receive cost; macOS-only (#582)
 - `server-http`: `HttpCall.queryParameters` — a multi-value `QueryParameters` (`get` / `getAll`) with a `maxParameterCount` DoS guard and opt-in strict-decoding rejection, configured via `connector { queryParameters { } }` (#565)
 - `server-websocket`: `webSockets { }` can be nested inside a `route(prefix) { }` group — WebSocket endpoints inherit the group's path prefix and `install`ed middleware (auth / logging run before the handshake) (#563)
