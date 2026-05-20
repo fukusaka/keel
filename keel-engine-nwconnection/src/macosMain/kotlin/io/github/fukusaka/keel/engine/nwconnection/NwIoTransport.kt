@@ -196,16 +196,36 @@ internal class NwIoTransport(
     private var pendingReadBuf: IoBuf? = null
 
     /**
+     * Recycled fallback buffer for the multi-region copy path.
+     *
+     * The zero-copy fast path does NOT use this buffer — it wraps the
+     * framework-managed memory as an IoBuf directly. But the C wrapper
+     * needs a destination for the multi-region branch, so a buffer is
+     * always supplied to `keel_nw_read_async`. Caching it across
+     * receives avoids per-iteration allocator pool churn on the
+     * zero-copy hot path (the buffer is allocated once on first arm
+     * and reused until the multi-region branch claims it).
+     *
+     * Lifecycle: allocated on demand in [armRead] when null; reused
+     * across all-zero-copy receives; consumed (handed to onRead and
+     * not reclaimed) when the multi-region branch fires.
+     */
+    @kotlin.concurrent.Volatile
+    private var spareFallbackBuf: IoBuf? = null
+
+    /**
      * Starts the async read loop via [keel_nw_read_async].
      *
-     * Allocates a buffer, creates a StableRef with a [ReadContext], and
-     * passes it to the C wrapper. The read callback re-arms automatically
-     * on each successful read.
+     * Allocates (or reuses) a fallback buffer, creates a StableRef
+     * with a [ReadContext], and passes it to the C wrapper. The read
+     * callback re-arms automatically on each successful read.
      */
     private fun armRead() {
         if (!opened) return
         if (pendingReadBuf != null) return
-        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        val buf = spareFallbackBuf
+            ?.also { spareFallbackBuf = null }
+            ?: allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
         pendingReadBuf = buf
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         val ref = StableRef.create(ReadContext(this, buf))
@@ -255,8 +275,11 @@ internal class NwIoTransport(
             zcHandle != null && bytesRead > 0 -> {
                 // Zero-copy single-region path: the framework-managed
                 // memory is wrapped as an IoBuf; the pre-allocated
-                // fallback buffer was unused, return it to the pool.
-                fallbackBuf.release()
+                // fallback buffer was unused — recycle it via
+                // [spareFallbackBuf] so the next armRead skips a
+                // pool allocate+release pair.
+                fallbackBuf.clear()
+                spareFallbackBuf = fallbackBuf
                 @Suppress("UnsafeCallOnNullableType")
                 val zcBuf = wrapExternalNativePtr(zcPtr!!, bytesRead) {
                     keel_nw_dispatch_data_release(zcHandle)
@@ -401,6 +424,8 @@ internal class NwIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
+        spareFallbackBuf?.release()
+        spareFallbackBuf = null
         nw_connection_cancel(conn)
     }
 
