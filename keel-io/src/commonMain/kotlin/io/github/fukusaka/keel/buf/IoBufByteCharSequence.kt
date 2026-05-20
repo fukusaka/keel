@@ -1,0 +1,132 @@
+package io.github.fukusaka.keel.buf
+
+/**
+ * A [CharSequence] view over a byte range of an [IoBuf], interpreting
+ * bytes as ASCII (0–255) characters.
+ *
+ * Designed for the HTTP / WebSocket header / URI parse path where header
+ * values are wire-level ASCII byte sequences (per RFC 7230 §3.2.6 token
+ * grammar) and materialising them into [String] instances on every
+ * `headers["X"]` access is the dominant per-request alloc source.
+ * `IoBufByteCharSequence(buf, start, end)` lets the caller hold a
+ * zero-copy view over the parsed header value and only pay a [String]
+ * allocation when [toString] is actually called.
+ *
+ * **Lifetime**: the view holds a reference to [buf] but **does not
+ * retain** it. The caller (typically the codec that constructs the view
+ * and hands it to a downstream handler) is responsible for ensuring the
+ * underlying [IoBuf] is alive for the lifetime of the view. The intended
+ * usage pattern is: header parse → view lives until handler dispatch
+ * completes → backing buffer released as part of the request lifecycle.
+ *
+ * Using a view after the backing buffer has been released is a
+ * use-after-free; [getByte] on a released buffer is undefined behaviour
+ * on Native and may produce stale data on JVM.
+ *
+ * **ASCII assumption**: bytes 0x00–0xFF are interpreted as their
+ * corresponding `Char` (i.e., ISO-8859-1). HTTP header values are
+ * defined as US-ASCII with the relaxation that opaque-text and
+ * obs-text bytes may appear (RFC 7230 §3.2.6); this view exposes them
+ * as ISO-8859-1 codepoints rather than decoding them as UTF-8 (no UTF-8
+ * decoding is performed). Callers wanting Unicode decoding must call
+ * [toString] (which uses the platform default `decodeToString`, i.e.
+ * UTF-8 on JVM / Native / JS — note that this differs from the [get]
+ * behaviour for non-ASCII bytes).
+ *
+ * **Per-instance cost** (JVM, ~32 bytes/instance): object header (~16) +
+ * `buf` reference (8) + `start` int (4) + `length` int (4). Smaller
+ * than an equivalent [String] (~40 bytes + char[]).
+ *
+ * @param buf    The backing [IoBuf]. Must outlive every operation on
+ *               this view; the view does not retain.
+ * @param start  Absolute start byte index into [buf] (inclusive).
+ * @param length Number of bytes the view covers.
+ */
+@OptIn(UnsafeIoBufApi::class)
+class IoBufByteCharSequence(
+    private val buf: IoBuf,
+    private val start: Int,
+    override val length: Int,
+) : CharSequence {
+
+    init {
+        require(start >= 0) { "start ($start) must be >= 0" }
+        require(length >= 0) { "length ($length) must be >= 0" }
+        require(start + length <= buf.capacity) {
+            "start ($start) + length ($length) > buf.capacity (${buf.capacity})"
+        }
+    }
+
+    /**
+     * Returns the byte at byte offset [index] in the view, interpreted
+     * as an ISO-8859-1 [Char]. Use [toString] for Unicode-decoded
+     * conversion.
+     */
+    override fun get(index: Int): Char {
+        if (index < 0 || index >= length) {
+            throw IndexOutOfBoundsException("index $index out of bounds for length $length")
+        }
+        return (buf.getByte(start + index).toInt() and 0xFF).toChar()
+    }
+
+    /**
+     * Returns a sub-range view over the same backing [IoBuf]. Allocates
+     * a fresh `IoBufByteCharSequence` (~32 bytes); does not copy bytes.
+     * The sub-view shares the same lifetime constraint as `this`.
+     */
+    override fun subSequence(startIndex: Int, endIndex: Int): CharSequence {
+        if (startIndex < 0 || endIndex < startIndex || endIndex > length) {
+            throw IndexOutOfBoundsException(
+                "subSequence($startIndex, $endIndex) out of bounds for length $length",
+            )
+        }
+        return IoBufByteCharSequence(buf, start + startIndex, endIndex - startIndex)
+    }
+
+    /**
+     * Materialises the view into a [String]. Allocates a `ByteArray` of
+     * [length] bytes (copied from the backing [IoBuf]) and decodes as
+     * UTF-8.
+     */
+    override fun toString(): String {
+        if (length == 0) return ""
+        val bytes = ByteArray(length)
+        for (i in 0 until length) {
+            bytes[i] = buf.getByte(start + i)
+        }
+        return bytes.decodeToString()
+    }
+
+    /**
+     * Per-char [hashCode] using the same algorithm as [String.hashCode]
+     * so `IoBufByteCharSequence.hashCode() == toString().hashCode()`
+     * holds for pure-ASCII content (the JVM `String.hashCode()` is
+     * defined to iterate `chars`, not bytes; for ASCII bytes the two
+     * agree since `(byte.toInt() and 0xFF)` equals the `char` code).
+     */
+    override fun hashCode(): Int {
+        var h = 0
+        for (i in 0 until length) {
+            h = 31 * h + (buf.getByte(start + i).toInt() and 0xFF)
+        }
+        return h
+    }
+
+    /**
+     * Two views (or a view and any [CharSequence]) are equal when they
+     * have the same length and identical char-by-char content under
+     * this view's ISO-8859-1 interpretation. Comparable with [String]
+     * via Kotlin's `contentEquals`, but the inherited [Any.equals]
+     * contract requires the other side to be an `IoBufByteCharSequence`
+     * — use [contentEquals] explicitly for cross-type compares.
+     */
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is IoBufByteCharSequence) return false
+        if (length != other.length) return false
+        for (i in 0 until length) {
+            if (buf.getByte(start + i) != other.buf.getByte(other.start + i)) return false
+        }
+        return true
+    }
+}
