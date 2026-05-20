@@ -13,7 +13,7 @@ package io.github.fukusaka.keel.buf
  *
  * The [capacity] is its own field rather than a constant because a
  * "huge" segment (a request larger than the pooled size class) is
- * larger than the standard pooled [RawMemorySource] size.
+ * larger than the standard pooled allocator's segment size.
  *
  * @property backing  The opaque platform memory region.
  * @property capacity Size of the region in bytes.

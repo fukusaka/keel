@@ -8,10 +8,10 @@ import kotlinx.cinterop.nativeHeap
 /**
  * Native [RawSegmentBacking] over a `CPointer<ByteVar>`.
  *
- * The pointer is either `nativeHeap`-owned (allocated by
- * [NativeRawMemorySource], freed by [free]) or external (wrapping
- * caller-owned memory, in which case [free] is a no-op — the external
- * owner reclaims it).
+ * The pointer is either `nativeHeap`-owned (allocated by the allocator
+ * via `nativeHeap.allocArray<ByteVar>`, freed by [free]) or external
+ * (wrapping caller-owned memory, in which case [free] is a no-op — the
+ * external owner reclaims it).
  *
  * @property base       Pointer to the raw memory region.
  * @property ownsMemory Whether [free] should release [base].

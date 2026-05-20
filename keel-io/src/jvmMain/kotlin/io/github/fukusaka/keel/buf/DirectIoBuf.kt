@@ -239,13 +239,13 @@ class DirectIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(JvmRawMemorySource(capacity).acquire(), capacity)
+            Segment(RawSegmentBacking(ByteBuffer.allocateDirect(capacity)), capacity)
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a
          * [DirectIoBuf], installing [owner] on the segment. Used by
-         * pool-backed allocators that obtain raw memory through a
-         * [RawMemorySource] themselves.
+         * pool-backed allocators that construct the [RawSegmentBacking]
+         * themselves.
          */
         internal fun overSegment(segment: Segment, owner: SegmentOwner): DirectIoBuf {
             segment.owner = owner

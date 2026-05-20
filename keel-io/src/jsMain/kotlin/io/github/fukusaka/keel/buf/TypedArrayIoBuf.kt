@@ -200,7 +200,7 @@ class TypedArrayIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(JsRawMemorySource(capacity).acquire(), capacity)
+            Segment(RawSegmentBacking(Int8Array(capacity)), capacity)
     }
 }
 

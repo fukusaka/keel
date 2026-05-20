@@ -6,8 +6,9 @@ import java.nio.ByteBuffer
  * JVM [RawSegmentBacking] over a direct [ByteBuffer].
  *
  * The direct [ByteBuffer] is reclaimed by the JVM's Cleaner, so [free]
- * is a no-op regardless of whether the backing was produced by
- * [JvmRawMemorySource] or wraps an externally-supplied buffer.
+ * is a no-op regardless of whether the backing was allocated by the
+ * allocator (`ByteBuffer.allocateDirect`) or wraps an externally-supplied
+ * buffer.
  *
  * @property base The direct [ByteBuffer] holding the raw memory region.
  */
