@@ -49,11 +49,36 @@ class IoBufByteCharSequenceTest {
     }
 
     @Test
-    fun `toString decodes the byte range as utf-8`() {
+    fun `toString uses ISO-8859-1 byte-as-char semantics`() {
+        // Pure ASCII case: every encoding agrees, sanity check.
         val buf = bufOf("text/plain")
         val seq = IoBufByteCharSequence(buf, 0, 10)
         assertEquals("text/plain", seq.toString())
         buf.release()
+    }
+
+    @Test
+    fun `toString preserves CharSequence contract for high bytes`() {
+        // High bytes (0x80-0xFF) — obs-text per RFC 7230. ISO-8859-1
+        // maps them to chars with the same codepoint. UTF-8 decode
+        // would have given replacement chars or combined them into
+        // fewer codepoints, breaking the CharSequence contract.
+        val highByte = 0xC3.toByte()              // 0xC3 standalone is not a valid UTF-8 start
+        val anotherHigh = 0xA9.toByte()
+        val backing = DefaultAllocator.allocate(2)
+        backing.writeByte(highByte)
+        backing.writeByte(anotherHigh)
+        val seq = IoBufByteCharSequence(backing, 0, 2)
+        assertEquals(2, seq.length)
+        // get(i) == ISO-8859-1 codepoint
+        assertEquals(0xC3.toChar(), seq[0])
+        assertEquals(0xA9.toChar(), seq[1])
+        // toString().length == length, toString()[i] == get(i)
+        val s = seq.toString()
+        assertEquals(seq.length, s.length, "length and toString().length must match")
+        assertEquals(seq[0], s[0])
+        assertEquals(seq[1], s[1])
+        backing.release()
     }
 
     @Test

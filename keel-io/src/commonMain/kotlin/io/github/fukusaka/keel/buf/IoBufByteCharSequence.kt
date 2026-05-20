@@ -23,15 +23,21 @@ package io.github.fukusaka.keel.buf
  * use-after-free; [getByte] on a released buffer is undefined behaviour
  * on Native and may produce stale data on JVM.
  *
- * **ASCII assumption**: bytes 0x00–0xFF are interpreted as their
- * corresponding `Char` (i.e., ISO-8859-1). HTTP header values are
- * defined as US-ASCII with the relaxation that opaque-text and
- * obs-text bytes may appear (RFC 7230 §3.2.6); this view exposes them
- * as ISO-8859-1 codepoints rather than decoding them as UTF-8 (no UTF-8
- * decoding is performed). Callers wanting Unicode decoding must call
- * [toString] (which uses the platform default `decodeToString`, i.e.
- * UTF-8 on JVM / Native / JS — note that this differs from the [get]
- * behaviour for non-ASCII bytes).
+ * **ASCII / ISO-8859-1 semantics throughout**: bytes 0x00–0xFF are
+ * interpreted as the `Char` whose codepoint is the byte value itself
+ * (i.e., ISO-8859-1). HTTP header values are defined as US-ASCII with
+ * the relaxation that obs-text bytes 0x80–0xFF may appear (RFC 7230
+ * §3.2.6); UTF-8 multi-byte sequences are **not valid** field-content
+ * per spec (RFC 8187 requires explicit percent-encoding for non-ASCII
+ * header values). Both [get] and [toString] use the same byte-as-char
+ * mapping so the [CharSequence] contract
+ * (`length == toString().length`, `get(i) == toString()[i]`) holds.
+ *
+ * Callers that explicitly want UTF-8-decoded text (e.g., for
+ * non-conformant servers that put raw UTF-8 in headers) should copy
+ * the bytes out and decode themselves; this class does not expose a
+ * UTF-8 helper to keep the semantic uniform with [Netty's `AsciiString`
+ * pattern](https://netty.io/4.1/api/io/netty/util/AsciiString.html).
  *
  * **Per-instance cost** (JVM, ~32 bytes/instance): object header (~16) +
  * `buf` reference (8) + `start` int (4) + `length` int (4). Smaller
@@ -91,17 +97,21 @@ class IoBufByteCharSequence(
     }
 
     /**
-     * Materialises the view into a [String]. Allocates a `ByteArray` of
-     * [length] bytes (copied from the backing [IoBuf]) and decodes as
-     * UTF-8.
+     * Materialises the view into a [String] using ISO-8859-1
+     * semantics: each byte becomes the [Char] with the same codepoint
+     * value. This matches [get] so the [CharSequence] contract holds
+     * (`length == toString().length`, `get(i) == toString()[i]`).
+     *
+     * Allocates a `CharArray` of [length] chars and constructs a
+     * [String] from it.
      */
     override fun toString(): String {
         if (length == 0) return ""
-        val bytes = ByteArray(length)
+        val chars = CharArray(length)
         for (i in 0 until length) {
-            bytes[i] = buf.getByte(start + i)
+            chars[i] = (buf.getByte(start + i).toInt() and 0xFF).toChar()
         }
-        return bytes.decodeToString()
+        return chars.concatToString()
     }
 
     /**
