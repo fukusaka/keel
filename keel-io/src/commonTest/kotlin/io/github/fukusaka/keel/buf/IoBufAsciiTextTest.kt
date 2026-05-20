@@ -209,7 +209,7 @@ class IoBufAsciiTextTest {
     }
 
     @Test
-    fun `contentEqualsAscii is byte-equal, not case-insensitive`() {
+    fun `contentEqualsAscii is byte-equal and not case-insensitive`() {
         val buf = bufOf("Content-Type")
         val seq = IoBufAsciiText(buf, 0, 12)
         assertTrue(seq.contentEqualsAscii("Content-Type".encodeToByteArray()))
