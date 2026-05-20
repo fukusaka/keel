@@ -60,13 +60,15 @@ class DirectIoBuf private constructor(
      * so absolute indexing stays a single window-relative indexed access.
      */
     private val cachedBase: ByteBuffer =
-        if (windowStart == 0 && windowLength == segment.capacity) {
-            segment.backing.base
-        } else {
-            segment.backing.base.duplicate().apply {
-                position(windowStart)
-                limit(windowStart + windowLength)
-            }.slice()
+        (segment.backing as DirectByteBufferBacking).base.let { buffer ->
+            if (windowStart == 0 && windowLength == segment.capacity) {
+                buffer
+            } else {
+                buffer.duplicate().apply {
+                    position(windowStart)
+                    limit(windowStart + windowLength)
+                }.slice()
+            }
         }
 
     private val buf: ByteBuffer get() = cachedBase
@@ -230,7 +232,7 @@ class DirectIoBuf private constructor(
             bytesWritten: Int,
             owner: SegmentOwner = HeapOwner,
         ): DirectIoBuf {
-            val segment = Segment(RawSegmentBacking(buffer), buffer.capacity())
+            val segment = Segment(DirectByteBufferBacking(buffer), buffer.capacity())
             segment.owner = owner
             return DirectIoBuf(segment).also {
                 it.writerIndex = bytesWritten
@@ -239,7 +241,7 @@ class DirectIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(RawSegmentBacking(ByteBuffer.allocateDirect(capacity)), capacity)
+            Segment(DirectByteBufferBacking(ByteBuffer.allocateDirect(capacity)), capacity)
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a
