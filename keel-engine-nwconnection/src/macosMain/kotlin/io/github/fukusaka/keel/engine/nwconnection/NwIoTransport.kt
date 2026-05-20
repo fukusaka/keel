@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.buf.wrapExternalNativePtr
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -46,7 +45,7 @@ import platform.darwin.dispatch_queue_t
  * delivers data as `dispatch_data_t`. The C wrapper [keel_nw_read_async]
  * implements a **dual-path receive**: single-region `dispatch_data_t`
  * (the empirical 100% case for loopback TCP, verified 2026-05-20) is
- * wrapped zero-copy via [wrapExternalNativePtr], while multi-region
+ * wrapped zero-copy as a [DispatchDataIoBuf] (engine-direct), while multi-region
  * data falls back to per-region memcpy into the pre-allocated buffer.
  *
  * **Read path**: [readEnabled] arms the async read loop via [keel_nw_read_async].
@@ -241,10 +240,11 @@ internal class NwIoTransport(
      * - `zcHandle != null`: **zero-copy single-region path**. The
      *   region pointer in [zcPtr] is valid until
      *   [keel_nw_dispatch_data_release] is called on [zcHandle]. The
-     *   pre-allocated [fallbackBuf] is unused and is released back to
-     *   the allocator; a fresh [IoBuf] is wrapped via
-     *   [wrapExternalNativePtr] with [zcHandle] released at refcount
-     *   zero.
+     *   pre-allocated [fallbackBuf] is unused and is recycled via
+     *   [spareFallbackBuf]; the framework memory is wrapped as a
+     *   [DispatchDataIoBuf] (engine-direct, 1 allocation per
+     *   receive) whose [DispatchDataIoBuf.release] releases [zcHandle]
+     *   at refcount zero.
      * - `zcHandle == null` and `bytesRead > 0`: **multi-region copy
      *   path**. [bytesRead] bytes have been memcpy'd into [fallbackBuf]
      *   by the C wrapper; it is delivered to [onRead] like before.
@@ -274,16 +274,14 @@ internal class NwIoTransport(
             }
             zcHandle != null && bytesRead > 0 -> {
                 // Zero-copy single-region path: the framework-managed
-                // memory is wrapped as an IoBuf; the pre-allocated
-                // fallback buffer was unused — recycle it via
-                // [spareFallbackBuf] so the next armRead skips a
-                // pool allocate+release pair.
+                // memory is wrapped as an engine-direct IoBuf; the
+                // pre-allocated fallback buffer was unused — recycle
+                // it via [spareFallbackBuf] so the next armRead skips
+                // a pool allocate+release pair.
                 fallbackBuf.clear()
                 spareFallbackBuf = fallbackBuf
                 @Suppress("UnsafeCallOnNullableType")
-                val zcBuf = wrapExternalNativePtr(zcPtr!!, bytesRead) {
-                    keel_nw_dispatch_data_release(zcHandle)
-                }
+                val zcBuf = DispatchDataIoBuf(zcPtr!!, bytesRead, zcHandle)
                 // Same delivery semantics as the copy path. See the
                 // KDoc above on idle-read policies for how this
                 // interacts with `readEnabled`.

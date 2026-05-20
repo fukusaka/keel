@@ -20,20 +20,27 @@ package io.github.fukusaka.keel.benchmark
  * version: future re-validations can run it and get numbers that
  * track production A/B trends.
  *
- * **Two scenarios**:
+ * **Three scenarios**:
  *
- * - **wrap-path**: drives `keel_nw_test_dispatch_handle` (production
- *   `keel_nw_dispatch_received` with a pre-made single-region handle),
- *   the callback wraps the region as an IoBuf via
- *   `wrapExternalNativePtr`, releases the IoBuf (which fires the
- *   handle release through `keel_nw_dispatch_data_release`), and loops.
+ * - **segwrap-path** (`wrapExternalNativePtr`, Segment-backed wrap as
+ *   of PR #581): callback wraps via `wrapExternalNativePtr`, 4
+ *   allocations per receive (`Segment` + `ExternalNativeBacking` +
+ *   `NativeIoBuf` view + `ExternalWrapOwner` closure). Kept as a
+ *   historical reference — production switched away from this path
+ *   in PR #583.
+ *
+ * - **engdir-path** (`DispatchDataIoBuf`, engine-direct as of PR
+ *   #583, current production wrap): callback allocates a small
+ *   holder of identical field shape to `DispatchDataIoBuf` (used as
+ *   a proxy because `DispatchDataIoBuf` itself is `internal` to
+ *   keel-engine-nwconnection) and releases the handle. 1 allocation
+ *   per receive.
  *
  * - **copy-path**: drives `keel_nw_test_dispatch_handle_copyonly`
  *   (bench-only helper that forces the multi-region memcpy branch on
- *   any handle, bypassing the zero-copy detection). The callback
- *   receives bytes already memcpy'd into a pre-allocated
- *   pool-backed IoBuf — identical to the pre-zero-copy production
- *   path. Loops.
+ *   any handle, bypassing the zero-copy detection). Identical to the
+ *   pre-zero-copy production path; represents the multi-region
+ *   fallback cost in current production.
  *
  * Both paths share the same outer dispatch_data_t (created once,
  * retained externally, released after the bench), so per-iter cost
