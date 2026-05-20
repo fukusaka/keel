@@ -52,10 +52,12 @@ class TypedArrayIoBuf private constructor(
      * full-window primary view caches the backing array directly.
      */
     private val cachedBase: Int8Array =
-        if (windowStart == 0 && windowLength == segment.capacity) {
-            segment.backing.base
-        } else {
-            segment.backing.base.subarray(windowStart, windowStart + windowLength)
+        (segment.backing as Int8ArrayBacking).base.let { array ->
+            if (windowStart == 0 && windowLength == segment.capacity) {
+                array
+            } else {
+                array.subarray(windowStart, windowStart + windowLength)
+            }
         }
 
     private val buf: Int8Array get() = cachedBase
@@ -191,7 +193,7 @@ class TypedArrayIoBuf private constructor(
             bytesWritten: Int,
             owner: SegmentOwner = HeapOwner,
         ): TypedArrayIoBuf {
-            val segment = Segment(RawSegmentBacking(array), array.length)
+            val segment = Segment(Int8ArrayBacking(array), array.length)
             segment.owner = owner
             return TypedArrayIoBuf(segment).also {
                 it.writerIndex = bytesWritten
@@ -200,7 +202,7 @@ class TypedArrayIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(RawSegmentBacking(Int8Array(capacity)), capacity)
+            Segment(Int8ArrayBacking(Int8Array(capacity)), capacity)
     }
 }
 

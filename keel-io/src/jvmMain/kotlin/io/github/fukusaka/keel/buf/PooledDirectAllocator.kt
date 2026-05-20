@@ -86,7 +86,7 @@ class PooledDirectAllocator(
      * recycling is handled at a higher level via [PoolOwner].
      */
     private fun newSegment(capacity: Int): Segment =
-        Segment(RawSegmentBacking(ByteBuffer.allocateDirect(capacity)), capacity)
+        Segment(DirectByteBufferBacking(ByteBuffer.allocateDirect(capacity)), capacity)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null

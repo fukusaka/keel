@@ -18,10 +18,11 @@ import platform.posix.memcpy
  * Native [IoBuf] implementation — a *view* over a [Segment].
  *
  * The buffer holds a [Segment] reference; the segment's
- * [RawSegmentBacking] carries the `nativeHeap` (or external) memory. At
- * construction the view reads the base `CPointer<ByteVar>` out of the
- * backing once and caches it in [cachedBase]; all per-byte access uses
- * the cached pointer directly (an uncached `segment.backing.base`
+ * The [NativeBacking] (a [NativeHeapBacking] for `nativeHeap`-owned
+ * memory, an [ExternalNativeBacking] for wrapped external memory) carries
+ * the raw `CPointer<ByteVar>`. At construction the view reads `base`
+ * out of the backing once and caches it in [cachedBase]; all per-byte
+ * access uses the cached pointer directly (an uncached cast +
  * indirection per access is materially slower).
  *
  * **Owned memory** (primary constructor): the [Segment] wraps a
@@ -73,7 +74,7 @@ class NativeIoBuf private constructor(
      * windowed slices stay a single indexed load.
      */
     @Suppress("UnsafeCallOnNullableType")
-    private val cachedBase: CPointer<ByteVar> = (segment.backing.base + windowStart)!!
+    private val cachedBase: CPointer<ByteVar> = ((segment.backing as NativeBacking).base + windowStart)!!
 
     override val capacity: Int get() = windowLength
 
@@ -228,7 +229,7 @@ class NativeIoBuf private constructor(
             bytesWritten: Int,
             owner: SegmentOwner,
         ): NativeIoBuf {
-            val segment = Segment(RawSegmentBacking(ptr, ownsMemory = false), capacity)
+            val segment = Segment(ExternalNativeBacking(ptr), capacity)
             segment.owner = owner
             return NativeIoBuf(segment).also {
                 it.writerIndex = bytesWritten
@@ -237,7 +238,7 @@ class NativeIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(RawSegmentBacking(nativeHeap.allocArray<ByteVar>(capacity), ownsMemory = true), capacity)
+            Segment(NativeHeapBacking(nativeHeap.allocArray<ByteVar>(capacity)), capacity)
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a

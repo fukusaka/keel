@@ -99,7 +99,7 @@ class SlabAllocator(
      */
     @OptIn(ExperimentalForeignApi::class)
     private fun newSegment(capacity: Int): Segment =
-        Segment(RawSegmentBacking(nativeHeap.allocArray<ByteVar>(capacity), ownsMemory = true), capacity)
+        Segment(NativeHeapBacking(nativeHeap.allocArray<ByteVar>(capacity)), capacity)
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
