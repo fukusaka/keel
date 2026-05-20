@@ -6,8 +6,8 @@ import org.khronos.webgl.Int8Array
  * JS [RawSegmentBacking] over an [Int8Array].
  *
  * V8's garbage collector reclaims the backing `ArrayBuffer`, so [free]
- * is a no-op regardless of whether the backing was produced by
- * [JsRawMemorySource] or wraps an externally-supplied array.
+ * is a no-op regardless of whether the backing was allocated by the
+ * allocator (`Int8Array(size)`) or wraps an externally-supplied array.
  *
  * @property base The [Int8Array] holding the raw memory region.
  */

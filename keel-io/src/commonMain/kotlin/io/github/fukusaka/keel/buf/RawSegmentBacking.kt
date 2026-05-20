@@ -18,10 +18,6 @@ package io.github.fukusaka.keel.buf
  * `IoBuf.wrapExternal`) does not own that memory and [free] is a no-op
  * for it too.
  *
- * **Phase 1 note**: this is internal scaffolding for later phases
- * (composite buffers, chunk allocator). It is behaviour-neutral — the
- * public [IoBuf] surface does not change.
- *
  * **Thread safety**: a backing is owned by the single EventLoop thread
  * that owns the [IoBuf] view over it; [free] is non-atomic and must run
  * on that thread.

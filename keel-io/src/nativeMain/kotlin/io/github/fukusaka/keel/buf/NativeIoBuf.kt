@@ -2,13 +2,15 @@
 
 package io.github.fukusaka.keel.buf
 
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.get
-import kotlinx.cinterop.set
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.get
+import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.plus
+import kotlinx.cinterop.set
 import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
 
@@ -235,13 +237,13 @@ class NativeIoBuf private constructor(
 
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
-            Segment(NativeRawMemorySource(capacity).acquire(), capacity)
+            Segment(RawSegmentBacking(nativeHeap.allocArray<ByteVar>(capacity), ownsMemory = true), capacity)
 
         /**
          * Wraps an already-allocated heap-owned [Segment] as a
          * [NativeIoBuf], installing [owner] on the segment. Used by
-         * pool-backed allocators that obtain raw memory through a
-         * [RawMemorySource] themselves.
+         * pool-backed allocators that construct the [RawSegmentBacking]
+         * themselves.
          */
         internal fun overSegment(segment: Segment, owner: SegmentOwner): NativeIoBuf {
             segment.owner = owner

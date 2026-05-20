@@ -2,8 +2,11 @@
 
 package io.github.fukusaka.keel.buf
 
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.pin
 import kotlinx.cinterop.plus
 import kotlin.concurrent.AtomicReference
@@ -74,13 +77,6 @@ class SlabAllocator(
 
     private val poolOwner: SegmentOwner = PoolOwner(::returnToPool)
 
-    /**
-     * Pluggable source of raw memory for the standard pooled size class.
-     * Larger requests bypass it with a one-off [Segment] of exactly the
-     * requested capacity (the "huge bypass" path).
-     */
-    private val standardMemorySource: RawMemorySource = NativeRawMemorySource(SEGMENT_SIZE)
-
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
         val buf: NativeIoBuf = withSpinLock {
@@ -95,17 +91,15 @@ class SlabAllocator(
     }
 
     /**
-     * Acquires a [Segment] of [capacity] bytes. The standard pooled size
-     * is served through [standardMemorySource]; any other size (a "huge"
-     * request larger than the pooled class) gets a one-off [Segment] of
-     * exactly that capacity.
+     * Allocates a fresh `nativeHeap`-owned [Segment] of [capacity] bytes
+     * for a pool miss. Standard-size and "huge bypass" (larger than the
+     * pooled class) requests follow the same path; the allocation is
+     * `nativeHeap.allocArray<ByteVar>(capacity)` either way, and pool
+     * recycling is handled at a higher level via [PoolOwner].
      */
+    @OptIn(ExperimentalForeignApi::class)
     private fun newSegment(capacity: Int): Segment =
-        if (capacity == SEGMENT_SIZE) {
-            Segment(standardMemorySource.acquire(), SEGMENT_SIZE)
-        } else {
-            Segment(NativeRawMemorySource(capacity).acquire(), capacity)
-        }
+        Segment(RawSegmentBacking(nativeHeap.allocArray<ByteVar>(capacity), ownsMemory = true), capacity)
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
