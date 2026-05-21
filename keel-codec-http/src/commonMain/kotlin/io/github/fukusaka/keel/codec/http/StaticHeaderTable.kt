@@ -50,17 +50,20 @@ package io.github.fukusaka.keel.codec.http
  * An H1 caller adding `Accept-Encoding: gzip, deflate, br` (Title-Case)
  * does **not** hit QPACK index 31 `accept-encoding: gzip, deflate, br`
  * (lowercase) — that lowercase entry serves only the H2/H3 decoder
- * indexed-entry path. The Tier 2 H1 extension Title-Cases the HPACK +
- * QPACK concrete-value pairs (filtered to drop pseudo-headers and
- * name-only sentinels) to cover the H1 hot path; the (deferred) Tier 3
- * set will add production-frequent variants not present in HPACK / QPACK.
+ * indexed-entry path. The H1 extension Title-Cases the HPACK + QPACK
+ * concrete-value pairs (filtered to drop pseudo-headers and name-only
+ * sentinels), the H1-specific hop-by-hop / framing / cache-busting set,
+ * and the production-frequent preset to cover the H1 hot path. A
+ * BigQuery follow-up PR will refine the production-frequent set with
+ * empirical wire-frequency data.
  *
  * **Layout**: a hash-bucket structure parallel to [HttpHeaders]'s own —
  * same `BUCKET_COUNT=64` + plain low-bit mask (the §46.12 mixing audit
  * confirmed mask is the empirical optimum for `31 * h + asciiLower(c)`
  * polynomial hashes of HTTP header names). Bucket chains stay short
- * (≤ 4 for the ~170-entry table at BUCKET=64) — a [tryInternAt] call is
- * a single hash compute + bucket index + 1-4 byte-equality compares.
+ * (avg ~4 for the ~240-entry table at BUCKET=64) — a [tryInternAt]
+ * call is a single hash compute + bucket index + a small number of
+ * byte-equality compares.
  */
 internal object StaticHeaderTable {
 
@@ -506,7 +509,7 @@ internal object StaticHeaderTable {
      * behavior of Netty `DefaultHttpHeaders` and OkHttp `Headers`. The
      * lowercase HPACK / QPACK entries therefore do not hit H1 Title-Case
      * input; they serve only the H2 / H3 indexed-entry decode path. The
-     * H1 Tier 2 extension (Title-Case) carries H1 hot-path hits.
+     * H1 extension (Title-Case) carries H1 hot-path hits.
      *
      * Value comparison is byte-exact (HTTP values are case-sensitive in
      * general per RFC 9110 §5.5).
