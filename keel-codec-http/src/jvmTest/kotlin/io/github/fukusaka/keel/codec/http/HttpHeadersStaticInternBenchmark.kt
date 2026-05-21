@@ -6,24 +6,30 @@ import kotlin.test.Test
 
 /**
  * Allocation impact of [StaticHeaderTable] intern on the
- * `HttpHeaders.add` hot path. Compares two scenarios:
+ * `HttpHeaders.add` hot path. Compares three scenarios:
  *
- * - **A — CDN-realistic intern-friendly subset**: 5 headers chosen to
- *   hit the intern table (`Connection: keep-alive`,
- *   `Accept-Encoding: gzip, deflate, br`, `Content-Type: text/plain`,
- *   `Transfer-Encoding: chunked`, `Cache-Control: no-cache`). All
- *   five intern, so the per-request `HeaderEntry` allocation drops
- *   to zero on this set.
- * - **B — CDN-realistic intern-miss subset**: 5 headers with unique
- *   values (`Authorization` JWT, `Cookie` session, `Host` site,
- *   `X-Request-ID` UUID, `traceparent` ID). None intern.
+ * - **A — Tier 2 (H1 hop-by-hop / framing) full-hit subset**: 5 headers
+ *   chosen to hit the Tier 2 H1 Title-Case entries:
+ *   `Connection: keep-alive`, `Connection: close`,
+ *   `Transfer-Encoding: chunked`, `Content-Length: 0`,
+ *   `Pragma: no-cache`. All five intern, so the per-request
+ *   [HeaderEntry] allocation drops to zero on this set.
+ * - **B — full-miss subset**: 5 headers with unique values
+ *   (`Authorization` JWT, `Cookie` session, `Host` site,
+ *   `X-Request-ID` UUID, `traceparent` ID). None intern; baseline
+ *   `5 × 24 B = 120 B/cycle`.
  * - **C — production-typical CDN workload mix**: 23 headers from
- *   `HttpHeadersCdnWorkloadBenchmark`. The intern hit / miss ratio
- *   on this set is what production deployments will most resemble.
+ *   `HttpHeadersCdnWorkloadBenchmark`. Of these, only the Tier 2
+ *   subset (`Connection: keep-alive` plus zero or one others depending
+ *   on the workload) intern; production-frequent Title-Case pairs
+ *   such as `Accept: text/html,...`, `Accept-Encoding: gzip, deflate,
+ *   br`, `Content-Type: text/html; charset=utf-8`, `Cache-Control:
+ *   no-cache` are NOT in the table — they are deferred to the Tier 3
+ *   follow-up PR (HTTP Archive BigQuery derivation, see
+ *   `StaticHeaderTable.kt` Tier 3 comment block).
  *
- * Pool path is what production hits — the relevant numbers are
- * `pathBPool` / `pathCPool` (warm pool, per-request alloc is just
- * `HeaderEntry × N - intern hits × 24 B`).
+ * Once the Tier 3 PR lands, scenario C is expected to drop further as
+ * the production-frequent Title-Case pairs start interning.
  */
 class HttpHeadersStaticInternBenchmark {
 
@@ -45,12 +51,13 @@ class HttpHeadersStaticInternBenchmark {
     private var sink = 0
 
     private fun pathInternHits() {
+        // All Tier 2 (H1 hop-by-hop / framing / H1.0 carry-over).
         val h = HttpHeaders.borrow()
         h.add("Connection", "keep-alive")
-        h.add("Accept-Encoding", "gzip, deflate, br")
-        h.add("Content-Type", "text/plain")
+        h.add("Connection", "close")
         h.add("Transfer-Encoding", "chunked")
-        h.add("Cache-Control", "no-cache")
+        h.add("Content-Length", "0")
+        h.add("Pragma", "no-cache")
         h.release()
     }
 
@@ -105,11 +112,11 @@ class HttpHeadersStaticInternBenchmark {
         val medMisses = median(TRIALS) { measure(ITERS, ::pathInternMisses) }
         val medCdn = median(TRIALS) { measure(ITERS_C, ::pathCdnMix) }
         println("=== HttpHeaders static intern (bytes / cycle, pool, iters=$ITERS × $TRIALS) ===")
-        println("  A — 5 intern hits  (Connection / Accept-Encoding / Content-Type / Transfer-Encoding / Cache-Control)")
-        println("      median=$medHits bytes / cycle")
-        println("  B — 5 intern misses (Authorization / Cookie / Host / X-Request-ID / traceparent)")
-        println("      median=$medMisses bytes / cycle")
-        println("  C — production CDN workload (N=23 mixed hits and misses)")
+        println("  A — 5 Tier 2 hits  (Connection × 2 / Transfer-Encoding / Content-Length / Pragma)")
+        println("      median=$medHits bytes / cycle  (expected 0)")
+        println("  B — 5 full-miss    (Authorization / Cookie / Host / X-Request-ID / traceparent)")
+        println("      median=$medMisses bytes / cycle  (baseline 5 × 24 B = 120)")
+        println("  C — production CDN workload (N=23, Tier 3 entries deferred)")
         println("      median=$medCdn bytes / cycle")
     }
 
