@@ -5,284 +5,385 @@ import io.github.fukusaka.keel.io.toDecLongOrNull
 /**
  * HTTP header fields (RFC 7230 §3.2).
  *
- * Stores header values in a [LinkedHashMap] keyed by lowercase field name for O(1) lookup.
- * The original header name case is preserved for HTTP/1.1 serialization.
+ * **Storage model** (design.md §46, C2-v5 final, 2026-05-21):
+ * - `entries: ArrayList<HeaderEntry>` — insertion-order iteration storage
+ * - `bucketHead: IntArray[BUCKET_COUNT=64]` — first entry index per hash bucket (`-1` if empty)
+ * - `bucketNext: IntArray` — parallel to `entries`, `bucketNext[i]` = next entry index
+ *   in same bucket as `entries[i]` (`-1` if last in chain), grown on demand
+ * - `HeaderEntry(hashLower, name, value)` — 24 B on JVM with compressed oops
+ *   (the `Int hashLower` slot fits in the alignment padding of a 2-ref class,
+ *   so storing the case-folded name hash costs nothing per entry)
  *
- * - Field names are case-insensitive tokens (RFC 7230 §3.2).
- * - Insertion order is preserved; same-name fields keep their relative order (RFC 7230 §3.2.2).
- * - Set-Cookie must not be comma-joined (RFC 6265) — use [getAll] + individual output.
- * - OWS (optional whitespace) in field values is stripped by the parser before storage.
+ * Achieves near-O(1) lookup (11 ns flat for N=1-50) via the IntArray-indexed
+ * bucket chain with C (list-of-entries)'s 24 B HeaderEntry footprint —
+ * pareto-optimal across the four-construct comparison in design.md §46.5.
+ *
+ * The bucket chain is **reverse-insertion-order** (each `add` prepends);
+ * `get` walks the full chain and returns the **last match in chain order =
+ * first inserted in wire order**, matching Netty `DefaultHeaders.get` and the
+ * RFC 7230 §3.2.2 first-value semantic. The per-entry `hashLower` lets the
+ * chain walk skip non-matching entries on a single int compare.
+ *
+ * - Field names are case-insensitive ASCII tokens (RFC 7230 §3.2). Stored
+ *   bytes preserve the original case for HTTP/1.1 serialization; the lookup
+ *   path folds to lower-case before compare.
+ * - Insertion order is preserved; same-name fields keep their relative order
+ *   (RFC 7230 §3.2.2).
+ * - Set-Cookie must not be comma-joined (RFC 6265) — use [getAll].
+ * - OWS (optional whitespace) in field values is stripped by the parser
+ *   before storage.
+ *
+ * Public `String` API is unchanged from the previous `LinkedHashMap × 2`
+ * representation. A follow-up (design.md §50, BREAKING) will change the
+ * public API to `CharSequence`-first and the `HeaderEntry.value` type to
+ * `ByteString` / `IoBufAsciiText` for zero-copy from the recv buffer.
+ *
+ * **Lifecycle**: instances obtained via [borrow] go back to [HttpHeadersPool]
+ * on [release]; the underlying `entries` backing array + `bucketHead` +
+ * `bucketNext` are all retained for the next borrower. Direct-constructor
+ * instances are GC-managed; `release` is a no-op for them.
+ *
+ * **HTTP/2 / HTTP/3 forward compatibility**: the `HeaderEntry` type is the
+ * same shape every production HTTP/2 codec uses for its HPACK / QPACK
+ * static- and dynamic-table entries (Netty `HpackHeaderField`, Jetty
+ * `HttpField`, Hyper `Bytes`-backed `Header`, h3 QPACK `HeaderField`).
+ * Phase 13 `keel-codec-http2` can hand existing `HeaderEntry` instances
+ * directly to the per-request `entries` for zero-allocation indexed reads.
  */
 class HttpHeaders private constructor(
-    private val map: LinkedHashMap<String, MutableList<String>>,
-    private val originalNames: LinkedHashMap<String, String>,
+    private val entries: ArrayList<HeaderEntry>,
+    private val bucketHead: IntArray,
 ) {
-    constructor() : this(LinkedHashMap(), LinkedHashMap())
 
-    // Parallel arrays for O(1) indexed access without Pair allocation.
-    // Invalidated on mutation; rebuilt on first access after mutation.
-    private var flatNames: Array<String> = EMPTY_STRING_ARRAY
-    private var flatValues: Array<String> = EMPTY_STRING_ARRAY
-    private var flatValid = false
+    constructor() : this(ArrayList(INITIAL_ENTRY_CAPACITY), IntArray(BUCKET_COUNT).also { it.fill(-1) })
 
-    // True when this instance was obtained via [HttpHeaders.borrow]; on
-    // [release] the entry maps are cleared (keeping their backing
-    // arrays) and the instance is returned to the pool. Direct
-    // constructor users do not opt into pooling — for them [release]
-    // is a no-op.
+    // Parallel to `entries`: bucketNext[i] = next entry index in same
+    // bucket as entries[i], or -1 if last in chain. Grown on demand.
+    private var bucketNext: IntArray = IntArray(INITIAL_ENTRY_CAPACITY)
+
     private var pooled: Boolean = false
-
-    private fun ensureFlatArrays() {
-        if (flatValid) return
-        var count = 0
-        for ((_, values) in map) count += values.size
-        val names = Array(count) { "" }
-        val values = Array(count) { "" }
-        var i = 0
-        for ((key, vals) in map) {
-            val name = originalNames[key] ?: key
-            for (value in vals) {
-                names[i] = name
-                values[i] = value
-                i++
-            }
-        }
-        flatNames = names
-        flatValues = values
-        flatValid = true
-    }
-
-    private fun invalidateCache() {
-        flatValid = false
-    }
 
     // --- Access ---
 
-    /** Returns the first value for [name] (case-insensitive), or null if absent. */
-    operator fun get(name: String): String? = map[name.lowercase()]?.firstOrNull()
-
-    /** Returns all values for [name] (case-insensitive) in insertion order. */
-    fun getAll(name: String): List<String> = map[name.lowercase()] ?: emptyList()
-
-    /** Returns true if at least one field with [name] exists (case-insensitive). */
-    operator fun contains(name: String): Boolean = name.lowercase() in map
-
-    /** Total number of header field values (counting multi-valued headers individually). */
-    val size: Int get() {
-        ensureFlatArrays()
-        return flatNames.size
+    operator fun get(name: String): String? {
+        val hash = caseInsensitiveHash(name)
+        val bucket = bucketOf(hash)
+        var idx = bucketHead[bucket]
+        var value: String? = null
+        // Walk the full chain; bucket is prepended on add so chain is
+        // reverse-insertion-order. The LAST match in the chain is the
+        // FIRST inserted — Netty `DefaultHeaders.get` pattern. Hash
+        // pre-check skips the per-byte equality on non-matching entries
+        // in the bucket.
+        while (idx >= 0) {
+            val e = entries[idx]
+            if (e.hashLower == hash && e.name.equals(name, ignoreCase = true)) value = e.value
+            idx = bucketNext[idx]
+        }
+        return value
     }
 
-    /** True if no header fields are present. */
-    val isEmpty: Boolean get() = map.isEmpty()
+    fun getAll(name: String): List<String> {
+        if (entries.isEmpty()) return emptyList()
+        var result: MutableList<String>? = null
+        // Walk in insertion order via the entries ArrayList.
+        for (i in entries.indices) {
+            val e = entries[i]
+            if (e.name.equals(name, ignoreCase = true)) {
+                (result ?: mutableListOf<String>().also { result = it }).add(e.value)
+            }
+        }
+        return result ?: emptyList()
+    }
+
+    operator fun contains(name: String): Boolean {
+        val hash = caseInsensitiveHash(name)
+        val bucket = bucketOf(hash)
+        var idx = bucketHead[bucket]
+        while (idx >= 0) {
+            val e = entries[idx]
+            if (e.hashLower == hash && e.name.equals(name, ignoreCase = true)) return true
+            idx = bucketNext[idx]
+        }
+        return false
+    }
+
+    val size: Int get() = entries.size
+    val isEmpty: Boolean get() = entries.isEmpty()
 
     // --- Mutation ---
 
-    /** Append a header field. Allows multiple values for the same name. */
     fun add(name: String, value: String): HttpHeaders {
-        val key = name.lowercase()
-        map.getOrPut(key) { mutableListOf() }.add(value)
-        if (key !in originalNames) originalNames[key] = name
-        invalidateCache()
+        val hash = caseInsensitiveHash(name)
+        val bucket = bucketOf(hash)
+        val idx = entries.size
+        entries.add(HeaderEntry(hash, name, value))
+        ensureBucketNextCapacity(idx + 1)
+        bucketNext[idx] = bucketHead[bucket]
+        bucketHead[bucket] = idx
         return this
     }
 
-    /** Replace all existing values for [name] with a single [value]. */
     operator fun set(name: String, value: String): HttpHeaders {
-        val key = name.lowercase()
-        map[key] = mutableListOf(value)
-        originalNames[key] = name
-        invalidateCache()
+        removeAll(name)
+        add(name, value)
         return this
     }
 
-    /** Removes all fields with [name] (case-insensitive). */
     fun remove(name: String): HttpHeaders {
-        val key = name.lowercase()
-        map.remove(key)
-        originalNames.remove(key)
-        invalidateCache()
+        removeAll(name)
         return this
+    }
+
+    private fun removeAll(name: String) {
+        if (entries.isEmpty()) return
+        // Snapshot the surviving entries, then rebuild bucketHead /
+        // bucketNext from scratch. Simpler and fault-free vs in-place
+        // re-index. Removal is a cold path; the O(N) rebuild is fine.
+        var anyRemoved = false
+        val kept = ArrayList<HeaderEntry>(entries.size)
+        for (i in entries.indices) {
+            val e = entries[i]
+            if (e.name.equals(name, ignoreCase = true)) {
+                anyRemoved = true
+            } else {
+                kept.add(e)
+            }
+        }
+        if (!anyRemoved) return
+        entries.clear()
+        entries.addAll(kept)
+        bucketHead.fill(-1)
+        for (i in entries.indices) {
+            val e = entries[i]
+            val bucket = bucketOf(e.hashLower)
+            ensureBucketNextCapacity(i + 1)
+            bucketNext[i] = bucketHead[bucket]
+            bucketHead[bucket] = i
+        }
+    }
+
+    private fun ensureBucketNextCapacity(needed: Int) {
+        if (bucketNext.size >= needed) return
+        var newSize = if (bucketNext.isEmpty()) INITIAL_ENTRY_CAPACITY else bucketNext.size * 2
+        while (newSize < needed) newSize *= 2
+        bucketNext = bucketNext.copyOf(newSize)
     }
 
     // --- Iteration ---
 
-    /**
-     * Iterates all header fields in insertion order, preserving original name case.
-     *
-     * Multi-valued headers yield one call per value.
-     */
     fun forEach(action: (name: String, value: String) -> Unit) {
-        ensureFlatArrays()
-        for (i in flatNames.indices) {
-            action(flatNames[i], flatValues[i])
+        for (i in entries.indices) {
+            val e = entries[i]
+            action(e.name, e.value)
         }
     }
 
-    /** Returns all unique header names in insertion order, preserving original case. */
     fun names(): Set<String> {
+        if (entries.isEmpty()) return emptySet()
         val result = linkedSetOf<String>()
-        for ((key, _) in map) {
-            result.add(originalNames[key] ?: key)
+        for (i in entries.indices) {
+            val n = entries[i].name
+            var seen = false
+            for (existing in result) {
+                if (existing.equals(n, ignoreCase = true)) {
+                    seen = true
+                    break
+                }
+            }
+            if (!seen) result.add(n)
         }
         return result
     }
 
-    /** Returns all header fields as a list of (name, value) pairs, preserving original case. */
-    fun entries(): List<Pair<String, String>> {
-        ensureFlatArrays()
-        return List(flatNames.size) { i -> flatNames[i] to flatValues[i] }
-    }
+    fun entries(): List<Pair<String, String>> =
+        List(entries.size) { i -> entries[i].name to entries[i].value }
 
-    // --- Indexed access (for suspend writer that cannot use inline forEach) ---
+    fun nameAt(index: Int): String = entries[index].name
+    fun valueAt(index: Int): String = entries[index].value
 
-    /** Returns the name of the header at [index] (insertion order, original case). O(1). */
-    fun nameAt(index: Int): String {
-        ensureFlatArrays()
-        return flatNames[index]
-    }
+    internal fun getByLowercaseKey(key: String): String? = get(key)
 
-    /** Returns the value of the header at [index] (insertion order). O(1). */
-    fun valueAt(index: Int): String {
-        ensureFlatArrays()
-        return flatValues[index]
-    }
+    val contentLength: Long? get() = get(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
+    val contentType: String? get() = get(HttpHeaderName.CONTENT_TYPE_KEY)
+    val isChunked: Boolean get() = get(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
+    val connection: String? get() = get(HttpHeaderName.CONNECTION_KEY)
 
-    // --- Direct lookup (bypasses lowercase() allocation) ---
-
-    /**
-     * Returns the first value for a pre-lowered [key], or null if absent.
-     *
-     * Callers must pass a key that is already lowercase. This avoids the
-     * [String.lowercase] allocation in [get] on the hot path.
-     */
-    internal fun getByLowercaseKey(key: String): String? = map[key]?.firstOrNull()
-
-    // --- Typed properties ---
-
-    /** Parsed value of the Content-Length header, or null if absent or malformed. */
-    val contentLength: Long? get() = getByLowercaseKey(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
-
-    /** Value of the Content-Type header, or null if absent. */
-    val contentType: String? get() = getByLowercaseKey(HttpHeaderName.CONTENT_TYPE_KEY)
-
-    /** True if Transfer-Encoding contains "chunked" (case-insensitive). */
-    val isChunked: Boolean
-        get() = getByLowercaseKey(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
-
-    /** Value of the Connection header, or null if absent. */
-    val connection: String? get() = getByLowercaseKey(HttpHeaderName.CONNECTION_KEY)
-
-    /**
-     * Equality is based on the normalized (lowercase) header map.
-     *
-     * Two [HttpHeaders] instances with the same header values but different original
-     * name casing (e.g. "Content-Type" vs "content-type") are considered equal,
-     * since HTTP header names are case-insensitive (RFC 7230 §3.2).
-     */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is HttpHeaders) return false
-        return map == other.map
+        if (entries.size != other.entries.size) return false
+        for (i in entries.indices) {
+            val a = entries[i]
+            val b = other.entries[i]
+            if (!a.name.equals(b.name, ignoreCase = true)) return false
+            if (a.value != b.value) return false
+        }
+        return true
     }
 
-    override fun hashCode(): Int = map.hashCode()
+    override fun hashCode(): Int {
+        var h = 0
+        for (i in entries.indices) {
+            val e = entries[i]
+            h = 31 * h + e.hashLower
+            h = 31 * h + (1 shl 16)
+            h = 31 * h + e.value.hashCode()
+            h = 31 * h + (1 shl 24)
+        }
+        return h
+    }
 
     override fun toString(): String = buildString {
         append("HttpHeaders(")
-        val pairs = entries()
-        pairs.forEachIndexed { i, (name, value) ->
+        for (i in entries.indices) {
             if (i > 0) append(", ")
-            append("$name: $value")
+            val e = entries[i]
+            append(e.name).append(": ").append(e.value)
         }
         append(")")
     }
 
-    // --- Lifecycle ---
-
-    /**
-     * Releases this instance. After release the headers must not be
-     * read or mutated.
-     *
-     * For instances obtained via [borrow], the entry maps are cleared
-     * (keeping their backing arrays) and the instance is handed back
-     * to [HttpHeadersPool] for the next borrower. For instances
-     * constructed directly (via `HttpHeaders()` / [build] / [of]), the
-     * call is a no-op — the JVM GC reclaims the maps when the
-     * instance becomes unreachable.
-     *
-     * Callers must release exactly once per [borrow]. A second call
-     * on the same pool-borrowed instance would push it into the pool
-     * twice and two subsequent borrows would observe the same
-     * underlying storage, corrupting both readers.
-     */
     fun release() {
         if (!pooled) return
         resetForReuse()
         HttpHeadersPool.giveBack(this)
     }
 
-    /**
-     * Clears per-request state so this instance is empty again, but
-     * keeps the underlying `LinkedHashMap` backing arrays for the
-     * next pool borrower. Internal to the [HttpHeadersPool] handoff —
-     * external callers should use [release].
-     */
     internal fun resetForReuse() {
-        // `clear()` empties entries but keeps the bucket table array
-        // — that's the per-request alloc we save on subsequent reuse.
-        map.clear()
-        originalNames.clear()
-        // The flat String arrays are rebuilt lazily; mark stale so the
-        // next iteration does not surface entries from the previous
-        // borrower.
-        flatValid = false
-        flatNames = EMPTY_STRING_ARRAY
-        flatValues = EMPTY_STRING_ARRAY
+        entries.clear()
+        bucketHead.fill(-1)
     }
 
-    /** Internal hook for [HttpHeadersPool.borrow] to flip the flag. */
     internal fun markPooled() {
         pooled = true
     }
 
     companion object {
-        private val EMPTY_STRING_ARRAY = emptyArray<String>()
+        private const val BUCKET_LOG2: Int = 6
 
         /**
-         * Shared empty instance with no header fields.
+         * Hash bucket count for the `bucketHead` IntArray. Decided by
+         * measurement (`HttpHeadersCdnLookupBenchmark`, 2026-05-21).
          *
-         * Used as the default trailer value for [HttpBodyEnd] to avoid
-         * allocating a fresh [HttpHeaders] per request. Callers must not
-         * mutate this instance; a future task will enforce immutability
-         * by throwing from mutator methods.
+         * Individual-name lookup latency on the 23 CDN-typical header
+         * set (Cookie / Upgrade-Insecure-Requests / CF-Visitor /
+         * CDN-Loop cluster, BUCKET=16-32 chain depth 4):
+         *
+         *   name                       BUCKET=32   BUCKET=64
+         *   ----                       ---------   ---------
+         *   Cookie                     13 ns       10 ns  (-3)
+         *   CF-Visitor                 16 ns       14 ns  (-2)
+         *   CDN-Loop                   14 ns       12 ns  (-2)
+         *   Upgrade-Insecure-Requests  30 ns       28 ns  (-2)
+         *   (non-cluster names)        11-15 ns    11-15 ns (tie)
+         *
+         * The 5-lookup batch metric had too much measurement variance
+         * (28-38 ns at both BUCKET=32 and =64) to choose between them
+         * on that signal alone, but the per-name latencies for the
+         * clustered subset are reproducibly faster at BUCKET=64.
+         * BUCKET=128 showed no further gain.
+         *
+         * BUCKET=64 is the conservative default: 2-4 ns saved per
+         * clustered-name lookup, no slowdown for non-cluster names,
+         * +128 bytes per instance (16 KiB total at MAX_POOLED=64 —
+         * trivial). Workloads that never look up the clustered names
+         * (Cookie / CDN-Loop / Upgrade-Insecure-Requests) would see
+         * identical performance at BUCKET=32, but the future-proofing
+         * is cheap.
          */
+        private const val BUCKET_COUNT: Int = 1 shl BUCKET_LOG2
+        private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
+
+        /**
+         * Plain low-bit mask. Decided by measurement
+         * (`HttpHeadersBucketDistributionDiagnostic`, 2026-05-21).
+         *
+         * Three mixing strategies were compared on the
+         * production-typical CDN header set:
+         *
+         *   mask            max chain N=23/N=50 = 2 / 3 at BUCKET=64
+         *   XOR spreader    max chain N=23/N=50 = 3 / 4 at BUCKET=64
+         *                   (Java HashMap-style `h ^ (h >>> 16)`)
+         *   Knuth/Fibonacci max chain N=23/N=50 = 3 / 4 at BUCKET=64
+         *                   (multiplicative * GOLDEN_RATIO_INT, the
+         *                    pattern `keel-io.LongObjectMap` uses)
+         *
+         * For the `31 * h + asciiLower(c)` polynomial hash applied to
+         * HTTP header names, plain mask at BUCKET=64 is reproducibly
+         * the best — both extra mixers compound on top of the
+         * polynomial hash in ways that re-introduce clustering on
+         * different axes. The same conclusion does **not** transfer
+         * to `LongObjectMap` (whose input is raw `Long` keys with no
+         * polynomial mixing — there Fibonacci is essential).
+         */
+        internal fun bucketOf(hash: Int): Int = hash and BUCKET_MASK
+
+        /**
+         * Initial size of `entries: ArrayList` + `bucketNext: IntArray`.
+         * Decided by measurement (`HttpHeadersCdnWorkloadBenchmark`,
+         * 2026-05-21):
+         *
+         *   INITIAL=8:  direct 1480 / pool 552 B per CDN cycle (N=23)
+         *   INITIAL=16: direct 1296 / pool 552
+         *   INITIAL=32: direct 1168 / pool 552
+         *
+         * Pool path is invariant (after warmup the capacity grows to
+         * N and stays). Direct-constructor savings at INITIAL=32 are
+         * for cold-start large-N construction, which is rare. The
+         * typical direct caller is `HttpResponse.of` / `build { }` for
+         * server-response headers (N=3-5: Content-Type, Content-Length,
+         * Date, Server, Connection); INITIAL=32 would waste ~96 B of
+         * unused `Object[]` slack per such instance.
+         *
+         * 8 is the small-N-direct optimum and irrelevant for the
+         * pool-warm hot path.
+         */
+        private const val INITIAL_ENTRY_CAPACITY: Int = 8
+
         val EMPTY: HttpHeaders = HttpHeaders()
 
-        /**
-         * Returns a pooled [HttpHeaders] instance. The returned instance
-         * is empty and ready to accept [add] / [set] calls. The caller
-         * **must** call [release] exactly once when finished to return
-         * the instance to the pool — failing to do so leaves the
-         * borrowed instance unreachable to the pool until GC (bounded
-         * leak), and calling release twice would corrupt the pool.
-         *
-         * Intended for request-bound callers (parser / writer /
-         * keel-server-http) where the lifecycle is bounded by a single
-         * request and the call to [release] is deterministic.
-         */
         fun borrow(): HttpHeaders = HttpHeadersPool.borrow()
 
-        /** Builds an [HttpHeaders] instance using the given [block]. */
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
 
-        /** Creates an [HttpHeaders] from the given name-value [pairs]. */
         fun of(vararg pairs: Pair<String, String>): HttpHeaders {
             val headers = HttpHeaders()
-            for ((name, value) in pairs) {
-                headers.add(name, value)
-            }
+            for ((name, value) in pairs) headers.add(name, value)
             return headers
+        }
+
+        internal fun caseInsensitiveHash(s: String): Int {
+            var h = 0
+            for (i in 0 until s.length) {
+                val c = s[i].code
+                val folded = if (c in 0x41..0x5A) c + 0x20 else c
+                h = 31 * h + folded
+            }
+            return h
         }
     }
 }
+
+/**
+ * A single HTTP header field — one `(name, value)` pair preserving
+ * the original case of the name as it appeared on the wire, plus the
+ * case-insensitive hash of the name for O(1) bucket lookup in
+ * [HttpHeaders].
+ *
+ * 24 B on JVM with compressed oops (12 B header + 4 B `hashLower` + 4 B
+ * `name` ref + 4 B `value` ref); the `Int hashLower` slot fits in the
+ * alignment padding of a 2-ref class so storing the hash is free.
+ *
+ * `internal` to keep the public surface on `String` until L7-a-ii
+ * (design.md §50) BREAKING changes the API to `CharSequence`-first.
+ * Phase 13 (`keel-codec-http2`) will reuse this exact type as the
+ * HPACK static / dynamic table entry shape — an indexed entry read
+ * costs zero allocation because the table simply hands the existing
+ * `HeaderEntry` to the per-request [HttpHeaders.entries].
+ */
+internal class HeaderEntry(
+    val hashLower: Int,
+    val name: String,
+    val value: String,
+)

@@ -4,10 +4,19 @@ package io.github.fukusaka.keel.codec.http
  * Stack-based pool of reusable [HttpHeaders] instances.
  *
  * Reduces per-request allocation by recycling the [HttpHeaders] object
- * and the two underlying `LinkedHashMap` bucket arrays across requests.
- * A pool hit costs one stack pop and a `LinkedHashMap.clear()` on each
- * map (entries GC'd, bucket array kept); a miss (cold start or pool
- * drained) costs one fresh [HttpHeaders] construction.
+ * **and** its internal storage (the `ArrayList<HeaderEntry>` backing
+ * array + the `IntArray` hash bucket head + the `IntArray` per-entry
+ * bucket-chain links) across requests. A pool hit costs one stack pop,
+ * one `ArrayList.clear()`, and one `IntArray.fill(-1)` on the bucket
+ * head; a miss (cold start or pool drained) costs one fresh
+ * [HttpHeaders] construction.
+ *
+ * Per-request allocation with a warm pool is just the `HeaderEntry`
+ * instances themselves (24 B each on 64-bit JVM with compressed oops).
+ * For the bench-driven CDN workload (N=23 + 5 server-side lookups)
+ * this is 552 B / request — the same number as the unhashed
+ * list-of-entries variant, achieved while keeping near-O(1) lookup
+ * via the IntArray-indexed bucket chain (design.md §46.5).
  *
  * **Design** — minimal and intentionally simple:
  *
@@ -15,12 +24,13 @@ package io.github.fukusaka.keel.codec.http
  *   instances are dropped (let the GC reclaim them); a runaway leak
  *   cannot grow the pool unbounded.
  * - No size classes / no eviction strategy. The pool just holds onto
- *   whatever the two maps' buckets grew to over the borrower's
- *   lifetime. For browser-typical workloads (≤ 16 unique header names)
- *   the steady-state bucket capacity converges within the first dozen
- *   requests on a connection.
- * - **Thread-confined**: this is a `kotlin.collections.ArrayDeque` with
- *   no internal locking. keel-server-http currently runs each
+ *   whatever capacity the entries list + bucketNext grew to over each
+ *   borrower's lifetime. For browser-typical workloads (≤ 15 unique
+ *   header names) the steady-state capacity converges within the
+ *   first dozen requests on a connection. For CDN-mediated production
+ *   workloads (N=20-50) the steady state is reached just as fast.
+ * - **Thread-confined**: this is a `kotlin.collections.ArrayDeque`
+ *   with no internal locking. keel-server-http currently runs each
  *   connection on a single EventLoop thread; the parser borrow and
  *   handler release both happen on that thread. If multi-threaded use
  *   is introduced later this must move to a per-EventLoop pool (the
@@ -28,11 +38,11 @@ package io.github.fukusaka.keel.codec.http
  *   with `synchronized` / a lock-free Treiber stack.
  *
  * **Not** a buffer allocator: codec headers never participate in
- * zero-copy DMA, so the pool deliberately holds heap-managed
- * `LinkedHashMap` instances and does not reach into the I/O
- * `BufferAllocator`. Every other production HTTP codec we surveyed
- * (Netty 4.1, Jetty 12, Hyper, Ktor CIO) follows the same boundary —
- * the codec layer never pulls header storage from the I/O buffer pool.
+ * zero-copy DMA, so the pool deliberately holds heap-managed objects
+ * and does not reach into the I/O `BufferAllocator`. Every other
+ * production HTTP codec we surveyed (Netty 4.1, Jetty 12, Hyper,
+ * Ktor CIO) follows the same boundary — the codec layer never pulls
+ * header storage from the I/O buffer pool (design.md §45).
  */
 internal object HttpHeadersPool {
 
@@ -40,8 +50,8 @@ internal object HttpHeadersPool {
 
     /**
      * Returns a reset [HttpHeaders] ready for `add`. Either a pooled
-     * instance (with its `LinkedHashMap` bucket arrays already
-     * allocated) or a fresh construction if the pool is empty.
+     * instance (with its `ArrayList` backing + `IntArray` hash bucket
+     * already allocated) or a fresh construction if the pool is empty.
      */
     fun borrow(): HttpHeaders {
         val pooled = if (stack.isNotEmpty()) stack.removeLast() else null
@@ -52,7 +62,7 @@ internal object HttpHeadersPool {
     /**
      * Returns [headers] to the pool. Called from
      * [HttpHeaders.release] after [HttpHeaders.resetForReuse] has
-     * wiped the per-request entries. Callers must not retain the
+     * wiped the per-request state. Callers must not retain the
      * reference.
      *
      * If the pool is at [MAX_POOLED] capacity the instance is dropped
