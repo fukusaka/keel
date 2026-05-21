@@ -40,6 +40,13 @@
 #                        server JVM before and after the wrk benchmark
 #                        and the output line carries the deltas
 #                        (allocation rate / GC count / GC time fraction).
+#                        Raw jstat pre/post samples are also written to
+#                        `benchmark/results/{host}/{name}-gc-{ts}.txt`
+#                        so a future analyst can recompute metrics with
+#                        a more exact formula than the
+#                        `YGC × Eden / duration` proxy emitted on the
+#                        summary line (the GC count / time deltas
+#                        themselves are exact and need no recomputation).
 #                        Requires `jstat` on the remote host PATH; Native
 #                        servers silently skip (no JVM to attach to).
 #
@@ -90,6 +97,16 @@ WARMUP_DURATION=${BENCH_WARMUP:-3s}
 SCHEME=${BENCH_SCHEME:-http}
 GC_CAPTURE=${BENCH_GC_CAPTURE:-0}
 READY_TIMEOUT=60
+
+# Raw jstat samples land alongside other bench artifacts so
+# `bench-snapshot.sh` can pick them up. `bench-keel.sh` writes results
+# under benchmark/results/{hostname}/...; bench-remote.sh historically
+# didn't, but the GC capture additions need a place for raw artifacts
+# that supersedes the inline summary line.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESULTS_DIR="${BENCH_RESULTS_DIR:-${SCRIPT_DIR}/results/${BENCH_REMOTE_HOST%%.*}}"
+mkdir -p "$RESULTS_DIR"
+GC_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 # Allow --port=N to override BENCH_PORT.
 for arg in "$@"; do
@@ -344,6 +361,23 @@ for run in $(seq 1 "$RUNS"); do
         GC_POST=$(jstat_sample "$GC_PID")
         if [ -n "$GC_POST" ]; then
             LAST_GC_SUMMARY=$(gc_summary "$GC_PRE" "$GC_POST" "$(duration_to_seconds "$WRK_DURATION")")
+            # Persist raw jstat pre/post snapshots so a future analyst
+            # can recompute metrics with a different formula. The
+            # summary line's `alloc MB/s` is a proxy
+            # (`YGC × Eden_end / duration`) and tied to G1's
+            # end-of-run Eden capacity; the YGC / FGC / YGCT / FGCT
+            # deltas are exact and recomputable from these snapshots.
+            GC_RAW="${RESULTS_DIR}/${NAME//[^A-Za-z0-9_-]/_}-gc-${GC_TIMESTAMP}-run${run}.txt"
+            {
+                echo "# bench-remote.sh GC capture"
+                echo "# name=$NAME engine_pid=$GC_PID port=$PORT"
+                echo "# duration_seconds=$(duration_to_seconds "$WRK_DURATION") run=$run"
+                echo "# summary=$LAST_GC_SUMMARY"
+                echo "## pre"
+                printf '%s\n' "$GC_PRE"
+                echo "## post"
+                printf '%s\n' "$GC_POST"
+            } >"$GC_RAW"
         fi
     fi
 
