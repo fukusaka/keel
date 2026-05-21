@@ -67,7 +67,7 @@ class HttpHeaders private constructor(
 
     operator fun get(name: String): String? {
         val hash = caseInsensitiveHash(name)
-        val bucket = hash and BUCKET_MASK
+        val bucket = bucketOf(hash)
         var idx = bucketHead[bucket]
         var value: String? = null
         // Walk the full chain; bucket is prepended on add so chain is
@@ -98,7 +98,7 @@ class HttpHeaders private constructor(
 
     operator fun contains(name: String): Boolean {
         val hash = caseInsensitiveHash(name)
-        val bucket = hash and BUCKET_MASK
+        val bucket = bucketOf(hash)
         var idx = bucketHead[bucket]
         while (idx >= 0) {
             val e = entries[idx]
@@ -115,7 +115,7 @@ class HttpHeaders private constructor(
 
     fun add(name: String, value: String): HttpHeaders {
         val hash = caseInsensitiveHash(name)
-        val bucket = hash and BUCKET_MASK
+        val bucket = bucketOf(hash)
         val idx = entries.size
         entries.add(HeaderEntry(hash, name, value))
         ensureBucketNextCapacity(idx + 1)
@@ -156,7 +156,7 @@ class HttpHeaders private constructor(
         bucketHead.fill(-1)
         for (i in entries.indices) {
             val e = entries[i]
-            val bucket = e.hashLower and BUCKET_MASK
+            val bucket = bucketOf(e.hashLower)
             ensureBucketNextCapacity(i + 1)
             bucketNext[i] = bucketHead[bucket]
             bucketHead[bucket] = i
@@ -260,6 +260,8 @@ class HttpHeaders private constructor(
     }
 
     companion object {
+        private const val BUCKET_LOG2: Int = 6
+
         /**
          * Hash bucket count for the `bucketHead` IntArray. Decided by
          * measurement (`HttpHeadersCdnLookupBenchmark`, 2026-05-21).
@@ -290,8 +292,32 @@ class HttpHeaders private constructor(
          * identical performance at BUCKET=32, but the future-proofing
          * is cheap.
          */
-        private const val BUCKET_COUNT: Int = 64
+        private const val BUCKET_COUNT: Int = 1 shl BUCKET_LOG2
         private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
+
+        /**
+         * Plain low-bit mask. Decided by measurement
+         * (`HttpHeadersBucketDistributionDiagnostic`, 2026-05-21).
+         *
+         * Three mixing strategies were compared on the
+         * production-typical CDN header set:
+         *
+         *   mask            max chain N=23/N=50 = 2 / 3 at BUCKET=64
+         *   XOR spreader    max chain N=23/N=50 = 3 / 4 at BUCKET=64
+         *                   (Java HashMap-style `h ^ (h >>> 16)`)
+         *   Knuth/Fibonacci max chain N=23/N=50 = 3 / 4 at BUCKET=64
+         *                   (multiplicative * GOLDEN_RATIO_INT, the
+         *                    pattern `keel-io.LongObjectMap` uses)
+         *
+         * For the `31 * h + asciiLower(c)` polynomial hash applied to
+         * HTTP header names, plain mask at BUCKET=64 is reproducibly
+         * the best — both extra mixers compound on top of the
+         * polynomial hash in ways that re-introduce clustering on
+         * different axes. The same conclusion does **not** transfer
+         * to `LongObjectMap` (whose input is raw `Long` keys with no
+         * polynomial mixing — there Fibonacci is essential).
+         */
+        internal fun bucketOf(hash: Int): Int = hash and BUCKET_MASK
 
         /**
          * Initial size of `entries: ArrayList` + `bucketNext: IntArray`.

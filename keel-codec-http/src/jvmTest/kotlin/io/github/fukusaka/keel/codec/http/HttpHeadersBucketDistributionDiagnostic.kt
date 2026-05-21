@@ -64,13 +64,24 @@ class HttpHeadersBucketDistributionDiagnostic {
         return h
     }
 
-    private fun report(names: List<String>, bucketCount: Int): String {
+    private fun report(names: List<String>, bucketCount: Int, mode: String): String {
+        val log2 = Integer.numberOfTrailingZeros(bucketCount)
+        val shift = 32 - log2
         val mask = bucketCount - 1
         val chainLen = IntArray(bucketCount)
         val bucketContents = Array(bucketCount) { mutableListOf<String>() }
         for (n in names) {
             val h = caseInsensitiveHash(n)
-            val b = h and mask
+            val b = when (mode) {
+                "mask" -> h and mask
+                "xor" -> (h xor (h ushr 16)) and mask
+                "knuth" -> (h * GOLDEN_RATIO_INT) ushr shift
+                "xor+knuth" -> {
+                    val s = h xor (h ushr 16)
+                    (s * GOLDEN_RATIO_INT) ushr shift
+                }
+                else -> error("unknown mode: $mode")
+            }
             chainLen[b]++
             bucketContents[b].add(n)
         }
@@ -95,13 +106,26 @@ class HttpHeadersBucketDistributionDiagnostic {
     }
 
     @Test
-    fun `bucket distribution diagnostic`() {
-        println("=== Hash distribution for CDN-mediated header workload ===")
+    fun `bucket distribution mixing strategies`() {
+        println("=== Hash distribution: 4 mixing strategies ===")
         println()
         println("Header set: CDN-mediated typical (N=${cdnHeaderNames.size})")
-        for (bc in intArrayOf(8, 16, 32, 64)) print(report(cdnHeaderNames, bc))
-        println()
+        for (bc in intArrayOf(16, 32, 64)) {
+            for (mode in listOf("mask", "xor", "knuth", "xor+knuth")) {
+                print("[${mode.padEnd(9)}] " + report(cdnHeaderNames, bc, mode))
+            }
+            println()
+        }
         println("Header set: heavy enterprise / multi-CDN (N=${heavyHeaderNames.size})")
-        for (bc in intArrayOf(8, 16, 32, 64, 128)) print(report(heavyHeaderNames, bc))
+        for (bc in intArrayOf(32, 64)) {
+            for (mode in listOf("mask", "xor", "knuth", "xor+knuth")) {
+                print("[${mode.padEnd(9)}] " + report(heavyHeaderNames, bc, mode))
+            }
+            println()
+        }
+    }
+
+    companion object {
+        private const val GOLDEN_RATIO_INT: Int = -1640531527 // 0x9E_37_79_B9
     }
 }
