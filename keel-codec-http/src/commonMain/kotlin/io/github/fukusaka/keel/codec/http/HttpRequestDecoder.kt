@@ -111,7 +111,16 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
     private var method: HttpMethod? = null
     private var uri: String? = null
     private var version: HttpVersion? = null
-    private var headers = HttpHeaders()
+
+    // Borrowed from [HttpHeadersPool] so the two underlying
+    // `LinkedHashMap` bucket arrays are reused across requests on the
+    // connection. Ownership is transferred to the emitted
+    // [HttpRequestHead] at [emitHead]; the downstream
+    // [HttpServerHandler] is responsible for calling
+    // [HttpHeaders.release] on the emitted instance once the response
+    // has been written. After [emitHead] the field holds a fresh
+    // borrow ready for the next request line.
+    private var headers = HttpHeaders.borrow()
     private var bodyBytesRemaining: Long = 0L
 
     // Trailer accumulator for READ_CHUNK_TRAILER. Null until the first
@@ -122,6 +131,18 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
     // many of the 2 expected bytes (CR, LF) have been consumed across
     // partial reads.
     private var chunkCrlfSeen: Int = 0
+
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        // The decoder's current accumulator is borrowed from
+        // [HttpHeadersPool]. On connection close it has not been
+        // transferred to a downstream [HttpRequestHead], so the only
+        // remaining reference is the decoder field itself — release it
+        // back to the pool here, otherwise every closed connection
+        // costs the pool one slot (bounded by `MAX_POOLED` but still
+        // wasteful for short-lived connections).
+        headers.release()
+        ctx.propagateInactive()
+    }
 
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
         try {
@@ -714,10 +735,13 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
             headers,
         )
         // Reset parser state before emitting to allow re-entrant pipeline processing.
+        // The previous `headers` reference has been transferred to `head`;
+        // downstream owns its lifecycle. We pull a fresh pooled instance
+        // for the next request line on this connection.
         method = null
         uri = null
         version = null
-        headers = HttpHeaders()
+        headers = HttpHeaders.borrow()
         ctx.propagateRead(head)
 
         val cl = head.headers.contentLength
@@ -745,7 +769,11 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         method = null
         uri = null
         version = null
-        headers = HttpHeaders()
+        // Error-path reset: the partially-filled accumulator never
+        // reached `emitHead`, so the decoder still owns it. Return it
+        // to the pool before borrowing a fresh one.
+        headers.release()
+        headers = HttpHeaders.borrow()
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0

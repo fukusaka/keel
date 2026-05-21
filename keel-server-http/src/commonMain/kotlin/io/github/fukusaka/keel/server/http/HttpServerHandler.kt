@@ -223,6 +223,7 @@ internal class HttpServerHandler(
             // The rejection is by design — the request is answered `400`
             // and not propagated; the cause carries no further detail the
             // client should see.
+            head.headers.release()
             ctx.propagateWriteAndFlush(BAD_REQUEST_RESPONSE)
             if (draining) channel.close()
             return
@@ -242,6 +243,7 @@ internal class HttpServerHandler(
         val unmatched = match?.handler == null && !isUpgrade
         val noAsyncWork = middlewares.isEmpty() && errorHandlers.notFound == null
         if (unmatched && noAsyncWork) {
+            head.headers.release()
             ctx.propagateWriteAndFlush(errorResponseFor(resolution))
             if (draining) channel.close()
             return
@@ -268,6 +270,13 @@ internal class HttpServerHandler(
                 // drain anything that arrived but was never consumed.
                 if (inFlight === call) inFlight = null
                 call.discardUnconsumedBody()
+                // Return the pooled request headers; the response has
+                // been written so no further reads of `head.headers`
+                // are valid. The `finally` runs exactly once per
+                // request (one per `launch`), so the pool only sees
+                // one matching `release` per `borrow` on the decoder
+                // side.
+                head.headers.release()
                 // Draining: the request has been answered, so close the
                 // keep-alive connection now (the response already carried
                 // `Connection: close`). Runs even on cancellation.
