@@ -120,10 +120,12 @@ class HttpHeaders private constructor(
         // Static intern: well-known (name, value) pairs share a single
         // process-wide HeaderEntry instance (see [StaticHeaderTable]).
         // Skips the 24-byte HeaderEntry alloc on hit. tryInternAt uses
-        // a (name, value) combined hash so chain depth on a 242-entry
-        // table at BUCKET=64 is max 12 / avg 3.78 even with popular
-        // names like Content-Type carrying ~18 value variants — see
-        // `StaticHeaderTableBucketDepthTest`. Net positive vs 24 B
+        // a (name, value) combined hash at BUCKET=256, so the 242-entry
+        // table has chain depth max=6 / avg=0.95 — typical lookup pays
+        // 0-1 chain walks even with popular names like Content-Type
+        // carrying ~18 value variants (see
+        // StaticHeaderTableBucketDepthTest /
+        // StaticHeaderTableBucketCountAuditTest). Net positive vs 24 B
         // alloc on typical CDN / browser workloads where well-known
         // pairs dominate.
         val shared = StaticHeaderTable.tryInternAt(hash, name, value)

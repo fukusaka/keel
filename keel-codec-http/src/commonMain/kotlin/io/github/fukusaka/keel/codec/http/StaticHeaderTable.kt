@@ -57,21 +57,29 @@ package io.github.fukusaka.keel.codec.http
  * BigQuery follow-up PR will refine the production-frequent set with
  * empirical wire-frequency data.
  *
- * **Layout**: a hash-bucket structure (`BUCKET_COUNT=64` + low-bit mask
- * — the §46.12 mixing audit picked mask as the empirical optimum for
- * the `31 * h + c` polynomial family). Unlike [HttpHeaders] which
- * hashes on name only (it serves both `get(name)` and `(name, value)`
- * lookups), this table hashes on the **combined `(name, value)` pair**
- * via [combinedHash] = `nameHashLower * 31 + value.hashCode()`. The
- * name-only hash piles all ~18 `Content-Type` value variants into one
- * bucket (measured max depth 31 in an earlier revision); the combined
- * hash spreads each variant into its own bucket and the distribution
- * tightens substantially: avg = 3.78, max = 12, only 5 empty buckets
- * out of 64. `String.hashCode()` is cached on the JVM so the extra
- * combine cost is one multiply on the [HttpHeaders.add] hot path. The
- * `e.hashLower == nameHashLower` int compare in [tryInternAt] short-
- * circuits non-matching entries early; byte-equality runs only on
- * full chain matches.
+ * **Layout**: a hash-bucket structure with [BUCKET_COUNT] buckets
+ * and a low-bit mask (§46.12 mixing audit picked mask as the
+ * empirical optimum for the `31 * h + c` polynomial family). Two
+ * choices that differ from [HttpHeaders]:
+ *
+ * 1. **Hashed by `(name, value)` combined** (not name-only) via
+ *    [combinedHash] = `nameHashLower * 31 + value.hashCode()`. Popular
+ *    names like `Content-Type` carry ~18 value variants here; the
+ *    name-only hash piled them all into a single bucket (max depth 31
+ *    in an earlier revision), the combined hash spreads each variant
+ *    into a different bucket.
+ * 2. **`BUCKET_COUNT = 256`** (vs HttpHeaders' 64). The
+ *    `StaticHeaderTableBucketCountAuditTest` measured chain depth at
+ *    32 / 64 / 128 / 256 / 512 on this table's 242 entries and picked
+ *    256 as the smallest where max chain walk stops dropping (max =
+ *    6 at both 256 and 512). 1 KB `bucketHead` is trivial for a
+ *    process-wide singleton.
+ *
+ * Result: avg chain depth 0.95, max 6, p99 6. `String.hashCode()` is
+ * cached on the JVM so the combine cost is one multiply on the
+ * [HttpHeaders.add] hot path. The `e.hashLower == nameHashLower` int
+ * compare in [tryInternAt] short-circuits non-matching entries early;
+ * byte-equality runs only on the rare full chain match.
  */
 internal object StaticHeaderTable {
 
@@ -616,6 +624,50 @@ internal object StaticHeaderTable {
         return depths
     }
 
-    private const val BUCKET_COUNT: Int = 64
+    /**
+     * Re-hashes all [byIndex] entries into a hypothetical bucket array
+     * of size [hypotheticalBucketCount] (must be a power of 2) using
+     * the same `combinedHash` formula and low-bit mask, and returns the
+     * resulting per-bucket chain depths. Used by the
+     * `StaticHeaderTableBucketCountAuditTest` to compare `BUCKET=32 /
+     * 64 / 128 / 256 / 512` for this table specifically (rather than
+     * relying on the HttpHeaders §46.12 audit which assumed a small
+     * per-request name-only-hashed table).
+     */
+    internal fun hypotheticalBucketDepths(hypotheticalBucketCount: Int): IntArray {
+        require(hypotheticalBucketCount > 0 && (hypotheticalBucketCount and (hypotheticalBucketCount - 1)) == 0) {
+            "hypotheticalBucketCount must be a power of 2, got $hypotheticalBucketCount"
+        }
+        val mask = hypotheticalBucketCount - 1
+        val depths = IntArray(hypotheticalBucketCount)
+        for (i in byIndex.indices) {
+            val e = byIndex[i]
+            val bucket = combinedHash(e.hashLower, e.value) and mask
+            depths[bucket]++
+        }
+        return depths
+    }
+
+    /**
+     * Number of hash buckets. Chosen by
+     * `StaticHeaderTableBucketCountAuditTest` which measured chain
+     * depth at 32 / 64 / 128 / 256 / 512 on the current 242-entry
+     * table with the `(name, value)` combined hash:
+     *
+     *   BUCKET   avg    max    p99    empty   load%   memory
+     *   32       7.56   16     16     0       100.0%  128 B
+     *   64       3.78   12     12     5        92.2%  256 B
+     *   128      1.89    9      9    32        75.0%  512 B
+     *   256      0.95    6      6   137        46.5% 1024 B
+     *   512      0.47    6      4   380        25.8% 2048 B
+     *
+     * 256 picked: max chain walk halves vs 64 (12 → 6), `avg < 1`
+     * means typical lookup hits an empty or 1-entry bucket, and 256 →
+     * 512 stops improving max (returns disappear past 256). Memory
+     * cost (1 KB) is trivial for a process-wide singleton. The
+     * HttpHeaders BUCKET=64 stays because that table holds only 10-30
+     * entries per request — a different inclusion criterion entirely.
+     */
+    private const val BUCKET_COUNT: Int = 256
     private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
 }

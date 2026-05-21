@@ -51,18 +51,18 @@ class StaticHeaderTableBucketDepthTest {
             "depth sum $total != table size ${StaticHeaderTable.size}",
         )
         // Soft cap based on the current (name, value) combined-hash
-        // distribution (depth=12 on the 242-entry table). The combined
-        // hash spreads same-name value variants across different
-        // buckets, so the dominant residual depth comes from
+        // distribution at BUCKET=256 (max=6 on the 242-entry table).
+        // The combined hash spreads same-name value variants across
+        // different buckets, so the residual depth comes from
         // unrelated names that happen to collide on the bucket mask.
         // Cap leaves headroom for the BigQuery follow-up PR to add
         // ~20-40 more entries.
         assertTrue(
-            max <= 20,
-            "max bucket depth $max exceeds the 20-entry soft cap; " +
+            max <= 12,
+            "max bucket depth $max exceeds the 12-entry soft cap; " +
                 "either the (name, value) combined hash spread " +
                 "degraded, or many recently-added entries happen to " +
-                "share a bucket — re-run the §46.12 mixing audit " +
+                "share a bucket — re-run StaticHeaderTableBucketCountAuditTest " +
                 "before adding more.",
         )
     }
