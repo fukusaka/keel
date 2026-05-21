@@ -7,7 +7,7 @@ import io.github.fukusaka.keel.io.toDecLongOrNull
  *
  * **Storage model** (design.md §46, C2-v5 final, 2026-05-21):
  * - `entries: ArrayList<HeaderEntry>` — insertion-order iteration storage
- * - `bucketHead: IntArray[BUCKET_COUNT=32]` — first entry index per hash bucket (`-1` if empty)
+ * - `bucketHead: IntArray[BUCKET_COUNT=64]` — first entry index per hash bucket (`-1` if empty)
  * - `bucketNext: IntArray` — parallel to `entries`, `bucketNext[i]` = next entry index
  *   in same bucket as `entries[i]` (`-1` if last in chain), grown on demand
  * - `HeaderEntry(hashLower, name, value)` — 24 B on JVM with compressed oops
@@ -260,8 +260,59 @@ class HttpHeaders private constructor(
     }
 
     companion object {
-        private const val BUCKET_COUNT: Int = 32
+        /**
+         * Hash bucket count for the `bucketHead` IntArray. Decided by
+         * measurement (`HttpHeadersCdnLookupBenchmark`, 2026-05-21).
+         *
+         * Individual-name lookup latency on the 23 CDN-typical header
+         * set (Cookie / Upgrade-Insecure-Requests / CF-Visitor /
+         * CDN-Loop cluster, BUCKET=16-32 chain depth 4):
+         *
+         *   name                       BUCKET=32   BUCKET=64
+         *   ----                       ---------   ---------
+         *   Cookie                     13 ns       10 ns  (-3)
+         *   CF-Visitor                 16 ns       14 ns  (-2)
+         *   CDN-Loop                   14 ns       12 ns  (-2)
+         *   Upgrade-Insecure-Requests  30 ns       28 ns  (-2)
+         *   (non-cluster names)        11-15 ns    11-15 ns (tie)
+         *
+         * The 5-lookup batch metric had too much measurement variance
+         * (28-38 ns at both BUCKET=32 and =64) to choose between them
+         * on that signal alone, but the per-name latencies for the
+         * clustered subset are reproducibly faster at BUCKET=64.
+         * BUCKET=128 showed no further gain.
+         *
+         * BUCKET=64 is the conservative default: 2-4 ns saved per
+         * clustered-name lookup, no slowdown for non-cluster names,
+         * +128 bytes per instance (16 KiB total at MAX_POOLED=64 —
+         * trivial). Workloads that never look up the clustered names
+         * (Cookie / CDN-Loop / Upgrade-Insecure-Requests) would see
+         * identical performance at BUCKET=32, but the future-proofing
+         * is cheap.
+         */
+        private const val BUCKET_COUNT: Int = 64
         private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
+
+        /**
+         * Initial size of `entries: ArrayList` + `bucketNext: IntArray`.
+         * Decided by measurement (`HttpHeadersCdnWorkloadBenchmark`,
+         * 2026-05-21):
+         *
+         *   INITIAL=8:  direct 1480 / pool 552 B per CDN cycle (N=23)
+         *   INITIAL=16: direct 1296 / pool 552
+         *   INITIAL=32: direct 1168 / pool 552
+         *
+         * Pool path is invariant (after warmup the capacity grows to
+         * N and stays). Direct-constructor savings at INITIAL=32 are
+         * for cold-start large-N construction, which is rare. The
+         * typical direct caller is `HttpResponse.of` / `build { }` for
+         * server-response headers (N=3-5: Content-Type, Content-Length,
+         * Date, Server, Connection); INITIAL=32 would waste ~96 B of
+         * unused `Object[]` slack per such instance.
+         *
+         * 8 is the small-N-direct optimum and irrelevant for the
+         * pool-warm hot path.
+         */
         private const val INITIAL_ENTRY_CAPACITY: Int = 8
 
         val EMPTY: HttpHeaders = HttpHeaders()
