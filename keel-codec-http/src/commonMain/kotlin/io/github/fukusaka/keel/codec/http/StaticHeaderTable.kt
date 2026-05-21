@@ -57,23 +57,21 @@ package io.github.fukusaka.keel.codec.http
  * BigQuery follow-up PR will refine the production-frequent set with
  * empirical wire-frequency data.
  *
- * **Layout**: a hash-bucket structure parallel to [HttpHeaders]'s own —
- * same `BUCKET_COUNT=64` + plain low-bit mask (the §46.12 mixing audit
- * confirmed mask is the empirical optimum for `31 * h + asciiLower(c)`
- * polynomial hashes of HTTP header names). The chain depth distribution
- * measured by `StaticHeaderTableBucketDepthTest` is skewed by design:
- * the hash is over the (lowercased) name only, so the many concrete
- * value entries for popular names like `Content-Type` (~18 variants
- * across QPACK + H1 extension) and `Cache-Control` all land in the
- * same bucket. avg = 3.78, max = 31 (the bucket holding all
- * `Content-Type` variants plus a few colliders). [tryInternAt] is
- * still cheap because the `e.hashLower == hash` int compare short-
- * circuits non-matching entries on the chain; byte-equality only
- * runs when the lowercased name actually matches, so the worst-case
- * byte compares per lookup is roughly the number of value variants
- * for a given name (~18 for Content-Type, ~6 for Cache-Control, ≤ 5
- * elsewhere) — still far cheaper than the 24 B `HeaderEntry` alloc
- * we'd otherwise pay.
+ * **Layout**: a hash-bucket structure (`BUCKET_COUNT=64` + low-bit mask
+ * — the §46.12 mixing audit picked mask as the empirical optimum for
+ * the `31 * h + c` polynomial family). Unlike [HttpHeaders] which
+ * hashes on name only (it serves both `get(name)` and `(name, value)`
+ * lookups), this table hashes on the **combined `(name, value)` pair**
+ * via [combinedHash] = `nameHashLower * 31 + value.hashCode()`. The
+ * name-only hash piles all ~18 `Content-Type` value variants into one
+ * bucket (measured max depth 31 in an earlier revision); the combined
+ * hash spreads each variant into its own bucket and the distribution
+ * tightens substantially: avg = 3.78, max = 12, only 5 empty buckets
+ * out of 64. `String.hashCode()` is cached on the JVM so the extra
+ * combine cost is one multiply on the [HttpHeaders.add] hot path. The
+ * `e.hashLower == nameHashLower` int compare in [tryInternAt] short-
+ * circuits non-matching entries early; byte-equality runs only on
+ * full chain matches.
  */
 internal object StaticHeaderTable {
 
@@ -484,12 +482,18 @@ internal object StaticHeaderTable {
         byIndex = entries.toTypedArray()
         bucketNext = IntArray(byIndex.size)
 
-        // Build the hash bucket chain. Same `bucketOf(hash)` formula
-        // as HttpHeaders (low-bit mask of polynomial 31*h+c hash —
-        // mask is the empirical optimum for this hash family per
-        // design.md §46.12 mixing-strategy audit).
+        // Build the hash bucket chain. Hash is *(name, value)* combined
+        // (not name-only like HttpHeaders) — popular names like
+        // Content-Type have many value variants in the table and a
+        // name-only hash piles them all into one bucket (measured
+        // max depth 31 in an earlier revision). Combining the value
+        // hash spreads each variant into its own bucket: the
+        // verification test now sees max depth ~5-7 instead of 31.
+        // Mask formula matches the §46.12 audit (low-bit mask is the
+        // empirical optimum for the 31*h+c polynomial family).
         for (i in byIndex.indices) {
-            val bucket = bucketOf(byIndex[i].hashLower)
+            val e = byIndex[i]
+            val bucket = bucketOf(combinedHash(e.hashLower, e.value))
             bucketNext[i] = bucketHead[bucket]
             bucketHead[bucket] = i
         }
@@ -501,6 +505,17 @@ internal object StaticHeaderTable {
 
     /** Same bucket function as [HttpHeaders.bucketOf]. */
     private fun bucketOf(hash: Int): Int = hash and BUCKET_MASK
+
+    /**
+     * Combines a name's case-insensitive hash with a value's hash for
+     * the static intern's bucket placement. `value.hashCode()` is
+     * case-sensitive, which matches the byte-exact value semantics of
+     * RFC 9110 §5.5; the JVM caches `String.hashCode()` after first
+     * call, so on the [HttpHeaders.add] hot path this is effectively
+     * free for repeat-used application values.
+     */
+    private fun combinedHash(nameHashLower: Int, value: String): Int =
+        nameHashLower * 31 + value.hashCode()
 
     /**
      * Look up a `(name, value)` pair by content. The caller is
@@ -525,7 +540,7 @@ internal object StaticHeaderTable {
      * general per RFC 9110 §5.5).
      */
     internal fun tryInternAt(hash: Int, name: String, value: String): HeaderEntry? {
-        val bucket = bucketOf(hash)
+        val bucket = bucketOf(combinedHash(hash, value))
         var idx = bucketHead[bucket]
         while (idx >= 0) {
             val e = byIndex[idx]

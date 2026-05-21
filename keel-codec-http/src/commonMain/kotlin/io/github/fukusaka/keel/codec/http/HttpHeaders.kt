@@ -119,14 +119,13 @@ class HttpHeaders private constructor(
         val idx = entries.size
         // Static intern: well-known (name, value) pairs share a single
         // process-wide HeaderEntry instance (see [StaticHeaderTable]).
-        // Skips the 24-byte HeaderEntry alloc on hit. Per-entry cost is
-        // one hash + bucket walk; the chain walk short-circuits on
-        // hashLower int compare so the byte-equality cost is bounded by
-        // the number of (name, value) variants for the given name
-        // (~18 for Content-Type, ~6 for Cache-Control, ≤ 5 elsewhere —
-        // see `StaticHeaderTableBucketDepthTest`). Still net positive
-        // vs the 24 B alloc on typical CDN / browser workloads where
-        // well-known pairs dominate.
+        // Skips the 24-byte HeaderEntry alloc on hit. tryInternAt uses
+        // a (name, value) combined hash so chain depth on a 242-entry
+        // table at BUCKET=64 is max 12 / avg 3.78 even with popular
+        // names like Content-Type carrying ~18 value variants — see
+        // `StaticHeaderTableBucketDepthTest`. Net positive vs 24 B
+        // alloc on typical CDN / browser workloads where well-known
+        // pairs dominate.
         val shared = StaticHeaderTable.tryInternAt(hash, name, value)
         entries.add(shared ?: HeaderEntry(hash, name, value))
         ensureBucketNextCapacity(idx + 1)
