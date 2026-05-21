@@ -8,11 +8,12 @@ import kotlin.test.Test
  * Allocation impact of [StaticHeaderTable] intern on the
  * `HttpHeaders.add` hot path. Compares three scenarios:
  *
- * - **A — Tier 2 hop-by-hop full-hit subset**: 5 headers from the H1
- *   hop-by-hop / framing set (`Connection: keep-alive`,
- *   `Connection: close`, `Transfer-Encoding: chunked`,
- *   `Content-Length: 0`, `Pragma: no-cache`). All five intern,
- *   per-request [HeaderEntry] allocation 0 B/cycle.
+ * - **A — H1 hop-by-hop full-hit subset**: 5 headers from the H1
+ *   extension category (b) — hop-by-hop / framing / H1.0 carry-over
+ *   (`Connection: keep-alive`, `Connection: close`,
+ *   `Transfer-Encoding: chunked`, `Content-Length: 0`,
+ *   `Pragma: no-cache`). All five intern, per-request [HeaderEntry]
+ *   allocation 0 B/cycle.
  * - **B — full-miss subset**: 5 headers with unique values
  *   (`Authorization` JWT, `Cookie` session, `Host` site,
  *   `X-Request-ID` UUID, `traceparent` ID). None intern; baseline
@@ -48,7 +49,7 @@ class HttpHeadersStaticInternBenchmark {
     private var sink = 0
 
     private fun pathInternHits() {
-        // All Tier 2 (H1 hop-by-hop / framing / H1.0 carry-over).
+        // All H1 extension (b) — hop-by-hop / framing / H1.0 carry-over.
         val h = HttpHeaders.borrow()
         h.add("Connection", "keep-alive")
         h.add("Connection", "close")
@@ -109,11 +110,11 @@ class HttpHeadersStaticInternBenchmark {
         val medMisses = median(TRIALS) { measure(ITERS, ::pathInternMisses) }
         val medCdn = median(TRIALS) { measure(ITERS_C, ::pathCdnMix) }
         println("=== HttpHeaders static intern (bytes / cycle, pool, iters=$ITERS × $TRIALS) ===")
-        println("  A — 5 Tier 2 hits  (Connection × 2 / Transfer-Encoding / Content-Length / Pragma)")
+        println("  A — 5 H1 hop-by-hop hits  (Connection × 2 / Transfer-Encoding / Content-Length / Pragma)")
         println("      median=$medHits bytes / cycle  (expected 0)")
-        println("  B — 5 full-miss    (Authorization / Cookie / Host / X-Request-ID / traceparent)")
+        println("  B — 5 full-miss            (Authorization / Cookie / Host / X-Request-ID / traceparent)")
         println("      median=$medMisses bytes / cycle  (baseline 5 × 24 B = 120)")
-        println("  C — production CDN workload (N=23, Tier 3 entries deferred)")
+        println("  C — production CDN workload (N=23 mixed, BigQuery follow-up PR refines further)")
         println("      median=$medCdn bytes / cycle")
     }
 
