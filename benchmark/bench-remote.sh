@@ -176,8 +176,7 @@ start_server() {
 }
 
 wait_for_ready() {
-    local i
-    for i in $(seq 1 "$READY_TIMEOUT"); do
+    for _ in $(seq 1 "$READY_TIMEOUT"); do
         if ssh -n "$REMOTE_HOST" "ss -lnt | grep -q ':${PORT}\b'"; then
             return 0
         fi
