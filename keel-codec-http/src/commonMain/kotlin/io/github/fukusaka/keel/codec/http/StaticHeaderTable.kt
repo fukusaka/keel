@@ -60,10 +60,20 @@ package io.github.fukusaka.keel.codec.http
  * **Layout**: a hash-bucket structure parallel to [HttpHeaders]'s own —
  * same `BUCKET_COUNT=64` + plain low-bit mask (the §46.12 mixing audit
  * confirmed mask is the empirical optimum for `31 * h + asciiLower(c)`
- * polynomial hashes of HTTP header names). Bucket chains stay short
- * (avg ~4 for the ~240-entry table at BUCKET=64) — a [tryInternAt]
- * call is a single hash compute + bucket index + a small number of
- * byte-equality compares.
+ * polynomial hashes of HTTP header names). The chain depth distribution
+ * measured by `StaticHeaderTableBucketDepthTest` is skewed by design:
+ * the hash is over the (lowercased) name only, so the many concrete
+ * value entries for popular names like `Content-Type` (~18 variants
+ * across QPACK + H1 extension) and `Cache-Control` all land in the
+ * same bucket. avg = 3.78, max = 31 (the bucket holding all
+ * `Content-Type` variants plus a few colliders). [tryInternAt] is
+ * still cheap because the `e.hashLower == hash` int compare short-
+ * circuits non-matching entries on the chain; byte-equality only
+ * runs when the lowercased name actually matches, so the worst-case
+ * byte compares per lookup is roughly the number of value variants
+ * for a given name (~18 for Content-Type, ~6 for Cache-Control, ≤ 5
+ * elsewhere) — still far cheaper than the 24 B `HeaderEntry` alloc
+ * we'd otherwise pay.
  */
 internal object StaticHeaderTable {
 
@@ -570,6 +580,26 @@ internal object StaticHeaderTable {
 
     /** Total entry count (HPACK + QPACK + H1 extension). */
     internal val size: Int get() = byIndex.size
+
+    /**
+     * Returns the chain length of each of the [BUCKET_COUNT] hash buckets.
+     * Used by `StaticHeaderTableBucketDepthTest` to verify that the
+     * polynomial hash + low-bit mask spread the entries evenly enough
+     * (no bucket should accumulate a pathologically long chain).
+     */
+    internal fun bucketDepths(): IntArray {
+        val depths = IntArray(BUCKET_COUNT)
+        for (b in 0 until BUCKET_COUNT) {
+            var idx = bucketHead[b]
+            var depth = 0
+            while (idx >= 0) {
+                depth++
+                idx = bucketNext[idx]
+            }
+            depths[b] = depth
+        }
+        return depths
+    }
 
     private const val BUCKET_COUNT: Int = 64
     private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
