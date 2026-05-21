@@ -8,28 +8,26 @@ import kotlin.test.Test
  * Allocation impact of [StaticHeaderTable] intern on the
  * `HttpHeaders.add` hot path. Compares three scenarios:
  *
- * - **A — Tier 2 (H1 hop-by-hop / framing) full-hit subset**: 5 headers
- *   chosen to hit the Tier 2 H1 Title-Case entries:
- *   `Connection: keep-alive`, `Connection: close`,
- *   `Transfer-Encoding: chunked`, `Content-Length: 0`,
- *   `Pragma: no-cache`. All five intern, so the per-request
- *   [HeaderEntry] allocation drops to zero on this set.
+ * - **A — Tier 2 hop-by-hop full-hit subset**: 5 headers from the H1
+ *   hop-by-hop / framing set (`Connection: keep-alive`,
+ *   `Connection: close`, `Transfer-Encoding: chunked`,
+ *   `Content-Length: 0`, `Pragma: no-cache`). All five intern,
+ *   per-request [HeaderEntry] allocation 0 B/cycle.
  * - **B — full-miss subset**: 5 headers with unique values
  *   (`Authorization` JWT, `Cookie` session, `Host` site,
  *   `X-Request-ID` UUID, `traceparent` ID). None intern; baseline
  *   `5 × 24 B = 120 B/cycle`.
  * - **C — production-typical CDN workload mix**: 23 headers from
- *   `HttpHeadersCdnWorkloadBenchmark`. Of these, only the Tier 2
- *   subset (`Connection: keep-alive` plus zero or one others depending
- *   on the workload) intern; production-frequent Title-Case pairs
- *   such as `Accept: text/html,...`, `Accept-Encoding: gzip, deflate,
- *   br`, `Content-Type: text/html; charset=utf-8`, `Cache-Control:
- *   no-cache` are NOT in the table — they are deferred to the Tier 3
+ *   `HttpHeadersCdnWorkloadBenchmark`. With the HPACK + QPACK
+ *   Title-Case provisional set added in this PR, common pairs such as
+ *   `Accept-Encoding: gzip, deflate, br`, `Content-Type: text/html;
+ *   charset=utf-8`, `Cache-Control: no-cache`, `Vary: accept-encoding`,
+ *   `X-Frame-Options: deny` intern. Production-frequent pairs absent
+ *   from HPACK / QPACK (browser default `Accept`, uppercase
+ *   `X-Frame-Options: DENY`, charset case / spacing variants, bare
+ *   `Cache-Control: private` / `public`) are deferred to the Tier 3
  *   follow-up PR (HTTP Archive BigQuery derivation, see
  *   `StaticHeaderTable.kt` Tier 3 comment block).
- *
- * Once the Tier 3 PR lands, scenario C is expected to drop further as
- * the production-frequent Title-Case pairs start interning.
  */
 class HttpHeadersStaticInternBenchmark {
 

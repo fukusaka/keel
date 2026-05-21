@@ -28,25 +28,28 @@ package io.github.fukusaka.keel.codec.http
  *   BigQuery analysis with a >5 % per-name value-frequency threshold
  *   (https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table).
  *   Indices 0..98 (0-based per RFC 9204).
- * - **HTTP/1.1 hop-by-hop and message-framing extension**
- *   (~11 Title-Case entries): hop-by-hop headers (RFC 9110 §7.6.1),
- *   chunked framing (RFC 9112 §6), protocol upgrade handshake
- *   (RFC 9110 §7.8), and HTTP/1.0 cache-busting idioms (RFC 9111 §5.2).
- *   These are absent from the H2/H3 static tables by design (H2/H3
- *   forbid hop-by-hop headers and use frame-level framing). Title-Case
- *   matches the H1 wire convention so the [tryInternAt] exact-case
- *   compare hits H1 application input.
+ * - **HTTP/1.1 extension (Title-Case)** (~63 entries): provisional
+ *   H1 hot-path hits before the Tier 3 BigQuery-derived set lands.
+ *   Two RFC sources: (a) HPACK + QPACK concrete-value non-pseudo
+ *   entries Title-Cased for H1 wire convention (filtered to drop
+ *   H2/H3 pseudo-headers and name-only sentinels), and (b) H1-specific
+ *   hop-by-hop / framing / cache-busting pairs absent from QPACK by
+ *   design (RFC 9110 §7.6.1, RFC 9112 §6, RFC 9111 §5.2). Title-Case
+ *   matches the H1 wire convention preserved by Netty
+ *   `DefaultHttpHeaders` and OkHttp `Headers`, so the [tryInternAt]
+ *   exact-case compare hits H1 application input.
  *
- * **Why H1 hot path doesn't reuse the HPACK/QPACK lowercase entries**:
+ * **Why H1 hot path needs separate Title-Case entries**:
  * [tryInternAt] uses exact-case name compare to preserve the
  * application's chosen case on H1 wire (RFC 9110 §5.1 allows any case
  * but case-as-authored is the H1 convention preserved by Netty / OkHttp).
  * An H1 caller adding `Accept-Encoding: gzip, deflate, br` (Title-Case)
  * does **not** hit QPACK index 31 `accept-encoding: gzip, deflate, br`
  * (lowercase) — that lowercase entry serves only the H2/H3 decoder
- * indexed-entry path. The H1 Title-Case hits live in the Tier 2 H1
- * extension below, and (deferred) a Tier 3 set derived from production
- * H1 wire frequency.
+ * indexed-entry path. The Tier 2 H1 extension Title-Cases the HPACK +
+ * QPACK concrete-value pairs (filtered to drop pseudo-headers and
+ * name-only sentinels) to cover the H1 hot path; the (deferred) Tier 3
+ * set will add production-frequent variants not present in HPACK / QPACK.
  *
  * **Layout**: a hash-bucket structure parallel to [HttpHeaders]'s own —
  * same `BUCKET_COUNT=64` + plain low-bit mask (the §46.12 mixing audit
@@ -265,41 +268,72 @@ internal object StaticHeaderTable {
         }
 
         // ===================================================================
-        // HTTP/1.1 extension (Tier 2): hop-by-hop + framing + H1.0 carry-over.
+        // HTTP/1.1 extension (Title-Case): provisional H1 hot-path hits
+        // before the Tier 3 BigQuery-derived set lands.
         // ===================================================================
         //
         // Title-Case names match the HTTP/1.1 wire convention preserved by
         // Netty `DefaultHttpHeaders` / OkHttp `Headers`, so the exact-case
         // [tryInternAt] compare hits the typical H1 application input
-        // (`headers.add("Connection", "close")`). The lowercase HPACK / QPACK
-        // entries above intentionally do **not** hit H1 Title-Case input —
-        // they serve only the H2 / H3 indexed-entry decode path.
+        // (`headers.add("Cache-Control", "no-cache")`). The lowercase
+        // HPACK / QPACK entries above intentionally do **not** hit H1
+        // Title-Case input — they serve only the H2 / H3 indexed-entry
+        // decode path.
         //
-        // === Inclusion criteria (Tier 2) ===
+        // === Tier 2 inclusion (RFC-derived, in this PR) ===
         //
-        // RFC-derived only. Each entry has an explicit reference to the
-        // HTTP/1.1 wire feature it represents. QPACK explicitly excludes
-        // these by design because H2 / H3 forbid hop-by-hop headers and use
-        // frame-level framing.
+        // Two source categories, both RFC-derived:
         //
-        // === Tier 3 (production wire frequency, DEFERRED to follow-up PR) ===
+        // (a) **HPACK + QPACK concrete-value non-pseudo entries, Title-Cased.**
+        //     HPACK / QPACK names are RFC-mandated lowercase (RFC 9113
+        //     §8.2.1 / RFC 9114 §4.2). The same `(name, value)` pairs on
+        //     H1 wire conventionally use Title-Case. We add Title-Case
+        //     copies for the H1 hot path so that `Accept-Encoding: gzip,
+        //     deflate, br` (Title-Case application input) hits the same
+        //     `(name, value)` pair that QPACK index 31 covers in lowercase
+        //     for H3. Filtering: skip H2/H3 pseudo-headers (`:authority`,
+        //     `:method`, `:path`, `:scheme`, `:status`; absent from H1
+        //     wire) and skip name-only sentinels (empty value never
+        //     matches non-empty H1 application input). Name conversion is
+        //     the standard Title-Case rule: each `-` separated token has
+        //     its first character upper, remaining lower.
+        // (b) **HTTP/1.1-specific pairs that QPACK omitted by design**:
+        //     hop-by-hop headers (RFC 9110 §7.6.1: `Connection`, `Upgrade`),
+        //     chunked / identity framing (RFC 9112 §6 `Transfer-Encoding`),
+        //     HTTP/1.0 cache-busting carry-over (RFC 9111 §5.2 `Pragma`,
+        //     §5.3 `Expires`). H2 / H3 forbid hop-by-hop headers and use
+        //     frame-level framing, so QPACK excluded these.
         //
-        // **Not included here**: browser-default `Accept`, Content-Type
-        // `charset` spacing / case variants (`text/plain; charset=utf-8`
-        // with space, `; charset=UTF-8` uppercase), Cache-Control bare
-        // `private` / `public`, `Content-Encoding: deflate`,
-        // `X-Frame-Options: DENY` / `SAMEORIGIN` (uppercase values — QPACK
-        // 97/98 normalize to lowercase but real wire is uppercase per
-        // Spring Boot / Express / Rails defaults), `Vary: Accept-Encoding`
-        // (Title-Case version of QPACK 59).
+        // === Tier 3 (DEFERRED to follow-up PR) ===
         //
-        // These pairs are observed to be H1-frequent in production but lack
-        // an RFC source. Including them on a "library X does it this way"
-        // basis (e.g. Jetty `HttpParser.CACHE`) was rejected as unprincipled.
-        // The follow-up PR will derive them empirically by replaying the
-        // QPACK methodology against a recent HTTP Archive crawl.
+        // Production-frequent on H1 wire but absent from the two Tier 2
+        // RFC sources above. Examples:
         //
-        // === Tier 3 derivation methodology ===
+        //   - Browser default `Accept: text/html,application/xhtml+xml,
+        //     application/xml;q=0.9,*/*;q=0.8` (Chrome / Firefox H1 default,
+        //     not in QPACK).
+        //   - Content-Type charset spacing variant `text/plain; charset=utf-8`
+        //     (with space; QPACK 54 omits the space) and uppercase UTF-8
+        //     `text/plain; charset=UTF-8`.
+        //   - `X-Frame-Options: DENY` / `SAMEORIGIN` (uppercase values;
+        //     QPACK 97/98 normalized to lowercase but Spring Boot /
+        //     Express / Rails / MDN docs use uppercase on the wire).
+        //   - `Cache-Control: private` / `public` bare (QPACK has
+        //     `public, max-age=31536000` only).
+        //   - `Content-Encoding: deflate` (QPACK has only `gzip` / `br`).
+        //   - `X-XSS-Protection: 1; mode=block` (real wire convention is
+        //     `XSS` uppercase; we use canonical Title-Case
+        //     `X-Xss-Protection` here, so production uppercase input
+        //     misses — Tier 3 should add the uppercase variant).
+        //
+        // These pairs need empirical wire-frequency evidence rather than
+        // ad-hoc inclusion. The follow-up PR will derive them by replaying
+        // the QPACK methodology (HTTP Archive BigQuery + >5 % per-name
+        // value-frequency threshold) against a recent (2024-06 or later)
+        // crawl restricted to HTTP/1.1, committing the SQL queries +
+        // result CSV alongside the new entries for full reproducibility.
+        //
+        // === Tier 3 derivation methodology (for the follow-up PR) ===
         //
         // Source: HTTP Archive BigQuery public dataset (https://httparchive.org,
         // `httparchive.crawl.requests`, monthly crawl of ~16M top-rank URLs
@@ -308,8 +342,8 @@ internal object StaticHeaderTable {
         // (https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table)
         // with the following procedure:
         //
-        //   1. Filter: drop vendor-proprietary and non-HQ-compatible headers
-        //      (`user-agent`, `youtube-client-id`, etc.).
+        //   1. Filter: drop vendor-proprietary and non-HQ-compatible
+        //      headers (`user-agent`, `youtube-client-id`, etc.).
         //   2. Inclusion threshold (value): include if value accounts for
         //      >5 % of occurrences of that header name.
         //   3. Ranking: by total frequency of the header's occurrence
@@ -318,47 +352,94 @@ internal object StaticHeaderTable {
         //   5. Additions: a few spec-required entries not present in the
         //      archive (e.g. uncommon `:status` codes).
         //
-        // keel's Tier 3 PR will replay the same methodology against a recent
-        // (2024-06 or later) HTTP Archive crawl restricted to HTTP/1.1
-        // request/response pairs, and additionally include the H1-specific
-        // variants that QPACK filtered out by design. The SQL queries and
-        // result CSVs will be committed alongside the new entries for full
-        // reproducibility.
-        //
         // BigQuery cost: ~600-800 GB scan total across the ~5 queries
         // needed, well within the 1 TB monthly free tier when the queries
-        // use `WHERE date = ... AND client = ...` partition filters. Zero
-        // monetary cost under sandbox billing.
-        //
-        // **Until the Tier 3 PR lands**, H1 traffic carrying values like:
-        //   `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`
-        //   `Content-Type: text/html; charset=utf-8` (with space)
-        //   `X-Frame-Options: DENY` (uppercase)
-        // will **miss** the intern table and pay the 24 B per-request
-        // [HeaderEntry] allocation, as they did before this PR.
+        // use `WHERE date = ... AND client = ...` partition filters.
+        // Zero monetary cost under sandbox billing.
         //
         // ===================================================================
 
         fun h1(name: String, value: String) = entries.add(make(name, value))
 
-        // --- Connection management (RFC 9110 §7.6.1 hop-by-hop) ---
+        // --- (a-1) HPACK concrete-value non-pseudo, Title-Cased ---
+        // Only HPACK index 16 has both a concrete value and a non-pseudo
+        // name; indices 2-14 are `:method` / `:path` / `:scheme` /
+        // `:status` pseudo-headers and the rest are name-only sentinels.
+        h1("Accept-Encoding", "gzip, deflate") // HPACK 16
+
+        // --- (a-2) QPACK concrete-value non-pseudo, Title-Cased ---
+        h1("Age", "0") // QPACK 2
+        h1("Content-Length", "0") // QPACK 4
+        h1("Accept", "*/*") // QPACK 29
+        h1("Accept", "application/dns-message") // QPACK 30
+        h1("Accept-Encoding", "gzip, deflate, br") // QPACK 31
+        h1("Accept-Ranges", "bytes") // QPACK 32
+        h1("Access-Control-Allow-Headers", "cache-control") // QPACK 33
+        h1("Access-Control-Allow-Headers", "content-type") // QPACK 34
+        h1("Access-Control-Allow-Origin", "*") // QPACK 35
+        h1("Cache-Control", "max-age=0") // QPACK 36
+        h1("Cache-Control", "max-age=2592000") // QPACK 37
+        h1("Cache-Control", "max-age=604800") // QPACK 38
+        h1("Cache-Control", "no-cache") // QPACK 39
+        h1("Cache-Control", "no-store") // QPACK 40
+        h1("Cache-Control", "public, max-age=31536000") // QPACK 41
+        h1("Content-Encoding", "br") // QPACK 42
+        h1("Content-Encoding", "gzip") // QPACK 43
+        h1("Content-Type", "application/dns-message") // QPACK 44
+        h1("Content-Type", "application/javascript") // QPACK 45
+        h1("Content-Type", "application/json") // QPACK 46
+        h1("Content-Type", "application/x-www-form-urlencoded") // QPACK 47
+        h1("Content-Type", "image/gif") // QPACK 48
+        h1("Content-Type", "image/jpeg") // QPACK 49
+        h1("Content-Type", "image/png") // QPACK 50
+        h1("Content-Type", "text/css") // QPACK 51
+        h1("Content-Type", "text/html; charset=utf-8") // QPACK 52
+        h1("Content-Type", "text/plain") // QPACK 53
+        h1("Content-Type", "text/plain;charset=utf-8") // QPACK 54
+        h1("Range", "bytes=0-") // QPACK 55
+        h1("Strict-Transport-Security", "max-age=31536000") // QPACK 56
+        h1("Strict-Transport-Security", "max-age=31536000; includesubdomains") // QPACK 57
+        h1("Strict-Transport-Security", "max-age=31536000; includesubdomains; preload") // QPACK 58
+        h1("Vary", "accept-encoding") // QPACK 59
+        h1("Vary", "origin") // QPACK 60
+        h1("X-Content-Type-Options", "nosniff") // QPACK 61
+        h1("X-Xss-Protection", "1; mode=block") // QPACK 62 (canonical Title-Case)
+        h1("Access-Control-Allow-Credentials", "FALSE") // QPACK 73
+        h1("Access-Control-Allow-Credentials", "TRUE") // QPACK 74
+        h1("Access-Control-Allow-Headers", "*") // QPACK 75
+        h1("Access-Control-Allow-Methods", "get") // QPACK 76
+        h1("Access-Control-Allow-Methods", "get, post, options") // QPACK 77
+        h1("Access-Control-Allow-Methods", "options") // QPACK 78
+        h1("Access-Control-Expose-Headers", "content-length") // QPACK 79
+        h1("Access-Control-Request-Headers", "content-type") // QPACK 80
+        h1("Access-Control-Request-Method", "get") // QPACK 81
+        h1("Access-Control-Request-Method", "post") // QPACK 82
+        h1("Alt-Svc", "clear") // QPACK 83
+        h1("Content-Security-Policy", "script-src 'none'; object-src 'none'; base-uri 'none'") // QPACK 85
+        h1("Early-Data", "1") // QPACK 86
+        h1("Purpose", "prefetch") // QPACK 91
+        h1("Timing-Allow-Origin", "*") // QPACK 93
+        h1("Upgrade-Insecure-Requests", "1") // QPACK 94
+        h1("X-Frame-Options", "deny") // QPACK 97
+        h1("X-Frame-Options", "sameorigin") // QPACK 98
+
+        // --- (b) HTTP/1.1-specific (RFC 9110 §7.6.1 / 9112 §6 / 9111 §5.2) ---
+        // Connection management (RFC 9110 §7.6.1 hop-by-hop)
         h1("Connection", "close")
         h1("Connection", "keep-alive")
         h1("Connection", "Upgrade")
-
-        // --- Message framing (RFC 9112 §6 Transfer-Encoding, §6.2 body length) ---
+        // Transfer-Encoding framing (RFC 9112 §6.1)
         h1("Transfer-Encoding", "chunked")
         h1("Transfer-Encoding", "identity")
-        h1("Content-Length", "0")
-
-        // --- Protocol upgrade (RFC 9110 §7.8 Upgrade, RFC 7540 §3.2 h2c) ---
+        // Protocol upgrade (RFC 9110 §7.8, RFC 7540 §3.2)
         h1("Upgrade", "websocket")
         h1("Upgrade", "h2c")
-
-        // --- HTTP/1.0 cache-busting carry-over (RFC 9111 §5.2 Pragma, §5.3 Expires) ---
+        // HTTP/1.0 cache-busting (RFC 9111 §5.2 Pragma, §5.3 Expires)
         h1("Pragma", "no-cache")
         h1("Expires", "0")
         h1("Expires", "Fri, 01 Jan 1990 00:00:00 GMT")
+        // Note: `Content-Length: 0` is already covered by QPACK 4
+        // Title-Case above; no duplicate entry here.
 
         // === End of Tier 2 entries; Tier 3 follow-up PR appends below ===
 
