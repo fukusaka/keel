@@ -25,6 +25,13 @@ class HttpHeaders private constructor(
     private var flatValues: Array<String> = EMPTY_STRING_ARRAY
     private var flatValid = false
 
+    // True when this instance was obtained via [HttpHeaders.borrow]; on
+    // [release] the entry maps are cleared (keeping their backing
+    // arrays) and the instance is returned to the pool. Direct
+    // constructor users do not opt into pooling — for them [release]
+    // is a no-op.
+    private var pooled: Boolean = false
+
     private fun ensureFlatArrays() {
         if (flatValid) return
         var count = 0
@@ -191,6 +198,54 @@ class HttpHeaders private constructor(
         append(")")
     }
 
+    // --- Lifecycle ---
+
+    /**
+     * Releases this instance. After release the headers must not be
+     * read or mutated.
+     *
+     * For instances obtained via [borrow], the entry maps are cleared
+     * (keeping their backing arrays) and the instance is handed back
+     * to [HttpHeadersPool] for the next borrower. For instances
+     * constructed directly (via `HttpHeaders()` / [build] / [of]), the
+     * call is a no-op — the JVM GC reclaims the maps when the
+     * instance becomes unreachable.
+     *
+     * Callers must release exactly once per [borrow]. A second call
+     * on the same pool-borrowed instance would push it into the pool
+     * twice and two subsequent borrows would observe the same
+     * underlying storage, corrupting both readers.
+     */
+    fun release() {
+        if (!pooled) return
+        resetForReuse()
+        HttpHeadersPool.giveBack(this)
+    }
+
+    /**
+     * Clears per-request state so this instance is empty again, but
+     * keeps the underlying `LinkedHashMap` backing arrays for the
+     * next pool borrower. Internal to the [HttpHeadersPool] handoff —
+     * external callers should use [release].
+     */
+    internal fun resetForReuse() {
+        // `clear()` empties entries but keeps the bucket table array
+        // — that's the per-request alloc we save on subsequent reuse.
+        map.clear()
+        originalNames.clear()
+        // The flat String arrays are rebuilt lazily; mark stale so the
+        // next iteration does not surface entries from the previous
+        // borrower.
+        flatValid = false
+        flatNames = EMPTY_STRING_ARRAY
+        flatValues = EMPTY_STRING_ARRAY
+    }
+
+    /** Internal hook for [HttpHeadersPool.borrow] to flip the flag. */
+    internal fun markPooled() {
+        pooled = true
+    }
+
     companion object {
         private val EMPTY_STRING_ARRAY = emptyArray<String>()
 
@@ -203,6 +258,20 @@ class HttpHeaders private constructor(
          * by throwing from mutator methods.
          */
         val EMPTY: HttpHeaders = HttpHeaders()
+
+        /**
+         * Returns a pooled [HttpHeaders] instance. The returned instance
+         * is empty and ready to accept [add] / [set] calls. The caller
+         * **must** call [release] exactly once when finished to return
+         * the instance to the pool — failing to do so leaves the
+         * borrowed instance unreachable to the pool until GC (bounded
+         * leak), and calling release twice would corrupt the pool.
+         *
+         * Intended for request-bound callers (parser / writer /
+         * keel-server-http) where the lifecycle is bounded by a single
+         * request and the call to [release] is deterministic.
+         */
+        fun borrow(): HttpHeaders = HttpHeadersPool.borrow()
 
         /** Builds an [HttpHeaders] instance using the given [block]. */
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
