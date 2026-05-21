@@ -18,16 +18,15 @@ import kotlin.test.Test
  *   `X-Request-ID` UUID, `traceparent` ID). None intern; baseline
  *   `5 × 24 B = 120 B/cycle`.
  * - **C — production-typical CDN workload mix**: 23 headers from
- *   `HttpHeadersCdnWorkloadBenchmark`. With the HPACK + QPACK
- *   Title-Case provisional set added in this PR, common pairs such as
- *   `Accept-Encoding: gzip, deflate, br`, `Content-Type: text/html;
- *   charset=utf-8`, `Cache-Control: no-cache`, `Vary: accept-encoding`,
- *   `X-Frame-Options: deny` intern. Production-frequent pairs absent
- *   from HPACK / QPACK (browser default `Accept`, uppercase
- *   `X-Frame-Options: DENY`, charset case / spacing variants, bare
- *   `Cache-Control: private` / `public`) are deferred to the Tier 3
- *   follow-up PR (HTTP Archive BigQuery derivation, see
- *   `StaticHeaderTable.kt` Tier 3 comment block).
+ *   `HttpHeadersCdnWorkloadBenchmark`. With the full H1 extension
+ *   preset (HPACK + QPACK Title-Case + H1 hop-by-hop + production-
+ *   frequent variants), common production pairs intern: browser
+ *   default `Accept`, `Accept-Encoding: gzip, deflate, br`,
+ *   `Content-Type: text/html; charset=utf-8`, `Cache-Control:
+ *   no-cache`, `X-Frame-Options: DENY` (uppercase), `Vary:
+ *   Accept-Encoding` (Title-Case value), etc. The BigQuery follow-up
+ *   PR will refine the category (c) production-frequent set based on
+ *   empirical HTTP Archive frequency data.
  */
 class HttpHeadersStaticInternBenchmark {
 

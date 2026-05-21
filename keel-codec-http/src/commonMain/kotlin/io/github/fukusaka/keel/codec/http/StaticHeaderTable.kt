@@ -28,13 +28,17 @@ package io.github.fukusaka.keel.codec.http
  *   BigQuery analysis with a >5 % per-name value-frequency threshold
  *   (https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table).
  *   Indices 0..98 (0-based per RFC 9204).
- * - **HTTP/1.1 extension (Title-Case)** (~63 entries): provisional
- *   H1 hot-path hits before the Tier 3 BigQuery-derived set lands.
- *   Two RFC sources: (a) HPACK + QPACK concrete-value non-pseudo
+ * - **HTTP/1.1 extension (Title-Case)** (~80 entries): provisional
+ *   H1 hot-path preset before an empirical wire-frequency study runs.
+ *   Three categories: (a) HPACK + QPACK concrete-value non-pseudo
  *   entries Title-Cased for H1 wire convention (filtered to drop
- *   H2/H3 pseudo-headers and name-only sentinels), and (b) H1-specific
+ *   H2/H3 pseudo-headers and name-only sentinels), (b) H1-specific
  *   hop-by-hop / framing / cache-busting pairs absent from QPACK by
- *   design (RFC 9110 §7.6.1, RFC 9112 §6, RFC 9111 §5.2). Title-Case
+ *   design (RFC 9110 §7.6.1, RFC 9112 §6, RFC 9111 §5.2), and
+ *   (c) production-frequent variants observed on the H1 wire (browser
+ *   default `Accept`, Content-Type charset spacing / case variants,
+ *   `X-Frame-Options: DENY` uppercase, etc.) — pragmatic preset
+ *   pending BigQuery confirmation in a follow-up PR. Title-Case
  *   matches the H1 wire convention preserved by Netty
  *   `DefaultHttpHeaders` and OkHttp `Headers`, so the [tryInternAt]
  *   exact-case compare hits H1 application input.
@@ -268,8 +272,7 @@ internal object StaticHeaderTable {
         }
 
         // ===================================================================
-        // HTTP/1.1 extension (Title-Case): provisional H1 hot-path hits
-        // before the Tier 3 BigQuery-derived set lands.
+        // HTTP/1.1 extension (Title-Case): provisional H1 hot-path preset.
         // ===================================================================
         //
         // Title-Case names match the HTTP/1.1 wire convention preserved by
@@ -280,83 +283,60 @@ internal object StaticHeaderTable {
         // Title-Case input — they serve only the H2 / H3 indexed-entry
         // decode path.
         //
-        // === Tier 2 inclusion (RFC-derived, in this PR) ===
+        // **Intent**: build a high-hit-rate preset for the H1 hot path
+        // **before** an empirical wire-frequency study runs (see
+        // "BigQuery confirmation" note at the end). Three inclusion
+        // categories:
         //
-        // Two source categories, both RFC-derived:
-        //
-        // (a) **HPACK + QPACK concrete-value non-pseudo entries, Title-Cased.**
+        // (a) **HPACK + QPACK concrete-value non-pseudo entries, Title-Cased**.
         //     HPACK / QPACK names are RFC-mandated lowercase (RFC 9113
         //     §8.2.1 / RFC 9114 §4.2). The same `(name, value)` pairs on
-        //     H1 wire conventionally use Title-Case. We add Title-Case
-        //     copies for the H1 hot path so that `Accept-Encoding: gzip,
-        //     deflate, br` (Title-Case application input) hits the same
-        //     `(name, value)` pair that QPACK index 31 covers in lowercase
-        //     for H3. Filtering: skip H2/H3 pseudo-headers (`:authority`,
+        //     H1 wire conventionally use Title-Case. Title-Case copies
+        //     are added so `Accept-Encoding: gzip, deflate, br`
+        //     (Title-Case application input) hits the same `(name, value)`
+        //     pair that QPACK index 31 covers in lowercase for H3.
+        //     Filtering: skip H2/H3 pseudo-headers (`:authority`,
         //     `:method`, `:path`, `:scheme`, `:status`; absent from H1
         //     wire) and skip name-only sentinels (empty value never
-        //     matches non-empty H1 application input). Name conversion is
-        //     the standard Title-Case rule: each `-` separated token has
-        //     its first character upper, remaining lower.
+        //     matches non-empty H1 application input). Name conversion
+        //     is the standard Title-Case rule: each `-` separated token
+        //     has its first character upper, remaining lower.
         // (b) **HTTP/1.1-specific pairs that QPACK omitted by design**:
         //     hop-by-hop headers (RFC 9110 §7.6.1: `Connection`, `Upgrade`),
         //     chunked / identity framing (RFC 9112 §6 `Transfer-Encoding`),
         //     HTTP/1.0 cache-busting carry-over (RFC 9111 §5.2 `Pragma`,
         //     §5.3 `Expires`). H2 / H3 forbid hop-by-hop headers and use
         //     frame-level framing, so QPACK excluded these.
+        // (c) **Production-frequent variants observed on the H1 wire**.
+        //     Pragmatic preset: pairs that real-world H1 traffic exhibits
+        //     in significant volume but that don't appear in HPACK /
+        //     QPACK with the wire form authors use. Selected by
+        //     inspection of common frameworks and browsers (Chrome /
+        //     Firefox H1 request defaults, Spring Boot / Express / Rails
+        //     response defaults, Mozilla security header docs). Examples:
+        //     browser default `Accept`, Content-Type charset spacing /
+        //     case variants, `X-Frame-Options: DENY` / `SAMEORIGIN`
+        //     uppercase (real wire is uppercase even though QPACK
+        //     normalized to lowercase), bare `Cache-Control: private` /
+        //     `public`, `Content-Encoding: deflate`. Without empirical
+        //     evidence these would be unprincipled, but as a provisional
+        //     preset they significantly raise H1 hit rate before the
+        //     BigQuery study lands.
         //
-        // === Tier 3 (DEFERRED to follow-up PR) ===
-        //
-        // Production-frequent on H1 wire but absent from the two Tier 2
-        // RFC sources above. Examples:
-        //
-        //   - Browser default `Accept: text/html,application/xhtml+xml,
-        //     application/xml;q=0.9,*/*;q=0.8` (Chrome / Firefox H1 default,
-        //     not in QPACK).
-        //   - Content-Type charset spacing variant `text/plain; charset=utf-8`
-        //     (with space; QPACK 54 omits the space) and uppercase UTF-8
-        //     `text/plain; charset=UTF-8`.
-        //   - `X-Frame-Options: DENY` / `SAMEORIGIN` (uppercase values;
-        //     QPACK 97/98 normalized to lowercase but Spring Boot /
-        //     Express / Rails / MDN docs use uppercase on the wire).
-        //   - `Cache-Control: private` / `public` bare (QPACK has
-        //     `public, max-age=31536000` only).
-        //   - `Content-Encoding: deflate` (QPACK has only `gzip` / `br`).
-        //   - `X-XSS-Protection: 1; mode=block` (real wire convention is
-        //     `XSS` uppercase; we use canonical Title-Case
-        //     `X-Xss-Protection` here, so production uppercase input
-        //     misses — Tier 3 should add the uppercase variant).
-        //
-        // These pairs need empirical wire-frequency evidence rather than
-        // ad-hoc inclusion. The follow-up PR will derive them by replaying
-        // the QPACK methodology (HTTP Archive BigQuery + >5 % per-name
-        // value-frequency threshold) against a recent (2024-06 or later)
-        // crawl restricted to HTTP/1.1, committing the SQL queries +
-        // result CSV alongside the new entries for full reproducibility.
-        //
-        // === Tier 3 derivation methodology (for the follow-up PR) ===
-        //
-        // Source: HTTP Archive BigQuery public dataset (https://httparchive.org,
-        // `httparchive.crawl.requests`, monthly crawl of ~16M top-rank URLs
-        // since 2010). The QPACK static table (RFC 9204 Appendix A) was
-        // itself derived from this dataset's 2018 crawl by the IETF QUIC WG
-        // (https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table)
-        // with the following procedure:
-        //
-        //   1. Filter: drop vendor-proprietary and non-HQ-compatible
-        //      headers (`user-agent`, `youtube-client-id`, etc.).
-        //   2. Inclusion threshold (value): include if value accounts for
-        //      >5 % of occurrences of that header name.
-        //   3. Ranking: by total frequency of the header's occurrence
-        //      (both requests and responses).
-        //   4. Value ordering: by percentage of responses.
-        //   5. Additions: a few spec-required entries not present in the
-        //      archive (e.g. uncommon `:status` codes).
-        //
-        // BigQuery cost: ~600-800 GB scan total across the ~5 queries
-        // needed, well within the 1 TB monthly free tier when the queries
-        // use `WHERE date = ... AND client = ...` partition filters.
-        // Zero monetary cost under sandbox billing.
-        //
+        // **BigQuery confirmation (follow-up PR)**: the QPACK static
+        // table (RFC 9204 Appendix A) was generated by the IETF QUIC WG
+        // from HTTP Archive BigQuery 2018 crawl with the procedure
+        // documented at https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table:
+        // drop vendor-proprietary headers, include values that account
+        // for >5 % of occurrences of their name, order by frequency.
+        // A follow-up PR will replay that procedure against a recent
+        // HTTP Archive crawl restricted to HTTP/1.1, and add / remove /
+        // reorder the category (c) entries based on the resulting
+        // frequency table. SQL queries + result CSV will be committed
+        // alongside the entry changes for reproducibility. BigQuery scan
+        // is ~600-800 GB / ~5 queries, within the 1 TB monthly free tier
+        // given `WHERE date = ... AND client = ...` partition filters;
+        // zero monetary cost under sandbox billing.
         // ===================================================================
 
         fun h1(name: String, value: String) = entries.add(make(name, value))
@@ -441,7 +421,52 @@ internal object StaticHeaderTable {
         // Note: `Content-Length: 0` is already covered by QPACK 4
         // Title-Case above; no duplicate entry here.
 
-        // === End of Tier 2 entries; Tier 3 follow-up PR appends below ===
+        // --- (c) Production-frequent H1 preset (pending BigQuery confirmation) ---
+        // Selected by inspection of common framework / browser defaults.
+        // Will be reviewed / refined by the BigQuery follow-up PR.
+
+        // Browser default Accept (Chrome / Firefox H1 navigation request)
+        h1("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        h1("Accept", "application/json") // REST client default
+
+        // Accept-Encoding short forms (HPACK 16 / QPACK 31 cover the longer ones)
+        h1("Accept-Encoding", "gzip")
+
+        // Cache-Control bare (QPACK has `public, max-age=31536000` only)
+        h1("Cache-Control", "private")
+        h1("Cache-Control", "public")
+
+        // Content-Encoding deflate (QPACK has only gzip / br)
+        h1("Content-Encoding", "deflate")
+
+        // Content-Type charset spacing + UTF-8 uppercase variants
+        // (QPACK 52/54 cover `text/html; charset=utf-8` lowercase and
+        //  `text/plain;charset=utf-8` without space; production sends
+        //  many other shapes)
+        h1("Content-Type", "text/html")
+        h1("Content-Type", "text/html; charset=UTF-8")
+        h1("Content-Type", "text/plain; charset=utf-8") // with space
+        h1("Content-Type", "text/plain; charset=UTF-8")
+        h1("Content-Type", "application/json; charset=utf-8")
+        h1("Content-Type", "application/json; charset=UTF-8")
+        h1("Content-Type", "application/octet-stream")
+
+        // Vary: Accept-Encoding (Title-Case value — Apache / nginx /
+        // CloudFront emit Title-Case on the wire; QPACK 59 uses lowercase)
+        h1("Vary", "Accept-Encoding")
+
+        // X-Frame-Options uppercase values (Spring Boot / Express /
+        // Rails / MDN docs use uppercase even though QPACK 97/98
+        // normalized to lowercase)
+        h1("X-Frame-Options", "DENY")
+        h1("X-Frame-Options", "SAMEORIGIN")
+
+        // X-XSS-Protection — real wire uses `XSS` uppercase even though
+        // the canonical Title-Case form is `X-Xss-Protection` (already
+        // covered by QPACK 62 Title-Case)
+        h1("X-XSS-Protection", "1; mode=block")
+
+        // === End of H1 extension; BigQuery follow-up PR refines below ===
 
         byIndex = entries.toTypedArray()
         bucketNext = IntArray(byIndex.size)
