@@ -5,17 +5,50 @@ import io.github.fukusaka.keel.io.toDecLongOrNull
 /**
  * HTTP header fields (RFC 7230 §3.2).
  *
- * **Storage model** (C2-v4 prototype, IntArray-indexed bucket):
- * - `ArrayList<HeaderEntry>` for insertion-order iteration (`entries`)
- * - `IntArray bucketHead[16]` = first entry index per hash bucket (-1 if empty)
- * - `IntArray bucketNext` = parallel to `entries`, next entry index in same bucket
- * - `HeaderEntry(name, value)` = 2 refs only, ~24 B per entry
+ * **Storage model** (design.md §46, C2-v5 final, 2026-05-21):
+ * - `entries: ArrayList<HeaderEntry>` — insertion-order iteration storage
+ * - `bucketHead: IntArray[BUCKET_COUNT=32]` — first entry index per hash bucket (`-1` if empty)
+ * - `bucketNext: IntArray` — parallel to `entries`, `bucketNext[i]` = next entry index
+ *   in same bucket as `entries[i]` (`-1` if last in chain), grown on demand
+ * - `HeaderEntry(hashLower, name, value)` — 24 B on JVM with compressed oops
+ *   (the `Int hashLower` slot fits in the alignment padding of a 2-ref class,
+ *   so storing the case-folded name hash costs nothing per entry)
  *
- * This achieves O(1) lookup via bucket index (like C2) with C
- * (list-of-entries)'s 24 B HeaderEntry size. The cost is the
- * bucketNext IntArray retained in the pool. Hash is recomputed on
- * every lookup (no per-entry stored hash); for typical header names
- * (10-15 chars) this is ~10-15 ns extra per lookup.
+ * Achieves near-O(1) lookup (11 ns flat for N=1-50) via the IntArray-indexed
+ * bucket chain with C (list-of-entries)'s 24 B HeaderEntry footprint —
+ * pareto-optimal across the four-construct comparison in design.md §46.5.
+ *
+ * The bucket chain is **reverse-insertion-order** (each `add` prepends);
+ * `get` walks the full chain and returns the **last match in chain order =
+ * first inserted in wire order**, matching Netty `DefaultHeaders.get` and the
+ * RFC 7230 §3.2.2 first-value semantic. The per-entry `hashLower` lets the
+ * chain walk skip non-matching entries on a single int compare.
+ *
+ * - Field names are case-insensitive ASCII tokens (RFC 7230 §3.2). Stored
+ *   bytes preserve the original case for HTTP/1.1 serialization; the lookup
+ *   path folds to lower-case before compare.
+ * - Insertion order is preserved; same-name fields keep their relative order
+ *   (RFC 7230 §3.2.2).
+ * - Set-Cookie must not be comma-joined (RFC 6265) — use [getAll].
+ * - OWS (optional whitespace) in field values is stripped by the parser
+ *   before storage.
+ *
+ * Public `String` API is unchanged from the previous `LinkedHashMap × 2`
+ * representation. A follow-up (design.md §50, BREAKING) will change the
+ * public API to `CharSequence`-first and the `HeaderEntry.value` type to
+ * `ByteString` / `IoBufAsciiText` for zero-copy from the recv buffer.
+ *
+ * **Lifecycle**: instances obtained via [borrow] go back to [HttpHeadersPool]
+ * on [release]; the underlying `entries` backing array + `bucketHead` +
+ * `bucketNext` are all retained for the next borrower. Direct-constructor
+ * instances are GC-managed; `release` is a no-op for them.
+ *
+ * **HTTP/2 / HTTP/3 forward compatibility**: the `HeaderEntry` type is the
+ * same shape every production HTTP/2 codec uses for its HPACK / QPACK
+ * static- and dynamic-table entries (Netty `HpackHeaderField`, Jetty
+ * `HttpField`, Hyper `Bytes`-backed `Header`, h3 QPACK `HeaderField`).
+ * Phase 13 `keel-codec-http2` can hand existing `HeaderEntry` instances
+ * directly to the per-request `entries` for zero-allocation indexed reads.
  */
 class HttpHeaders private constructor(
     private val entries: ArrayList<HeaderEntry>,
@@ -255,6 +288,23 @@ class HttpHeaders private constructor(
     }
 }
 
+/**
+ * A single HTTP header field — one `(name, value)` pair preserving
+ * the original case of the name as it appeared on the wire, plus the
+ * case-insensitive hash of the name for O(1) bucket lookup in
+ * [HttpHeaders].
+ *
+ * 24 B on JVM with compressed oops (12 B header + 4 B `hashLower` + 4 B
+ * `name` ref + 4 B `value` ref); the `Int hashLower` slot fits in the
+ * alignment padding of a 2-ref class so storing the hash is free.
+ *
+ * `internal` to keep the public surface on `String` until L7-a-ii
+ * (design.md §50) BREAKING changes the API to `CharSequence`-first.
+ * Phase 13 (`keel-codec-http2`) will reuse this exact type as the
+ * HPACK static / dynamic table entry shape — an indexed entry read
+ * costs zero allocation because the table simply hands the existing
+ * `HeaderEntry` to the per-request [HttpHeaders.entries].
+ */
 internal class HeaderEntry(
     val hashLower: Int,
     val name: String,
