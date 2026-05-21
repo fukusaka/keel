@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`, `server-http`: `HttpHeaders.borrow` / `release` + `HttpHeadersPool` recycle the `HttpHeaders` wrapper and its two `LinkedHashMap` bucket arrays across requests, wired into `HttpRequestDecoder`'s accumulator and released from `HttpServerHandler`. Server-side `/hello` end-to-end per-request allocation -6.8 % (4686 → 4369 B/req, sampled JFR), `HashMap.Node[]` event count -81 %. Loopback throughput unchanged (141 k req/s, GC not bottleneck at this scale). Per-entry `HashMap.Node` / `ArrayList.Node` and the `get`-side lowercase `String` still allocate — a storage refactor and a refcount design are needed to extend the pool to those (#590)
 - `io`: `IntArrayPool` (per-EventLoop reuse of fixed-size `IntArray`s) and `IoBufAsciiText` (zero-copy `CharSequence` view over an `IoBuf` byte range, ISO-8859-1 semantics) — enabling primitives for the HTTP/1.1 headers slot-table refactor (#588)
 - `benchmark`: new `--bench=nw-recv-cost` in-process micro-bench compares wrap vs copy NW receive cost; macOS-only (#582)
 - `server-http`: `HttpCall.queryParameters` — a multi-value `QueryParameters` (`get` / `getAll`) with a `maxParameterCount` DoS guard and opt-in strict-decoding rejection, configured via `connector { queryParameters { } }` (#565)
