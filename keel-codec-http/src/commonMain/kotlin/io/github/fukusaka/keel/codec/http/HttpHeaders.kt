@@ -471,8 +471,30 @@ class HttpHeaders private constructor(private val isEmptySingleton: Boolean) {
         // 4 ints per slot. See `slots` field doc.
         internal const val SLOT_INTS: Int = 4
 
-        // Default initial capacities. Most HTTP requests have < 16 headers
-        // totaling < 1 KB, so the first allocation tends to be the only one.
+        // Default initial capacities. The bench-driven /hello workload
+        // (1 Host on request, 3–4 auto-added response headers) consumes
+        // ~80 bytes of name+value content per request side and 2 of 8
+        // slots, so this sizing fits both sides without triggering
+        // `ByteArray.copyOf` growth.
+        //
+        // PR #589 A/B at single-thread saturation (10 s window):
+        //   capacity=128 → 350 k req/s   2786 B/req   15.68 % GC
+        //                  (-6.6 % throughput vs 256 — growth event
+        //                   fires on the response side, the
+        //                   `copyOf` + transient garbage outweighs the
+        //                   smaller initial alloc)
+        //   capacity=192 → 361 k req/s   2914 B/req   15.37 % GC
+        //                  (middle ground; growth occasionally fires)
+        //   capacity=256 → 384 k req/s   3042 B/req   17.19 % GC
+        //                  (no growth for /hello, highest throughput;
+        //                   GC fraction trades up for the larger
+        //                   per-request alloc, net throughput wins)
+        //
+        // For browser-typical workloads (5–15 headers, ~500–1000 bytes
+        // name+value content) capacity=256 is undersized and will grow
+        // 1–2 times per request. A configurable initial capacity is
+        // future work — for now this is hard-coded to fit the /hello
+        // bench-driven design baseline.
         private const val INITIAL_SLOT_CAPACITY: Int = 8
         private const val INITIAL_BACKING_CAPACITY: Int = 256
 
