@@ -117,7 +117,19 @@ class HttpHeaders private constructor(
         val hash = caseInsensitiveHash(name)
         val bucket = bucketOf(hash)
         val idx = entries.size
-        entries.add(HeaderEntry(hash, name, value))
+        // Static intern: well-known (name, value) pairs share a single
+        // process-wide HeaderEntry instance (see [StaticHeaderTable]).
+        // Skips the 24-byte HeaderEntry alloc on hit. tryInternAt uses
+        // a (name, value) combined hash at BUCKET=256, so the 242-entry
+        // table has chain depth max=6 / avg=0.95 — typical lookup pays
+        // 0-1 chain walks even with popular names like Content-Type
+        // carrying ~18 value variants (see
+        // StaticHeaderTableBucketDepthTest /
+        // StaticHeaderTableBucketCountAuditTest). Net positive vs 24 B
+        // alloc on typical CDN / browser workloads where well-known
+        // pairs dominate.
+        val shared = StaticHeaderTable.tryInternAt(hash, name, value)
+        entries.add(shared ?: HeaderEntry(hash, name, value))
         ensureBucketNextCapacity(idx + 1)
         bucketNext[idx] = bucketHead[bucket]
         bucketHead[bucket] = idx
