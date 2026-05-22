@@ -181,9 +181,8 @@ class HttpHeadersPoolStrategyBenchmark {
         }
     }
 
-    @Suppress("ForbiddenComment")
     private fun printf(fmt: String, vararg args: Any) {
-        print(String.format(fmt, *args))
+        print(fmt.format(*args))
     }
 
     companion object {
