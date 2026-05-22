@@ -203,6 +203,57 @@ class HttpServerHotPathAllocationBenchmark {
         }
     }
 
+    private inner class HelloGetCdnHeaders : Scenario() {
+        // /hello with a CDN-realistic 23-header set (the shape used by
+        // HttpRequestParseAllocBenchmark) — the case where header storage
+        // dominates the per-request parse cost, unlike the N=1 HelloGet.
+        private val request = buildString {
+            append("GET /hello HTTP/1.1\r\n")
+            append("Host: api.example.com\r\n")
+            append("User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15\r\n")
+            append("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n")
+            append("Accept-Language: en-US,en;q=0.9\r\n")
+            append("Accept-Encoding: gzip, deflate, br\r\n")
+            append("Connection: keep-alive\r\n")
+            append("Cookie: session=abc123; tracking=xyz789; consent=accepted; ab_variant=B\r\n")
+            append("Upgrade-Insecure-Requests: 1\r\n")
+            append("Sec-Fetch-Dest: document\r\n")
+            append("Sec-Fetch-Mode: navigate\r\n")
+            append("CF-Connecting-IP: 203.0.113.42\r\n")
+            append("CF-IPCountry: US\r\n")
+            append("CF-Ray: abc123def456-DFW\r\n")
+            append("CF-Visitor: {\"scheme\":\"https\"}\r\n")
+            append("X-Forwarded-For: 203.0.113.42, 172.16.0.1\r\n")
+            append("X-Forwarded-Proto: https\r\n")
+            append("X-Real-IP: 203.0.113.42\r\n")
+            append("traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n")
+            append("tracestate: rojo=00f067aa0ba902b7,congo=t61rcWkgMzE\r\n")
+            append("X-Request-ID: 550e8400-e29b-41d4-a716-446655440000\r\n")
+            append("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig\r\n")
+            append("CDN-Loop: cloudflare; subreqs=1\r\n")
+            append("\r\n")
+        }.encodeToByteArray()
+
+        override fun install() {
+            channel.installHttpServerPipeline(
+                Router().apply {
+                    register(HttpMethod.GET, "/hello") { call ->
+                        call.respond(HttpResponse.ok("Hello, World!"))
+                    }
+                },
+                emptyList(),
+                ErrorHandlers.DEFAULT,
+                QueryParameterConfig.DEFAULT,
+                scope,
+            )
+        }
+
+        override fun runOnce() {
+            channel.pipeline.notifyRead(bufOf(request))
+            drainResponse()
+        }
+    }
+
     private inner class HelloGetPipelined(private val perBatch: Int) : Scenario() {
         // A single buffer carrying `perBatch` GET /hello requests
         // back-to-back, simulating HTTP/1.1 keep-alive pipelining or a
@@ -283,10 +334,34 @@ class HttpServerHotPathAllocationBenchmark {
         }
     }
 
+    /**
+     * JFR allocation-profiling driver for scenario A (/hello, 1 header).
+     * No-op unless `-Dkeel.jfr=1` is set, so the normal `jvmTest` run is
+     * unaffected. Run under a JFR recording to attribute the per-request
+     * allocation by class / site:
+     *
+     * ```
+     * JAVA_TOOL_OPTIONS="-Dkeel.jfr=1 \
+     *   -XX:StartFlightRecording=settings=profile,filename=/tmp/jfr-%p.jfr,dumponexit=true" \
+     *   ./gradlew :keel-server-http:jvmTest --tests '*HotPath*jfr scenario A*' --rerun
+     * jfr view allocation-by-class /tmp/jfr-<worker-pid>.jfr
+     * ```
+     */
+    @Test
+    fun `jfr scenario A profile`() {
+        if (System.getProperty("keel.jfr") != "1") return
+        val scenario = HelloGet()
+        scenario.install()
+        repeat(JFR_WARMUP) { scenario.runOnce() }
+        repeat(JFR_ITERS) { scenario.runOnce() }
+        scenario.transport.close()
+    }
+
     @Test
     fun `per-request allocation across hot-path scenarios`() {
         val scenarios = listOf(
             "A (/hello GET, 13B body)" to HelloGet(),
+            "H (/hello GET, CDN 23 headers)" to HelloGetCdnHeaders(),
             "B (/large GET, ${LARGE_BODY_SIZE}B body)" to LargeGet(),
             "C (POST /echo, 100B req body)" to PostEcho(SMALL_BODY_SIZE),
             "D (POST /echo, ${LARGE_BODY_SIZE}B req body)" to PostEcho(LARGE_BODY_SIZE),
@@ -332,5 +407,7 @@ class HttpServerHotPathAllocationBenchmark {
         private const val WARMUP = 2_000
         private const val ITERS = 10_000
         private const val TRIALS = 5
+        private const val JFR_WARMUP = 50_000
+        private const val JFR_ITERS = 3_000_000
     }
 }
