@@ -81,11 +81,11 @@ private fun parseHeaders(lines: List<String>): HttpHeaders =
  * `Content-Length` or `chunked` `Transfer-Encoding` of [headers].
  */
 private fun parseBody(raw: ByteArray, bodyStart: Int, headers: HttpHeaders): ByteArray {
-    val transferEncoding = headers[HttpHeaderName.TRANSFER_ENCODING]
+    val transferEncoding = headers.getString(HttpHeaderName.TRANSFER_ENCODING)
     if (transferEncoding != null && transferEncoding.contains("chunked", ignoreCase = true)) {
         return decodeChunked(raw, bodyStart)
     }
-    val contentLength = headers[HttpHeaderName.CONTENT_LENGTH]?.toIntOrNull()
+    val contentLength = headers.getString(HttpHeaderName.CONTENT_LENGTH)?.toIntOrNull()
     if (contentLength != null) {
         val end = (bodyStart + contentLength).coerceAtMost(raw.size)
         return raw.copyOfRange(bodyStart.coerceAtMost(raw.size), end)

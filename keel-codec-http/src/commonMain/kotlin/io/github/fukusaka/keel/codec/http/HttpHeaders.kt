@@ -1,139 +1,271 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufAsciiText
 import io.github.fukusaka.keel.io.toDecLongOrNull
 
 /**
- * HTTP header fields (RFC 7230 §3.2).
+ * HTTP header fields (RFC 7230 §3.2) — **L7-a-ii Variant (Y): IntArray-slot
+ * storage with lazy allocation + small-N linear scan**.
  *
- * **Storage model** (design.md §46, C2-v5 final, 2026-05-21):
- * - `entries: ArrayList<HeaderEntry>` — insertion-order iteration storage
- * - `bucketHead: IntArray[BUCKET_COUNT=64]` — first entry index per hash bucket (`-1` if empty)
- * - `bucketNext: IntArray` — parallel to `entries`, `bucketNext[i]` = next entry index
- *   in same bucket as `entries[i]` (`-1` if last in chain), grown on demand
- * - `HeaderEntry(hashLower, name, value)` — 24 B on JVM with compressed oops
- *   (the `Int hashLower` slot fits in the alignment padding of a 2-ref class,
- *   so storing the case-folded name hash costs nothing per entry)
+ * Storage model:
+ * - `slots: IntArray?`, stride 5 per header
+ *   (`[hashLower, nameStart, nameLen, valStart, valLen]`), allocated on the
+ *   first entry. Range entries (`nameStart >= 0`) index the retained recv
+ *   buffer [backing]; string entries (`nameStart == STRING_SENTINEL`, from
+ *   `add` / `set` / cross-read fallback) index [stringBacking].
+ * - `bucketHead` / `bucketNext`: a hash index built **only once the entry
+ *   count exceeds [BUCKET_THRESHOLD]**. Below the threshold (the dominant
+ *   response-header and small-request case) lookups linear-scan the slots
+ *   and no bucket arrays are allocated.
+ * - `backing: IoBuf?` — recv buffer retained for the lifetime of the range
+ *   views; released on [resetForReuse] / [release].
  *
- * Achieves near-O(1) lookup (11 ns flat for N=1-50) via the IntArray-indexed
- * bucket chain with C (list-of-entries)'s 24 B HeaderEntry footprint —
- * pareto-optimal across the four-construct comparison in design.md §46.5.
+ * Defining property: the parse path (`addRange`) allocates **no per-header
+ * heap object** — just int writes into pooled arrays; a view is
+ * materialised lazily, only for the matched value, on [get]. A freshly
+ * built header set (e.g. a response) with few fields allocates only the
+ * `slots` array (right-sized) and a string store — no per-instance bucket
+ * arrays. Static intern does not participate (no per-entry object to
+ * share); its role reverts to HTTP/2 HPACK indexed-entry decode.
  *
- * The bucket chain is **reverse-insertion-order** (each `add` prepends);
- * `get` walks the full chain and returns the **last match in chain order =
- * first inserted in wire order**, matching Netty `DefaultHeaders.get` and the
- * RFC 7230 §3.2.2 first-value semantic. The per-entry `hashLower` lets the
- * chain walk skip non-matching entries on a single int compare.
- *
- * - Field names are case-insensitive ASCII tokens (RFC 7230 §3.2). Stored
- *   bytes preserve the original case for HTTP/1.1 serialization; the lookup
- *   path folds to lower-case before compare.
- * - Insertion order is preserved; same-name fields keep their relative order
- *   (RFC 7230 §3.2.2).
- * - Set-Cookie must not be comma-joined (RFC 6265) — use [getAll].
- * - OWS (optional whitespace) in field values is stripped by the parser
- *   before storage.
- *
- * Public `String` API is unchanged from the previous `LinkedHashMap × 2`
- * representation. A follow-up (design.md §50, BREAKING) will change the
- * public API to `CharSequence`-first and the `HeaderEntry.value` type to
- * `ByteString` / `IoBufAsciiText` for zero-copy from the recv buffer.
- *
- * **Lifecycle**: instances obtained via [borrow] go back to [HttpHeadersPool]
- * on [release]; the underlying `entries` backing array + `bucketHead` +
- * `bucketNext` are all retained for the next borrower. Direct-constructor
- * instances are GC-managed; `release` is a no-op for them.
- *
- * **HTTP/2 / HTTP/3 forward compatibility**: the `HeaderEntry` type is the
- * same shape every production HTTP/2 codec uses for its HPACK / QPACK
- * static- and dynamic-table entries (Netty `HpackHeaderField`, Jetty
- * `HttpField`, Hyper `Bytes`-backed `Header`, h3 QPACK `HeaderField`).
- * Phase 13 `keel-codec-http2` can hand existing `HeaderEntry` instances
- * directly to the per-request `entries` for zero-allocation indexed reads.
+ * Public API is CharSequence-first (BREAKING vs the historical `String`
+ * API): [get] returns the view directly; [getString] materialises.
  */
-class HttpHeaders private constructor(
-    private val entries: ArrayList<HeaderEntry>,
-    private val bucketHead: IntArray,
-) {
+class HttpHeaders {
 
-    constructor() : this(ArrayList(INITIAL_ENTRY_CAPACITY), IntArray(BUCKET_COUNT).also { it.fill(-1) })
+    private var slots: IntArray? = null
+    private var slotCount: Int = 0
 
-    // Parallel to `entries`: bucketNext[i] = next entry index in same
-    // bucket as entries[i], or -1 if last in chain. Grown on demand.
-    private var bucketNext: IntArray = IntArray(INITIAL_ENTRY_CAPACITY)
+    // Hash index, built lazily once slotCount exceeds BUCKET_THRESHOLD.
+    // Both null below the threshold (linear-scan lookups).
+    private var bucketHead: IntArray? = null
+    private var bucketNext: IntArray? = null
+
+    // Lazily allocated string store for non-range entries.
+    private var stringBacking: ArrayList<String>? = null
+
+    // Retained recv buffer backing every range entry's view (see addRange).
+    private var backing: IoBuf? = null
 
     private var pooled: Boolean = false
 
     // --- Access ---
 
-    operator fun get(name: String): String? {
+    /**
+     * Returns the value for [name] as a [CharSequence]. For range entries
+     * this materialises a single zero-copy [IoBufAsciiText] view over the
+     * matched value; no allocation for un-matched entries. Use [getString]
+     * when a `String` is required.
+     */
+    operator fun get(name: String): CharSequence? {
+        if (slotCount == 0) return null
         val hash = caseInsensitiveHash(name)
-        val bucket = bucketOf(hash)
-        var idx = bucketHead[bucket]
-        var value: String? = null
-        // Walk the full chain; bucket is prepended on add so chain is
-        // reverse-insertion-order. The LAST match in the chain is the
-        // FIRST inserted — Netty `DefaultHeaders.get` pattern. Hash
-        // pre-check skips the per-byte equality on non-matching entries
-        // in the bucket.
-        while (idx >= 0) {
-            val e = entries[idx]
-            if (e.hashLower == hash && e.name.equals(name, ignoreCase = true)) value = e.value
-            idx = bucketNext[idx]
-        }
-        return value
+        val matched = lastMatch(hash, name)
+        return if (matched >= 0) valueOf(matched) else null
     }
 
+    /** [get] materialised to a `String` (or `null` if absent). */
+    fun getString(name: String): String? = get(name)?.toString()
+
     fun getAll(name: String): List<String> {
-        if (entries.isEmpty()) return emptyList()
+        if (slotCount == 0) return emptyList()
         var result: MutableList<String>? = null
-        // Walk in insertion order via the entries ArrayList.
-        for (i in entries.indices) {
-            val e = entries[i]
-            if (e.name.equals(name, ignoreCase = true)) {
-                (result ?: mutableListOf<String>().also { result = it }).add(e.value)
+        for (i in 0 until slotCount) {
+            if (nameMatches(i, name)) {
+                (result ?: mutableListOf<String>().also { result = it }).add(valueOf(i).toString())
             }
         }
         return result ?: emptyList()
     }
 
     operator fun contains(name: String): Boolean {
+        if (slotCount == 0) return false
         val hash = caseInsensitiveHash(name)
-        val bucket = bucketOf(hash)
-        var idx = bucketHead[bucket]
-        while (idx >= 0) {
-            val e = entries[idx]
-            if (e.hashLower == hash && e.name.equals(name, ignoreCase = true)) return true
-            idx = bucketNext[idx]
-        }
-        return false
+        return lastMatch(hash, name) >= 0
     }
 
-    val size: Int get() = entries.size
-    val isEmpty: Boolean get() = entries.isEmpty()
+    val size: Int get() = slotCount
+    val isEmpty: Boolean get() = slotCount == 0
+
+    /**
+     * Index of the last entry (in chain order = first inserted in wire
+     * order, RFC 7230 §3.2.2) matching [name], or -1. Uses the hash index
+     * when present, else a linear scan over the slots.
+     */
+    private fun lastMatch(hash: Int, name: String): Int {
+        val s = slots ?: return -1
+        val bh = bucketHead
+        var matched = -1
+        if (bh != null) {
+            val bn = bucketNext ?: return -1
+            var idx = bh[bucketOf(hash)]
+            while (idx >= 0) {
+                if (s[idx * STRIDE] == hash && nameMatches(idx, name)) matched = idx
+                idx = bn[idx]
+            }
+        } else {
+            // Forward scan: the first match is the first inserted (wire
+            // order) — RFC 7230 §3.2.2 first-value semantic. The bucket
+            // path reaches the same entry as the last match in its
+            // reverse-insertion chain.
+            for (i in 0 until slotCount) {
+                if (s[i * STRIDE] == hash && nameMatches(i, name)) {
+                    matched = i
+                    break
+                }
+            }
+        }
+        return matched
+    }
+
+    // --- Entry accessors (view / string resolution) ---
+
+    private fun nameOf(i: Int): CharSequence {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        val ns = s[base + 1]
+        if (ns == STRING_SENTINEL) return stringName(s[base + 2])
+        return IoBufAsciiText(backingBuf(), ns, s[base + 2])
+    }
+
+    private fun valueOf(i: Int): CharSequence {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        val ns = s[base + 1]
+        if (ns == STRING_SENTINEL) return stringValue(s[base + 2])
+        return IoBufAsciiText(backingBuf(), s[base + 3], s[base + 4])
+    }
+
+    /** Case-insensitive name compare without materialising the entry. */
+    private fun nameMatches(i: Int, name: String): Boolean {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        val ns = s[base + 1]
+        if (ns == STRING_SENTINEL) return csEqualsIgnoreCase(stringName(s[base + 2]), name)
+        return bufEqualsIgnoreCase(backingBuf(), ns, s[base + 2], name)
+    }
+
+    private fun stringName(strIdx: Int): String = stringStore()[strIdx]
+    private fun stringValue(strIdx: Int): String = stringStore()[strIdx + 1]
+
+    private fun stringStore(): ArrayList<String> =
+        stringBacking ?: error("string entry without string backing")
+
+    private fun backingBuf(): IoBuf =
+        backing ?: error("range entry without backing buffer")
+
+    private fun slotsOrFail(): IntArray =
+        slots ?: error("entry access with no slots allocated")
 
     // --- Mutation ---
 
     fun add(name: String, value: String): HttpHeaders {
         val hash = caseInsensitiveHash(name)
-        val bucket = bucketOf(hash)
-        val idx = entries.size
-        // Static intern: well-known (name, value) pairs share a single
-        // process-wide HeaderEntry instance (see [StaticHeaderTable]).
-        // Skips the 24-byte HeaderEntry alloc on hit. tryInternAt uses
-        // a (name, value) combined hash at BUCKET=256, so the 242-entry
-        // table has chain depth max=6 / avg=0.95 — typical lookup pays
-        // 0-1 chain walks even with popular names like Content-Type
-        // carrying ~18 value variants (see
-        // StaticHeaderTableBucketDepthTest /
-        // StaticHeaderTableBucketCountAuditTest). Net positive vs 24 B
-        // alloc on typical CDN / browser workloads where well-known
-        // pairs dominate.
-        val shared = StaticHeaderTable.tryInternAt(hash, name, value)
-        entries.add(shared ?: HeaderEntry(hash, name, value))
-        ensureBucketNextCapacity(idx + 1)
-        bucketNext[idx] = bucketHead[bucket]
-        bucketHead[bucket] = idx
+        val sb = stringBacking ?: ArrayList<String>(INITIAL_ENTRY_CAPACITY * 2).also { stringBacking = it }
+        val strIdx = sb.size
+        sb.add(name)
+        sb.add(value)
+        appendSlot(hash, STRING_SENTINEL, strIdx, -1, -1)
         return this
+    }
+
+    /**
+     * Adds a header whose name and value are byte ranges in [buf]
+     * (Variant Y parse path). Writes five ints into [slots]; allocates no
+     * per-header object. [buf] is retained on the first range-add and
+     * released on [resetForReuse] / [release].
+     */
+    internal fun addRange(
+        buf: IoBuf,
+        hash: Int,
+        nameStart: Int,
+        nameLen: Int,
+        valueStart: Int,
+        valueLen: Int,
+    ): HttpHeaders {
+        val cur = backing
+        if (cur != null && cur !== buf) {
+            // Cross-read / second pipelined request reusing this instance:
+            // materialise to detach from a buffer this instance does not
+            // retain.
+            add(
+                IoBufAsciiText(buf, nameStart, nameLen).toString(),
+                IoBufAsciiText(buf, valueStart, valueLen).toString(),
+            )
+            return this
+        }
+        if (cur == null) {
+            backing = buf
+            buf.retain()
+        }
+        appendSlot(hash, nameStart, nameLen, valueStart, valueLen)
+        return this
+    }
+
+    private fun appendSlot(hash: Int, nameStart: Int, nameLen: Int, valStart: Int, valLen: Int) {
+        val i = slotCount
+        val s = ensureSlots(i + 1)
+        val base = i * STRIDE
+        s[base] = hash
+        s[base + 1] = nameStart
+        s[base + 2] = nameLen
+        s[base + 3] = valStart
+        s[base + 4] = valLen
+        slotCount = i + 1
+        val bh = bucketHead
+        if (bh != null) {
+            linkBucket(bh, i, hash)
+        } else if (slotCount > BUCKET_THRESHOLD) {
+            buildBuckets()
+        }
+    }
+
+    /** Ensures [slots] can hold [neededEntries], allocating / growing it. */
+    private fun ensureSlots(neededEntries: Int): IntArray {
+        val cur = slots
+        if (cur != null && cur.size >= neededEntries * STRIDE) return cur
+        val newCount = when {
+            cur == null -> maxOf(neededEntries, INITIAL_ENTRY_CAPACITY)
+            else -> {
+                var c = cur.size / STRIDE * 2
+                while (c < neededEntries) c *= 2
+                c
+            }
+        }
+        val next = if (cur == null) IntArray(newCount * STRIDE) else cur.copyOf(newCount * STRIDE)
+        slots = next
+        // Keep bucketNext parallel to the slot capacity when bucketing.
+        if (bucketHead != null) {
+            val bn = bucketNext
+            if (bn == null || bn.size < newCount) {
+                bucketNext = bn?.copyOf(newCount) ?: IntArray(newCount)
+            }
+        }
+        return next
+    }
+
+    /** Builds the hash index over the current entries (called past the threshold). */
+    private fun buildBuckets() {
+        val s = slots ?: return
+        val head = IntArray(BUCKET_COUNT) { -1 }
+        val next = IntArray(s.size / STRIDE)
+        for (i in 0 until slotCount) {
+            linkInto(head, next, i, s[i * STRIDE])
+        }
+        bucketHead = head
+        bucketNext = next
+    }
+
+    private fun linkBucket(head: IntArray, i: Int, hash: Int) {
+        val next = bucketNext ?: IntArray(slotsOrFail().size / STRIDE).also { bucketNext = it }
+        linkInto(head, next, i, hash)
+    }
+
+    private fun linkInto(head: IntArray, next: IntArray, i: Int, hash: Int) {
+        val bucket = bucketOf(hash)
+        next[i] = head[bucket]
+        head[bucket] = i
     }
 
     operator fun set(name: String, value: String): HttpHeaders {
@@ -148,99 +280,115 @@ class HttpHeaders private constructor(
     }
 
     private fun removeAll(name: String) {
-        if (entries.isEmpty()) return
-        // Snapshot the surviving entries, then rebuild bucketHead /
-        // bucketNext from scratch. Simpler and fault-free vs in-place
-        // re-index. Removal is a cold path; the O(N) rebuild is fine.
+        if (slotCount == 0) return
         var anyRemoved = false
-        val kept = ArrayList<HeaderEntry>(entries.size)
-        for (i in entries.indices) {
-            val e = entries[i]
-            if (e.name.equals(name, ignoreCase = true)) {
+        for (i in 0 until slotCount) {
+            if (nameMatches(i, name)) {
                 anyRemoved = true
-            } else {
-                kept.add(e)
+                break
             }
         }
         if (!anyRemoved) return
-        entries.clear()
-        entries.addAll(kept)
-        bucketHead.fill(-1)
-        for (i in entries.indices) {
-            val e = entries[i]
-            val bucket = bucketOf(e.hashLower)
-            ensureBucketNextCapacity(i + 1)
-            bucketNext[i] = bucketHead[bucket]
-            bucketHead[bucket] = i
+        // Rebuild slots / stringBacking from the surviving entries. Removal
+        // is a cold path; the O(N) rebuild is fine.
+        val src = slotsOrFail()
+        val newSlots = IntArray(src.size)
+        val newStrings = if (stringBacking != null) ArrayList<String>() else null
+        var w = 0
+        for (i in 0 until slotCount) {
+            if (nameMatches(i, name)) continue
+            val base = i * STRIDE
+            val ns = src[base + 1]
+            val wbase = w * STRIDE
+            newSlots[wbase] = src[base]
+            if (ns == STRING_SENTINEL) {
+                val store = stringStore()
+                val dst = newStrings ?: error("string entry without string backing")
+                val srcIdx = src[base + 2]
+                val newIdx = dst.size
+                dst.add(store[srcIdx])
+                dst.add(store[srcIdx + 1])
+                newSlots[wbase + 1] = STRING_SENTINEL
+                newSlots[wbase + 2] = newIdx
+                newSlots[wbase + 3] = -1
+                newSlots[wbase + 4] = -1
+            } else {
+                newSlots[wbase + 1] = ns
+                newSlots[wbase + 2] = src[base + 2]
+                newSlots[wbase + 3] = src[base + 3]
+                newSlots[wbase + 4] = src[base + 4]
+            }
+            w++
         }
-    }
-
-    private fun ensureBucketNextCapacity(needed: Int) {
-        if (bucketNext.size >= needed) return
-        var newSize = if (bucketNext.isEmpty()) INITIAL_ENTRY_CAPACITY else bucketNext.size * 2
-        while (newSize < needed) newSize *= 2
-        bucketNext = bucketNext.copyOf(newSize)
+        slots = newSlots
+        stringBacking = newStrings
+        slotCount = w
+        // Drop or rebuild the hash index depending on the surviving count.
+        if (w > BUCKET_THRESHOLD) {
+            buildBuckets()
+        } else {
+            bucketHead = null
+            bucketNext = null
+        }
     }
 
     // --- Iteration ---
 
     fun forEach(action: (name: String, value: String) -> Unit) {
-        for (i in entries.indices) {
-            val e = entries[i]
-            action(e.name, e.value)
+        for (i in 0 until slotCount) {
+            action(nameOf(i).toString(), valueOf(i).toString())
         }
     }
 
     fun names(): Set<String> {
-        if (entries.isEmpty()) return emptySet()
+        if (slotCount == 0) return emptySet()
         val result = linkedSetOf<String>()
-        for (i in entries.indices) {
-            val n = entries[i].name
+        for (i in 0 until slotCount) {
+            val n = nameOf(i)
             var seen = false
             for (existing in result) {
-                if (existing.equals(n, ignoreCase = true)) {
+                if (csEqualsIgnoreCase(n, existing)) {
                     seen = true
                     break
                 }
             }
-            if (!seen) result.add(n)
+            if (!seen) result.add(n.toString())
         }
         return result
     }
 
     fun entries(): List<Pair<String, String>> =
-        List(entries.size) { i -> entries[i].name to entries[i].value }
+        List(slotCount) { i -> nameOf(i).toString() to valueOf(i).toString() }
 
-    fun nameAt(index: Int): String = entries[index].name
-    fun valueAt(index: Int): String = entries[index].value
+    fun nameAt(index: Int): String = nameOf(index).toString()
+    fun valueAt(index: Int): String = valueOf(index).toString()
 
-    internal fun getByLowercaseKey(key: String): String? = get(key)
+    internal fun getByLowercaseKey(key: String): String? = getString(key)
 
-    val contentLength: Long? get() = get(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
-    val contentType: String? get() = get(HttpHeaderName.CONTENT_TYPE_KEY)
-    val isChunked: Boolean get() = get(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
-    val connection: String? get() = get(HttpHeaderName.CONNECTION_KEY)
+    val contentLength: Long? get() = getString(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
+    val contentType: String? get() = getString(HttpHeaderName.CONTENT_TYPE_KEY)
+    val isChunked: Boolean
+        get() = getString(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
+    val connection: String? get() = getString(HttpHeaderName.CONNECTION_KEY)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is HttpHeaders) return false
-        if (entries.size != other.entries.size) return false
-        for (i in entries.indices) {
-            val a = entries[i]
-            val b = other.entries[i]
-            if (!a.name.equals(b.name, ignoreCase = true)) return false
-            if (a.value != b.value) return false
+        if (slotCount != other.slotCount) return false
+        for (i in 0 until slotCount) {
+            if (!csEqualsIgnoreCase(nameOf(i), other.nameOf(i))) return false
+            if (!csContentEquals(valueOf(i), other.valueOf(i))) return false
         }
         return true
     }
 
     override fun hashCode(): Int {
+        val s = slots ?: return 0
         var h = 0
-        for (i in entries.indices) {
-            val e = entries[i]
-            h = 31 * h + e.hashLower
+        for (i in 0 until slotCount) {
+            h = 31 * h + s[i * STRIDE]
             h = 31 * h + (1 shl 16)
-            h = 31 * h + e.value.hashCode()
+            h = 31 * h + valueOf(i).hashCode()
             h = 31 * h + (1 shl 24)
         }
         return h
@@ -248,10 +396,9 @@ class HttpHeaders private constructor(
 
     override fun toString(): String = buildString {
         append("HttpHeaders(")
-        for (i in entries.indices) {
+        for (i in 0 until slotCount) {
             if (i > 0) append(", ")
-            val e = entries[i]
-            append(e.name).append(": ").append(e.value)
+            append(nameOf(i)).append(": ").append(valueOf(i))
         }
         append(")")
     }
@@ -263,8 +410,15 @@ class HttpHeaders private constructor(
     }
 
     internal fun resetForReuse() {
-        entries.clear()
-        bucketHead.fill(-1)
+        slotCount = 0
+        // Keep the (pooled) slots / bucket arrays for the next borrower;
+        // just clear the hash index if one was built.
+        bucketHead?.fill(-1)
+        stringBacking?.clear()
+        // Release the recv buffer retained by [addRange] so views do not
+        // outlive their backing bytes.
+        backing?.release()
+        backing = null
     }
 
     internal fun markPooled() {
@@ -272,85 +426,29 @@ class HttpHeaders private constructor(
     }
 
     companion object {
-        private const val BUCKET_LOG2: Int = 6
+        private const val STRIDE: Int = 5
 
-        /**
-         * Hash bucket count for the `bucketHead` IntArray. Decided by
-         * measurement (`HttpHeadersCdnLookupBenchmark`, 2026-05-21).
-         *
-         * Individual-name lookup latency on the 23 CDN-typical header
-         * set (Cookie / Upgrade-Insecure-Requests / CF-Visitor /
-         * CDN-Loop cluster, BUCKET=16-32 chain depth 4):
-         *
-         *   name                       BUCKET=32   BUCKET=64
-         *   ----                       ---------   ---------
-         *   Cookie                     13 ns       10 ns  (-3)
-         *   CF-Visitor                 16 ns       14 ns  (-2)
-         *   CDN-Loop                   14 ns       12 ns  (-2)
-         *   Upgrade-Insecure-Requests  30 ns       28 ns  (-2)
-         *   (non-cluster names)        11-15 ns    11-15 ns (tie)
-         *
-         * The 5-lookup batch metric had too much measurement variance
-         * (28-38 ns at both BUCKET=32 and =64) to choose between them
-         * on that signal alone, but the per-name latencies for the
-         * clustered subset are reproducibly faster at BUCKET=64.
-         * BUCKET=128 showed no further gain.
-         *
-         * BUCKET=64 is the conservative default: 2-4 ns saved per
-         * clustered-name lookup, no slowdown for non-cluster names,
-         * +128 bytes per instance (16 KiB total at MAX_POOLED=64 —
-         * trivial). Workloads that never look up the clustered names
-         * (Cookie / CDN-Loop / Upgrade-Insecure-Requests) would see
-         * identical performance at BUCKET=32, but the future-proofing
-         * is cheap.
-         */
+        /** Sentinel in slot `nameStart` marking a string (non-range) entry. */
+        private const val STRING_SENTINEL: Int = -1
+
+        private const val BUCKET_LOG2: Int = 6
         private const val BUCKET_COUNT: Int = 1 shl BUCKET_LOG2
         private const val BUCKET_MASK: Int = BUCKET_COUNT - 1
 
         /**
-         * Plain low-bit mask. Decided by measurement
-         * (`HttpHeadersBucketDistributionDiagnostic`, 2026-05-21).
-         *
-         * Three mixing strategies were compared on the
-         * production-typical CDN header set:
-         *
-         *   mask            max chain N=23/N=50 = 2 / 3 at BUCKET=64
-         *   XOR spreader    max chain N=23/N=50 = 3 / 4 at BUCKET=64
-         *                   (Java HashMap-style `h ^ (h >>> 16)`)
-         *   Knuth/Fibonacci max chain N=23/N=50 = 3 / 4 at BUCKET=64
-         *                   (multiplicative * GOLDEN_RATIO_INT, the
-         *                    pattern `keel-io.LongObjectMap` uses)
-         *
-         * For the `31 * h + asciiLower(c)` polynomial hash applied to
-         * HTTP header names, plain mask at BUCKET=64 is reproducibly
-         * the best — both extra mixers compound on top of the
-         * polynomial hash in ways that re-introduce clustering on
-         * different axes. The same conclusion does **not** transfer
-         * to `LongObjectMap` (whose input is raw `Long` keys with no
-         * polynomial mixing — there Fibonacci is essential).
+         * Entry count above which a hash index ([bucketHead] / [bucketNext])
+         * is built. At or below it, lookups linear-scan the slots — cheaper
+         * for the small header sets that responses and minimal requests
+         * carry, and it avoids the per-instance bucket-array allocation
+         * entirely for those (decided by the end-to-end hot-path alloc
+         * benchmark: the bucket arrays were the dominant fresh-instance
+         * cost for response headers). Header-heavy requests (CDN / proxy,
+         * N≫8) cross the threshold and get O(1) bucket lookups.
          */
+        private const val BUCKET_THRESHOLD: Int = 8
+
         internal fun bucketOf(hash: Int): Int = hash and BUCKET_MASK
 
-        /**
-         * Initial size of `entries: ArrayList` + `bucketNext: IntArray`.
-         * Decided by measurement (`HttpHeadersCdnWorkloadBenchmark`,
-         * 2026-05-21):
-         *
-         *   INITIAL=8:  direct 1480 / pool 552 B per CDN cycle (N=23)
-         *   INITIAL=16: direct 1296 / pool 552
-         *   INITIAL=32: direct 1168 / pool 552
-         *
-         * Pool path is invariant (after warmup the capacity grows to
-         * N and stays). Direct-constructor savings at INITIAL=32 are
-         * for cold-start large-N construction, which is rare. The
-         * typical direct caller is `HttpResponse.of` / `build { }` for
-         * server-response headers (N=3-5: Content-Type, Content-Length,
-         * Date, Server, Connection); INITIAL=32 would waste ~96 B of
-         * unused `Object[]` slack per such instance.
-         *
-         * 8 is the small-N-direct optimum and irrelevant for the
-         * pool-warm hot path.
-         */
         private const val INITIAL_ENTRY_CAPACITY: Int = 8
 
         val EMPTY: HttpHeaders = HttpHeaders()
@@ -374,28 +472,73 @@ class HttpHeaders private constructor(
             }
             return h
         }
+
+        /**
+         * Case-insensitive name hash computed directly over an [IoBuf]
+         * byte range (Variant Y parse path), matching [caseInsensitiveHash]
+         * char-for-char for ASCII names.
+         */
+        internal fun caseInsensitiveHashOfBuf(buf: IoBuf, start: Int, length: Int): Int {
+            var h = 0
+            for (i in 0 until length) {
+                val c = buf.getByte(start + i).toInt() and 0xFF
+                val folded = if (c in 0x41..0x5A) c + 0x20 else c
+                h = 31 * h + folded
+            }
+            return h
+        }
+
+        /** ASCII case-insensitive equality between two [CharSequence]s. */
+        internal fun csEqualsIgnoreCase(a: CharSequence, b: CharSequence): Boolean {
+            if (a.length != b.length) return false
+            for (i in 0 until a.length) {
+                var ca = a[i].code
+                var cb = b[i].code
+                if (ca in 0x41..0x5A) ca += 0x20
+                if (cb in 0x41..0x5A) cb += 0x20
+                if (ca != cb) return false
+            }
+            return true
+        }
+
+        /** Case-sensitive char-by-char equality between two [CharSequence]s. */
+        internal fun csContentEquals(a: CharSequence, b: CharSequence): Boolean {
+            if (a.length != b.length) return false
+            for (i in 0 until a.length) {
+                if (a[i] != b[i]) return false
+            }
+            return true
+        }
+
+        /**
+         * ASCII case-insensitive equality of an [IoBuf] byte range against
+         * a `String` — used by the name-compare hot path so the range
+         * entry's name is not materialised into a view just to compare it.
+         */
+        private fun bufEqualsIgnoreCase(buf: IoBuf, start: Int, length: Int, s: String): Boolean {
+            if (length != s.length) return false
+            for (i in 0 until length) {
+                var cb = buf.getByte(start + i).toInt() and 0xFF
+                var cs = s[i].code
+                if (cb in 0x41..0x5A) cb += 0x20
+                if (cs in 0x41..0x5A) cs += 0x20
+                if (cb != cs) return false
+            }
+            return true
+        }
     }
 }
 
 /**
- * A single HTTP header field — one `(name, value)` pair preserving
- * the original case of the name as it appeared on the wire, plus the
- * case-insensitive hash of the name for O(1) bucket lookup in
- * [HttpHeaders].
+ * A single well-known HTTP header `(name, value)` pair held by
+ * [StaticHeaderTable] (HPACK / QPACK static entries + H1 intern table).
  *
- * 24 B on JVM with compressed oops (12 B header + 4 B `hashLower` + 4 B
- * `name` ref + 4 B `value` ref); the `Int hashLower` slot fits in the
- * alignment padding of a 2-ref class so storing the hash is free.
- *
- * `internal` to keep the public surface on `String` until L7-a-ii
- * (design.md §50) BREAKING changes the API to `CharSequence`-first.
- * Phase 13 (`keel-codec-http2`) will reuse this exact type as the
- * HPACK static / dynamic table entry shape — an indexed entry read
- * costs zero allocation because the table simply hands the existing
- * `HeaderEntry` to the per-request [HttpHeaders.entries].
+ * In the Variant Y storage model the per-request [HttpHeaders] no longer
+ * uses `HeaderEntry`; it survives as the shape of the static / HPACK
+ * table entries that Phase 13 (`keel-codec-http2`) decodes by index.
  */
 internal class HeaderEntry(
     val hashLower: Int,
-    val name: String,
-    val value: String,
+    val name: CharSequence,
+    val value: CharSequence,
 )

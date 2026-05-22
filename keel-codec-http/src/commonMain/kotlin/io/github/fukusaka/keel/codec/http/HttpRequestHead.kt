@@ -5,6 +5,18 @@ package io.github.fukusaka.keel.codec.http
  *
  * Use [parseRequestHead] to obtain an instance from a [kotlinx.io.Source].
  * The body bytes remain in the source for streaming consumption.
+ *
+ * **Buffer lifetime contract**: when this head comes from
+ * [HttpRequestDecoder], its [headers] store header values as zero-copy
+ * byte-range views over the recv buffer, and [HttpHeaders] retains that
+ * buffer for the lifetime of the views. The **terminal consumer** of the
+ * head (the handler that finishes the request) **must call
+ * `headers.release()`** to free the retained buffer; failing to do so
+ * leaks one recv buffer per request. A value returned by
+ * [HttpHeaders.get] (a `CharSequence` view) must not be retained past
+ * that `release()` — call `toString()` first to copy out anything that
+ * needs to outlive the request. Heads built directly (not via the
+ * decoder) own no buffer and `release()` is a no-op.
  */
 data class HttpRequestHead(
     val method: HttpMethod,

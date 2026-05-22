@@ -45,8 +45,12 @@ public class WsEchoHandler(
             is HttpRequestHead -> {
                 if (msg.path == "/ws-echo" && isWebSocketUpgrade(msg)) {
                     wsUpgradePending = true
-                    wsClientKey = msg.headers["Sec-WebSocket-Key"]
+                    wsClientKey = msg.headers.getString("Sec-WebSocket-Key")
                 }
+                // Terminal consumer of the request head: release its headers
+                // so the recv buffer the byte-range views retain is freed
+                // (HttpHeaders now owns a buffer reference under view storage).
+                msg.headers.release()
             }
             is HttpBodyEnd -> {
                 if (wsUpgradePending) {
@@ -102,11 +106,11 @@ public class WsEchoHandler(
     }
 
     private fun isWebSocketUpgrade(head: HttpRequestHead): Boolean {
-        val upgrade = head.headers[HttpHeaderName.UPGRADE] ?: return false
+        val upgrade = head.headers.getString(HttpHeaderName.UPGRADE) ?: return false
         if (!upgrade.equals("websocket", ignoreCase = true)) return false
-        val connection = head.headers[HttpHeaderName.CONNECTION] ?: return false
+        val connection = head.headers.getString(HttpHeaderName.CONNECTION) ?: return false
         if (!connection.split(',').any { it.trim().equals("upgrade", ignoreCase = true) }) return false
-        if (head.headers["Sec-WebSocket-Version"] != "13") return false
+        if (head.headers.getString("Sec-WebSocket-Version") != "13") return false
         return head.headers["Sec-WebSocket-Key"] != null
     }
 }

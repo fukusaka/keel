@@ -85,7 +85,7 @@ public class CompressionHandler(
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is HttpRequestHead) {
-            acceptQueue.addLast(msg.headers[HttpHeaderName.ACCEPT_ENCODING])
+            acceptQueue.addLast(msg.headers.getString(HttpHeaderName.ACCEPT_ENCODING))
         }
         ctx.propagateRead(msg)
     }
@@ -339,7 +339,7 @@ public class CompressionHandler(
             } else {
                 this[HttpHeaderName.TRANSFER_ENCODING] = "chunked"
             }
-            val existingVary = src["Vary"]
+            val existingVary = src.getString("Vary")
             this["Vary"] = if (existingVary.isNullOrBlank()) {
                 "Accept-Encoding"
             } else if (existingVary.contains("accept-encoding", ignoreCase = true)) {
@@ -370,10 +370,10 @@ public class CompressionCondition(
     public fun shouldCompress(head: HttpResponseHead): Boolean {
         if (head.headers[HttpHeaderName.CONTENT_ENCODING] != null) return false
         if (minContentLength > 0) {
-            val len = head.headers[HttpHeaderName.CONTENT_LENGTH]?.toLongOrNull() ?: -1L
+            val len = head.headers.getString(HttpHeaderName.CONTENT_LENGTH)?.toLongOrNull() ?: -1L
             if (len in 0L until minContentLength.toLong()) return false
         }
-        val ctype = head.headers["Content-Type"]?.lowercase().orEmpty()
+        val ctype = head.headers.getString("Content-Type")?.lowercase().orEmpty()
         if (skipMimeTypes.any { ctype.startsWith(it) }) return false
         return custom?.invoke(head) ?: true
     }

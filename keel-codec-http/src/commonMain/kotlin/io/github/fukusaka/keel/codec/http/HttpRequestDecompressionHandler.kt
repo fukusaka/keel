@@ -130,7 +130,7 @@ public class HttpRequestDecompressionHandler(
     // ---- Aggregated ----
 
     private fun handleAggregatedRequest(ctx: PipelineHandlerContext, request: HttpRequest) {
-        val encoding = request.headers[HttpHeaderName.CONTENT_ENCODING]?.lowercase()
+        val encoding = request.headers.getString(HttpHeaderName.CONTENT_ENCODING)?.lowercase()
         if (encoding == null || encoding == ENCODING_IDENTITY) {
             ctx.propagateRead(request)
             return
@@ -237,7 +237,7 @@ public class HttpRequestDecompressionHandler(
     // ---- Streaming ----
 
     private fun handleRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
-        val encoding = head.headers[HttpHeaderName.CONTENT_ENCODING]?.lowercase()
+        val encoding = head.headers.getString(HttpHeaderName.CONTENT_ENCODING)?.lowercase()
         if (encoding == null || encoding == ENCODING_IDENTITY) {
             ctx.propagateRead(head)
             return

@@ -29,7 +29,7 @@ internal class KeelHeaders(
 
     override fun isEmpty(): Boolean = keelHeaders.isEmpty
 
-    override fun get(name: String): String? = keelHeaders[name]
+    override fun get(name: String): String? = keelHeaders.getString(name)
 
     override fun contains(name: String): Boolean = name in keelHeaders
 
