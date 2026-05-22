@@ -43,8 +43,8 @@
 #   Native (only when BENCH_REMOTE_OS = Linux): ktor-keel-epoll,
 #     pipeline-http-epoll, ktor-cio-keel-epoll, ktor-keel-io-uring,
 #     pipeline-http-io-uring, ktor-cio-keel-io-uring, ktor-cio.
-#   JVM (always): ktor-keel-nio, pipeline-http-nio, ktor-cio-keel-nio,
-#     ktor-keel-netty, ktor-cio-keel-netty, pipeline-http-netty, ktor-cio.
+#   JVM (always): ktor-keel-nio, pipeline-http-nio, server-http-nio, ktor-cio-keel-nio,
+#     ktor-keel-netty, ktor-cio-keel-netty, pipeline-http-netty, server-http-netty, ktor-cio.
 #   JS (Node.js): pipeline-http-nodejs, only when
 #     `benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js`
 #     is present on the remote host.
@@ -125,10 +125,12 @@ build_engine_list() {
                 for engine in \
                     ktor-keel-kqueue \
                     pipeline-http-kqueue \
+                    server-http-kqueue \
                     ktor-cio-keel-kqueue \
                     ktor-keel-nwconnection \
                     ktor-cio-keel-nwconnection \
                     pipeline-http-nwconnection \
+                    server-http-nwconnection \
                     ktor-cio; do
                     engines+=("kn-engine:native:${engine}:${nbin}")
                 done
@@ -140,10 +142,12 @@ build_engine_list() {
         for engine in \
             ktor-keel-nio \
             pipeline-http-nio \
+            server-http-nio \
             ktor-cio-keel-nio \
             ktor-keel-netty \
             ktor-cio-keel-netty \
             pipeline-http-netty \
+            server-http-netty \
             ktor-cio; do
             engines+=("jvm-engine:jvm:${engine}")
         done
