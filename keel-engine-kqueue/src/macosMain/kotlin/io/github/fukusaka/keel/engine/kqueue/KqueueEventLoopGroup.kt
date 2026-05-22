@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlin.concurrent.AtomicInt
 
 /**
@@ -21,10 +22,17 @@ import kotlin.concurrent.AtomicInt
  * @param size Number of EventLoop threads. Must be >= 1.
  * @param logger Logger for each EventLoop in the group.
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
+ * @param readBufferSize Per-read buffer size propagated to each EventLoop
+ *   (see [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
  */
-internal class KqueueEventLoopGroup(size: Int, logger: Logger, allocator: BufferAllocator) {
+internal class KqueueEventLoopGroup(
+    size: Int,
+    logger: Logger,
+    allocator: BufferAllocator,
+    readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+) {
 
-    private val loops = Array(size) { KqueueEventLoop(logger, allocator.createForEventLoop()) }
+    private val loops = Array(size) { KqueueEventLoop(logger, allocator.createForEventLoop(), readBufferSize) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */
