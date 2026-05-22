@@ -151,6 +151,7 @@ internal class NioStreamServer(
                     workerLoop,
                     workerLoop.allocator,
                     idleReadPolicy,
+                    bindConfig.readBufferSize ?: workerLoop.readBufferSize,
                 )
                 val channel = NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
                 bindConfig.initializeConnection(channel)
