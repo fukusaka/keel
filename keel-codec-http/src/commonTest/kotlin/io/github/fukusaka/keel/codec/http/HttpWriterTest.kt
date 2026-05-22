@@ -228,7 +228,7 @@ class HttpWriterTest {
         assertEquals(original.method, parsed.method)
         assertEquals(original.uri, parsed.uri)
         assertEquals(original.version, parsed.version)
-        assertEquals("example.com", parsed.headers["Host"])
+        assertEquals("example.com", parsed.headers.getString("Host"))
         assertContentEquals(original.body, parsed.body)
     }
 
@@ -247,7 +247,7 @@ class HttpWriterTest {
 
         assertEquals(original.status, parsed.status)
         assertEquals(original.version, parsed.version)
-        assertEquals("text/plain", parsed.headers["Content-Type"])
+        assertEquals("text/plain", parsed.headers.getString("Content-Type"))
         assertContentEquals(original.body, parsed.body)
     }
 

@@ -113,20 +113,11 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
                     break
                 }
 
-                // WebSocket upgrade interception: before creating the body pump,
-                // check if this request targets a registered WebSocket route.
-                // Drain the zero-byte HttpBodyEnd emitted for GET-style upgrade
-                // requests, then hand off to runWebSocketUpgrade which hijacks
-                // the codec stack for the duration of the connection.
-                if (head.headers.isWebSocketUpgrade()) {
-                    val routes = engine.application().attributes.getOrNull(WsRoutesAttributeKey)
-                    val handler = routes?.lookup(head.uri)
-                    if (handler != null) {
-                        drainBodyMessages(bridge)
-                        runWebSocketUpgrade(channel, head.headers, handler)
-                        break
-                    }
-                }
+                // WebSocket upgrade interception: if this request targets a
+                // registered WebSocket route, hand off to runWebSocketUpgrade
+                // (which hijacks the codec stack for the connection) and exit
+                // the keep-alive loop.
+                if (tryWebSocketUpgrade(head, bridge, channel, engine)) break
 
                 val keepAlive = serverKeepAlive && head.isKeepAlive
                 if (!processRequest(head, bridge, channel, engine, scope, scheme, keepAlive)) break
@@ -149,7 +140,54 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
      * threshold — the `appCtx` dispatcher branch, the upgrade-job join, and the keep-alive
      * termination check all live here rather than inline in the loop.
      */
+    /**
+     * If [head] is a WebSocket upgrade for a registered route, drains the
+     * upgrade request's body terminator, runs the handshake + session, and
+     * releases the head's headers (and the recv buffer they may retain)
+     * afterwards. Returns `true` when the upgrade was handled (the caller
+     * should exit the keep-alive loop), `false` to fall through to normal
+     * request processing.
+     */
+    private suspend fun tryWebSocketUpgrade(
+        head: HttpRequestHead,
+        bridge: SuspendMessageBridge<HttpMessage>,
+        channel: PipelinedChannel,
+        engine: KeelApplicationEngine,
+    ): Boolean {
+        if (!head.headers.isWebSocketUpgrade()) return false
+        val routes = engine.application().attributes.getOrNull(WsRoutesAttributeKey)
+        val handler = routes?.lookup(head.uri) ?: return false
+        drainBodyMessages(bridge)
+        try {
+            runWebSocketUpgrade(channel, head.headers, handler)
+        } finally {
+            head.headers.release()
+        }
+        return true
+    }
+
     private suspend fun processRequest(
+        head: HttpRequestHead,
+        bridge: SuspendMessageBridge<HttpMessage>,
+        channel: PipelinedChannel,
+        engine: KeelApplicationEngine,
+        scope: CoroutineScope,
+        scheme: String,
+        keepAlive: Boolean,
+    ): Boolean {
+        try {
+            return runRequestCycle(head, bridge, channel, engine, scope, scheme, keepAlive)
+        } finally {
+            // Buffer-lifetime contract: the request head's headers may retain
+            // the recv buffer (byte-range view storage). Release them now that
+            // the request is fully handled, returning the pooled HttpHeaders +
+            // recv buffer for reuse. Skipping this leaks one recv buffer per
+            // request under view storage.
+            head.headers.release()
+        }
+    }
+
+    private suspend fun runRequestCycle(
         head: HttpRequestHead,
         bridge: SuspendMessageBridge<HttpMessage>,
         channel: PipelinedChannel,

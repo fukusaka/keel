@@ -84,9 +84,9 @@ class HttpRequestDecompressionHandlerTest {
         handler.onRead(ctx, HttpBodyEnd.EMPTY)
 
         val emittedHead = state.reads.filterIsInstance<HttpRequestHead>().single()
-        assertNull(emittedHead.headers["Content-Encoding"])
-        assertNull(emittedHead.headers["Content-Length"])
-        assertEquals("text/plain", emittedHead.headers["Content-Type"])
+        assertNull(emittedHead.headers.getString("Content-Encoding"))
+        assertNull(emittedHead.headers.getString("Content-Length"))
+        assertEquals("text/plain", emittedHead.headers.getString("Content-Type"))
 
         val decodedBytes = state.reads.filterIsInstance<HttpBody>()
             .filter { it !is HttpBodyEnd }
@@ -137,8 +137,8 @@ class HttpRequestDecompressionHandlerTest {
         handler.onRead(ctx, HttpBodyEnd.EMPTY)
 
         val emittedHead = state.reads.filterIsInstance<HttpRequestHead>().single()
-        assertNull(emittedHead.headers["Content-Encoding"])
-        assertNull(emittedHead.headers["Content-Length"])
+        assertNull(emittedHead.headers.getString("Content-Encoding"))
+        assertNull(emittedHead.headers.getString("Content-Length"))
         // No HttpBody, just HttpBodyEnd.
         assertEquals(0, state.reads.filterIsInstance<HttpBody>().count { it !is HttpBodyEnd })
         assertNotNull(state.reads.last() as? HttpBodyEnd)
@@ -164,8 +164,8 @@ class HttpRequestDecompressionHandlerTest {
         handler.onRead(ctx, request)
 
         val out = state.reads.single() as HttpRequest
-        assertNull(out.headers["Content-Encoding"])
-        assertNull(out.headers["Content-Length"])
+        assertNull(out.headers.getString("Content-Encoding"))
+        assertNull(out.headers.getString("Content-Length"))
         assertContentEquals("hello world".encodeToByteArray(), out.body)
     }
 
@@ -183,7 +183,7 @@ class HttpRequestDecompressionHandlerTest {
         handler.onRead(ctx, request)
 
         val out = state.reads.single() as HttpRequest
-        assertNull(out.headers["Content-Encoding"])
+        assertNull(out.headers.getString("Content-Encoding"))
         assertNull(out.body)
     }
 
@@ -563,9 +563,9 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals("5", originalHeaders["Content-Length"])
         // Propagated head sees them stripped.
         val emitted = state.reads.single() as HttpRequestHead
-        assertNull(emitted.headers["Content-Encoding"])
-        assertNull(emitted.headers["Content-Length"])
-        assertEquals("text/plain", emitted.headers["Content-Type"])
+        assertNull(emitted.headers.getString("Content-Encoding"))
+        assertNull(emitted.headers.getString("Content-Length"))
+        assertEquals("text/plain", emitted.headers.getString("Content-Type"))
     }
 
     // -------------------------------------------------------------- onWrite passthrough

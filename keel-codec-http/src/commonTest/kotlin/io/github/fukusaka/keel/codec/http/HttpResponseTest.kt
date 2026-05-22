@@ -37,7 +37,7 @@ class HttpResponseTest {
     fun `headers accessible`() {
         val h = HttpHeaders().add("Content-Type", "text/plain")
         val r = HttpResponse(HttpStatus.OK, headers = h)
-        assertEquals("text/plain", r.headers["Content-Type"])
+        assertEquals("text/plain", r.headers.getString("Content-Type"))
     }
 
     // --- Factory: ok(String?) ---
@@ -46,8 +46,8 @@ class HttpResponseTest {
     fun `ok with text body`() {
         val r = HttpResponse.ok("hello")
         assertEquals(HttpStatus.OK, r.status)
-        assertEquals("text/plain", r.headers["Content-Type"])
-        assertEquals("5", r.headers["Content-Length"])
+        assertEquals("text/plain", r.headers.getString("Content-Type"))
+        assertEquals("5", r.headers.getString("Content-Length"))
         assertTrue("hello".encodeToByteArray().contentEquals(r.body!!))
     }
 
@@ -55,14 +55,14 @@ class HttpResponseTest {
     fun `ok with null body`() {
         val r = HttpResponse.ok()
         assertEquals(HttpStatus.OK, r.status)
-        assertEquals("0", r.headers["Content-Length"])
+        assertEquals("0", r.headers.getString("Content-Length"))
         assertNull(r.body)
     }
 
     @Test
     fun `ok with custom content type`() {
         val r = HttpResponse.ok("data", contentType = "application/json")
-        assertEquals("application/json", r.headers["Content-Type"])
+        assertEquals("application/json", r.headers.getString("Content-Type"))
     }
 
     // --- Factory: ok(ByteArray) ---
@@ -71,8 +71,8 @@ class HttpResponseTest {
     fun `ok with binary body`() {
         val bytes = byteArrayOf(1, 2, 3)
         val r = HttpResponse.ok(bytes)
-        assertEquals("application/octet-stream", r.headers["Content-Type"])
-        assertEquals("3", r.headers["Content-Length"])
+        assertEquals("application/octet-stream", r.headers.getString("Content-Type"))
+        assertEquals("3", r.headers.getString("Content-Length"))
         assertTrue(bytes.contentEquals(r.body!!))
     }
 
@@ -82,7 +82,7 @@ class HttpResponseTest {
     fun `notFound factory`() {
         val r = HttpResponse.notFound("not here")
         assertEquals(HttpStatus.NOT_FOUND, r.status)
-        assertEquals("text/plain", r.headers["Content-Type"])
+        assertEquals("text/plain", r.headers.getString("Content-Type"))
         assertTrue("not here".encodeToByteArray().contentEquals(r.body!!))
     }
 

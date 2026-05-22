@@ -35,7 +35,7 @@ public fun interface RoutePredicate {
  * predictable; a caller needing a looser match writes a custom predicate.
  */
 public fun header(name: String, value: String): RoutePredicate =
-    RoutePredicate { head -> head.headers[name] == value }
+    RoutePredicate { head -> head.headers.getString(name) == value }
 
 /**
  * A [RoutePredicate] true when the request URL query string contains the
@@ -69,7 +69,9 @@ public fun query(name: String, value: String): RoutePredicate =
 public fun accept(contentType: String): RoutePredicate {
     val wantedType = contentType.substringBefore('/').trim().lowercase()
     val wantedFull = contentType.trim().lowercase()
-    return RoutePredicate { head -> acceptMatches(head.headers[HttpHeaderName.ACCEPT], wantedType, wantedFull) }
+    return RoutePredicate { head ->
+        acceptMatches(head.headers.getString(HttpHeaderName.ACCEPT), wantedType, wantedFull)
+    }
 }
 
 /**
@@ -82,7 +84,7 @@ public fun accept(contentType: String): RoutePredicate {
 public fun host(name: String): RoutePredicate {
     val wanted = name.substringBefore(':').lowercase()
     return RoutePredicate { head ->
-        val hostHeader = head.headers[HttpHeaderName.HOST] ?: return@RoutePredicate false
+        val hostHeader = head.headers.getString(HttpHeaderName.HOST) ?: return@RoutePredicate false
         hostHeader.substringBefore(':').lowercase() == wanted
     }
 }

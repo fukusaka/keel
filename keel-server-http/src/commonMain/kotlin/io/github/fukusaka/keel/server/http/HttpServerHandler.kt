@@ -387,7 +387,7 @@ internal class HttpServerHandler(
      */
     private fun upgradeFor(headers: HttpHeaders, match: RouteMatch?): UpgradeProtocol? {
         val upgrade = match?.upgrade ?: return null
-        return if (headers[HttpHeaderName.UPGRADE].equalsIgnoreCase(upgrade.name)) upgrade else null
+        return if (headers.getString(HttpHeaderName.UPGRADE).equalsIgnoreCase(upgrade.name)) upgrade else null
     }
 
     private companion object {

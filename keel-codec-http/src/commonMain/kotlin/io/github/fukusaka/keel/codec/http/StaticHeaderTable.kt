@@ -522,7 +522,7 @@ internal object StaticHeaderTable {
      * call, so on the [HttpHeaders.add] hot path this is effectively
      * free for repeat-used application values.
      */
-    private fun combinedHash(nameHashLower: Int, value: String): Int =
+    private fun combinedHash(nameHashLower: Int, value: CharSequence): Int =
         nameHashLower * 31 + value.hashCode()
 
     /**

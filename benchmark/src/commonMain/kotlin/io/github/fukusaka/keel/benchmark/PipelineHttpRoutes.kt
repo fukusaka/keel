@@ -169,9 +169,9 @@ private class BenchmarkRoutingHandler : InboundHandler {
                 if ((msg.path == "/ws-echo" || msg.path == "/ws-deflate") && msg.isWebSocketUpgrade()) {
                     wsUpgradePending = true
                     wsUpgradePath = msg.path
-                    wsClientKey = msg.headers["Sec-WebSocket-Key"]
+                    wsClientKey = msg.headers.getString("Sec-WebSocket-Key")
                     wsDeflateOffered = msg.path == "/ws-deflate" &&
-                        PipelineHttpWsDeflate.offersPermessageDeflate(msg.headers["Sec-WebSocket-Extensions"])
+                        PipelineHttpWsDeflate.offersPermessageDeflate(msg.headers.getString("Sec-WebSocket-Extensions"))
                     return
                 }
                 when {
@@ -541,10 +541,10 @@ private fun String?.equalsIgnoreCase(other: String): Boolean =
  * well-formed 16-byte `Sec-WebSocket-Key`.
  */
 private fun HttpRequestHead.isWebSocketUpgrade(): Boolean {
-    if (!headers[HttpHeaderName.UPGRADE].equalsIgnoreCase("websocket")) return false
-    val connection = headers[HttpHeaderName.CONNECTION] ?: return false
+    if (!headers.getString(HttpHeaderName.UPGRADE).equalsIgnoreCase("websocket")) return false
+    val connection = headers.getString(HttpHeaderName.CONNECTION) ?: return false
     if (!connection.split(',').any { it.trim().equalsIgnoreCase("upgrade") }) return false
-    if (headers["Sec-WebSocket-Version"] != "13") return false
-    val key = headers["Sec-WebSocket-Key"] ?: return false
+    if (headers.getString("Sec-WebSocket-Version") != "13") return false
+    val key = headers.getString("Sec-WebSocket-Key") ?: return false
     return validateClientKey(key)
 }

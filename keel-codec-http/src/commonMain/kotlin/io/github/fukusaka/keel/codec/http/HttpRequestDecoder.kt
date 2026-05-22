@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.ioBufToLatin1String
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.TypedInboundHandler
 import kotlin.reflect.KClass
@@ -404,14 +405,16 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
                 "Invalid header field (missing ':'): ${bufRangeToString(buf, start, length)}",
             )
         }
-        val name = bufRangeToString(buf, start, nameLen)
-
         // Value: (colon, end), trim OWS from both sides.
         val valStart = trimLeftInBuf(buf, colon + 1, end)
         val valEnd = trimRightInBuf(buf, valStart, end)
-        val value = bufRangeToString(buf, valStart, valEnd - valStart)
 
-        headers.add(name, value)
+        // L7-a-ii Variant B: store byte ranges into [buf] as zero-copy
+        // views instead of materialising name/value into `String`s. The
+        // recv buffer is retained by [HttpHeaders.addRange] for the
+        // lifetime of the views.
+        val hash = HttpHeaders.caseInsensitiveHashOfBuf(buf, start, nameLen)
+        headers.addRange(buf, hash, start, nameLen, valStart, valEnd - valStart)
     }
 
     private fun throwInvalidRequestLineFromBuf(buf: IoBuf, start: Int, length: Int): Nothing {
@@ -463,11 +466,11 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
                 "Invalid header field (missing ':'): ${arr.decodeToString(start, end)}",
             )
         }
-        val name = arr.decodeToString(start, nameEnd)
+        val name = arrAsciiToString(arr, start, nameEnd)
 
         val valStart = trimLeftInArr(arr, colon + 1, end)
         val valEnd = trimRightInArr(arr, valStart, end)
-        val value = arr.decodeToString(valStart, valEnd)
+        val value = arrAsciiToString(arr, valStart, valEnd)
 
         headers.add(name, value)
     }
@@ -518,6 +521,26 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         val scratch = ensureScratchCapacity(length)
         for (i in 0 until length) scratch[i] = buf.getByte(offset + i)
         return scratch.decodeToString(0, length)
+    }
+
+    /**
+     * ISO-8859-1 (byte-as-char) decode of an [IoBuf] byte range. Used for
+     * header / trailer field names and values so every materialisation
+     * path agrees with the fast-path [io.github.fukusaka.keel.buf.IoBufAsciiText]
+     * view: RFC 7230 §3.2.4 treats obs-text (0x80-0xFF) as opaque data,
+     * and byte-as-char is lossless / reversible (unlike a UTF-8 decode,
+     * which replaces lone high bytes with U+FFFD).
+     */
+    private fun bufAsciiToString(buf: IoBuf, offset: Int, length: Int): String =
+        ioBufToLatin1String(buf, offset, length)
+
+    /** ISO-8859-1 (byte-as-char) decode of a [ByteArray] range — see [bufAsciiToString]. */
+    private fun arrAsciiToString(arr: ByteArray, start: Int, end: Int): String {
+        val length = end - start
+        if (length == 0) return ""
+        val chars = CharArray(length)
+        for (i in 0 until length) chars[i] = (arr[start + i].toInt() and 0xFF).toChar()
+        return chars.concatToString()
     }
 
     private fun ensureScratchCapacity(required: Int): ByteArray {
@@ -670,10 +693,10 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
                 "Invalid trailer field (missing ':'): ${bufRangeToString(buf, start, length)}",
             )
         }
-        val name = bufRangeToString(buf, start, nameLen)
+        val name = bufAsciiToString(buf, start, nameLen)
         val valStart = trimLeftInBuf(buf, colon + 1, end)
         val valEnd = trimRightInBuf(buf, valStart, end)
-        val value = bufRangeToString(buf, valStart, valEnd - valStart)
+        val value = bufAsciiToString(buf, valStart, valEnd - valStart)
         trailers.add(name, value)
     }
 
@@ -694,10 +717,10 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
                 "Invalid trailer field (missing ':'): ${arr.decodeToString(start, end)}",
             )
         }
-        val name = arr.decodeToString(start, nameEnd)
+        val name = arrAsciiToString(arr, start, nameEnd)
         val valStart = trimLeftInArr(arr, colon + 1, end)
         val valEnd = trimRightInArr(arr, valStart, end)
-        val value = arr.decodeToString(valStart, valEnd)
+        val value = arrAsciiToString(arr, valStart, valEnd)
         trailers.add(name, value)
     }
 

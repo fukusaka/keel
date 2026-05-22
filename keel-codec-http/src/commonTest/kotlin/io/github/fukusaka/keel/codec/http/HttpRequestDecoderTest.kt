@@ -55,6 +55,55 @@ class HttpRequestDecoderTest {
         return buf
     }
 
+    /** Builds an IoBuf from raw [bytes] (for obs-text 0x80-0xFF, non-UTF-8). */
+    private fun bufOfBytes(bytes: ByteArray): IoBuf {
+        val buf = DefaultAllocator.allocate(bytes.size)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
+    // GET / HTTP/1.1 with `X-Note: <0xE9>` — a single obs-text byte that is
+    // 'é' in ISO-8859-1 but an *invalid* UTF-8 sequence on its own.
+    private val obsTextRequest: ByteArray =
+        "GET / HTTP/1.1\r\nHost: x\r\nX-Note: ".encodeToByteArray() +
+            byteArrayOf(0xE9.toByte()) +
+            "\r\n\r\n".encodeToByteArray()
+
+    // Split index right after "X-Note: ", so the obs-text byte is parsed
+    // through the fallback (ByteArray accumulator) path on the second read.
+    private val obsTextSplit: Int = "GET / HTTP/1.1\r\nHost: x\r\nX-Note: ".encodeToByteArray().size
+
+    @Test
+    fun `obs-text header value decodes as ISO-8859-1 on the fast path`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(bufOfBytes(obsTextRequest))
+
+        assertEquals(1, collector.heads.size)
+        val value = collector.heads[0].headers.getString("X-Note")
+        assertEquals(1, value?.length)
+        // ISO-8859-1: byte 0xE9 -> U+00E9, lossless. NOT the U+FFFD that a
+        // UTF-8 decode of a lone 0xE9 would produce.
+        assertEquals('é', value?.get(0))
+    }
+
+    @Test
+    fun `obs-text header value decodes as ISO-8859-1 on the fallback path`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        pipeline.notifyRead(bufOfBytes(obsTextRequest.copyOfRange(0, obsTextSplit)))
+        pipeline.notifyRead(bufOfBytes(obsTextRequest.copyOfRange(obsTextSplit, obsTextRequest.size)))
+
+        assertEquals(1, collector.heads.size)
+        val value = collector.heads[0].headers.getString("X-Note")
+        assertEquals(1, value?.length)
+        // Must match the fast path: same bytes, same ISO-8859-1 result,
+        // regardless of read boundaries.
+        assertEquals('é', value?.get(0))
+    }
+
     // --- Single complete request ---
 
     @Test
@@ -69,7 +118,7 @@ class HttpRequestDecoderTest {
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/hello", head.uri)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("example.com", head.headers["Host"])
+        assertEquals("example.com", head.headers.getString("Host"))
         assertEquals("/hello", head.path)
         assertNull(head.queryString)
         assertTrue(head.isKeepAlive)
@@ -159,7 +208,7 @@ class HttpRequestDecoderTest {
 
         pipeline.notifyRead(bufOf("lo\r\n\r\n"))
         assertEquals(1, collector.heads.size)
-        assertEquals("hello", collector.heads[0].headers["X-Custom"])
+        assertEquals("hello", collector.heads[0].headers.getString("X-Custom"))
     }
 
     @Test
@@ -193,6 +242,34 @@ class HttpRequestDecoderTest {
         assertEquals(2, collector.heads.size)
         assertEquals("/first", collector.heads[0].path)
         assertEquals("/second", collector.heads[1].path)
+    }
+
+    @Test
+    fun `pipelined requests keep independent header views and release cleanly`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // Two requests in one buffer with distinct header values: each
+        // head's byte-range views point into the same recv buffer but at
+        // different offsets, so both must read back independently.
+        pipeline.notifyRead(
+            bufOf(
+                "GET /a HTTP/1.1\r\nHost: alpha.example\r\nX-Tag: one\r\n\r\n" +
+                    "GET /b HTTP/1.1\r\nHost: beta.example\r\nX-Tag: two\r\n\r\n",
+            ),
+        )
+
+        assertEquals(2, collector.heads.size)
+        assertEquals("alpha.example", collector.heads[0].headers.getString("Host"))
+        assertEquals("one", collector.heads[0].headers.getString("X-Tag"))
+        assertEquals("beta.example", collector.heads[1].headers.getString("Host"))
+        assertEquals("two", collector.heads[1].headers.getString("X-Tag"))
+
+        // Terminal consumer releases both heads' headers (the buffer-lifetime
+        // contract); releasing must not throw or corrupt the other head.
+        collector.heads[0].headers.release()
+        assertEquals("two", collector.heads[1].headers.getString("X-Tag"))
+        collector.heads[1].headers.release()
     }
 
     @Test
@@ -378,7 +455,7 @@ class HttpRequestDecoderTest {
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/lf", head.uri)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+        assertEquals("example.com", head.headers.getString(HttpHeaderName.HOST))
     }
 
     @Test
@@ -397,7 +474,7 @@ class HttpRequestDecoderTest {
         val head = collector.heads[0]
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/", head.uri)
-        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+        assertEquals("example.com", head.headers.getString(HttpHeaderName.HOST))
     }
 
     @Test
@@ -421,7 +498,7 @@ class HttpRequestDecoderTest {
         val head = collector.heads[0]
         assertEquals(HttpMethod.GET, head.method)
         assertEquals(longPath, head.uri)
-        assertEquals("example.com", head.headers[HttpHeaderName.HOST])
+        assertEquals("example.com", head.headers.getString(HttpHeaderName.HOST))
 
         // Send a second request to verify the grown scratch buffer is
         // reused (not torn down). The second request has a short URI so
@@ -458,8 +535,8 @@ class HttpRequestDecoderTest {
         val head = collector.heads[0]
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/", head.uri)
-        assertEquals("h", head.headers[HttpHeaderName.HOST])
-        val big = head.headers["X-Big"]
+        assertEquals("h", head.headers.getString(HttpHeaderName.HOST))
+        val big = head.headers.getString("X-Big")
         assertEquals(valueLen, big?.length)
     }
 

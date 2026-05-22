@@ -87,12 +87,12 @@ public suspend fun runWebSocketUpgrade(
     pathParameters: Map<String, String> = emptyMap(),
     deflateConfig: WsDeflateConfig? = null,
 ) {
-    val clientKey = requestHeaders[SEC_WEBSOCKET_KEY]
+    val clientKey = requestHeaders.getString(SEC_WEBSOCKET_KEY)
         ?: error("Sec-WebSocket-Key missing — caller must validate via isWebSocketUpgrade()")
 
     // (1) Negotiate permessage-deflate against the request's extension offer.
     val extension = negotiatePermessageDeflate(
-        extensionsHeader = requestHeaders[SEC_WEBSOCKET_EXTENSIONS],
+        extensionsHeader = requestHeaders.getString(SEC_WEBSOCKET_EXTENSIONS),
         codec = deflateConfig?.codec,
         options = deflateConfig?.options ?: WsDeflateOptions.Default,
     )

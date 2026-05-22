@@ -47,7 +47,7 @@ internal class KeelApplicationRequest(
         remoteAddr = remoteAddress,
         version = head.version.text,
         uri = head.uri,
-        hostHeaderValue = head.headers["Host"],
+        hostHeaderValue = head.headers.getString("Host"),
         method = HttpMethod.parse(head.method.name),
         scheme = scheme,
     )

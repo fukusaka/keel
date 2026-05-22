@@ -105,14 +105,7 @@ class IoBufAsciiText(
      * Allocates a `CharArray` of [length] chars and constructs a
      * [String] from it.
      */
-    override fun toString(): String {
-        if (length == 0) return ""
-        val chars = CharArray(length)
-        for (i in 0 until length) {
-            chars[i] = (buf.getByte(start + i).toInt() and 0xFF).toChar()
-        }
-        return chars.concatToString()
-    }
+    override fun toString(): String = ioBufToLatin1String(buf, start, length)
 
     /**
      * Per-char [hashCode] using the same algorithm as [String.hashCode]

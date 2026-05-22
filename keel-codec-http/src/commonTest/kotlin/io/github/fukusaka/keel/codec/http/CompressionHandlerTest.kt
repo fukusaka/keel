@@ -60,9 +60,9 @@ class CompressionHandlerTest {
         // Verify mutated head: Content-Encoding=upper, Content-Length removed,
         // Vary present.
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
-        assertEquals("upper", emittedHead.headers["Content-Encoding"])
-        assertNull(emittedHead.headers["Content-Length"])
-        assertEquals("Accept-Encoding", emittedHead.headers["Vary"])
+        assertEquals("upper", emittedHead.headers.getString("Content-Encoding"))
+        assertNull(emittedHead.headers.getString("Content-Length"))
+        assertEquals("Accept-Encoding", emittedHead.headers.getString("Vary"))
 
         // Verify body got encoded.
         val bodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
@@ -111,10 +111,10 @@ class CompressionHandlerTest {
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
         // Compressed: CE set, CL stripped, TE: chunked added.
-        assertEquals("upper", emittedHead.headers["Content-Encoding"])
-        assertNull(emittedHead.headers["Content-Length"])
-        assertEquals("chunked", emittedHead.headers["Transfer-Encoding"])
-        assertEquals("Accept-Encoding", emittedHead.headers["Vary"])
+        assertEquals("upper", emittedHead.headers.getString("Content-Encoding"))
+        assertNull(emittedHead.headers.getString("Content-Length"))
+        assertEquals("chunked", emittedHead.headers.getString("Transfer-Encoding"))
+        assertEquals("Accept-Encoding", emittedHead.headers.getString("Vary"))
     }
 
     @Test
@@ -148,10 +148,10 @@ class CompressionHandlerTest {
         handler.onWrite(ctx, head)
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
-        assertEquals("upper", emittedHead.headers["Content-Encoding"])
-        assertNull(emittedHead.headers["Content-Length"])
+        assertEquals("upper", emittedHead.headers.getString("Content-Encoding"))
+        assertNull(emittedHead.headers.getString("Content-Length"))
         // Exactly one Transfer-Encoding header value, set to chunked.
-        assertEquals("chunked", emittedHead.headers["Transfer-Encoding"])
+        assertEquals("chunked", emittedHead.headers.getString("Transfer-Encoding"))
     }
 
     @Test
@@ -167,7 +167,7 @@ class CompressionHandlerTest {
         handler.onWrite(ctx, HttpBodyEnd.EMPTY)
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
-        assertNull(emittedHead.headers["Content-Encoding"])
+        assertNull(emittedHead.headers.getString("Content-Encoding"))
         // Body bytes unchanged
         val bodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
         assertEquals("hello", bodies.joinToString("") { ioBufAsString(it.content) })
@@ -184,7 +184,7 @@ class CompressionHandlerTest {
         handler.onWrite(ctx, HttpBodyEnd.EMPTY)
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
-        assertNull(emittedHead.headers["Content-Encoding"])
+        assertNull(emittedHead.headers.getString("Content-Encoding"))
     }
 
     @Test
@@ -203,7 +203,7 @@ class CompressionHandlerTest {
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
         // Pre-existing CE preserved (handler skipped).
-        assertEquals("br", emittedHead.headers["Content-Encoding"])
+        assertEquals("br", emittedHead.headers.getString("Content-Encoding"))
     }
 
     // ---- helpers ----

@@ -82,7 +82,7 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
 
         // The conditional-GET check has passed; a Range header (if any)
         // now decides between a 206, a 416, or the full 200.
-        val rangeHeader = call.headers[HttpHeaderName.RANGE]
+        val rangeHeader = call.headers.getString(HttpHeaderName.RANGE)
         val range = if (rangeHeader != null && rangeApplies(call, asset)) {
             parseByteRange(rangeHeader, asset.size)
         } else {
@@ -108,7 +108,7 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
      * `Last-Modified`; an exact match honours the range.
      */
     private fun rangeApplies(call: HttpCall, asset: Asset): Boolean {
-        val ifRange = call.headers[HttpHeaderName.IF_RANGE]?.trim() ?: return true
+        val ifRange = call.headers.getString(HttpHeaderName.IF_RANGE)?.trim() ?: return true
         val date = parseHttpDate(ifRange)
         if (date != null) {
             val lastModified = asset.lastModified ?: return false
@@ -288,11 +288,11 @@ internal class StaticAssetHandler(private val assetSource: AssetSource) {
          * takes precedence over `If-Modified-Since` per RFC 9110 §13.1.3.
          */
         fun isNotModified(call: HttpCall, asset: Asset): Boolean {
-            val ifNoneMatch = call.headers[HttpHeaderName.IF_NONE_MATCH]
+            val ifNoneMatch = call.headers.getString(HttpHeaderName.IF_NONE_MATCH)
             if (ifNoneMatch != null) {
                 return matchesIfNoneMatch(ifNoneMatch, asset.etag)
             }
-            val ifModifiedSince = call.headers[HttpHeaderName.IF_MODIFIED_SINCE] ?: return false
+            val ifModifiedSince = call.headers.getString(HttpHeaderName.IF_MODIFIED_SINCE) ?: return false
             val lastModified = asset.lastModified ?: return false
             val since = parseHttpDate(ifModifiedSince) ?: return false
             // Not modified when the asset is no newer than the client's copy.

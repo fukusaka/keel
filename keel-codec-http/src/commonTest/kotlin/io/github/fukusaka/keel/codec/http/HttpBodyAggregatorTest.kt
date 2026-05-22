@@ -133,7 +133,7 @@ class HttpBodyAggregatorTest {
         val req = collector.requests[0]
         assertEquals("hello", req.body!!.decodeToString())
         // Trailers are not surfaced on HttpRequest — they are discarded.
-        assertNull(req.headers["Trailer-Key"])
+        assertNull(req.headers.getString("Trailer-Key"))
     }
 
     @Test

@@ -197,7 +197,7 @@ class HttpParserTest {
         val req = parseRequest(src)
         assertEquals(HttpMethod.GET, req.method)
         assertEquals("/", req.uri)
-        assertEquals("example.com", req.headers["Host"])
+        assertEquals("example.com", req.headers.getString("Host"))
         assertNull(req.body)
     }
 
@@ -249,8 +249,8 @@ class HttpParserTest {
         assertEquals(HttpMethod.POST, head.method)
         assertEquals("/submit", head.uri)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("example.com", head.headers["Host"])
-        assertEquals("5", head.headers["Content-Length"])
+        assertEquals("example.com", head.headers.getString("Host"))
+        assertEquals("5", head.headers.getString("Content-Length"))
         // Body remains in source
         assertEquals("hello", src.readString())
     }
@@ -295,7 +295,7 @@ class HttpParserTest {
         val head = parseResponseHead(src)
         assertEquals(HttpStatus.OK, head.status)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("5", head.headers["Content-Length"])
+        assertEquals("5", head.headers.getString("Content-Length"))
         // Body remains in source
         assertEquals("hello", src.readString())
     }

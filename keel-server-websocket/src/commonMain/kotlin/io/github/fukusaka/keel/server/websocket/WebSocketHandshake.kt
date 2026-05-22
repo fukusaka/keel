@@ -19,11 +19,11 @@ private const val WEBSOCKET_VERSION_13 = "13"
  * tolerated as a comma-separated token list (a proxy may add `keep-alive`).
  */
 public fun HttpHeaders.isWebSocketUpgrade(): Boolean {
-    if (!this[HttpHeaderName.UPGRADE].equalsIgnoreCase("websocket")) return false
-    val connection = this[HttpHeaderName.CONNECTION] ?: return false
+    if (!this.getString(HttpHeaderName.UPGRADE).equalsIgnoreCase("websocket")) return false
+    val connection = this.getString(HttpHeaderName.CONNECTION) ?: return false
     if (connection.split(',').none { it.trim().equalsIgnoreCase("upgrade") }) return false
-    if (this[SEC_WEBSOCKET_VERSION] != WEBSOCKET_VERSION_13) return false
-    val key = this[SEC_WEBSOCKET_KEY] ?: return false
+    if (this.getString(SEC_WEBSOCKET_VERSION) != WEBSOCKET_VERSION_13) return false
+    val key = this.getString(SEC_WEBSOCKET_KEY) ?: return false
     return validateClientKey(key)
 }
 
