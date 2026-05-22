@@ -48,6 +48,19 @@ class HttpHeaders {
     // Retained recv buffer backing every range entry's view (see addRange).
     private var backing: IoBuf? = null
 
+    // Memoised `String` materialisation of range entries, parallel to the
+    // slots, lazily allocated on the first String-returning access of a
+    // range entry. Repeated String reads of the same header (the Ktor
+    // adapter and other framework code read headers many times per
+    // request) then return the cached `String` instead of re-materialising
+    // a fresh view + `String` each time. String entries (responses) are
+    // already `String`-backed and never populate these. The arrays are
+    // retained across pooled reuse and cleared in [resetForReuse]. The
+    // `CharSequence` [get] path stays uncached so a caller that only reads
+    // `length` / a few chars off the view never pays a `String` copy.
+    private var valueStringCache: Array<String?>? = null
+    private var nameStringCache: Array<String?>? = null
+
     private var pooled: Boolean = false
 
     // --- Access ---
@@ -65,15 +78,25 @@ class HttpHeaders {
         return if (matched >= 0) valueOf(matched) else null
     }
 
-    /** [get] materialised to a `String` (or `null` if absent). */
-    fun getString(name: String): String? = get(name)?.toString()
+    /**
+     * [get] materialised to a `String` (or `null` if absent). The
+     * materialised `String` of a range entry is memoised (see
+     * [valueStringCache]) so repeated reads of the same header do not
+     * re-allocate.
+     */
+    fun getString(name: String): String? {
+        if (slotCount == 0) return null
+        val hash = caseInsensitiveHash(name)
+        val matched = lastMatch(hash, name)
+        return if (matched >= 0) valueStringOf(matched) else null
+    }
 
     fun getAll(name: String): List<String> {
         if (slotCount == 0) return emptyList()
         var result: MutableList<String>? = null
         for (i in 0 until slotCount) {
             if (nameMatches(i, name)) {
-                (result ?: mutableListOf<String>().also { result = it }).add(valueOf(i).toString())
+                (result ?: mutableListOf<String>().also { result = it }).add(valueStringOf(i))
             }
         }
         return result ?: emptyList()
@@ -144,6 +167,45 @@ class HttpHeaders {
         val ns = s[base + 1]
         if (ns == STRING_SENTINEL) return csEqualsIgnoreCase(stringName(s[base + 2]), name)
         return bufEqualsIgnoreCase(backingBuf(), ns, s[base + 2], name)
+    }
+
+    /** [valueOf] materialised to `String`, memoised for range entries. */
+    private fun valueStringOf(i: Int): String {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2])
+        val cache = ensureCache(valueStringCache)?.also { valueStringCache = it } ?: valueStringCache
+        cache?.get(i)?.let { return it }
+        val str = IoBufAsciiText(backingBuf(), s[base + 3], s[base + 4]).toString()
+        cache?.set(i, str)
+        return str
+    }
+
+    /** [nameOf] materialised to `String`, memoised for range entries. */
+    private fun nameStringOf(i: Int): String {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        val ns = s[base + 1]
+        if (ns == STRING_SENTINEL) return stringName(s[base + 2])
+        val cache = ensureCache(nameStringCache)?.also { nameStringCache = it } ?: nameStringCache
+        cache?.get(i)?.let { return it }
+        val str = IoBufAsciiText(backingBuf(), ns, s[base + 2]).toString()
+        cache?.set(i, str)
+        return str
+    }
+
+    /**
+     * Returns a `String?[]` cache parallel to the slots, growing [existing]
+     * to the current slot capacity (or allocating it). Returns `null` only
+     * when there are no slots yet (no range entry can exist).
+     */
+    private fun ensureCache(existing: Array<String?>?): Array<String?>? {
+        val capacity = (slots ?: return null).size / STRIDE
+        return when {
+            existing == null -> arrayOfNulls(capacity)
+            existing.size < capacity -> existing.copyOf(capacity)
+            else -> existing
+        }
     }
 
     private fun stringName(strIdx: Int): String = stringStore()[strIdx]
@@ -323,6 +385,9 @@ class HttpHeaders {
         slots = newSlots
         stringBacking = newStrings
         slotCount = w
+        // Entry indices changed — the parallel String caches are now stale.
+        valueStringCache = null
+        nameStringCache = null
         // Drop or rebuild the hash index depending on the surviving count.
         if (w > BUCKET_THRESHOLD) {
             buildBuckets()
@@ -336,7 +401,7 @@ class HttpHeaders {
 
     fun forEach(action: (name: String, value: String) -> Unit) {
         for (i in 0 until slotCount) {
-            action(nameOf(i).toString(), valueOf(i).toString())
+            action(nameStringOf(i), valueStringOf(i))
         }
     }
 
@@ -344,24 +409,24 @@ class HttpHeaders {
         if (slotCount == 0) return emptySet()
         val result = linkedSetOf<String>()
         for (i in 0 until slotCount) {
-            val n = nameOf(i)
+            val n = nameStringOf(i)
             var seen = false
             for (existing in result) {
-                if (csEqualsIgnoreCase(n, existing)) {
+                if (existing.equals(n, ignoreCase = true)) {
                     seen = true
                     break
                 }
             }
-            if (!seen) result.add(n.toString())
+            if (!seen) result.add(n)
         }
         return result
     }
 
     fun entries(): List<Pair<String, String>> =
-        List(slotCount) { i -> nameOf(i).toString() to valueOf(i).toString() }
+        List(slotCount) { i -> nameStringOf(i) to valueStringOf(i) }
 
-    fun nameAt(index: Int): String = nameOf(index).toString()
-    fun valueAt(index: Int): String = valueOf(index).toString()
+    fun nameAt(index: Int): String = nameStringOf(index)
+    fun valueAt(index: Int): String = valueStringOf(index)
 
     internal fun getByLowercaseKey(key: String): String? = getString(key)
 
@@ -415,6 +480,10 @@ class HttpHeaders {
         // just clear the hash index if one was built.
         bucketHead?.fill(-1)
         stringBacking?.clear()
+        // Release cached materialised Strings (they reference the prior
+        // request's bytes); keep the arrays for the next borrower.
+        valueStringCache?.fill(null)
+        nameStringCache?.fill(null)
         // Release the recv buffer retained by [addRange] so views do not
         // outlive their backing bytes.
         backing?.release()
