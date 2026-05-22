@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufAsciiText
+import io.github.fukusaka.keel.buf.ioBufToLatin1String
 import io.github.fukusaka.keel.io.toDecLongOrNull
 
 /**
@@ -176,7 +177,7 @@ class HttpHeaders {
         if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2])
         val cache = ensureCache(valueStringCache)?.also { valueStringCache = it } ?: valueStringCache
         cache?.get(i)?.let { return it }
-        val str = IoBufAsciiText(backingBuf(), s[base + 3], s[base + 4]).toString()
+        val str = ioBufToLatin1String(backingBuf(), s[base + 3], s[base + 4])
         cache?.set(i, str)
         return str
     }
@@ -189,7 +190,7 @@ class HttpHeaders {
         if (ns == STRING_SENTINEL) return stringName(s[base + 2])
         val cache = ensureCache(nameStringCache)?.also { nameStringCache = it } ?: nameStringCache
         cache?.get(i)?.let { return it }
-        val str = IoBufAsciiText(backingBuf(), ns, s[base + 2]).toString()
+        val str = ioBufToLatin1String(backingBuf(), ns, s[base + 2])
         cache?.set(i, str)
         return str
     }

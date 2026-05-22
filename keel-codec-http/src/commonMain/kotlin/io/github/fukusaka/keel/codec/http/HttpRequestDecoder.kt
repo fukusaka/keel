@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.ioBufToLatin1String
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.TypedInboundHandler
 import kotlin.reflect.KClass
@@ -530,12 +531,8 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
      * and byte-as-char is lossless / reversible (unlike a UTF-8 decode,
      * which replaces lone high bytes with U+FFFD).
      */
-    private fun bufAsciiToString(buf: IoBuf, offset: Int, length: Int): String {
-        if (length == 0) return ""
-        val chars = CharArray(length)
-        for (i in 0 until length) chars[i] = (buf.getByte(offset + i).toInt() and 0xFF).toChar()
-        return chars.concatToString()
-    }
+    private fun bufAsciiToString(buf: IoBuf, offset: Int, length: Int): String =
+        ioBufToLatin1String(buf, offset, length)
 
     /** ISO-8859-1 (byte-as-char) decode of a [ByteArray] range — see [bufAsciiToString]. */
     private fun arrAsciiToString(arr: ByteArray, start: Int, end: Int): String {

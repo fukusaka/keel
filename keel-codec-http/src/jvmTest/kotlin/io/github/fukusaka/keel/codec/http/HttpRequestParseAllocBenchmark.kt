@@ -109,6 +109,18 @@ class HttpRequestParseAllocBenchmark {
         collector.lastHead = null
     }
 
+    private fun parseAndMaterializeAll() {
+        channel.pipeline.notifyRead(feed())
+        val h = collector.lastHead?.headers
+        if (h != null) {
+            // mimic the Ktor adapter: materialise every header name+value
+            // to String (HeadersImpl build / read-all framework pattern).
+            h.forEach { name, value -> sink += name.length + value.length }
+            h.release()
+        }
+        collector.lastHead = null
+    }
+
     @Suppress("unused")
     private var sink = 0
 
@@ -128,9 +140,11 @@ class HttpRequestParseAllocBenchmark {
     fun `request parse allocation per cycle`() {
         val parse = median(TRIALS) { measure(ITERS, ::parseOnly) }
         val parseAccess = median(TRIALS) { measure(ITERS, ::parseAndAccess) }
+        val parseAll = median(TRIALS) { measure(ITERS, ::parseAndMaterializeAll) }
         println("=== HttpRequest parse alloc (CDN N=23, bytes/cycle, iters=$ITERS × $TRIALS) ===")
         println("  A — parse + release only:        $parse bytes/cycle")
         println("  B — parse + access 3 headers:    $parseAccess bytes/cycle")
+        println("  C — parse + materialise ALL:     $parseAll bytes/cycle")
     }
 
     companion object {
