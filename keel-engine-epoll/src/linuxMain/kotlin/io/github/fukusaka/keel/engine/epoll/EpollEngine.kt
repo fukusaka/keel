@@ -96,7 +96,12 @@ class EpollEngine(
     private val logger = config.loggerFactory.logger("EpollEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
-    private val workerGroup = EpollEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("EpollEventLoop"), config.allocator)
+    private val workerGroup = EpollEventLoopGroup(
+        resolveThreads(config),
+        config.loggerFactory.logger("EpollEventLoop"),
+        config.allocator,
+        config.readBufferSize,
+    )
     private var closed = false
 
     init {
@@ -183,11 +188,15 @@ class EpollEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.readBufferSize)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.readBufferSize)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
@@ -211,18 +220,28 @@ class EpollEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
+        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
         return EpollPipelinedChannel(transport, logger, address, null)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip, address.port, socketOptions)
+            connectToIp(ip, address.port, socketOptions, readBufferSizeOverride)
         }
     }
 
-    private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
+    private suspend fun connectToIp(
+        ip: IpAddress,
+        port: Int,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
@@ -248,7 +267,8 @@ class EpollEngine(
         val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
+        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
