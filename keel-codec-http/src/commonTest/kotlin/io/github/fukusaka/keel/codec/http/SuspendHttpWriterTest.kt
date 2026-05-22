@@ -117,8 +117,8 @@ class SuspendHttpWriterTest {
         val parsed = parseResponseHead(source)
         assertEquals(200, parsed.status.code)
         assertEquals(HttpVersion.HTTP_1_1, parsed.version)
-        assertEquals("text/html", parsed.headers["Content-Type"])
-        assertEquals("value", parsed.headers["X-Custom"])
+        assertEquals("text/html", parsed.headers.getString("Content-Type"))
+        assertEquals("value", parsed.headers.getString("X-Custom"))
         source.close()
     }
 

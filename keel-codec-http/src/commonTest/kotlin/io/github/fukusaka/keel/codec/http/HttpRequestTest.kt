@@ -34,7 +34,7 @@ class HttpRequestTest {
     fun `headers accessible`() {
         val h = HttpHeaders().add("Host", "example.com")
         val r = HttpRequest(HttpMethod.GET, "/", headers = h)
-        assertEquals("example.com", r.headers["Host"])
+        assertEquals("example.com", r.headers.getString("Host"))
     }
 
     @Test
@@ -116,7 +116,7 @@ class HttpRequestTest {
     fun `get factory with headers`() {
         val h = HttpHeaders().add("Host", "example.com")
         val r = HttpRequest.get("/", h)
-        assertEquals("example.com", r.headers["Host"])
+        assertEquals("example.com", r.headers.getString("Host"))
     }
 
     // --- data class: copy ---
@@ -127,7 +127,7 @@ class HttpRequestTest {
         val copied = original.copy(uri = "/other")
         assertEquals("/other", copied.uri)
         assertEquals(HttpMethod.GET, copied.method)
-        assertEquals("x", copied.headers["Host"])
+        assertEquals("x", copied.headers.getString("Host"))
     }
 
     // --- equals / hashCode ---

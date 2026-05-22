@@ -100,7 +100,7 @@ class KeelHttpTestTest {
                 val res = client.get("/text")
                 assertEquals(HttpStatus(201), res.status)
                 assertEquals("plain body", res.bodyText())
-                val contentType = res.headers[HttpHeaderName.CONTENT_TYPE]
+                val contentType = res.headers.getString(HttpHeaderName.CONTENT_TYPE)
                 assertTrue(
                     contentType != null && contentType.contains("text/plain"),
                     "expected text/plain content type, got $contentType",

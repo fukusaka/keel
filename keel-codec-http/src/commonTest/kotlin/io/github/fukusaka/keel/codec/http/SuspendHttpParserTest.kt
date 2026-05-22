@@ -35,8 +35,8 @@ class SuspendHttpParserTest {
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/hello", head.uri)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("localhost", head.headers["Host"])
-        assertEquals("0", head.headers["Content-Length"])
+        assertEquals("localhost", head.headers.getString("Host"))
+        assertEquals("0", head.headers.getString("Content-Length"))
         source.close()
     }
 
@@ -49,8 +49,8 @@ class SuspendHttpParserTest {
 
         assertEquals(HttpMethod.POST, head.method)
         assertEquals("/submit", head.uri)
-        assertEquals("text/plain", head.headers["Content-Type"])
-        assertEquals("5", head.headers["Content-Length"])
+        assertEquals("text/plain", head.headers.getString("Content-Type"))
+        assertEquals("5", head.headers.getString("Content-Length"))
 
         // Body should remain in the source
         val body = source.readByteArray(5)
@@ -67,7 +67,7 @@ class SuspendHttpParserTest {
 
         assertEquals(200, head.status.code)
         assertEquals(HttpVersion.HTTP_1_1, head.version)
-        assertEquals("2", head.headers["Content-Length"])
+        assertEquals("2", head.headers.getString("Content-Length"))
         source.close()
     }
 
@@ -131,8 +131,8 @@ class SuspendHttpParserTest {
 
         assertEquals(HttpMethod.GET, head.method)
         assertEquals("/path", head.uri)
-        assertEquals("example.com", head.headers["Host"])
-        assertEquals("value", head.headers["X-Key"])
+        assertEquals("example.com", head.headers.getString("Host"))
+        assertEquals("value", head.headers.getString("X-Key"))
         source.close()
     }
 
@@ -144,7 +144,7 @@ class SuspendHttpParserTest {
         val head = parseResponseHead(source)
 
         assertEquals(404, head.status.code)
-        assertEquals("0", head.headers["Content-Length"])
+        assertEquals("0", head.headers.getString("Content-Length"))
         source.close()
     }
 
