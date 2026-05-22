@@ -232,7 +232,7 @@ build_engine_list() {
 
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
-        for engine in ktor-keel-nio pipeline-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty ktor-cio; do
+        for engine in ktor-keel-nio pipeline-http-nio server-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty ktor-cio; do
             engines+=("jvm-engine:jvm:${engine}")
         done
     fi

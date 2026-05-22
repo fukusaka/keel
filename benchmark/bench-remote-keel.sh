@@ -43,7 +43,7 @@
 #   Native (only when BENCH_REMOTE_OS = Linux): ktor-keel-epoll,
 #     pipeline-http-epoll, ktor-cio-keel-epoll, ktor-keel-io-uring,
 #     pipeline-http-io-uring, ktor-cio-keel-io-uring, ktor-cio.
-#   JVM (always): ktor-keel-nio, pipeline-http-nio, ktor-cio-keel-nio,
+#   JVM (always): ktor-keel-nio, pipeline-http-nio, server-http-nio, ktor-cio-keel-nio,
 #     ktor-keel-netty, ktor-cio-keel-netty, pipeline-http-netty, ktor-cio.
 #   JS (Node.js): pipeline-http-nodejs, only when
 #     `benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js`
@@ -140,6 +140,7 @@ build_engine_list() {
         for engine in \
             ktor-keel-nio \
             pipeline-http-nio \
+            server-http-nio \
             ktor-cio-keel-nio \
             ktor-keel-netty \
             ktor-cio-keel-netty \
