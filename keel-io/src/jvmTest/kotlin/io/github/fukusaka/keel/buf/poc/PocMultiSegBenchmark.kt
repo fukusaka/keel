@@ -3,11 +3,13 @@ package io.github.fukusaka.keel.buf.poc
 import com.sun.management.ThreadMXBean
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.asByteBuffer
 import io.github.fukusaka.keel.buf.poc.cand1.Cand1AsciiText
 import io.github.fukusaka.keel.buf.poc.cand1.Cand1IoBufImpl
 import io.github.fukusaka.keel.buf.poc.cand2.Cand2AsciiText
 import io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBufImpl
 import java.lang.management.ManagementFactory
+import java.nio.ByteBuffer
 import kotlin.test.Test
 
 /**
@@ -123,6 +125,7 @@ class PocMultiSegBenchmark {
         runScan()
         runWalk()
         runAscii()
+        runIovBuild()
     }
 
     private fun runScan() {
@@ -324,6 +327,65 @@ class PocMultiSegBenchmark {
         println("  ascii cand2 (single-seg)              %5d        %6d".format(c2ssAlloc, c2ssNs))
         println("  ascii cand1 (4-seg, hash cached)      %5d        %6d".format(c1msAlloc, c1msNs))
         println("  ascii cand2 (4-seg, hash cached)      %5d        %6d".format(c2msAlloc, c2msNs))
+    }
+
+    /**
+     * iov-build cost: simulates the engine's `writeMulti` iov assembly
+     * (the only path where cand1's callback vs cand2's list iteration
+     * costs differ). We allocate the `ByteBuffer[]` once outside the
+     * hot loop and reset it on every iteration, so the bench measures
+     * **only** the per-segment iteration cost — not the syscall, not
+     * the array growth.
+     *
+     * Expected signal: cand2 list iteration should be marginally
+     * cheaper than cand1's lambda-based callback if JIT escape
+     * analysis fails to elide the lambda allocation; near-identical
+     * if escape analysis succeeds. The loopback bench, when added,
+     * piles the actual `SocketChannel.write(ByteBuffer[])` syscall on
+     * top of this cost.
+     */
+    private fun runIovBuild() {
+        val (c1Alloc, c1Ns) = median3 {
+            val buf = makeCand1(multiSegPayload, 8)
+            val iovs = arrayOfNulls<ByteBuffer>(16)
+            try {
+                measure(ITERS) {
+                    var count = 0
+                    buf.forEachReadableSegment { mem, off, len ->
+                        val bb = mem.asByteBuffer().duplicate()
+                        bb.position(off)
+                        bb.limit(off + len)
+                        iovs[count] = bb
+                        count++
+                    }
+                    sink += count.toLong()
+                }
+            } finally {
+                buf.close()
+            }
+        }
+        val (c2Alloc, c2Ns) = median3 {
+            val buf = makeCand2(multiSegPayload, 8)
+            val iovs = arrayOfNulls<ByteBuffer>(16)
+            try {
+                measure(ITERS) {
+                    val list = buf.readableSegments()
+                    val n = list.size
+                    for (i in 0 until n) {
+                        val range = list[i]
+                        val bb = range.memory!!.asByteBuffer().duplicate()
+                        bb.position(range.offset)
+                        bb.limit(range.offset + range.length)
+                        iovs[i] = bb
+                    }
+                    sink += n.toLong()
+                }
+            } finally {
+                buf.close()
+            }
+        }
+        println("  iov-build cand1 (8-seg, callback)     %5d        %6d".format(c1Alloc, c1Ns))
+        println("  iov-build cand2 (8-seg, list)         %5d        %6d".format(c2Alloc, c2Ns))
     }
 
     companion object {
