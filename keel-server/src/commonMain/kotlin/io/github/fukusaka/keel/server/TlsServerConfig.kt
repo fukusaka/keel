@@ -35,13 +35,16 @@ import io.github.fukusaka.keel.tls.TlsConfig
  * @param backlog TCP listen backlog (inherited from [BindConfig]).
  * @param childSocketOptions socket options applied to every accepted
  *   client fd (inherited from [BindConfig]).
+ * @param readBufferSize per-server read buffer size override (inherited
+ *   from [BindConfig]).
  */
 public class TlsServerConfig(
     public val tls: TlsConfig,
     public val installer: TlsServerInstaller? = null,
     backlog: Int = DEFAULT_BACKLOG,
     childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
-) : BindConfig(backlog, childSocketOptions) {
+    readBufferSize: Int? = null,
+) : BindConfig(backlog, childSocketOptions, readBufferSize) {
 
     /**
      * Installs TLS on the channel via [installer].
