@@ -4,23 +4,30 @@ package io.github.fukusaka.keel.buf
  * Internal multi-segment chain primitive — the substrate that the
  * multi-segment [IoBuf] implementations delegate to.
  *
- * The chain holds an ordered list of [Segment]s. Each [Segment] keeps
- * its own reference count (PoC PR #602 decided on per-Segment refcount,
- * "semantic B") and is appended explicitly via [appendSegment]; there
- * is no implicit auto-grow on write. The first segment is the "primary"
- * and is supplied at construction.
+ * The chain holds a [primarySegment] (supplied at construction, valid
+ * for the chain's lifetime) plus a lazy-allocated [extras] list of
+ * follow-on segments. Each [Segment] keeps its own reference count (PoC
+ * PR #602 decided on per-Segment refcount, "semantic B"). Segments are
+ * appended explicitly via [appendSegment]; there is no implicit
+ * auto-grow on write.
  *
- * Logical indexing: callers (the [IoBuf] view in PR-2) maintain
- * `readerIndex` / `writerIndex` in *logical* coordinates spanning
- * `[0, totalCapacity)`. The chain maps logical indices onto
- * `(segmentIndex, localOffset)` via [locateLogical] and emits
- * readable windows via [forEachReadableSegment] / [fillReadableSegments].
+ * Logical indexing: callers (the [IoBuf] view) maintain `readerIndex` /
+ * `writerIndex` in *logical* coordinates spanning `[0, totalCapacity)`.
+ * The chain maps logical indices onto `(segmentIndex, localOffset)` via
+ * [locateLogical] and emits readable windows via
+ * [forEachReadableSegment] / [fillReadableSegments].
  *
  * **Cap semantic**: [maxCapacity] bounds the *sum* of segment
  * capacities. [appendSegment] throws [KeelBufferOverflowException] when
  * adding the new segment would exceed it. Auto-grow logic in the
  * write path is the caller's responsibility — [SegmentChain] never
  * allocates segments itself.
+ *
+ * **Single-seg representation**: a freshly constructed chain holds only
+ * the primary segment with [extras] still `null`. No `ArrayList` is
+ * allocated until [appendSegment] is first called, so the hot path
+ * (every short-response IoBuf the engine fills from a single recv) pays
+ * for nothing beyond the chain object itself.
  *
  * **Refcount lifecycle**: [retainAll] / [releaseAll] iterate the chain
  * and apply the operation to every segment. Each [Segment]'s own
@@ -34,42 +41,45 @@ package io.github.fukusaka.keel.buf
  * on the owner thread.
  */
 internal class SegmentChain(
-    primary: Segment,
+    private val primarySegment: Segment,
     val maxCapacity: Int,
 ) {
 
     /**
-     * Ordered list of segments. `segments[0]` is the primary (the head)
-     * and stays valid for the chain's lifetime; subsequent entries are
-     * appended via [appendSegment].
+     * Lazily-allocated list of follow-on segments — `null` until the
+     * first [appendSegment]. Keeps the single-segment IoBuf case at one
+     * allocated object total (the chain itself).
      */
-    private val segments: ArrayList<Segment> = ArrayList<Segment>(INITIAL_SEGMENT_LIST_CAPACITY).also {
-        it.add(primary)
-    }
+    private var extras: ArrayList<Segment>? = null
 
-    private var _totalCapacity: Int = primary.capacity
+    private var _totalCapacity: Int = primarySegment.capacity
 
     init {
-        require(maxCapacity >= primary.capacity) {
-            "maxCapacity ($maxCapacity) must be >= primary segment capacity (${primary.capacity})"
+        require(maxCapacity >= primarySegment.capacity) {
+            "maxCapacity ($maxCapacity) must be >= primary segment capacity (${primarySegment.capacity})"
         }
     }
 
     /** Sum of segment capacities currently in the chain. */
     val totalCapacity: Int get() = _totalCapacity
 
-    /** Number of segments in the chain. */
-    val segmentCount: Int get() = segments.size
+    /** Capacity of the primary segment — the fast-path window for hot byte ops. */
+    val primaryCapacity: Int get() = primarySegment.capacity
+
+    /** Number of segments in the chain (always `>= 1`). */
+    val segmentCount: Int get() = 1 + (extras?.size ?: 0)
 
     /** Returns the primary segment (constant across the chain's lifetime). */
-    fun primary(): Segment = segments[0]
+    fun primary(): Segment = primarySegment
 
     /** Returns the segment at [index] (`0 <= index < segmentCount`). */
     fun segmentAt(index: Int): Segment {
-        if (index < 0 || index >= segments.size) {
-            throw IndexOutOfBoundsException("index=$index, segmentCount=${segments.size}")
+        if (index == 0) return primarySegment
+        val list = extras
+        if (list == null || index < 1 || index > list.size) {
+            throw IndexOutOfBoundsException("index=$index, segmentCount=$segmentCount")
         }
-        return segments[index]
+        return list[index - 1]
     }
 
     /**
@@ -87,7 +97,8 @@ internal class SegmentChain(
                     "current=$_totalCapacity, appending=${seg.capacity}, maxCapacity=$maxCapacity",
             )
         }
-        segments.add(seg)
+        val list = extras ?: ArrayList<Segment>(EXTRAS_INITIAL_CAPACITY).also { extras = it }
+        list.add(seg)
         _totalCapacity = newTotal
     }
 
@@ -101,16 +112,22 @@ internal class SegmentChain(
      */
     fun forEachReadableSegment(readerIdx: Int, writerIdx: Int, action: SegmentRangeAction) {
         if (readerIdx >= writerIdx) return
-        var logicalStart = 0
-        val n = segments.size
+        // Primary segment window.
+        val primaryEnd = primarySegment.capacity
+        val pFrom = if (readerIdx > 0) readerIdx else 0
+        val pTo = if (writerIdx < primaryEnd) writerIdx else primaryEnd
+        if (pFrom < pTo) action.apply(primarySegment.backing, pFrom, pTo - pFrom)
+        if (writerIdx <= primaryEnd) return
+        // Extras.
+        val list = extras ?: return
+        var logicalStart = primaryEnd
+        val n = list.size
         for (i in 0 until n) {
-            val seg = segments[i]
+            val seg = list[i]
             val segEnd = logicalStart + seg.capacity
             val from = if (readerIdx > logicalStart) readerIdx else logicalStart
             val to = if (writerIdx < segEnd) writerIdx else segEnd
-            if (from < to) {
-                action.apply(seg.backing, from - logicalStart, to - from)
-            }
+            if (from < to) action.apply(seg.backing, from - logicalStart, to - from)
             if (writerIdx <= segEnd) return
             logicalStart = segEnd
         }
@@ -125,16 +142,20 @@ internal class SegmentChain(
     fun fillReadableSegments(readerIdx: Int, writerIdx: Int, into: SegmentRangeList) {
         into.reset()
         if (readerIdx >= writerIdx) return
-        var logicalStart = 0
-        val n = segments.size
+        val primaryEnd = primarySegment.capacity
+        val pFrom = if (readerIdx > 0) readerIdx else 0
+        val pTo = if (writerIdx < primaryEnd) writerIdx else primaryEnd
+        if (pFrom < pTo) into.acquireSlot().set(primarySegment.backing, pFrom, pTo - pFrom)
+        if (writerIdx <= primaryEnd) return
+        val list = extras ?: return
+        var logicalStart = primaryEnd
+        val n = list.size
         for (i in 0 until n) {
-            val seg = segments[i]
+            val seg = list[i]
             val segEnd = logicalStart + seg.capacity
             val from = if (readerIdx > logicalStart) readerIdx else logicalStart
             val to = if (writerIdx < segEnd) writerIdx else segEnd
-            if (from < to) {
-                into.acquireSlot().set(seg.backing, from - logicalStart, to - from)
-            }
+            if (from < to) into.acquireSlot().set(seg.backing, from - logicalStart, to - from)
             if (writerIdx <= segEnd) return
             logicalStart = segEnd
         }
@@ -159,13 +180,19 @@ internal class SegmentChain(
                 "logicalIdx=$logicalIdx, totalCapacity=$_totalCapacity",
             )
         }
-        var logicalStart = 0
-        val n = segments.size
+        val primaryEnd = primarySegment.capacity
+        if (logicalIdx < primaryEnd) {
+            return packLocateResult(0, logicalIdx)
+        }
+        val list = extras
+            ?: error("locateLogical: extras null but logicalIdx=$logicalIdx >= primaryEnd=$primaryEnd")
+        var logicalStart = primaryEnd
+        val n = list.size
         for (i in 0 until n) {
-            val seg = segments[i]
+            val seg = list[i]
             val segEnd = logicalStart + seg.capacity
             if (logicalIdx < segEnd) {
-                return packLocateResult(i, logicalIdx - logicalStart)
+                return packLocateResult(i + 1, logicalIdx - logicalStart)
             }
             logicalStart = segEnd
         }
@@ -175,8 +202,10 @@ internal class SegmentChain(
 
     /** Increments the refcount of every segment in the chain. */
     fun retainAll() {
-        val n = segments.size
-        for (i in 0 until n) segments[i].retain()
+        primarySegment.retain()
+        val list = extras ?: return
+        val n = list.size
+        for (i in 0 until n) list[i].retain()
     }
 
     /**
@@ -188,16 +217,17 @@ internal class SegmentChain(
      * reconstruct it.
      */
     fun releaseAll(): Boolean {
-        var any = false
-        val n = segments.size
+        var any = primarySegment.release()
+        val list = extras ?: return any
+        val n = list.size
         for (i in 0 until n) {
-            if (segments[i].release()) any = true
+            if (list[i].release()) any = true
         }
         return any
     }
 
     companion object {
-        private const val INITIAL_SEGMENT_LIST_CAPACITY: Int = 4
+        private const val EXTRAS_INITIAL_CAPACITY: Int = 4
     }
 }
 
