@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.TlsHandler
 
 /**
  * Per-listener TLS server configuration.
@@ -37,6 +38,17 @@ import io.github.fukusaka.keel.tls.TlsConfig
  *   client fd (inherited from [BindConfig]).
  * @param readBufferSize per-server read buffer size override (inherited
  *   from [BindConfig]).
+ * @param plaintextBufferSize per-server override of the TLS plaintext
+ *   buffer size — the buffer the downstream codec sees as its "recv
+ *   segment" on a TLS connection. `null` (default) keeps
+ *   [TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT][io.github.fukusaka.keel.tls.TlsHandler.Companion.TLS_PLAINTEXT_BUF_SIZE_DEFAULT]
+ *   (16 KiB). When non-null, validated via
+ *   [TlsHandler.requireValidPlaintextBufferSize][io.github.fukusaka.keel.tls.TlsHandler.Companion.requireValidPlaintextBufferSize]
+ *   (power of two in 16 KiB..1 MiB) and forwarded to the
+ *   [TlsServerInstaller] three-argument overload. Honoured by
+ *   installers that wrap `TlsHandler` (such as [TlsCodecServerInstaller]);
+ *   engine-native installers (e.g., Netty's `SslHandler` adapter) manage
+ *   their own buffer sizing and ignore the override.
  */
 public class TlsServerConfig(
     public val tls: TlsConfig,
@@ -44,16 +56,22 @@ public class TlsServerConfig(
     backlog: Int = DEFAULT_BACKLOG,
     childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
     readBufferSize: Int? = null,
+    public val plaintextBufferSize: Int? = null,
 ) : BindConfig(backlog, childSocketOptions, readBufferSize) {
 
+    init {
+        plaintextBufferSize?.let { TlsHandler.requireValidPlaintextBufferSize(it) }
+    }
+
     /**
-     * Installs TLS on the channel via [installer].
+     * Installs TLS on the channel via [installer], forwarding the
+     * [plaintextBufferSize] override (or the default when null).
      *
      * No-op when [installer] is null (engine-native listener-level TLS
      * handles TLS at the listener level, so per-connection initialisation
      * is not needed).
      */
     override fun initializeConnection(channel: PipelinedChannel) {
-        installer?.install(channel, tls)
+        installer?.install(channel, tls, plaintextBufferSize ?: TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT)
     }
 }

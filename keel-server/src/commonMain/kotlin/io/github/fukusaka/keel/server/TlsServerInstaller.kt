@@ -23,4 +23,19 @@ import io.github.fukusaka.keel.tls.TlsConfig
 public fun interface TlsServerInstaller {
     /** Installs TLS on [channel] using the given [config]. */
     public fun install(channel: PipelinedChannel, config: TlsConfig)
+
+    /**
+     * Installs TLS on [channel] using the given [config] and a per-bind
+     * `plaintextBufferSize` override (see
+     * [TlsServerConfig.plaintextBufferSize]). The default implementation
+     * delegates to the two-argument [install] and ignores the override,
+     * which is the right behaviour for installers that do not use keel's
+     * `TlsHandler` (e.g., engine-native TLS such as Netty's `SslHandler`
+     * which manages its own buffer sizing). Installers that wrap
+     * `TlsHandler` (such as [TlsCodecServerInstaller]) override this
+     * overload to forward the value to `TlsHandler`.
+     */
+    public fun install(channel: PipelinedChannel, config: TlsConfig, plaintextBufferSize: Int) {
+        install(channel, config)
+    }
 }

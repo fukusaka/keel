@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsHandler
+import io.github.fukusaka.keel.tls.TlsHandler.Companion.TLS_PLAINTEXT_BUF_SIZE_DEFAULT
 
 /**
  * [TlsServerInstaller] adapter that installs keel's `TlsHandler` at the
@@ -27,9 +28,24 @@ public class TlsCodecServerInstaller(
     private val factory: TlsCodecFactory,
 ) : TlsServerInstaller {
 
-    /** Installs `TlsHandler` (wrapping a fresh server codec) at the pipeline HEAD. */
+    /**
+     * Installs `TlsHandler` (wrapping a fresh server codec) at the pipeline
+     * HEAD, using the default [TLS_PLAINTEXT_BUF_SIZE_DEFAULT] (16 KiB).
+     */
     override fun install(channel: PipelinedChannel, config: TlsConfig) {
+        install(channel, config, TLS_PLAINTEXT_BUF_SIZE_DEFAULT)
+    }
+
+    /**
+     * Installs `TlsHandler` (wrapping a fresh server codec) at the pipeline
+     * HEAD with the requested [plaintextBufferSize] — the buffer size the
+     * downstream codec sees as its "recv segment" on this TLS connection.
+     * Forwards the value into the `TlsHandler` constructor; validation is
+     * performed there via
+     * [TlsHandler.requireValidPlaintextBufferSize][io.github.fukusaka.keel.tls.TlsHandler.Companion.requireValidPlaintextBufferSize].
+     */
+    override fun install(channel: PipelinedChannel, config: TlsConfig, plaintextBufferSize: Int) {
         val codec = factory.createServerCodec(config)
-        channel.pipeline.addFirst("tls", TlsHandler(codec))
+        channel.pipeline.addFirst("tls", TlsHandler(codec, plaintextBufferSize))
     }
 }
