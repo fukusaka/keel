@@ -126,6 +126,7 @@ class PocMultiSegBenchmark {
         runWalk()
         runAscii()
         runIovBuild()
+        runIovBuildWarmupSweep()
     }
 
     private fun runScan() {
@@ -386,6 +387,118 @@ class PocMultiSegBenchmark {
         }
         println("  iov-build cand1 (8-seg, callback)     %5d        %6d".format(c1Alloc, c1Ns))
         println("  iov-build cand2 (8-seg, list)         %5d        %6d".format(c2Alloc, c2Ns))
+    }
+
+    /**
+     * Warmup-sensitivity sweep: re-runs the iov-build scenario at
+     * progressively higher warmup counts to see whether HotSpot C2's
+     * escape analysis eventually elides cand1's SAM-lambda allocation.
+     *
+     * The 8 % cand2 advantage observed at the default warmup (1 000
+     * iterations) may be a transient — JIT compilation thresholds /
+     * deopt cycles on cold call sites tend to land in a regime where
+     * the lambda capture has not yet been proved local. With enough
+     * iterations under the same code path the C2 IR shapes the call
+     * site to a single concrete receiver type and the lambda gets
+     * stack-allocated (or eliminated outright), making cand1
+     * competitive with — or faster than — cand2 (mirroring the
+     * Native release-mode result where cand1 dominates by ~26 %).
+     *
+     * Three warmup tiers: 1k (default), 50k (well past C2 threshold),
+     * 200k (deeply warm — exercise OSR + tiered recompile).
+     */
+    private fun runIovBuildWarmupSweep() {
+        for (warmup in intArrayOf(1_000, 50_000, 200_000)) {
+            val c1 = measureIovBuildWithWarmup(warmup) { useCand1: Boolean ->
+                if (useCand1) {
+                    val buf = makeCand1(multiSegPayload, 8)
+                    val iovs = arrayOfNulls<ByteBuffer>(16)
+                    object : IovBuildCycle {
+                        override fun close() = buf.close()
+                        override fun runOnce() {
+                            var count = 0
+                            buf.forEachReadableSegment { mem, off, len ->
+                                val bb = mem.asByteBuffer().duplicate()
+                                bb.position(off)
+                                bb.limit(off + len)
+                                iovs[count] = bb
+                                count++
+                            }
+                            sink += count.toLong()
+                        }
+                    }
+                } else {
+                    val buf = makeCand2(multiSegPayload, 8)
+                    val iovs = arrayOfNulls<ByteBuffer>(16)
+                    object : IovBuildCycle {
+                        override fun close() = buf.close()
+                        override fun runOnce() {
+                            val list = buf.readableSegments()
+                            val n = list.size
+                            for (i in 0 until n) {
+                                val range = list[i]
+                                val bb = range.memory!!.asByteBuffer().duplicate()
+                                bb.position(range.offset)
+                                bb.limit(range.offset + range.length)
+                                iovs[i] = bb
+                            }
+                            sink += n.toLong()
+                        }
+                    }
+                }
+            }
+            println(
+                "  iov-build warmup=%6d cand1 / cand2: %5d / %5d B/c, %5d / %5d ns/c".format(
+                    warmup,
+                    c1.cand1AllocBytes,
+                    c1.cand2AllocBytes,
+                    c1.cand1Ns,
+                    c1.cand2Ns,
+                ),
+            )
+        }
+    }
+
+    private interface IovBuildCycle : AutoCloseable {
+        fun runOnce()
+    }
+
+    private data class WarmupTierResult(
+        val cand1AllocBytes: Long,
+        val cand1Ns: Long,
+        val cand2AllocBytes: Long,
+        val cand2Ns: Long,
+    )
+
+    private fun measureIovBuildWithWarmup(
+        warmupIterations: Int,
+        cycleFactory: (Boolean) -> IovBuildCycle,
+    ): WarmupTierResult {
+        val tid = Thread.currentThread().threadId()
+        // cand1
+        val c1Cycle = cycleFactory(true)
+        repeat(warmupIterations) { c1Cycle.runOnce() }
+        val c1AStart = tmx.getThreadAllocatedBytes(tid)
+        val c1TStart = System.nanoTime()
+        repeat(ITERS) { c1Cycle.runOnce() }
+        val c1TEnd = System.nanoTime()
+        val c1AEnd = tmx.getThreadAllocatedBytes(tid)
+        c1Cycle.close()
+        // cand2
+        val c2Cycle = cycleFactory(false)
+        repeat(warmupIterations) { c2Cycle.runOnce() }
+        val c2AStart = tmx.getThreadAllocatedBytes(tid)
+        val c2TStart = System.nanoTime()
+        repeat(ITERS) { c2Cycle.runOnce() }
+        val c2TEnd = System.nanoTime()
+        val c2AEnd = tmx.getThreadAllocatedBytes(tid)
+        c2Cycle.close()
+        return WarmupTierResult(
+            cand1AllocBytes = (c1AEnd - c1AStart) / ITERS,
+            cand1Ns = (c1TEnd - c1TStart) / ITERS,
+            cand2AllocBytes = (c2AEnd - c2AStart) / ITERS,
+            cand2Ns = (c2TEnd - c2TStart) / ITERS,
+        )
     }
 
     companion object {

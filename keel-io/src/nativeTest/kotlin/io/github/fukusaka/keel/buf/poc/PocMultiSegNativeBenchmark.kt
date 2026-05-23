@@ -5,8 +5,11 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.asNativePointer
 import io.github.fukusaka.keel.buf.poc.cand1.Cand1AsciiText
+import io.github.fukusaka.keel.buf.poc.cand1.Cand1IoBuf
 import io.github.fukusaka.keel.buf.poc.cand1.Cand1IoBufImpl
+import io.github.fukusaka.keel.buf.poc.cand1.SegmentRangeAction
 import io.github.fukusaka.keel.buf.poc.cand2.Cand2AsciiText
+import io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBuf
 import io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBufImpl
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.plus
@@ -92,6 +95,8 @@ class PocMultiSegNativeBenchmark {
         runWalk()
         runAscii()
         runIovBuild()
+        runIovBuildInterfaceMonomorphic()
+        runIovBuildInterfaceMegamorphic()
     }
 
     private fun runScan() {
@@ -360,6 +365,153 @@ class PocMultiSegNativeBenchmark {
         println("  iov-build cand1 (8-seg, callback)              $c1")
         println("  iov-build cand2 (8-seg, list)                  $c2")
     }
+
+    /**
+     * Condition (1): interface-typed receiver, but only one impl seen
+     * at the indirect call site. Kotlin/Native LTO should still be
+     * able to devirtualise + inline because the whole program contains
+     * a single concrete `Cand1IoBuf` impl reachable from this call
+     * site.
+     *
+     * If the numbers match [runIovBuild], the AOT compiler is robust
+     * against the static type widening (good). If they diverge, the
+     * concrete-type fast path in the original bench was effectively
+     * an artefact of the variable's declared type — production code
+     * that passes the buffer through `Cand1IoBuf` interface boundaries
+     * would degrade.
+     */
+    private fun runIovBuildInterfaceMonomorphic() {
+        val c1Ns = median3 {
+            val buf: Cand1IoBuf = makeCand1(multiSegPayload, 8)
+            val ptrs = LongArray(16)
+            val lens = IntArray(16)
+            try {
+                runBlock(ITERS) {
+                    var count = 0
+                    invokeCand1ForEach(buf) { mem, off, len ->
+                        ptrs[count] = (mem.asNativePointer() + off)!!.rawValue.toLong()
+                        lens[count] = len
+                        count++
+                    }
+                    sink += count.toLong()
+                }
+            } finally {
+                buf.close()
+            }
+        }
+        val c2Ns = median3 {
+            val buf: Cand2IoBuf = makeCand2(multiSegPayload, 8)
+            val ptrs = LongArray(16)
+            val lens = IntArray(16)
+            try {
+                runBlock(ITERS) {
+                    val list = invokeCand2ReadableSegments(buf)
+                    val n = list.size
+                    for (i in 0 until n) {
+                        val range = list[i]
+                        ptrs[i] = (range.memory!!.asNativePointer() + range.offset)!!.rawValue.toLong()
+                        lens[i] = range.length
+                    }
+                    sink += n.toLong()
+                }
+            } finally {
+                buf.close()
+            }
+        }
+        println("  iov-build cand1 (interface, monomorphic)       $c1Ns")
+        println("  iov-build cand2 (interface, monomorphic)       $c2Ns")
+    }
+
+    /**
+     * Condition (2): force the indirect call site to be megamorphic
+     * by also passing the stub impl through it during warm-up — so
+     * Kotlin/Native LTO sees two concrete types reaching the same
+     * call site and cannot pick one to inline.
+     *
+     * This is the **worst case** for the cand1 callback path on
+     * Native: every `forEachReadableSegment` invocation goes through
+     * a virtual call with no inlining of the SAM lambda, no inlining
+     * of the body. Same situation for the cand2 list path's
+     * `readableSegments()`. The comparison tells whether the JVM
+     * baseline (~165 / 152 ns) is closer to the Native worst case
+     * than to the Native best case.
+     */
+    private fun runIovBuildInterfaceMegamorphic() {
+        val stub1: Cand1IoBuf = Cand1IoBufStubImpl()
+        val stub2: Cand2IoBuf = Cand2IoBufStubImpl()
+        val c1Ns = median3 {
+            val real: Cand1IoBuf = makeCand1(multiSegPayload, 8)
+            val ptrs = LongArray(16)
+            val lens = IntArray(16)
+            try {
+                // Pollute the call site by routing the stub through
+                // the same helper before measuring. The helper's
+                // single call site now resolves to both
+                // Cand1IoBufImpl and Cand1IoBufStubImpl, which forces
+                // a virtual dispatch.
+                repeat(WARMUP) {
+                    invokeCand1ForEach(stub1) { _, _, _ -> /* no-op */ }
+                    invokeCand1ForEach(real) { _, _, _ -> /* no-op */ }
+                }
+                val mark = kotlin.time.TimeSource.Monotonic.markNow()
+                repeat(ITERS) {
+                    var count = 0
+                    invokeCand1ForEach(real) { mem, off, len ->
+                        ptrs[count] = (mem.asNativePointer() + off)!!.rawValue.toLong()
+                        lens[count] = len
+                        count++
+                    }
+                    sink += count.toLong()
+                }
+                mark.elapsedNow().inWholeNanoseconds / ITERS
+            } finally {
+                real.close()
+            }
+        }
+        val c2Ns = median3 {
+            val real: Cand2IoBuf = makeCand2(multiSegPayload, 8)
+            val ptrs = LongArray(16)
+            val lens = IntArray(16)
+            try {
+                repeat(WARMUP) {
+                    invokeCand2ReadableSegments(stub2)
+                    invokeCand2ReadableSegments(real)
+                }
+                val mark = kotlin.time.TimeSource.Monotonic.markNow()
+                repeat(ITERS) {
+                    val list = invokeCand2ReadableSegments(real)
+                    val n = list.size
+                    for (i in 0 until n) {
+                        val range = list[i]
+                        ptrs[i] = (range.memory!!.asNativePointer() + range.offset)!!.rawValue.toLong()
+                        lens[i] = range.length
+                    }
+                    sink += n.toLong()
+                }
+                mark.elapsedNow().inWholeNanoseconds / ITERS
+            } finally {
+                real.close()
+            }
+        }
+        println("  iov-build cand1 (interface, megamorphic)       $c1Ns")
+        println("  iov-build cand2 (interface, megamorphic)       $c2Ns")
+    }
+
+    /**
+     * Dispatch helper that takes a [Cand1IoBuf] interface argument.
+     * Having a single helper that is called from both `monomorphic`
+     * and `megamorphic` scenarios with different concrete impls is
+     * what makes the latter actually megamorphic — the AOT compiler
+     * sees both [Cand1IoBufImpl] and [Cand1IoBufStubImpl] reach
+     * `buf.forEachReadableSegment` here and can no longer pick one to
+     * specialise on.
+     */
+    private fun invokeCand1ForEach(buf: Cand1IoBuf, action: SegmentRangeAction) {
+        buf.forEachReadableSegment(action)
+    }
+
+    private fun invokeCand2ReadableSegments(buf: Cand2IoBuf): io.github.fukusaka.keel.buf.poc.cand2.SegmentRangeList =
+        buf.readableSegments()
 
     companion object {
         private const val WARMUP = 500
