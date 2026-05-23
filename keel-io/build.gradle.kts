@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
@@ -14,7 +16,15 @@ kotlin {
     // Native targets
     linuxX64()
     linuxArm64()
-    macosArm64()
+    macosArm64 {
+        // Provisional: opt-in release-mode test binary so the multi-seg
+        // IoBuf PoC microbench (`buf.poc.PocMultiSegNativeBenchmark` and
+        // `PocNativeOverheadDiagnostic`) can be measured under
+        // production-realistic Kotlin/Native AOT optimisation rather
+        // than the default debug-test binary. Removed once the PoC
+        // decision lands.
+        binaries.test("release", listOf(NativeBuildType.RELEASE))
+    }
     macosX64()
 
     // Intermediate source set shared by all native targets
