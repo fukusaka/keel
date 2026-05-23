@@ -316,7 +316,10 @@ class HttpHeaders {
         if (cur == null) {
             val cap = buf.capacity
             if (cap <= 0 || (cap and (cap - 1)) != 0) return -1
-            segmentLog2 = countTrailingZeroBits(cap)
+            // `Int.countTrailingZeroBits()` is `log2(cap)` for a power of
+            // two — the same primitive used by `LongObjectMap.shift` and
+            // `HttpResponseEncoder.size.countLeadingZeroBits / 4`.
+            segmentLog2 = cap.countTrailingZeroBits()
             backing = buf
             buf.retain()
             return 0
@@ -354,17 +357,6 @@ class HttpHeaders {
         val packed = slotsOrFail()[i * STRIDE + 3]
         val log2 = segmentLog2
         return if (log2 == 0 || extraBackings == null) packed else packed and ((1 shl log2) - 1)
-    }
-
-    /** Counts the trailing-zero bits of [v]; [v] must be a positive power of two. */
-    private fun countTrailingZeroBits(v: Int): Int {
-        var n = 0
-        var x = v
-        while (x > 1) {
-            x = x ushr 1
-            n++
-        }
-        return n
     }
 
     private fun appendSlot(hash: Int, nameStart: Int, nameLen: Int, valStart: Int, valLen: Int) {
