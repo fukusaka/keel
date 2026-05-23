@@ -5,6 +5,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asNativePointer
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -413,4 +414,60 @@ internal class KqueueIoTransport(
          */
         const val READ_BUFFER_POOL_SLOTS = 16
     }
+
+    // -----------------------------------------------------------------
+    // PoC scatter-gather write paths for the multi-seg IoBuf candidates
+    // (buf.poc.cand1 / buf.poc.cand2). Mirrors NioIoTransport.writeMulti
+    // for the JVM side; rolled into the production write path once the
+    // multi-seg candidate decision lands.
+    //
+    // Reuses [writevPtrs] / [writevLens] / [ensureWritevCapacity] from
+    // the existing single-seg flush path so there is no second iovec
+    // scratch allocation per transport.
+    // -----------------------------------------------------------------
+
+    @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+    fun writeMulti(buf: io.github.fukusaka.keel.buf.poc.cand1.Cand1IoBuf): Int {
+        var count = 0
+        buf.forEachReadableSegment { memory, offset, length ->
+            ensureWritevCapacity(count + 1)
+            val base = memory.asNativePointer()
+            writevPtrs[count] = (base + offset)!!.rawValue.toLong()
+            writevLens[count] = length
+            count++
+        }
+        if (count == 0) return 0
+        val written = writevAndExtractBytes(count)
+        buf.readerIndex = (buf.readerIndex + written).coerceAtMost(buf.writerIndex)
+        return written
+    }
+
+    @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+    fun writeMulti(buf: io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBuf): Int {
+        val list = buf.readableSegments()
+        if (list.size == 0) return 0
+        ensureWritevCapacity(list.size)
+        for (i in 0 until list.size) {
+            val range = list[i]
+            val base = range.memory!!.asNativePointer()
+            writevPtrs[i] = (base + range.offset)!!.rawValue.toLong()
+            writevLens[i] = range.length
+        }
+        val written = writevAndExtractBytes(list.size)
+        buf.readerIndex = (buf.readerIndex + written).coerceAtMost(buf.writerIndex)
+        return written
+    }
+
+    /**
+     * Runs `nativeSocket.writev` and pulls the byte count out of the
+     * sealed `WriteResult`. `WouldBlock` / `Failed` are flattened to 0
+     * for PoC scope — the caller (microbench harness) drives a fresh
+     * connection per measurement so partial-write retry plumbing is
+     * not on the critical path.
+     */
+    private fun writevAndExtractBytes(count: Int): Int =
+        when (val result = nativeSocket.writev(fd, writevPtrs, writevLens, count)) {
+            is io.github.fukusaka.keel.native.posix.WriteResult.Written -> result.bytes
+            else -> 0
+        }
 }

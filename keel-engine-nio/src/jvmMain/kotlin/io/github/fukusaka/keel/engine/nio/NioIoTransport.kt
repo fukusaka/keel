@@ -5,6 +5,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asByteBuffer
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -352,5 +353,78 @@ internal class NioIoTransport(
          * is idempotent so it is a no-op for the already-registered default.
          */
         const val READ_BUFFER_POOL_SLOTS = 16
+    }
+
+    // -----------------------------------------------------------------
+    // PoC scatter-gather write paths for the multi-seg IoBuf candidates
+    // (buf.poc.cand1 / buf.poc.cand2).
+    //
+    // Lives on the existing IoTransport so the engine's socket handle
+    // stays in one place. Rolled into the production write path
+    // (replacing the existing write(IoBuf) impl) once the multi-seg
+    // candidate decision lands; deleted otherwise. Caller responsibility:
+    // run on the EventLoop thread that owns this transport, same as the
+    // existing write(IoBuf) path.
+    // -----------------------------------------------------------------
+
+    /**
+     * iovec scratch array reused across PoC scatter-gather writes.
+     * Grows when the longest candidate-IoBuf chain seen so far
+     * outgrows it; the previous slots are kept (no copy) on growth so
+     * cap-bounded chains do not amplify allocations.
+     */
+    private var pocIovs: Array<java.nio.ByteBuffer?> = arrayOfNulls(4)
+
+    private fun ensurePocIovCapacity(need: Int) {
+        if (pocIovs.size < need) {
+            pocIovs = pocIovs.copyOf((need * 2).coerceAtLeast(4))
+        }
+    }
+
+    /**
+     * Candidate-1 scatter-gather send: collects every readable segment
+     * via the `forEachReadableSegment` callback, builds a
+     * `ByteBuffer[]` view over each segment's window, and emits one
+     * `SocketChannel.write(ByteBuffer[])` syscall. Advances the
+     * buffer's `readerIndex` by the bytes the kernel actually wrote
+     * (partial-write handling is deferred to the caller for PoC scope).
+     */
+    fun writeMulti(buf: io.github.fukusaka.keel.buf.poc.cand1.Cand1IoBuf): Long {
+        var count = 0
+        buf.forEachReadableSegment { memory, offset, length ->
+            ensurePocIovCapacity(count + 1)
+            val bb = memory.asByteBuffer().duplicate()
+            bb.position(offset)
+            bb.limit(offset + length)
+            pocIovs[count] = bb
+            count++
+        }
+        @Suppress("UNCHECKED_CAST")
+        val n = socketChannel.write(pocIovs as Array<java.nio.ByteBuffer>, 0, count)
+        buf.readerIndex = (buf.readerIndex + n.toInt()).coerceAtMost(buf.writerIndex)
+        return n
+    }
+
+    /**
+     * Candidate-2 scatter-gather send: same syscall as the candidate-1
+     * variant, but walks the segments via the explicit
+     * [io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBuf.readableSegments]
+     * list API rather than the callback. The PoC microbench compares
+     * the per-call cost of the two iteration shapes.
+     */
+    fun writeMulti(buf: io.github.fukusaka.keel.buf.poc.cand2.Cand2IoBuf): Long {
+        val list = buf.readableSegments()
+        ensurePocIovCapacity(list.size)
+        for (i in 0 until list.size) {
+            val range = list[i]
+            val bb = range.memory!!.asByteBuffer().duplicate()
+            bb.position(range.offset)
+            bb.limit(range.offset + range.length)
+            pocIovs[i] = bb
+        }
+        @Suppress("UNCHECKED_CAST")
+        val n = socketChannel.write(pocIovs as Array<java.nio.ByteBuffer>, 0, list.size)
+        buf.readerIndex = (buf.readerIndex + n.toInt()).coerceAtMost(buf.writerIndex)
+        return n
     }
 }
