@@ -32,7 +32,22 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 class TlsHandler(
     private val codec: TlsCodec,
+    /**
+     * Per-record plaintext buffer size for this connection (the buffer the
+     * downstream codec receives as its "recv segment" on a TLS connection).
+     * Defaults to [TLS_PLAINTEXT_BUF_SIZE_DEFAULT] (16 KiB, the RFC 8446
+     * §5.1 maximum), which preserves the historical hardcoded value. Set
+     * via [io.github.fukusaka.keel.server.TlsServerConfig.plaintextBufferSize]
+     * for per-server override. Must be a power of two in
+     * [[TLS_PLAINTEXT_BUF_SIZE_MIN]]..[TLS_PLAINTEXT_BUF_SIZE_MAX]; see
+     * [requireValidPlaintextBufferSize].
+     */
+    private val plaintextBufferSize: Int = TLS_PLAINTEXT_BUF_SIZE_DEFAULT,
 ) : DuplexHandler {
+
+    init {
+        requireValidPlaintextBufferSize(plaintextBufferSize)
+    }
 
     private var ctx: PipelineHandlerContext? = null
     private var accumulate: IoBuf? = null
@@ -40,7 +55,7 @@ class TlsHandler(
 
     override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
-        ctx.allocator.registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, PLAINTEXT_POOL_SLOTS)
+        ctx.allocator.registerPoolSize(plaintextBufferSize, PLAINTEXT_POOL_SLOTS)
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
@@ -70,7 +85,7 @@ class TlsHandler(
         val input = mergeWithAccumulate(ctx, cipherBuf)
 
         while (input.readableBytes > 0) {
-            val plainBuf = ctx.allocator.allocate(TLS_PLAINTEXT_BUF_SIZE)
+            val plainBuf = ctx.allocator.allocate(plaintextBufferSize)
             val result = try {
                 codec.unprotect(input, plainBuf)
             } catch (e: TlsException) {
@@ -457,8 +472,9 @@ class TlsHandler(
          *
          * ### Buffer pooling
          *
-         * Plaintext buffers (16 KiB) are registered as a pool size class
-         * via [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
+         * Plaintext buffers (`plaintextBufferSize`, default 16 KiB) are
+         * registered as a pool size class via
+         * [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
          * in [handlerAdded], so inbound plaintext allocations hit the pool
          * on steady-state connections. Ciphertext buffers (17 KiB) are not
          * pooled: JFR profiling showed TLS buffer allocation accounts for
@@ -471,8 +487,52 @@ class TlsHandler(
          * [3]: https://www.rfc-editor.org/rfc/rfc8449#section-1
          * [4]: https://www.rfc-editor.org/rfc/rfc8446#section-5.4
          */
-        /** Maximum plaintext record payload: 2^14 = 16384 (RFC 8446 §5.1). */
-        private const val TLS_PLAINTEXT_BUF_SIZE = 16 * 1024
+        /**
+         * Default plaintext buffer size: 2^14 = 16384 (RFC 8446 §5.1 max
+         * plaintext record payload). Honours any compliant peer's record
+         * size without a `record_overflow` alert. Preserved as the default
+         * for [TlsHandler.plaintextBufferSize], so installers that do not
+         * pass a per-connection override see no behaviour change.
+         */
+        public const val TLS_PLAINTEXT_BUF_SIZE_DEFAULT: Int = 16 * 1024
+
+        /**
+         * Minimum permitted plaintext buffer size for [TlsHandler]. Set to
+         * the RFC 8446 §5.1 ceiling so the receiver can accept any
+         * compliant peer record without `record_overflow`; shrinking below
+         * this requires advertising a smaller `record_size_limit`
+         * (RFC 8449), a follow-up not implemented in any keel TLS backend
+         * yet.
+         */
+        public const val TLS_PLAINTEXT_BUF_SIZE_MIN: Int = 16 * 1024
+
+        /**
+         * Maximum permitted plaintext buffer size for [TlsHandler]. 1 MiB
+         * matches the upper bound of [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]
+         * so callers face a uniform envelope across the transport-side
+         * read buffer and the TLS-side codec segment.
+         */
+        public const val TLS_PLAINTEXT_BUF_SIZE_MAX: Int = 1 shl 20
+
+        /**
+         * Validates a [TlsHandler.plaintextBufferSize] candidate: a power
+         * of two within [TLS_PLAINTEXT_BUF_SIZE_MIN]..[TLS_PLAINTEXT_BUF_SIZE_MAX].
+         * Separate from
+         * `IoEngineConfig.requireValidReadBufferSize` because the TLS
+         * plaintext buffer has a stricter lower bound (the RFC 8446 §5.1
+         * ceiling); applying the readBufferSize validator here would not
+         * catch the unsafe sub-16 KiB range, and applying this validator
+         * to transport read buffers would be a regression.
+         */
+        public fun requireValidPlaintextBufferSize(size: Int) {
+            require(size in TLS_PLAINTEXT_BUF_SIZE_MIN..TLS_PLAINTEXT_BUF_SIZE_MAX) {
+                "plaintextBufferSize must be in " +
+                    "$TLS_PLAINTEXT_BUF_SIZE_MIN..$TLS_PLAINTEXT_BUF_SIZE_MAX, was $size"
+            }
+            require(size and (size - 1) == 0) {
+                "plaintextBufferSize must be a power of two, was $size"
+            }
+        }
 
         /**
          * Maximum ciphertext record on the wire: plaintext (16 KiB) + AEAD
