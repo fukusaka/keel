@@ -29,7 +29,11 @@ import java.nio.ByteBuffer
  * to throw [IndexOutOfBoundsException] if index >= limit.
  */
 class DirectIoBuf private constructor(
-    private val segment: Segment,
+    // Internal (not private) so the multi-seg IoBuf PoC under
+    // buf.poc.* can extract the underlying Segment via
+    // [io.github.fukusaka.keel.buf.poc.extractSegment]. Reverts to
+    // `private` after the PoC decision lands.
+    internal val segment: Segment,
     private val windowStart: Int,
     private val windowLength: Int,
 ) : IoBuf, PoolableIoBuf, NioByteBufferBacking {
