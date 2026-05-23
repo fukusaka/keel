@@ -542,9 +542,14 @@ class TlsHandler(
          */
         private const val TLS_CIPHERTEXT_BUF_SIZE = 17 * 1024
 
-        // Per-EventLoop pool slots for 16 KiB plaintext buffers.
-        // Typical HTTPS connection uses 1-2 concurrent inbound buffers;
-        // 4 slots accommodate a small burst without over-committing memory.
+        // Per-EventLoop pool slots for plaintext buffers (size is the
+        // per-connection `plaintextBufferSize`, default 16 KiB). Typical
+        // HTTPS connection uses 1-2 concurrent inbound buffers; 4 slots
+        // accommodate a small burst without over-committing memory.
+        // Callers configuring a larger plaintextBufferSize trade pool
+        // capacity for per-slot memory accordingly; pool slot count itself
+        // is not configurable here (follow-up if a per-bind slot knob
+        // turns out to matter empirically).
         private const val PLAINTEXT_POOL_SLOTS = 4
 
         // Defense-in-depth: bounds total flushHandshakeResponse iterations.
