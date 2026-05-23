@@ -3,19 +3,28 @@ package io.github.fukusaka.keel.buf
 import org.khronos.webgl.Int8Array
 
 /**
- * JS/Node.js [IoBuf] implementation — a *view* over a [Segment].
+ * JS/Node.js [IoBuf] implementation — a *view* over a [Segment] or,
+ * when grown via [appendSegment], a chain of segments.
  *
- * The buffer holds a [Segment] reference; the segment's
- * [RawSegmentBacking] carries the [Int8Array]. At construction the view
- * reads the [Int8Array] out of the backing once and caches it in
- * [cachedBase]; all access uses the cached array directly. V8's garbage
- * collector manages the underlying `ArrayBuffer`, so [close] and
- * [release] do not free memory — they only update the reference count
- * for API compatibility with Native/JVM implementations.
+ * A *primary* `TypedArrayIoBuf` carries an internal [SegmentChain]; the
+ * chain initially holds just its primary segment, and [appendSegment]
+ * extends it with follow-on segments up to [maxCapacity]. Byte ops use
+ * the cached primary [Int8Array] for accesses that fall inside the
+ * primary segment (the hot path), and route to the chain's
+ * `locateLogical` helper for the cross-segment slow path. The
+ * [Int8ArrayBacking] carries the underlying typed array; V8's garbage
+ * collector manages each `ArrayBuffer`, so [close] and [release] do not
+ * free memory — they only update the reference count for API
+ * compatibility with Native/JVM implementations.
+ *
+ * A *slice* (returned by [sliceWindow] / [sliceDefaultIoBuf]) is a
+ * single-segment same-[Segment] window view with [chain] left `null`,
+ * supporting the multi-segment iteration API (single range covering the
+ * window) but rejecting [appendSegment].
  *
  * **External memory** ([wrapExternal] factory): wraps a caller-provided
- * [Int8Array] without allocation. Pass a [SegmentOwner] if recycling
- * is required.
+ * [Int8Array] without allocation. External-wrapped buffers are
+ * single-segment.
  *
  * Note: [Int8Array] provides direct byte-level access without `dynamic`
  * type casts, ensuring type safety in Kotlin/JS IR mode.
@@ -24,17 +33,20 @@ class TypedArrayIoBuf private constructor(
     private val segment: Segment,
     private val windowStart: Int,
     private val windowLength: Int,
+    private val chain: SegmentChain?,
 ) : IoBuf, PoolableIoBuf {
 
     /**
      * Primary-view constructor: a full-window view over [segment] that
-     * registers itself as the segment's [Segment.view].
-     *
-     * The windowed constructor `(segment, windowStart, windowLength)` is
-     * used for slices; it deliberately does NOT touch [Segment.view] so
-     * the primary view remains the segment's canonical owner-facing view.
+     * registers itself as the segment's [Segment.view] and owns a
+     * [SegmentChain] for growth up to [maxCapacity].
      */
-    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
+    private constructor(segment: Segment, maxCapacity: Int) : this(
+        segment,
+        windowStart = 0,
+        windowLength = segment.capacity,
+        chain = SegmentChain(segment, maxCapacity),
+    ) {
         segment.view = this
     }
 
@@ -42,8 +54,10 @@ class TypedArrayIoBuf private constructor(
      * Creates a heap-owned [TypedArrayIoBuf] backed by a freshly-allocated
      * [Segment]. V8 reclaims the backing [Int8Array] via GC; the
      * segment's owner defaults to [HeapOwner] with a no-op backing free.
+     * `maxCapacity == capacity` — no segment chaining is permitted unless
+     * created via [wrapExternal] with explicit larger cap.
      */
-    constructor(capacity: Int) : this(allocSegment(capacity))
+    constructor(capacity: Int) : this(allocSegment(capacity), capacity)
 
     /**
      * Cached [Int8Array] windowed to `[windowStart, windowStart +
@@ -62,7 +76,9 @@ class TypedArrayIoBuf private constructor(
 
     private val buf: Int8Array get() = cachedBase
 
-    override val capacity: Int get() = windowLength
+    override val capacity: Int get() = chain?.totalCapacity ?: windowLength
+
+    override val maxCapacity: Int get() = chain?.maxCapacity ?: windowLength
 
     override var segmentOwner: SegmentOwner
         get() = segment.owner
@@ -75,62 +91,228 @@ class TypedArrayIoBuf private constructor(
     override val writableBytes: Int get() = capacity - writerIndex
 
     override fun writeByte(value: Byte) {
-        buf.asDynamic()[writerIndex++] = value
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (writerIndex < primaryCap) {
+            buf.asDynamic()[writerIndex++] = value
+        } else {
+            writeByteCrossSeg(value)
+        }
+    }
+
+    private fun writeByteCrossSeg(value: Byte) {
+        val c = chain ?: error("writeByteCrossSeg called without chain (slice)")
+        val packed = c.locateLogical(writerIndex)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        val targetBacking = c.segmentAt(segIdx).backing as Int8ArrayBacking
+        targetBacking.base.asDynamic()[localOff] = value
+        writerIndex++
     }
 
     override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
-        for (i in 0 until length) {
-            buf.asDynamic()[writerIndex++] = src[offset + i]
+        if (length == 0) return
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        val primaryRemaining = primaryCap - writerIndex
+        if (length <= primaryRemaining) {
+            for (i in 0 until length) {
+                buf.asDynamic()[writerIndex + i] = src[offset + i]
+            }
+            writerIndex += length
+        } else {
+            writeByteArrayCrossSeg(src, offset, length)
         }
+    }
+
+    private fun writeByteArrayCrossSeg(src: ByteArray, srcOffset: Int, length: Int) {
+        val c = chain ?: error("writeByteArrayCrossSeg called without chain (slice)")
+        var remaining = length
+        var srcIdx = srcOffset
+        var write = writerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(write)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val targetSeg = c.segmentAt(segIdx)
+            val segAvail = targetSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val targetBacking = (targetSeg.backing as Int8ArrayBacking).base
+            for (i in 0 until toCopy) {
+                targetBacking.asDynamic()[localOff + i] = src[srcIdx + i]
+            }
+            write += toCopy
+            srcIdx += toCopy
+            remaining -= toCopy
+        }
+        writerIndex = write
     }
 
     override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
-        for (i in 0 until length) {
-            buf.asDynamic()[writerIndex + i] = src[srcOffset + i].code.toByte()
+        if (length == 0) return
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        val primaryRemaining = primaryCap - writerIndex
+        if (length <= primaryRemaining) {
+            for (i in 0 until length) {
+                buf.asDynamic()[writerIndex + i] = src[srcOffset + i].code.toByte()
+            }
+            writerIndex += length
+        } else {
+            writeAsciiCrossSeg(src, srcOffset, length)
         }
-        writerIndex += length
+    }
+
+    private fun writeAsciiCrossSeg(src: String, srcOffset: Int, length: Int) {
+        val c = chain ?: error("writeAsciiCrossSeg called without chain (slice)")
+        var remaining = length
+        var srcIdx = srcOffset
+        var write = writerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(write)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val targetSeg = c.segmentAt(segIdx)
+            val segAvail = targetSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val targetBacking = (targetSeg.backing as Int8ArrayBacking).base
+            for (i in 0 until toCopy) {
+                targetBacking.asDynamic()[localOff + i] = src[srcIdx + i].code.toByte()
+            }
+            write += toCopy
+            srcIdx += toCopy
+            remaining -= toCopy
+        }
+        writerIndex = write
     }
 
     override fun copyTo(dest: IoBuf, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
-        // Int8Array.set(source, offset) is V8-optimized for bulk typed array copy.
-        val destBuf = (dest as TypedArrayIoBuf).buf
-        destBuf.set(buf.subarray(readerIndex, readerIndex + length), dest.writerIndex)
-        readerIndex += length
-        dest.writerIndex += length
+        val srcPrimaryCap = chain?.primaryCapacity ?: windowLength
+        val srcStaysInPrimary = readerIndex + length <= srcPrimaryCap
+        val destStaysInPrimary = dest is TypedArrayIoBuf &&
+            dest.writerIndex + length <= (dest.chain?.primaryCapacity ?: dest.windowLength)
+        if (dest is TypedArrayIoBuf && srcStaysInPrimary && destStaysInPrimary) {
+            // Int8Array.set(source, offset) is V8-optimized for bulk
+            // typed array copy.
+            val destBuf = dest.buf
+            destBuf.set(buf.subarray(readerIndex, readerIndex + length), dest.writerIndex)
+            readerIndex += length
+            dest.writerIndex += length
+        } else {
+            val tmp = ByteArray(length)
+            readByteArray(tmp, 0, length)
+            dest.writeByteArray(tmp, 0, length)
+        }
     }
 
     override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         if (length == 0) return
-        for (i in 0 until length) {
-            dest[offset + i] = (buf.asDynamic()[readerIndex + i] as Int).toByte()
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (readerIndex + length <= primaryCap) {
+            for (i in 0 until length) {
+                dest[offset + i] = (buf.asDynamic()[readerIndex + i] as Int).toByte()
+            }
+            readerIndex += length
+        } else {
+            readByteArrayCrossSeg(dest, offset, length)
         }
-        readerIndex += length
     }
 
-    override fun readByte(): Byte = (buf.asDynamic()[readerIndex++] as Int).toByte()
+    private fun readByteArrayCrossSeg(dest: ByteArray, destOffset: Int, length: Int) {
+        val c = chain ?: error("readByteArrayCrossSeg called without chain (slice)")
+        var remaining = length
+        var destIdx = destOffset
+        var read = readerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(read)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val srcSeg = c.segmentAt(segIdx)
+            val segAvail = srcSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val srcBacking = (srcSeg.backing as Int8ArrayBacking).base
+            for (i in 0 until toCopy) {
+                dest[destIdx + i] = (srcBacking.asDynamic()[localOff + i] as Int).toByte()
+            }
+            read += toCopy
+            destIdx += toCopy
+            remaining -= toCopy
+        }
+        readerIndex = read
+    }
 
-    override fun getByte(index: Int): Byte = (buf.asDynamic()[index] as Int).toByte()
+    override fun readByte(): Byte {
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (readerIndex < primaryCap) {
+            return (buf.asDynamic()[readerIndex++] as Int).toByte()
+        }
+        return readByteCrossSeg()
+    }
+
+    private fun readByteCrossSeg(): Byte {
+        val c = chain ?: error("readByteCrossSeg called without chain (slice)")
+        val packed = c.locateLogical(readerIndex)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        readerIndex++
+        return ((c.segmentAt(segIdx).backing as Int8ArrayBacking).base.asDynamic()[localOff] as Int).toByte()
+    }
+
+    override fun getByte(index: Int): Byte {
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (index < primaryCap) {
+            return (buf.asDynamic()[index] as Int).toByte()
+        }
+        val c = chain ?: error("getByte cross-seg without chain (slice)")
+        val packed = c.locateLogical(index)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        return ((c.segmentAt(segIdx).backing as Int8ArrayBacking).base.asDynamic()[localOff] as Int).toByte()
+    }
 
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
     }
 
+    override fun appendSegment(seg: Segment) {
+        val c = chain
+            ?: throw UnsupportedOperationException("TypedArrayIoBuf slice does not support segment chaining")
+        c.appendSegment(seg)
+    }
+
+    override fun forEachReadableSegment(action: SegmentRangeAction) {
+        val c = chain
+        if (c != null) {
+            c.forEachReadableSegment(readerIndex, writerIndex, action)
+        } else if (readerIndex < writerIndex) {
+            action.apply(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
+        }
+    }
+
+    override fun fillReadableSegments(into: SegmentRangeList) {
+        val c = chain
+        if (c != null) {
+            c.fillReadableSegments(readerIndex, writerIndex, into)
+        } else {
+            into.reset()
+            if (readerIndex < writerIndex) {
+                into.acquireSlot().set(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
+            }
+        }
+    }
+
     /**
      * Returns a same-[Segment] window view of [length] bytes at [offset]
      * within this buffer's window.
      *
-     * This is the same-[Segment] window-view slice path: the returned
-     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
-     * needs no throwaway wrapper segment. The caller owns the returned
-     * handle and must [release] it; when the segment's refcount reaches
-     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
+     * Multi-seg sources: [offset] is interpreted in *logical* coordinates
+     * spanning the chain, but the produced slice is restricted to bytes
+     * inside the primary segment — cross-segment slicing is rejected
+     * with [IllegalArgumentException] in PR-2.
      *
      * The view starts with `readerIndex = 0` and `writerIndex = length`.
      * A zero [length] yields [EmptyIoBuf].
@@ -141,26 +323,44 @@ class TypedArrayIoBuf private constructor(
             "slice out of range: offset=$offset length=$length capacity=$capacity"
         }
         if (length == 0) return EmptyIoBuf
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        require(offset + length <= primaryCap) {
+            "cross-segment slice not yet supported: offset=$offset length=$length primaryCapacity=$primaryCap"
+        }
         segment.retain()
-        return TypedArrayIoBuf(segment, windowStart + offset, length).also {
+        return TypedArrayIoBuf(
+            segment = segment,
+            windowStart = windowStart + offset,
+            windowLength = length,
+            chain = null,
+        ).also {
             it.readerIndex = 0
             it.writerIndex = length
         }
     }
 
     override fun retain(): IoBuf {
-        segment.retain()
+        val c = chain
+        if (c != null) c.retainAll() else segment.retain()
         return this
     }
 
-    override fun release(): Boolean = segment.release()
+    override fun release(): Boolean {
+        val c = chain
+        return c?.releaseAll() ?: segment.release()
+    }
 
     override fun close() {
         // Int8Array is GC-managed so routing the raw-memory free through
-        // the Segment's backing is a no-op. Escape-hatch path bypasses
-        // the segment owner so pool slots / external handles leak
+        // each Segment's backing is a no-op. Escape-hatch path bypasses
+        // segment owners so pool slots / external handles leak
         // (intentional). RawSegmentBacking.free() is idempotent.
         segment.backing.free()
+        chain?.let { c ->
+            for (i in 1 until c.segmentCount) {
+                c.segmentAt(i).backing.free()
+            }
+        }
     }
 
     /** The backing [Int8Array] for engine-layer I/O. */
@@ -172,7 +372,8 @@ class TypedArrayIoBuf private constructor(
          * without allocation.
          *
          * The returned buffer does NOT own the array; the supplied
-         * [owner] handles cleanup on refcount-zero.
+         * [owner] handles cleanup on refcount-zero. External-wrapped
+         * buffers are single-segment.
          *
          * @param array         The external [Int8Array] to wrap.
          * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
@@ -186,7 +387,7 @@ class TypedArrayIoBuf private constructor(
         ): TypedArrayIoBuf {
             val segment = Segment(Int8ArrayBacking(array), array.length)
             segment.owner = owner
-            return TypedArrayIoBuf(segment).also {
+            return TypedArrayIoBuf(segment, array.length).also {
                 it.writerIndex = bytesWritten
             }
         }
@@ -194,6 +395,16 @@ class TypedArrayIoBuf private constructor(
         /** Allocates a heap-owned [Segment] of [capacity] bytes. */
         private fun allocSegment(capacity: Int): Segment =
             Segment(Int8ArrayBacking(Int8Array(capacity)), capacity)
+
+        /**
+         * Wraps an already-allocated heap-owned [Segment] as a
+         * [TypedArrayIoBuf] with explicit [maxCapacity]. Used by codec /
+         * engine call sites that want a multi-seg-capable buffer.
+         */
+        internal fun overSegmentWithCap(segment: Segment, owner: SegmentOwner, maxCapacity: Int): TypedArrayIoBuf {
+            segment.owner = owner
+            return TypedArrayIoBuf(segment, maxCapacity)
+        }
     }
 }
 
