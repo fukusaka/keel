@@ -417,7 +417,14 @@ internal class NioIoTransport(
         ensurePocIovCapacity(list.size)
         for (i in 0 until list.size) {
             val range = list[i]
-            val bb = range.memory!!.asByteBuffer().duplicate()
+            // SegmentRange.memory is nullable because the API contract
+            // allows a fresh instance to be uninitialised; readableSegments
+            // returns instances whose fields the impl has just populated,
+            // so the value is non-null here by construction.
+            val memory = checkNotNull(range.memory) {
+                "SegmentRange.memory must be set by Cand2IoBuf.readableSegments before iov-build"
+            }
+            val bb = memory.asByteBuffer().duplicate()
             bb.position(range.offset)
             bb.limit(range.offset + range.length)
             pocIovs[i] = bb

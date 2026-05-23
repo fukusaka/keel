@@ -47,5 +47,17 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.test)
             }
         }
+        // PoC scope: source set for tests that run on JVM + Native
+        // but NOT on JS. The multi-seg IoBuf PoC's `expect`/`actual`
+        // segment-access shim has JS stubs that throw — those exist
+        // only to satisfy the contract, not as a real impl — so tests
+        // that exercise the real read/write paths must skip JS.
+        // Removed alongside `buf.poc.*` once the candidate decision
+        // lands.
+        val jvmAndNativeTest by creating {
+            dependsOn(commonTest.get())
+        }
+        jvmTest { dependsOn(jvmAndNativeTest) }
+        nativeTest { dependsOn(jvmAndNativeTest) }
     }
 }
