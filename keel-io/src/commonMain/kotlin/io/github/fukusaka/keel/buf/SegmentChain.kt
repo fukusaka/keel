@@ -23,9 +23,11 @@ package io.github.fukusaka.keel.buf
  * allocates segments itself.
  *
  * **Refcount lifecycle**: [retainAll] / [releaseAll] iterate the chain
- * and apply the operation to every segment. Releasing the chain's
- * primary segment also releases the segment's cached [Segment.view]
- * memory if the primary's refcount reaches zero.
+ * and apply the operation to every segment. Each [Segment]'s own
+ * `release` decides what happens when its refcount reaches zero (the
+ * heap-owned default frees the backing; pool-owned segments return
+ * themselves to the originating pool). [SegmentChain] has no separate
+ * lifecycle of its own — it is a thin organiser over its segments.
  *
  * **Thread safety**: single EventLoop ownership, identical to [IoBuf].
  * All mutating operations (append, retain, release) and reads must run
