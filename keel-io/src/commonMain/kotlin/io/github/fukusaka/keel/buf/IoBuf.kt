@@ -195,6 +195,77 @@ interface IoBuf : Releasable {
      * Safe to call multiple times (idempotent).
      */
     fun close()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Multi-segment surface (PoC PR #602 design decision; foundation
+    // primitives in PR #603). [capacity] is multi-seg-aware: it returns
+    // the *current* sum of segment capacities — appending a segment
+    // grows it. The platform IoBuf implementations
+    // ([DirectIoBuf] / [NativeIoBuf] / [TypedArrayIoBuf]) override these
+    // defaults to delegate to an internal [SegmentChain]; custom
+    // (non-Segment-backed) implementations such as engine-io-uring's
+    // `RingBufferIoBuf` keep the defaults and stay effectively single-
+    // segment.
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Hard upper bound on [capacity] for buffers that support segment
+     * chaining. [appendSegment] throws [KeelBufferOverflowException]
+     * when the sum of segment capacities would exceed this value.
+     *
+     * Default = [capacity] (single-segment, no growth permitted) so
+     * existing custom implementations behave exactly as before.
+     */
+    val maxCapacity: Int get() = capacity
+
+    /**
+     * Appends [seg] as the next segment in this buffer's chain, extending
+     * [capacity] by `seg.capacity`. Ownership of the segment's reference
+     * count is transferred to this buffer — the buffer's [release] /
+     * [close] decrements every chained segment.
+     *
+     * @throws KeelBufferOverflowException if the new total would exceed [maxCapacity].
+     * @throws UnsupportedOperationException for non-Segment-backed implementations
+     *   (the default `IoBuf` body throws; multi-seg-capable platform impls override).
+     */
+    fun appendSegment(seg: Segment) {
+        throw UnsupportedOperationException(
+            "IoBuf implementation ${this::class.simpleName} does not support segment chaining",
+        )
+    }
+
+    /**
+     * Iterates the readable byte windows of this buffer in head→tail
+     * order, calling [action] once per intersected segment. The
+     * `(memory, offset, length)` trio identifies a contiguous window in
+     * the segment's [SegmentBacking] local coordinate space; engines
+     * combine the platform extensions ([SegmentBacking.asByteBuffer] /
+     * `asNativePointer` / `asInt8Array`) with `(offset, length)` to
+     * build scatter-gather descriptors.
+     *
+     * Default body throws [UnsupportedOperationException] for non-
+     * Segment-backed implementations; the platform impls override.
+     */
+    fun forEachReadableSegment(action: SegmentRangeAction) {
+        throw UnsupportedOperationException(
+            "IoBuf implementation ${this::class.simpleName} does not expose readable segments",
+        )
+    }
+
+    /**
+     * Fills [into] with the readable byte windows of this buffer in
+     * head→tail order. [into] is reset before populating, so the caller
+     * may keep a single [SegmentRangeList] instance and reuse it across
+     * iterations without allocating.
+     *
+     * Default body throws [UnsupportedOperationException] for non-
+     * Segment-backed implementations; the platform impls override.
+     */
+    fun fillReadableSegments(into: SegmentRangeList) {
+        throw UnsupportedOperationException(
+            "IoBuf implementation ${this::class.simpleName} does not expose readable segments",
+        )
+    }
 }
 
 /**
