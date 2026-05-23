@@ -25,7 +25,7 @@ package io.github.fukusaka.keel.buf
  * that owns the [IoBuf] view over it; [free] is non-atomic and must run
  * on that thread.
  */
-internal interface RawSegmentBacking {
+internal interface RawSegmentBacking : SegmentBacking {
     /**
      * Releases the raw memory region.
      *
