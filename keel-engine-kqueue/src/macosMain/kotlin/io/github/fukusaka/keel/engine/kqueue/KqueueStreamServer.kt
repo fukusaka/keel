@@ -106,7 +106,8 @@ internal class KqueueStreamServer(
                     val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
                     val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val workerLoop = workerGroup.next()
-                    val transport = KqueueIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket)
+                    val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
+                    val transport = KqueueIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
                     val channel = KqueuePipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )

@@ -100,7 +100,8 @@ internal class EpollPipelinedStreamServer(
     }
 
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop) {
-        val transport = EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket)
+        val rbs = config.readBufferSize ?: loop.readBufferSize
+        val transport = EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs)
         val channel = EpollPipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

@@ -90,6 +90,7 @@ internal class NioPipelinedStreamServer(
             loop,
             loop.allocator,
             idleReadPolicy,
+            config.readBufferSize ?: loop.readBufferSize,
         )
         val channel = NioPipelinedChannel(transport, logger)
         config.initializeConnection(channel)

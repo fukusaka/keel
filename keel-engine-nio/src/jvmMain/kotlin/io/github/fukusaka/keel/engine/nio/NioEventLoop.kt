@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import java.nio.channels.SelectableChannel
@@ -57,6 +58,15 @@ internal class NioEventLoop(
      * and therefore never invoke the allocator.
      */
     val allocator: BufferAllocator = DefaultAllocator,
+    /**
+     * Engine-wide default read buffer size
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
+     * connections on this loop. Used as the fallback when a connection's
+     * [io.github.fukusaka.keel.core.BindConfig.readBufferSize] /
+     * [io.github.fukusaka.keel.core.ConnectConfig.readBufferSize] is `null`;
+     * the effective size is captured per connection on the transport.
+     */
+    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) : CoroutineDispatcher() {
 
     internal val selector: Selector = Selector.open()
@@ -470,9 +480,19 @@ internal class NioEventLoop(
  * @param namePrefix Thread name prefix (e.g., "keel-nio-worker").
  * @param logger Logger for each EventLoop in the group.
  * @param allocator Base allocator; [BufferAllocator.createForEventLoop] is called per EventLoop.
+ * @param readBufferSize Per-read buffer size propagated to each EventLoop
+ *   (see [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
  */
-internal class NioEventLoopGroup(size: Int, namePrefix: String, logger: Logger, allocator: BufferAllocator) {
-    private val loops = Array(size) { i -> NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop()) }
+internal class NioEventLoopGroup(
+    size: Int,
+    namePrefix: String,
+    logger: Logger,
+    allocator: BufferAllocator,
+    readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+) {
+    private val loops = Array(size) { i ->
+        NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop(), readBufferSize)
+    }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Number of EventLoops in this group. */

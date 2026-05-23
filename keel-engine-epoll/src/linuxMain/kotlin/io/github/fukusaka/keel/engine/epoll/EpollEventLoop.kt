@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -106,6 +107,15 @@ internal class EpollEventLoop(
      * and therefore never invoke the allocator.
      */
     val allocator: BufferAllocator = DefaultAllocator,
+    /**
+     * Engine-wide default read buffer size
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
+     * connections on this loop. Used as the fallback when a connection's
+     * [io.github.fukusaka.keel.core.BindConfig.readBufferSize] /
+     * [io.github.fukusaka.keel.core.ConnectConfig.readBufferSize] is `null`;
+     * the effective size is captured per connection on the transport.
+     */
+    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
 ) : CoroutineDispatcher(), EpollSuspendRegister {
 

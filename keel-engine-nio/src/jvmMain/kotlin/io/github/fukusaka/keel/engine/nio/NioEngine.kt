@@ -90,6 +90,7 @@ class NioEngine(
             "keel-nio-worker",
             eventLoopLogger,
             config.allocator,
+            config.readBufferSize,
         )
     private var closed = false
 
@@ -186,11 +187,15 @@ class NioEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.readBufferSize)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.readBufferSize)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
@@ -240,18 +245,28 @@ class NioEngine(
             workerLoop,
             workerLoop.allocator,
             config.idleReadPolicy,
+            readBufferSizeOverride ?: workerLoop.readBufferSize,
         )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port, socketOptions)
+            connectToIp(ip.toCanonicalString(), address.port, socketOptions, readBufferSizeOverride)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int, socketOptions: SocketOptions): Channel {
+    private suspend fun connectToIp(
+        host: String,
+        port: Int,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
         applySocketOptions(socketChannel, socketOptions)
@@ -304,6 +319,7 @@ class NioEngine(
             workerLoop,
             workerLoop.allocator,
             config.idleReadPolicy,
+            readBufferSizeOverride ?: workerLoop.readBufferSize,
         )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }

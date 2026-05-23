@@ -29,11 +29,25 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   they are set unconditionally by
  *   [io.github.fukusaka.keel.native.posix.NativeSocketOps.bindListener].
  *   Default: [SocketOptions.DEFAULT] (`TCP_NODELAY` enabled).
+ * @param readBufferSize Per-server override of the read buffer size for
+ *   connections accepted by this server (see
+ *   [IoEngineConfig.readBufferSize]). `null` (default) inherits the engine-wide
+ *   [IoEngineConfig.readBufferSize]. Captured per accepted connection and
+ *   fixed for its lifetime. If non-null, must be a power of two in
+ *   [IoEngineConfig.MIN_READ_BUFFER_SIZE]..[IoEngineConfig.MAX_READ_BUFFER_SIZE].
+ *   Honoured by the pull-model POSIX / NIO engines (epoll / kqueue / nio);
+ *   io_uring uses a per-EventLoop shared buffer ring and falls back to the
+ *   engine-wide value; push-model engines ignore it.
  */
 open class BindConfig(
     val backlog: Int = DEFAULT_BACKLOG,
     val childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
+    val readBufferSize: Int? = null,
 ) {
+
+    init {
+        readBufferSize?.let { IoEngineConfig.requireValidReadBufferSize(it) }
+    }
 
     /**
      * Per-connection initializer called after accept, before the pipeline

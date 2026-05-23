@@ -44,7 +44,20 @@ internal class EpollIoTransport(
     private val eventLoop: EpollEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    /**
+     * Effective per-connection read buffer size (the bind / connect override
+     * or the engine-wide default — see
+     * [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]). Fixed for
+     * this connection's lifetime. A matching pool size class is registered on
+     * the EventLoop allocator lazily on the first read (on the EventLoop
+     * thread, where the allocator is owned) so a non-default size is pooled.
+     */
+    private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) : AbstractIoTransport(allocator), EpollEventLoop.FdReadyListener {
+
+    // One-time guard for lazy pool-class registration (see [readBufferSize]).
+    // Touched only on the EventLoop thread (the read path).
+    private var readPoolRegistered = false
 
     /**
      * [EpollEventLoop.FdReadyListener] dispatch — passing `this` to
@@ -139,7 +152,14 @@ internal class EpollIoTransport(
         // readEnabled is false.
         if (!readEnabled) return
 
-        val buf = allocator.allocate(IoTransport.DEFAULT_READ_BUFFER_SIZE)
+        if (!readPoolRegistered) {
+            // Idempotent; on the EventLoop thread that owns the allocator.
+            // No-op for the engine-default size already pooled by the
+            // allocator child, and for pool-less allocators.
+            allocator.registerPoolSize(readBufferSize, READ_BUFFER_POOL_SLOTS)
+            readPoolRegistered = true
+        }
+        val buf = allocator.allocate(readBufferSize)
         val ptr = (buf.unsafePointer + buf.writerIndex)!!
         when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
@@ -378,5 +398,12 @@ internal class EpollIoTransport(
          * of Long slots. Grown 1.5x on demand.
          */
         const val INITIAL_WRITEV_CAPACITY = 8
+
+        /**
+         * Pool slots to register for this connection's read buffer size class.
+         * Matches the allocator's default read-buffer pooling depth; the call
+         * is idempotent so it is a no-op for the already-registered default.
+         */
+        const val READ_BUFFER_POOL_SLOTS = 16
     }
 }

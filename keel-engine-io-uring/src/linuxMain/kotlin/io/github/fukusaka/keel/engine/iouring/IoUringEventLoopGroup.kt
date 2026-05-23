@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
@@ -42,6 +43,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
  * @param capabilities Runtime-detected io_uring kernel capabilities.
  * @param ringSize SQE ring size per EventLoop. See [IoUringEventLoop.DEFAULT_RING_SIZE].
+ * @param readBufferSize Per-buffer size of each EventLoop's provided buffer
+ *   ring — the recv buffer size for the multishot RECV path (see
+ *   [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]). Does not
+ *   affect the SEND-side registered buffers / warmup, which stay at the
+ *   allocator segment size.
  */
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 internal class IoUringEventLoopGroup(
@@ -50,6 +56,7 @@ internal class IoUringEventLoopGroup(
     allocator: BufferAllocator,
     capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
+    readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) {
 
     /** Number of EventLoop threads in this group. */
@@ -58,7 +65,7 @@ internal class IoUringEventLoopGroup(
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
-        Array(size) { i -> ProvidedBufferRing(loops[i], logger, bgid = i) }
+        Array(size) { i -> ProvidedBufferRing(loops[i], logger, bufferSize = readBufferSize, bgid = i) }
     } else {
         arrayOfNulls(size)
     }

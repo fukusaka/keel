@@ -98,7 +98,12 @@ class KqueueEngine(
     private val logger = config.loggerFactory.logger("KqueueEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
-    private val workerGroup = KqueueEventLoopGroup(resolveThreads(config), config.loggerFactory.logger("KqueueEventLoop"), config.allocator)
+    private val workerGroup = KqueueEventLoopGroup(
+        resolveThreads(config),
+        config.loggerFactory.logger("KqueueEventLoop"),
+        config.allocator,
+        config.readBufferSize,
+    )
     private var closed = false
 
     init {
@@ -203,11 +208,15 @@ class KqueueEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.readBufferSize)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.readBufferSize)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
 
@@ -232,18 +241,28 @@ class KqueueEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
+        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
         return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip, address.port, socketOptions)
+            connectToIp(ip, address.port, socketOptions, readBufferSizeOverride)
         }
     }
 
-    private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
+    private suspend fun connectToIp(
+        ip: IpAddress,
+        port: Int,
+        socketOptions: SocketOptions,
+        readBufferSizeOverride: Int?,
+    ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
         val workerLoop = workerGroup.next()
@@ -269,7 +288,8 @@ class KqueueEngine(
         val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket)
+        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

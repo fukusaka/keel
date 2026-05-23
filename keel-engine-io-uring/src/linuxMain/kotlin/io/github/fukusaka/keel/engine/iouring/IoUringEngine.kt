@@ -138,6 +138,7 @@ class IoUringEngine(
             logger = config.loggerFactory.logger("IoUringEventLoop"),
             allocator = config.allocator,
             capabilities = resolvedCapabilities,
+            readBufferSize = config.readBufferSize,
         )
 
         bossLoop.start()
