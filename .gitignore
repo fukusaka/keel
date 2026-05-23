@@ -29,6 +29,9 @@ daily/
 benchmark/results/
 benchmark/results-summary/
 
+# Local-only bench env (auto-resolves LAN IPs via mDNS, never tracked)
+.bench-env.local
+
 # Benchmark native server build artifacts
 benchmark/rust-bench/target/
 benchmark/rust-bench/Cargo.lock

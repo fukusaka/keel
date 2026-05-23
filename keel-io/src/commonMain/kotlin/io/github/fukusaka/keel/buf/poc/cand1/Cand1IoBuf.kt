@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.buf.poc.cand1
 
-import io.github.fukusaka.keel.buf.SegmentBacking
+import io.github.fukusaka.keel.buf.KeelBufferOverflowException
 import io.github.fukusaka.keel.buf.Releasable
+import io.github.fukusaka.keel.buf.Segment
+import io.github.fukusaka.keel.buf.SegmentBacking
 
 /**
  * PoC candidate 1: multi-segment [io.github.fukusaka.keel.buf.IoBuf] where
@@ -40,11 +42,25 @@ import io.github.fukusaka.keel.buf.Releasable
 interface Cand1IoBuf : Releasable {
 
     /**
-     * Total logical capacity = sum of every segment's capacity. Grows as
-     * new segments are appended on writer overflow; never shrinks while
-     * the IoBuf is live.
+     * Total logical capacity = sum of every segment's capacity in the
+     * chain. Grows only via an explicit [appendSegment] call (the
+     * caller's responsibility); does **not** grow as a side effect of
+     * [writeByte] / [writeByteArray]. Never shrinks while the IoBuf is
+     * live (drained head segments stay in the chain until [release] /
+     * [close]).
      */
     val capacity: Int
+
+    /**
+     * Cap on [capacity]'s eventual size. Supplied at construction by
+     * the engine / codec layer (typically from `BindConfig` /
+     * `ConnectConfig` — the same "max read buffer" / "max accumulator
+     * size" knob that bounds memory growth from a slow or hostile
+     * peer). [appendSegment] throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] when
+     * appending the next segment would push capacity past this cap.
+     */
+    val maxCapacity: Int
 
     /**
      * Logical reader position across all segments (`0..writerIndex`).
@@ -67,23 +83,45 @@ interface Cand1IoBuf : Releasable {
     val writableBytes: Int
 
     /**
-     * Writes [value] at the current write position. If the tail segment
-     * is full, allocates a new tail segment and writes into it.
+     * Writes [value] at the current write position. Walks across
+     * already-chained segment boundaries transparently. Throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] if the
+     * tail segment is full — the IoBuf does **not** auto-grow on
+     * write; the caller must explicitly [appendSegment] before further
+     * writes can land.
      */
     fun writeByte(value: Byte)
 
     /**
      * Bulk write of [length] bytes from [src] starting at [offset].
-     * Split across tail segments on segment-boundary crossings; uses
-     * platform-optimised copy within each segment.
+     * Splits across already-chained segment boundaries; uses
+     * platform-optimised copy within each segment. Throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] if the
+     * chain cannot accommodate [length] bytes from the current
+     * [writerIndex] — same no-auto-grow contract as [writeByte].
      */
     fun writeByteArray(src: ByteArray, offset: Int, length: Int)
 
     /**
      * ASCII bulk write — interprets each char as a single byte (low 8
-     * bits). Split across tail segments on boundary crossings.
+     * bits). Splits across already-chained segment boundaries. Same
+     * overflow semantics as [writeByteArray].
      */
     fun writeAscii(src: String, srcOffset: Int, length: Int)
+
+    /**
+     * Appends [seg] as a new tail segment in this IoBuf's chain. The
+     * caller obtains [seg] either from a pool / allocator (PoC scope:
+     * via `extractSegment` over a freshly-allocated single-seg
+     * `IoBuf`) or by handing over a segment that an upstream actor
+     * (engine read delivery) produced.
+     *
+     * Throws [io.github.fukusaka.keel.buf.KeelBufferOverflowException]
+     * when [capacity] + [seg]'s capacity would exceed [maxCapacity].
+     * Caller is responsible for releasing [seg] in that case (the
+     * IoBuf does not take ownership of a segment it rejected).
+     */
+    fun appendSegment(seg: Segment)
 
     /**
      * Reads one byte from the current read position and advances

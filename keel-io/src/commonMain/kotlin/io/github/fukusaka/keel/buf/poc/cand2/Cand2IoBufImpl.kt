@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.buf.poc.cand2
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.KeelBufferOverflowException
 import io.github.fukusaka.keel.buf.Segment
 import io.github.fukusaka.keel.buf.poc.extractSegment
 import io.github.fukusaka.keel.buf.poc.segmentGetByte
@@ -31,7 +32,14 @@ import io.github.fukusaka.keel.buf.poc.segmentPutBytes
 internal class Cand2IoBufImpl(
     private val allocator: BufferAllocator,
     private val segmentCapacity: Int,
+    override val maxCapacity: Int,
 ) : Cand2IoBuf {
+
+    init {
+        require(maxCapacity >= segmentCapacity) {
+            "maxCapacity ($maxCapacity) must be >= segmentCapacity ($segmentCapacity)"
+        }
+    }
 
     private val segments: ArrayList<Segment> = ArrayList(2)
     private var primary: Segment
@@ -106,7 +114,12 @@ internal class Cand2IoBufImpl(
     }
 
     private fun writeByteSlow(value: Byte) {
-        ensureWritable(1)
+        if (_writerIndex >= capacity) {
+            throw KeelBufferOverflowException(
+                "writeByte at writerIndex=$_writerIndex but chain capacity=$capacity; " +
+                    "appendSegment first (no auto-grow on write)",
+            )
+        }
         locateLogical(_writerIndex)
         segmentPutByte(_locSeg, _locOff, value)
         _writerIndex++
@@ -131,10 +144,15 @@ internal class Cand2IoBufImpl(
     }
 
     override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
+        if (length > writableBytes) {
+            throw KeelBufferOverflowException(
+                "writeByteArray length=$length exceeds writableBytes=$writableBytes; " +
+                    "appendSegment to grow the chain (no auto-grow on write)",
+            )
+        }
         var remaining = length
         var srcCursor = offset
         while (remaining > 0) {
-            ensureWritable(1)
             locateLogical(_writerIndex)
             val seg = _locSeg
             val segOff = _locOff
@@ -240,15 +258,19 @@ internal class Cand2IoBufImpl(
         return writableList
     }
 
-    // ---- Internal helpers (mirrors Cand1IoBufImpl) ----
-
-    private fun ensureWritable(need: Int) {
-        if (writableBytes >= need) return
-        val newSeg = extractSegment(allocator.allocate(segmentCapacity))
-        segments.add(newSeg)
+    override fun appendSegment(seg: Segment) {
+        if (capacity + seg.capacity > maxCapacity) {
+            throw KeelBufferOverflowException(
+                "appendSegment would push capacity from $capacity to " +
+                    "${capacity + seg.capacity}, past maxCapacity=$maxCapacity",
+            )
+        }
+        segments.add(seg)
         readableRanges.add(SegmentRange())
         writableRanges.add(SegmentRange())
     }
+
+    // ---- Internal helpers (mirrors Cand1IoBufImpl) ----
 
     private fun locateLogical(logical: Int) {
         var remaining = logical

@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.buf.poc.cand2
 
-import io.github.fukusaka.keel.buf.SegmentBacking
+import io.github.fukusaka.keel.buf.KeelBufferOverflowException
 import io.github.fukusaka.keel.buf.Releasable
+import io.github.fukusaka.keel.buf.Segment
+import io.github.fukusaka.keel.buf.SegmentBacking
 
 /**
  * PoC candidate 2: multi-segment [io.github.fukusaka.keel.buf.IoBuf] where
@@ -33,15 +35,39 @@ import io.github.fukusaka.keel.buf.Releasable
  */
 interface Cand2IoBuf : Releasable {
 
+    /** Total logical capacity = sum of every segment's capacity. */
     val capacity: Int
+
+    /**
+     * Cap on [capacity]. See [Cand1IoBuf.maxCapacity] for the
+     * engine-layer rationale; the semantic is identical here.
+     */
+    val maxCapacity: Int
+
     var readerIndex: Int
     var writerIndex: Int
     val readableBytes: Int
     val writableBytes: Int
 
+    /**
+     * Writes [value] at the current write position. Throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] if the
+     * tail segment is full — no auto-grow; caller must
+     * [appendSegment] explicitly.
+     */
     fun writeByte(value: Byte)
+
+    /**
+     * Bulk write. Splits across already-chained segments; throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] if
+     * the chain cannot accommodate [length] bytes from the current
+     * [writerIndex].
+     */
     fun writeByteArray(src: ByteArray, offset: Int, length: Int)
+
+    /** Same overflow semantics as [writeByteArray]. */
     fun writeAscii(src: String, srcOffset: Int, length: Int)
+
     fun readByte(): Byte
     fun readByteArray(dest: ByteArray, offset: Int, length: Int)
     fun getByte(index: Int): Byte
@@ -49,6 +75,16 @@ interface Cand2IoBuf : Releasable {
     fun clear()
     fun retain(): Cand2IoBuf
     fun close()
+
+    /**
+     * Appends [seg] as a new tail segment. Throws
+     * [io.github.fukusaka.keel.buf.KeelBufferOverflowException] when
+     * [capacity] + [seg]'s capacity would exceed [maxCapacity];
+     * caller owns [seg]'s lifetime in that case. See
+     * [Cand1IoBuf.appendSegment] for the full contract — identical
+     * here.
+     */
+    fun appendSegment(seg: Segment)
 
     /**
      * Returns the readable byte ranges as a [SegmentRangeList]. The same
