@@ -34,7 +34,12 @@ import io.github.fukusaka.keel.buf.poc.segmentPutBytes
  * (`buf.poc.segmentGet/Put*`) with a single branch on top of the
  * existing single-seg IoBuf cost.
  */
-internal class Cand1IoBufImpl(
+// Visibility note: `public` for the PoC so the cross-module bench
+// (engine-nio / engine-kqueue test sources) can construct the impl
+// directly. The class itself is PoC-scoped (`buf.poc.cand1`) and the
+// whole package goes away once the multi-seg IoBuf candidate decision
+// lands, so this does not commit keel-io to a wider API surface.
+public class Cand1IoBufImpl(
     private val allocator: BufferAllocator,
     private val segmentCapacity: Int,
     override val maxCapacity: Int,

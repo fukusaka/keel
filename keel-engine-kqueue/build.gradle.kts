@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
@@ -9,6 +11,10 @@ kotlin {
                 defFile("src/nativeInterop/cinterop/kqueue.def")
             }
         }
+        // Provisional release-test binary for the cross-module multi-seg
+        // IoBuf PoC bench. Removed alongside the keel-io PoC sources once
+        // the candidate decision lands.
+        binaries.test("release", listOf(NativeBuildType.RELEASE))
     }
     macosX64 {
         compilations["main"].cinterops {

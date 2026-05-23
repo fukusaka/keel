@@ -29,7 +29,10 @@ import io.github.fukusaka.keel.buf.poc.segmentPutBytes
  * (i.e. on a tail-segment allocation triggered by writer overflow);
  * the lists are reused across subsequent calls.
  */
-internal class Cand2IoBufImpl(
+// Visibility note: see Cand1IoBufImpl — public for the PoC cross-module
+// bench, removed with the rest of `buf.poc.*` once the candidate
+// decision lands.
+public class Cand2IoBufImpl(
     private val allocator: BufferAllocator,
     private val segmentCapacity: Int,
     override val maxCapacity: Int,
