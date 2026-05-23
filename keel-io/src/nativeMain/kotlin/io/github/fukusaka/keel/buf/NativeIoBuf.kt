@@ -15,15 +15,27 @@ import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
 
 /**
- * Native [IoBuf] implementation — a *view* over a [Segment].
+ * Native [IoBuf] implementation — a *view* over a [Segment] or, when
+ * grown via [appendSegment], a chain of segments.
  *
- * The buffer holds a [Segment] reference; the segment's
- * The [NativeBacking] (a [NativeHeapBacking] for `nativeHeap`-owned
- * memory, an [ExternalNativeBacking] for wrapped external memory) carries
- * the raw `CPointer<ByteVar>`. At construction the view reads `base`
- * out of the backing once and caches it in [cachedBase]; all per-byte
- * access uses the cached pointer directly (an uncached cast +
- * indirection per access is materially slower).
+ * A *primary* `NativeIoBuf` carries an internal [SegmentChain]; the
+ * chain initially holds just its primary segment, and [appendSegment]
+ * extends it with follow-on segments up to [maxCapacity]. Byte ops use
+ * the cached primary `CPointer<ByteVar>` for writes / reads that fall
+ * inside the primary segment (the hot path — every short-response IoBuf
+ * the engine fills from a single recv), and route to the chain's
+ * `locateLogical` helper for the cross-segment slow path. The
+ * [NativeBacking] (a [NativeHeapBacking] for `nativeHeap`-owned memory,
+ * an [ExternalNativeBacking] for wrapped external memory) carries the
+ * raw pointer; at construction the view reads `base` out of the backing
+ * once and caches it in [cachedBase].
+ *
+ * A *slice* (returned by [sliceWindow] / [sliceDefaultIoBuf]) is a
+ * single-segment same-[Segment] window view with [chain] left `null` —
+ * the slice supports the multi-segment iteration API (emitting one
+ * range that covers the window) but rejects [appendSegment]. Slices
+ * carry their own `windowStart` / `windowLength` so absolute indexing
+ * into [cachedBase] stays a single window-relative pointer arithmetic.
  *
  * **Owned memory** (primary constructor): the [Segment] wraps a
  * `nativeHeap`-owned backing whose [Segment.owner] is [HeapOwner],
@@ -33,40 +45,47 @@ import platform.posix.memcpy
  * non-owning backing over caller-provided memory. The view does NOT own
  * the memory; the segment's owner handles cleanup on refcount-zero
  * (e.g. an [ExternalWrapOwner] to drop a pinned hold, or a slice owner
- * to release the parent).
+ * to release the parent). External-wrapped buffers are single-segment.
  *
  * The [unsafePointer] property exposes the cached `CPointer<ByteVar>`
  * for zero-copy I/O with POSIX syscalls (read/write/writev).
  *
- * **Reference counting**: the refcount lives on the [Segment]; this
- * view delegates [retain] / [release] to it. Non-atomic
- * (single-threaded EventLoop model).
+ * **Reference counting**: every chained [Segment] keeps its own
+ * refcount (PoC PR #602 / #603 design decision, "semantic B"). [retain]
+ * walks the chain (or the slice's single segment) and increments each;
+ * [release] decrements each. Non-atomic (single-threaded EventLoop
+ * model).
  */
 @OptIn(ExperimentalForeignApi::class)
 class NativeIoBuf private constructor(
     private val segment: Segment,
     private val windowStart: Int,
     private val windowLength: Int,
+    private val chain: SegmentChain?,
 ) : IoBuf, PoolableIoBuf, NativePointerAccess {
 
     /**
      * Primary-view constructor: a full-window view over [segment] that
-     * registers itself as the segment's [Segment.view].
-     *
-     * The windowed constructor `(segment, windowStart, windowLength)` is
-     * used for slices; it deliberately does NOT touch [Segment.view] so
-     * the primary view remains the segment's canonical owner-facing view.
+     * registers itself as the segment's [Segment.view] and owns a
+     * [SegmentChain] for growth up to [maxCapacity].
      */
-    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
+    private constructor(segment: Segment, maxCapacity: Int) : this(
+        segment,
+        windowStart = 0,
+        windowLength = segment.capacity,
+        chain = SegmentChain(segment, maxCapacity),
+    ) {
         segment.view = this
     }
 
     /**
      * Creates a heap-owned [NativeIoBuf] backed by a freshly-allocated
-     * [Segment]. The segment's owner defaults to [HeapOwner], which
-     * frees the backing on refcount-zero.
+     * [Segment]. The segment's owner defaults to [HeapOwner]. The
+     * resulting buffer has `maxCapacity == capacity` — no segment
+     * chaining is permitted unless created via the [overSegmentWithCap]
+     * companion overload.
      */
-    constructor(capacity: Int) : this(allocSegment(capacity))
+    constructor(capacity: Int) : this(allocSegment(capacity), capacity)
 
     /**
      * Cached native base pointer to the window start, read once out of
@@ -76,7 +95,9 @@ class NativeIoBuf private constructor(
     @Suppress("UnsafeCallOnNullableType")
     private val cachedBase: CPointer<ByteVar> = ((segment.backing as NativeBacking).base + windowStart)!!
 
-    override val capacity: Int get() = windowLength
+    override val capacity: Int get() = chain?.totalCapacity ?: windowLength
+
+    override val maxCapacity: Int get() = chain?.maxCapacity ?: windowLength
 
     @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = cachedBase
@@ -94,65 +115,239 @@ class NativeIoBuf private constructor(
     // No bounds check — raw pointer write. Caller must ensure writableBytes > 0.
     // Bounds check omitted for hot-path performance; see IoBuf.writeByte KDoc.
     override fun writeByte(value: Byte) {
-        cachedBase[writerIndex++] = value
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (writerIndex < primaryCap) {
+            cachedBase[writerIndex++] = value
+        } else {
+            writeByteCrossSeg(value)
+        }
+    }
+
+    private fun writeByteCrossSeg(value: Byte) {
+        val c = chain ?: error("writeByteCrossSeg called without chain (slice)")
+        val packed = c.locateLogical(writerIndex)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        val targetSeg = c.segmentAt(segIdx)
+        (targetSeg.backing as NativeBacking).base[localOff] = value
+        writerIndex++
     }
 
     override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         if (length == 0) return
-        src.usePinned { pinned ->
-            memcpy(cachedBase + writerIndex, pinned.addressOf(offset), length.toULong())
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        val primaryRemaining = primaryCap - writerIndex
+        if (length <= primaryRemaining) {
+            src.usePinned { pinned ->
+                memcpy(cachedBase + writerIndex, pinned.addressOf(offset), length.toULong())
+            }
+            writerIndex += length
+        } else {
+            writeByteArrayCrossSeg(src, offset, length)
         }
-        writerIndex += length
+    }
+
+    private fun writeByteArrayCrossSeg(src: ByteArray, srcOffset: Int, length: Int) {
+        val c = chain ?: error("writeByteArrayCrossSeg called without chain (slice)")
+        var remaining = length
+        var srcIdx = srcOffset
+        var write = writerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(write)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val targetSeg = c.segmentAt(segIdx)
+            val segAvail = targetSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val targetBase = (targetSeg.backing as NativeBacking).base
+            src.usePinned { pinned ->
+                memcpy(targetBase + localOff, pinned.addressOf(srcIdx), toCopy.toULong())
+            }
+            write += toCopy
+            srcIdx += toCopy
+            remaining -= toCopy
+        }
+        writerIndex = write
     }
 
     override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
-        for (i in 0 until length) {
-            cachedBase[writerIndex + i] = src[srcOffset + i].code.toByte()
+        if (length == 0) return
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        val primaryRemaining = primaryCap - writerIndex
+        if (length <= primaryRemaining) {
+            for (i in 0 until length) {
+                cachedBase[writerIndex + i] = src[srcOffset + i].code.toByte()
+            }
+            writerIndex += length
+        } else {
+            writeAsciiCrossSeg(src, srcOffset, length)
         }
-        writerIndex += length
+    }
+
+    private fun writeAsciiCrossSeg(src: String, srcOffset: Int, length: Int) {
+        val c = chain ?: error("writeAsciiCrossSeg called without chain (slice)")
+        var remaining = length
+        var srcIdx = srcOffset
+        var write = writerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(write)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val targetSeg = c.segmentAt(segIdx)
+            val segAvail = targetSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val targetBase = (targetSeg.backing as NativeBacking).base
+            for (i in 0 until toCopy) {
+                targetBase[localOff + i] = src[srcIdx + i].code.toByte()
+            }
+            write += toCopy
+            srcIdx += toCopy
+            remaining -= toCopy
+        }
+        writerIndex = write
     }
 
     override fun copyTo(dest: IoBuf, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
-        val destPtr = (dest as NativePointerAccess).unsafePointer + dest.writerIndex
-        memcpy(destPtr, cachedBase + readerIndex, length.toULong())
-        readerIndex += length
-        dest.writerIndex += length
+        val srcPrimaryCap = chain?.primaryCapacity ?: windowLength
+        val srcStaysInPrimary = readerIndex + length <= srcPrimaryCap
+        if (dest is NativeIoBuf && srcStaysInPrimary &&
+            dest.writerIndex + length <= (dest.chain?.primaryCapacity ?: dest.windowLength)
+        ) {
+            // Fast path: pointer-to-pointer memcpy, both sides inside primary.
+            memcpy(dest.cachedBase + dest.writerIndex, cachedBase + readerIndex, length.toULong())
+            readerIndex += length
+            dest.writerIndex += length
+        } else if (dest is NativePointerAccess && srcStaysInPrimary && dest !is NativeIoBuf) {
+            // Cross-impl native dest with single-segment source: keep
+            // the legacy pointer copy.
+            memcpy(dest.unsafePointer + dest.writerIndex, cachedBase + readerIndex, length.toULong())
+            readerIndex += length
+            dest.writerIndex += length
+        } else {
+            // Slow path: ByteArray-mediated transfer (covers cross-segment
+            // source or dest, and cross-platform-type dests).
+            val tmp = ByteArray(length)
+            readByteArray(tmp, 0, length)
+            dest.writeByteArray(tmp, 0, length)
+        }
     }
 
     override fun readByteArray(dest: ByteArray, offset: Int, length: Int) {
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         if (length == 0) return
-        dest.usePinned { pinned ->
-            memcpy(pinned.addressOf(offset), cachedBase + readerIndex, length.toULong())
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (readerIndex + length <= primaryCap) {
+            dest.usePinned { pinned ->
+                memcpy(pinned.addressOf(offset), cachedBase + readerIndex, length.toULong())
+            }
+            readerIndex += length
+        } else {
+            readByteArrayCrossSeg(dest, offset, length)
         }
-        readerIndex += length
+    }
+
+    private fun readByteArrayCrossSeg(dest: ByteArray, destOffset: Int, length: Int) {
+        val c = chain ?: error("readByteArrayCrossSeg called without chain (slice)")
+        var remaining = length
+        var destIdx = destOffset
+        var read = readerIndex
+        while (remaining > 0) {
+            val packed = c.locateLogical(read)
+            val segIdx = unpackLocateSegmentIndex(packed)
+            val localOff = unpackLocateLocalOffset(packed)
+            val srcSeg = c.segmentAt(segIdx)
+            val segAvail = srcSeg.capacity - localOff
+            val toCopy = if (remaining < segAvail) remaining else segAvail
+            val srcBase = (srcSeg.backing as NativeBacking).base
+            dest.usePinned { pinned ->
+                memcpy(pinned.addressOf(destIdx), srcBase + localOff, toCopy.toULong())
+            }
+            read += toCopy
+            destIdx += toCopy
+            remaining -= toCopy
+        }
+        readerIndex = read
     }
 
     // No bounds check — raw pointer read. Caller must ensure readableBytes > 0.
-    override fun readByte(): Byte = cachedBase[readerIndex++]
+    override fun readByte(): Byte {
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (readerIndex < primaryCap) {
+            return cachedBase[readerIndex++]
+        }
+        return readByteCrossSeg()
+    }
+
+    private fun readByteCrossSeg(): Byte {
+        val c = chain ?: error("readByteCrossSeg called without chain (slice)")
+        val packed = c.locateLogical(readerIndex)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        val srcSeg = c.segmentAt(segIdx)
+        readerIndex++
+        return (srcSeg.backing as NativeBacking).base[localOff]
+    }
 
     // No bounds check — raw pointer read. Caller must ensure 0 <= index < capacity.
-    override fun getByte(index: Int): Byte = cachedBase[index]
+    override fun getByte(index: Int): Byte {
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        if (index < primaryCap) {
+            return cachedBase[index]
+        }
+        val c = chain ?: error("getByte cross-seg without chain (slice)")
+        val packed = c.locateLogical(index)
+        val segIdx = unpackLocateSegmentIndex(packed)
+        val localOff = unpackLocateLocalOffset(packed)
+        return (c.segmentAt(segIdx).backing as NativeBacking).base[localOff]
+    }
 
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
     }
 
+    override fun appendSegment(seg: Segment) {
+        val c = chain
+            ?: throw UnsupportedOperationException("NativeIoBuf slice does not support segment chaining")
+        c.appendSegment(seg)
+    }
+
+    override fun forEachReadableSegment(action: SegmentRangeAction) {
+        val c = chain
+        if (c != null) {
+            c.forEachReadableSegment(readerIndex, writerIndex, action)
+        } else if (readerIndex < writerIndex) {
+            action.apply(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
+        }
+    }
+
+    override fun fillReadableSegments(into: SegmentRangeList) {
+        val c = chain
+        if (c != null) {
+            c.fillReadableSegments(readerIndex, writerIndex, into)
+        } else {
+            into.reset()
+            if (readerIndex < writerIndex) {
+                into.acquireSlot().set(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
+            }
+        }
+    }
+
     /**
      * Returns a same-[Segment] window view of [length] bytes at [offset]
      * within this buffer's window.
      *
-     * This is the same-[Segment] window-view slice path: the returned
-     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
-     * needs no throwaway wrapper segment. The caller owns the returned
-     * handle and must [release] it; when the segment's refcount reaches
-     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
+     * Multi-seg sources: [offset] is interpreted in *logical* coordinates
+     * spanning the chain, but the produced slice is restricted to bytes
+     * that lie inside the primary segment — slicing across segment
+     * boundaries is rejected with [IllegalArgumentException] in PR-2.
+     * (Cross-segment slicing lands together with the codec retire-
+     * workarounds PR.)
      *
      * The view starts with `readerIndex = 0` and `writerIndex = length`.
      * A zero [length] yields [EmptyIoBuf].
@@ -163,28 +358,46 @@ class NativeIoBuf private constructor(
             "slice out of range: offset=$offset length=$length capacity=$capacity"
         }
         if (length == 0) return EmptyIoBuf
+        val primaryCap = chain?.primaryCapacity ?: windowLength
+        require(offset + length <= primaryCap) {
+            "cross-segment slice not yet supported: offset=$offset length=$length primaryCapacity=$primaryCap"
+        }
         segment.retain()
-        return NativeIoBuf(segment, windowStart + offset, length).also {
+        return NativeIoBuf(
+            segment = segment,
+            windowStart = windowStart + offset,
+            windowLength = length,
+            chain = null,
+        ).also {
             it.readerIndex = 0
             it.writerIndex = length
         }
     }
 
     override fun retain(): IoBuf {
-        segment.retain()
+        val c = chain
+        if (c != null) c.retainAll() else segment.retain()
         return this
     }
 
-    override fun release(): Boolean = segment.release()
+    override fun release(): Boolean {
+        val c = chain
+        return c?.releaseAll() ?: segment.release()
+    }
 
     override fun close() {
-        // Escape hatch: intentionally does NOT invoke the segment owner —
+        // Escape hatch: intentionally does NOT invoke segment owners —
         // pool returns and kernel-slot handoffs are skipped. The raw
-        // memory free routes through the Segment's backing so teardown
+        // memory free routes through each Segment's backing so teardown
         // does not leak the nativeHeap allocation; an external
         // (wrapExternal) backing frees nothing here. RawSegmentBacking.free()
         // is idempotent, so repeated calls are safe.
         segment.backing.free()
+        chain?.let { c ->
+            for (i in 1 until c.segmentCount) {
+                c.segmentAt(i).backing.free()
+            }
+        }
     }
 
     companion object {
@@ -215,7 +428,7 @@ class NativeIoBuf private constructor(
         ): NativeIoBuf {
             val segment = Segment(ExternalNativeBacking(ptr), capacity)
             segment.owner = owner
-            return NativeIoBuf(segment).also {
+            return NativeIoBuf(segment, capacity).also {
                 it.writerIndex = bytesWritten
             }
         }
@@ -228,11 +441,23 @@ class NativeIoBuf private constructor(
          * Wraps an already-allocated heap-owned [Segment] as a
          * [NativeIoBuf], installing [owner] on the segment. Used by
          * pool-backed allocators that construct the [RawSegmentBacking]
-         * themselves.
+         * themselves. The buffer's [maxCapacity] equals the segment's
+         * capacity (no growth) — pool callers that want growth must use
+         * the [overSegmentWithCap] overload.
          */
         internal fun overSegment(segment: Segment, owner: SegmentOwner): NativeIoBuf {
             segment.owner = owner
-            return NativeIoBuf(segment)
+            return NativeIoBuf(segment, segment.capacity)
+        }
+
+        /**
+         * As [overSegment], but with an explicit [maxCapacity] bound for
+         * [appendSegment]-driven growth. Used by codec / engine call
+         * sites that want a multi-seg-capable buffer.
+         */
+        internal fun overSegmentWithCap(segment: Segment, owner: SegmentOwner, maxCapacity: Int): NativeIoBuf {
+            segment.owner = owner
+            return NativeIoBuf(segment, maxCapacity)
         }
     }
 }
