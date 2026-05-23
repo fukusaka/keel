@@ -172,6 +172,13 @@ private class BenchmarkRoutingHandler : InboundHandler {
                     wsClientKey = msg.headers.getString("Sec-WebSocket-Key")
                     wsDeflateOffered = msg.path == "/ws-deflate" &&
                         PipelineHttpWsDeflate.offersPermessageDeflate(msg.headers.getString("Sec-WebSocket-Extensions"))
+                    // Release the parsed headers' backing recv buffer. With the
+                    // PR #596 byte-range storage contract, HttpHeaders retains
+                    // the recv IoBuf until release(); on io-uring the provided
+                    // buffer ring has only DEFAULT_BUFFER_COUNT slots, so a
+                    // missing release here exhausts the ring within ~64 requests
+                    // and collapses throughput by ~6000×.
+                    msg.headers.release()
                     return
                 }
                 when {
@@ -224,6 +231,11 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         sseStreaming = true
                     }
                 }
+                // Release the parsed headers' backing recv buffer. See the
+                // /ws-* return path above for rationale (io-uring provided
+                // buffer ring exhaustion under the PR #596 byte-range
+                // storage contract).
+                msg.headers.release()
             }
             is HttpBodyEnd -> {
                 when {
