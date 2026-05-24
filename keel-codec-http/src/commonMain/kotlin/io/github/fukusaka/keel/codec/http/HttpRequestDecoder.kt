@@ -372,6 +372,13 @@ class HttpRequestDecoder(
     // --- Line parsing (fast path, IoBuf-backed) ---
 
     private fun parseRequestLineFast(buf: IoBuf, start: Int, length: Int) {
+        // New request — reset the cumulative header / trailer byte
+        // counter. The previous request's `headerByteCount` was
+        // intentionally kept across `emitHead` so trailer bytes
+        // accumulate on top of header bytes (cannot be bypassed via
+        // the trailer block); now that a new request line has
+        // arrived, the cumulative count starts fresh.
+        headerByteCount = 0
         val end = start + length
         val sp1 = indexOfByteInBuf(buf, start, end, SP)
         if (sp1 <= start) throwInvalidRequestLineFromBuf(buf, start, length)
@@ -438,6 +445,8 @@ class HttpRequestDecoder(
     // --- Line parsing (fallback path, ByteArray-backed) ---
 
     private fun parseRequestLineFallback(arr: ByteArray, start: Int, length: Int) {
+        // See [parseRequestLineFast] for the reset rationale.
+        headerByteCount = 0
         val end = start + length
         val sp1 = indexOfByteInArr(arr, start, end, SP)
         if (sp1 <= start) throwInvalidRequestLineFromArr(arr, start, length)
@@ -844,9 +853,12 @@ class HttpRequestDecoder(
         uri = null
         version = null
         headers = HttpHeaders.borrow()
-        // The cumulative byte counter belongs to the previous request;
-        // reset before the next request line.
-        headerByteCount = 0
+        // [headerByteCount] is **not** reset here — trailer bytes
+        // accumulate on top of the header bytes for the same request
+        // (a malicious peer cannot bypass the cumulative cap by
+        // stuffing fields into the trailer block). The counter is
+        // reset at the start of the next request line — see
+        // [parseRequestLineFast] / [parseRequestLineFallback].
         ctx.propagateRead(head)
 
         val cl = head.headers.contentLength
