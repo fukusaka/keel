@@ -8,6 +8,8 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import openssl.BIO_free
 import openssl.BIO_new_mem_buf
 import openssl.EVP_PKEY_free
@@ -32,6 +34,7 @@ import openssl.keel_openssl_create_server
 import openssl.keel_openssl_err_string
 import openssl.keel_openssl_get_port
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Minimal TLS echo test using OpenSSL 3.x.
@@ -48,8 +51,13 @@ import kotlin.test.Test
 class OpenSslEchoTest {
 
     @Test
-    fun `OpenSSL server handshake and echo succeeds`() = memScoped {
-        // --- Init OpenSSL ---
+    fun `OpenSSL server handshake and echo succeeds`() = runBlocking {
+        // withTimeout: 30 seconds budget for fork(curl) + TCP accept + TLS handshake + SSL_read/write.
+        // Native blocking syscalls (accept/SSL_read) are not interruptible by withTimeout,
+        // so the bound is effectively wall-clock for the cooperative suspension points only.
+        withTimeout(30.seconds) {
+            memScoped {
+                // --- Init OpenSSL ---
         OPENSSL_init_ssl(0u, null)
 
         // --- Create SSL_CTX ---
@@ -143,7 +151,9 @@ class OpenSslEchoTest {
 
         platform.posix.kill(pid, platform.posix.SIGTERM)
         platform.posix.waitpid(pid, null, 0)
-        Unit
+                Unit
+            }
+        }
     }
 
     companion object {

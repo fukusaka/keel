@@ -9,6 +9,8 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import mbedtls.MBEDTLS_NET_PROTO_TCP
 import mbedtls.MBEDTLS_SSL_IS_SERVER
 import mbedtls.MBEDTLS_SSL_PRESET_DEFAULT
@@ -52,6 +54,7 @@ import platform.posix.usleep
 import platform.posix.waitpid
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Minimal TLS echo test using Mbed TLS 4.x net_sockets (blocking I/O).
@@ -70,8 +73,13 @@ import kotlin.test.assertEquals
 class MbedTlsEchoTest {
 
     @Test
-    fun `Mbed TLS server handshake and echo succeeds`() = memScoped {
-        // --- PSA Crypto init (replaces entropy/ctr_drbg in 4.x) ---
+    fun `Mbed TLS server handshake and echo succeeds`() = runBlocking {
+        // withTimeout: 30 seconds budget for fork(curl) + TCP accept + TLS handshake + SSL read/write.
+        // Native blocking syscalls (mbedtls_net_accept/mbedtls_ssl_read) are not interruptible by withTimeout,
+        // so the bound is effectively wall-clock for cooperative suspension points only.
+        withTimeout(30.seconds) {
+            memScoped {
+                // --- PSA Crypto init (replaces entropy/ctr_drbg in 4.x) ---
         val psaRet = psa_crypto_init().toInt()
         check(psaRet == 0) { "psa_crypto_init failed: $psaRet" }
 
@@ -180,7 +188,9 @@ class MbedTlsEchoTest {
         // Kill client process
         kill(pid, SIGTERM)
         waitpid(pid, null, 0)
-        Unit
+                Unit
+            }
+        }
     }
 
     companion object {

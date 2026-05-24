@@ -6,6 +6,8 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import awslc.BIO_free
 import awslc.BIO_new_mem_buf
 import awslc.EVP_PKEY_free
@@ -30,6 +32,7 @@ import awslc.keel_awslc_create_server
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_get_port
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Minimal TLS echo test using AWS-LC (BoringSSL fork, OpenSSL-compatible API).
@@ -41,8 +44,13 @@ import kotlin.test.Test
 class AwsLcEchoTest {
 
     @Test
-    fun `AWS-LC server handshake and echo succeeds`() = memScoped {
-        // --- Init ---
+    fun `AWS-LC server handshake and echo succeeds`() = runBlocking {
+        // withTimeout: 30 seconds budget for fork(curl) + TCP accept + TLS handshake + SSL read/write.
+        // Native blocking syscalls (accept/SSL_read) are not interruptible by withTimeout,
+        // so the bound is effectively wall-clock for cooperative suspension points only.
+        withTimeout(30.seconds) {
+            memScoped {
+                // --- Init ---
         OPENSSL_init_ssl(0u, null)
 
         // --- Create SSL_CTX ---
@@ -128,7 +136,9 @@ class AwsLcEchoTest {
 
         platform.posix.kill(pid, platform.posix.SIGTERM)
         platform.posix.waitpid(pid, null, 0)
-        Unit
+                Unit
+            }
+        }
     }
 
     companion object {
