@@ -6,7 +6,9 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io_uring.keel_prep_shutdown
 import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asNativePointer
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.logging.debug
@@ -353,12 +355,20 @@ internal class IoUringIoTransport(
         if (pendingWrites.isEmpty()) return true
 
         val rawMode = writeModeSelector.select(stats)
+        // Multi-seg gating: SEND_ZC / SENDMSG_ZC chain or send a buffer as
+        // a single contiguous pointer + length, which is incompatible with
+        // a multi-segment IoBuf (the underlying memory is split across
+        // chained segments). Downgrade to CQE — the writev SQE path
+        // expands the chain into an iovec array.
+        val anyMultiSeg = pendingWrites.any { it.buf.segmentCount > 1 }
+
         // Capability fallback: degrade to CQE if the kernel lacks the opcode.
         // SENDMSG_ZC also requires sendZc (single-buffer path uses SEND_ZC).
         // FALLBACK_CQE issues direct send()/writev() syscalls with the raw fd;
         // direct-allocated slots don't expose a raw fd, so those modes must
         // stay on the pure io_uring CQE path.
         val mode = when {
+            anyMultiSeg && (rawMode == IoMode.SEND_ZC || rawMode == IoMode.SENDMSG_ZC) -> IoMode.CQE
             rawMode == IoMode.SEND_ZC && !capabilities.sendZc -> IoMode.CQE
             rawMode == IoMode.SENDMSG_ZC && (!capabilities.sendmsgZc || !capabilities.sendZc) -> IoMode.CQE
             rawMode == IoMode.FALLBACK_CQE && useDirectAlloc -> IoMode.CQE
@@ -394,7 +404,11 @@ internal class IoUringIoTransport(
      * @return true if all data sent synchronously, false if async pending.
      */
     private fun flushDirectSend(): Boolean {
-        if (pendingWrites.size == 1) {
+        // Route to the gather path whenever the iovec array would be
+        // multi-entry — either multiple pending writes, OR a single
+        // pending write whose IoBuf is multi-segment. flushDirectSendSingle
+        // is restricted to truly single-iovec single-segment writes.
+        if (pendingWrites.size == 1 && pendingWrites[0].buf.segmentCount == 1) {
             return flushDirectSendSingle(pendingWrites[0])
         }
         return flushDirectSendGather()
@@ -406,27 +420,53 @@ internal class IoUringIoTransport(
      * On partial write, releases fully-written buffers and submits
      * the remainder as an async SEND chain via [submitAsyncWritevRemainder].
      */
+    /**
+     * Scratch list reused across [flushDirectSendGather] / [submitAsyncWritev]
+     * calls to collect readable segments from each pending write. Owned
+     * by this transport, single-EL invariant.
+     */
+    private val gatherList = SegmentRangeList()
+
     private fun flushDirectSendGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
         val writtenBytes: Int
 
+        // Build the iovec array from all pending writes' segments — one
+        // entry per intersected chain segment. A multi-seg IoBuf
+        // contributes N entries.
+        gatherList.clear()
+        for (pw in pendingWrites) {
+            pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+        }
+        val iovCount = gatherList.size
+
         memScoped {
-            val count = pendingWrites.size
-            val bases = allocArray<CPointerVar<ByteVar>>(count)
-            val lens = allocArray<ULongVar>(count)
-            for ((i, pw) in pendingWrites.withIndex()) {
-                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-                lens[i] = pw.length.convert()
+            val bases = allocArray<CPointerVar<ByteVar>>(iovCount)
+            val lens = allocArray<ULongVar>(iovCount)
+            for (i in 0 until iovCount) {
+                val range = gatherList[i]
+                val backing = checkNotNull(range.memory) {
+                    "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                }
+                bases[i] = (backing.asNativePointer() + range.offset)!!
+                lens[i] = range.length.convert()
             }
-            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
+            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), iovCount)
             if (n < 0) {
                 val err = errno
                 if (err == EAGAIN || err == EWOULDBLOCK) {
-                    // Nothing written — submit all as async chain.
+                    // Nothing written — submit all as async. For multi-seg
+                    // any pending write we route through the writev SQE
+                    // path; the legacy SEND chain assumes single-segment
+                    // pointer arithmetic.
                     flushHadEagain = true
                     asyncFlushPending = true
                     asyncPendingFlushBytes += totalBytes
-                    submitAsyncSendChain(0)
+                    if (pendingWrites.any { it.buf.segmentCount > 1 }) {
+                        submitAsyncWritev()
+                    } else {
+                        submitAsyncSendChain(0)
+                    }
                     return false
                 }
                 // Unrecoverable error — release all and report sync completion.
@@ -459,7 +499,8 @@ internal class IoUringIoTransport(
                 break
             }
         }
-        // Submit remaining from splitIndex as async chain.
+        // Submit remaining from splitIndex as async chain (single-seg) or
+        // async writev suffix (any multi-seg in the remainder).
         asyncFlushPending = true
         val alreadySentInSplit = (writtenBytes - consumed).coerceAtLeast(0)
         val remainingBytes = totalBytes - writtenBytes
@@ -467,7 +508,14 @@ internal class IoUringIoTransport(
         if (alreadySentInSplit > 0) {
             updatePendingBytes(-alreadySentInSplit)
         }
-        submitAsyncWritevRemainder(ArrayList(pendingWrites), splitIndex, alreadySentInSplit)
+        val snapshot = ArrayList(pendingWrites)
+        val remainderHasMultiSeg = (splitIndex until snapshot.size)
+            .any { snapshot[it].buf.segmentCount > 1 }
+        if (remainderHasMultiSeg) {
+            submitAsyncWritevSuffix(snapshot, splitIndex, alreadySentInSplit)
+        } else {
+            submitAsyncWritevRemainder(snapshot, splitIndex, alreadySentInSplit)
+        }
         return false
     }
 
@@ -630,7 +678,10 @@ internal class IoUringIoTransport(
         asyncFlushPending = true
         val totalBytes = pendingWrites.sumOf { it.length }
         asyncPendingFlushBytes += totalBytes
-        if (pendingWrites.size == 1) {
+        if (pendingWrites.size == 1 && pendingWrites[0].buf.segmentCount == 1) {
+            // Fast path: single single-segment buffer — SEND SQE with one
+            // pointer + length. Multi-segment single-buffer falls through
+            // to the writev path so its segments become iovec entries.
             val pw = pendingWrites[0]
             submitAsyncSend(pw.buf, pw.offset, pw.length)
         } else {
@@ -640,35 +691,53 @@ internal class IoUringIoTransport(
 
     /**
      * Submits all pending writes as a single WRITEV SQE via callback.
+     * Each pending write contributes one iovec entry per readable segment
+     * in its buffer — a multi-seg `IoBuf` (built by codec growth via
+     * [IoBuf.appendSegment]) expands into as many iovec entries as it has
+     * segments.
      *
-     * On partial writev, fully-written buffers are released and the remainder
-     * is retried via [submitAsyncSendSequential].
+     * On partial writev, fully-written buffers are released and the
+     * remainder is retried via [submitAsyncSendSequential] (single-segment
+     * case) or [submitAsyncWritev] (multi-segment case — re-submits the
+     * unwritten suffix as another writev SQE so cross-segment recovery
+     * stays on the iovec path).
      */
     private fun submitAsyncWritev() {
-        val count = pendingWrites.size
         val totalBytes = pendingWrites.sumOf { it.length }
         val writes = ArrayList(pendingWrites) // snapshot before clear
 
+        // Expand all pending writes into iovec entries via the shared
+        // gatherList. A multi-seg IoBuf contributes N iovec entries.
+        gatherList.clear()
+        for (pw in writes) {
+            pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+        }
+        val iovCount = gatherList.size
+
         val iovecs: kotlinx.cinterop.CPointer<io_uring.iovec>
         memScoped {
-            val bases = allocArray<COpaquePointerVar>(count)
-            val lens = allocArray<ULongVar>(count)
-            for ((i, pw) in writes.withIndex()) {
-                bases[i] = (pw.buf.unsafePointer + pw.offset)
-                lens[i] = pw.length.convert()
+            val bases = allocArray<COpaquePointerVar>(iovCount)
+            val lens = allocArray<ULongVar>(iovCount)
+            for (i in 0 until iovCount) {
+                val range = gatherList[i]
+                val backing = checkNotNull(range.memory) {
+                    "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                }
+                bases[i] = (backing.asNativePointer() + range.offset)
+                lens[i] = range.length.convert()
             }
-            iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
+            iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), iovCount)
                 ?: error("keel_alloc_iovec failed (OOM)")
         }
 
-        eventLoop.submitWritevCallback(sqeFd, iovecs, count.toUInt(), fixedFile = useFixedFile) { res ->
+        eventLoop.submitWritevCallback(sqeFd, iovecs, iovCount.toUInt(), fixedFile = useFixedFile) { res ->
             io_uring.keel_free_iovec(iovecs)
             val writtenBytes = if (res > 0) res else 0
             if (writtenBytes >= totalBytes) {
                 for (pw in writes) pw.buf.release()
                 onAsyncFlushDone()
             } else {
-                // Partial writev: release fully-written, retry remainder sequentially.
+                // Partial writev: release fully-written, retry remainder.
                 var consumed = 0
                 var splitIndex = -1
                 for ((i, pw) in writes.withIndex()) {
@@ -684,8 +753,94 @@ internal class IoUringIoTransport(
                     // All buffers fully written (shouldn't happen, but safe)
                     onAsyncFlushDone()
                 } else {
-                    // Send remaining buffers sequentially via SEND chain.
-                    submitAsyncWritevRemainder(writes, splitIndex, writtenBytes - consumed)
+                    // For single-segment remainder, the existing sequential
+                    // SEND chain is cheap and order-preserving. For multi-
+                    // segment remainder (any buffer at or after splitIndex
+                    // is multi-seg), re-submit the unwritten suffix as
+                    // another writev SQE so cross-segment recovery stays
+                    // on the iovec path.
+                    val alreadySent = writtenBytes - consumed
+                    val remainderHasMultiSeg = writes.subList(splitIndex, writes.size)
+                        .any { it.buf.segmentCount > 1 }
+                    if (remainderHasMultiSeg) {
+                        submitAsyncWritevSuffix(writes, splitIndex, alreadySent)
+                    } else {
+                        submitAsyncWritevRemainder(writes, splitIndex, alreadySent)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Re-submits the unwritten suffix of a partial writev as another
+     * writev SQE — multi-segment-safe recovery path. The split buffer at
+     * [splitIndex] is shifted by [alreadySent] (logical offset within
+     * its (offset, length) snapshot); subsequent buffers are kept in
+     * full.
+     */
+    private fun submitAsyncWritevSuffix(writes: List<PendingWrite>, splitIndex: Int, alreadySent: Int) {
+        gatherList.clear()
+        val suffixPw = writes[splitIndex]
+        val suffixOffset = suffixPw.offset + alreadySent.coerceAtLeast(0)
+        val suffixLength = suffixPw.length - alreadySent.coerceAtLeast(0)
+        suffixPw.buf.appendSegmentsForRange(suffixOffset, suffixLength, gatherList)
+        for (i in splitIndex + 1 until writes.size) {
+            val pw = writes[i]
+            pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+        }
+        val iovCount = gatherList.size
+        val totalRemaining = suffixLength + (splitIndex + 1 until writes.size).sumOf { writes[it].length }
+
+        val iovecs: kotlinx.cinterop.CPointer<io_uring.iovec>
+        memScoped {
+            val bases = allocArray<COpaquePointerVar>(iovCount)
+            val lens = allocArray<ULongVar>(iovCount)
+            for (i in 0 until iovCount) {
+                val range = gatherList[i]
+                val backing = checkNotNull(range.memory) {
+                    "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                }
+                bases[i] = (backing.asNativePointer() + range.offset)
+                lens[i] = range.length.convert()
+            }
+            iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), iovCount)
+                ?: error("keel_alloc_iovec failed (OOM)")
+        }
+
+        eventLoop.submitWritevCallback(sqeFd, iovecs, iovCount.toUInt(), fixedFile = useFixedFile) { res ->
+            io_uring.keel_free_iovec(iovecs)
+            val written = if (res > 0) res else 0
+            if (written >= totalRemaining) {
+                for (i in splitIndex until writes.size) writes[i].buf.release()
+                onAsyncFlushDone()
+            } else {
+                // Recursive partial: release fully-written, retry the
+                // unwritten suffix again.
+                var consumed = 0
+                var nextSplit = -1
+                // The suffix portion of the split buffer counts first.
+                if (consumed + suffixLength <= written) {
+                    consumed += suffixLength
+                    writes[splitIndex].buf.release()
+                    for (j in splitIndex + 1 until writes.size) {
+                        val pw = writes[j]
+                        if (consumed + pw.length <= written) {
+                            consumed += pw.length
+                            pw.buf.release()
+                        } else {
+                            nextSplit = j
+                            break
+                        }
+                    }
+                    if (nextSplit < 0) {
+                        onAsyncFlushDone()
+                    } else {
+                        submitAsyncWritevSuffix(writes, nextSplit, written - consumed)
+                    }
+                } else {
+                    // Still inside the original split buffer.
+                    submitAsyncWritevSuffix(writes, splitIndex, alreadySent + written)
                 }
             }
         }
