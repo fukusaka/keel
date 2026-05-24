@@ -220,6 +220,48 @@ class IoBufAsciiTextTest {
     }
 
     @Test
+    fun `toString caches the materialised String across repeated calls`() {
+        val buf = bufOf("Content-Type")
+        try {
+            val seq = IoBufAsciiText(buf, 0, 12)
+            val first = seq.toString()
+            val second = seq.toString()
+            val third = seq.toString()
+            // Reference identity: every subsequent toString must return
+            // the exact same String instance the first call materialised,
+            // not just an equal one. Catches a regression where the cache
+            // is dropped and each call re-allocates.
+            assertTrue(first === second, "second toString() did not hit the cache")
+            assertTrue(second === third, "third toString() did not hit the cache")
+            assertEquals("Content-Type", first)
+        } finally {
+            buf.release()
+        }
+    }
+
+    @Test
+    fun `toString cache does not alias across distinct views over the same range`() {
+        val buf = bufOf("Content-Type")
+        try {
+            // Two distinct IoBufAsciiText instances over the same buffer
+            // range. Cache lives on the instance, not the buffer / range,
+            // so each view materialises its own content independently.
+            // (We can only assert content equality portably — on JS,
+            // `String` is a value type, so `===` is content equality, not
+            // identity, and an instance-identity assertion would be a
+            // JVM / Native semantic leaking into the test.)
+            val a = IoBufAsciiText(buf, 0, 12)
+            val b = IoBufAsciiText(buf, 0, 12)
+            assertEquals("Content-Type", a.toString())
+            assertEquals("Content-Type", b.toString())
+            // Calling toString on one must not affect the other.
+            assertEquals(a.toString(), b.toString())
+        } finally {
+            buf.release()
+        }
+    }
+
+    @Test
     fun `start plus length must fit within buf capacity`() {
         val buf = bufOf("abc")
         // buf capacity is at least 3 (depends on allocator backing); the
