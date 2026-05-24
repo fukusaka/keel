@@ -114,7 +114,7 @@ class GzipHeaderParserTest {
         assertContentEquals(sample, collected.toByteArray())
     }
 
-    private fun drainOutput(output: io.github.fukusaka.keel.buf.IoBuf, dest: MutableList<Byte>) {
+    private fun drainOutput(output: IoBuf, dest: MutableList<Byte>) {
         val n = output.readableBytes
         if (n == 0) return
         val tmp = ByteArray(n)
@@ -128,9 +128,9 @@ class GzipHeaderParserTest {
         val parser = GzipHeaderParser()
         val header = byteArrayOf(
             0x1F.toByte(), 0x8B.toByte(), 0x08, 0x04, // magic CM FLG=FEXTRA
-            0, 0, 0, 0,                                // MTIME
-            0, 0xFF.toByte(),                          // XFL OS
-            0, 0,                                      // XLEN = 0
+            0, 0, 0, 0, // MTIME
+            0, 0xFF.toByte(), // XFL OS
+            0, 0, // XLEN = 0
         )
         val tail = parser.consume(header)
         assertTrue(parser.done, "parser should complete on the FEXTRA-with-XLEN-0 case")
@@ -275,14 +275,6 @@ class GzipHeaderParserTest {
         out.write(((isize shr 16) and 0xFFL).toInt())
         out.write(((isize shr 24) and 0xFFL).toInt())
         return out.toByteArray()
-    }
-
-    private fun IoBuf.toByteList(): List<Byte> {
-        val n = readableBytes
-        if (n == 0) return emptyList()
-        val tmp = ByteArray(n)
-        readByteArray(tmp, 0, n)
-        return tmp.toList()
     }
 
     @Suppress("unused")
