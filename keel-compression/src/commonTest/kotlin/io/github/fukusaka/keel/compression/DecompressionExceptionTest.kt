@@ -1,0 +1,50 @@
+package io.github.fukusaka.keel.compression
+
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+
+/**
+ * Exception hierarchy contract.
+ *
+ * The SPI documents [DecompressionLimitException] as a subclass of
+ * [DecompressionException] so callers may `catch (e: DecompressionException)`
+ * to catch both malformed-input and limit-exceeded failures with one
+ * handler. This is a public contract that backends rely on — pin it here
+ * so a future refactor cannot silently break it.
+ */
+class DecompressionExceptionTest {
+
+    @Test
+    fun `DecompressionLimitException is a subclass of DecompressionException`() {
+        val e: DecompressionException = DecompressionLimitException("limit hit")
+        assertTrue(e is DecompressionLimitException)
+    }
+
+    @Test
+    fun `DecompressionException carries message`() {
+        val e = DecompressionException("malformed header")
+        assertEquals("malformed header", e.message)
+    }
+
+    @Test
+    fun `DecompressionException preserves cause`() {
+        val root = RuntimeException("root")
+        val e = DecompressionException("wrapper", root)
+        assertSame(root, e.cause)
+    }
+
+    @Test
+    fun `DecompressionException with no cause has null cause`() {
+        val e = DecompressionException("standalone")
+        assertNull(e.cause)
+    }
+
+    @Test
+    fun `DecompressionLimitException carries message`() {
+        val e = DecompressionLimitException("max-output-size exceeded")
+        assertEquals("max-output-size exceeded", e.message)
+    }
+}
