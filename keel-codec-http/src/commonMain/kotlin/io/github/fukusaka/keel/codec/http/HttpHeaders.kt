@@ -93,8 +93,14 @@ class HttpHeaders {
      * this materialises a single zero-copy [IoBufAsciiText] view over the
      * matched value; no allocation for un-matched entries. Use [getString]
      * when a `String` is required.
+     *
+     * Accepting any [CharSequence] lets callers pass a zero-copy view
+     * (e.g. an [IoBufAsciiText] sourced from another header value or the
+     * request URI's path slice) as the lookup key without materialising
+     * it to `String` first. The case-insensitive name hash and compare
+     * operate directly on the `CharSequence`.
      */
-    operator fun get(name: String): CharSequence? {
+    operator fun get(name: CharSequence): CharSequence? {
         if (slotCount == 0) return null
         val hash = caseInsensitiveHash(name)
         val matched = lastMatch(hash, name)
@@ -107,14 +113,14 @@ class HttpHeaders {
      * [valueStringCache]) so repeated reads of the same header do not
      * re-allocate.
      */
-    fun getString(name: String): String? {
+    fun getString(name: CharSequence): String? {
         if (slotCount == 0) return null
         val hash = caseInsensitiveHash(name)
         val matched = lastMatch(hash, name)
         return if (matched >= 0) valueStringOf(matched) else null
     }
 
-    fun getAll(name: String): List<String> {
+    fun getAll(name: CharSequence): List<String> {
         if (slotCount == 0) return emptyList()
         var result: MutableList<String>? = null
         for (i in 0 until slotCount) {
@@ -125,7 +131,7 @@ class HttpHeaders {
         return result ?: emptyList()
     }
 
-    operator fun contains(name: String): Boolean {
+    operator fun contains(name: CharSequence): Boolean {
         if (slotCount == 0) return false
         val hash = caseInsensitiveHash(name)
         return lastMatch(hash, name) >= 0
@@ -139,7 +145,7 @@ class HttpHeaders {
      * order, RFC 7230 §3.2.2) matching [name], or -1. Uses the hash index
      * when present, else a linear scan over the slots.
      */
-    private fun lastMatch(hash: Int, name: String): Int {
+    private fun lastMatch(hash: Int, name: CharSequence): Int {
         val s = slots ?: return -1
         val bh = bucketHead
         var matched = -1
@@ -184,7 +190,7 @@ class HttpHeaders {
     }
 
     /** Case-insensitive name compare without materialising the entry. */
-    private fun nameMatches(i: Int, name: String): Boolean {
+    private fun nameMatches(i: Int, name: CharSequence): Boolean {
         val s = slotsOrFail()
         val base = i * STRIDE
         val ns = s[base + 1]
@@ -254,6 +260,17 @@ class HttpHeaders {
         appendSlot(hash, STRING_SENTINEL, strIdx, -1, -1)
         return this
     }
+
+    /**
+     * [add] taking [CharSequence] for ergonomic symmetry with the lookup
+     * API. The stored entry is still a `String` (mutation always
+     * materialises) — the overload exists so callers holding a zero-copy
+     * view (e.g. [IoBufAsciiText]) can hand it to [add] / [set] directly
+     * without an explicit `.toString()`. Overload resolution prefers the
+     * `String` overload for `String` arguments so existing call sites are
+     * unchanged.
+     */
+    fun add(name: CharSequence, value: CharSequence): HttpHeaders = add(name.toString(), value.toString())
 
     /**
      * Adds a header whose name and value are byte ranges in [buf] (the
@@ -430,12 +447,15 @@ class HttpHeaders {
         return this
     }
 
-    fun remove(name: String): HttpHeaders {
+    /** [set] taking [CharSequence] for symmetry with [add]; see [add] KDoc. */
+    operator fun set(name: CharSequence, value: CharSequence): HttpHeaders = set(name.toString(), value.toString())
+
+    fun remove(name: CharSequence): HttpHeaders {
         removeAll(name)
         return this
     }
 
-    private fun removeAll(name: String) {
+    private fun removeAll(name: CharSequence) {
         if (slotCount == 0) return
         var anyRemoved = false
         for (i in 0 until slotCount) {
@@ -652,7 +672,16 @@ class HttpHeaders {
             return headers
         }
 
-        internal fun caseInsensitiveHash(s: String): Int {
+        /**
+         * Case-insensitive name hash (ASCII A..Z folded to a..z, polynomial
+         * 31 mixing) over any [CharSequence] — `String`, [IoBufAsciiText],
+         * `StringBuilder`, etc. Matches [caseInsensitiveHashOfBuf]
+         * char-for-char for ASCII so a name parsed straight off an
+         * [IoBuf] hashes identically to its `String` materialisation;
+         * [HttpHeadersHashInvariantTest] pins this equivalence so a
+         * divergence would be caught immediately.
+         */
+        internal fun caseInsensitiveHash(s: CharSequence): Int {
             var h = 0
             for (i in 0 until s.length) {
                 val c = s[i].code
@@ -701,10 +730,13 @@ class HttpHeaders {
 
         /**
          * ASCII case-insensitive equality of an [IoBuf] byte range against
-         * a `String` — used by the name-compare hot path so the range
-         * entry's name is not materialised into a view just to compare it.
+         * any [CharSequence] — used by the name-compare hot path so the
+         * range entry's name is not materialised into a view just to
+         * compare it. Accepts `CharSequence` so a caller already holding a
+         * zero-copy view (e.g. [IoBufAsciiText]) can be used directly as
+         * the lookup key.
          */
-        private fun bufEqualsIgnoreCase(buf: IoBuf, start: Int, length: Int, s: String): Boolean {
+        private fun bufEqualsIgnoreCase(buf: IoBuf, start: Int, length: Int, s: CharSequence): Boolean {
             if (length != s.length) return false
             for (i in 0 until length) {
                 var cb = buf.getByte(start + i).toInt() and 0xFF
