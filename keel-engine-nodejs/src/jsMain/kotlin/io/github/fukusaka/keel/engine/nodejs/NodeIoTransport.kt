@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
+import io.github.fukusaka.keel.buf.asInt8Array
 import io.github.fukusaka.keel.buf.unsafeArray
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import kotlinx.coroutines.CoroutineDispatcher
@@ -134,11 +136,25 @@ internal class NodeIoTransport(
     // --- Write path ---
 
     /**
+     * Scratch list reused across [flush] calls to expand a multi-segment
+     * [IoBuf] into per-segment ranges before each segment is wrapped as
+     * a Node.js Buffer. Single-EL invariant (JS is single-threaded).
+     */
+    private val gatherList = SegmentRangeList()
+
+    /**
      * Sends all pending writes via Node.js `socket.write()`.
      *
      * Node.js buffers data internally — no EAGAIN handling needed.
      * Each pending write is copied byte-by-byte from [IoBuf]'s backing
      * Int8Array into a Node.js Buffer.
+     *
+     * **Multi-seg expansion**: a Segment-backed [IoBuf] with
+     * [IoBuf.segmentCount] > 1 (built by codec growth via
+     * [IoBuf.appendSegment]) is dispatched as one `socket.write()` call
+     * per chained segment — Node's stream layer batches sequential
+     * writes into the underlying TCP send, so byte order is preserved
+     * across the chain.
      *
      * @return always `true` because Node.js socket.write is synchronous
      *         from the caller's perspective (buffers internally).
@@ -146,13 +162,29 @@ internal class NodeIoTransport(
     override fun flush(): Boolean {
         var totalFlushed = 0
         for (pw in pendingWrites) {
-            val src = pw.buf.unsafeArray
-            // Int8Array.subarray shares the same underlying ArrayBuffer (zero-copy view).
-            // Buffer.from(TypedArray) copies the data into a new Node.js Buffer.
-            // This replaces the previous byte-by-byte jsArray.push loop (O(n) per byte).
-            val slice = src.subarray(pw.offset, pw.offset + pw.length)
-            val nodeBuf = nodeBuffer.from(slice)
-            socket.write(nodeBuf)
+            val buf = pw.buf
+            if (buf.segmentCount == 1) {
+                // Fast path: single-segment buffer. Int8Array.subarray
+                // shares the same underlying ArrayBuffer (zero-copy view);
+                // Buffer.from(TypedArray) copies the data into a new
+                // Node.js Buffer.
+                val src = buf.unsafeArray
+                val slice = src.subarray(pw.offset, pw.offset + pw.length)
+                socket.write(nodeBuffer.from(slice))
+            } else {
+                // Multi-seg: one socket.write per chained segment.
+                gatherList.clear()
+                buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+                val n = gatherList.size
+                for (i in 0 until n) {
+                    val range = gatherList[i]
+                    val backing = checkNotNull(range.memory) {
+                        "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                    }
+                    val slice = backing.asInt8Array().subarray(range.offset, range.offset + range.length)
+                    socket.write(nodeBuffer.from(slice))
+                }
+            }
             pw.buf.release()
             totalFlushed += pw.length
         }
