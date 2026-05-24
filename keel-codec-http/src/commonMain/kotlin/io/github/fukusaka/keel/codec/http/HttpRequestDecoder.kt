@@ -136,12 +136,15 @@ class HttpRequestDecoder(
 
     /**
      * Cumulative byte total `(nameLen + valueLen)` of every header
-     * field admitted so far for the in-progress request. Reset to `0`
-     * in [resetState] and at [emitHead] (the next request starts
-     * fresh). Trailer field bytes accumulate into the same counter so
-     * the cap covers the union of headers + trailers — a malicious
-     * peer cannot bypass the cap by stuffing bytes into the trailer
-     * block.
+     * (and trailer) field admitted so far for the in-progress
+     * request. Reset to `0` at the **next request line**
+     * ([parseRequestLineFast] / [parseRequestLineFallback]) and on
+     * the error path ([resetState]) — deliberately **not** at
+     * [emitHead], because trailer field bytes parsed after the head
+     * is emitted accumulate on top of the header bytes for the same
+     * request. A malicious peer that splits its flood between the
+     * header block and the chunked trailer block is therefore caught
+     * by the same cap.
      */
     private var headerByteCount: Int = 0
 
