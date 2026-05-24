@@ -47,36 +47,32 @@ class SuspendChannelBridgeTest {
     }
 
     @Test
-    fun `SuspendChannelSource delegates read to channel`()= runTest {
-        withTimeout(15.seconds) {
-            val channel = StubChannel()
-            val source = channel.asSuspendSource()
+    fun `SuspendChannelSource delegates read to channel`()= runTest(timeout = 15.seconds) {
+        val channel = StubChannel()
+        val source = channel.asSuspendSource()
 
-            val buf = DefaultAllocator.allocate(16)
-            val n = source.read(buf)
+        val buf = DefaultAllocator.allocate(16)
+        val n = source.read(buf)
 
-            assertEquals(1, n)
-            assertEquals(true, channel.readCalled)
-            assertEquals(0x42.toByte(), buf.readByte())
-            buf.release()
-        }
+        assertEquals(1, n)
+        assertEquals(true, channel.readCalled)
+        assertEquals(0x42.toByte(), buf.readByte())
+        buf.release()
     }
 
     @Test
-    fun `SuspendChannelSink delegates write and flush to channel`()= runTest {
-        withTimeout(15.seconds) {
-            val channel = StubChannel()
-            val sink = channel.asSuspendSink()
+    fun `SuspendChannelSink delegates write and flush to channel`()= runTest(timeout = 15.seconds) {
+        val channel = StubChannel()
+        val sink = channel.asSuspendSink()
 
-            val buf = DefaultAllocator.allocate(16)
-            buf.writeByte(0x41)
-            val n = sink.write(buf) // transfer: sink owns buf from here
-            sink.flush()
+        val buf = DefaultAllocator.allocate(16)
+        buf.writeByte(0x41)
+        val n = sink.write(buf) // transfer: sink owns buf from here
+        sink.flush()
 
-            assertEquals(1, n)
-            assertEquals(true, channel.writeCalled)
-            assertEquals(true, channel.flushCalled)
-        }
+        assertEquals(1, n)
+        assertEquals(true, channel.writeCalled)
+        assertEquals(true, channel.flushCalled)
     }
 
     @Test

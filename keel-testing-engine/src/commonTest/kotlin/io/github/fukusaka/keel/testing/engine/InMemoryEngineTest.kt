@@ -78,49 +78,43 @@ class InMemoryEngineTest {
                     engine.close()
                 }
             }
-        }
+    }
 
     @Test
-    fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = InMemoryEngine()
-            try {
-                val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
-                val address = server.localAddress
-                assertTrue(address is InetSocketAddress)
-                assertTrue(address.port != 0, "expected a synthetic non-zero port, got ${address.port}")
-            } finally {
-                engine.close()
-            }
+    fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest(timeout = 15.seconds) {
+        val engine = InMemoryEngine()
+        try {
+            val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
+            val address = server.localAddress
+            assertTrue(address is InetSocketAddress)
+            assertTrue(address.port != 0, "expected a synthetic non-zero port, got ${address.port}")
+        } finally {
+            engine.close()
         }
     }
 
     @Test
-    fun `connect to an address with no registered listener is refused`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = InMemoryEngine()
-            try {
-                assertFailsWith<IllegalStateException> {
-                    engine.connect(InetSocketAddress("127.0.0.1", 65000))
-                }
-            } finally {
-                engine.close()
+    fun `connect to an address with no registered listener is refused`() = runTest(timeout = 15.seconds) {
+        val engine = InMemoryEngine()
+        try {
+            assertFailsWith<IllegalStateException> {
+                engine.connect(InetSocketAddress("127.0.0.1", 65000))
             }
+        } finally {
+            engine.close()
         }
     }
 
     @Test
-    fun `binding the same resolved address twice is rejected`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = InMemoryEngine()
-            try {
+    fun `binding the same resolved address twice is rejected`() = runTest(timeout = 15.seconds) {
+        val engine = InMemoryEngine()
+        try {
+            engine.bindPipeline(InetSocketAddress("127.0.0.1", 8080)) { }
+            assertFailsWith<IllegalStateException> {
                 engine.bindPipeline(InetSocketAddress("127.0.0.1", 8080)) { }
-                assertFailsWith<IllegalStateException> {
-                    engine.bindPipeline(InetSocketAddress("127.0.0.1", 8080)) { }
-                }
-            } finally {
-                engine.close()
             }
+        } finally {
+            engine.close()
         }
     }
 
@@ -150,28 +144,24 @@ class InMemoryEngineTest {
     }
 
     @Test
-    fun `bind throws because only pipeline-mode binding is supported`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = InMemoryEngine()
-            try {
-                assertFailsWith<UnsupportedOperationException> {
-                    engine.bind(InetSocketAddress("127.0.0.1", 0))
-                }
-            } finally {
-                engine.close()
+    fun `bind throws because only pipeline-mode binding is supported`() = runTest(timeout = 15.seconds) {
+        val engine = InMemoryEngine()
+        try {
+            assertFailsWith<UnsupportedOperationException> {
+                engine.bind(InetSocketAddress("127.0.0.1", 0))
             }
+        } finally {
+            engine.close()
         }
     }
 
     @Test
-    fun `connect after the engine is closed is rejected`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = InMemoryEngine()
-            val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
-            engine.close()
-            assertFailsWith<IllegalStateException> {
-                engine.connect(server.localAddress)
-            }
+    fun `connect after the engine is closed is rejected`() = runTest(timeout = 15.seconds) {
+        val engine = InMemoryEngine()
+        val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
+        engine.close()
+        assertFailsWith<IllegalStateException> {
+            engine.connect(server.localAddress)
         }
     }
 }

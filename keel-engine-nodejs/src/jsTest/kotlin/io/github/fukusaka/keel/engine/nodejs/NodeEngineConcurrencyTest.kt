@@ -29,35 +29,33 @@ class NodeEngineConcurrencyTest {
      * `onConnection` then needs to resume each accept in turn.
      */
     @Test
-    fun multipleConcurrentAcceptsAreFifoQueued() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NodeEngine()
-            val server = engine.bind("127.0.0.1", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+    fun multipleConcurrentAcceptsAreFifoQueued() = runTest(timeout = 15.seconds) {
+        val engine = NodeEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val acceptJobs = (1..8).map {
-                async { server.accept() }
-            }
-            // Yield so the accept coroutines suspend before any connect.
-            yield()
-
-            val clientJobs = (1..8).map {
-                async { engine.connect("127.0.0.1", port) }
-            }
-
-            val serverChannels = acceptJobs.awaitAll()
-            val clientChannels = clientJobs.awaitAll()
-
-            assertEquals(8, serverChannels.size)
-            assertEquals(8, clientChannels.size)
-            serverChannels.forEach { assertTrue(it.isOpen) }
-            clientChannels.forEach { assertTrue(it.isOpen) }
-
-            serverChannels.forEach { it.close() }
-            clientChannels.forEach { it.close() }
-            server.close()
-            engine.close()
+        val acceptJobs = (1..8).map {
+            async { server.accept() }
         }
+        // Yield so the accept coroutines suspend before any connect.
+        yield()
+
+        val clientJobs = (1..8).map {
+            async { engine.connect("127.0.0.1", port) }
+        }
+
+        val serverChannels = acceptJobs.awaitAll()
+        val clientChannels = clientJobs.awaitAll()
+
+        assertEquals(8, serverChannels.size)
+        assertEquals(8, clientChannels.size)
+        serverChannels.forEach { assertTrue(it.isOpen) }
+        clientChannels.forEach { assertTrue(it.isOpen) }
+
+        serverChannels.forEach { it.close() }
+        clientChannels.forEach { it.close() }
+        server.close()
+        engine.close()
     }
 
 }

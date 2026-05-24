@@ -2,348 +2,323 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 class NioEngineReadWriteTest {
 
     @Test
     fun echoRoundTrip() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val serverCh = server.accept()
+        val client = connectRawClient(port)
+        val serverCh = server.accept()
 
-            rawWrite(client, "hello")
+        rawWrite(client, "hello")
 
-            val readBuf = DefaultAllocator.allocate(64)
-            val n = serverCh.read(readBuf)
-            assertEquals(5, n)
+        val readBuf = DefaultAllocator.allocate(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(5, n)
 
-            serverCh.write(readBuf) // transfer: serverCh owns readBuf
-            serverCh.flush()
+        serverCh.write(readBuf) // transfer: serverCh owns readBuf
+        serverCh.flush()
 
-            val echo = rawRead(client, 5)
-            assertEquals("hello", echo)
+        val echo = rawRead(client, 5)
+        assertEquals("hello", echo)
 
-            serverCh.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        serverCh.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun readReturnsMinusOneOnEof() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            client.close() // Client closes -> EOF
+        client.close() // Client closes -> EOF
 
-            val buf = DefaultAllocator.allocate(64)
-            val n = ch.read(buf)
-            assertEquals(-1, n)
+        val buf = DefaultAllocator.allocate(64)
+        val n = ch.read(buf)
+        assertEquals(-1, n)
 
-            buf.release()
-            ch.close()
-            server.close()
-            engine.close()
-        }
+        buf.release()
+        ch.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun writeAndFlush() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            val buf = DefaultAllocator.allocate(8)
-            buf.writeByte(0x41) // 'A'
-            buf.writeByte(0x42) // 'B'
+        val buf = DefaultAllocator.allocate(8)
+        buf.writeByte(0x41) // 'A'
+        buf.writeByte(0x42) // 'B'
 
-            val written = ch.write(buf) // transfer: ch owns buf
-            assertEquals(2, written)
+        val written = ch.write(buf) // transfer: ch owns buf
+        assertEquals(2, written)
 
-            ch.flush()
+        ch.flush()
 
-            val received = rawRead(client, 2)
-            assertEquals("AB", received)
+        val received = rawRead(client, 2)
+        assertEquals("AB", received)
 
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun multipleWritesSingleFlush() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            val buf1 = DefaultAllocator.allocate(4)
-            buf1.writeByte(0x41) // 'A'
-            buf1.writeByte(0x42) // 'B'
+        val buf1 = DefaultAllocator.allocate(4)
+        buf1.writeByte(0x41) // 'A'
+        buf1.writeByte(0x42) // 'B'
 
-            val buf2 = DefaultAllocator.allocate(4)
-            buf2.writeByte(0x43) // 'C'
-            buf2.writeByte(0x44) // 'D'
+        val buf2 = DefaultAllocator.allocate(4)
+        buf2.writeByte(0x43) // 'C'
+        buf2.writeByte(0x44) // 'D'
 
-            ch.write(buf1) // transfer
-            ch.write(buf2) // transfer
-            ch.flush()
+        ch.write(buf1) // transfer
+        ch.write(buf2) // transfer
+        ch.flush()
 
-            val received = rawRead(client, 4)
-            assertEquals("ABCD", received)
+        val received = rawRead(client, 4)
+        assertEquals("ABCD", received)
 
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun readAdvancesIoBufWriterIndex() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            rawWrite(client, "abc")
+        rawWrite(client, "abc")
 
-            val buf = DefaultAllocator.allocate(64)
-            assertEquals(0, buf.writerIndex)
-            ch.read(buf)
-            assertEquals(3, buf.writerIndex)
-            assertEquals(3, buf.readableBytes)
+        val buf = DefaultAllocator.allocate(64)
+        assertEquals(0, buf.writerIndex)
+        ch.read(buf)
+        assertEquals(3, buf.writerIndex)
+        assertEquals(3, buf.readableBytes)
 
-            buf.release()
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        buf.release()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun writeTransfersOwnershipButDoesNotAdvanceReaderIndex() = runTest {
-        withTimeout(15.seconds) {
-            // Under ownership-transfer semantics, transport.write takes over the
-            // caller's reference and captures (readerIndex, readableBytes) as a
-            // PendingWrite snapshot. The buffer's live readerIndex is left alone
-            // (matches Netty ChannelOutboundBuffer). The caller must not touch
-            // buf after the transfer.
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        // Under ownership-transfer semantics, transport.write takes over the
+        // caller's reference and captures (readerIndex, readableBytes) as a
+        // PendingWrite snapshot. The buffer's live readerIndex is left alone
+        // (matches Netty ChannelOutboundBuffer). The caller must not touch
+        // buf after the transfer.
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            val buf = DefaultAllocator.allocate(8)
-            buf.writeByte(0x41)
-            buf.writeByte(0x42)
+        val buf = DefaultAllocator.allocate(8)
+        buf.writeByte(0x41)
+        buf.writeByte(0x42)
 
-            // Keep a retained ref so we can legally observe indices after transfer.
-            val observer = buf.retain()
-            ch.write(buf) // transfer of the original ref; observer still holds 1
-            assertEquals(0, observer.readerIndex) // not advanced by transport
-            assertEquals(2, observer.writerIndex)
+        // Keep a retained ref so we can legally observe indices after transfer.
+        val observer = buf.retain()
+        ch.write(buf) // transfer of the original ref; observer still holds 1
+        assertEquals(0, observer.readerIndex) // not advanced by transport
+        assertEquals(2, observer.writerIndex)
 
-            ch.flush()
+        ch.flush()
 
-            observer.release() // the only caller-side release we should make
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        observer.release() // the only caller-side release we should make
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun shutdownOutputSendsFin() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            ch.shutdownOutput()
+        ch.shutdownOutput()
 
-            // Client should see EOF
-            val n = client.getInputStream().read()
-            assertEquals(-1, n) // EOF
+        // Client should see EOF
+        val n = client.getInputStream().read()
+        assertEquals(-1, n) // EOF
 
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun readAfterShutdownOutputStillWorks() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            ch.shutdownOutput()
+        ch.shutdownOutput()
 
-            rawWrite(client, "hi")
+        rawWrite(client, "hi")
 
-            val buf = DefaultAllocator.allocate(64)
-            val n = ch.read(buf)
-            assertEquals(2, n)
-            assertEquals('h'.code.toByte(), buf.readByte())
-            assertEquals('i'.code.toByte(), buf.readByte())
+        val buf = DefaultAllocator.allocate(64)
+        val n = ch.read(buf)
+        assertEquals(2, n)
+        assertEquals('h'.code.toByte(), buf.readByte())
+        assertEquals('i'.code.toByte(), buf.readByte())
 
-            buf.release()
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        buf.release()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun asSuspendSourceReadsData() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            rawWrite(client, "test")
+        rawWrite(client, "test")
 
-            val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
-                ch.asSuspendSource(), ch.allocator,
-            )
-            val data = source.readByteArray(4)
-            assertEquals("test", data.decodeToString())
+        val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
+            ch.asSuspendSource(), ch.allocator,
+        )
+        val data = source.readByteArray(4)
+        assertEquals("test", data.decodeToString())
 
-            source.close()
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        source.close()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun asSuspendSinkWritesData() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
-                ch.asSuspendSink(), ch.allocator,
-            )
-            sink.writeString("data")
-            sink.flush()
+        val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
+            ch.asSuspendSink(), ch.allocator,
+        )
+        sink.writeString("data")
+        sink.flush()
 
-            val received = rawRead(client, 4)
-            assertEquals("data", received)
+        val received = rawRead(client, 4)
+        assertEquals("data", received)
 
-            sink.close()
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
-        }
+        sink.close()
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun asSuspendSourceEofReturnsMinusOne() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("0.0.0.0", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            client.close()
+        client.close()
 
-            val buf = DefaultAllocator.allocate(64)
-            val n = ch.asSuspendSource().read(buf)
-            assertEquals(-1, n)
+        val buf = DefaultAllocator.allocate(64)
+        val n = ch.asSuspendSource().read(buf)
+        assertEquals(-1, n)
 
-            buf.release()
-            ch.close()
-            server.close()
-            engine.close()
-        }
+        buf.release()
+        ch.close()
+        server.close()
+        engine.close()
     }
 
     @Test
     fun `multiple read-write cycles reuse SelectionKey`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            val server = engine.bind("127.0.0.1", 0)
-            val port = (server.localAddress as InetSocketAddress).port
+        val engine = NioEngine()
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
 
-            val client = connectRawClient(port)
-            val ch = server.accept()
+        val client = connectRawClient(port)
+        val ch = server.accept()
 
-            // Multiple echo cycles — SelectionKey is registered once and
-            // reused via interestOps toggle (no re-registration per read)
-            repeat(10) { i ->
-                val msg = "cycle-$i"
-                client.getOutputStream().write(msg.toByteArray())
-                client.getOutputStream().flush()
+        // Multiple echo cycles — SelectionKey is registered once and
+        // reused via interestOps toggle (no re-registration per read)
+        repeat(10) { i ->
+            val msg = "cycle-$i"
+            client.getOutputStream().write(msg.toByteArray())
+            client.getOutputStream().flush()
 
-                val buf = DefaultAllocator.allocate(64)
-                val n = ch.read(buf)
-                assertEquals(msg.length, n)
+            val buf = DefaultAllocator.allocate(64)
+            val n = ch.read(buf)
+            assertEquals(msg.length, n)
 
-                ch.write(buf) // transfer
-                ch.flush()
+            ch.write(buf) // transfer
+            ch.flush()
 
-                val echo = rawRead(client, msg.length)
-                assertEquals(msg, echo)
-            }
-
-            ch.close()
-            client.close()
-            server.close()
-            engine.close()
+            val echo = rawRead(client, msg.length)
+            assertEquals(msg, echo)
         }
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
     }
 
     @Test

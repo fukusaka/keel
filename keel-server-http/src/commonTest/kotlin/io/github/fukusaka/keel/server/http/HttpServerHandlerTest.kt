@@ -917,19 +917,17 @@ class HttpServerHandlerTest {
     }
 
     @Test
-    fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest {
-        withTimeout(15.seconds) {
-            val connections = ServerConnections()
-            channel.installHttpServerPipeline(
-                Router(), emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, connections,
-            )
+    fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest(timeout = 15.seconds) {
+        val connections = ServerConnections()
+        channel.installHttpServerPipeline(
+            Router(), emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, connections,
+        )
 
-            channel.pipeline.notifyActive()
-            assertEquals(1, connections.snapshot().size, "the connection joins its shard on onActive")
+        channel.pipeline.notifyActive()
+        assertEquals(1, connections.snapshot().size, "the connection joins its shard on onActive")
 
-            channel.pipeline.notifyInactive()
-            assertEquals(0, connections.snapshot().size, "the connection leaves its shard on onInactive")
-        }
+        channel.pipeline.notifyInactive()
+        assertEquals(0, connections.snapshot().size, "the connection leaves its shard on onInactive")
     }
 
     @Test

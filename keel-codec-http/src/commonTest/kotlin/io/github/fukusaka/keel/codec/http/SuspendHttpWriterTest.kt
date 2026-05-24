@@ -32,105 +32,97 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead suspend variant writes status and headers`() = runTest {
-        withTimeout(15.seconds) {
-            val sink = CollectingSink()
-            val buffered = BufferedSuspendSink(sink, DefaultAllocator)
+    fun `writeResponseHead suspend variant writes status and headers`() = runTest(timeout = 15.seconds) {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
-            val headers = HttpHeaders()
-                .add("Content-Length", "13")
-                .add("Content-Type", "text/plain")
+        val headers = HttpHeaders()
+            .add("Content-Length", "13")
+            .add("Content-Type", "text/plain")
 
-            writeResponseHead(
-                status = HttpStatus(200),
-                version = HttpVersion.HTTP_1_1,
-                headers = headers,
-                sink = buffered,
-            )
-            buffered.flush()
+        writeResponseHead(
+            status = HttpStatus(200),
+            version = HttpVersion.HTTP_1_1,
+            headers = headers,
+            sink = buffered,
+        )
+        buffered.flush()
 
-            val output = sink.collected()
-            assertTrue(output.startsWith("HTTP/1.1 200 OK\r\n"))
-            assertTrue(output.contains("Content-Length: 13\r\n"))
-            assertTrue(output.contains("Content-Type: text/plain\r\n"))
-            assertTrue(output.endsWith("\r\n\r\n"))
-            buffered.close()
-        }
+        val output = sink.collected()
+        assertTrue(output.startsWith("HTTP/1.1 200 OK\r\n"))
+        assertTrue(output.contains("Content-Length: 13\r\n"))
+        assertTrue(output.contains("Content-Type: text/plain\r\n"))
+        assertTrue(output.endsWith("\r\n\r\n"))
+        buffered.close()
     }
 
     @Test
-    fun `writeResponseHead with no headers`() = runTest {
-        withTimeout(15.seconds) {
-            val sink = CollectingSink()
-            val buffered = BufferedSuspendSink(sink, DefaultAllocator)
+    fun `writeResponseHead with no headers`() = runTest(timeout = 15.seconds) {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
-            writeResponseHead(
-                status = HttpStatus(204),
-                version = HttpVersion.HTTP_1_1,
-                headers = HttpHeaders(),
-                sink = buffered,
-            )
-            buffered.flush()
+        writeResponseHead(
+            status = HttpStatus(204),
+            version = HttpVersion.HTTP_1_1,
+            headers = HttpHeaders(),
+            sink = buffered,
+        )
+        buffered.flush()
 
-            val output = sink.collected()
-            assertEquals("HTTP/1.1 204 No Content\r\n\r\n", output)
-            buffered.close()
-        }
+        val output = sink.collected()
+        assertEquals("HTTP/1.1 204 No Content\r\n\r\n", output)
+        buffered.close()
     }
 
     @Test
-    fun `writeResponseHead with HTTP 1_0`() = runTest {
-        withTimeout(15.seconds) {
-            val sink = CollectingSink()
-            val buffered = BufferedSuspendSink(sink, DefaultAllocator)
+    fun `writeResponseHead with HTTP 1_0`() = runTest(timeout = 15.seconds) {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
-            val headers = HttpHeaders().add("Content-Length", "0")
-            writeResponseHead(
-                status = HttpStatus(200),
-                version = HttpVersion.HTTP_1_0,
-                headers = headers,
-                sink = buffered,
-            )
-            buffered.flush()
+        val headers = HttpHeaders().add("Content-Length", "0")
+        writeResponseHead(
+            status = HttpStatus(200),
+            version = HttpVersion.HTTP_1_0,
+            headers = headers,
+            sink = buffered,
+        )
+        buffered.flush()
 
-            val output = sink.collected()
-            assertTrue(output.startsWith("HTTP/1.0 200 OK\r\n"))
-            assertTrue(output.contains("Content-Length: 0\r\n"))
-            buffered.close()
-        }
+        val output = sink.collected()
+        assertTrue(output.startsWith("HTTP/1.0 200 OK\r\n"))
+        assertTrue(output.contains("Content-Length: 0\r\n"))
+        buffered.close()
     }
 
     @Test
-    fun `writeResponseHead round-trip with parseResponseHead`() = runTest {
-        withTimeout(15.seconds) {
-            val sink = CollectingSink()
-            val buffered = BufferedSuspendSink(sink, DefaultAllocator)
+    fun `writeResponseHead round-trip with parseResponseHead`() = runTest(timeout = 15.seconds) {
+        val sink = CollectingSink()
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
-            val headers = HttpHeaders()
-                .add("Content-Type", "text/html")
-                .add("X-Custom", "value")
-            writeResponseHead(
-                status = HttpStatus(200),
-                version = HttpVersion.HTTP_1_1,
-                headers = headers,
-                sink = buffered,
-            )
-            buffered.flush()
-            buffered.close()
+        val headers = HttpHeaders()
+            .add("Content-Type", "text/html")
+            .add("X-Custom", "value")
+        writeResponseHead(
+            status = HttpStatus(200),
+            version = HttpVersion.HTTP_1_1,
+            headers = headers,
+            sink = buffered,
+        )
+        buffered.flush()
+        buffered.close()
 
-            // Parse back from the written bytes
-            val source = BufferedSuspendSource(
-                byteSource(sink.collected().encodeToByteArray()),
-                DefaultAllocator,
-            )
-            val parsed = parseResponseHead(source)
-            assertEquals(200, parsed.status.code)
-            assertEquals(HttpVersion.HTTP_1_1, parsed.version)
-            assertEquals("text/html", parsed.headers.getString("Content-Type"))
-            assertEquals("value", parsed.headers.getString("X-Custom"))
-            source.close()
+        // Parse back from the written bytes
+        val source = BufferedSuspendSource(
+            byteSource(sink.collected().encodeToByteArray()),
+            DefaultAllocator,
+        )
+        val parsed = parseResponseHead(source)
+        assertEquals(200, parsed.status.code)
+        assertEquals(HttpVersion.HTTP_1_1, parsed.version)
+        assertEquals("text/html", parsed.headers.getString("Content-Type"))
+        assertEquals("value", parsed.headers.getString("X-Custom"))
+        source.close()
         }
-    }
 
     /** Creates a SuspendSource that reads from a ByteArray. */
     private fun byteSource(data: ByteArray): io.github.fukusaka.keel.io.SuspendSource =
@@ -143,5 +135,5 @@ class SuspendHttpWriterTest {
                 return n
             }
             override fun close() {}
-        }
+    }
 }

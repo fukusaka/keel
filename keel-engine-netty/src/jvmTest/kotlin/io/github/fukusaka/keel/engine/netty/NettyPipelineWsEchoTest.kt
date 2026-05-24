@@ -5,18 +5,16 @@ import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.testing.http.newTestHttpClient
 import io.github.fukusaka.keel.testing.websocket.WsEchoHandler
-import java.net.URI
-import java.net.http.WebSocket
-import java.util.concurrent.CompletableFuture
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
+import java.net.URI
+import java.net.http.WebSocket
+import java.util.concurrent.CompletableFuture
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /**
  * Integration smoke test for the pipeline-http-netty WebSocket upgrade + echo path.
@@ -65,42 +63,40 @@ class NettyPipelineWsEchoTest {
      */
     @Test
     fun `ws-echo single connection echoes text frames`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NettyEngine()
-            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-                channel.pipeline.addLast("encoder", HttpResponseEncoder())
-                channel.pipeline.addLast("decoder", HttpRequestDecoder())
-                channel.pipeline.addLast("ws-echo", WsEchoHandler())
-            }
-            val port = (server.localAddress as InetSocketAddress).port
-            try {
-                newTestHttpClient().use { client ->
-                    val echo1 = CompletableFuture<String>()
-                    val echo2 = CompletableFuture<String>()
-                    val echo3 = CompletableFuture<String>()
-                    val echoes = listOf(echo1, echo2, echo3)
-                    var echoIdx = 0
+        val engine = NettyEngine()
+        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+            channel.pipeline.addLast("encoder", HttpResponseEncoder())
+            channel.pipeline.addLast("decoder", HttpRequestDecoder())
+            channel.pipeline.addLast("ws-echo", WsEchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+        try {
+            newTestHttpClient().use { client ->
+                val echo1 = CompletableFuture<String>()
+                val echo2 = CompletableFuture<String>()
+                val echo3 = CompletableFuture<String>()
+                val echoes = listOf(echo1, echo2, echo3)
+                var echoIdx = 0
 
-                    val ws = client.http.newWebSocketBuilder()
-                        .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                            override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                            override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) =
-                                echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null }
-                        })
-                        .await()
+                val ws = client.http.newWebSocketBuilder()
+                    .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
+                        override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                        override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) =
+                            echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null }
+                    })
+                    .await()
 
-                    ws.sendText("hello", true).await()
-                    assertEquals("hello", echo1.await())
-                    ws.sendText("world", true).await()
-                    assertEquals("world", echo2.await())
-                    ws.sendText("keel", true).await()
-                    assertEquals("keel", echo3.await())
-                    ws.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
-                }
-            } finally {
-                server.close()
-                engine.close()
+                ws.sendText("hello", true).await()
+                assertEquals("hello", echo1.await())
+                ws.sendText("world", true).await()
+                assertEquals("world", echo2.await())
+                ws.sendText("keel", true).await()
+                assertEquals("keel", echo3.await())
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
             }
+        } finally {
+            server.close()
+            engine.close()
         }
     }
 
@@ -118,54 +114,52 @@ class NettyPipelineWsEchoTest {
      */
     @Test
     fun `ws-echo two concurrent connections both receive echoes`() = runTest {
-        withTimeout(15.seconds) {
-            val engine = NettyEngine()
-            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-                channel.pipeline.addLast("encoder", HttpResponseEncoder())
-                channel.pipeline.addLast("decoder", HttpRequestDecoder())
-                channel.pipeline.addLast("ws-echo", WsEchoHandler())
-            }
-            val port = (server.localAddress as InetSocketAddress).port
-            try {
-                newTestHttpClient().use { client ->
-                    suspend fun openWs(): Pair<WebSocket, CompletableFuture<String>> {
-                        val echoFuture = CompletableFuture<String>()
-                        val pending = StringBuilder()
-                        val ws = client.http.newWebSocketBuilder()
-                            .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                                override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                                override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
-                                    pending.append(data)
-                                    if (last) echoFuture.complete(pending.toString())
-                                    return null
-                                }
-                                override fun onError(ws: WebSocket, error: Throwable) {
-                                    echoFuture.completeExceptionally(error)
-                                }
-                            })
-                            .await()
-                        return ws to echoFuture
-                    }
-
-                    val (first, second) = coroutineScope {
-                        listOf(async { openWs() }, async { openWs() }).awaitAll()
-                    }
-                    val (ws1, echo1) = first
-                    val (ws2, echo2) = second
-
-                    ws1.sendText("from-vu1", true)
-                    ws2.sendText("from-vu2", true)
-
-                    assertEquals("from-vu1", echo1.await())
-                    assertEquals("from-vu2", echo2.await())
-
-                    ws1.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
-                    ws2.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
+        val engine = NettyEngine()
+        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+            channel.pipeline.addLast("encoder", HttpResponseEncoder())
+            channel.pipeline.addLast("decoder", HttpRequestDecoder())
+            channel.pipeline.addLast("ws-echo", WsEchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+        try {
+            newTestHttpClient().use { client ->
+                suspend fun openWs(): Pair<WebSocket, CompletableFuture<String>> {
+                    val echoFuture = CompletableFuture<String>()
+                    val pending = StringBuilder()
+                    val ws = client.http.newWebSocketBuilder()
+                        .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
+                            override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                            override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
+                                pending.append(data)
+                                if (last) echoFuture.complete(pending.toString())
+                                return null
+                            }
+                            override fun onError(ws: WebSocket, error: Throwable) {
+                                echoFuture.completeExceptionally(error)
+                            }
+                        })
+                        .await()
+                    return ws to echoFuture
                 }
-            } finally {
-                server.close()
-                engine.close()
+
+                val (first, second) = coroutineScope {
+                    listOf(async { openWs() }, async { openWs() }).awaitAll()
+                }
+                val (ws1, echo1) = first
+                val (ws2, echo2) = second
+
+                ws1.sendText("from-vu1", true)
+                ws2.sendText("from-vu2", true)
+
+                assertEquals("from-vu1", echo1.await())
+                assertEquals("from-vu2", echo2.await())
+
+                ws1.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
+                ws2.sendClose(WebSocket.NORMAL_CLOSURE, "").await()
             }
+        } finally {
+            server.close()
+            engine.close()
         }
     }
 }
