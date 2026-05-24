@@ -140,7 +140,21 @@ internal class SegmentChain(
      * Preconditions identical to [forEachReadableSegment].
      */
     fun fillReadableSegments(readerIdx: Int, writerIdx: Int, into: SegmentRangeList) {
-        into.reset()
+        into.clear()
+        appendReadableSegments(readerIdx, writerIdx, into)
+    }
+
+    /**
+     * Appends the readable windows of `[readerIdx, writerIdx)` to [into]
+     * without resetting it.
+     *
+     * Engines use this variant to accumulate iovec ranges across multiple
+     * `IoBuf`s into a single shared list — one call per pending write, the
+     * resulting list feeds `writev` / `SocketChannel.write(ByteBuffer[])`
+     * with all gather entries at once. Preconditions identical to
+     * [forEachReadableSegment].
+     */
+    fun appendReadableSegments(readerIdx: Int, writerIdx: Int, into: SegmentRangeList) {
         if (readerIdx >= writerIdx) return
         val primaryEnd = primarySegment.capacity
         val pFrom = if (readerIdx > 0) readerIdx else 0

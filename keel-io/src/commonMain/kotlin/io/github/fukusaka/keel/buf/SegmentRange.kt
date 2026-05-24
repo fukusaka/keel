@@ -78,8 +78,18 @@ public class SegmentRangeList {
         return slots[index]
     }
 
-    /** Resets [size] to 0 without releasing any backing cells. */
-    internal fun reset() {
+    /**
+     * Resets [size] to 0 without releasing any backing cells.
+     *
+     * Engines reset their scratch list at the start of each flush
+     * before populating it with [IoBuf.appendSegmentsForRange]; the
+     * public visibility lets cross-module callers participate in that
+     * pattern. Same-module callers reach for it through
+     * [SegmentChain.fillReadableSegments] which calls [clear]
+     * internally before appending — they typically do not call
+     * [clear] directly.
+     */
+    public fun clear() {
         // Clear references in the populated slots so SegmentBacking
         // instances are not retained past their logical lifetime.
         for (i in 0 until _size) slots[i].clear()

@@ -43,7 +43,7 @@ class SegmentRangeListTest {
         r.set(FakeSegmentBacking, offset = 4, length = 8)
         assertNotNull(list[0].memory)
 
-        list.reset()
+        list.clear()
         assertEquals(0, list.size)
 
         // After reset, the underlying slot still exists but its memory ref is cleared.
@@ -59,7 +59,7 @@ class SegmentRangeListTest {
         val list = SegmentRangeList()
         val first = list.acquireSlot()
         val second = list.acquireSlot()
-        list.reset()
+        list.clear()
         assertSame(first, list.acquireSlot())
         assertSame(second, list.acquireSlot())
     }
