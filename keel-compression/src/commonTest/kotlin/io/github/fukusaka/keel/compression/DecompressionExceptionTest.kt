@@ -19,6 +19,13 @@ class DecompressionExceptionTest {
 
     @Test
     fun `DecompressionLimitException is a subclass of DecompressionException`() {
+        // The subclass relation is pinned at compile time by the `val e:
+        // DecompressionException = DecompressionLimitException(...)`
+        // assignment — if `DecompressionLimitException` ever stops extending
+        // `DecompressionException`, this file no longer compiles. The runtime
+        // `assertTrue(e is ...)` is therefore a tautology (the construction
+        // type and the runtime type are the same `DecompressionLimitException`
+        // instance), kept only as documentation of the intended hierarchy.
         val e: DecompressionException = DecompressionLimitException("limit hit")
         assertTrue(e is DecompressionLimitException)
     }
