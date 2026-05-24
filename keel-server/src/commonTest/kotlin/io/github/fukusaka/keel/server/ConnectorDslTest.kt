@@ -1,19 +1,21 @@
 package io.github.fukusaka.keel.server
 
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.server.dsl.connector
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
-import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsCodecResult
-import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.tls.TlsConfig
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /**
  * Direct tests for the `connector { }` / `tls { }` DSL builders that
@@ -70,7 +72,7 @@ class ConnectorDslTest {
         assertNotNull(tls)
         assertSame(tlsConfig, tls.config)
         val strategy = tls.strategy
-        kotlin.test.assertIs<ServerTlsStrategy.KeelCodec>(strategy)
+        assertIs<ServerTlsStrategy.KeelCodec>(strategy)
         assertSame(factory, strategy.factory)
     }
 
@@ -84,7 +86,7 @@ class ConnectorDslTest {
         }
 
         val strategy = c.tls?.strategy
-        kotlin.test.assertIs<ServerTlsStrategy.KeelCodec>(strategy)
+        assertIs<ServerTlsStrategy.KeelCodec>(strategy)
         assertSame(secondFactory, strategy.factory, "second tls block must overwrite the first")
     }
 
@@ -96,7 +98,7 @@ class ConnectorDslTest {
         val msg = ex.message
         assertNotNull(msg)
         // Hint must steer the caller to the config field.
-        kotlin.test.assertTrue(msg.contains("config"), "expected message to mention `config`, got: $msg")
+        assertTrue(msg.contains("config"), "expected message to mention `config`, got: $msg")
     }
 
     @Test
@@ -106,7 +108,7 @@ class ConnectorDslTest {
         }
         val msg = ex.message
         assertNotNull(msg)
-        kotlin.test.assertTrue(msg.contains("strategy"), "expected message to mention `strategy`, got: $msg")
+        assertTrue(msg.contains("strategy"), "expected message to mention `strategy`, got: $msg")
     }
 
     @Test

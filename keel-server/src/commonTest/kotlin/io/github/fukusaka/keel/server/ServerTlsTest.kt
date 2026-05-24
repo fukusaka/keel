@@ -1,16 +1,18 @@
 package io.github.fukusaka.keel.server
 
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
+import io.github.fukusaka.keel.tls.TlsCodecResult
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsHandler
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 
@@ -52,13 +54,13 @@ class ServerTlsTest {
         override val negotiatedProtocol: String? = null
         override val peerCertificates: List<ByteArray> = emptyList()
         override fun protect(
-            plaintext: io.github.fukusaka.keel.buf.IoBuf,
-            ciphertext: io.github.fukusaka.keel.buf.IoBuf,
-        ): io.github.fukusaka.keel.tls.TlsCodecResult = error("not used")
+            plaintext: IoBuf,
+            ciphertext: IoBuf,
+        ): TlsCodecResult = error("not used")
         override fun unprotect(
-            ciphertext: io.github.fukusaka.keel.buf.IoBuf,
-            plaintext: io.github.fukusaka.keel.buf.IoBuf,
-        ): io.github.fukusaka.keel.tls.TlsCodecResult = error("not used")
+            ciphertext: IoBuf,
+            plaintext: IoBuf,
+        ): TlsCodecResult = error("not used")
         override fun close() {}
     }
 

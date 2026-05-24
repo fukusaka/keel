@@ -26,9 +26,13 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Uses `runTest`'s virtual time scheduler so the loop's `delay(...)` calls
  * are observable and deterministic without real wall-clock waits. Each test
- * is wrapped in `withTimeout(15.seconds)` per the project rule that any
- * test exercising dispatch / suspend completion must carry a wall-clock
- * upper bound, even on a virtual-time scheduler.
+ * is wrapped in `withTimeout(5.seconds)` per the project rule that any test
+ * exercising dispatch / suspend completion must carry a wall-clock upper
+ * bound, even on a virtual-time scheduler. 5 s comes from the testing.md
+ * "loopback dispatch / event loop hop: 1–5 s" envelope — these tests are
+ * pure seam-level with no real I/O so they complete in ≪ 100 ms; the bound
+ * exists only to fail closed if a future refactor introduces a real-time
+ * suspension that the virtual scheduler can't advance through.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AcceptLoopTest {
@@ -70,7 +74,7 @@ class AcceptLoopTest {
     }
 
     private fun runLoopTest(block: suspend TestScope.() -> Unit): TestResult = runTest {
-        withTimeout(15.seconds) { block() }
+        withTimeout(5.seconds) { block() }
     }
 
     @Test
