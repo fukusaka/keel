@@ -262,6 +262,17 @@ class HttpHeaders {
     }
 
     /**
+     * [add] taking [CharSequence] for ergonomic symmetry with the lookup
+     * API. The stored entry is still a `String` (mutation always
+     * materialises) — the overload exists so callers holding a zero-copy
+     * view (e.g. [IoBufAsciiText]) can hand it to [add] / [set] directly
+     * without an explicit `.toString()`. Overload resolution prefers the
+     * `String` overload for `String` arguments so existing call sites are
+     * unchanged.
+     */
+    fun add(name: CharSequence, value: CharSequence): HttpHeaders = add(name.toString(), value.toString())
+
+    /**
      * Adds a header whose name and value are byte ranges in [buf] (the
      * Variant Y parse path). Writes five ints into [slots] without
      * allocating any per-header object. The first range-add captures
@@ -435,6 +446,9 @@ class HttpHeaders {
         add(name, value)
         return this
     }
+
+    /** [set] taking [CharSequence] for symmetry with [add]; see [add] KDoc. */
+    operator fun set(name: CharSequence, value: CharSequence): HttpHeaders = set(name.toString(), value.toString())
 
     fun remove(name: CharSequence): HttpHeaders {
         removeAll(name)
