@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: extract `AbstractIoBuf` (commonMain, `public abstract class` with `internal constructor`) so `NativeIoBuf` / `DirectIoBuf` / `TypedArrayIoBuf` share index pair + `refCount` + `owner` dispatch + `retain` / `release` / `clear` / `close` / `resetForReuse`. Throughput-neutral by construction (lifecycle methods are `final` overrides, per-byte primitives stay abstract on each concrete class). Loopback bench A/B (macOS + 32-core Linux, clean host) confirms regression-free: −4.5 % .. +4.4 % range, all within the loopback 4t/100c noise envelope. Adds `PoolAllocatorTest` decorator-nesting regression tests pinning the PR #613 correctness fix (pool allocator resets `owner` on pop so `TrackingAllocator` / `LeakDetectingAllocator` don't nest across recycles) (#617)
 - `io`: flatten the `Segment` / `RawSegmentBacking` two-layer indirection — `NativeIoBuf` / `DirectIoBuf` / `TypedArrayIoBuf` now hold the platform pointer / `ByteBuffer` / `Int8Array` directly, and a renamed `IoBufOwner` (formerly `SegmentOwner`) dispatches the refcount-zero strategy on the buffer itself. Pool freelists (intrusive `nextLink` per concrete class) and slice paths (`SliceOwner` parent retain) preserved; engine-direct IoBufs (`NettyByteBufIoBuf`, `RingBufferIoBuf`, `DispatchDataIoBuf`) unchanged. Behaviour-preserving (#613)
 
 ### Removed
