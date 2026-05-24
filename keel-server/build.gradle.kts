@@ -22,6 +22,8 @@ kotlin {
         commonTest {
             dependencies {
                 implementation(kotlin("test"))
+                implementation(libs.kotlinx.coroutines.test)
+                implementation(project(":keel-testing-internal"))
             }
         }
     }
