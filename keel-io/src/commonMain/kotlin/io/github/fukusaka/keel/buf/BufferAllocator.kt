@@ -29,6 +29,42 @@ interface BufferAllocator {
     fun allocate(capacity: Int): IoBuf
 
     /**
+     * Allocates a multi-segment-capable buffer with an initial primary
+     * segment of [capacity] bytes and a hard upper bound [maxCapacity]
+     * on the chain's total capacity (see [IoBuf.maxCapacity]). Callers
+     * grow the buffer by [IoBuf.appendSegment]-ing additional segments
+     * (typically obtained via [allocateSegment]); each
+     * [IoBuf.appendSegment] throws [KeelBufferOverflowException] when
+     * the new total would exceed [maxCapacity].
+     *
+     * Default body throws [UnsupportedOperationException] for allocators
+     * that do not (yet) support multi-segment growth. [DefaultAllocator]
+     * and the platform pool allocators override the default with a
+     * platform-typed implementation.
+     */
+    fun allocate(capacity: Int, maxCapacity: Int): IoBuf {
+        throw UnsupportedOperationException(
+            "BufferAllocator implementation ${this::class.simpleName} does not support multi-segment allocate",
+        )
+    }
+
+    /**
+     * Allocates a standalone [Segment] for chaining into an existing
+     * multi-seg-capable [IoBuf] via [IoBuf.appendSegment]. The returned
+     * segment starts at `refCount = 1`; ownership of that reference
+     * transfers to the recipient `IoBuf` on [IoBuf.appendSegment].
+     *
+     * Default body throws [UnsupportedOperationException].
+     * [DefaultAllocator] and the platform pool allocators override the
+     * default with a platform-typed implementation.
+     */
+    fun allocateSegment(capacity: Int): Segment {
+        throw UnsupportedOperationException(
+            "BufferAllocator implementation ${this::class.simpleName} does not support allocateSegment",
+        )
+    }
+
+    /**
      * Wraps a [ByteArray] region as a read-only [IoBuf] view without
      * copying bytes. The returned buffer uses platform-native backing
      * (e.g. pinned pointer on Native, heap ByteBuffer on JVM) so it is
@@ -106,6 +142,13 @@ fun BufferAllocator.tryWrapBytes(bytes: ByteArray, offset: Int, length: Int): Io
 object DefaultAllocator : BufferAllocator {
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf = createDefaultIoBuf(capacity)
+
+    @Suppress("IoBufLeak") // Allocator returns ownership to caller
+    override fun allocate(capacity: Int, maxCapacity: Int): IoBuf =
+        createMultiSegDefaultIoBuf(capacity, maxCapacity)
+
+    override fun allocateSegment(capacity: Int): Segment =
+        createDefaultSegment(capacity)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
 
