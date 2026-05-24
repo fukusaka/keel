@@ -8,7 +8,6 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.runBlocking
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -20,6 +19,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 class KeelEngineTest {
 
@@ -404,7 +406,10 @@ class KeelEngineTest {
         cfg.keepAlive = keepAlive
         server.start(wait = false)
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             block(port)
         } finally {
             server.stop(500, 1000)

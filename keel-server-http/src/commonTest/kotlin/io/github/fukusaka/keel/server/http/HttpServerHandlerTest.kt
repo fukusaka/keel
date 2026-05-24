@@ -14,15 +14,17 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.http.dsl.QueryParameterConfigBuilder
 import io.github.fukusaka.keel.server.http.dsl.RouteGroupBuilder
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 /**
  * Pipeline-level integration test for the keel-server-http server stack
@@ -915,7 +917,7 @@ class HttpServerHandlerTest {
     }
 
     @Test
-    fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest {
+    fun `a connection joins the registry shard on activation and leaves on inactivation`() = runTest(timeout = 15.seconds) {
         val connections = ServerConnections()
         channel.installHttpServerPipeline(
             Router(), emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, connections,

@@ -1,14 +1,16 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.io.BufferedSuspendSink
-import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.io.BufferedSuspendSink
+import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSink
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class SuspendHttpWriterTest {
 
@@ -30,7 +32,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead suspend variant writes status and headers`() = runTest {
+    fun `writeResponseHead suspend variant writes status and headers`() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -55,7 +57,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead with no headers`() = runTest {
+    fun `writeResponseHead with no headers`() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -73,7 +75,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead with HTTP 1_0`() = runTest {
+    fun `writeResponseHead with HTTP 1_0`() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -93,7 +95,7 @@ class SuspendHttpWriterTest {
     }
 
     @Test
-    fun `writeResponseHead round-trip with parseResponseHead`() = runTest {
+    fun `writeResponseHead round-trip with parseResponseHead`() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val buffered = BufferedSuspendSink(sink, DefaultAllocator)
 
@@ -120,7 +122,7 @@ class SuspendHttpWriterTest {
         assertEquals("text/html", parsed.headers.getString("Content-Type"))
         assertEquals("value", parsed.headers.getString("X-Custom"))
         source.close()
-    }
+        }
 
     /** Creates a SuspendSource that reads from a ByteArray. */
     private fun byteSource(data: ByteArray): io.github.fukusaka.keel.io.SuspendSource =
@@ -133,5 +135,5 @@ class SuspendHttpWriterTest {
                 return n
             }
             override fun close() {}
-        }
+    }
 }

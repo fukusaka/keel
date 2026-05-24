@@ -1,11 +1,13 @@
 package io.github.fukusaka.keel.core
 
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class DnsResolverTest {
 
@@ -13,7 +15,7 @@ class DnsResolverTest {
     private val loopbackV6 = IpAddress.V6.LOOPBACK
 
     @Test
-    fun `resolveAll returns the literal without invoking resolver for Host Ip`() = runTest {
+    fun `resolveAll returns the literal without invoking resolver for Host Ip`() = runTest(timeout = 15.seconds) {
         val throwingResolver = object : DnsResolver {
             override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult =
                 error("resolver must not be invoked for Host.Ip")
@@ -23,7 +25,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `resolveAll delegates to resolver for Host Name`() = runTest {
+    fun `resolveAll delegates to resolver for Host Name`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(loopbackV4, loopbackV6))
         val addr = InetSocketAddress("example.com", 443)
         assertEquals(listOf(loopbackV4, loopbackV6), addr.resolveAll(resolver))
@@ -31,7 +33,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `FamilyPreference V4Only filters V6 out`() = runTest {
+    fun `FamilyPreference V4Only filters V6 out`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(loopbackV6, loopbackV4))
         val addr = InetSocketAddress("example.com", 443)
         val hints = ResolveHints(family = FamilyPreference.V4Only)
@@ -39,7 +41,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `FamilyPreference V6Only filters V4 out`() = runTest {
+    fun `FamilyPreference V6Only filters V4 out`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(loopbackV4, loopbackV6))
         val addr = InetSocketAddress("example.com", 443)
         val hints = ResolveHints(family = FamilyPreference.V6Only)
@@ -47,14 +49,14 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `resolveFirst returns first candidate`() = runTest {
+    fun `resolveFirst returns first candidate`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(loopbackV6, loopbackV4))
         val addr = InetSocketAddress("example.com", 443)
         assertEquals(loopbackV6, addr.resolveFirst(resolver))
     }
 
     @Test
-    fun `resolveFirst throws when family filter empties the list`() = runTest {
+    fun `resolveFirst throws when family filter empties the list`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(loopbackV6))
         val addr = InetSocketAddress("example.com", 443)
         val hints = ResolveHints(family = FamilyPreference.V4Only)
@@ -98,7 +100,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `connectWithFallback returns the first successful attempt`() = runTest {
+    fun `connectWithFallback returns the first successful attempt`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK))
         val address = InetSocketAddress("example.com", 80)
         val tried = mutableListOf<IpAddress>()
@@ -113,7 +115,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `connectWithFallback moves to next candidate on failure`() = runTest {
+    fun `connectWithFallback moves to next candidate on failure`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK))
         val address = InetSocketAddress("example.com", 80)
         val tried = mutableListOf<IpAddress>()
@@ -129,7 +131,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `connectWithFallback throws the last error with prior errors suppressed`() = runTest {
+    fun `connectWithFallback throws the last error with prior errors suppressed`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK))
         val address = InetSocketAddress("example.com", 80)
 
@@ -144,7 +146,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `connectWithFallback rethrows CancellationException immediately`() = runTest {
+    fun `connectWithFallback rethrows CancellationException immediately`() = runTest(timeout = 15.seconds) {
         val resolver = StubResolver(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK))
         val address = InetSocketAddress("example.com", 80)
         var attempts = 0
@@ -159,7 +161,7 @@ class DnsResolverTest {
     }
 
     @Test
-    fun `connectWithFallback short-circuits for Host Ip`() = runTest {
+    fun `connectWithFallback short-circuits for Host Ip`() = runTest(timeout = 15.seconds) {
         val throwingResolver = object : DnsResolver {
             override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult =
                 error("resolver must not be invoked")
@@ -167,7 +169,7 @@ class DnsResolverTest {
         val address = InetSocketAddress("127.0.0.1", 80)
         val result = address.connectWithFallback(throwingResolver) { ip -> "ok-$ip" }
         assertEquals("ok-127.0.0.1", result)
-    }
+        }
 
     private class StubResolver(private val addresses: List<IpAddress>) : DnsResolver {
         var lastHostname: String? = null

@@ -2,9 +2,11 @@ package io.github.fukusaka.keel.io
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class OwnedToSuspendSourceAdapterTest {
 
@@ -30,7 +32,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read copies data from owned buffer to caller buffer`() = runTest {
+    fun `read copies data from owned buffer to caller buffer`() = runTest(timeout = 15.seconds) {
         val source = ListPushSource(listOf(filledBuf(0x41, 0x42, 0x43)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -46,7 +48,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read returns minus one on EOF`() = runTest {
+    fun `read returns minus one on EOF`() = runTest(timeout = 15.seconds) {
         val source = ListPushSource(emptyList())
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -59,7 +61,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `read caps at writable bytes and retains leftover`() = runTest {
+    fun `read caps at writable bytes and retains leftover`() = runTest(timeout = 15.seconds) {
         val source = ListPushSource(listOf(filledBuf(1, 2, 3, 4, 5)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 
@@ -87,7 +89,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `multiple reads drain multiple owned buffers`() = runTest {
+    fun `multiple reads drain multiple owned buffers`() = runTest(timeout = 15.seconds) {
         val source = ListPushSource(
             listOf(
                 filledBuf(0x41, 0x42),
@@ -111,7 +113,7 @@ class OwnedToSuspendSourceAdapterTest {
     }
 
     @Test
-    fun `close delegates to push source`() = runTest {
+    fun `close delegates to push source`() = runTest(timeout = 15.seconds) {
         val source = ListPushSource(listOf(filledBuf(1)))
         val adapter = OwnedToSuspendSourceAdapter(source)
 

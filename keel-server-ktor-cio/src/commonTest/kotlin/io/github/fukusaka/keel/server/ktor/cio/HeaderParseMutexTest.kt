@@ -1,11 +1,13 @@
 package io.github.fukusaka.keel.server.ktor.cio
 
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
-import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlinx.coroutines.withTimeout
 
 /**
  * Behavioural tests for [HeaderParseMutex].
@@ -17,14 +19,14 @@ import kotlin.test.assertEquals
 class HeaderParseMutexTest {
 
     @Test
-    fun `withLock returns the block result`() = runTest {
+    fun `withLock returns the block result`() = runTest(timeout = 15.seconds) {
         val mutex = HeaderParseMutex()
         val result = mutex.withLock { 42 }
         assertEquals(42, result)
     }
 
     @Test
-    fun `withLock propagates exceptions thrown inside the block`() = runTest {
+    fun `withLock propagates exceptions thrown inside the block`() = runTest(timeout = 15.seconds) {
         val mutex = HeaderParseMutex()
         var caught: Throwable? = null
         try {
@@ -36,7 +38,7 @@ class HeaderParseMutexTest {
     }
 
     @Test
-    fun `concurrent calls observe consistent ordering when serialised`() = runTest {
+    fun `concurrent calls observe consistent ordering when serialised`() = runTest(timeout = 15.seconds) {
         // On Native this asserts that the mutex actually serialises
         // overlapping `withLock` blocks.  On JVM (no-op actual) the
         // counter still ends up at the expected total because each

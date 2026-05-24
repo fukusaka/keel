@@ -1,15 +1,17 @@
 package io.github.fukusaka.keel.codec.http
 
-import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSource
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class SuspendHttpParserTest {
 
@@ -26,7 +28,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseRequestHead suspend variant parses GET request`() = runTest {
+    fun `parseRequestHead suspend variant parses GET request`() = runTest(timeout = 15.seconds) {
         val raw = "GET /hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
@@ -41,7 +43,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseRequestHead suspend variant parses POST request`() = runTest {
+    fun `parseRequestHead suspend variant parses POST request`() = runTest(timeout = 15.seconds) {
         val raw = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
@@ -59,7 +61,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseResponseHead suspend variant parses 200 OK`() = runTest {
+    fun `parseResponseHead suspend variant parses 200 OK`() = runTest(timeout = 15.seconds) {
         val raw = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
 
@@ -69,19 +71,19 @@ class SuspendHttpParserTest {
         assertEquals(HttpVersion.HTTP_1_1, head.version)
         assertEquals("2", head.headers.getString("Content-Length"))
         source.close()
-    }
+        }
 
     // --- Error handling ---
 
     @Test
-    fun `parseRequestHead throws on EOF`() = runTest {
+    fun `parseRequestHead throws on EOF`() = runTest(timeout = 15.seconds) {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         assertFailsWith<HttpEofException> { parseRequestHead(source) }
         source.close()
     }
 
     @Test
-    fun `parseRequestHead throws on invalid request line`() = runTest {
+    fun `parseRequestHead throws on invalid request line`() = runTest(timeout = 15.seconds) {
         val raw = "BADREQUEST\r\n\r\n"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
         assertFailsWith<HttpParseException> { parseRequestHead(source) }
@@ -89,7 +91,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseRequestHead throws on obs-fold`() = runTest {
+    fun `parseRequestHead throws on obs-fold`() = runTest(timeout = 15.seconds) {
         val raw = "GET / HTTP/1.1\r\nHost: h\r\nX-Foo: bar\r\n  folded\r\n\r\n"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
         assertFailsWith<HttpParseException> { parseRequestHead(source) }
@@ -97,7 +99,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseRequestHead throws on missing Host for HTTP 1_1`() = runTest {
+    fun `parseRequestHead throws on missing Host for HTTP 1_1`() = runTest(timeout = 15.seconds) {
         val raw = "GET / HTTP/1.1\r\nX-Other: value\r\n\r\n"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
         assertFailsWith<HttpParseException> { parseRequestHead(source) }
@@ -105,24 +107,24 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseResponseHead throws on EOF`() = runTest {
+    fun `parseResponseHead throws on EOF`() = runTest(timeout = 15.seconds) {
         val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
         assertFailsWith<HttpEofException> { parseResponseHead(source) }
         source.close()
     }
 
     @Test
-    fun `parseResponseHead throws on invalid status line`() = runTest {
+    fun `parseResponseHead throws on invalid status line`() = runTest(timeout = 15.seconds) {
         val raw = "BADRESPONSE\r\n\r\n"
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
         assertFailsWith<HttpParseException> { parseResponseHead(source) }
         source.close()
-    }
+        }
 
     // --- Partial reads ---
 
     @Test
-    fun `parseRequestHead with small-chunk source`() = runTest {
+    fun `parseRequestHead with small-chunk source`() = runTest(timeout = 15.seconds) {
         val raw = "GET /path HTTP/1.1\r\nHost: example.com\r\nX-Key: value\r\n\r\n"
         // Source delivers only 8 bytes at a time to exercise partial-read buffering.
         val source = BufferedSuspendSource(smallChunkSource(raw, chunkSize = 8), DefaultAllocator)
@@ -137,7 +139,7 @@ class SuspendHttpParserTest {
     }
 
     @Test
-    fun `parseResponseHead with small-chunk source`() = runTest {
+    fun `parseResponseHead with small-chunk source`() = runTest(timeout = 15.seconds) {
         val raw = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
         val source = BufferedSuspendSource(smallChunkSource(raw, chunkSize = 5), DefaultAllocator)
 
@@ -146,7 +148,7 @@ class SuspendHttpParserTest {
         assertEquals(404, head.status.code)
         assertEquals("0", head.headers.getString("Content-Length"))
         source.close()
-    }
+        }
 
     // --- Helpers ---
 

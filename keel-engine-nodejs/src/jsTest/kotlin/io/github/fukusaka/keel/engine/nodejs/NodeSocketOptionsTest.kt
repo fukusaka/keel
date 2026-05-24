@@ -5,9 +5,11 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 /**
  * End-to-end smoke tests for `ConnectConfig.socketOptions` and
@@ -31,7 +33,7 @@ import kotlin.test.assertEquals
 class NodeSocketOptionsTest {
 
     @Test
-    fun bindChildSocketOptionsRoundTripsEcho() = runTest {
+    fun bindChildSocketOptionsRoundTripsEcho() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind(
             InetSocketAddress("127.0.0.1", 0),
@@ -61,7 +63,7 @@ class NodeSocketOptionsTest {
     }
 
     @Test
-    fun connectConfigSocketOptionsRoundTripsEcho() = runTest {
+    fun connectConfigSocketOptionsRoundTripsEcho() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -89,7 +91,7 @@ class NodeSocketOptionsTest {
     }
 
     @Test
-    fun unsupportedBufferSizeOptionsAcceptedSilently() = runTest {
+    fun unsupportedBufferSizeOptionsAcceptedSilently() = runTest(timeout = 15.seconds) {
         // Node.js net.Socket exposes no SO_RCVBUF / SO_SNDBUF API.
         // receiveBufferSize / sendBufferSize must be accepted without
         // error; applySocketOptions only touches tcpNoDelay + keepAlive.

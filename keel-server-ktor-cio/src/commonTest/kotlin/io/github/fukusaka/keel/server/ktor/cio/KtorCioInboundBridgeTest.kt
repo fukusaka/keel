@@ -7,12 +7,14 @@ import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class KtorCioInboundBridgeTest {
 
@@ -33,7 +35,7 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
-    fun `receiveCatching delivers IoBuf from pipeline`() = runTest {
+    fun `receiveCatching delivers IoBuf from pipeline`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         pipeline.notifyRead(allocBuf(0x41, 0x42))
 
@@ -47,7 +49,7 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
-    fun `multiple buffers are delivered in order`() = runTest {
+    fun `multiple buffers are delivered in order`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         pipeline.notifyRead(allocBuf(0x01))
         pipeline.notifyRead(allocBuf(0x02))
@@ -61,7 +63,7 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
-    fun `onInactive closes the channel cleanly`() = runTest {
+    fun `onInactive closes the channel cleanly`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         pipeline.notifyInactive()
 
@@ -71,7 +73,7 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
-    fun `onError closes the channel with cause`() = runTest {
+    fun `onError closes the channel with cause`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         val error = RuntimeException("boom")
         pipeline.notifyError(error)
@@ -82,7 +84,7 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
-    fun `close drains and releases queued buffers`() = runTest {
+    fun `close drains and releases queued buffers`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         val buf1 = allocBuf(0x10)
         val buf2 = allocBuf(0x20)

@@ -1,21 +1,28 @@
 package io.github.fukusaka.keel.tls.awslc
 
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import awslc.BIO_free
 import awslc.BIO_new_mem_buf
 import awslc.EVP_PKEY_free
 import awslc.OPENSSL_init_ssl
 import awslc.PEM_read_bio_PrivateKey
 import awslc.PEM_read_bio_X509
+import awslc.SSL
 import awslc.SSL_CTX_free
 import awslc.SSL_CTX_new
 import awslc.SSL_CTX_use_PrivateKey
 import awslc.SSL_CTX_use_certificate
+import awslc.SSL_ERROR_WANT_READ
+import awslc.SSL_ERROR_WANT_WRITE
 import awslc.SSL_accept
 import awslc.SSL_free
 import awslc.SSL_get_error
@@ -29,7 +36,21 @@ import awslc.X509_free
 import awslc.keel_awslc_create_server
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_get_port
+import platform.posix.EAGAIN
+import platform.posix.EINTR
+import platform.posix.EWOULDBLOCK
+import platform.posix.F_GETFL
+import platform.posix.F_SETFL
+import platform.posix.O_NONBLOCK
+import platform.posix.POLLIN
+import platform.posix.POLLOUT
+import platform.posix.errno
+import platform.posix.fcntl
+import platform.posix.poll
+import platform.posix.pollfd
 import kotlin.test.Test
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Minimal TLS echo test using AWS-LC (BoringSSL fork, OpenSSL-compatible API).
@@ -41,8 +62,18 @@ import kotlin.test.Test
 class AwsLcEchoTest {
 
     @Test
-    fun `AWS-LC server handshake and echo succeeds`() = memScoped {
-        // --- Init ---
+    fun `AWS-LC server handshake and echo succeeds`() = runBlocking {
+        // Two layers of timeout protection:
+        //  1. Outer `withTimeout(30.seconds)` — cooperative cancellation between
+        //     suspending boundaries (none here, but rule compliance).
+        //  2. Inner `deadline` threaded into `acceptWithDeadline` / `sslOpWithDeadline` —
+        //     real wall-clock deadline enforced via non-blocking fd + `poll(2)`.
+        //     Required because `accept(2)` and `SSL_read/write/accept` in blocking
+        //     mode park inside the kernel and are not interruptible by `withTimeout`.
+        withTimeout(30.seconds) {
+            val deadline = TimeSource.Monotonic.markNow() + 30.seconds
+            memScoped {
+                // --- Init ---
         OPENSSL_init_ssl(0u, null)
 
         // --- Create SSL_CTX ---
@@ -79,6 +110,7 @@ class AwsLcEchoTest {
         check(serverFd >= 0) { "create_server failed: $serverFd" }
         val port = keel_awslc_get_port(serverFd)
         check(port > 0) { "failed to get assigned port" }
+        setNonBlocking(serverFd)
 
         // --- curl client ---
         val pid = platform.posix.fork()
@@ -91,44 +123,128 @@ class AwsLcEchoTest {
             platform.posix._exit(1)
         }
 
-        // --- Accept + handshake ---
-        val clientFd = platform.posix.accept(serverFd, null, null)
-        check(clientFd >= 0) { "accept failed" }
+        // --- Accept (deadline-aware) + handshake ---
+        val clientFd = acceptWithDeadline(serverFd, deadline)
+        setNonBlocking(clientFd)
 
-        val ssl = SSL_new(ctx)
-        check(ssl != null) { "SSL_new failed" }
-        SSL_set_fd(ssl, clientFd)
+        try {
+            val ssl = SSL_new(ctx)
+            check(ssl != null) { "SSL_new failed" }
+            SSL_set_fd(ssl, clientFd)
 
-        val hsRet = SSL_accept(ssl)
-        check(hsRet == 1) {
-            "SSL_accept failed: err=${SSL_get_error(ssl, hsRet)} ${keel_awslc_err_string()?.toKString()}"
+            sslOpWithDeadline("SSL_accept", ssl, clientFd, deadline) { SSL_accept(ssl) }
+
+            // --- Read request, send response ---
+            val buf = ByteArray(4096)
+            val n = buf.usePinned { pinned ->
+                sslOpWithDeadline("SSL_read", ssl, clientFd, deadline) {
+                    SSL_read(ssl, pinned.addressOf(0), buf.size)
+                }
+            }
+            println("Server received $n bytes: ${buf.decodeToString(0, n).lines().first()}")
+
+            val body = "Hello, AWS-LC TLS!"
+            val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+            val responseBytes = response.encodeToByteArray()
+            responseBytes.usePinned { pinned ->
+                sslOpWithDeadline("SSL_write", ssl, clientFd, deadline) {
+                    SSL_write(ssl, pinned.addressOf(0), responseBytes.size)
+                }
+            }
+
+            // --- Cleanup ---
+            SSL_shutdown(ssl)
+            SSL_free(ssl)
+        } finally {
+            platform.posix.close(clientFd)
+            platform.posix.close(serverFd)
+            SSL_CTX_free(ctx)
+
+            platform.posix.kill(pid, platform.posix.SIGTERM)
+            platform.posix.waitpid(pid, null, 0)
         }
-
-        // --- Read request, send response ---
-        val buf = ByteArray(4096)
-        val n = buf.usePinned { pinned ->
-            SSL_read(ssl, pinned.addressOf(0), buf.size)
+                Unit
+            }
         }
-        check(n > 0) { "SSL_read failed: ${SSL_get_error(ssl, n)}" }
-        println("Server received ${n} bytes: ${buf.decodeToString(0, n).lines().first()}")
+    }
 
-        val body = "Hello, AWS-LC TLS!"
-        val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
-        val responseBytes = response.encodeToByteArray()
-        responseBytes.usePinned { pinned ->
-            SSL_write(ssl, pinned.addressOf(0), responseBytes.size)
+    /**
+     * Switch [fd] to non-blocking mode. Required for `poll(2)`-based deadline
+     * enforcement in [acceptWithDeadline] / [sslOpWithDeadline].
+     */
+    private fun setNonBlocking(fd: Int) {
+        val flags = fcntl(fd, F_GETFL, 0)
+        check(flags >= 0) { "fcntl(F_GETFL) failed: errno=$errno" }
+        val r = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
+        check(r >= 0) { "fcntl(F_SETFL O_NONBLOCK) failed: errno=$errno" }
+    }
+
+    /**
+     * Block-equivalent `accept(2)` with a wall-clock deadline. Server fd must
+     * already be non-blocking.
+     */
+    private fun acceptWithDeadline(serverFd: Int, deadline: TimeSource.Monotonic.ValueTimeMark): Int {
+        while (true) {
+            val remainingMs = remainingMillis(deadline)
+            check(remainingMs > 0) { "accept(): deadline exceeded" }
+            pollOrThrow(serverFd, POLLIN.toShort(), remainingMs, "accept")
+            val client = platform.posix.accept(serverFd, null, null)
+            if (client >= 0) return client
+            val e = errno
+            if (e != EAGAIN && e != EWOULDBLOCK && e != EINTR) {
+                error("accept(): errno=$e")
+            }
         }
+    }
 
-        // --- Cleanup ---
-        SSL_shutdown(ssl)
-        SSL_free(ssl)
-        platform.posix.close(clientFd)
-        platform.posix.close(serverFd)
-        SSL_CTX_free(ctx)
+    /**
+     * Run an SSL op under a deadline. On `SSL_ERROR_WANT_READ` /
+     * `SSL_ERROR_WANT_WRITE` poll the underlying fd within the remaining
+     * budget and retry.
+     */
+    private inline fun sslOpWithDeadline(
+        label: String,
+        ssl: CPointer<SSL>?,
+        fd: Int,
+        deadline: TimeSource.Monotonic.ValueTimeMark,
+        op: () -> Int,
+    ): Int {
+        while (true) {
+            val ret = op()
+            if (ret > 0) return ret
+            val err = SSL_get_error(ssl, ret)
+            val wantRead = err == SSL_ERROR_WANT_READ
+            val wantWrite = err == SSL_ERROR_WANT_WRITE
+            if (!wantRead && !wantWrite) {
+                error("$label failed: err=$err ${keel_awslc_err_string()?.toKString()}")
+            }
+            val remainingMs = remainingMillis(deadline)
+            check(remainingMs > 0) { "$label: deadline exceeded" }
+            val events = if (wantRead) POLLIN else POLLOUT
+            pollOrThrow(fd, events.toShort(), remainingMs, label)
+        }
+    }
 
-        platform.posix.kill(pid, platform.posix.SIGTERM)
-        platform.posix.waitpid(pid, null, 0)
-        Unit
+    private fun pollOrThrow(fd: Int, events: Short, timeoutMs: Int, label: String) {
+        memScoped {
+            val pfd = alloc<pollfd>().apply {
+                this.fd = fd
+                this.events = events
+                this.revents = 0
+            }
+            val r = poll(pfd.ptr, 1u, timeoutMs)
+            when {
+                r < 0 && errno == EINTR -> Unit
+                r < 0 -> error("$label poll(): errno=$errno")
+                r == 0 -> error("$label: deadline exceeded waiting for fd ready")
+            }
+        }
+    }
+
+    private fun remainingMillis(deadline: TimeSource.Monotonic.ValueTimeMark): Int {
+        val remaining = deadline - TimeSource.Monotonic.markNow()
+        if (remaining.isNegative()) return 0
+        return remaining.inWholeMilliseconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     companion object {

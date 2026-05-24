@@ -7,9 +7,6 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.io.PrintWriter
 import java.net.Socket
 import java.net.URI
@@ -22,6 +19,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Regression test for `KeelApplicationEngine.stop()` completing within the
@@ -61,7 +61,10 @@ class EngineStopLifecycleTest {
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
-        val port = runBlocking { server.engine.resolvedConnectors().first().port }
+        val port = runBlocking {
+            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            }
+        }
 
         val client = Socket("127.0.0.1", port)
         try {
@@ -82,7 +85,10 @@ class EngineStopLifecycleTest {
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
-        val port = runBlocking { server.engine.resolvedConnectors().first().port }
+        val port = runBlocking {
+            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            }
+        }
 
         val clients = (1..20).map { Socket("127.0.0.1", port) }
         try {
@@ -108,7 +114,10 @@ class EngineStopLifecycleTest {
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
-        val port = runBlocking { server.engine.resolvedConnectors().first().port }
+        val port = runBlocking {
+            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            }
+        }
 
         newTestHttpClient().use { client ->
             val req = HttpRequest.newBuilder(URI("http://127.0.0.1:$port/slow"))
@@ -178,7 +187,10 @@ class EngineStopLifecycleTest {
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
-        val port = runBlocking { server.engine.resolvedConnectors().first().port }
+        val port = runBlocking {
+            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            }
+        }
 
         val connectionCount = 50
         newTestHttpClient(threadPoolSize = 8).use { client ->

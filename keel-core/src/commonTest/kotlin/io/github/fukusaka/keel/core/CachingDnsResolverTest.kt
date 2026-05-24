@@ -1,13 +1,5 @@
 package io.github.fukusaka.keel.core
 
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -16,11 +8,20 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class CachingDnsResolverTest {
 
     @Test
-    fun `cache hit skips the delegate`() = runTest {
+    fun `cache hit skips the delegate`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -32,7 +33,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `cache miss populates the entry`() = runTest {
+    fun `cache miss populates the entry`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -43,7 +44,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `TTL expiry forces a re-fetch`() = runTest {
+    fun `TTL expiry forces a re-fetch`() = runTest(timeout = 15.seconds) {
         val ts = TestTimeSource()
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 1.seconds, timeSource = ts)
@@ -59,7 +60,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `LRU evicts the oldest entry beyond maxSize`() = runTest {
+    fun `LRU evicts the oldest entry beyond maxSize`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds, maxSize = 2)
 
@@ -76,7 +77,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `family filter reuses the same upstream entry`() = runTest {
+    fun `family filter reuses the same upstream entry`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK, IpAddress.V6.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -91,7 +92,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `invalidate forces a re-fetch on the next call`() = runTest {
+    fun `invalidate forces a re-fetch on the next call`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -103,7 +104,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `invalidateAll clears every entry`() = runTest {
+    fun `invalidateAll clears every entry`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -117,7 +118,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `empty filter result fails with a clear error`() = runTest {
+    fun `empty filter result fails with a clear error`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V6.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -127,7 +128,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `delegate failures are not cached`() = runTest {
+    fun `delegate failures are not cached`() = runTest(timeout = 15.seconds) {
         val delegate = FlakyResolver()
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -156,7 +157,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `concurrent misses share one delegate call via single-flight`() = runTest {
+    fun `concurrent misses share one delegate call via single-flight`() = runTest(timeout = 15.seconds) {
         val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
         val concurrency = 16
@@ -175,7 +176,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `single-flight lead failure propagates to joiners and clears in-flight`() = runTest {
+    fun `single-flight lead failure propagates to joiners and clears in-flight`() = runTest(timeout = 15.seconds) {
         val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -199,7 +200,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `single-flight survives lead caller cancellation without cancelling joiners`() = runTest {
+    fun `single-flight survives lead caller cancellation without cancelling joiners`() = runTest(timeout = 15.seconds) {
         val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -238,7 +239,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `close cancels in-flight fetches so pending joiners fail`() = runTest {
+    fun `close cancels in-flight fetches so pending joiners fail`() = runTest(timeout = 15.seconds) {
         val delegate = BlockingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -255,7 +256,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `single-flight does not conflate distinct hostnames`() = runTest {
+    fun `single-flight does not conflate distinct hostnames`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(listOf(IpAddress.V4.LOOPBACK))
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
@@ -270,7 +271,7 @@ class CachingDnsResolverTest {
     }
 
     @Test
-    fun `canonicalName is preserved across cache hits`() = runTest {
+    fun `canonicalName is preserved across cache hits`() = runTest(timeout = 15.seconds) {
         val delegate = CountingResolver(
             addresses = listOf(IpAddress.V4.LOOPBACK),
             canonicalName = "example.com.",
@@ -283,7 +284,7 @@ class CachingDnsResolverTest {
         assertEquals("example.com.", first.canonicalName)
         assertEquals("example.com.", second.canonicalName)
         assertEquals(1, delegate.calls)
-    }
+        }
 
     private class CountingResolver(
         private val addresses: List<IpAddress>,

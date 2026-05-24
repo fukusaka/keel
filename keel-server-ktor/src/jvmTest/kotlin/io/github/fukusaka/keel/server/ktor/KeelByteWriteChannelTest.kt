@@ -11,10 +11,6 @@ import io.ktor.server.routing.routing
 import io.ktor.utils.io.ClosedWriteChannelException
 import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -32,6 +28,10 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Integration tests for [KeelByteWriteChannel]'s close-cause wrap policy:
@@ -432,7 +432,10 @@ class KeelByteWriteChannelTest {
         cfg.keepAlive = keepAlive
         server.start(wait = false)
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             block(port)
         } finally {
             server.stop(500, 1000)
@@ -450,7 +453,10 @@ class KeelByteWriteChannelTest {
         cfg.keepAlive = keepAlive
         server.start(wait = false)
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             block(port)
         } finally {
             server.stop(500, 1000)

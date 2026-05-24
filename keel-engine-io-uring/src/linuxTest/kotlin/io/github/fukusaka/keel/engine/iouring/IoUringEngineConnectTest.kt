@@ -1,16 +1,17 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+import kotlin.test.Test
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
-import kotlin.test.Test
-import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineConnectTest {
@@ -37,18 +38,20 @@ class IoUringEngineConnectTest {
 
     @Test
     fun `connect via hostname resolves through SystemDnsResolver`() = runBlocking {
-        val engine = IoUringEngine()
-        // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
-        // the machine — this exercises the whole resolve + connect path
-        // without depending on network DNS.
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
+            // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
+            // the machine — this exercises the whole resolve + connect path
+            // without depending on network DNS.
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val channel = engine.connect("localhost", port)
-        channel.close()
+            val channel = engine.connect("localhost", port)
+            channel.close()
 
-        server.close()
-        engine.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test

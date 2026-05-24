@@ -1,18 +1,20 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.buf.DefaultAllocator
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class NodeEngineReadWriteTest {
 
     @Test
-    fun echoRoundTrip() = runTest {
+    fun echoRoundTrip() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -51,7 +53,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun readReturnsMinusOneOnEof() = runTest {
+    fun readReturnsMinusOneOnEof() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -72,7 +74,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun writeAndFlush() = runTest {
+    fun writeAndFlush() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -103,7 +105,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun readAdvancesIoBufWriterIndex() = runTest {
+    fun readAdvancesIoBufWriterIndex() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -130,7 +132,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun writeTransfersOwnershipWithoutAdvancingIndex() = runTest {
+    fun writeTransfersOwnershipWithoutAdvancingIndex() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -157,7 +159,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun shutdownOutputSendsFin() = runTest {
+    fun shutdownOutputSendsFin() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -180,7 +182,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun readAfterShutdownOutputStillWorks() = runTest {
+    fun readAfterShutdownOutputStillWorks() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -209,7 +211,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun asSuspendSourceReadsData() = runTest {
+    fun asSuspendSourceReadsData() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -239,7 +241,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun asSuspendSinkWritesData() = runTest {
+    fun asSuspendSinkWritesData() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -269,7 +271,7 @@ class NodeEngineReadWriteTest {
     }
 
     @Test
-    fun asSuspendSourceEofReturnsMinusOne() = runTest {
+    fun asSuspendSourceEofReturnsMinusOne() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port

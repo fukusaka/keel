@@ -2,12 +2,14 @@ package io.github.fukusaka.keel.server.ktor.compression
 
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readRemaining
-import kotlinx.coroutines.test.runTest
-import kotlinx.io.readByteArray
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.io.readByteArray
 
 /**
  * Unit tests for the Native [ContentEncoder] adapters backed by
@@ -28,21 +30,21 @@ class KeelContentEncodersTest {
     }
 
     @Test
-    fun `gzip encode then decode round trips small payload`() = runTest {
+    fun `gzip encode then decode round trips small payload`() = runTest(timeout = 15.seconds) {
         val original = "hello, world!".encodeToByteArray()
         val roundTripped = roundTrip(KeelGZipEncoder, original)
         assertContentEquals(original, roundTripped)
     }
 
     @Test
-    fun `deflate encode then decode round trips small payload`() = runTest {
+    fun `deflate encode then decode round trips small payload`() = runTest(timeout = 15.seconds) {
         val original = "hello, deflate!".encodeToByteArray()
         val roundTripped = roundTrip(KeelDeflateEncoder, original)
         assertContentEquals(original, roundTripped)
     }
 
     @Test
-    fun `gzip encode produces gzip magic bytes`() = runTest {
+    fun `gzip encode produces gzip magic bytes`() = runTest(timeout = 15.seconds) {
         val original = "compressible text content goes here".encodeToByteArray()
         val source = ByteReadChannel(original)
         val encoded = KeelGZipEncoder.encode(source).readRemaining().readByteArray()
@@ -54,7 +56,7 @@ class KeelContentEncodersTest {
     }
 
     @Test
-    fun `deflate encode produces zlib header bytes`() = runTest {
+    fun `deflate encode produces zlib header bytes`() = runTest(timeout = 15.seconds) {
         val original = "compressible text content".encodeToByteArray()
         val source = ByteReadChannel(original)
         val encoded = KeelDeflateEncoder.encode(source).readRemaining().readByteArray()
@@ -65,19 +67,19 @@ class KeelContentEncodersTest {
     }
 
     @Test
-    fun `gzip empty payload round trips`() = runTest {
+    fun `gzip empty payload round trips`() = runTest(timeout = 15.seconds) {
         val empty = ByteArray(0)
         val roundTripped = roundTrip(KeelGZipEncoder, empty)
         assertContentEquals(empty, roundTripped)
     }
 
     @Test
-    fun `gzip large payload round trips`() = runTest {
+    fun `gzip large payload round trips`() = runTest(timeout = 15.seconds) {
         // 100 KiB matches /large benchmark endpoint.
         val original = ByteArray(100 * 1024) { (it and 0xff).toByte() }
         val roundTripped = roundTrip(KeelGZipEncoder, original)
         assertContentEquals(original, roundTripped)
-    }
+        }
 
     private suspend fun roundTrip(
         encoder: KeelContentEncoder,

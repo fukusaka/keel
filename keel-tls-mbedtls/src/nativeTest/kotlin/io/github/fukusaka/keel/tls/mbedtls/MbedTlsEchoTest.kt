@@ -9,11 +9,16 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import mbedtls.MBEDTLS_ERR_SSL_WANT_READ
+import mbedtls.MBEDTLS_ERR_SSL_WANT_WRITE
 import mbedtls.MBEDTLS_NET_PROTO_TCP
 import mbedtls.MBEDTLS_SSL_IS_SERVER
 import mbedtls.MBEDTLS_SSL_PRESET_DEFAULT
 import mbedtls.MBEDTLS_SSL_TRANSPORT_STREAM
 import mbedtls.keel_mbedtls_get_port
+import mbedtls.keel_mbedtls_net_get_fd
 import mbedtls.keel_mbedtls_ssl_set_bio_net
 import mbedtls.keel_mbedtls_strerror
 import mbedtls.mbedtls_net_accept
@@ -21,6 +26,7 @@ import mbedtls.mbedtls_net_bind
 import mbedtls.mbedtls_net_context
 import mbedtls.mbedtls_net_free
 import mbedtls.mbedtls_net_init
+import mbedtls.mbedtls_net_set_nonblock
 import mbedtls.mbedtls_pk_context
 import mbedtls.mbedtls_pk_free
 import mbedtls.mbedtls_pk_init
@@ -43,15 +49,22 @@ import mbedtls.mbedtls_x509_crt_free
 import mbedtls.mbedtls_x509_crt_init
 import mbedtls.mbedtls_x509_crt_parse
 import mbedtls.psa_crypto_init
+import platform.posix.EINTR
+import platform.posix.POLLIN
+import platform.posix.POLLOUT
 import platform.posix.SIGTERM
 import platform.posix._exit
+import platform.posix.errno
 import platform.posix.execl
 import platform.posix.fork
 import platform.posix.kill
+import platform.posix.poll
+import platform.posix.pollfd
 import platform.posix.usleep
 import platform.posix.waitpid
 import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Minimal TLS echo test using Mbed TLS 4.x net_sockets (blocking I/O).
@@ -70,8 +83,18 @@ import kotlin.test.assertEquals
 class MbedTlsEchoTest {
 
     @Test
-    fun `Mbed TLS server handshake and echo succeeds`() = memScoped {
-        // --- PSA Crypto init (replaces entropy/ctr_drbg in 4.x) ---
+    fun `Mbed TLS server handshake and echo succeeds`() = runBlocking {
+        // Two layers of timeout protection:
+        //  1. Outer `withTimeout(30.seconds)` — cooperative cancellation between
+        //     suspending boundaries (none here, but rule compliance).
+        //  2. Inner `deadline` threaded into `acceptWithDeadline` / `sslOpWithDeadline` —
+        //     real wall-clock deadline enforced via non-blocking fd + `poll(2)`.
+        //     Required because `mbedtls_net_accept` and `mbedtls_ssl_*` in blocking
+        //     mode park inside the kernel and are not interruptible by `withTimeout`.
+        withTimeout(30.seconds) {
+            val deadline = TimeSource.Monotonic.markNow() + 30.seconds
+            memScoped {
+                // --- PSA Crypto init (replaces entropy/ctr_drbg in 4.x) ---
         val psaRet = psa_crypto_init().toInt()
         check(psaRet == 0) { "psa_crypto_init failed: $psaRet" }
 
@@ -123,6 +146,10 @@ class MbedTlsEchoTest {
         check(ret == 0) { "net_bind failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
         val port = keel_mbedtls_get_port(listenFd.ptr)
         check(port > 0) { "failed to get assigned port" }
+        // Switch to non-blocking so mbedtls_net_accept returns MBEDTLS_ERR_SSL_WANT_READ
+        // promptly and the deadline-aware poll(2) loop below can enforce a timeout.
+        ret = mbedtls_net_set_nonblock(listenFd.ptr)
+        check(ret == 0) { "net_set_nonblock(listen) failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
 
         // --- Start curl client in background ---
         val pid = fork()
@@ -137,50 +164,119 @@ class MbedTlsEchoTest {
             _exit(1)
         }
 
-        // --- Accept client ---
+        // --- Accept client (deadline-aware) ---
         val clientFd = alloc<mbedtls_net_context>()
         mbedtls_net_init(clientFd.ptr)
-        ret = mbedtls_net_accept(listenFd.ptr, clientFd.ptr, null, 0u, null)
-        check(ret == 0) { "net_accept failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
-
-        // --- Set BIO and handshake ---
-        // Use C wrapper because mbedtls_net_send/recv can't be passed as
-        // CFunction pointers directly from Kotlin/Native.
-        keel_mbedtls_ssl_set_bio_net(ssl.ptr, clientFd.ptr)
-
-        ret = mbedtls_ssl_handshake(ssl.ptr)
-        check(ret == 0) { "handshake failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
-
-        // --- Read HTTP request from curl, send HTTP response ---
-        val buf = ByteArray(4096)
-        val n = buf.usePinned { pinned ->
-            mbedtls_ssl_read(ssl.ptr, pinned.addressOf(0).reinterpret(), buf.size.convert())
+        val listenSockFd = keel_mbedtls_net_get_fd(listenFd.ptr)
+        while (true) {
+            ret = mbedtls_net_accept(listenFd.ptr, clientFd.ptr, null, 0u, null)
+            if (ret == 0) break
+            check(ret == MBEDTLS_ERR_SSL_WANT_READ) {
+                "net_accept failed: ${keel_mbedtls_strerror(ret)?.toKString()}"
+            }
+            val remainingMs = remainingMillis(deadline)
+            check(remainingMs > 0) { "net_accept: deadline exceeded" }
+            pollOrThrow(listenSockFd, POLLIN.toShort(), remainingMs, "net_accept")
         }
-        check(n > 0) { "ssl_read failed: ${keel_mbedtls_strerror(n)?.toKString()}" }
+        ret = mbedtls_net_set_nonblock(clientFd.ptr)
+        check(ret == 0) { "net_set_nonblock(client) failed: ${keel_mbedtls_strerror(ret)?.toKString()}" }
+        val clientSockFd = keel_mbedtls_net_get_fd(clientFd.ptr)
 
-        val received = buf.decodeToString(0, n)
-        println("Server received ${n} bytes: ${received.lines().first()}")
+        try {
+            // --- Set BIO and handshake (deadline-aware) ---
+            // Use C wrapper because mbedtls_net_send/recv can't be passed as
+            // CFunction pointers directly from Kotlin/Native.
+            keel_mbedtls_ssl_set_bio_net(ssl.ptr, clientFd.ptr)
 
-        // Send a minimal HTTP response
-        val body = "Hello, TLS!"
-        val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
-        val responseBytes = response.encodeToByteArray()
-        responseBytes.usePinned { pinned ->
-            mbedtls_ssl_write(ssl.ptr, pinned.addressOf(0).reinterpret(), responseBytes.size.convert())
+            sslOpWithDeadline("ssl_handshake", clientSockFd, deadline) {
+                mbedtls_ssl_handshake(ssl.ptr)
+            }
+
+            // --- Read HTTP request from curl, send HTTP response ---
+            val buf = ByteArray(4096)
+            val n = buf.usePinned { pinned ->
+                sslOpWithDeadline("ssl_read", clientSockFd, deadline) {
+                    mbedtls_ssl_read(ssl.ptr, pinned.addressOf(0).reinterpret(), buf.size.convert())
+                }
+            }
+
+            val received = buf.decodeToString(0, n)
+            println("Server received $n bytes: ${received.lines().first()}")
+
+            // Send a minimal HTTP response
+            val body = "Hello, TLS!"
+            val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+            val responseBytes = response.encodeToByteArray()
+            responseBytes.usePinned { pinned ->
+                sslOpWithDeadline("ssl_write", clientSockFd, deadline) {
+                    mbedtls_ssl_write(ssl.ptr, pinned.addressOf(0).reinterpret(), responseBytes.size.convert())
+                }
+            }
+        } finally {
+            // --- Cleanup ---
+            mbedtls_ssl_free(ssl.ptr)
+            mbedtls_ssl_config_free(conf.ptr)
+            mbedtls_net_free(clientFd.ptr)
+            mbedtls_net_free(listenFd.ptr)
+            mbedtls_x509_crt_free(srvcert.ptr)
+            mbedtls_pk_free(pkey.ptr)
+
+            // Kill client process
+            kill(pid, SIGTERM)
+            waitpid(pid, null, 0)
         }
+                Unit
+            }
+        }
+    }
 
-        // --- Cleanup ---
-        mbedtls_ssl_free(ssl.ptr)
-        mbedtls_ssl_config_free(conf.ptr)
-        mbedtls_net_free(clientFd.ptr)
-        mbedtls_net_free(listenFd.ptr)
-        mbedtls_x509_crt_free(srvcert.ptr)
-        mbedtls_pk_free(pkey.ptr)
+    /**
+     * Run a Mbed TLS op under a wall-clock deadline. On
+     * `MBEDTLS_ERR_SSL_WANT_READ` / `MBEDTLS_ERR_SSL_WANT_WRITE` the caller
+     * polls the underlying fd for the requested direction within the remaining
+     * budget and retries.
+     */
+    private inline fun sslOpWithDeadline(
+        label: String,
+        fd: Int,
+        deadline: TimeSource.Monotonic.ValueTimeMark,
+        op: () -> Int,
+    ): Int {
+        while (true) {
+            val ret = op()
+            if (ret >= 0) return ret
+            val wantRead = ret == MBEDTLS_ERR_SSL_WANT_READ
+            val wantWrite = ret == MBEDTLS_ERR_SSL_WANT_WRITE
+            if (!wantRead && !wantWrite) {
+                error("$label failed: ret=$ret ${keel_mbedtls_strerror(ret)?.toKString()}")
+            }
+            val remainingMs = remainingMillis(deadline)
+            check(remainingMs > 0) { "$label: deadline exceeded" }
+            val events = if (wantRead) POLLIN else POLLOUT
+            pollOrThrow(fd, events.toShort(), remainingMs, label)
+        }
+    }
 
-        // Kill client process
-        kill(pid, SIGTERM)
-        waitpid(pid, null, 0)
-        Unit
+    private fun pollOrThrow(fd: Int, events: Short, timeoutMs: Int, label: String) {
+        memScoped {
+            val pfd = alloc<pollfd>().apply {
+                this.fd = fd
+                this.events = events
+                this.revents = 0
+            }
+            val r = poll(pfd.ptr, 1u, timeoutMs)
+            when {
+                r < 0 && errno == EINTR -> Unit
+                r < 0 -> error("$label poll(): errno=$errno")
+                r == 0 -> error("$label: deadline exceeded waiting for fd ready")
+            }
+        }
+    }
+
+    private fun remainingMillis(deadline: TimeSource.Monotonic.ValueTimeMark): Int {
+        val remaining = deadline - TimeSource.Monotonic.markNow()
+        if (remaining.isNegative()) return 0
+        return remaining.inWholeMilliseconds.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     companion object {

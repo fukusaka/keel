@@ -12,7 +12,6 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.runBlocking
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.http.HttpClient
@@ -24,6 +23,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Integration tests for WebSocket support via the `KeelCio` factory using the
@@ -189,7 +191,10 @@ class KeelCioWebSocketTest {
         cfg.keepAlive = true
         server.start(wait = false)
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             block(port)
         } finally {
             server.stop(SHUTDOWN_GRACE_MS, SHUTDOWN_TIMEOUT_MS)

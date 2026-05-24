@@ -67,6 +67,13 @@ static void keel_mbedtls_ssl_set_bio_net(mbedtls_ssl_context *ssl,
                         mbedtls_net_send, mbedtls_net_recv, NULL);
 }
 
+// Expose the private fd of mbedtls_net_context so callers can poll(2) on it
+// to enforce a wall-clock deadline around blocking SSL ops. Used only by
+// MbedTlsEchoTest's deadline wrapper.
+static int keel_mbedtls_net_get_fd(mbedtls_net_context *ctx) {
+    return ctx->MBEDTLS_PRIVATE(fd);
+}
+
 // ============================================================
 // Pointer-based BIO adapter for TlsCodec protect/unprotect
 // ============================================================

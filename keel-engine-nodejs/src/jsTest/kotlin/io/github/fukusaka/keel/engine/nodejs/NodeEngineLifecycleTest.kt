@@ -1,26 +1,28 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import kotlinx.coroutines.test.runTest
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class NodeEngineLifecycleTest {
 
     @Test
-    fun engineCreateAndClose() = runTest {
+    fun engineCreateAndClose() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         engine.close()
     }
 
     @Test
-    fun bindReturnsActiveServerChannel() = runTest {
+    fun bindReturnsActiveServerChannel() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         assertTrue(server.isActive)
@@ -29,7 +31,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun serverChannelLocalAddress() = runTest {
+    fun serverChannelLocalAddress() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
@@ -39,7 +41,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun serverChannelCloseStopsListening() = runTest {
+    fun serverChannelCloseStopsListening() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         server.close()
@@ -48,7 +50,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun channelLifecycleAfterClose() = runTest {
+    fun channelLifecycleAfterClose() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -68,7 +70,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun readOnClosedChannelThrows() = runTest {
+    fun readOnClosedChannelThrows() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -86,7 +88,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun writeOnClosedChannelThrows() = runTest {
+    fun writeOnClosedChannelThrows() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -104,7 +106,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun bindOnClosedEngineThrows() = runTest {
+    fun bindOnClosedEngineThrows() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         engine.close()
 
@@ -114,7 +116,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun `double close is idempotent`() = runTest {
+    fun `double close is idempotent`() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -130,7 +132,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun `write zero bytes returns zero`() = runTest {
+    fun `write zero bytes returns zero`() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -149,7 +151,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun `UDS filesystem bind connect echo round trip`() = runTest {
+    fun `UDS filesystem bind connect echo round trip`() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val path = uniqueUdsPath()
         val addr = UnixSocketAddress(path)
@@ -179,7 +181,7 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
-    fun `UDS abstract namespace is rejected on non-Linux platforms`() = runTest {
+    fun `UDS abstract namespace is rejected on non-Linux platforms`() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         try {
             val platform = js("process.platform") as String

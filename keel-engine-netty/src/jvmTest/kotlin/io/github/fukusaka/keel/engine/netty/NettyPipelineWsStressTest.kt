@@ -10,6 +10,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assume.assumeTrue
 import java.net.URI
 import java.net.http.HttpClient
@@ -78,6 +79,9 @@ class NettyPipelineWsStressTest {
      */
     @Test
     fun `50 concurrent connections each complete 100 echo rounds without leak or timeout`() = runBlocking {
+        // withTimeout: 5 minutes budget — matches the existing perTestTimeout wall-clock check.
+        // Stress test runs 50 × 100 = 5000 echo rounds over real Netty + JDK HttpClient.
+        withTimeout(5.minutes) {
         assumeTrue(
             "stress tests are gated; opt in with -Dkeel.stress=true",
             System.getProperty("keel.stress") == "true",
@@ -117,6 +121,7 @@ class NettyPipelineWsStressTest {
         } finally {
             server.close()
             engine.close()
+        }
         }
     }
 

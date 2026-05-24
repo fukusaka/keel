@@ -1,17 +1,19 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
-import kotlinx.coroutines.test.runTest
+import io.github.fukusaka.keel.core.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class NodeEngineConnectTest {
 
     @Test
-    fun connectToListeningServer() = runTest {
+    fun connectToListeningServer() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -29,7 +31,7 @@ class NodeEngineConnectTest {
     }
 
     @Test
-    fun connectRemoteAddress() = runTest {
+    fun connectRemoteAddress() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port

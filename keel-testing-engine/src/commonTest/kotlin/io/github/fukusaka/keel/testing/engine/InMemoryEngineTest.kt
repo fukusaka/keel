@@ -5,13 +5,13 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 /**
  * Loopback tests for [InMemoryEngine]: a `bindPipeline` listener plus a
@@ -78,10 +78,10 @@ class InMemoryEngineTest {
                     engine.close()
                 }
             }
-        }
+    }
 
     @Test
-    fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest {
+    fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest(timeout = 15.seconds) {
         val engine = InMemoryEngine()
         try {
             val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
@@ -94,7 +94,7 @@ class InMemoryEngineTest {
     }
 
     @Test
-    fun `connect to an address with no registered listener is refused`() = runTest {
+    fun `connect to an address with no registered listener is refused`() = runTest(timeout = 15.seconds) {
         val engine = InMemoryEngine()
         try {
             assertFailsWith<IllegalStateException> {
@@ -106,7 +106,7 @@ class InMemoryEngineTest {
     }
 
     @Test
-    fun `binding the same resolved address twice is rejected`() = runTest {
+    fun `binding the same resolved address twice is rejected`() = runTest(timeout = 15.seconds) {
         val engine = InMemoryEngine()
         try {
             engine.bindPipeline(InetSocketAddress("127.0.0.1", 8080)) { }
@@ -144,7 +144,7 @@ class InMemoryEngineTest {
     }
 
     @Test
-    fun `bind throws because only pipeline-mode binding is supported`() = runTest {
+    fun `bind throws because only pipeline-mode binding is supported`() = runTest(timeout = 15.seconds) {
         val engine = InMemoryEngine()
         try {
             assertFailsWith<UnsupportedOperationException> {
@@ -156,7 +156,7 @@ class InMemoryEngineTest {
     }
 
     @Test
-    fun `connect after the engine is closed is rejected`() = runTest {
+    fun `connect after the engine is closed is rejected`() = runTest(timeout = 15.seconds) {
         val engine = InMemoryEngine()
         val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
         engine.close()
