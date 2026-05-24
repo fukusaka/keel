@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- `io`: unused `BufferedSuspendSource.scanLine()` + `crossBufferScanLine()` + `IoBufView` class. Never reached the production HTTP hot path — `HttpRequestDecoder` scans IoBuf bytes directly via `IoBuf.getByte(index)` and uses a `ByteArray` accumulator for cross-IoBuf lines; the kotlinx-io adapter path (`HttpParser` suspend variants used by `respondBadRequest` fallback / tests / CLI) consumes `readLine(): String`. The zero-copy `CharSequence` need is served by `IoBufAsciiText` (#588) which uses a different abstraction. The `IoBufView.next` chain was carried forward from a planned `readLine → scanLine` migration that was experimented with on `feat/codec-http-zerocopy` (2026-03-27) and abandoned when the BufSlice lifetime issue surfaced; `HttpHeaders` byte-range view storage (#596) and `HttpRequestHead` byte-range URI (#601) resolve that lifetime concern via explicit IoBuf retain in HttpHeaders.
+
 ### Added
 
 - `codec-http`: chain-global multi-segment addressing in `HttpHeaders` so a request head delivered across multiple recv buffers keeps every header as a zero-copy range entry instead of falling back to `String` materialisation on the second buffer onward. Range slots pack `(chainIndex shl segmentLog2) or posInSegment` into the existing `nameStart` / `valueStart` ints — no slot stride change — and the read side decodes them per slot. The encoding relies on every recv buffer for one connection sharing a uniform power-of-two capacity, an invariant `IoEngineConfig.readBufferSize` (#597) and `TlsServerConfig.plaintextBufferSize` (#598) made part of the public surface. Buffers that miss the capacity invariant (custom allocator / mismatched pool class) bypass the chain via the existing `String` side channel. Cross-read CDN N=23 parse alloc **-73 %** (2840 → 760 B/cycle), ROI ceiling vs single-buffer collapsed from +2376 to +296 B/cycle; single-buffer default path is byte-identical (#599)

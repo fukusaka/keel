@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.io
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.buf.IoBufView
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
 import kotlinx.coroutines.test.runTest
@@ -108,60 +107,6 @@ class BufferedSuspendSourceTest {
         source.close()
     }
 
-    // -- scanLine --
-
-    @Test
-    fun scanLineSimple() = runTest {
-        val source = BufferedSuspendSource(sourceOf("hello\r\nworld\r\n"), DefaultAllocator)
-        assertEquals("hello", source.scanLine()?.decodeToString())
-        assertEquals("world", source.scanLine()?.decodeToString())
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun scanLineLfOnly() = runTest {
-        val source = BufferedSuspendSource(sourceOf("abc\ndef\n"), DefaultAllocator)
-        assertEquals("abc", source.scanLine()?.decodeToString())
-        assertEquals("def", source.scanLine()?.decodeToString())
-        source.close()
-    }
-
-    @Test
-    fun scanLineEofWithoutNewline() = runTest {
-        val source = BufferedSuspendSource(sourceOf("no-newline"), DefaultAllocator)
-        assertEquals("no-newline", source.scanLine()?.decodeToString())
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun scanLineEmptySource() = runTest {
-        val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun scanLineReturnsZeroCopySlice() = runTest {
-        val source = BufferedSuspendSource(sourceOf("GET /hello HTTP/1.1\r\n"), DefaultAllocator)
-        val slice = source.scanLine()!!
-        // Verify it's a real IoBufView, not a copy
-        assertTrue(slice.contentEquals("GET /hello HTTP/1.1"))
-        assertEquals(19, slice.length) // "GET /hello HTTP/1.1" = 19 bytes
-        source.close()
-    }
-
-    @Test
-    fun scanLineEmptyLine() = runTest {
-        val source = BufferedSuspendSource(sourceOf("first\r\n\r\n"), DefaultAllocator)
-        assertEquals("first", source.scanLine()?.decodeToString())
-        val empty = source.scanLine()!!
-        assertEquals(0, empty.length)
-        assertTrue(empty.isEmpty())
-        source.close()
-    }
-
     // ============================================================
     // Pull-mode: buffer boundary tests
     // ============================================================
@@ -177,57 +122,6 @@ class BufferedSuspendSourceTest {
             return n
         }
         override fun close() {}
-    }
-
-    @Test
-    fun pullMode_scanLine_lineAtBufferBoundary() = runTest {
-        // Line exactly fills BUFFER_SIZE (8192). The LF is at the buffer boundary.
-        val line = "x".repeat(8191) + "\n"
-        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
-        val result = source.scanLine()?.decodeToString()
-        assertEquals("x".repeat(8191), result)
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun pullMode_scanLine_secondLineSpansRefill() = runTest {
-        // First line consumes most of the first refill buffer. The second
-        // line starts near the buffer end and continues into the next
-        // refill, exercising the cross-buffer IoBufView path in pull mode.
-        val line1 = "A".repeat(8000) + "\n"
-        val line2 = "B".repeat(500) + "\n"
-        val source = BufferedSuspendSource(sourceOf(line1 + line2), DefaultAllocator)
-        assertEquals("A".repeat(8000), source.scanLine()?.decodeToString())
-        assertEquals("B".repeat(500), source.scanLine()?.decodeToString())
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun pullMode_scanLine_crossBuffer_multiSegment() = runTest {
-        // A single line longer than BUFFER_SIZE (8192): the LF lands in the
-        // second refill buffer, so scanLine returns a multi-segment IoBufView.
-        val line = "C".repeat(10000) + "\r\n"
-        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
-        val slice = source.scanLine()
-        assertNotNull(slice)
-        assertEquals("C".repeat(10000), slice.decodeToString())
-        assertEquals(10000, slice.totalLength)
-        assertNotNull(slice.next) // spans two refill buffers
-        assertNull(source.scanLine())
-        source.close()
-    }
-
-    @Test
-    fun pullMode_scanLine_crossBuffer_crAtBoundary() = runTest {
-        // CR is the last byte of the first refill buffer (8192 bytes),
-        // LF is the first byte of the next refill buffer.
-        val line = "z".repeat(8191) + "\r\n"
-        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
-        assertEquals("z".repeat(8191), source.scanLine()?.decodeToString())
-        assertNull(source.scanLine())
-        source.close()
     }
 
     @Test
@@ -306,48 +200,6 @@ class BufferedSuspendSourceTest {
         assertEquals('A'.code.toByte(), source.readByte())
         assertEquals('B'.code.toByte(), source.readByte())
         assertEquals('C'.code.toByte(), source.readByte())
-        source.close()
-    }
-
-    @Test
-    fun pushMode_scanLine_singleBuffer() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("GET /hello HTTP/1.1\r\n"))
-        val slice = source.scanLine()
-        assertNotNull(slice)
-        assertTrue(slice.contentEquals("GET /hello HTTP/1.1"))
-        assertNull(slice.next) // single segment
-        source.close()
-    }
-
-    @Test
-    fun pushMode_scanLine_crossBuffer() = runTest {
-        // Line "Hello-World" spans two chunks: "Hello-" and "World\r\n"
-        val source = BufferedSuspendSource(pushSourceOf("Hello-", "World\r\n"))
-        val slice = source.scanLine()
-        assertNotNull(slice)
-        assertEquals("Hello-World", slice.decodeToString())
-        assertEquals(11, slice.totalLength)
-        // Multi-segment: first="Hello-", next="World"
-        assertNotNull(slice.next)
-        source.close()
-    }
-
-    @Test
-    fun pushMode_scanLine_crossBuffer_crAtBoundary() = runTest {
-        // CR at end of first chunk, LF at start of second
-        val source = BufferedSuspendSource(pushSourceOf("Header\r", "\nBody\r\n"))
-        val slice = source.scanLine()
-        assertNotNull(slice)
-        assertEquals("Header", slice.decodeToString())
-        assertEquals("Body", source.scanLine()?.decodeToString())
-        source.close()
-    }
-
-    @Test
-    fun pushMode_scanLine_eofWithoutNewline() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("no-newline"))
-        assertEquals("no-newline", source.scanLine()?.decodeToString())
-        assertNull(source.scanLine())
         source.close()
     }
 
