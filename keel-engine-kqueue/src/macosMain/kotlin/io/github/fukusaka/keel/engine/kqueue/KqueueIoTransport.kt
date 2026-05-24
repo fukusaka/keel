@@ -4,7 +4,9 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asNativePointer
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -96,10 +98,21 @@ internal class KqueueIoTransport(
 
     // Parallel primitive arrays reused across [flushGather] calls to
     // feed [NativeSocket.writev] without per-flush heap allocation.
-    // Grown lazily (1.5x) via [ensureWritevCapacity] when pendingWrites
-    // exceeds the current capacity.
+    // Grown lazily (1.5x) via [ensureWritevCapacity] when the assembled
+    // iovec entry count (one per readable segment across all pending
+    // writes — a multi-seg IoBuf contributes N entries) exceeds the
+    // current capacity.
     private var writevPtrs: LongArray = LongArray(INITIAL_WRITEV_CAPACITY)
     private var writevLens: IntArray = IntArray(INITIAL_WRITEV_CAPACITY)
+
+    /**
+     * Scratch list reused across [flushGather] calls to collect readable
+     * segments from each pending write before they are translated into
+     * the primitive [writevPtrs] / [writevLens] arrays. Owned by this
+     * transport, never escapes — single-EventLoop-thread invariant
+     * matches the rest of the write path.
+     */
+    private val gatherList = SegmentRangeList()
 
     private fun ensureWritevCapacity(n: Int) {
         if (writevPtrs.size >= n) return
@@ -212,7 +225,11 @@ internal class KqueueIoTransport(
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
-        if (pendingWrites.size == 1) {
+        if (pendingWrites.size == 1 && pendingWrites.first().buf.segmentCount == 1) {
+            // Fast path: a single single-segment buffer — one `write()`
+            // syscall suffices, skip the iovec assembly. Multi-segment
+            // single-buffer falls through to flushGather so its segments
+            // become writev entries.
             return flushSingle(pendingWrites.removeFirst())
         }
         return flushGather()
@@ -289,20 +306,32 @@ internal class KqueueIoTransport(
     // --- Gather-write flush ---
 
     /**
-     * Writes multiple pending buffers via `writev()`. Falls back to
-     * single-buffer retry on partial write or EAGAIN.
+     * Writes multiple pending buffers via `writev()`. Each pending write
+     * contributes one iovec entry per readable segment in its buffer —
+     * a multi-seg `IoBuf` (built by codec growth via [IoBuf.appendSegment])
+     * expands into as many writev entries as it has segments. Falls back
+     * to single-buffer retry on partial write or EAGAIN.
      */
     private fun flushGather(): Boolean {
-        val count = pendingWrites.size
-        ensureWritevCapacity(count)
+        gatherList.clear()
         var totalBytes = 0
-        for (i in 0 until count) {
+        val pwCount = pendingWrites.size
+        for (i in 0 until pwCount) {
             val pw = pendingWrites[i]
-            writevPtrs[i] = (pw.buf.unsafePointer + pw.offset)!!.rawValue.toLong()
-            writevLens[i] = pw.length
+            pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
             totalBytes += pw.length
         }
-        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, writevPtrs, writevLens, count)) {
+        val iovCount = gatherList.size
+        ensureWritevCapacity(iovCount)
+        for (i in 0 until iovCount) {
+            val range = gatherList[i]
+            val backing = checkNotNull(range.memory) {
+                "SegmentRange.memory must be non-null after appendSegmentsForRange"
+            }
+            writevPtrs[i] = (backing.asNativePointer() + range.offset)!!.rawValue.toLong()
+            writevLens[i] = range.length
+        }
+        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, writevPtrs, writevLens, iovCount)) {
             WriteResult.WouldBlock -> {
                 // Nothing written — register WRITE and retry all later.
                 registerWriteCallback()

@@ -54,3 +54,5 @@ internal fun connectRawClient(port: Int): Int = PosixRawClient.rawConnect(port)
 internal fun rawWrite(fd: Int, data: String): Unit = PosixRawClient.rawWrite(fd, data)
 
 internal fun rawRead(fd: Int, size: Int): String = PosixRawClient.rawRead(fd, size)
+
+internal fun rawReadBytes(fd: Int, size: Int): ByteArray = PosixRawClient.rawReadBytes(fd, size)
