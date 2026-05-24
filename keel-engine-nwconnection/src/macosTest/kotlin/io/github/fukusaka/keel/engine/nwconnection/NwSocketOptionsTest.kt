@@ -6,13 +6,13 @@ import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.native.posix.PosixRawClient
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * End-to-end smoke tests for `ConnectConfig.socketOptions` and
@@ -44,100 +44,106 @@ class NwSocketOptionsTest {
 
     @Test
     fun `bind with childSocketOptions accepts and echoes`() = runTest {
-        val engine = NwEngine()
-        val server = engine.bind(
-            InetSocketAddress("127.0.0.1", 0),
-            BindConfig(
-                childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
-            ),
-        )
-        val port = (server.localAddress as InetSocketAddress).port
-        val clientFd = PosixRawClient.rawConnect(port)
-        try {
-            val serverCh = server.accept()
-            PosixRawClient.rawWrite(clientFd, "hello")
-            val buf = DefaultAllocator.allocate(64)
-            val n = serverCh.read(buf)
-            assertEquals(5, n)
-            serverCh.write(buf)
-            serverCh.flush()
-            assertEquals("hello", PosixRawClient.rawRead(clientFd, 5))
-            serverCh.close()
-        } finally {
-            close(clientFd)
-            server.close()
-            engine.close()
+        withTimeout(15.seconds) {
+            val engine = NwEngine()
+            val server = engine.bind(
+                InetSocketAddress("127.0.0.1", 0),
+                BindConfig(
+                    childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
+                ),
+            )
+            val port = (server.localAddress as InetSocketAddress).port
+            val clientFd = PosixRawClient.rawConnect(port)
+            try {
+                val serverCh = server.accept()
+                PosixRawClient.rawWrite(clientFd, "hello")
+                val buf = DefaultAllocator.allocate(64)
+                val n = serverCh.read(buf)
+                assertEquals(5, n)
+                serverCh.write(buf)
+                serverCh.flush()
+                assertEquals("hello", PosixRawClient.rawRead(clientFd, 5))
+                serverCh.close()
+            } finally {
+                close(clientFd)
+                server.close()
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect with ConnectConfig tcpNoDelay plus keepAlive round-trips`() = runTest {
-        val engine = NwEngine()
-        // Use the engine itself for the server (no childSocketOptions) and a
-        // second engine instance for the client with ConnectConfig.socketOptions.
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val clientEngine = NwEngine()
+        withTimeout(15.seconds) {
+            val engine = NwEngine()
+            // Use the engine itself for the server (no childSocketOptions) and a
+            // second engine instance for the client with ConnectConfig.socketOptions.
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
             try {
-                val client = clientEngine.connect(
-                    InetSocketAddress("127.0.0.1", port),
-                    ConnectConfig(
-                        socketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
-                    ),
-                )
-                val serverCh = server.accept()
+                val clientEngine = NwEngine()
+                try {
+                    val client = clientEngine.connect(
+                        InetSocketAddress("127.0.0.1", port),
+                        ConnectConfig(
+                            socketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
+                        ),
+                    )
+                    val serverCh = server.accept()
 
-                val send = DefaultAllocator.allocate(5)
-                "hello".encodeToByteArray().forEach { send.writeByte(it) }
-                client.write(send)
-                client.flush()
+                    val send = DefaultAllocator.allocate(5)
+                    "hello".encodeToByteArray().forEach { send.writeByte(it) }
+                    client.write(send)
+                    client.flush()
 
-                val recv = DefaultAllocator.allocate(64)
-                val n = serverCh.read(recv)
-                assertEquals(5, n)
-                recv.release()
+                    val recv = DefaultAllocator.allocate(64)
+                    val n = serverCh.read(recv)
+                    assertEquals(5, n)
+                    recv.release()
 
-                client.close()
-                serverCh.close()
+                    client.close()
+                    serverCh.close()
+                } finally {
+                    clientEngine.close()
+                }
             } finally {
-                clientEngine.close()
+                server.close()
+                engine.close()
             }
-        } finally {
-            server.close()
-            engine.close()
         }
     }
 
     @Test
     fun `ConnectConfig with unsupported buffer size options is accepted silently`() = runTest {
-        // NW framework does not expose SO_RCVBUF / SO_SNDBUF. The helper
-        // must accept non-null values without erroring — they are silently
-        // ignored. Same opaque path as tcpNoDelay to prove the isEmpty
-        // short-circuit isn't bypassed incorrectly.
-        val engine = NwEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val clientEngine = NwEngine()
+        withTimeout(15.seconds) {
+            // NW framework does not expose SO_RCVBUF / SO_SNDBUF. The helper
+            // must accept non-null values without erroring — they are silently
+            // ignored. Same opaque path as tcpNoDelay to prove the isEmpty
+            // short-circuit isn't bypassed incorrectly.
+            val engine = NwEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
             try {
-                val client = clientEngine.connect(
-                    InetSocketAddress("127.0.0.1", port),
-                    ConnectConfig(
-                        socketOptions = SocketOptions(
-                            tcpNoDelay = true,
-                            receiveBufferSize = 65536,
-                            sendBufferSize = 131072,
+                val clientEngine = NwEngine()
+                try {
+                    val client = clientEngine.connect(
+                        InetSocketAddress("127.0.0.1", port),
+                        ConnectConfig(
+                            socketOptions = SocketOptions(
+                                tcpNoDelay = true,
+                                receiveBufferSize = 65536,
+                                sendBufferSize = 131072,
+                            ),
                         ),
-                    ),
-                )
-                client.close()
+                    )
+                    client.close()
+                } finally {
+                    clientEngine.close()
+                }
             } finally {
-                clientEngine.close()
+                server.close()
+                engine.close()
             }
-        } finally {
-            server.close()
-            engine.close()
         }
     }
 }

@@ -2,13 +2,19 @@
 
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
-import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io_uring.io_uring_prep_read
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.reinterpret
@@ -27,11 +33,6 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.pipe
 import platform.posix.write
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineUringSpecificTest {
@@ -225,37 +226,39 @@ class IoUringEngineUringSpecificTest {
      */
     @Test
     fun `multishot accept handles concurrent accept callers`() = runBlocking {
-        val engine = IoUringEngine(IoEngineConfig(threads = 4))
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine(IoEngineConfig(threads = 4))
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val results = (1..8).map { i ->
-            async(Dispatchers.Default) {
-                val clientFd = connectRawClient(port)
-                val ch = server.accept()
+            val results = (1..8).map { i ->
+                async(Dispatchers.Default) {
+                    val clientFd = connectRawClient(port)
+                    val ch = server.accept()
 
-                val msg = "msg-$i"
-                rawWrite(clientFd, msg)
+                    val msg = "msg-$i"
+                    rawWrite(clientFd, msg)
 
-                val buf = DefaultAllocator.allocate(64)
-                val n = ch.read(buf)
-                assertEquals(msg.length, n)
+                    val buf = DefaultAllocator.allocate(64)
+                    val n = ch.read(buf)
+                    assertEquals(msg.length, n)
 
-                ch.write(buf)
-                ch.flush()
+                    ch.write(buf)
+                    ch.flush()
 
-                val echo = rawRead(clientFd, msg.length)
-                ch.close()
-                close(clientFd)
-                echo
+                    val echo = rawRead(clientFd, msg.length)
+                    ch.close()
+                    close(clientFd)
+                    echo
+                }
             }
-        }
-        for ((i, deferred) in results.withIndex()) {
-            assertEquals("msg-${i + 1}", deferred.await())
-        }
+            for ((i, deferred) in results.withIndex()) {
+                assertEquals("msg-${i + 1}", deferred.await())
+            }
 
-        server.close()
-        engine.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test

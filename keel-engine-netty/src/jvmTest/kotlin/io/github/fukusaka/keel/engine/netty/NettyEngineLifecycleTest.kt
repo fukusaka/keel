@@ -1,154 +1,175 @@
 package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import kotlinx.coroutines.withTimeout
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.withTimeout
 
 class NettyEngineLifecycleTest {
 
     @Test
     fun engineCreateAndClose() = runTest {
-        val engine = NettyEngine()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            engine.close()
+        }
     }
 
     @Test
     fun bindReturnsActiveServerChannel() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        assertTrue(server.isActive)
-        server.close()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            assertTrue(server.isActive)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelLocalAddress() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
-        assertTrue((server.localAddress as InetSocketAddress).port > 0)
-        server.close()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            assertEquals("127.0.0.1", (server.localAddress as InetSocketAddress).hostString)
+            assertTrue((server.localAddress as InetSocketAddress).port > 0)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun serverChannelCloseStopsListening() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        server.close()
-        assertFalse(server.isActive)
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            server.close()
+            assertFalse(server.isActive)
+            engine.close()
+        }
     }
 
     @Test
     fun channelLifecycleAfterClose() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val client = connectRawClient(port)
-        val ch = server.accept()
-        assertTrue(ch.isOpen)
-        assertTrue(ch.isActive)
+            val client = connectRawClient(port)
+            val ch = server.accept()
+            assertTrue(ch.isOpen)
+            assertTrue(ch.isActive)
 
-        ch.close()
-        assertFalse(ch.isOpen)
-        assertFalse(ch.isActive)
+            ch.close()
+            assertFalse(ch.isOpen)
+            assertFalse(ch.isActive)
 
-        client.close()
-        server.close()
-        engine.close()
+            client.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun readOnClosedChannelThrows() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val client = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val client = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.read(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.read(DefaultAllocator.allocate(8))
+            }
+
+            client.close()
+            server.close()
+            engine.close()
         }
-
-        client.close()
-        server.close()
-        engine.close()
     }
 
     @Test
     fun writeOnClosedChannelThrows() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val client = connectRawClient(port)
-        val ch = server.accept()
-        ch.close()
+            val client = connectRawClient(port)
+            val ch = server.accept()
+            ch.close()
 
-        assertFailsWith<IllegalStateException> {
-            ch.write(DefaultAllocator.allocate(8))
+            assertFailsWith<IllegalStateException> {
+                ch.write(DefaultAllocator.allocate(8))
+            }
+
+            client.close()
+            server.close()
+            engine.close()
         }
-
-        client.close()
-        server.close()
-        engine.close()
     }
 
     @Test
     fun bindOnClosedEngineThrows() = runTest {
-        val engine = NettyEngine()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            engine.close()
 
-        assertFailsWith<IllegalStateException> {
-            engine.bind("127.0.0.1", 0)
+            assertFailsWith<IllegalStateException> {
+                engine.bind("127.0.0.1", 0)
+            }
         }
     }
 
     @Test
     fun `double close is idempotent`() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val client = connectRawClient(port)
-        val ch = server.accept()
+            val client = connectRawClient(port)
+            val ch = server.accept()
 
-        ch.close()
-        ch.close()
+            ch.close()
+            ch.close()
 
-        client.close()
-        server.close()
-        engine.close()
+            client.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun `write zero bytes returns zero`() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val client = connectRawClient(port)
-        val ch = server.accept()
+            val client = connectRawClient(port)
+            val ch = server.accept()
 
-        val buf = DefaultAllocator.allocate(8)
-        val written = ch.write(buf) // transfer (empty)
-        assertEquals(0, written)
+            val buf = DefaultAllocator.allocate(8)
+            val written = ch.write(buf) // transfer (empty)
+            assertEquals(0, written)
 
-        ch.close()
-        client.close()
-        server.close()
-        engine.close()
+            ch.close()
+            client.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
@@ -182,13 +203,15 @@ class NettyEngineLifecycleTest {
 
     @Test
     fun `UDS abstract namespace is rejected on JVM Netty`() = runTest {
-        val engine = NettyEngine()
-        try {
-            val addr = UnixSocketAddress.abstract("keel-netty-abstract-should-fail")
-            assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
-            assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            try {
+                val addr = UnixSocketAddress.abstract("keel-netty-abstract-should-fail")
+                assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
+                assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+            } finally {
+                engine.close()
+            }
         }
     }
 

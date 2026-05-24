@@ -10,12 +10,14 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.runBlocking
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Regression test for the borrow ↔ recycle race covered by PR #502.
@@ -107,7 +109,10 @@ class KtorCioRequestReleaseSerialisationTest {
         server.start(wait = false)
         val totalRequests = REQUESTS_TO_SEND
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             // Sequential requests on separate connections (no keep-alive
             // shortcut) so each request exercises both borrow and
             // recycle paths fully.

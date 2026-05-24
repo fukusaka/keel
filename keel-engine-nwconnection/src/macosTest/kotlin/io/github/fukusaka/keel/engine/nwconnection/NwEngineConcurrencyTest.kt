@@ -1,8 +1,12 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -11,43 +15,42 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class NwEngineConcurrencyTest {
 
     @Test
     fun concurrentReadOnMultipleChannels() = runBlocking {
-        val engine = NwEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        val clientCount = 5
+        withTimeout(15.seconds) {
+            val engine = NwEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            val clientCount = 5
 
-        val clients = (1..clientCount).map { connectRawClient(port) }
-        val channels = (1..clientCount).map { server.accept() }
+            val clients = (1..clientCount).map { connectRawClient(port) }
+            val channels = (1..clientCount).map { server.accept() }
 
-        clients.forEachIndexed { i, fd -> rawWrite(fd, "msg$i") }
+            clients.forEachIndexed { i, fd -> rawWrite(fd, "msg$i") }
 
-        val results = channels.map { ch ->
-            async {
-                val buf = DefaultAllocator.allocate(64)
-                val n = ch.read(buf)
-                val bytes = ByteArray(n)
-                for (j in 0 until n) bytes[j] = buf.readByte()
-                buf.release()
-                bytes.decodeToString()
+            val results = channels.map { ch ->
+                async {
+                    val buf = DefaultAllocator.allocate(64)
+                    val n = ch.read(buf)
+                    val bytes = ByteArray(n)
+                    for (j in 0 until n) bytes[j] = buf.readByte()
+                    buf.release()
+                    bytes.decodeToString()
+                }
             }
+
+            val messages = results.map { it.await() }.sorted()
+            assertEquals(listOf("msg0", "msg1", "msg2", "msg3", "msg4"), messages)
+
+            channels.forEach { it.close() }
+            clients.forEach { close(it) }
+            server.close()
+            engine.close()
         }
-
-        val messages = results.map { it.await() }.sorted()
-        assertEquals(listOf("msg0", "msg1", "msg2", "msg3", "msg4"), messages)
-
-        channels.forEach { it.close() }
-        clients.forEach { close(it) }
-        server.close()
-        engine.close()
     }
 
     /**

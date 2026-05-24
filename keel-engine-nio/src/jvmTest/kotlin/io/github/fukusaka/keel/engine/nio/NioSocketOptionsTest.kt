@@ -4,13 +4,13 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
-import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import java.net.StandardSocketOptions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Verifies `ConnectConfig.socketOptions` (client-side) and
@@ -31,107 +31,115 @@ class NioSocketOptionsTest {
 
     @Test
     fun `connect with ConnectConfig applies socket options to client SocketChannel`() = runTest {
-        val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val client = engine.connect(
-                InetSocketAddress("127.0.0.1", port),
-                ConnectConfig(
-                    socketOptions = SocketOptions(
-                        tcpNoDelay = true,
-                        keepAlive = true,
-                        receiveBufferSize = 65536,
-                        sendBufferSize = 131072,
+        withTimeout(15.seconds) {
+            val engine = NioEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                val client = engine.connect(
+                    InetSocketAddress("127.0.0.1", port),
+                    ConnectConfig(
+                        socketOptions = SocketOptions(
+                            tcpNoDelay = true,
+                            keepAlive = true,
+                            receiveBufferSize = 65536,
+                            sendBufferSize = 131072,
+                        ),
                     ),
-                ),
-            )
-            val transport = (client as NioPipelinedChannel).transport as NioIoTransport
-            val sc = transport.socketChannel
-            assertEquals(true, sc.getOption(StandardSocketOptions.TCP_NODELAY))
-            assertEquals(true, sc.getOption(StandardSocketOptions.SO_KEEPALIVE))
-            // Kernel may round up to rmem_default / sndbuf_default — accept any >= requested.
-            assert(sc.getOption(StandardSocketOptions.SO_RCVBUF) >= 65536) {
-                "SO_RCVBUF ${sc.getOption(StandardSocketOptions.SO_RCVBUF)} < 65536"
+                )
+                val transport = (client as NioPipelinedChannel).transport as NioIoTransport
+                val sc = transport.socketChannel
+                assertEquals(true, sc.getOption(StandardSocketOptions.TCP_NODELAY))
+                assertEquals(true, sc.getOption(StandardSocketOptions.SO_KEEPALIVE))
+                // Kernel may round up to rmem_default / sndbuf_default — accept any >= requested.
+                assert(sc.getOption(StandardSocketOptions.SO_RCVBUF) >= 65536) {
+                    "SO_RCVBUF ${sc.getOption(StandardSocketOptions.SO_RCVBUF)} < 65536"
+                }
+                assert(sc.getOption(StandardSocketOptions.SO_SNDBUF) >= 131072) {
+                    "SO_SNDBUF ${sc.getOption(StandardSocketOptions.SO_SNDBUF)} < 131072"
+                }
+                client.close()
+            } finally {
+                server.close()
+                engine.close()
             }
-            assert(sc.getOption(StandardSocketOptions.SO_SNDBUF) >= 131072) {
-                "SO_SNDBUF ${sc.getOption(StandardSocketOptions.SO_SNDBUF)} < 131072"
-            }
-            client.close()
-        } finally {
-            server.close()
-            engine.close()
         }
     }
 
     @Test
     fun `bind with childSocketOptions applies to accepted SocketChannel`() = runTest {
-        val engine = NioEngine()
-        val server = engine.bind(
-            InetSocketAddress("127.0.0.1", 0),
-            BindConfig(
-                childSocketOptions = SocketOptions(
-                    tcpNoDelay = true,
-                    keepAlive = true,
+        withTimeout(15.seconds) {
+            val engine = NioEngine()
+            val server = engine.bind(
+                InetSocketAddress("127.0.0.1", 0),
+                BindConfig(
+                    childSocketOptions = SocketOptions(
+                        tcpNoDelay = true,
+                        keepAlive = true,
+                    ),
                 ),
-            ),
-        )
-        val port = (server.localAddress as InetSocketAddress).port
-        val acceptJob = async {
-            val accepted = server.accept()
-            val transport = (accepted as NioPipelinedChannel).transport as NioIoTransport
-            val sc = transport.socketChannel
-            val tcpNoDelay = sc.getOption(StandardSocketOptions.TCP_NODELAY)
-            val keepAlive = sc.getOption(StandardSocketOptions.SO_KEEPALIVE)
-            accepted.close()
-            tcpNoDelay to keepAlive
-        }
-        try {
-            val client = engine.connect(InetSocketAddress("127.0.0.1", port))
-            val (tcpNoDelay, keepAlive) = acceptJob.await()
-            assertEquals(true, tcpNoDelay)
-            assertEquals(true, keepAlive)
-            client.close()
-        } finally {
-            server.close()
-            engine.close()
+            )
+            val port = (server.localAddress as InetSocketAddress).port
+            val acceptJob = async {
+                val accepted = server.accept()
+                val transport = (accepted as NioPipelinedChannel).transport as NioIoTransport
+                val sc = transport.socketChannel
+                val tcpNoDelay = sc.getOption(StandardSocketOptions.TCP_NODELAY)
+                val keepAlive = sc.getOption(StandardSocketOptions.SO_KEEPALIVE)
+                accepted.close()
+                tcpNoDelay to keepAlive
+            }
+            try {
+                val client = engine.connect(InetSocketAddress("127.0.0.1", port))
+                val (tcpNoDelay, keepAlive) = acceptJob.await()
+                assertEquals(true, tcpNoDelay)
+                assertEquals(true, keepAlive)
+                client.close()
+            } finally {
+                server.close()
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect without ConnectConfig applies SocketOptions DEFAULT with TCP_NODELAY enabled`() = runTest {
-        val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val client = engine.connect(InetSocketAddress("127.0.0.1", port))
-            val transport = (client as NioPipelinedChannel).transport as NioIoTransport
-            // SocketOptions.DEFAULT sets tcpNoDelay = true; verify it reaches the channel.
-            assertEquals(true, transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY))
-            client.close()
-        } finally {
-            server.close()
-            engine.close()
+        withTimeout(15.seconds) {
+            val engine = NioEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                val client = engine.connect(InetSocketAddress("127.0.0.1", port))
+                val transport = (client as NioPipelinedChannel).transport as NioIoTransport
+                // SocketOptions.DEFAULT sets tcpNoDelay = true; verify it reaches the channel.
+                assertEquals(true, transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY))
+                client.close()
+            } finally {
+                server.close()
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect with partial ConnectConfig skips null properties`() = runTest {
-        val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        try {
-            val client = engine.connect(
-                InetSocketAddress("127.0.0.1", port),
-                ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true)),
-            )
-            val transport = (client as NioPipelinedChannel).transport as NioIoTransport
-            assertEquals(true, transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY))
-            // Other properties were null — kernel defaults, not asserted.
-            client.close()
-        } finally {
-            server.close()
-            engine.close()
+        withTimeout(15.seconds) {
+            val engine = NioEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                val client = engine.connect(
+                    InetSocketAddress("127.0.0.1", port),
+                    ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true)),
+                )
+                val transport = (client as NioPipelinedChannel).transport as NioIoTransport
+                assertEquals(true, transport.socketChannel.getOption(StandardSocketOptions.TCP_NODELAY))
+                // Other properties were null — kernel defaults, not asserted.
+                client.close()
+            } finally {
+                server.close()
+                engine.close()
+            }
         }
     }
 }

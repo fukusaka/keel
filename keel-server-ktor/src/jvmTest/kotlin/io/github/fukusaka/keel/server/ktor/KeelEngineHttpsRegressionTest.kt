@@ -11,10 +11,12 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Regression tests for bench infra JSSE TLS path failures.
@@ -54,7 +56,10 @@ class KeelEngineHttpsRegressionTest {
         server.start(wait = false)
 
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             val (exitCode, output) = curlHttps(port, "/large")
 
             assertEquals(0, exitCode, "curl exit code (output length: ${output.length})")
@@ -93,7 +98,10 @@ class KeelEngineHttpsRegressionTest {
         server.start(wait = false)
 
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             val (exitCode, output) = curlHttps(port, "/hello")
 
             assertEquals(0, exitCode, "curl exit code (output: $output)")
@@ -128,7 +136,10 @@ class KeelEngineHttpsRegressionTest {
         server.start(wait = false)
 
         try {
-            val port = runBlocking { server.engine.resolvedConnectors().first().port }
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                }
+            }
             repeat(KEEPALIVE_REQUEST_COUNT) { i ->
                 val (exitCode, output) = curlHttps(port, "/hello")
                 assertEquals(0, exitCode, "curl exit code on request ${i + 1} (output: $output)")

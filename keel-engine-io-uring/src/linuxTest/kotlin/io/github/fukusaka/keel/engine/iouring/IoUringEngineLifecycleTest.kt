@@ -1,56 +1,65 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.UnixSocketAddress
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.UnixSocketAddress
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.unlink
 import platform.posix.write
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineLifecycleTest {
 
     @Test
     fun `engine create and close`() = runBlocking {
-        val engine = IoUringEngine()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
+            engine.close()
+        }
     }
 
     @Test
     fun `bind returns active server channel`() = runBlocking {
-        val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertTrue(server.isActive)
-        server.close()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertTrue(server.isActive)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun `server channel local address`() = runBlocking {
-        val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
-        assertTrue((server.localAddress as InetSocketAddress).port > 0)
-        server.close()
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            assertEquals("0.0.0.0", (server.localAddress as InetSocketAddress).hostString)
+            assertTrue((server.localAddress as InetSocketAddress).port > 0)
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun `server channel close stops listening`() = runBlocking {
-        val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
-        server.close()
-        assertFalse(server.isActive)
-        engine.close()
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            server.close()
+            assertFalse(server.isActive)
+            engine.close()
+        }
     }
 
     @Test
@@ -92,16 +101,18 @@ class IoUringEngineLifecycleTest {
 
     @Test
     fun `connect to invalid host address throws`() = runBlocking {
-        val engine = IoUringEngine()
+        withTimeout(15.seconds) {
+            val engine = IoUringEngine()
 
-        // Native SystemDnsResolver wraps getaddrinfo; an unresolvable
-        // hostname surfaces as a RuntimeException carrying the
-        // gai_strerror message.
-        assertFailsWith<RuntimeException> {
-            engine.connect("not.a.valid.invalid", 80)
+            // Native SystemDnsResolver wraps getaddrinfo; an unresolvable
+            // hostname surfaces as a RuntimeException carrying the
+            // gai_strerror message.
+            assertFailsWith<RuntimeException> {
+                engine.connect("not.a.valid.invalid", 80)
+            }
+
+            engine.close()
         }
-
-        engine.close()
     }
 
     @Test

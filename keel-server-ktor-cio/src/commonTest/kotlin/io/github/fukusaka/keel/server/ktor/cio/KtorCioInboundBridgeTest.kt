@@ -7,12 +7,14 @@ import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class KtorCioInboundBridgeTest {
 
@@ -34,69 +36,79 @@ class KtorCioInboundBridgeTest {
 
     @Test
     fun `receiveCatching delivers IoBuf from pipeline`() = runTest {
-        val (pipeline, bridge) = installBridge()
-        pipeline.notifyRead(allocBuf(0x41, 0x42))
+        withTimeout(15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            pipeline.notifyRead(allocBuf(0x41, 0x42))
 
-        val received = bridge.receiveCatching()
-        assertTrue(received.isSuccess)
-        val buf = received.getOrThrow()
-        assertEquals(2, buf.readableBytes)
-        assertEquals(0x41.toByte(), buf.readByte())
-        assertEquals(0x42.toByte(), buf.readByte())
-        buf.release()
-    }
-
-    @Test
-    fun `multiple buffers are delivered in order`() = runTest {
-        val (pipeline, bridge) = installBridge()
-        pipeline.notifyRead(allocBuf(0x01))
-        pipeline.notifyRead(allocBuf(0x02))
-        pipeline.notifyRead(allocBuf(0x03))
-
-        for (expected in listOf<Byte>(0x01, 0x02, 0x03)) {
-            val buf = bridge.receiveCatching().getOrThrow()
-            assertEquals(expected, buf.readByte())
+            val received = bridge.receiveCatching()
+            assertTrue(received.isSuccess)
+            val buf = received.getOrThrow()
+            assertEquals(2, buf.readableBytes)
+            assertEquals(0x41.toByte(), buf.readByte())
+            assertEquals(0x42.toByte(), buf.readByte())
             buf.release()
         }
     }
 
     @Test
-    fun `onInactive closes the channel cleanly`() = runTest {
-        val (pipeline, bridge) = installBridge()
-        pipeline.notifyInactive()
+    fun `multiple buffers are delivered in order`() = runTest {
+        withTimeout(15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            pipeline.notifyRead(allocBuf(0x01))
+            pipeline.notifyRead(allocBuf(0x02))
+            pipeline.notifyRead(allocBuf(0x03))
 
-        val received = bridge.receiveCatching()
-        assertTrue(received.isClosed)
-        assertNull(received.exceptionOrNull())
+            for (expected in listOf<Byte>(0x01, 0x02, 0x03)) {
+                val buf = bridge.receiveCatching().getOrThrow()
+                assertEquals(expected, buf.readByte())
+                buf.release()
+            }
+        }
+    }
+
+    @Test
+    fun `onInactive closes the channel cleanly`() = runTest {
+        withTimeout(15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            pipeline.notifyInactive()
+
+            val received = bridge.receiveCatching()
+            assertTrue(received.isClosed)
+            assertNull(received.exceptionOrNull())
+        }
     }
 
     @Test
     fun `onError closes the channel with cause`() = runTest {
-        val (pipeline, bridge) = installBridge()
-        val error = RuntimeException("boom")
-        pipeline.notifyError(error)
+        withTimeout(15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            val error = RuntimeException("boom")
+            pipeline.notifyError(error)
 
-        val received = bridge.receiveCatching()
-        assertTrue(received.isClosed)
-        assertEquals(error, received.exceptionOrNull())
+            val received = bridge.receiveCatching()
+            assertTrue(received.isClosed)
+            assertEquals(error, received.exceptionOrNull())
+        }
     }
 
     @Test
     fun `close drains and releases queued buffers`() = runTest {
-        val (pipeline, bridge) = installBridge()
-        val buf1 = allocBuf(0x10)
-        val buf2 = allocBuf(0x20)
-        pipeline.notifyRead(buf1)
-        pipeline.notifyRead(buf2)
+        withTimeout(15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            val buf1 = allocBuf(0x10)
+            val buf2 = allocBuf(0x20)
+            pipeline.notifyRead(buf1)
+            pipeline.notifyRead(buf2)
 
-        // Skip receiveCatching — emulate a pump that never drained.
-        bridge.close()
+            // Skip receiveCatching — emulate a pump that never drained.
+            bridge.close()
 
-        // After close, receiveCatching reports closed and the queued IoBufs
-        // were released as part of close — releasing again must throw
-        // IllegalStateException (refcount already zero).
-        assertTrue(bridge.receiveCatching().isClosed)
-        assertFailsWith<IllegalStateException> { buf1.release() }
-        assertFailsWith<IllegalStateException> { buf2.release() }
+            // After close, receiveCatching reports closed and the queued IoBufs
+            // were released as part of close — releasing again must throw
+            // IllegalStateException (refcount already zero).
+            assertTrue(bridge.receiveCatching().isClosed)
+            assertFailsWith<IllegalStateException> { buf1.release() }
+            assertFailsWith<IllegalStateException> { buf2.release() }
+        }
     }
 }

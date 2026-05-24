@@ -5,9 +5,11 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 /**
  * End-to-end smoke tests for `ConnectConfig.socketOptions` and
@@ -32,83 +34,89 @@ class NodeSocketOptionsTest {
 
     @Test
     fun bindChildSocketOptionsRoundTripsEcho() = runTest {
-        val engine = NodeEngine()
-        val server = engine.bind(
-            InetSocketAddress("127.0.0.1", 0),
-            BindConfig(
-                childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
-            ),
-        )
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NodeEngine()
+            val server = engine.bind(
+                InetSocketAddress("127.0.0.1", 0),
+                BindConfig(
+                    childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
+                ),
+            )
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientCh = engine.connect("127.0.0.1", port)
-        val serverCh = server.accept()
+            val clientCh = engine.connect("127.0.0.1", port)
+            val serverCh = server.accept()
 
-        val writeBuf = DefaultAllocator.allocate(64)
-        for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf) // transfer
-        clientCh.flush()
+            val writeBuf = DefaultAllocator.allocate(64)
+            for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
+            clientCh.write(writeBuf) // transfer
+            clientCh.flush()
 
-        val readBuf = DefaultAllocator.allocate(64)
-        val n = serverCh.read(readBuf)
-        assertEquals(5, n)
+            val readBuf = DefaultAllocator.allocate(64)
+            val n = serverCh.read(readBuf)
+            assertEquals(5, n)
 
-        readBuf.release()
-        clientCh.close()
-        serverCh.close()
-        server.close()
-        engine.close()
+            readBuf.release()
+            clientCh.close()
+            serverCh.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun connectConfigSocketOptionsRoundTripsEcho() = runTest {
-        val engine = NodeEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NodeEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientCh = engine.connect(
-            InetSocketAddress("127.0.0.1", port),
-            ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true)),
-        )
-        val serverCh = server.accept()
+            val clientCh = engine.connect(
+                InetSocketAddress("127.0.0.1", port),
+                ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true)),
+            )
+            val serverCh = server.accept()
 
-        val writeBuf = DefaultAllocator.allocate(64)
-        for (b in "world".encodeToByteArray()) writeBuf.writeByte(b)
-        clientCh.write(writeBuf) // transfer
-        clientCh.flush()
+            val writeBuf = DefaultAllocator.allocate(64)
+            for (b in "world".encodeToByteArray()) writeBuf.writeByte(b)
+            clientCh.write(writeBuf) // transfer
+            clientCh.flush()
 
-        val readBuf = DefaultAllocator.allocate(64)
-        val n = serverCh.read(readBuf)
-        assertEquals(5, n)
+            val readBuf = DefaultAllocator.allocate(64)
+            val n = serverCh.read(readBuf)
+            assertEquals(5, n)
 
-        readBuf.release()
-        clientCh.close()
-        serverCh.close()
-        server.close()
-        engine.close()
+            readBuf.release()
+            clientCh.close()
+            serverCh.close()
+            server.close()
+            engine.close()
+        }
     }
 
     @Test
     fun unsupportedBufferSizeOptionsAcceptedSilently() = runTest {
-        // Node.js net.Socket exposes no SO_RCVBUF / SO_SNDBUF API.
-        // receiveBufferSize / sendBufferSize must be accepted without
-        // error; applySocketOptions only touches tcpNoDelay + keepAlive.
-        val engine = NodeEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            // Node.js net.Socket exposes no SO_RCVBUF / SO_SNDBUF API.
+            // receiveBufferSize / sendBufferSize must be accepted without
+            // error; applySocketOptions only touches tcpNoDelay + keepAlive.
+            val engine = NodeEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val clientCh = engine.connect(
-            InetSocketAddress("127.0.0.1", port),
-            ConnectConfig(
-                socketOptions = SocketOptions(
-                    tcpNoDelay = true,
-                    receiveBufferSize = 65536,
-                    sendBufferSize = 131072,
+            val clientCh = engine.connect(
+                InetSocketAddress("127.0.0.1", port),
+                ConnectConfig(
+                    socketOptions = SocketOptions(
+                        tcpNoDelay = true,
+                        receiveBufferSize = 65536,
+                        sendBufferSize = 131072,
+                    ),
                 ),
-            ),
-        )
-        clientCh.close()
-        server.close()
-        engine.close()
+            )
+            clientCh.close()
+            server.close()
+            engine.close()
+        }
     }
 }

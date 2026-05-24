@@ -2,12 +2,14 @@ package io.github.fukusaka.keel.server.ktor.compression
 
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readRemaining
-import kotlinx.coroutines.test.runTest
-import kotlinx.io.readByteArray
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.io.readByteArray
 
 /**
  * Unit tests for the Native [ContentEncoder] adapters backed by
@@ -29,54 +31,66 @@ class KeelContentEncodersTest {
 
     @Test
     fun `gzip encode then decode round trips small payload`() = runTest {
-        val original = "hello, world!".encodeToByteArray()
-        val roundTripped = roundTrip(KeelGZipEncoder, original)
-        assertContentEquals(original, roundTripped)
+        withTimeout(15.seconds) {
+            val original = "hello, world!".encodeToByteArray()
+            val roundTripped = roundTrip(KeelGZipEncoder, original)
+            assertContentEquals(original, roundTripped)
+        }
     }
 
     @Test
     fun `deflate encode then decode round trips small payload`() = runTest {
-        val original = "hello, deflate!".encodeToByteArray()
-        val roundTripped = roundTrip(KeelDeflateEncoder, original)
-        assertContentEquals(original, roundTripped)
+        withTimeout(15.seconds) {
+            val original = "hello, deflate!".encodeToByteArray()
+            val roundTripped = roundTrip(KeelDeflateEncoder, original)
+            assertContentEquals(original, roundTripped)
+        }
     }
 
     @Test
     fun `gzip encode produces gzip magic bytes`() = runTest {
-        val original = "compressible text content goes here".encodeToByteArray()
-        val source = ByteReadChannel(original)
-        val encoded = KeelGZipEncoder.encode(source).readRemaining().readByteArray()
+        withTimeout(15.seconds) {
+            val original = "compressible text content goes here".encodeToByteArray()
+            val source = ByteReadChannel(original)
+            val encoded = KeelGZipEncoder.encode(source).readRemaining().readByteArray()
 
-        // RFC 1952 §2.3.1 gzip magic
-        assertTrue(encoded.size >= 2, "encoded bytes too short")
-        assertEquals(0x1f.toByte(), encoded[0], "gzip ID1 byte")
-        assertEquals(0x8b.toByte(), encoded[1], "gzip ID2 byte")
+            // RFC 1952 §2.3.1 gzip magic
+            assertTrue(encoded.size >= 2, "encoded bytes too short")
+            assertEquals(0x1f.toByte(), encoded[0], "gzip ID1 byte")
+            assertEquals(0x8b.toByte(), encoded[1], "gzip ID2 byte")
+        }
     }
 
     @Test
     fun `deflate encode produces zlib header bytes`() = runTest {
-        val original = "compressible text content".encodeToByteArray()
-        val source = ByteReadChannel(original)
-        val encoded = KeelDeflateEncoder.encode(source).readRemaining().readByteArray()
+        withTimeout(15.seconds) {
+            val original = "compressible text content".encodeToByteArray()
+            val source = ByteReadChannel(original)
+            val encoded = KeelDeflateEncoder.encode(source).readRemaining().readByteArray()
 
-        // RFC 1950 §2.2: zlib starts with CMF + FLG. CMF lower nibble = 8 for deflate.
-        assertTrue(encoded.size >= 2, "encoded bytes too short")
-        assertEquals(0x08, encoded[0].toInt() and 0x0f, "zlib CMF method nibble")
+            // RFC 1950 §2.2: zlib starts with CMF + FLG. CMF lower nibble = 8 for deflate.
+            assertTrue(encoded.size >= 2, "encoded bytes too short")
+            assertEquals(0x08, encoded[0].toInt() and 0x0f, "zlib CMF method nibble")
+        }
     }
 
     @Test
     fun `gzip empty payload round trips`() = runTest {
-        val empty = ByteArray(0)
-        val roundTripped = roundTrip(KeelGZipEncoder, empty)
-        assertContentEquals(empty, roundTripped)
+        withTimeout(15.seconds) {
+            val empty = ByteArray(0)
+            val roundTripped = roundTrip(KeelGZipEncoder, empty)
+            assertContentEquals(empty, roundTripped)
+        }
     }
 
     @Test
     fun `gzip large payload round trips`() = runTest {
-        // 100 KiB matches /large benchmark endpoint.
-        val original = ByteArray(100 * 1024) { (it and 0xff).toByte() }
-        val roundTripped = roundTrip(KeelGZipEncoder, original)
-        assertContentEquals(original, roundTripped)
+        withTimeout(15.seconds) {
+            // 100 KiB matches /large benchmark endpoint.
+            val original = ByteArray(100 * 1024) { (it and 0xff).toByte() }
+            val roundTripped = roundTrip(KeelGZipEncoder, original)
+            assertContentEquals(original, roundTripped)
+        }
     }
 
     private suspend fun roundTrip(

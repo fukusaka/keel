@@ -1,14 +1,16 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.yield
+import io.github.fukusaka.keel.core.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 
 class NodeEngineConcurrencyTest {
 
@@ -28,32 +30,34 @@ class NodeEngineConcurrencyTest {
      */
     @Test
     fun multipleConcurrentAcceptsAreFifoQueued() = runTest {
-        val engine = NodeEngine()
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NodeEngine()
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val acceptJobs = (1..8).map {
-            async { server.accept() }
+            val acceptJobs = (1..8).map {
+                async { server.accept() }
+            }
+            // Yield so the accept coroutines suspend before any connect.
+            yield()
+
+            val clientJobs = (1..8).map {
+                async { engine.connect("127.0.0.1", port) }
+            }
+
+            val serverChannels = acceptJobs.awaitAll()
+            val clientChannels = clientJobs.awaitAll()
+
+            assertEquals(8, serverChannels.size)
+            assertEquals(8, clientChannels.size)
+            serverChannels.forEach { assertTrue(it.isOpen) }
+            clientChannels.forEach { assertTrue(it.isOpen) }
+
+            serverChannels.forEach { it.close() }
+            clientChannels.forEach { it.close() }
+            server.close()
+            engine.close()
         }
-        // Yield so the accept coroutines suspend before any connect.
-        yield()
-
-        val clientJobs = (1..8).map {
-            async { engine.connect("127.0.0.1", port) }
-        }
-
-        val serverChannels = acceptJobs.awaitAll()
-        val clientChannels = clientJobs.awaitAll()
-
-        assertEquals(8, serverChannels.size)
-        assertEquals(8, clientChannels.size)
-        serverChannels.forEach { assertTrue(it.isOpen) }
-        clientChannels.forEach { assertTrue(it.isOpen) }
-
-        serverChannels.forEach { it.close() }
-        clientChannels.forEach { it.close() }
-        server.close()
-        engine.close()
     }
 
 }

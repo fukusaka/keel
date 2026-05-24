@@ -12,6 +12,8 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import java.io.InputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.withTimeout
 
 /**
  * Regression test: `pipeline-http-netty` POST `/upload-stream` must report
@@ -94,78 +96,82 @@ class NettyPipelineUploadTest {
 
     @Test
     fun `pipeline-http-netty POST upload-stream reports correct byte count for small body`() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("upload", UploadCountHandler())
-        }
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("upload", UploadCountHandler())
+            }
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val body = "hello world from netty"
-        val request =
-            "POST /upload-stream HTTP/1.1\r\n" +
-            "Host: localhost\r\n" +
-            "Content-Length: ${body.length}\r\n" +
-            "Content-Type: application/octet-stream\r\n" +
-            "\r\n" +
-            body
+            val body = "hello world from netty"
+            val request =
+                "POST /upload-stream HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Content-Length: ${body.length}\r\n" +
+                "Content-Type: application/octet-stream\r\n" +
+                "\r\n" +
+                body
 
-        val client = connectRawClient(port)
-        try {
-            rawWrite(client, request)
-            val headers = readHttpResponseHeaders(client.getInputStream())
-            val xBytesReceived = headers.lines()
-                .firstOrNull { it.startsWith("X-Bytes-Received:", ignoreCase = true) }
-                ?.substringAfter(":")?.trim()?.toLongOrNull()
-            assertEquals(
-                body.length.toLong(),
-                xBytesReceived,
-                "expected X-Bytes-Received=${body.length}, got headers:\n$headers",
-            )
-        } finally {
-            client.close()
-            server.close()
-            engine.close()
+            val client = connectRawClient(port)
+            try {
+                rawWrite(client, request)
+                val headers = readHttpResponseHeaders(client.getInputStream())
+                val xBytesReceived = headers.lines()
+                    .firstOrNull { it.startsWith("X-Bytes-Received:", ignoreCase = true) }
+                    ?.substringAfter(":")?.trim()?.toLongOrNull()
+                assertEquals(
+                    body.length.toLong(),
+                    xBytesReceived,
+                    "expected X-Bytes-Received=${body.length}, got headers:\n$headers",
+                )
+            } finally {
+                client.close()
+                server.close()
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `pipeline-http-netty POST upload-stream reports correct byte count for 64KB body`() = runTest {
-        val engine = NettyEngine()
-        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("upload", UploadCountHandler())
-        }
-        val port = (server.localAddress as InetSocketAddress).port
+        withTimeout(15.seconds) {
+            val engine = NettyEngine()
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("upload", UploadCountHandler())
+            }
+            val port = (server.localAddress as InetSocketAddress).port
 
-        val bodySize = 65536
-        val body = "x".repeat(bodySize)
-        val request =
-            "POST /upload-stream HTTP/1.1\r\n" +
-            "Host: localhost\r\n" +
-            "Content-Length: $bodySize\r\n" +
-            "Content-Type: application/octet-stream\r\n" +
-            "\r\n" +
-            body
+            val bodySize = 65536
+            val body = "x".repeat(bodySize)
+            val request =
+                "POST /upload-stream HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Content-Length: $bodySize\r\n" +
+                "Content-Type: application/octet-stream\r\n" +
+                "\r\n" +
+                body
 
-        val client = connectRawClient(port)
-        try {
-            rawWrite(client, request)
-            val headers = readHttpResponseHeaders(client.getInputStream())
-            val xBytesReceived = headers.lines()
-                .firstOrNull { it.startsWith("X-Bytes-Received:", ignoreCase = true) }
-                ?.substringAfter(":")?.trim()?.toLongOrNull()
-            assertEquals(
-                bodySize.toLong(),
-                xBytesReceived,
-                "expected X-Bytes-Received=$bodySize, got headers:\n$headers",
-            )
-        } finally {
-            client.close()
-            server.close()
-            engine.close()
+            val client = connectRawClient(port)
+            try {
+                rawWrite(client, request)
+                val headers = readHttpResponseHeaders(client.getInputStream())
+                val xBytesReceived = headers.lines()
+                    .firstOrNull { it.startsWith("X-Bytes-Received:", ignoreCase = true) }
+                    ?.substringAfter(":")?.trim()?.toLongOrNull()
+                assertEquals(
+                    bodySize.toLong(),
+                    xBytesReceived,
+                    "expected X-Bytes-Received=$bodySize, got headers:\n$headers",
+                )
+            } finally {
+                client.close()
+                server.close()
+                engine.close()
+            }
         }
     }
 }
