@@ -4,7 +4,9 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asByteBuffer
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -302,12 +304,30 @@ internal class NettyIoTransport(
     private var lastFlushFuture: ChannelFuture? = null
 
     /**
+     * Scratch list reused across [flush] calls to expand a multi-segment
+     * [IoBuf] into per-segment ranges before each segment is wrapped as a
+     * Netty [ByteBuf]. Owned by this transport, single-EL invariant.
+     */
+    private val gatherList = SegmentRangeList()
+
+    /**
      * Sends all pending writes via Netty's [writeAndFlush].
      *
      * Batches all pending writes into Netty's outbound buffer using
      * [write][NettyNativeChannel.write], then issues a single flush on
      * the last write. The last write's [ChannelFuture] listener releases
-     * buffers and invokes [onFlushComplete].
+     * the keel [IoBuf]s and invokes [onFlushComplete].
+     *
+     * **Multi-seg expansion**: a Segment-backed [IoBuf] with
+     * [IoBuf.segmentCount] > 1 (built by codec growth via
+     * [IoBuf.appendSegment]) expands into one Netty [ByteBuf] per chained
+     * segment — each segment's backing direct [java.nio.ByteBuffer] is
+     * wrapped via [Unpooled.wrappedBuffer]. The lifetime of the
+     * Segment-owned memory stays anchored to the keel `IoBuf`'s refcount
+     * (released in the flush listener after Netty has sent and released
+     * its `ByteBuf` slices). For [NettyByteBufIoBuf] the zero-wrap path
+     * (single `retainedSlice`) is unchanged — `NettyByteBufIoBuf` is
+     * always single-segment.
      *
      * @return always `false` because Netty writes are asynchronous.
      */
@@ -322,25 +342,68 @@ internal class NettyIoTransport(
 
         val callback = onFlushComplete
         try {
-            var lastFuture: ChannelFuture? = null
-            for ((i, pw) in writes.withIndex()) {
+            // First pass: count the total number of Netty ByteBufs we
+            // will write so we know which is the last one (the one that
+            // gets writeAndFlush instead of write).
+            var totalNettyWrites = 0
+            for (pw in writes) {
                 val buf = pw.buf
-                val nettyBuf: ByteBuf = if (buf is NettyByteBufIoBuf) {
-                    // Zero-wrap path: keel IoBuf is directly a Netty ByteBuf.
-                    // Hand the underlying ByteBuf to Netty with retained slice
-                    // so the flush listener's buf.release() still matches one
-                    // retain (ByteBuf refCnt dropped by Netty after send).
-                    buf.byteBuf.retainedSlice(pw.offset, pw.length)
+                totalNettyWrites += if (buf is NettyByteBufIoBuf || buf.segmentCount == 1) {
+                    1
                 } else {
+                    buf.segmentCount
+                }
+            }
+
+            // Second pass: send. `lastFuture` is only assigned by the
+            // final `writeAndFlush`; intermediate `write` calls leave it
+            // unchanged.
+            var lastFuture: ChannelFuture? = null
+            var sent = 0
+            for (pw in writes) {
+                val buf = pw.buf
+                if (buf is NettyByteBufIoBuf) {
+                    // Zero-wrap path: keel IoBuf is directly a Netty
+                    // ByteBuf. Hand the underlying ByteBuf to Netty with
+                    // a retained slice so the flush listener's
+                    // buf.release() still matches one retain (ByteBuf
+                    // refCnt dropped by Netty after send).
+                    sent++
+                    val nb = buf.byteBuf.retainedSlice(pw.offset, pw.length)
+                    if (sent == totalNettyWrites) lastFuture = nettyChannel.writeAndFlush(nb)
+                    else nettyChannel.write(nb)
+                } else if (buf.segmentCount == 1) {
+                    // Single-segment Segment-backed (DirectIoBuf): wrap
+                    // the primary backing's ByteBuffer window.
+                    sent++
                     val bb = buf.unsafeBuffer.duplicate()
                     bb.position(pw.offset)
                     bb.limit(pw.offset + pw.length)
-                    Unpooled.wrappedBuffer(bb)
-                }
-                if (i == size - 1) {
-                    lastFuture = nettyChannel.writeAndFlush(nettyBuf)
+                    val nb = Unpooled.wrappedBuffer(bb)
+                    if (sent == totalNettyWrites) lastFuture = nettyChannel.writeAndFlush(nb)
+                    else nettyChannel.write(nb)
                 } else {
-                    nettyChannel.write(nettyBuf)
+                    // Multi-seg: emit one Netty ByteBuf per intersected
+                    // segment. The Segment-owned memory stays alive
+                    // because pw.buf's release is deferred to the flush
+                    // listener.
+                    gatherList.clear()
+                    buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+                    val n = gatherList.size
+                    for (i in 0 until n) {
+                        val range = gatherList[i]
+                        val backing = checkNotNull(range.memory) {
+                            "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                        }
+                        val bb = backing.asByteBuffer().duplicate().apply {
+                            position(range.offset)
+                            limit(range.offset + range.length)
+                        }
+                        val nb = Unpooled.wrappedBuffer(bb)
+                        sent++
+                        if (sent == totalNettyWrites) lastFuture = nettyChannel.writeAndFlush(nb)
+                        else nettyChannel.write(nb)
+                    }
                 }
             }
 
@@ -364,6 +427,7 @@ internal class NettyIoTransport(
 
         return false // Always async.
     }
+
 
     /**
      * Suspends until the [ChannelFuture] from the most recent [writeAndFlush]
