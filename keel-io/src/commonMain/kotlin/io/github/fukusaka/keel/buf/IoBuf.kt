@@ -266,6 +266,41 @@ interface IoBuf : Releasable {
             "IoBuf implementation ${this::class.simpleName} does not expose readable segments",
         )
     }
+
+    /**
+     * Number of segments currently in this buffer's chain (always `>= 1`).
+     *
+     * Engines use this to short-circuit the gather path: when both
+     * `pendingWrites.size == 1` and the sole buffer's [segmentCount] is
+     * `1`, the existing single-buffer `write` syscall is sufficient
+     * (saving the iovec construction for the common short-response case).
+     *
+     * Default = `1` (single-segment) so existing custom implementations
+     * behave exactly as before; multi-seg-capable platform impls
+     * (`DirectIoBuf` / `NativeIoBuf` / `TypedArrayIoBuf`) override.
+     */
+    val segmentCount: Int get() = 1
+
+    /**
+     * Appends the readable byte windows of the logical range
+     * `[offset, offset + length)` to [into] without resetting it.
+     *
+     * Engines use this to accumulate iovec entries across the
+     * transport's pending writes (one [appendSegmentsForRange] call per
+     * `PendingWrite`) into a single scratch list that then feeds
+     * `writev` / `SocketChannel.write(ByteBuffer[])`. The range is
+     * specified explicitly so the engine can replay a logical
+     * `(offset, length)` snapshot captured at `write()` time, decoupled
+     * from any later mutation of [readerIndex] / [writerIndex].
+     *
+     * Default body throws [UnsupportedOperationException] for non-
+     * Segment-backed implementations; the platform impls override.
+     */
+    fun appendSegmentsForRange(offset: Int, length: Int, into: SegmentRangeList) {
+        throw UnsupportedOperationException(
+            "IoBuf implementation ${this::class.simpleName} does not expose segments for explicit ranges",
+        )
+    }
 }
 
 /**
@@ -304,6 +339,25 @@ internal interface PoolableIoBuf : IoBuf {
  * [BufferAllocator.allocate] over calling this directly.
  */
 internal expect fun createDefaultIoBuf(capacity: Int): IoBuf
+
+/**
+ * Creates a platform-default multi-segment-capable [IoBuf] with an
+ * initial primary segment of [capacity] bytes and a hard upper bound
+ * [maxCapacity] on the chain's total capacity. Backs
+ * [DefaultAllocator.allocate] (the two-arg overload). Engines and tests
+ * should prefer the public allocator entry point over calling this
+ * directly.
+ */
+internal expect fun createMultiSegDefaultIoBuf(capacity: Int, maxCapacity: Int): IoBuf
+
+/**
+ * Creates a platform-default standalone [Segment] for chaining into an
+ * existing multi-seg-capable [IoBuf] via [IoBuf.appendSegment]. The
+ * returned segment starts at `refCount = 1`. Backs
+ * [DefaultAllocator.allocateSegment]; engines and tests should prefer
+ * the public allocator entry point.
+ */
+internal expect fun createDefaultSegment(capacity: Int): Segment
 
 /**
  * Creates a zero-copy [IoBuf] view of [length] bytes starting at [offset]

@@ -348,10 +348,23 @@ class DirectIoBuf private constructor(
         if (c != null) {
             c.fillReadableSegments(readerIndex, writerIndex, into)
         } else {
-            into.reset()
+            into.clear()
             if (readerIndex < writerIndex) {
                 into.acquireSlot().set(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
             }
+        }
+    }
+
+    override val segmentCount: Int get() = chain?.segmentCount ?: 1
+
+    override fun appendSegmentsForRange(offset: Int, length: Int, into: SegmentRangeList) {
+        if (length <= 0) return
+        val c = chain
+        if (c != null) {
+            c.appendReadableSegments(offset, offset + length, into)
+        } else {
+            // Slice: single window into the segment.
+            into.acquireSlot().set(segment.backing, windowStart + offset, length)
         }
     }
 
@@ -490,6 +503,18 @@ val IoBuf.unsafeBuffer: ByteBuffer
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = DirectIoBuf(capacity)
+
+@Suppress("IoBufLeak") // Factory returns ownership to caller
+internal actual fun createMultiSegDefaultIoBuf(capacity: Int, maxCapacity: Int): IoBuf {
+    require(maxCapacity >= capacity) {
+        "maxCapacity ($maxCapacity) must be >= initial capacity ($capacity)"
+    }
+    val segment = Segment(DirectByteBufferBacking(java.nio.ByteBuffer.allocateDirect(capacity)), capacity)
+    return DirectIoBuf.overSegmentWithCap(segment, HeapOwner, maxCapacity)
+}
+
+internal actual fun createDefaultSegment(capacity: Int): Segment =
+    Segment(DirectByteBufferBacking(java.nio.ByteBuffer.allocateDirect(capacity)), capacity)
 
 @Suppress("IoBufLeak") // Slice returns ownership to caller
 @OptIn(UnsafeIoBufApi::class)

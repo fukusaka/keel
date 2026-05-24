@@ -298,10 +298,22 @@ class TypedArrayIoBuf private constructor(
         if (c != null) {
             c.fillReadableSegments(readerIndex, writerIndex, into)
         } else {
-            into.reset()
+            into.clear()
             if (readerIndex < writerIndex) {
                 into.acquireSlot().set(segment.backing, windowStart + readerIndex, writerIndex - readerIndex)
             }
+        }
+    }
+
+    override val segmentCount: Int get() = chain?.segmentCount ?: 1
+
+    override fun appendSegmentsForRange(offset: Int, length: Int, into: SegmentRangeList) {
+        if (length <= 0) return
+        val c = chain
+        if (c != null) {
+            c.appendReadableSegments(offset, offset + length, into)
+        } else {
+            into.acquireSlot().set(segment.backing, windowStart + offset, length)
         }
     }
 
@@ -419,6 +431,18 @@ val IoBuf.unsafeArray: Int8Array
 
 @Suppress("IoBufLeak") // Factory returns ownership to caller
 internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = TypedArrayIoBuf(capacity)
+
+@Suppress("IoBufLeak") // Factory returns ownership to caller
+internal actual fun createMultiSegDefaultIoBuf(capacity: Int, maxCapacity: Int): IoBuf {
+    require(maxCapacity >= capacity) {
+        "maxCapacity ($maxCapacity) must be >= initial capacity ($capacity)"
+    }
+    val segment = Segment(Int8ArrayBacking(Int8Array(capacity)), capacity)
+    return TypedArrayIoBuf.overSegmentWithCap(segment, HeapOwner, maxCapacity)
+}
+
+internal actual fun createDefaultSegment(capacity: Int): Segment =
+    Segment(Int8ArrayBacking(Int8Array(capacity)), capacity)
 
 @Suppress("IoBufLeak") // Slice returns ownership to caller
 internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
