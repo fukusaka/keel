@@ -32,7 +32,7 @@ package io.github.fukusaka.keel.codec.http
  *   request head (or chunked-trailer block) may carry before parsing is
  *   aborted with [HttpHeaderLimitExceededException].
  */
-public class HttpHeaderLimitsConfig internal constructor(
+public class HttpHeaderLimitsConfig public constructor(
     public val maxHeaderCount: Int,
 ) {
 

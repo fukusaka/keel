@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.http
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
+import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMessage
@@ -52,10 +53,11 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     middlewares: List<Middleware>,
     errorHandlers: ErrorHandlers,
     queryParameterConfig: QueryParameterConfig,
+    headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
 ) {
-    addHttp1ServerCodec(aggregateBody = false)
+    addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits)
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,
         HttpServerHandler(

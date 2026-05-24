@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http.dsl
 
+import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.server.ServerConnector
@@ -39,6 +40,7 @@ public class KeelHttpServerBuilder internal constructor() {
 
     private var connector: ServerConnector? = null
     private var queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
+    private var headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
@@ -63,6 +65,7 @@ public class KeelHttpServerBuilder internal constructor() {
         val builder = HttpConnectorBuilder().apply(configure)
         connector = builder.buildConnector()
         queryParameterConfig = builder.buildQueryConfig()
+        headerLimits = builder.buildHeaderLimits()
     }
 
     /**
@@ -270,6 +273,7 @@ public class KeelHttpServerBuilder internal constructor() {
             engine,
             connector ?: ServerConnector(),
             queryParameterConfig,
+            headerLimits,
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),

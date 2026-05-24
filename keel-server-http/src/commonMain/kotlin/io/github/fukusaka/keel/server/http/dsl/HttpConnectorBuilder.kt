@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http.dsl
 
+import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.server.ServerConnector
@@ -39,6 +40,7 @@ public class HttpConnectorBuilder internal constructor() {
 
     private var tlsConfigure: (ServerTlsBuilder.() -> Unit)? = null
     private var queryConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
+    private var headerLimitsConfig: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
 
     /**
      * Enables TLS on this connector. The block must set both
@@ -62,6 +64,18 @@ public class HttpConnectorBuilder internal constructor() {
     }
 
     /**
+     * Configures the per-request header limits enforced by the
+     * codec — currently `maxHeaderCount` (see
+     * [HttpHeaderLimitsConfig]). The block extends here, alongside
+     * [queryParameters], to keep keel's DoS-guard surface a single
+     * coordinate (`connector { headerLimits { … } }`) rather than
+     * scattering it across the server's wider builder.
+     */
+    public fun headerLimits(configure: HttpHeaderLimitsConfigBuilder.() -> Unit) {
+        headerLimitsConfig = HttpHeaderLimitsConfigBuilder().apply(configure).build()
+    }
+
+    /**
      * Builds the [ServerConnector] by forwarding this builder's connector
      * fields into `:keel-server`'s public `connector { }` function.
      */
@@ -76,4 +90,7 @@ public class HttpConnectorBuilder internal constructor() {
 
     /** The query-parameter configuration set by [queryParameters], or the default. */
     internal fun buildQueryConfig(): QueryParameterConfig = queryConfig
+
+    /** The header-limits configuration set by [headerLimits], or the default. */
+    internal fun buildHeaderLimits(): HttpHeaderLimitsConfig = headerLimitsConfig
 }
