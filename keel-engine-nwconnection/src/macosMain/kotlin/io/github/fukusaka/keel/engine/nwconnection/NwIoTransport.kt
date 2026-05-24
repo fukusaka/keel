@@ -4,7 +4,9 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asNativePointer
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -354,6 +356,13 @@ internal class NwIoTransport(
      *
      * @return always `false` because NWConnection writes are asynchronous.
      */
+    /**
+     * Scratch list reused across [flush] calls to expand multi-segment
+     * [IoBuf]s into per-segment ranges before the iovec-like array is
+     * passed to `keel_nw_writev_async`. Single-EL invariant.
+     */
+    private val gatherList = SegmentRangeList()
+
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
 
@@ -366,7 +375,9 @@ internal class NwIoTransport(
         val totalBytes = writes.sumOf { it.length }
         val transport = this
 
-        if (writes.size == 1) {
+        if (writes.size == 1 && writes[0].buf.segmentCount == 1) {
+            // Fast path: single single-segment buffer — one
+            // nw_connection_send call with one pointer + length.
             val pw = writes[0]
             val ptr = checkNotNull(pw.buf.unsafePointer + pw.offset) {
                 "buf.unsafePointer + offset returned null; IoBuf pointer must be valid"
@@ -376,20 +387,32 @@ internal class NwIoTransport(
             })
             keel_nw_write_async(conn, ptr, pw.length.toUInt(), flushCallback, ref.asCPointer())
         } else {
+            // Multi-buf or single multi-seg buf: expand all pending
+            // writes' chained segments into the iovec-like array and
+            // dispatch as a single keel_nw_writev_async call.
+            gatherList.clear()
+            for (pw in writes) {
+                pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+            }
+            val iovCount = gatherList.size
             memScoped {
-                val bufs = allocArray<CPointerVar<ByteVar>>(writes.size)
-                val lens = allocArray<UIntVar>(writes.size)
-                for (i in writes.indices) {
-                    val p = checkNotNull(writes[i].buf.unsafePointer + writes[i].offset) {
-                        "buf.unsafePointer + offset returned null at index $i; IoBuf pointer must be valid"
+                val bufs = allocArray<CPointerVar<ByteVar>>(iovCount)
+                val lens = allocArray<UIntVar>(iovCount)
+                for (i in 0 until iovCount) {
+                    val range = gatherList[i]
+                    val backing = checkNotNull(range.memory) {
+                        "SegmentRange.memory must be non-null after appendSegmentsForRange"
+                    }
+                    val p = checkNotNull(backing.asNativePointer() + range.offset) {
+                        "segment pointer + offset returned null at iovec $i; segment backing must be valid"
                     }
                     bufs[i] = p.reinterpret()
-                    lens[i] = writes[i].length.toUInt()
+                    lens[i] = range.length.toUInt()
                 }
                 val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
                     transport.updatePendingBytes(delta)
                 })
-                keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
+                keel_nw_writev_async(conn, bufs.reinterpret(), lens, iovCount, flushCallback, ref.asCPointer())
             }
         }
         return false // Always async.
