@@ -4,7 +4,9 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SegmentRangeList
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.asByteBuffer
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
@@ -13,6 +15,7 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.EmptyCoroutineContext
@@ -190,9 +193,36 @@ internal class NioIoTransport(
      * @return `true` if all data was sent synchronously, `false` if the send
      *         buffer is full and an async OP_WRITE callback is pending.
      */
+    /**
+     * Scratch list reused across [flushGather] calls to collect readable
+     * segments from each pending write before they are translated into
+     * the [gatherBuffers] array. Owned by this transport, single-EL
+     * invariant matches the rest of the write path.
+     */
+    private val gatherList = SegmentRangeList()
+
+    /**
+     * Reusable `ByteBuffer[]` for [java.nio.channels.GatheringByteChannel.write].
+     * Grown lazily when the assembled iovec entry count exceeds capacity;
+     * never shrunk. Trailing slots are nulled before each `write` so the
+     * channel only sees the live prefix when we pass an array slice via
+     * the `offset` / `length` overload.
+     */
+    private var gatherBuffers: Array<ByteBuffer?> = arrayOfNulls(INITIAL_GATHER_CAPACITY)
+
+    private fun ensureGatherCapacity(n: Int) {
+        if (gatherBuffers.size >= n) return
+        val grown = maxOf(gatherBuffers.size + (gatherBuffers.size shr 1), n)
+        gatherBuffers = arrayOfNulls(grown)
+    }
+
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
-        if (pendingWrites.size == 1) {
+        if (pendingWrites.size == 1 && pendingWrites.first().buf.segmentCount == 1) {
+            // Fast path: a single single-segment buffer — one
+            // SocketChannel.write(ByteBuffer) suffices, skip the iovec
+            // assembly. Multi-segment single-buffer falls through to
+            // flushGather so its segments become gather entries.
             return flushSingle(pendingWrites.removeFirst())
         }
         return flushGather()
@@ -254,44 +284,71 @@ internal class NioIoTransport(
     }
 
     /**
-     * Writes multiple pending buffers via [java.nio.channels.GatheringByteChannel.write].
+     * Writes multiple pending buffers via
+     * [java.nio.channels.GatheringByteChannel.write]. Each pending write
+     * contributes one [ByteBuffer] per readable segment in its buffer —
+     * a multi-seg `IoBuf` (built by codec growth via [IoBuf.appendSegment])
+     * expands into as many gather entries as it has segments.
      *
-     * On partial write, fully-written buffers are released and the remainder
-     * is re-enqueued with OP_WRITE callback for async retry.
+     * On partial write, fully-written buffers are released and the
+     * remainder is re-enqueued with OP_WRITE callback for async retry.
+     * The partial-write tracking stays at `PendingWrite` granularity:
+     * logical `(offset, length)` are shifted by the bytes already written,
+     * so the next flush re-expands the unwritten suffix into fresh
+     * gather entries.
      */
     private fun flushGather(): Boolean {
-        val bbArray = Array(pendingWrites.size) { i ->
+        gatherList.clear()
+        var totalBytes = 0
+        val pwCount = pendingWrites.size
+        for (i in 0 until pwCount) {
             val pw = pendingWrites[i]
-            pw.buf.unsafeBuffer.duplicate().apply {
-                position(pw.offset)
-                limit(pw.offset + pw.length)
+            pw.buf.appendSegmentsForRange(pw.offset, pw.length, gatherList)
+            totalBytes += pw.length
+        }
+        val gatherCount = gatherList.size
+        ensureGatherCapacity(gatherCount)
+        val buffers = gatherBuffers
+        for (i in 0 until gatherCount) {
+            val range = gatherList[i]
+            val backing = checkNotNull(range.memory) {
+                "SegmentRange.memory must be non-null after appendSegmentsForRange"
+            }
+            buffers[i] = backing.asByteBuffer().duplicate().apply {
+                position(range.offset)
+                limit(range.offset + range.length)
             }
         }
-        val totalBytes = bbArray.sumOf { it.remaining().toLong() }
-        val written = socketChannel.write(bbArray)
+        // Null out trailing slots so the channel never sees stale references
+        // from a prior larger-batch flush.
+        for (i in gatherCount until buffers.size) buffers[i] = null
+
+        val written = socketChannel.write(buffers, 0, gatherCount).toInt()
 
         if (written >= totalBytes) {
             for (pw in pendingWrites) pw.buf.release()
             pendingWrites.clear()
-            updatePendingBytes(-totalBytes.toInt())
+            updatePendingBytes(-totalBytes)
             return true
         }
 
-        // Partial write: release fully-written, re-enqueue remainder.
-        val remaining = mutableListOf<PendingWrite>()
-        for (i in pendingWrites.indices) {
-            val pw = pendingWrites[i]
-            val bb = bbArray[i]
-            if (!bb.hasRemaining()) {
+        // Partial write: release fully-written PendingWrites, shift the
+        // partially-written one's offset/length. The next flush iteration
+        // re-expands its unwritten suffix into gather entries.
+        var consumed = 0
+        while (pendingWrites.isNotEmpty()) {
+            val pw = pendingWrites.first()
+            if (consumed + pw.length <= written) {
+                consumed += pw.length
                 pw.buf.release()
+                pendingWrites.removeFirst()
             } else {
-                val consumed = bb.position() - pw.offset
-                remaining.add(PendingWrite(pw.buf, pw.offset + consumed, pw.length - consumed))
+                val alreadyWritten = (written - consumed).coerceAtLeast(0)
+                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                break
             }
         }
-        pendingWrites.clear()
-        pendingWrites.addAll(remaining)
-        updatePendingBytes(-written.toInt())
+        updatePendingBytes(-written)
         registerWriteCallback()
         return false
     }
@@ -352,5 +409,12 @@ internal class NioIoTransport(
          * is idempotent so it is a no-op for the already-registered default.
          */
         const val READ_BUFFER_POOL_SLOTS = 16
+
+        /**
+         * Starting capacity of the [gatherBuffers] scratch array. Grown
+         * 1.5x on demand, matching the [KqueueIoTransport.writevPtrs]
+         * sizing strategy.
+         */
+        const val INITIAL_GATHER_CAPACITY = 8
     }
 }
