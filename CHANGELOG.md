@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `io`: flatten the `Segment` / `RawSegmentBacking` two-layer indirection — `NativeIoBuf` / `DirectIoBuf` / `TypedArrayIoBuf` now hold the platform pointer / `ByteBuffer` / `Int8Array` directly, and a renamed `IoBufOwner` (formerly `SegmentOwner`) dispatches the refcount-zero strategy on the buffer itself. Pool freelists (intrusive `nextLink` per concrete class) and slice paths (`SliceOwner` parent retain) preserved; engine-direct IoBufs (`NettyByteBufIoBuf`, `RingBufferIoBuf`, `DispatchDataIoBuf`) unchanged. Behaviour-preserving (#613)
+
 ### Removed
 
 - `io`: unused `BufferedSuspendSource.scanLine()` + `crossBufferScanLine()` + `IoBufView` class. Never reached the production HTTP hot path — `HttpRequestDecoder` scans IoBuf bytes directly via `IoBuf.getByte(index)` and uses a `ByteArray` accumulator for cross-IoBuf lines; the kotlinx-io adapter path (`HttpParser` suspend variants used by `respondBadRequest` fallback / tests / CLI) consumes `readLine(): String`. The zero-copy `CharSequence` need is served by `IoBufAsciiText` (#588) which uses a different abstraction. The `IoBufView.next` chain was carried forward from a planned `readLine → scanLine` migration that was experimented with on `feat/codec-http-zerocopy` (2026-03-27) and abandoned when the BufSlice lifetime issue surfaced; `HttpHeaders` byte-range view storage (#596) and `HttpRequestHead` byte-range URI (#601) resolve that lifetime concern via explicit IoBuf retain in HttpHeaders.

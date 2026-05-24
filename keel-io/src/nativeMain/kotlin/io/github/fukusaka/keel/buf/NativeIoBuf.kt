@@ -15,75 +15,55 @@ import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
 
 /**
- * Native [IoBuf] implementation — a *view* over a [Segment].
+ * Native [IoBuf] implementation.
  *
- * The buffer holds a [Segment] reference; the segment's
- * The [NativeBacking] (a [NativeHeapBacking] for `nativeHeap`-owned
- * memory, an [ExternalNativeBacking] for wrapped external memory) carries
- * the raw `CPointer<ByteVar>`. At construction the view reads `base`
- * out of the backing once and caches it in [cachedBase]; all per-byte
- * access uses the cached pointer directly (an uncached cast +
- * indirection per access is materially slower).
+ * The buffer holds a `CPointer<ByteVar>` to platform memory and an
+ * [ownsMemory] flag that gates whether [freeBacking] reclaims the
+ * allocation. The pointer is read once at construction (or computed
+ * once for a windowed slice) and used directly on every per-byte
+ * access — no indirection through a backing object.
  *
- * **Owned memory** (primary constructor): the [Segment] wraps a
- * `nativeHeap`-owned backing whose [Segment.owner] is [HeapOwner],
- * which frees the backing when the refcount reaches zero.
+ * **Owned memory** (primary constructor): allocated via
+ * `nativeHeap.allocArray<ByteVar>(capacity)`; [freeBacking] frees it
+ * exactly once when the owner dispatches release (typically
+ * [HeapOwner]) or [close] is invoked.
  *
- * **External memory** ([wrapExternal] factory): the [Segment] wraps a
- * non-owning backing over caller-provided memory. The view does NOT own
- * the memory; the segment's owner handles cleanup on refcount-zero
- * (e.g. an [ExternalWrapOwner] to drop a pinned hold, or a slice owner
- * to release the parent).
+ * **External memory** ([wrapExternal] factory): the pointer is supplied
+ * by the caller and [ownsMemory] is `false`. The [IoBufOwner] handles
+ * cleanup on refcount-zero (for example, [ExternalWrapOwner] to drop a
+ * pinned hold, or [SliceOwner] to release the parent).
+ *
+ * **Slices** ([sliceWindow]): create a sibling [NativeIoBuf] over a
+ * sub-range of this buffer's window, retain `this`, and install
+ * [SliceOwner] so the parent stays alive until the slice is released.
+ * [ownsMemory] on the slice is `false` so [freeBacking] is a no-op
+ * for the slice.
  *
  * The [unsafePointer] property exposes the cached `CPointer<ByteVar>`
  * for zero-copy I/O with POSIX syscalls (read/write/writev).
  *
- * **Reference counting**: the refcount lives on the [Segment]; this
- * view delegates [retain] / [release] to it. Non-atomic
- * (single-threaded EventLoop model).
+ * **Reference counting**: non-atomic; single-EventLoop ownership
+ * invariant.
  */
 @OptIn(ExperimentalForeignApi::class)
 class NativeIoBuf private constructor(
-    private val segment: Segment,
-    private val windowStart: Int,
-    private val windowLength: Int,
+    private val base: CPointer<ByteVar>,
+    override val capacity: Int,
+    private val ownsMemory: Boolean,
 ) : IoBuf, PoolableIoBuf, NativePointerAccess {
 
     /**
-     * Primary-view constructor: a full-window view over [segment] that
-     * registers itself as the segment's [Segment.view].
-     *
-     * The windowed constructor `(segment, windowStart, windowLength)` is
-     * used for slices; it deliberately does NOT touch [Segment.view] so
-     * the primary view remains the segment's canonical owner-facing view.
+     * Creates a heap-owned [NativeIoBuf] of [capacity] bytes backed by
+     * a fresh `nativeHeap` allocation. Owner defaults to [HeapOwner].
      */
-    private constructor(segment: Segment) : this(segment, 0, segment.capacity) {
-        segment.view = this
-    }
-
-    /**
-     * Creates a heap-owned [NativeIoBuf] backed by a freshly-allocated
-     * [Segment]. The segment's owner defaults to [HeapOwner], which
-     * frees the backing on refcount-zero.
-     */
-    constructor(capacity: Int) : this(allocSegment(capacity))
-
-    /**
-     * Cached native base pointer to the window start, read once out of
-     * the [Segment]'s backing. All per-byte access uses this directly so
-     * windowed slices stay a single indexed load.
-     */
-    @Suppress("UnsafeCallOnNullableType")
-    private val cachedBase: CPointer<ByteVar> = ((segment.backing as NativeBacking).base + windowStart)!!
-
-    override val capacity: Int get() = windowLength
+    constructor(capacity: Int) : this(
+        nativeHeap.allocArray<ByteVar>(capacity),
+        capacity,
+        ownsMemory = true,
+    )
 
     @UnsafeIoBufApi
-    override val unsafePointer: CPointer<ByteVar> get() = cachedBase
-
-    override var segmentOwner: SegmentOwner
-        get() = segment.owner
-        set(value) { segment.owner = value }
+    override val unsafePointer: CPointer<ByteVar> get() = base
 
     override var readerIndex: Int = 0
     override var writerIndex: Int = 0
@@ -91,17 +71,32 @@ class NativeIoBuf private constructor(
     override val readableBytes: Int get() = writerIndex - readerIndex
     override val writableBytes: Int get() = capacity - writerIndex
 
+    /** Non-atomic reference count (single-EventLoop ownership invariant). */
+    private var refCount: Int = 1
+
+    override var owner: IoBufOwner = HeapOwner
+
+    /**
+     * Intrusive freelist link used by [SlabAllocator]'s per-size-class
+     * `ArrayDeque`. Non-null only while this buffer resides in the
+     * pool; cleared on pop.
+     */
+    internal var nextLink: NativeIoBuf? = null
+
+    /** Idempotency latch for owned `nativeHeap` allocations. */
+    private var freed: Boolean = false
+
     // No bounds check — raw pointer write. Caller must ensure writableBytes > 0.
     // Bounds check omitted for hot-path performance; see IoBuf.writeByte KDoc.
     override fun writeByte(value: Byte) {
-        cachedBase[writerIndex++] = value
+        base[writerIndex++] = value
     }
 
     override fun writeByteArray(src: ByteArray, offset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         if (length == 0) return
         src.usePinned { pinned ->
-            memcpy(cachedBase + writerIndex, pinned.addressOf(offset), length.toULong())
+            memcpy(base + writerIndex, pinned.addressOf(offset), length.toULong())
         }
         writerIndex += length
     }
@@ -109,7 +104,7 @@ class NativeIoBuf private constructor(
     override fun writeAscii(src: String, srcOffset: Int, length: Int) {
         require(length <= writableBytes) { "length $length exceeds writableBytes $writableBytes" }
         for (i in 0 until length) {
-            cachedBase[writerIndex + i] = src[srcOffset + i].code.toByte()
+            base[writerIndex + i] = src[srcOffset + i].code.toByte()
         }
         writerIndex += length
     }
@@ -119,7 +114,7 @@ class NativeIoBuf private constructor(
         require(length <= dest.writableBytes) { "length $length exceeds dest.writableBytes ${dest.writableBytes}" }
         if (length == 0) return
         val destPtr = (dest as NativePointerAccess).unsafePointer + dest.writerIndex
-        memcpy(destPtr, cachedBase + readerIndex, length.toULong())
+        memcpy(destPtr, base + readerIndex, length.toULong())
         readerIndex += length
         dest.writerIndex += length
     }
@@ -128,33 +123,68 @@ class NativeIoBuf private constructor(
         require(length <= readableBytes) { "length $length exceeds readableBytes $readableBytes" }
         if (length == 0) return
         dest.usePinned { pinned ->
-            memcpy(pinned.addressOf(offset), cachedBase + readerIndex, length.toULong())
+            memcpy(pinned.addressOf(offset), base + readerIndex, length.toULong())
         }
         readerIndex += length
     }
 
     // No bounds check — raw pointer read. Caller must ensure readableBytes > 0.
-    override fun readByte(): Byte = cachedBase[readerIndex++]
+    override fun readByte(): Byte = base[readerIndex++]
 
     // No bounds check — raw pointer read. Caller must ensure 0 <= index < capacity.
-    override fun getByte(index: Int): Byte = cachedBase[index]
+    override fun getByte(index: Int): Byte = base[index]
 
     override fun clear() {
         readerIndex = 0
         writerIndex = 0
     }
 
+    override fun retain(): IoBuf {
+        check(refCount > 0) { "Cannot retain a released buffer" }
+        refCount++
+        return this
+    }
+
+    override fun release(): Boolean {
+        check(refCount > 0) { "Buffer already released" }
+        if (--refCount == 0) {
+            owner.release(this)
+            return true
+        }
+        return false
+    }
+
+    override fun close() {
+        // Escape hatch: bypass the owner (pool slots / external unpins
+        // are intentionally skipped). The raw memory free runs through
+        // freeBacking() so a heap-owned allocation does not leak; an
+        // external wrap is a no-op. Idempotent.
+        freeBacking()
+    }
+
+    override fun freeBacking() {
+        if (ownsMemory && !freed) {
+            freed = true
+            nativeHeap.free(base.rawValue)
+        }
+    }
+
     /**
-     * Returns a same-[Segment] window view of [length] bytes at [offset]
-     * within this buffer's window.
-     *
-     * This is the same-[Segment] window-view slice path: the returned
-     * [IoBuf] shares this buffer's [Segment] (via [Segment.retain]) and
-     * needs no throwaway wrapper segment. The caller owns the returned
-     * handle and must [release] it; when the segment's refcount reaches
-     * zero the existing [Segment] / [SegmentOwner] machinery frees it.
-     *
-     * The view starts with `readerIndex = 0` and `writerIndex = length`.
+     * Restores this buffer to a fresh-from-allocator state for pool
+     * reuse: indices to 0, refcount to 1, [nextLink] cleared. Invoked
+     * by [SlabAllocator] on pop().
+     */
+    internal fun resetForReuse() {
+        readerIndex = 0
+        writerIndex = 0
+        refCount = 1
+        nextLink = null
+    }
+
+    /**
+     * Returns a slice view of [length] bytes at [offset] within this
+     * buffer's window. The slice shares this buffer's backing memory
+     * — `this` is retained and [SliceOwner] releases it on refcount-zero.
      * A zero [length] yields [EmptyIoBuf].
      */
     @Suppress("IoBufLeak") // Slice returns ownership to caller
@@ -163,76 +193,31 @@ class NativeIoBuf private constructor(
             "slice out of range: offset=$offset length=$length capacity=$capacity"
         }
         if (length == 0) return EmptyIoBuf
-        segment.retain()
-        return NativeIoBuf(segment, windowStart + offset, length).also {
-            it.readerIndex = 0
+        this.retain()
+        @Suppress("UnsafeCallOnNullableType")
+        val slicePtr = (base + offset)!!
+        return NativeIoBuf(slicePtr, length, ownsMemory = false).also {
+            it.owner = SliceOwner(this)
             it.writerIndex = length
         }
-    }
-
-    override fun retain(): IoBuf {
-        segment.retain()
-        return this
-    }
-
-    override fun release(): Boolean = segment.release()
-
-    override fun close() {
-        // Escape hatch: intentionally does NOT invoke the segment owner —
-        // pool returns and kernel-slot handoffs are skipped. The raw
-        // memory free routes through the Segment's backing so teardown
-        // does not leak the nativeHeap allocation; an external
-        // (wrapExternal) backing frees nothing here. RawSegmentBacking.free()
-        // is idempotent, so repeated calls are safe.
-        segment.backing.free()
     }
 
     companion object {
         /**
          * Wraps an externally-owned memory region as a [NativeIoBuf]
-         * without allocation.
-         *
-         * The external memory is wrapped as a non-owning
-         * [RawSegmentBacking] inside a [Segment]; the returned view does
-         * NOT own the memory. The supplied [owner] handles cleanup on
-         * refcount-zero (for instance, [ExternalWrapOwner] to drop a
-         * pinned [ByteArray] hold, or a slice owner to release a parent).
-         *
-         * For hot-path usage, pre-allocate wrappers at startup and reuse
-         * them via [resetForReuse] to avoid object creation overhead.
-         *
-         * @param ptr           Pointer to the external memory region.
-         * @param capacity      Size of the memory region in bytes.
-         * @param bytesWritten  Number of valid bytes already written (sets [writerIndex]).
-         * @param owner         Strategy invoked at refcount-zero.
-         * @return A [NativeIoBuf] wrapping the external memory.
+         * without allocation. [ownsMemory] is `false`; the supplied
+         * [owner] handles cleanup at refcount-zero (for instance,
+         * [ExternalWrapOwner] to drop a pinned hold, or [SliceOwner] to
+         * release a parent).
          */
         internal fun wrapExternal(
             ptr: CPointer<ByteVar>,
             capacity: Int,
             bytesWritten: Int,
-            owner: SegmentOwner,
-        ): NativeIoBuf {
-            val segment = Segment(ExternalNativeBacking(ptr), capacity)
-            segment.owner = owner
-            return NativeIoBuf(segment).also {
-                it.writerIndex = bytesWritten
-            }
-        }
-
-        /** Allocates a heap-owned [Segment] of [capacity] bytes. */
-        private fun allocSegment(capacity: Int): Segment =
-            Segment(NativeHeapBacking(nativeHeap.allocArray<ByteVar>(capacity)), capacity)
-
-        /**
-         * Wraps an already-allocated heap-owned [Segment] as a
-         * [NativeIoBuf], installing [owner] on the segment. Used by
-         * pool-backed allocators that construct the [RawSegmentBacking]
-         * themselves.
-         */
-        internal fun overSegment(segment: Segment, owner: SegmentOwner): NativeIoBuf {
-            segment.owner = owner
-            return NativeIoBuf(segment)
+            owner: IoBufOwner,
+        ): NativeIoBuf = NativeIoBuf(ptr, capacity, ownsMemory = false).also {
+            it.owner = owner
+            it.writerIndex = bytesWritten
         }
     }
 }
@@ -244,10 +229,9 @@ internal actual fun createDefaultIoBuf(capacity: Int): IoBuf = NativeIoBuf(capac
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): IoBuf {
     if (length == 0) return EmptyIoBuf
-    // Segment-backed source: slice as a same-Segment window view, no wrapper.
     if (source is NativeIoBuf) return source.sliceWindow(offset, length)
-    // Engine-direct source (no Segment): wrap a window of its native memory
-    // and release the source through a SliceOwner at refcount-zero.
+    // Engine-direct source: wrap a window of its native memory and
+    // release the source through a SliceOwner at refcount-zero.
     source.retain()
     @Suppress("UnsafeCallOnNullableType")
     val ptr = ((source as NativePointerAccess).unsafePointer + offset)!!
@@ -255,18 +239,14 @@ internal actual fun sliceDefaultIoBuf(source: IoBuf, offset: Int, length: Int): 
 }
 
 /**
- * Wraps an externally-owned native memory region as a Segment-backed [IoBuf].
+ * Wraps an externally-owned native memory region as an [IoBuf].
  *
- * Public seam for engines that prefer the Segment-backed wrap shape
- * (`Segment` + `ExternalNativeBacking` + `NativeIoBuf` view + `unpin`
- * via [SegmentOwner]) over building their own engine-direct IoBuf
- * class. The Segment-backed shape pays 4 allocations per wrap but
- * slices via the same-Segment window view (1 allocation per slice
- * via [DefaultAllocator.slice]). Engine-direct wraps (e.g.
- * `RingBufferIoBuf` in keel-engine-io-uring, `DispatchDataIoBuf` in
- * keel-engine-nwconnection) pay 1 allocation per wrap but 4 per slice
- * (slice goes through `sliceDefaultIoBuf`'s engine-direct branch).
- * Pick the shape that matches the engine's slice / receive ratio.
+ * Public seam for engines that prefer this generic wrap shape over
+ * building their own engine-direct IoBuf class. Engine-direct wraps
+ * (e.g. `RingBufferIoBuf` in keel-engine-io-uring, `DispatchDataIoBuf`
+ * in keel-engine-nwconnection) can still bypass this for tighter
+ * allocation counts; pick the shape that matches the engine's
+ * slice / receive ratio.
  *
  * The returned [IoBuf] has `readerIndex = 0`, `writerIndex = [length]`,
  * and `capacity = [length]`. When its reference count reaches zero

@@ -182,15 +182,15 @@ interface IoBuf : Releasable {
 
     /**
      * Teardown escape hatch: forces the reference count to zero without
-     * invoking the segment's normal owner release path.
+     * invoking the buffer's normal [IoBufOwner] release path.
      *
      * **Prefer [release] for normal lifecycle management.** [close] is
      * an escape for engine shutdown / emergency teardown scenarios where
      * holding a pool slot or kernel-registered index is acceptable to
      * leak (the whole allocator or engine is going away anyway). It
-     * intentionally bypasses the segment owner so pool returns and
-     * kernel slot returns do not happen; for heap-backed buffers,
-     * backing memory is freed directly via the concrete IoBuf type.
+     * intentionally bypasses the owner so pool returns and external
+     * unpins do not happen; for heap-backed buffers, the platform-native
+     * free routine is invoked directly.
      *
      * Safe to call multiple times (idempotent).
      */
@@ -198,27 +198,33 @@ interface IoBuf : Releasable {
 }
 
 /**
- * Extended [IoBuf] interface for [Segment]-backed buffers — exposes a
- * mutable [segmentOwner] hook that internal decorators such as
- * [TrackingAllocator] / [LeakDetectingAllocator] use to intercept the
- * release path.
- *
- * The freelist link and recycle reset now live on the [Segment] itself
- * (the pool unit); pooled allocators retain segments and reset the
- * primary view's `readerIndex` / `writerIndex` on pop. This interface
- * therefore carries only the decorator hook.
+ * Internal extension of [IoBuf] that exposes the mutable [owner] hook
+ * decorators such as [TrackingAllocator] / [LeakDetectingAllocator] use
+ * to intercept the release path, plus the [freeBacking] hook
+ * [HeapOwner] dispatches through. Implemented by every standard
+ * platform [IoBuf].
  */
 internal interface PoolableIoBuf : IoBuf {
 
     /**
-     * The [SegmentOwner] of the buffer's backing [Segment].
+     * The [IoBufOwner] of this buffer.
      *
-     * Reads and writes go straight through to [Segment.owner].
      * Decorators (leak detection, allocate/release counting) replace
      * the owner in-place so the release path can be intercepted
      * without changing the public [IoBuf] surface.
      */
-    var segmentOwner: SegmentOwner
+    var owner: IoBufOwner
+
+    /**
+     * Releases the platform-native backing memory if this buffer owns
+     * it. No-op for externally-wrapped buffers (the external owner
+     * reclaims the memory) and for slices (the parent owns the
+     * memory). Idempotent.
+     *
+     * On JVM and JS, always a no-op because direct [java.nio.ByteBuffer] /
+     * [org.khronos.webgl.Int8Array] are GC-managed.
+     */
+    fun freeBacking()
 }
 
 /**
@@ -239,9 +245,9 @@ internal expect fun createDefaultIoBuf(capacity: Int): IoBuf
  * in [source], using the platform-native backing type.
  *
  * The view shares [source]'s backing memory — no bytes are copied.
- * [source] is [retained][IoBuf.retain]; the returned view's backing
- * [Segment] is owned by a [SliceOwner] that releases [source] when the
- * view's reference count reaches zero. A zero [length] yields [EmptyIoBuf].
+ * [source] is [retained][IoBuf.retain]; the returned view's [IoBufOwner]
+ * is a [SliceOwner] that releases [source] when the view's reference
+ * count reaches zero. A zero [length] yields [EmptyIoBuf].
  *
  * Backs [DefaultAllocator.slice] and the per-EventLoop pooled allocators'
  * `slice`, so every platform produces a true zero-copy slice.

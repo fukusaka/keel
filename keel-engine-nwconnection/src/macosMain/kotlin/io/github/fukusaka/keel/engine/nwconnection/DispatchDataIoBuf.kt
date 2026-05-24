@@ -21,9 +21,9 @@ import platform.posix.memcpy
  * Engine-direct [IoBuf] backed by a single contiguous region of a
  * retained NWConnection `dispatch_data_t`.
  *
- * Engine-direct means no [io.github.fukusaka.keel.buf.Segment] / no
- * [io.github.fukusaka.keel.buf.SegmentOwner] / no
- * [io.github.fukusaka.keel.buf.RawSegmentBacking] — the IoBuf manages
+ * Engine-direct means it does not extend
+ * [io.github.fukusaka.keel.buf.AbstractIoBuf] and carries no
+ * [io.github.fukusaka.keel.buf.IoBufOwner] dispatch — the IoBuf manages
  * its own refcount and runs the foreign-resource release primitive
  * (`keel_nw_dispatch_data_release`) inline at refcount zero. The
  * model mirrors
@@ -33,18 +33,15 @@ import platform.posix.memcpy
  * ByteBuf) — each is the engine's idiomatic representation of a
  * framework-owned memory region with its own release primitive.
  *
- * Compared with the Segment-backed `wrapExternalNativePtr` path the
- * production engine used before this class existed
- * (`Segment` + `ExternalNativeBacking` + `NativeIoBuf` + `ExternalWrapOwner`
- * closure = 4 allocations per receive), constructing one
- * [DispatchDataIoBuf] is 1 allocation. The trade-off is on slicing:
- * `sliceDefaultIoBuf` takes the engine-direct branch for this class
- * (no Segment to window over), creating a fresh Segment-backed
- * `NativeIoBuf` per slice — 4 allocations per slice vs the
- * same-Segment window view's 1 allocation in the prior path. So this
- * class is a win for receive-dominated workloads (small or no body
- * slicing) and approximately neutral for chunked-body workloads
- * (every receive ends up sliced once for the body chunk emit).
+ * Compared with the generic `wrapExternalNativePtr` path
+ * (`NativeIoBuf` + `ExternalWrapOwner` closure = 2 allocations per
+ * receive), constructing one [DispatchDataIoBuf] is 1 allocation. On
+ * the slice path `sliceDefaultIoBuf` takes the engine-direct branch
+ * for this class, wrapping a fresh `NativeIoBuf` over a sub-pointer
+ * of the receive buffer. The class is a win for receive-dominated
+ * workloads (small or no body slicing) and approximately neutral for
+ * chunked-body workloads (every receive ends up sliced once for the
+ * body chunk emit).
  *
  * **Lifetime contract**:
  * - `ptr` and the underlying memory remain valid until
