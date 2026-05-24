@@ -47,7 +47,7 @@ import kotlin.reflect.KClass
  * trailing bytes of the current buffer are copied into a lazily
  * allocated byte accumulator, and the rest of the line from the next
  * buffer is appended before parsing. The accumulator is sized to
- * [MAX_LINE_SIZE] at most and its backing `ByteArray` is retained
+ * [headerLimits.maxLineSize] at most and its backing `ByteArray` is retained
  * across lines and even across parse errors within the same
  * connection, so that a decoder which once triggered a partial read
  * does not reallocate the accumulator on every subsequent line. The
@@ -113,7 +113,7 @@ class HttpRequestDecoder(
     // reused for every subsequent request.
     //
     // Size starts at [INITIAL_SCRATCH_CAPACITY]; doubles on demand up
-    // to [MAX_LINE_SIZE] (same cap as the accumulator). The scratch
+    // to [headerLimits.maxLineSize] (same cap as the accumulator). The scratch
     // buffer is only valid for the duration of a single
     // `bufRangeToString` call — the returned `String` copies its
     // contents — so no lifecycle handling beyond growth is needed.
@@ -133,6 +133,17 @@ class HttpRequestDecoder(
     // borrow ready for the next request line.
     private var headers = HttpHeaders.borrow()
     private var bodyBytesRemaining: Long = 0L
+
+    /**
+     * Cumulative byte total `(nameLen + valueLen)` of every header
+     * field admitted so far for the in-progress request. Reset to `0`
+     * in [resetState] and at [emitHead] (the next request starts
+     * fresh). Trailer field bytes accumulate into the same counter so
+     * the cap covers the union of headers + trailers — a malicious
+     * peer cannot bypass the cap by stuffing bytes into the trailer
+     * block.
+     */
+    private var headerByteCount: Int = 0
 
     // Trailer accumulator for READ_CHUNK_TRAILER. Null until the first
     // trailer line is encountered; reset after emitting HttpBodyEnd.
@@ -223,7 +234,7 @@ class HttpRequestDecoder(
         val lfIndex = scanLf(buf, buf.readerIndex, buf.writerIndex)
         if (lfIndex < 0) {
             // No LF in this IoBuf — copy remainder to accumulator for the
-            // next read. Enforces MAX_LINE_SIZE inside appendToAccumulator.
+            // next read. Enforces headerLimits.maxLineSize inside appendToAccumulator.
             val remaining = buf.writerIndex - buf.readerIndex
             if (remaining > 0) {
                 appendToAccumulator(buf, buf.readerIndex, remaining)
@@ -248,11 +259,7 @@ class HttpRequestDecoder(
         var lineEnd = lfIndex
         if (lineEnd > lineStart && buf.getByte(lineEnd - 1) == CR) lineEnd--
         val lineLength = lineEnd - lineStart
-        if (lineLength > MAX_LINE_SIZE) {
-            throw HttpParseException(
-                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
-            )
-        }
+        enforceLineSizeCap(lineLength)
         buf.readerIndex = lfIndex + 1
         when (state) {
             State.READ_REQUEST_LINE -> {
@@ -294,11 +301,7 @@ class HttpRequestDecoder(
         val arr = accumulator!!
         var effLength = accumulatorSize
         if (effLength > 0 && arr[effLength - 1] == CR) effLength--
-        if (effLength > MAX_LINE_SIZE) {
-            throw HttpParseException(
-                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
-            )
-        }
+        enforceLineSizeCap(effLength)
         try {
             when (state) {
                 State.READ_REQUEST_LINE -> {
@@ -340,11 +343,7 @@ class HttpRequestDecoder(
     private fun appendToAccumulator(buf: IoBuf, offset: Int, length: Int) {
         if (length == 0) return
         val newSize = accumulatorSize + length
-        if (newSize > MAX_LINE_SIZE) {
-            throw HttpParseException(
-                "Header line exceeds maximum length ($MAX_LINE_SIZE bytes)",
-            )
-        }
+        enforceLineSizeCap(newSize)
         ensureAccumulatorCapacity(newSize)
         val arr = accumulator!!
         for (i in 0 until length) {
@@ -359,9 +358,9 @@ class HttpRequestDecoder(
         val newCap = if (cur == null) {
             maxOf(required, INITIAL_ACCUMULATOR_CAPACITY)
         } else {
-            // Double, capped at MAX_LINE_SIZE so that the accumulator cannot
+            // Double, capped at headerLimits.maxLineSize so that the accumulator cannot
             // grow past the hard line-size limit.
-            minOf(MAX_LINE_SIZE, maxOf(required, cur.size * 2))
+            minOf(headerLimits.maxLineSize, maxOf(required, cur.size * 2))
         }
         val next = ByteArray(newCap)
         if (cur != null && accumulatorSize > 0) {
@@ -424,8 +423,10 @@ class HttpRequestDecoder(
         // recv buffer is retained by [HttpHeaders.addRange] for the
         // lifetime of the views.
         val hash = HttpHeaders.caseInsensitiveHashOfBuf(buf, start, nameLen)
-        headers.addRange(buf, hash, start, nameLen, valStart, valEnd - valStart)
+        val valueLen = valEnd - valStart
+        headers.addRange(buf, hash, start, nameLen, valStart, valueLen)
         enforceHeaderCountCap(headers.size)
+        enforceHeaderBytesCap(nameLen + valueLen)
     }
 
     private fun throwInvalidRequestLineFromBuf(buf: IoBuf, start: Int, length: Int): Nothing {
@@ -485,6 +486,7 @@ class HttpRequestDecoder(
 
         headers.add(name, value)
         enforceHeaderCountCap(headers.size)
+        enforceHeaderBytesCap(name.length + value.length)
     }
 
     /**
@@ -504,6 +506,48 @@ class HttpRequestDecoder(
                 limit = cap,
             )
         }
+    }
+
+    /**
+     * Accumulates the freshly-added field's `name + value` byte count
+     * into [headerByteCount] and aborts the parse with
+     * [HttpHeaderLimitExceededException] when the running total
+     * exceeds [HttpHeaderLimitsConfig.maxHeaderBytes]. Headers and
+     * trailers share the same accumulator so a flood split between
+     * the two blocks cannot bypass the cap.
+     */
+    private fun enforceHeaderBytesCap(addedBytes: Int) {
+        headerByteCount += addedBytes
+        val cap = headerLimits.maxHeaderBytes
+        if (headerByteCount > cap) {
+            throw HttpHeaderLimitExceededException(
+                limitName = "maxHeaderBytes",
+                actual = headerByteCount,
+                limit = cap,
+            )
+        }
+    }
+
+    /**
+     * Aborts the parse with the appropriate
+     * [HttpHeaderLimitExceededException] subtype when the just-parsed
+     * line exceeds [HttpHeaderLimitsConfig.maxLineSize]. The
+     * request-line case raises [HttpUriLengthExceededException] (so a
+     * response mapper can dispatch it to [HttpStatus.URI_TOO_LONG],
+     * 414); every other line type raises the generic exception
+     * (→ [HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE], 431).
+     */
+    private fun enforceLineSizeCap(actualLength: Int) {
+        val cap = headerLimits.maxLineSize
+        if (actualLength <= cap) return
+        if (state == State.READ_REQUEST_LINE) {
+            throw HttpUriLengthExceededException(actual = actualLength, limit = cap)
+        }
+        throw HttpHeaderLimitExceededException(
+            limitName = "maxLineSize",
+            actual = actualLength,
+            limit = cap,
+        )
     }
 
     private fun throwInvalidRequestLineFromArr(arr: ByteArray, start: Int, length: Int): Nothing {
@@ -577,10 +621,10 @@ class HttpRequestDecoder(
     private fun ensureScratchCapacity(required: Int): ByteArray {
         val cur = scratchBuffer
         if (cur.size >= required) return cur
-        // Double on demand, capped at MAX_LINE_SIZE (the same bound the
+        // Double on demand, capped at headerLimits.maxLineSize (the same bound the
         // fast path enforces on `lineLength`, so scratch never needs to
         // hold more than that).
-        val newCap = minOf(MAX_LINE_SIZE, maxOf(required, cur.size * 2))
+        val newCap = minOf(headerLimits.maxLineSize, maxOf(required, cur.size * 2))
         val next = ByteArray(newCap)
         scratchBuffer = next
         return next
@@ -730,6 +774,7 @@ class HttpRequestDecoder(
         val value = bufAsciiToString(buf, valStart, valEnd - valStart)
         trailers.add(name, value)
         enforceHeaderCountCap(trailers.size)
+        enforceHeaderBytesCap(name.length + value.length)
     }
 
     /** Parses a trailer header line from the fallback-path ByteArray. */
@@ -755,6 +800,7 @@ class HttpRequestDecoder(
         val value = arrAsciiToString(arr, valStart, valEnd)
         trailers.add(name, value)
         enforceHeaderCountCap(trailers.size)
+        enforceHeaderBytesCap(name.length + value.length)
     }
 
     private fun emitLastWithTrailers(ctx: PipelineHandlerContext) {
@@ -798,6 +844,9 @@ class HttpRequestDecoder(
         uri = null
         version = null
         headers = HttpHeaders.borrow()
+        // The cumulative byte counter belongs to the previous request;
+        // reset before the next request line.
+        headerByteCount = 0
         ctx.propagateRead(head)
 
         val cl = head.headers.contentLength
@@ -833,12 +882,10 @@ class HttpRequestDecoder(
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0
+        headerByteCount = 0
     }
 
     private companion object {
-        /** Maximum allowed length for a single header line (request line or header field). */
-        private const val MAX_LINE_SIZE = 8192
-
         /**
          * Initial capacity of the fallback byte accumulator, in bytes. Typical
          * HTTP request heads (request line + a handful of headers) fit within
@@ -851,7 +898,7 @@ class HttpRequestDecoder(
          * [bufRangeToString] to copy bytes out of an [IoBuf] before calling
          * [ByteArray.decodeToString]. Chosen to fit a typical HTTP request
          * URI and header value without growth; grows on demand up to
-         * [MAX_LINE_SIZE].
+         * [headerLimits.maxLineSize].
          */
         private const val INITIAL_SCRATCH_CAPACITY = 256
 
