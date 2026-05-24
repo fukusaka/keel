@@ -37,10 +37,16 @@ class JvmZlibRoundTripTest {
     private val allocator: BufferAllocator = DefaultAllocator
     private val outputCap = 256
 
+    private fun newGzipEncoder(): EncoderSession =
+        GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush))
+
+    private fun newDeflateEncoder(): EncoderSession =
+        DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush))
+
     @Test
     fun `gzip round-trip via keel encoder + JDK GZIPInputStream`() {
         val payload = "Hello, compression world! ".repeat(64).toByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(payload, newGzipEncoder())
 
         // gzip magic
         assertEquals(0x1F.toByte(), compressed[0])
@@ -53,7 +59,7 @@ class JvmZlibRoundTripTest {
     @Test
     fun `gzip round-trip via keel encoder + keel decoder`() {
         val payload = ("Round-trip test " + "x".repeat(2048)).toByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(payload, newGzipEncoder())
         val decoded = decodeAll(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
         assertContentEquals(payload, decoded)
     }
@@ -61,7 +67,7 @@ class JvmZlibRoundTripTest {
     @Test
     fun `deflate round-trip via keel encoder + JDK Inflater`() {
         val payload = "deflate body".repeat(32).toByteArray()
-        val compressed = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(payload, newDeflateEncoder())
 
         val inflater = Inflater()
         inflater.setInput(compressed)
@@ -74,7 +80,7 @@ class JvmZlibRoundTripTest {
     @Test
     fun `deflate round-trip via keel encoder + keel decoder`() {
         val payload = "x".repeat(4096).toByteArray()
-        val compressed = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(payload, newDeflateEncoder())
         val decoded = decodeAll(compressed, DeflateDecoder.newSession(allocator, DecoderOptions()))
         assertContentEquals(payload, decoded)
     }
@@ -84,8 +90,9 @@ class JvmZlibRoundTripTest {
         // 100 KB of 'x' compresses to ~140 bytes; decoding back should emit
         // many bounded chunks rather than a single 100 KB output.
         val payload = "x".repeat(100_000).toByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
-        val (decoded, chunkCount) = decodeAllWithChunkCount(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
+        val compressed = encodeAll(payload, newGzipEncoder())
+        val (decoded, chunkCount) =
+            decodeAllWithChunkCount(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
         assertContentEquals(payload, decoded)
         assertTrue(
             chunkCount >= 100_000 / outputCap - 5,
@@ -96,7 +103,7 @@ class JvmZlibRoundTripTest {
     @Test
     fun `decoder rejects oversize output via maxOutputSize after first chunk`() {
         val payload = "x".repeat(10_000).toByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(payload, newGzipEncoder())
 
         val session = GzipDecoder.newSession(allocator, DecoderOptions(maxOutputSize = 100L))
         val src = allocator.allocate(compressed.size).apply { writeByteArray(compressed, 0, compressed.size) }
