@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.io
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.buf.IoBufView
 
 /**
  * Buffered wrapper providing readLine/readByte utilities over either a
@@ -17,7 +16,7 @@ import io.github.fukusaka.keel.buf.IoBufView
  * chain; once drained it is released back to the allocator.
  * ```
  * kernel → IoBuf (zero-copy via Channel.read) → appended to chain
- *   → readByte/readLine/scanLine consume from the chain (no copy)
+ *   → readByte/readLine consume from the chain (no copy)
  *   → drained buffers released back to the allocator
  * ```
  *
@@ -25,7 +24,7 @@ import io.github.fukusaka.keel.buf.IoBufView
  * [OwnedSuspendSource.readOwned]. No allocation, no copy.
  * ```
  * kernel → engine-owned IoBuf (zero-copy via multishot recv) → chain
- *   → readByte/readLine/scanLine consume directly from the chain
+ *   → readByte/readLine consume directly from the chain
  *   → fully consumed buffers released back to the engine
  * ```
  *
@@ -207,110 +206,6 @@ class BufferedSuspendSource : AutoCloseable {
     }
 
     /**
-     * Scans for a line terminated by `\n` or `\r\n` and returns it as a
-     * [IoBufView] pointing directly into the buffer chain (zero-copy).
-     *
-     * Returns a single-segment [IoBufView] when the line fits in one buffer
-     * (99% of cases), or a multi-segment [IoBufView] chain when the line
-     * spans two buffers (< 1%).
-     *
-     * The returned IoBufView is valid until the next [scanLine], [readLine],
-     * [readByte], [readByteArray], [readAtMostTo], or [close] call.
-     *
-     * @return the line without the line terminator, or null on EOF.
-     * @throws IllegalStateException if this source has been [close]d.
-     */
-    suspend fun scanLine(): IoBufView? {
-        check(!closed) { "BufferedSuspendSource is closed" }
-        val chain = mode.chain
-        releaseConsumedBuffers()
-        if (chain.isEmpty() && fillAndGet() == null) return null
-
-        val head = chain.first()
-        val start = head.readerIndex
-
-        // Scan the head buffer for LF.
-        for (i in start until head.writerIndex) {
-            if (head.getByte(i) == LF) {
-                var lineEnd = i
-                if (lineEnd > start && head.getByte(lineEnd - 1) == CR) lineEnd--
-                val slice = IoBufView(head, start, lineEnd - start)
-                head.readerIndex = i + 1
-                return slice
-            }
-        }
-
-        // LF not in head — need more data.
-        if (fillAndGet() == null) {
-            // EOF: return the trailing partial line, if any.
-            return if (head.readableBytes > 0) {
-                val slice = IoBufView(head, head.readerIndex, head.readableBytes)
-                head.readerIndex = head.writerIndex
-                slice
-            } else {
-                null
-            }
-        }
-
-        // Line spans head and the next buffer(s) — build a chained IoBufView.
-        return crossBufferScanLine(head, start)
-    }
-
-    /**
-     * Builds a multi-segment [IoBufView] for a line that spans the buffer
-     * boundary. The first segment covers the remaining bytes in [firstBuf],
-     * the second covers bytes up to LF in the next buffer.
-     *
-     * This path is taken for < 1% of HTTP header lines. A line spanning
-     * three or more buffers (a header line larger than two refill buffers)
-     * is not supported and is left to upstream header-size limits.
-     */
-    private suspend fun crossBufferScanLine(firstBuf: IoBuf, startOffset: Int): IoBufView? {
-        val firstLength = firstBuf.writerIndex - startOffset
-        firstBuf.readerIndex = firstBuf.writerIndex // consume first segment
-        // Note: firstBuf is now fully consumed (readableBytes=0) but must NOT
-        // be released yet — the returned IoBufView will reference it. It is
-        // released on the next scanLine/readLine/close call via
-        // releaseConsumedBuffers. We do NOT call releaseConsumedBuffers here.
-
-        val chain = mode.chain
-        while (true) {
-            if (chain.size <= 1 && fillAndGet() == null) {
-                // EOF: return first segment only.
-                return if (firstLength > 0) IoBufView(firstBuf, startOffset, firstLength) else null
-            }
-
-            val cur = chain.last() // most recently added buffer
-            val curStart = cur.readerIndex
-            for (i in curStart until cur.writerIndex) {
-                if (cur.getByte(i) == LF) {
-                    cur.readerIndex = i + 1 // consume through LF
-
-                    // Compute second segment length, handling CR stripping.
-                    var secondEnd = i
-                    var adjFirstLength = firstLength
-                    if (secondEnd > curStart && cur.getByte(secondEnd - 1) == CR) {
-                        secondEnd-- // strip CR from second segment
-                    } else if (secondEnd == curStart && firstLength > 0 &&
-                        firstBuf.getByte(startOffset + firstLength - 1) == CR
-                    ) {
-                        adjFirstLength-- // CR is at end of first segment
-                    }
-
-                    val secondLength = secondEnd - curStart
-                    val second = if (secondLength > 0) IoBufView(cur, curStart, secondLength) else null
-                    return if (adjFirstLength > 0) {
-                        IoBufView(firstBuf, startOffset, adjFirstLength, second)
-                    } else {
-                        second
-                    }
-                }
-            }
-            // LF not in this buffer either — continue filling.
-        }
-    }
-
-    /**
      * Reads exactly [count] bytes into a new ByteArray.
      *
      * @throws KeelEofException if EOF is reached before [count] bytes.
@@ -370,6 +265,5 @@ class BufferedSuspendSource : AutoCloseable {
         /** Initial StringBuilder capacity for readLine. */
         private const val INITIAL_LINE_CAPACITY = 128
         private const val LF = '\n'.code.toByte()
-        private const val CR = '\r'.code.toByte()
     }
 }

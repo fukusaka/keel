@@ -8,7 +8,7 @@ package io.github.fukusaka.keel.buf
  * (HTTP parser, WebSocket framing) and back:
  *
  * ```
- * kernel recv → IoBuf → BufferedSuspendSource → codec (scanLine/readByte)
+ * kernel recv → IoBuf → BufferedSuspendSource → codec (readLine/readByte)
  * codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
  * ```
  *
@@ -57,7 +57,7 @@ package io.github.fukusaka.keel.buf
  * for an example.
  *
  * @see BufferAllocator for creating IoBuf instances
- * @see IoBufView for zero-copy read-only views into IoBuf regions
+ * @see IoBufAsciiText for zero-copy CharSequence views into IoBuf regions
  */
 interface IoBuf : Releasable {
     /** Buffer capacity in bytes. */
@@ -150,7 +150,7 @@ interface IoBuf : Releasable {
     /**
      * Reads a byte at the given absolute [index] without modifying [readerIndex].
      *
-     * Used by [IoBufView] for random access within a buffer region.
+     * Used by [IoBufAsciiText] for random access within a buffer region.
      *
      * **Precondition**: caller must ensure `0 <= index < capacity`. Behaviour
      * for out-of-bounds access is platform-dependent: JVM throws
