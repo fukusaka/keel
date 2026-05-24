@@ -29,13 +29,13 @@ internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): 
     val ref = PhantomReference<IoBuf>(buf, leakQueue)
     leakEntries[ref as PhantomReference<*>] = entry
 
-    val originalOwner = poolable.segmentOwner
-    poolable.segmentOwner = object : SegmentOwner {
-        override fun release(segment: Segment) {
+    val originalOwner = poolable.owner
+    poolable.owner = object : IoBufOwner {
+        override fun release(buf: IoBuf) {
             entry.released = true
             leakEntries.remove(ref as PhantomReference<*>)
             ref.clear()
-            originalOwner.release(segment)
+            originalOwner.release(buf)
         }
     }
 

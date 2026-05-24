@@ -8,10 +8,10 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Tests for [DefaultAllocator.slice] on Segment-backed buffers.
+ * Tests for [DefaultAllocator.slice] on platform-default buffers.
  *
- * Covers zero-copy sharing (the slice is a same-`Segment` window view),
- * independent reader/writer cursors, segment retention by the slice, the
+ * Covers zero-copy sharing (the slice is a window view over the parent's
+ * backing), independent reader/writer cursors, parent retention by the slice, the
  * [EmptyIoBuf] zero-length result, out-of-range rejection, and
  * slice-of-a-slice window-offset composition. These are pure synchronous
  * tests, so no timeout is needed.

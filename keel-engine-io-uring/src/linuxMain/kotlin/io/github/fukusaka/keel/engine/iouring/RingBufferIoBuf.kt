@@ -25,8 +25,9 @@ import platform.posix.memcpy
  * **Lifecycle**: Pre-allocated per buffer slot in [IoUringPushSource].
  * On each CQE, [reset] restores the buffer to initial state for reuse.
  * When the caller calls [release], the slot is returned to the ring via
- * [ProvidedBufferRing.returnBuffer]. This class is engine-direct — it has
- * no [io.github.fukusaka.keel.buf.Segment] and self-manages the slot return.
+ * [ProvidedBufferRing.returnBuffer]. This class is engine-direct — it
+ * does not extend [io.github.fukusaka.keel.buf.AbstractIoBuf] and
+ * self-manages the slot return.
  *
  * **Zero allocation**: No object creation on the CQE hot path. The wrapper
  * is reused across CQE callbacks via [reset].
@@ -134,7 +135,7 @@ internal class RingBufferIoBuf(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            // Engine-direct: no Segment. Return the kernel-managed slot
+            // Engine-direct: no IoBufOwner dispatch. Return the kernel-managed slot
             // to the provided buffer ring directly.
             bufferRing.returnBuffer(bufId)
             return true

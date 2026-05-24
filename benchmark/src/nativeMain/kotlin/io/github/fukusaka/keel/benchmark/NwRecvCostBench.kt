@@ -22,12 +22,10 @@ package io.github.fukusaka.keel.benchmark
  *
  * **Three scenarios**:
  *
- * - **segwrap-path** (`wrapExternalNativePtr`, Segment-backed wrap as
- *   of PR #581): callback wraps via `wrapExternalNativePtr`, 4
- *   allocations per receive (`Segment` + `ExternalNativeBacking` +
- *   `NativeIoBuf` view + `ExternalWrapOwner` closure). Kept as a
- *   historical reference — production switched away from this path
- *   in PR #583.
+ * - **segwrap-path** (`wrapExternalNativePtr`, generic wrap): callback
+ *   wraps via `wrapExternalNativePtr` (`NativeIoBuf` +
+ *   `ExternalWrapOwner` closure). Kept as a comparator — production
+ *   switched to the engine-direct path in PR #583.
  *
  * - **engdir-path** (`DispatchDataIoBuf`, engine-direct as of PR
  *   #583, current production wrap): callback allocates a small

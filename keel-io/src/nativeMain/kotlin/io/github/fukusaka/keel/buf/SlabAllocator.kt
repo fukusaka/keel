@@ -2,13 +2,9 @@
 
 package io.github.fukusaka.keel.buf
 
-import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.pin
-import kotlinx.cinterop.plus
 import kotlin.concurrent.AtomicReference
 
 /**
@@ -75,11 +71,11 @@ class SlabAllocator(
         }
     }
 
-    private val poolOwner: SegmentOwner = PoolOwner(::returnToPool)
+    private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf as NativeIoBuf) }
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun allocate(capacity: Int): IoBuf {
-        val seg: Segment? = withSpinLock {
+        val recycled: NativeIoBuf? = withSpinLock {
             val pool = pools[capacity]
             if (pool != null && pool.list.isNotEmpty()) {
                 pool.list.removeLast()
@@ -87,52 +83,40 @@ class SlabAllocator(
                 null
             }
         }
-        if (seg != null) {
-            seg.resetForReuse()
-            val view = checkNotNull(seg.view as? NativeIoBuf) { "pooled segment has no NativeIoBuf view" }
-            view.clear()
-            return view
+        if (recycled != null) {
+            recycled.resetForReuse()
+            recycled.owner = poolOwner
+            return recycled
         }
-        return NativeIoBuf.overSegment(newSegment(capacity), poolOwner)
+        val fresh = NativeIoBuf(capacity)
+        fresh.owner = poolOwner
+        return fresh
     }
-
-    /**
-     * Allocates a fresh `nativeHeap`-owned [Segment] of [capacity] bytes
-     * for a pool miss. Standard-size and "huge bypass" (larger than the
-     * pooled class) requests follow the same path; the allocation is
-     * `nativeHeap.allocArray<ByteVar>(capacity)` either way, and pool
-     * recycling is handled at a higher level via [PoolOwner].
-     */
-    @OptIn(ExperimentalForeignApi::class)
-    private fun newSegment(capacity: Int): Segment =
-        Segment(NativeHeapBacking(nativeHeap.allocArray<ByteVar>(capacity)), capacity)
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
         val pinned = bytes.pin()
-        @Suppress("UnsafeCallOnNullableType")
-        val ptr = pinned.addressOf(offset)!!
+        val ptr = pinned.addressOf(offset)
         return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = ExternalWrapOwner { pinned.unpin() })
     }
 
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    private fun returnToPool(seg: Segment) {
+    private fun returnToPool(buf: NativeIoBuf) {
         val rejected = withSpinLock {
-            val pool = pools[seg.capacity]
+            val pool = pools[buf.capacity]
             if (pool != null && pool.list.size < pool.maxSlots) {
-                pool.list.addLast(seg)
+                pool.list.addLast(buf)
                 false
             } else {
                 true
             }
         }
         // Pool full or no class for this size: free the backing directly.
-        // The segment's refCount is already zero (we are inside PoolOwner.release),
-        // so there is no view-side teardown to do beyond releasing the memory.
-        if (rejected) seg.backing.free()
+        // refCount is already zero (we are inside PoolOwner.release).
+        if (rejected) buf.freeBacking()
     }
 
     /**
@@ -147,8 +131,8 @@ class SlabAllocator(
         return withSpinLock {
             val result = mutableListOf<Pair<kotlinx.cinterop.CPointer<kotlinx.cinterop.ByteVar>, Int>>()
             for ((_, pool) in pools) {
-                for (seg in pool.list) {
-                    result.add((seg.backing as NativeBacking).base to seg.capacity)
+                for (buf in pool.list) {
+                    result.add(buf.unsafePointer to buf.capacity)
                 }
             }
             result
@@ -156,11 +140,11 @@ class SlabAllocator(
     }
 
     private class Pool(val maxSlots: Int) {
-        val list = ArrayDeque<Segment>(maxSlots)
+        val list = ArrayDeque<NativeIoBuf>(maxSlots)
     }
 
     companion object {
-        /** Standard pooled segment size served through [standardMemorySource]. */
+        /** Standard pooled buffer size served through `standardMemorySource`. */
         private const val SEGMENT_SIZE = 8192
         private const val DEFAULT_BUFFER_SIZE = SEGMENT_SIZE
         private const val DEFAULT_POOL_SLOTS = 16

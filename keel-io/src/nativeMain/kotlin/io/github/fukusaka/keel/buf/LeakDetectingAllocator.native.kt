@@ -38,11 +38,11 @@ internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): 
 
     // Decorate the owner to flip `state.released` before delegating to the
     // real release path. Avoids capturing `buf` inside the cleaner.
-    val originalOwner = poolable.segmentOwner
-    poolable.segmentOwner = object : SegmentOwner {
-        override fun release(segment: Segment) {
+    val originalOwner = poolable.owner
+    poolable.owner = object : IoBufOwner {
+        override fun release(buf: IoBuf) {
             state.released = true
-            originalOwner.release(segment)
+            originalOwner.release(buf)
         }
     }
 

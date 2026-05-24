@@ -5,9 +5,8 @@ package io.github.fukusaka.keel.engine.netty
 import com.sun.management.ThreadMXBean
 import io.github.fukusaka.keel.buf.DirectIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufOwner
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
-import io.github.fukusaka.keel.buf.Segment
-import io.github.fukusaka.keel.buf.SegmentOwner
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.netty.buffer.ByteBuf
@@ -26,12 +25,10 @@ import kotlin.test.Test
  *   bytes-per-packet attributable to bookkeeping outside the wrap path.
  * - **B (engine-direct wrap, current)**: [NettyByteBufIoBuf.wrapInbound].
  *   1 [NettyByteBufIoBuf] allocation + 1 cached `nioBuffer` view, no
- *   [Segment] / [SegmentOwner] / `DirectIoBuf` wrapping.
- * - **C (segment-backed wrap, pre-2026-05-20)**: the historical path,
- *   inlined here for A/B confirmation. `DirectIoBuf.wrapExternal` builds
- *   `DirectByteBufferBacking` + `Segment` + `DirectIoBuf`, plus an
- *   ad-hoc [SegmentOwner] that forwards `release` to `ByteBuf.release`
- *   (the role played by the removed `NettyByteBufOwner`).
+ *   `DirectIoBuf` wrapping.
+ * - **C (generic-wrap path)**: `DirectIoBuf.wrapExternal` + an ad-hoc
+ *   [IoBufOwner] that forwards `release` to `ByteBuf.release`. Kept
+ *   here as the comparator for the engine-direct shape.
  *
  * Uses `com.sun.management.ThreadMXBean.getThreadAllocatedBytes` to
  * count current-thread allocation deltas. Excludes the initial warmup
@@ -80,7 +77,7 @@ class NettyReadPathAllocationBenchmark {
         buf.release()
     }
 
-    /** C: segment-backed wrap via `DirectIoBuf.wrapExternal` + ad-hoc owner (pre-2026-05-20 path). */
+    /** C: generic wrap via `DirectIoBuf.wrapExternal` + ad-hoc owner. */
     private fun pathC(payload: ByteArray) {
         val byteBuf: ByteBuf = nettyAlloc.directBuffer(payload.size).writeBytes(payload)
         val readable = byteBuf.readableBytes()
@@ -88,8 +85,8 @@ class NettyReadPathAllocationBenchmark {
         val buf = DirectIoBuf.wrapExternal(
             buffer = nio,
             bytesWritten = readable,
-            owner = object : SegmentOwner {
-                override fun release(segment: Segment) {
+            owner = object : IoBufOwner {
+                override fun release(buf: IoBuf) {
                     byteBuf.release()
                 }
             },
@@ -110,8 +107,8 @@ class NettyReadPathAllocationBenchmark {
         println("=== NettyReadPath allocation (bytes / packet, payload=${PAYLOAD}B, iters=$ITERS × $TRIALS trials) ===")
         println("  A (alloc+copy, pool-warm)        median=$medA bytes  samples=${trialsA.toList()}")
         println("  B (engine-direct wrap, current)  median=$medB bytes  samples=${trialsB.toList()}")
-        println("  C (segment-backed wrap, old)     median=$medC bytes  samples=${trialsC.toList()}")
-        println("  Δ (B-C)                          ${medB - medC} bytes / packet (engine-direct vs segment-backed)")
+        println("  C (generic-wrap path)            median=$medC bytes  samples=${trialsC.toList()}")
+        println("  Δ (B-C)                          ${medB - medC} bytes / packet (engine-direct vs generic-wrap)")
         println("  Δ (B-A)                          ${medB - medA} bytes / packet (wrap vs copy baseline)")
     }
 

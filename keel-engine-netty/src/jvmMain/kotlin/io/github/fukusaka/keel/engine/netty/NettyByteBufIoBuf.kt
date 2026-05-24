@@ -8,7 +8,8 @@ import java.nio.ByteBuffer
 
 /**
  * [IoBuf] implementation backed directly by a Netty [ByteBuf]
- * (engine-direct — no [io.github.fukusaka.keel.buf.Segment]).
+ * (engine-direct — does not extend
+ * [io.github.fukusaka.keel.buf.AbstractIoBuf]).
  *
  * Used by two paths on the Netty engine:
  *
@@ -25,17 +26,18 @@ import java.nio.ByteBuffer
  *   handler wraps the incoming `ByteBuf` via [wrapInbound] (zero-copy,
  *   ownership transferred to the wrapper). [baseOffset] biases keel
  *   indices to the `ByteBuf`'s current `readerIndex` so keel sees the
- *   readable region as `[0, readableBytes)`. This replaces the previous
- *   path that built a `DirectIoBuf` + `Segment` + `RawSegmentBacking` +
- *   `NettyByteBufOwner` (4 allocations per receive) with a single
- *   `NettyByteBufIoBuf` allocation per receive.
+ *   readable region as `[0, readableBytes)`. This replaces a generic
+ *   `DirectIoBuf.wrapExternal` + ad-hoc
+ *   [io.github.fukusaka.keel.buf.IoBufOwner] closure path with a
+ *   single `NettyByteBufIoBuf` allocation per receive.
  *
  * **Refcount bridging**: Netty `ByteBuf.refCnt` is atomic (multi-threaded
  * pool safety); keel [IoBuf] refcount is non-atomic (EventLoop-confined).
  * keel's refcount is the logical ref count; the underlying `ByteBuf`
  * carries one reserve that is released when keel's refcount drops to
- * zero (engine-direct: no [io.github.fukusaka.keel.buf.Segment], the
- * wrapper self-manages the `ByteBuf` reserve in [release]). Explicit
+ * zero (engine-direct: does not extend
+ * [io.github.fukusaka.keel.buf.AbstractIoBuf], the wrapper
+ * self-manages the `ByteBuf` reserve in [release]). Explicit
  * extra holds on the `ByteBuf` (e.g. `retainedSlice` during flush) are
  * independent of the keel-side count.
  *
@@ -154,7 +156,7 @@ internal class NettyByteBufIoBuf(
     override fun release(): Boolean {
         check(refCount > 0) { "Buffer already released" }
         if (--refCount == 0) {
-            // Engine-direct: no Segment. Release the backing Netty ByteBuf
+            // Engine-direct: no IoBufOwner dispatch. Release the backing Netty ByteBuf
             // reserve directly. ByteBuf.release() is thread-safe (atomic CAS).
             byteBuf.release()
             return true
