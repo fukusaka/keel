@@ -47,6 +47,8 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * the handler joins for the duration of the connection so
  * [KeelHttpServer.stop] can drain it. [queryParameterConfig] bounds the
  * query-string parsing of every request (see [QueryParameterConfig]).
+ * [headerLimits] is the matching DoS guard for header parsing
+ * (currently `maxHeaderCount`); see [HttpHeaderLimitsConfig].
  */
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
