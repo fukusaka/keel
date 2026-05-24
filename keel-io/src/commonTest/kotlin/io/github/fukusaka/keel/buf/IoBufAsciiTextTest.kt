@@ -220,6 +220,45 @@ class IoBufAsciiTextTest {
     }
 
     @Test
+    fun `toString caches the materialised String across repeated calls`() {
+        val buf = bufOf("Content-Type")
+        try {
+            val seq = IoBufAsciiText(buf, 0, 12)
+            val first = seq.toString()
+            val second = seq.toString()
+            val third = seq.toString()
+            // Reference identity: every subsequent toString must return
+            // the exact same String instance the first call materialised,
+            // not just an equal one. Catches a regression where the cache
+            // is dropped and each call re-allocates.
+            assertTrue(first === second, "second toString() did not hit the cache")
+            assertTrue(second === third, "third toString() did not hit the cache")
+            assertEquals("Content-Type", first)
+        } finally {
+            buf.release()
+        }
+    }
+
+    @Test
+    fun `toString cache is per-instance — independent views materialise independently`() {
+        val buf = bufOf("Content-Type")
+        try {
+            // Two distinct IoBufAsciiText instances over the same buffer
+            // range. The cache lives on the instance, not the buffer, so
+            // each view materialises its own String (different identity)
+            // but both equal the expected content.
+            val a = IoBufAsciiText(buf, 0, 12)
+            val b = IoBufAsciiText(buf, 0, 12)
+            val sa = a.toString()
+            val sb = b.toString()
+            assertEquals(sa, sb)
+            assertTrue(sa !== sb, "expected per-instance cache, got shared identity")
+        } finally {
+            buf.release()
+        }
+    }
+
+    @Test
     fun `start plus length must fit within buf capacity`() {
         val buf = bufOf("abc")
         // buf capacity is at least 3 (depends on allocator backing); the

@@ -71,6 +71,23 @@ class IoBufAsciiText(
     private var cachedHashCode: Int = 0
 
     /**
+     * Cached `toString` result. `null` means "not yet computed"; a
+     * non-null value is the materialised `String` for this view's
+     * `(buf, start, length)` triple. The view's backing bytes are
+     * required by the lifetime contract not to mutate while the view
+     * is alive, so caching the materialisation is safe — a subsequent
+     * `toString` returns the same `String` instance.
+     *
+     * Eliminates repeated `String` allocation when a caller materialises
+     * the same view multiple times (e.g. a routing handler reads
+     * `headers["X"].toString()` more than once, or an adapter forwards
+     * the same `CharSequence` through several `String`-typed APIs).
+     * Symmetric with [cachedHashCode], which `java.lang.String` likewise
+     * caches lazily.
+     */
+    private var cachedString: String? = null
+
+    /**
      * Returns the byte at byte offset [index] in the view, interpreted
      * as an ISO-8859-1 [Char]. Use [toString] for Unicode-decoded
      * conversion.
@@ -102,10 +119,19 @@ class IoBufAsciiText(
      * value. This matches [get] so the [CharSequence] contract holds
      * (`length == toString().length`, `get(i) == toString()[i]`).
      *
-     * Allocates a `CharArray` of [length] chars and constructs a
-     * [String] from it.
+     * First call allocates a `CharArray` of [length] chars and
+     * constructs a [String] from it; the result is cached in
+     * [cachedString] so subsequent calls return the same instance with
+     * zero allocation.
      */
-    override fun toString(): String = ioBufToLatin1String(buf, start, length)
+    override fun toString(): String {
+        var s = cachedString
+        if (s == null) {
+            s = ioBufToLatin1String(buf, start, length)
+            cachedString = s
+        }
+        return s
+    }
 
     /**
      * Per-char [hashCode] using the same algorithm as [String.hashCode]
