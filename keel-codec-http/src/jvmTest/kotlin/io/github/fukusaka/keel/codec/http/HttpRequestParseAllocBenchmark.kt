@@ -85,8 +85,46 @@ class HttpRequestParseAllocBenchmark {
     }.encodeToByteArray()
 
     private fun feed(): IoBuf {
-        val buf = DefaultAllocator.allocate(request.size)
+        // Same power-of-two capacity as the split scenarios so the codec
+        // layer's chain-global multi-segment addressing sees a uniform 2^N
+        // segment across single-buffer and cross-read inputs alike (the
+        // capacity guard rejects non-power-of-two on first range-add). The
+        // actual data length is still `request.size`; the extra slack is
+        // pooled-allocator headroom that real-world recv buffers carry too.
+        val buf = DefaultAllocator.allocate(CROSS_READ_SEGMENT_SIZE)
         buf.writeByteArray(request, 0, request.size)
+        return buf
+    }
+
+    // Offset of the first line boundary at/after the head midpoint — every
+    // header line after this lands in the second IoBuf, exercising the
+    // cross-read code path in HttpRequestDecoder.parseHeaderLineFast /
+    // HttpHeaders.addRange.
+    private val splitOffset: Int = run {
+        val mid = request.size / 2
+        var i = mid
+        while (i < request.size && !(request[i] == '\r'.code.toByte() && request[i + 1] == '\n'.code.toByte())) i++
+        i + 2 // just past the CRLF, so the second buffer starts on a fresh line
+    }
+
+    // Both split halves are allocated at the same power-of-two capacity
+    // [CROSS_READ_SEGMENT_SIZE] (which is the engine-default segment size
+    // — see `IoTransport.DEFAULT_READ_BUFFER_SIZE`) so that the chain-global
+    // multi-segment addressing the codec layer relies on actually engages:
+    // `buf1.capacity == buf2.capacity == 2^N`. Allocating the exact data
+    // length instead (`DefaultAllocator.allocate(splitOffset)`) would give
+    // mis-matched capacities and force the capacity-guard fallback, which
+    // would not represent the production path (where both halves come from
+    // the same pooled allocator size class).
+    private fun feedSplitFirst(): IoBuf {
+        val buf = DefaultAllocator.allocate(CROSS_READ_SEGMENT_SIZE)
+        buf.writeByteArray(request, 0, splitOffset)
+        return buf
+    }
+
+    private fun feedSplitSecond(): IoBuf {
+        val buf = DefaultAllocator.allocate(CROSS_READ_SEGMENT_SIZE)
+        buf.writeByteArray(request, splitOffset, request.size - splitOffset)
         return buf
     }
 
@@ -121,6 +159,28 @@ class HttpRequestParseAllocBenchmark {
         collector.lastHead = null
     }
 
+    // Cross-read: head delivered as two IoBufs split at a mid-head line
+    // boundary. Header lines in the second buffer hit the String fallback
+    // (backing buf !== cur). Measures the alloc ceiling that a multi-segment
+    // zero-copy backing could recover vs the single-buffer `parseOnly`.
+    private fun parseSplitOnly() {
+        channel.pipeline.notifyRead(feedSplitFirst())
+        channel.pipeline.notifyRead(feedSplitSecond())
+        collector.lastHead?.headers?.release()
+        collector.lastHead = null
+    }
+
+    private fun parseSplitAndMaterializeAll() {
+        channel.pipeline.notifyRead(feedSplitFirst())
+        channel.pipeline.notifyRead(feedSplitSecond())
+        val h = collector.lastHead?.headers
+        if (h != null) {
+            h.forEach { name, value -> sink += name.length + value.length }
+            h.release()
+        }
+        collector.lastHead = null
+    }
+
     @Suppress("unused")
     private var sink = 0
 
@@ -141,15 +201,30 @@ class HttpRequestParseAllocBenchmark {
         val parse = median(TRIALS) { measure(ITERS, ::parseOnly) }
         val parseAccess = median(TRIALS) { measure(ITERS, ::parseAndAccess) }
         val parseAll = median(TRIALS) { measure(ITERS, ::parseAndMaterializeAll) }
+        val parseSplit = median(TRIALS) { measure(ITERS, ::parseSplitOnly) }
+        val parseSplitAll = median(TRIALS) { measure(ITERS, ::parseSplitAndMaterializeAll) }
         println("=== HttpRequest parse alloc (CDN N=23, bytes/cycle, iters=$ITERS × $TRIALS) ===")
-        println("  A — parse + release only:        $parse bytes/cycle")
-        println("  B — parse + access 3 headers:    $parseAccess bytes/cycle")
-        println("  C — parse + materialise ALL:     $parseAll bytes/cycle")
+        println("  A — parse + release only:           $parse bytes/cycle")
+        println("  B — parse + access 3 headers:       $parseAccess bytes/cycle")
+        println("  C — parse + materialise ALL:        $parseAll bytes/cycle")
+        println("  --- cross-read (split at offset $splitOffset / ${request.size}) ---")
+        println("  D — split parse + release only:     $parseSplit bytes/cycle")
+        println("  E — split parse + materialise ALL:  $parseSplitAll bytes/cycle")
+        println("  ROI ceiling (D-A, parse-only):      ${parseSplit - parse} bytes/cycle")
     }
 
     companion object {
         private const val WARMUP = 3_000
         private const val ITERS = 20_000
         private const val TRIALS = 5
+
+        /**
+         * Capacity each half of the cross-read split scenario is allocated
+         * at — matches [io.github.fukusaka.keel.pipeline.IoTransport.DEFAULT_READ_BUFFER_SIZE]
+         * so the bench mirrors the production-pooled allocator size class
+         * and the codec layer's chain-global multi-segment addressing
+         * engages (`buf1.capacity == buf2.capacity == 2^N`).
+         */
+        private const val CROSS_READ_SEGMENT_SIZE = 8192
     }
 }

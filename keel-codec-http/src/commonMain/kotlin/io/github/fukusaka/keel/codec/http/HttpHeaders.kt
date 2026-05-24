@@ -46,8 +46,30 @@ class HttpHeaders {
     // Lazily allocated string store for non-range entries.
     private var stringBacking: ArrayList<String>? = null
 
-    // Retained recv buffer backing every range entry's view (see addRange).
+    // Primary backing buffer (chain index 0) for range entries; retained on
+    // the first [addRange] call. The common single-buffer case keeps the
+    // [extraBackings] list `null` so the read path is byte-identical to the
+    // pre-multi-segment state — see [bufFor].
     private var backing: IoBuf? = null
+
+    // Lazy list of additional backing buffers (chain indices 1..N) populated
+    // when a second distinct recv buffer contributes range entries on the
+    // same [HttpHeaders] instance — the cross-read case. With every buffer
+    // sharing a uniform 2^N capacity (enforced at config boundary by
+    // `IoEngineConfig.readBufferSize` / `TlsServerConfig.plaintextBufferSize`),
+    // range slots pack `(chainIndex shl [segmentLog2]) or posInSegment` into
+    // the existing `nameStart` / `valueStart` ints so the slot stride does
+    // not grow. A capacity mismatch (custom allocator / mixed pool classes)
+    // bypasses the chain and falls back to `String` materialisation via the
+    // existing side channel.
+    private var extraBackings: ArrayList<IoBuf>? = null
+
+    // `log2(buffer.capacity)` captured from the first [addRange] call. Used
+    // to decode the packed `nameStart` / `valueStart` ints back into
+    // `(chainIndex, posInSegment)` on the read path. `0` until set, which
+    // is fine because the common single-buffer path never reads it (the
+    // unpacked offset path short-circuits when [extraBackings] is null).
+    private var segmentLog2: Int = 0
 
     // Memoised `String` materialisation of range entries, parallel to the
     // slots, lazily allocated on the first String-returning access of a
@@ -150,7 +172,7 @@ class HttpHeaders {
         val base = i * STRIDE
         val ns = s[base + 1]
         if (ns == STRING_SENTINEL) return stringName(s[base + 2])
-        return IoBufAsciiText(backingBuf(), ns, s[base + 2])
+        return IoBufAsciiText(bufFor(i), nameStartOf(i), s[base + 2])
     }
 
     private fun valueOf(i: Int): CharSequence {
@@ -158,7 +180,7 @@ class HttpHeaders {
         val base = i * STRIDE
         val ns = s[base + 1]
         if (ns == STRING_SENTINEL) return stringValue(s[base + 2])
-        return IoBufAsciiText(backingBuf(), s[base + 3], s[base + 4])
+        return IoBufAsciiText(bufFor(i), valStartOf(i), s[base + 4])
     }
 
     /** Case-insensitive name compare without materialising the entry. */
@@ -167,7 +189,7 @@ class HttpHeaders {
         val base = i * STRIDE
         val ns = s[base + 1]
         if (ns == STRING_SENTINEL) return csEqualsIgnoreCase(stringName(s[base + 2]), name)
-        return bufEqualsIgnoreCase(backingBuf(), ns, s[base + 2], name)
+        return bufEqualsIgnoreCase(bufFor(i), nameStartOf(i), s[base + 2], name)
     }
 
     /** [valueOf] materialised to `String`, memoised for range entries. */
@@ -177,7 +199,7 @@ class HttpHeaders {
         if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2])
         val cache = ensureCache(valueStringCache)?.also { valueStringCache = it } ?: valueStringCache
         cache?.get(i)?.let { return it }
-        val str = ioBufToLatin1String(backingBuf(), s[base + 3], s[base + 4])
+        val str = ioBufToLatin1String(bufFor(i), valStartOf(i), s[base + 4])
         cache?.set(i, str)
         return str
     }
@@ -190,7 +212,7 @@ class HttpHeaders {
         if (ns == STRING_SENTINEL) return stringName(s[base + 2])
         val cache = ensureCache(nameStringCache)?.also { nameStringCache = it } ?: nameStringCache
         cache?.get(i)?.let { return it }
-        val str = ioBufToLatin1String(backingBuf(), ns, s[base + 2])
+        val str = ioBufToLatin1String(bufFor(i), nameStartOf(i), s[base + 2])
         cache?.set(i, str)
         return str
     }
@@ -234,10 +256,28 @@ class HttpHeaders {
     }
 
     /**
-     * Adds a header whose name and value are byte ranges in [buf]
-     * (Variant Y parse path). Writes five ints into [slots]; allocates no
-     * per-header object. [buf] is retained on the first range-add and
-     * released on [resetForReuse] / [release].
+     * Adds a header whose name and value are byte ranges in [buf] (the
+     * Variant Y parse path). Writes five ints into [slots] without
+     * allocating any per-header object. The first range-add captures
+     * `[segmentLog2] = log2(buf.capacity)` and retains [buf] as the primary
+     * backing (chain index 0). A subsequent range-add with the same [buf]
+     * is a no-op for the backing chain — only the slot is written. A
+     * range-add with a different buffer of the **same uniform 2^N capacity**
+     * registers that buffer as a chain extension (`extraBackings`), retains
+     * it, and packs `(chainIndex shl segmentLog2) or posInSegment` into the
+     * slot's name/value start ints so the slot stride stays at 5. Read-side
+     * helpers ([bufFor] / [nameStartOf] / [valStartOf]) decode the packed
+     * value back into `(chainIndex, posInSegment)`.
+     *
+     * A buffer whose capacity does not match the captured invariant (custom
+     * allocator, non-power-of-two capacity, mismatched pool class) falls
+     * back to `String` materialisation via [add] so chain-global addressing
+     * never sees a non-uniform segment. In production the configured engine
+     * allocators (PR #597 / #598) deliver uniform 2^N buffers and this
+     * guard never fires; the fallback exists for tests, custom allocators,
+     * and defensive correctness.
+     *
+     * All retained buffers are released on [resetForReuse] / [release].
      */
     internal fun addRange(
         buf: IoBuf,
@@ -247,23 +287,76 @@ class HttpHeaders {
         valueStart: Int,
         valueLen: Int,
     ): HttpHeaders {
-        val cur = backing
-        if (cur != null && cur !== buf) {
-            // Cross-read / second pipelined request reusing this instance:
-            // materialise to detach from a buffer this instance does not
-            // retain.
+        val chainIndex = chainIndexFor(buf)
+        if (chainIndex < 0) {
+            // Capacity guard rejected the buffer (non-power-of-two or mismatched
+            // capacity vs the captured segment). Materialise to detach.
             add(
                 IoBufAsciiText(buf, nameStart, nameLen).toString(),
                 IoBufAsciiText(buf, valueStart, valueLen).toString(),
             )
             return this
         }
+        val log2 = segmentLog2
+        val packedNameStart = (chainIndex shl log2) or nameStart
+        val packedValStart = (chainIndex shl log2) or valueStart
+        appendSlot(hash, packedNameStart, nameLen, packedValStart, valueLen)
+        return this
+    }
+
+    /**
+     * Returns the chain index assigned to [buf], registering [buf] as the
+     * primary backing (index 0) or as a new extra (index ≥ 1) when first
+     * seen. Returns `-1` when [buf] cannot participate in the chain — its
+     * capacity is not a power of two, or it differs from the segment size
+     * captured on the first range-add.
+     */
+    private fun chainIndexFor(buf: IoBuf): Int {
+        val cur = backing
         if (cur == null) {
+            val cap = buf.capacity
+            if (cap <= 0 || (cap and (cap - 1)) != 0) return -1
+            // `Int.countTrailingZeroBits()` is `log2(cap)` for a power of
+            // two — the same primitive used by `LongObjectMap.shift` and
+            // `HttpResponseEncoder.size.countLeadingZeroBits / 4`.
+            segmentLog2 = cap.countTrailingZeroBits()
             backing = buf
             buf.retain()
+            return 0
         }
-        appendSlot(hash, nameStart, nameLen, valueStart, valueLen)
-        return this
+        if (cur === buf) return 0
+        if (buf.capacity != cur.capacity) return -1
+        val list = extraBackings ?: ArrayList<IoBuf>(2).also { extraBackings = it }
+        for (i in list.indices) if (list[i] === buf) return i + 1
+        list.add(buf)
+        buf.retain()
+        return list.size
+    }
+
+    /**
+     * Resolves the backing [IoBuf] for slot [i]. Common single-buffer case
+     * short-circuits on [extraBackings] being `null` so the read path is
+     * byte-identical to the pre-multi-segment state.
+     */
+    private fun bufFor(i: Int): IoBuf {
+        val extras = extraBackings ?: return backingBuf()
+        val packed = slotsOrFail()[i * STRIDE + 1]
+        val idx = packed ushr segmentLog2
+        return if (idx == 0) backingBuf() else extras[idx - 1]
+    }
+
+    /** Decodes the packed `nameStart` int for slot [i] into the buffer-local offset. */
+    private fun nameStartOf(i: Int): Int {
+        val packed = slotsOrFail()[i * STRIDE + 1]
+        val log2 = segmentLog2
+        return if (log2 == 0 || extraBackings == null) packed else packed and ((1 shl log2) - 1)
+    }
+
+    /** Decodes the packed `valueStart` int for slot [i] into the buffer-local offset. */
+    private fun valStartOf(i: Int): Int {
+        val packed = slotsOrFail()[i * STRIDE + 3]
+        val log2 = segmentLog2
+        return if (log2 == 0 || extraBackings == null) packed else packed and ((1 shl log2) - 1)
     }
 
     private fun appendSlot(hash: Int, nameStart: Int, nameLen: Int, valStart: Int, valLen: Int) {
@@ -475,6 +568,25 @@ class HttpHeaders {
         HttpHeadersPool.giveBack(this)
     }
 
+    /**
+     * Test-only accessor: number of slots that hold byte-range entries
+     * (`nameStart != [STRING_SENTINEL]`). With chain-global multi-segment
+     * addressing a cross-read parse over uniform 2^N buffers leaves every
+     * header as a range entry, so this matches [size]; a fall back to
+     * `String` materialisation (capacity guard mismatch, or the historical
+     * pre-chain-global code path) reduces the count by every fallback slot.
+     */
+    internal val rangeEntryCount: Int
+        get() {
+            if (slotCount == 0) return 0
+            val s = slots ?: return 0
+            var n = 0
+            for (i in 0 until slotCount) {
+                if (s[i * STRIDE + 1] != STRING_SENTINEL) n++
+            }
+            return n
+        }
+
     internal fun resetForReuse() {
         slotCount = 0
         // Keep the (pooled) slots / bucket arrays for the next borrower;
@@ -485,10 +597,17 @@ class HttpHeaders {
         // request's bytes); keep the arrays for the next borrower.
         valueStringCache?.fill(null)
         nameStringCache?.fill(null)
-        // Release the recv buffer retained by [addRange] so views do not
-        // outlive their backing bytes.
+        // Release every recv buffer retained by [addRange] / [chainIndexFor]
+        // so range-entry views do not outlive their backing bytes. Both the
+        // primary [backing] and every chain extension in [extraBackings]
+        // were retained with `buf.retain()` at registration time.
         backing?.release()
         backing = null
+        extraBackings?.let { extras ->
+            for (i in extras.indices) extras[i].release()
+            extras.clear()
+        }
+        segmentLog2 = 0
     }
 
     internal fun markPooled() {
