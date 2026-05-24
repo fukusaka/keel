@@ -151,10 +151,9 @@ class DirectIoBuf private constructor(
     }
 
     override fun close() {
-        // Escape hatch. The direct ByteBuffer is GC-managed so the raw
-        // memory free is a no-op; pool slots / external handles are
-        // intentionally skipped. RawSegmentBacking.free()'s old
-        // idempotence is preserved by freeBacking() being a no-op here.
+        // Escape hatch. The direct ByteBuffer is GC-managed so
+        // freeBacking() is a no-op; pool slots / external handles are
+        // intentionally skipped. Idempotent.
         freeBacking()
     }
 
