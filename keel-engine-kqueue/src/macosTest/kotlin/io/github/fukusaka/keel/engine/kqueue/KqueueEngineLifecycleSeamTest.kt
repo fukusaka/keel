@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNREFUSED
 import platform.posix.ECONNRESET
@@ -25,6 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Seam-level unit tests for `KqueueEngine` lifecycle branches via
@@ -69,41 +71,45 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connectInet Failed ECONNREFUSED throws with errno message`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(100)
-            enqueueConnect(fd = 100, ConnectResult.Failed(ECONNREFUSED))
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 12345))
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(100)
+                enqueueConnect(fd = 100, ConnectResult.Failed(ECONNREFUSED))
             }
-            assertTrue(
-                ex.message!!.contains("Connection refused"),
-                "message must include errno text, got: ${ex.message}",
-            )
-            assertEquals(1, fakeOps.openClientSocketCalls)
-            assertEquals(1, fakeOps.connectCalls)
-            fakeOps.assertAllConsumed()
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 12345))
+                }
+                assertTrue(
+                    ex.message!!.contains("Connection refused"),
+                    "message must include errno text, got: ${ex.message}",
+                )
+                assertEquals(1, fakeOps.openClientSocketCalls)
+                assertEquals(1, fakeOps.connectCalls)
+                fakeOps.assertAllConsumed()
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connectInet Failed ECONNRESET throws with errno message`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(101)
-            enqueueConnect(fd = 101, ConnectResult.Failed(ECONNRESET))
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("10.0.0.1")), 8080))
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(101)
+                enqueueConnect(fd = 101, ConnectResult.Failed(ECONNRESET))
             }
-            assertTrue(ex.message!!.contains("Connection reset"), "got: ${ex.message}")
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("10.0.0.1")), 8080))
+                }
+                assertTrue(ex.message!!.contains("Connection reset"), "got: ${ex.message}")
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -111,28 +117,30 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connectInet Connected returns channel with scripted addresses`() = runBlocking {
-        val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
-        val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(200)
-            enqueueConnect(fd = 200, ConnectResult.Connected)
-            enqueueRemoteAddress(200, remote)
-            enqueueLocalAddress(200, local)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val channel = engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
-            assertNotNull(channel)
-            assertEquals(remote, channel.remoteAddress)
-            assertEquals(local, channel.localAddress)
-            assertEquals(1, fakeOps.openClientSocketCalls)
-            assertEquals(1, fakeOps.connectCalls)
-            assertEquals(1, fakeOps.getRemoteAddressCalls)
-            assertEquals(1, fakeOps.getLocalAddressCalls)
-            fakeOps.assertAllConsumed()
-            channel.close()
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
+            val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(200)
+                enqueueConnect(fd = 200, ConnectResult.Connected)
+                enqueueRemoteAddress(200, remote)
+                enqueueLocalAddress(200, local)
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val channel = engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+                assertNotNull(channel)
+                assertEquals(remote, channel.remoteAddress)
+                assertEquals(local, channel.localAddress)
+                assertEquals(1, fakeOps.openClientSocketCalls)
+                assertEquals(1, fakeOps.connectCalls)
+                assertEquals(1, fakeOps.getRemoteAddressCalls)
+                assertEquals(1, fakeOps.getLocalAddressCalls)
+                fakeOps.assertAllConsumed()
+                channel.close()
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -140,41 +148,45 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connectUnix Failed ECONNREFUSED throws with errno message`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenUnixClientSocket(300)
-            enqueueConnectUnix(fd = 300, ConnectResult.Failed(ECONNREFUSED))
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.connect(UnixSocketAddress("/tmp/keel-fake.sock"))
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenUnixClientSocket(300)
+                enqueueConnectUnix(fd = 300, ConnectResult.Failed(ECONNREFUSED))
             }
-            assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
-            assertEquals(1, fakeOps.openUnixClientSocketCalls)
-            assertEquals(1, fakeOps.connectUnixCalls)
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.connect(UnixSocketAddress("/tmp/keel-fake.sock"))
+                }
+                assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
+                assertEquals(1, fakeOps.openUnixClientSocketCalls)
+                assertEquals(1, fakeOps.connectUnixCalls)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connectUnix Connected returns channel`() = runBlocking {
-        val addr = UnixSocketAddress("/tmp/keel-fake.sock")
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenUnixClientSocket(400)
-            enqueueConnectUnix(fd = 400, ConnectResult.Connected)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val channel = engine.connect(addr)
-            assertNotNull(channel)
-            assertEquals(addr, channel.remoteAddress)
-            assertEquals(0, fakeOps.getRemoteAddressCalls)
-            assertEquals(0, fakeOps.getLocalAddressCalls)
-            fakeOps.assertAllConsumed()
-            channel.close()
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val addr = UnixSocketAddress("/tmp/keel-fake.sock")
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenUnixClientSocket(400)
+                enqueueConnectUnix(fd = 400, ConnectResult.Connected)
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val channel = engine.connect(addr)
+                assertNotNull(channel)
+                assertEquals(addr, channel.remoteAddress)
+                assertEquals(0, fakeOps.getRemoteAddressCalls)
+                assertEquals(0, fakeOps.getLocalAddressCalls)
+                fakeOps.assertAllConsumed()
+                channel.close()
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -182,47 +194,51 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connectInet InProgress then SO_ERROR non-zero throws`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(800)
-            enqueueConnect(fd = 800, ConnectResult.InProgress)
-            enqueueSocketError(800, platform.posix.ECONNREFUSED)
-        }
-        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(800)
+                enqueueConnect(fd = 800, ConnectResult.InProgress)
+                enqueueSocketError(800, platform.posix.ECONNREFUSED)
             }
-            assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
-            assertEquals(1, fakeOps.connectCalls)
-            assertEquals(1, fakeOps.getSocketErrorCalls)
-            fakeOps.assertAllConsumed()
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+                }
+                assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
+                assertEquals(1, fakeOps.connectCalls)
+                assertEquals(1, fakeOps.getSocketErrorCalls)
+                fakeOps.assertAllConsumed()
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connectInet InProgress then SO_ERROR zero returns channel`() = runBlocking {
-        val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
-        val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(801)
-            enqueueConnect(fd = 801, ConnectResult.InProgress)
-            enqueueSocketError(801, 0)
-            enqueueRemoteAddress(801, remote)
-            enqueueLocalAddress(801, local)
-        }
-        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
-        try {
-            val channel = engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
-            assertNotNull(channel)
-            assertEquals(remote, channel.remoteAddress)
-            assertEquals(local, channel.localAddress)
-            assertEquals(1, fakeOps.getSocketErrorCalls)
-            fakeOps.assertAllConsumed()
-            channel.close()
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
+            val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(801)
+                enqueueConnect(fd = 801, ConnectResult.InProgress)
+                enqueueSocketError(801, 0)
+                enqueueRemoteAddress(801, remote)
+                enqueueLocalAddress(801, local)
+            }
+            val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+            try {
+                val channel = engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+                assertNotNull(channel)
+                assertEquals(remote, channel.remoteAddress)
+                assertEquals(local, channel.localAddress)
+                assertEquals(1, fakeOps.getSocketErrorCalls)
+                fakeOps.assertAllConsumed()
+                channel.close()
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -230,21 +246,23 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connectUnix InProgress then SO_ERROR non-zero throws`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenUnixClientSocket(802)
-            enqueueConnectUnix(fd = 802, ConnectResult.InProgress)
-            enqueueSocketError(802, platform.posix.ECONNREFUSED)
-        }
-        val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.connect(UnixSocketAddress("/tmp/keel-fake.sock"))
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenUnixClientSocket(802)
+                enqueueConnectUnix(fd = 802, ConnectResult.InProgress)
+                enqueueSocketError(802, platform.posix.ECONNREFUSED)
             }
-            assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
-            assertEquals(1, fakeOps.connectUnixCalls)
-            assertEquals(1, fakeOps.getSocketErrorCalls)
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps, suspendRegisterOverride = immediateSuspendRegister)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.connect(UnixSocketAddress("/tmp/keel-fake.sock"))
+                }
+                assertTrue(ex.message!!.contains("Connection refused"), "got: ${ex.message}")
+                assertEquals(1, fakeOps.connectUnixCalls)
+                assertEquals(1, fakeOps.getSocketErrorCalls)
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -252,24 +270,26 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `bindInet surfaces bindListener EADDRINUSE`() = runBlocking {
-        val expected = IllegalStateException("bind() failed: Address already in use")
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListenerThrows(expected)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.bind(InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 12345), BindConfig())
+        withTimeout(15.seconds) {
+            val expected = IllegalStateException("bind() failed: Address already in use")
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListenerThrows(expected)
             }
-            assertTrue(
-                ex.message!!.contains("Address already in use"),
-                "got: ${ex.message}",
-            )
-            assertEquals(1, fakeOps.bindListenerCalls)
-            assertEquals(0, fakeOps.getLocalAddressCalls)
-            fakeOps.assertAllConsumed()
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.bind(InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 12345), BindConfig())
+                }
+                assertTrue(
+                    ex.message!!.contains("Address already in use"),
+                    "got: ${ex.message}",
+                )
+                assertEquals(1, fakeOps.bindListenerCalls)
+                assertEquals(0, fakeOps.getLocalAddressCalls)
+                fakeOps.assertAllConsumed()
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -277,78 +297,84 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `connect with ConnectConfig applies socket options before connectNonBlocking`() = runBlocking {
-        val options = SocketOptions(
-            tcpNoDelay = true,
-            keepAlive = true,
-            receiveBufferSize = 65536,
-            sendBufferSize = 131072,
-        )
-        val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
-        val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(700)
-            enqueueConnect(fd = 700, ConnectResult.Connected)
-            enqueueRemoteAddress(700, remote)
-            enqueueLocalAddress(700, local)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val channel = engine.connect(
-                InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
-                ConnectConfig(socketOptions = options),
+        withTimeout(15.seconds) {
+            val options = SocketOptions(
+                tcpNoDelay = true,
+                keepAlive = true,
+                receiveBufferSize = 65536,
+                sendBufferSize = 131072,
             )
-            assertNotNull(channel)
-            assertEquals(
-                listOf(
-                    700 to SocketOption.TcpNoDelay(true),
-                    700 to SocketOption.KeepAlive(true),
-                    700 to SocketOption.ReceiveBufferSize(65536),
-                    700 to SocketOption.SendBufferSize(131072),
-                ),
-                fakeOps.appliedOptions,
-            )
-            assertEquals(4, fakeOps.setSocketOptionCalls)
-            channel.close()
-        } finally {
-            engine.close()
+            val remote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)
+            val local = InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 49152)
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(700)
+                enqueueConnect(fd = 700, ConnectResult.Connected)
+                enqueueRemoteAddress(700, remote)
+                enqueueLocalAddress(700, local)
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val channel = engine.connect(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
+                    ConnectConfig(socketOptions = options),
+                )
+                assertNotNull(channel)
+                assertEquals(
+                    listOf(
+                        700 to SocketOption.TcpNoDelay(true),
+                        700 to SocketOption.KeepAlive(true),
+                        700 to SocketOption.ReceiveBufferSize(65536),
+                        700 to SocketOption.SendBufferSize(131072),
+                    ),
+                    fakeOps.appliedOptions,
+                )
+                assertEquals(4, fakeOps.setSocketOptionCalls)
+                channel.close()
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect without ConnectConfig applies SocketOptions DEFAULT with TCP_NODELAY enabled`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(701)
-            enqueueConnect(fd = 701, ConnectResult.Connected)
-            enqueueRemoteAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
-            enqueueLocalAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)).close()
-            assertEquals(listOf(701 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(701)
+                enqueueConnect(fd = 701, ConnectResult.Connected)
+                enqueueRemoteAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+                enqueueLocalAddress(701, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80)).close()
+                assertEquals(listOf(701 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `connect with ConnectConfig partial options skips null properties`() = runBlocking {
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueOpenClientSocket(702)
-            enqueueConnect(fd = 702, ConnectResult.Connected)
-            enqueueRemoteAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
-            enqueueLocalAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            engine.connect(
-                InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
-                ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true)),
-            ).close()
-            assertEquals(listOf(702 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
-            assertEquals(1, fakeOps.setSocketOptionCalls)
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueOpenClientSocket(702)
+                enqueueConnect(fd = 702, ConnectResult.Connected)
+                enqueueRemoteAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80))
+                enqueueLocalAddress(702, InetSocketAddress(Host.Ip(IpAddress.parse("5.6.7.8")), 1))
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                engine.connect(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 80),
+                    ConnectConfig(socketOptions = SocketOptions(tcpNoDelay = true)),
+                ).close()
+                assertEquals(listOf(702 to SocketOption.TcpNoDelay(true)), fakeOps.appliedOptions)
+                assertEquals(1, fakeOps.setSocketOptionCalls)
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -363,75 +389,81 @@ class KqueueEngineLifecycleSeamTest {
 
     @Test
     fun `bindInet happy path returns StreamServer with scripted local address`() = runBlocking {
-        val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
-        check(sentinelFd >= 0) { "failed to create sentinel socket" }
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val server = engine.bind(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            )
-            assertEquals(scriptedLocal, server.localAddress)
-            assertTrue(server.isActive)
-            assertEquals(1, fakeOps.bindListenerCalls)
-            assertEquals(1, fakeOps.getLocalAddressCalls)
-            fakeOps.assertAllConsumed()
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
+            check(sentinelFd >= 0) { "failed to create sentinel socket" }
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                )
+                assertEquals(scriptedLocal, server.localAddress)
+                assertTrue(server.isActive)
+                assertEquals(1, fakeOps.bindListenerCalls)
+                assertEquals(1, fakeOps.getLocalAddressCalls)
+                fakeOps.assertAllConsumed()
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `bindUnix happy path returns StreamServer with passed address`() = runBlocking {
-        val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
-        check(sentinelFd >= 0) { "failed to create sentinel socket" }
-        val addr = UnixSocketAddress("/tmp/keel-fake.sock")
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindUnixListener(sentinelFd)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val server = engine.bind(addr, BindConfig())
-            assertEquals(addr, server.localAddress)
-            assertTrue(server.isActive)
-            assertEquals(1, fakeOps.bindUnixListenerCalls)
-            // bindUnix uses the caller-supplied address; no getLocalAddress lookup.
-            assertEquals(0, fakeOps.getLocalAddressCalls)
-            fakeOps.assertAllConsumed()
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = socket(AF_INET, SOCK_STREAM, 0)
+            check(sentinelFd >= 0) { "failed to create sentinel socket" }
+            val addr = UnixSocketAddress("/tmp/keel-fake.sock")
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindUnixListener(sentinelFd)
+            }
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val server = engine.bind(addr, BindConfig())
+                assertEquals(addr, server.localAddress)
+                assertTrue(server.isActive)
+                assertEquals(1, fakeOps.bindUnixListenerCalls)
+                // bindUnix uses the caller-supplied address; no getLocalAddress lookup.
+                assertEquals(0, fakeOps.getLocalAddressCalls)
+                fakeOps.assertAllConsumed()
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `bindUnix surfaces bindUnixListener permission denied`() = runBlocking {
-        val expected = IllegalStateException("bind(AF_UNIX) failed: Permission denied")
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindUnixListenerThrows(expected)
-        }
-        val engine = newEngine(fakeOps = fakeOps)
-        try {
-            val ex = assertFailsWith<IllegalStateException> {
-                engine.bind(UnixSocketAddress("/var/run/restricted.sock"), BindConfig())
+        withTimeout(15.seconds) {
+            val expected = IllegalStateException("bind(AF_UNIX) failed: Permission denied")
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindUnixListenerThrows(expected)
             }
-            assertTrue(ex.message!!.contains("Permission denied"), "got: ${ex.message}")
-            assertEquals(1, fakeOps.bindUnixListenerCalls)
-            fakeOps.assertAllConsumed()
-        } finally {
-            engine.close()
+            val engine = newEngine(fakeOps = fakeOps)
+            try {
+                val ex = assertFailsWith<IllegalStateException> {
+                    engine.bind(UnixSocketAddress("/var/run/restricted.sock"), BindConfig())
+                }
+                assertTrue(ex.message!!.contains("Permission denied"), "got: ${ex.message}")
+                assertEquals(1, fakeOps.bindUnixListenerCalls)
+                fakeOps.assertAllConsumed()
+            } finally {
+                engine.close()
+            }
         }
     }
 }

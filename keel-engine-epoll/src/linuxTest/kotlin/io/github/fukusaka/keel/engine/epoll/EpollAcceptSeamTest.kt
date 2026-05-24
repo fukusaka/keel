@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNABORTED
 import platform.posix.EMFILE
@@ -22,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Seam-level tests for `accept`-path branches on the epoll engine:
@@ -75,65 +77,69 @@ class EpollAcceptSeamTest {
 
     @Test
     fun `accept Failed ECONNABORTED throws with errno message`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
-        val fakeSocket = FakeNativeSocket().apply {
-            enqueueAccept(sentinelFd, AcceptResult.Failed(ECONNABORTED))
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bind(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            )
-            val ex = assertFailsWith<IllegalStateException> { server.accept() }
-            assertTrue(
-                ex.message!!.contains("Software caused connection abort") ||
-                    ex.message!!.contains("connection abort"),
-                "expected ECONNABORTED errno text, got: ${ex.message}",
-            )
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18080)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Failed(ECONNABORTED))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                )
+                val ex = assertFailsWith<IllegalStateException> { server.accept() }
+                assertTrue(
+                    ex.message!!.contains("Software caused connection abort") ||
+                        ex.message!!.contains("connection abort"),
+                    "expected ECONNABORTED errno text, got: ${ex.message}",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `accept Failed EMFILE throws with errno message`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18081)
-        val fakeSocket = FakeNativeSocket().apply {
-            enqueueAccept(sentinelFd, AcceptResult.Failed(EMFILE))
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bind(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            )
-            val ex = assertFailsWith<IllegalStateException> { server.accept() }
-            assertTrue(
-                ex.message!!.contains("Too many open files") ||
-                    ex.message!!.contains("open files"),
-                "expected EMFILE errno text, got: ${ex.message}",
-            )
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18081)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Failed(EMFILE))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                )
+                val ex = assertFailsWith<IllegalStateException> { server.accept() }
+                assertTrue(
+                    ex.message!!.contains("Too many open files") ||
+                        ex.message!!.contains("open files"),
+                    "expected EMFILE errno text, got: ${ex.message}",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -141,84 +147,88 @@ class EpollAcceptSeamTest {
 
     @Test
     fun `accept Accepted returns channel with setNonBlocking plus scripted addresses`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val clientFd = 4242
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18082)
-        val scriptedClientRemote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 5555)
-        val scriptedClientLocal = InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 18082)
-        val fakeSocket = FakeNativeSocket().apply {
-            enqueueAccept(sentinelFd, AcceptResult.Accepted(clientFd))
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-            enqueueRemoteAddress(clientFd, scriptedClientRemote)
-            enqueueLocalAddress(clientFd, scriptedClientLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bind(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            )
-            val channel = server.accept()
-            assertEquals(scriptedClientRemote, channel.remoteAddress)
-            assertEquals(scriptedClientLocal, channel.localAddress)
-            assertEquals(1, fakeSocket.acceptCalls)
-            assertEquals(listOf(clientFd), fakeOps.nonBlockingFds)
-            assertEquals(1, fakeOps.getRemoteAddressCalls)
-            // getLocalAddress is called twice: once for the bind listener fd
-            // (in bindInet) and once for the accepted client fd.
-            assertEquals(2, fakeOps.getLocalAddressCalls)
-            channel.close()
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val clientFd = 4242
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18082)
+            val scriptedClientRemote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 5555)
+            val scriptedClientLocal = InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 18082)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(clientFd))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+                enqueueRemoteAddress(clientFd, scriptedClientRemote)
+                enqueueLocalAddress(clientFd, scriptedClientLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                )
+                val channel = server.accept()
+                assertEquals(scriptedClientRemote, channel.remoteAddress)
+                assertEquals(scriptedClientLocal, channel.localAddress)
+                assertEquals(1, fakeSocket.acceptCalls)
+                assertEquals(listOf(clientFd), fakeOps.nonBlockingFds)
+                assertEquals(1, fakeOps.getRemoteAddressCalls)
+                // getLocalAddress is called twice: once for the bind listener fd
+                // (in bindInet) and once for the accepted client fd.
+                assertEquals(2, fakeOps.getLocalAddressCalls)
+                channel.close()
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `accept Accepted applies childSocketOptions before returning channel`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val clientFd = 4243
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18083)
-        val scriptedClientRemote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 5556)
-        val scriptedClientLocal = InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 18083)
-        val fakeSocket = FakeNativeSocket().apply {
-            enqueueAccept(sentinelFd, AcceptResult.Accepted(clientFd))
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-            enqueueRemoteAddress(clientFd, scriptedClientRemote)
-            enqueueLocalAddress(clientFd, scriptedClientLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bind(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(
-                    childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
-                ),
-            )
-            val channel = server.accept()
-            assertEquals(
-                listOf(
-                    clientFd to SocketOption.TcpNoDelay(true),
-                    clientFd to SocketOption.KeepAlive(true),
-                ),
-                fakeOps.appliedOptions,
-            )
-            channel.close()
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val clientFd = 4243
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18083)
+            val scriptedClientRemote = InetSocketAddress(Host.Ip(IpAddress.parse("1.2.3.4")), 5556)
+            val scriptedClientLocal = InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 18083)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(clientFd))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+                enqueueRemoteAddress(clientFd, scriptedClientRemote)
+                enqueueLocalAddress(clientFd, scriptedClientLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(
+                        childSocketOptions = SocketOptions(tcpNoDelay = true, keepAlive = true),
+                    ),
+                )
+                val channel = server.accept()
+                assertEquals(
+                    listOf(
+                        clientFd to SocketOption.TcpNoDelay(true),
+                        clientFd to SocketOption.KeepAlive(true),
+                    ),
+                    fakeOps.appliedOptions,
+                )
+                channel.close()
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
@@ -232,65 +242,69 @@ class EpollAcceptSeamTest {
 
     @Test
     fun `onAcceptable Failed logs and re-arms without dispatching`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18084)
-        val fakeSocket = FakeNativeSocket().apply {
-            // First call on onAcceptable() returns Failed; after Failed the
-            // engine re-arms without calling accept again.
-            enqueueAccept(sentinelFd, AcceptResult.Failed(ECONNABORTED))
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bindPipeline(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            ) { /* no-op initializer */ }
-            val pipelined = server as EpollPipelinedStreamServer
-            pipelined.onAcceptable()
-            assertEquals(1, fakeSocket.acceptCalls)
-            // No Accepted → no setNonBlocking / address reads.
-            assertTrue(fakeOps.nonBlockingFds.isEmpty())
-            assertEquals(0, fakeOps.getRemoteAddressCalls)
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18084)
+            val fakeSocket = FakeNativeSocket().apply {
+                // First call on onAcceptable() returns Failed; after Failed the
+                // engine re-arms without calling accept again.
+                enqueueAccept(sentinelFd, AcceptResult.Failed(ECONNABORTED))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as EpollPipelinedStreamServer
+                pipelined.onAcceptable()
+                assertEquals(1, fakeSocket.acceptCalls)
+                // No Accepted → no setNonBlocking / address reads.
+                assertTrue(fakeOps.nonBlockingFds.isEmpty())
+                assertEquals(0, fakeOps.getRemoteAddressCalls)
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 
     @Test
     fun `onAcceptable WouldBlock re-arms without side effects`() = runBlocking {
-        val sentinelFd = newSentinelFd()
-        val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18085)
-        val fakeSocket = FakeNativeSocket().apply {
-            enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
-        }
-        val fakeOps = FakeNativeSocketOps().apply {
-            enqueueBindListener(sentinelFd)
-            enqueueLocalAddress(sentinelFd, scriptedLocal)
-        }
-        val engine = newEngine(fakeSocket, fakeOps)
-        try {
-            val server = engine.bindPipeline(
-                InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
-                BindConfig(),
-            ) { /* no-op */ }
-            val pipelined = server as EpollPipelinedStreamServer
-            pipelined.onAcceptable()
-            assertEquals(1, fakeSocket.acceptCalls)
-            assertTrue(fakeOps.nonBlockingFds.isEmpty())
-            server.close()
-        } catch (t: Throwable) {
-            close(sentinelFd)
-            throw t
-        } finally {
-            engine.close()
+        withTimeout(15.seconds) {
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18085)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op */ }
+                val pipelined = server as EpollPipelinedStreamServer
+                pipelined.onAcceptable()
+                assertEquals(1, fakeSocket.acceptCalls)
+                assertTrue(fakeOps.nonBlockingFds.isEmpty())
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.darwin.EVFILT_WRITE
 import platform.posix.EAGAIN
 import platform.posix.EBADF
@@ -15,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Seam-level unit tests for `KqueueEventLoop` syscall error branches
@@ -102,7 +104,7 @@ class KqueueEventLoopSeamTest {
         val el = KqueueEventLoop(logger, syscallOps = fake)
         try {
             val ex = assertFailsWith<IllegalStateException> {
-                runBlocking { el.awaitWriteReady(fd = 5000, logger = logger) }
+                runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd = 5000, logger = logger) } }
             }
             assertTrue(ex.message!!.contains("kevent"))
             assertTrue(ex.message!!.contains("5000"))
