@@ -4,13 +4,15 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 
 class BufferedSuspendSourceTest {
 
@@ -29,82 +31,102 @@ class BufferedSuspendSourceTest {
 
     @Test
     fun readLineSimple() = runTest {
-        val source = BufferedSuspendSource(sourceOf("hello\r\nworld\r\n"), DefaultAllocator)
-        assertEquals("hello", source.readLine())
-        assertEquals("world", source.readLine())
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("hello\r\nworld\r\n"), DefaultAllocator)
+            assertEquals("hello", source.readLine())
+            assertEquals("world", source.readLine())
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun readLineLfOnly() = runTest {
-        val source = BufferedSuspendSource(sourceOf("abc\ndef\n"), DefaultAllocator)
-        assertEquals("abc", source.readLine())
-        assertEquals("def", source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("abc\ndef\n"), DefaultAllocator)
+            assertEquals("abc", source.readLine())
+            assertEquals("def", source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun readLineEofWithoutNewline() = runTest {
-        val source = BufferedSuspendSource(sourceOf("no-newline"), DefaultAllocator)
-        assertEquals("no-newline", source.readLine())
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("no-newline"), DefaultAllocator)
+            assertEquals("no-newline", source.readLine())
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun readLineEmptySource() = runTest {
-        val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun readByte() = runTest {
-        val source = BufferedSuspendSource(sourceOf("AB"), DefaultAllocator)
-        assertEquals('A'.code.toByte(), source.readByte())
-        assertEquals('B'.code.toByte(), source.readByte())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("AB"), DefaultAllocator)
+            assertEquals('A'.code.toByte(), source.readByte())
+            assertEquals('B'.code.toByte(), source.readByte())
+            source.close()
+        }
     }
 
     @Test
     fun readByteEofThrows() = runTest {
-        val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
-        assertFailsWith<KeelEofException> { source.readByte() }
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
+            assertFailsWith<KeelEofException> { source.readByte() }
+            source.close()
+        }
     }
 
     @Test
     fun readByteArray() = runTest {
-        val source = BufferedSuspendSource(sourceOf("hello"), DefaultAllocator)
-        val bytes = source.readByteArray(5)
-        assertEquals("hello", bytes.decodeToString())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("hello"), DefaultAllocator)
+            val bytes = source.readByteArray(5)
+            assertEquals("hello", bytes.decodeToString())
+            source.close()
+        }
     }
 
     @Test
     fun readByteArrayEofThrows() = runTest {
-        val source = BufferedSuspendSource(sourceOf("hi"), DefaultAllocator)
-        assertFailsWith<KeelEofException> { source.readByteArray(5) }
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("hi"), DefaultAllocator)
+            assertFailsWith<KeelEofException> { source.readByteArray(5) }
+            source.close()
+        }
     }
 
     @Test
     fun readAtMostTo() = runTest {
-        val source = BufferedSuspendSource(sourceOf("data"), DefaultAllocator)
-        val dest = ByteArray(10)
-        val n = source.readAtMostTo(dest, 0, 10)
-        assertEquals(4, n)
-        assertEquals("data", dest.decodeToString(0, n))
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf("data"), DefaultAllocator)
+            val dest = ByteArray(10)
+            val n = source.readAtMostTo(dest, 0, 10)
+            assertEquals(4, n)
+            assertEquals("data", dest.decodeToString(0, n))
+            source.close()
+        }
     }
 
     @Test
     fun readAtMostToEof() = runTest {
-        val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
-        val dest = ByteArray(10)
-        assertEquals(-1, source.readAtMostTo(dest, 0, 10))
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(sourceOf(""), DefaultAllocator)
+            val dest = ByteArray(10)
+            assertEquals(-1, source.readAtMostTo(dest, 0, 10))
+            source.close()
+        }
     }
 
     // ============================================================
@@ -126,36 +148,42 @@ class BufferedSuspendSourceTest {
 
     @Test
     fun pullMode_releasesAllRefillBuffersAfterConsume() = runTest {
-        // Consuming a multi-refill stream and closing must leave no
-        // outstanding refill buffers — each drained buffer is released
-        // back to the allocator, none are leaked.
-        val tracker = TrackingAllocator(DefaultAllocator)
-        val source = BufferedSuspendSource(chunkedSourceOf("D".repeat(20000), 4096), tracker)
-        val result = source.readByteArray(20000)
-        assertEquals(20000, result.size)
-        source.close()
-        assertTrue(tracker.allocateCount >= 2, "expected multiple refills, got ${tracker.allocateCount}")
-        tracker.assertNoLeaks()
+        withTimeout(15.seconds) {
+            // Consuming a multi-refill stream and closing must leave no
+            // outstanding refill buffers — each drained buffer is released
+            // back to the allocator, none are leaked.
+            val tracker = TrackingAllocator(DefaultAllocator)
+            val source = BufferedSuspendSource(chunkedSourceOf("D".repeat(20000), 4096), tracker)
+            val result = source.readByteArray(20000)
+            assertEquals(20000, result.size)
+            source.close()
+            assertTrue(tracker.allocateCount >= 2, "expected multiple refills, got ${tracker.allocateCount}")
+            tracker.assertNoLeaks()
+        }
     }
 
     @Test
     fun pullMode_readLine_largerThanBuffer() = runTest {
-        // Line larger than BUFFER_SIZE (8192) — requires multiple refills.
-        val line = "y".repeat(20000) + "\n"
-        val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
-        assertEquals("y".repeat(20000), source.readLine())
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            // Line larger than BUFFER_SIZE (8192) — requires multiple refills.
+            val line = "y".repeat(20000) + "\n"
+            val source = BufferedSuspendSource(sourceOf(line), DefaultAllocator)
+            assertEquals("y".repeat(20000), source.readLine())
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun pullMode_readByteArray_acrossRefill() = runTest {
-        // Request more bytes than initial buffer fill provides.
-        val data = "Z".repeat(100)
-        val source = BufferedSuspendSource(chunkedSourceOf(data, 30), DefaultAllocator)
-        val result = source.readByteArray(100)
-        assertEquals(data, result.decodeToString())
-        source.close()
+        withTimeout(15.seconds) {
+            // Request more bytes than initial buffer fill provides.
+            val data = "Z".repeat(100)
+            val source = BufferedSuspendSource(chunkedSourceOf(data, 30), DefaultAllocator)
+            val result = source.readByteArray(100)
+            assertEquals(data, result.decodeToString())
+            source.close()
+        }
     }
 
     // ============================================================
@@ -178,72 +206,88 @@ class BufferedSuspendSourceTest {
 
     @Test
     fun pushMode_readLine() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("hello\r\nworld\r\n"))
-        assertEquals("hello", source.readLine())
-        assertEquals("world", source.readLine())
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("hello\r\nworld\r\n"))
+            assertEquals("hello", source.readLine())
+            assertEquals("world", source.readLine())
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readByte() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("AB"))
-        assertEquals('A'.code.toByte(), source.readByte())
-        assertEquals('B'.code.toByte(), source.readByte())
-        assertFailsWith<KeelEofException> { source.readByte() }
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("AB"))
+            assertEquals('A'.code.toByte(), source.readByte())
+            assertEquals('B'.code.toByte(), source.readByte())
+            assertFailsWith<KeelEofException> { source.readByte() }
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readByteAcrossChunks() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("A", "B", "C"))
-        assertEquals('A'.code.toByte(), source.readByte())
-        assertEquals('B'.code.toByte(), source.readByte())
-        assertEquals('C'.code.toByte(), source.readByte())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("A", "B", "C"))
+            assertEquals('A'.code.toByte(), source.readByte())
+            assertEquals('B'.code.toByte(), source.readByte())
+            assertEquals('C'.code.toByte(), source.readByte())
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readByteArray() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("ABCD", "EF"))
-        val result = source.readByteArray(6)
-        assertEquals("ABCDEF", result.decodeToString())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("ABCD", "EF"))
+            val result = source.readByteArray(6)
+            assertEquals("ABCDEF", result.decodeToString())
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readAtMostTo() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("hello"))
-        val dest = ByteArray(10)
-        val n = source.readAtMostTo(dest, 0, 10)
-        assertEquals(5, n)
-        assertEquals("hello", dest.copyOfRange(0, n).decodeToString())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("hello"))
+            val dest = ByteArray(10)
+            val n = source.readAtMostTo(dest, 0, 10)
+            assertEquals(5, n)
+            assertEquals("hello", dest.copyOfRange(0, n).decodeToString())
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readAtMostToEof() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf())
-        val dest = ByteArray(10)
-        assertEquals(-1, source.readAtMostTo(dest, 0, 10))
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf())
+            val dest = ByteArray(10)
+            assertEquals(-1, source.readAtMostTo(dest, 0, 10))
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_readLineAcrossChunks() = runTest {
-        // Line spans two chunks
-        val source = BufferedSuspendSource(pushSourceOf("hel", "lo\r\n"))
-        assertEquals("hello", source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            // Line spans two chunks
+            val source = BufferedSuspendSource(pushSourceOf("hel", "lo\r\n"))
+            assertEquals("hello", source.readLine())
+            source.close()
+        }
     }
 
     @Test
     fun pushMode_multipleLines() = runTest {
-        val source = BufferedSuspendSource(pushSourceOf("line1\r\nline2\r\n", "line3\r\n"))
-        assertEquals("line1", source.readLine())
-        assertEquals("line2", source.readLine())
-        assertEquals("line3", source.readLine())
-        assertNull(source.readLine())
-        source.close()
+        withTimeout(15.seconds) {
+            val source = BufferedSuspendSource(pushSourceOf("line1\r\nline2\r\n", "line3\r\n"))
+            assertEquals("line1", source.readLine())
+            assertEquals("line2", source.readLine())
+            assertEquals("line3", source.readLine())
+            assertNull(source.readLine())
+            source.close()
+        }
     }
 }
