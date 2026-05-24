@@ -53,9 +53,9 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     middlewares: List<Middleware>,
     errorHandlers: ErrorHandlers,
     queryParameterConfig: QueryParameterConfig,
-    headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
+    headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
 ) {
     addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits)
     pipeline.addLast(
