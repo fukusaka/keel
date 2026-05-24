@@ -607,6 +607,18 @@ class HttpHeaders {
             return n
         }
 
+    /**
+     * Capacity (in slot positions, not ints) of the underlying [slots]
+     * array — the high-water mark of `add` / `addRange` calls this
+     * instance has serviced and grown its storage to. Read by
+     * [HttpHeadersPool] to refuse to recycle an instance that grew
+     * past the pool's shrink threshold, so a single oversized request
+     * does not poison the per-thread pool with arrays many times the
+     * typical request's footprint.
+     */
+    internal val slotCapacity: Int
+        get() = (slots?.size ?: 0) / STRIDE
+
     internal fun resetForReuse() {
         slotCount = 0
         // Keep the (pooled) slots / bucket arrays for the next borrower;

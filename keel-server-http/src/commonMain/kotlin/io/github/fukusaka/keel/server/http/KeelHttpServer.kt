@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
@@ -46,6 +47,7 @@ public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
     private val connector: ServerConnector,
     private val queryParameterConfig: QueryParameterConfig,
+    private val headerLimits: HttpHeaderLimitsConfig,
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
@@ -90,6 +92,7 @@ public class KeelHttpServer internal constructor(
                 middlewares = middlewares,
                 errorHandlers = errorHandlers,
                 queryParameterConfig = queryParameterConfig,
+                headerLimits = headerLimits,
                 scope = scope,
                 connections = connections,
             )

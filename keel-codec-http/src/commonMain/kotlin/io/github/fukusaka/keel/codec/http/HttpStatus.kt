@@ -54,11 +54,13 @@ data class HttpStatus(val code: Int) {
         val GONE = HttpStatus(410)
         val LENGTH_REQUIRED = HttpStatus(411)
         val CONTENT_TOO_LARGE = HttpStatus(413)
+        val URI_TOO_LONG = HttpStatus(414)
         val UNSUPPORTED_MEDIA_TYPE = HttpStatus(415)
         val RANGE_NOT_SATISFIABLE = HttpStatus(416)
         val EXPECTATION_FAILED = HttpStatus(417)
         val IM_A_TEAPOT = HttpStatus(418)
         val TOO_MANY_REQUESTS = HttpStatus(429)
+        val REQUEST_HEADER_FIELDS_TOO_LARGE = HttpStatus(431)
 
         // 5xx Server Error
         val INTERNAL_SERVER_ERROR = HttpStatus(500)

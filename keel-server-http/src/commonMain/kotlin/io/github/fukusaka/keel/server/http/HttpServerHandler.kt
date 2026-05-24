@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.server.http
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
+import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMessage
@@ -46,6 +47,8 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * the handler joins for the duration of the connection so
  * [KeelHttpServer.stop] can drain it. [queryParameterConfig] bounds the
  * query-string parsing of every request (see [QueryParameterConfig]).
+ * [headerLimits] is the matching DoS guard for header parsing
+ * (currently `maxHeaderCount`); see [HttpHeaderLimitsConfig].
  */
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
@@ -54,8 +57,9 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     queryParameterConfig: QueryParameterConfig,
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
+    headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
 ) {
-    addHttp1ServerCodec(aggregateBody = false)
+    addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits)
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,
         HttpServerHandler(

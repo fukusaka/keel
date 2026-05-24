@@ -67,7 +67,17 @@ import kotlin.reflect.KClass
  * state and propagates the error downstream. The caller (typically the
  * application handler) is responsible for closing the connection.
  */
-class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
+class HttpRequestDecoder(
+    /**
+     * Per-request header limits enforced during parsing — currently a
+     * `maxHeaderCount` cap that aborts the parse with
+     * [HttpHeaderLimitExceededException] when the configured count is
+     * exceeded. Defaults to [HttpHeaderLimitsConfig.DEFAULT] (100
+     * headers). The same cap is applied to chunked-trailer blocks, so
+     * a malicious peer cannot bypass it by flooding trailers.
+     */
+    private val headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+) : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease = false) {
 
     override val producedType: KClass<*> get() = HttpMessage::class
 
@@ -415,6 +425,7 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         // lifetime of the views.
         val hash = HttpHeaders.caseInsensitiveHashOfBuf(buf, start, nameLen)
         headers.addRange(buf, hash, start, nameLen, valStart, valEnd - valStart)
+        enforceHeaderCountCap(headers.size)
     }
 
     private fun throwInvalidRequestLineFromBuf(buf: IoBuf, start: Int, length: Int): Nothing {
@@ -473,6 +484,26 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         val value = arrAsciiToString(arr, valStart, valEnd)
 
         headers.add(name, value)
+        enforceHeaderCountCap(headers.size)
+    }
+
+    /**
+     * Aborts the parse with [HttpHeaderLimitExceededException] when
+     * the number of header (or trailer) fields admitted so far exceeds
+     * the configured [HttpHeaderLimitsConfig.maxHeaderCount] cap. The
+     * check runs after the slot has been written so [actual] reflects
+     * the actual oversize value (one past the cap), which the caller
+     * surfaces verbatim in the error log.
+     */
+    private fun enforceHeaderCountCap(actualCount: Int) {
+        val cap = headerLimits.maxHeaderCount
+        if (actualCount > cap) {
+            throw HttpHeaderLimitExceededException(
+                limitName = "maxHeaderCount",
+                actual = actualCount,
+                limit = cap,
+            )
+        }
     }
 
     private fun throwInvalidRequestLineFromArr(arr: ByteArray, start: Int, length: Int): Nothing {
@@ -698,6 +729,7 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         val valEnd = trimRightInBuf(buf, valStart, end)
         val value = bufAsciiToString(buf, valStart, valEnd - valStart)
         trailers.add(name, value)
+        enforceHeaderCountCap(trailers.size)
     }
 
     /** Parses a trailer header line from the fallback-path ByteArray. */
@@ -722,6 +754,7 @@ class HttpRequestDecoder : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease 
         val valEnd = trimRightInArr(arr, valStart, end)
         val value = arrAsciiToString(arr, valStart, valEnd)
         trailers.add(name, value)
+        enforceHeaderCountCap(trailers.size)
     }
 
     private fun emitLastWithTrailers(ctx: PipelineHandlerContext) {

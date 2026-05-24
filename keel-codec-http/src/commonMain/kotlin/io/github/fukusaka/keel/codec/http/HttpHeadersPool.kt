@@ -78,10 +78,25 @@ internal object HttpHeadersPool {
      * [HttpHeaders.release] after [HttpHeaders.resetForReuse] has wiped
      * the per-request state. Callers must not retain the reference.
      *
-     * If this thread's pool is at [MAX_POOLED] capacity the instance is
-     * dropped (eligible for GC), bounding the per-thread footprint.
+     * Two reasons the instance may be dropped (eligible for GC) instead
+     * of being recycled:
+     *
+     * 1. The pool is already at [MAX_POOLED] capacity (the per-thread
+     *    cap shaped after Netty's `Recycler` model).
+     * 2. The instance's internal [HttpHeaders.slotCapacity] has grown
+     *    past [SHRINK_CAPACITY_THRESHOLD]. A request flooded with a
+     *    malicious number of headers would otherwise leave the
+     *    grown-back-`IntArray` slot storage in the pool, where every
+     *    subsequent borrower inherits it — a single attacker request
+     *    poisons the per-thread pool for the lifetime of the worker.
+     *    Dropping over-sized instances bounds the per-EventLoop
+     *    pooled footprint to roughly [MAX_POOLED] × the slot capacity
+     *    a normal request grows to. The dropped instance is reclaimed
+     *    by the GC; the pool refills on the next miss with a
+     *    fresh-from-allocator default-sized instance.
      */
     fun giveBack(headers: HttpHeaders) {
+        if (headers.slotCapacity > SHRINK_CAPACITY_THRESHOLD) return
         val stack = headersPoolStack()
         if (stack.size < MAX_POOLED) stack.addLast(headers)
     }
@@ -103,6 +118,21 @@ internal object HttpHeadersPool {
      * class KDoc memory-bound note).
      */
     internal const val MAX_POOLED: Int = 64
+
+    /**
+     * Slot-capacity ceiling above which a recycled instance is dropped
+     * instead of being pooled (see [giveBack]).
+     *
+     * Sized to `2 × HttpHeaderLimitsConfig.DEFAULT_MAX_HEADER_COUNT`
+     * (= 200 slots, ~5 KB at the 5-int stride) so a request that grows
+     * past *twice* the default header cap before the per-request count
+     * cap fires (the cap fires only against the configured value, not
+     * against this pool-side threshold) still does not poison the pool
+     * across all subsequent requests. The shrink is one-shot per
+     * instance: a normal request that never grew past the default
+     * `INITIAL_ENTRY_CAPACITY` allocation is recycled as before.
+     */
+    internal const val SHRINK_CAPACITY_THRESHOLD: Int = 200
 }
 
 /**

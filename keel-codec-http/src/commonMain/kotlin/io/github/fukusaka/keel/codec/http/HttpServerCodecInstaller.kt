@@ -30,9 +30,15 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   so downstream handlers receive [HttpRequest] (head + aggregated
  *   bytes). When false, downstream handlers see streaming `HttpBody` /
  *   `HttpBodyEnd` chunks directly.
+ * @param headerLimits per-request header limits enforced by the
+ *   installed [HttpRequestDecoder]; defaults to
+ *   [HttpHeaderLimitsConfig.DEFAULT] (100-header cap).
  */
-public fun PipelinedChannel.addHttp1ServerCodec(aggregateBody: Boolean = true) {
-    pipeline.addLast("decoder", HttpRequestDecoder())
+public fun PipelinedChannel.addHttp1ServerCodec(
+    aggregateBody: Boolean = true,
+    headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+) {
+    pipeline.addLast("decoder", HttpRequestDecoder(headerLimits))
     pipeline.addLast("encoder", HttpResponseEncoder())
     if (aggregateBody) {
         pipeline.addLast("aggregator", HttpBodyAggregator())
