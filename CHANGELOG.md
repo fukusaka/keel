@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- `io`: unused `BufferedSuspendSource.scanLine()` + `crossBufferScanLine()` + `IoBufView` class. Never reached the production HTTP hot path — `HttpRequestDecoder` scans IoBuf bytes directly via `IoBuf.getByte(index)` and uses a `ByteArray` accumulator for cross-IoBuf lines; the kotlinx-io adapter path (`HttpParser` suspend variants used by `respondBadRequest` fallback / tests / CLI) consumes `readLine(): String`. The zero-copy `CharSequence` need is served by `IoBufAsciiText` (#588) which uses a different abstraction. The `IoBufView.next` chain was carried forward from a planned `readLine → scanLine` migration that was experimented with on `feat/codec-http-zerocopy` (2026-03-27) and abandoned when the BufSlice lifetime issue surfaced; `HttpHeaders` byte-range view storage (#596) and `HttpRequestHead` byte-range URI (#601) resolve that lifetime concern via explicit IoBuf retain in HttpHeaders.
+
 ### Added
 
 - `tls`, `server`: per-server override of the TLS plaintext buffer size — the buffer the downstream codec sees as its "recv segment" on a TLS connection — via `TlsServerConfig.plaintextBufferSize: Int?` (null = default), forwarded to `TlsHandler` through a new three-argument `TlsServerInstaller.install` overload (default delegates to the two-argument overload so engine-native installers such as `NettySslInstaller` are unaffected). Validation: power of two in 16 KiB..1 MiB via `TlsHandler.requireValidPlaintextBufferSize`; default 16 KiB matches the RFC 8446 §5.1 ceiling and preserves the historical hardcoded value. Configurable plaintext buffer below 16 KiB stays a follow-up (RFC 8449 `record_size_limit` not yet advertised by any keel TLS backend) (#598)
