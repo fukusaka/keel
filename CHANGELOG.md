@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `tls-mbedtls`: hoist `psa_crypto_init` + cert / key / `mbedtls_ssl_config` parsing into `MbedTlsCodecFactory` so every codec produced by one factory shares a single read-after-setup `MbedTlsServerSession` via `mbedtls_ssl_setup(ssl, conf)`. Per-codec init raced in Mbed TLS 4.x's PSA Crypto global key store on the multi-worker `pipeline-http-epoll` path (PSA is not thread-safe in homebrew / Linux distro builds that disable `MBEDTLS_THREADING_C`), aborting the server under sustained load with `x509_crt_parse failed: MBEDTLS_ERR_PK_INVALID_PUBKEY (0x3B00)`. Post-fix the same HTTPS bench cell sustains 669 k req/s (#619)
+
 ### Changed
 
 - `io`: extract `AbstractIoBuf` (commonMain, `public abstract class` with `internal constructor`) so `NativeIoBuf` / `DirectIoBuf` / `TypedArrayIoBuf` share index pair + `refCount` + `owner` dispatch + `retain` / `release` / `clear` / `close` / `resetForReuse`. Throughput-neutral by construction (lifecycle methods are `final` overrides, per-byte primitives stay abstract on each concrete class). Loopback bench A/B (macOS + 32-core Linux, clean host) confirms regression-free: −4.5 % .. +4.4 % range, all within the loopback 4t/100c noise envelope. Adds `PoolAllocatorTest` decorator-nesting regression tests pinning the PR #613 correctness fix (pool allocator resets `owner` on pop so `TrackingAllocator` / `LeakDetectingAllocator` don't nest across recycles) (#617)
