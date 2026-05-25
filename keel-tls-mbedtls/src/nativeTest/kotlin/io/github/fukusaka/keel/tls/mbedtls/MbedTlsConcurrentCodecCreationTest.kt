@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.tls.mbedtls
 
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -75,6 +76,59 @@ class MbedTlsConcurrentCodecCreationTest {
         }
     }
 
+    @Test
+    fun `concurrent createServerCodec across many distinct TlsConfigs does not corrupt PSA Crypto state`() = runBlocking {
+        // Simulates a multi-connector server bind (each connector with
+        // its own TlsConfig — e.g. per-vhost cert + verifyMode +
+        // trustAnchors variations) accepting first-burst connections
+        // concurrently across worker threads. Distinct cache keys
+        // force each worker through MbedTlsServerSession construction
+        // simultaneously rather than the cheap cache-hit path; without
+        // the construct-side mutex, two `mbedtls_x509_crt_parse` /
+        // `mbedtls_pk_parse_key` invocations race in PSA Crypto's
+        // global key store and abort the process.
+        val factory = MbedTlsCodecFactory()
+        try {
+            withTimeout(60.seconds) {
+                val configs = (0 until DISTINCT_CONFIGS).map { i ->
+                    TlsConfig(
+                        certificates = TlsCertificateSource.Pem(
+                            certificatePem = TestCertificates.SERVER_CERT,
+                            privateKeyPem = TestCertificates.SERVER_KEY,
+                        ),
+                        // Vary verifyMode + serverName so each config
+                        // is a distinct data-class equality key and
+                        // collides on neither the cache nor the
+                        // first-construction race.
+                        verifyMode = if (i % 2 == 0) TlsVerifyMode.NONE else TlsVerifyMode.REQUIRED,
+                        trustAnchors = TlsTrustSource.InsecureTrustAll,
+                        serverName = "vhost-$i.example.com",
+                    )
+                }
+                val successCount = (0 until CONCURRENCY).map { worker ->
+                    async(Dispatchers.Default) {
+                        var ok = 0
+                        repeat(ITERATIONS) { iter ->
+                            // Each worker cycles through all distinct
+                            // configs so the multi-config construction
+                            // race surfaces in the first iteration of
+                            // every worker (worst case for the
+                            // construct-side mutex).
+                            val config = configs[(worker + iter) % DISTINCT_CONFIGS]
+                            val codec = factory.createServerCodec(config)
+                            codec.close()
+                            ok++
+                        }
+                        ok
+                    }
+                }.awaitAll().sum()
+                assertEquals(CONCURRENCY * ITERATIONS, successCount)
+            }
+        } finally {
+            factory.close()
+        }
+    }
+
     companion object {
         // Tuned to comfortably trip the pre-fix race on a modern multi-core
         // host (16+ cores) within a few seconds. Lower bounds chosen to
@@ -82,5 +136,11 @@ class MbedTlsConcurrentCodecCreationTest {
         // exceeding the test wall-clock budget.
         private const val CONCURRENCY = 8
         private const val ITERATIONS = 50
+
+        // Bigger than CONCURRENCY so the multi-config test always
+        // hits the first-construction path on at least
+        // (DISTINCT_CONFIGS - CONCURRENCY) iterations even after the
+        // cache populates.
+        private const val DISTINCT_CONFIGS = 16
     }
 }
