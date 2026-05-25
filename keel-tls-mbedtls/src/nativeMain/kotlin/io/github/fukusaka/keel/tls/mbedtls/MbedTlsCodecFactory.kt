@@ -58,19 +58,17 @@ import platform.posix.pthread_mutex_unlock
  *   leaks one `pthread_mutex_t` + Arena bookkeeping per `close()`;
  *   acceptable for a per-server-lifetime factory.
  *
- * **Lifetime — what [close] does and does not protect**:
+ * **Lifetime — what [close] protects**:
  *
- * - **Protected**: concurrent [createServerCodec] / [createClientCodec]
- *   during [close] — fails fast with [IllegalStateException], no UB.
- * - **Not protected (still caller responsibility)**: live [TlsCodec]
- *   instances previously handed out by the factory must finish
- *   using their session before [close] runs. [close] frees each
- *   session's `mbedtls_ssl_config` / cert / key, and any in-flight
- *   `unprotect` / `protect` call on a live codec at that moment
- *   would touch freed memory. Solving this without an extra
- *   refcount on every codec is out of scope; the typical server
- *   lifecycle (stop accepting → drain in-flight handshakes → close
- *   factory) satisfies it.
+ * - **Concurrent [createServerCodec] / [createClientCodec] during
+ *   [close]**: fails fast with [IllegalStateException], no UB.
+ * - **Live codec still using a session at [close]**: the session
+ *   itself is reference-counted (see [MbedTlsServerSession]) — the
+ *   factory holds one ref per cached session, each codec holds
+ *   one. [close] drops the factory refs; if codecs are still
+ *   live, the underlying `mbedtls_ssl_config` / cert / key stay
+ *   alive until the last codec closes. Either ordering (factory
+ *   close first, or codec close first) is safe.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MbedTlsCodecFactory : TlsCodecFactory {
@@ -98,38 +96,53 @@ class MbedTlsCodecFactory : TlsCodecFactory {
     }
 
     override fun createServerCodec(config: TlsConfig): TlsCodec =
-        MbedTlsCodec(getOrCreateSession(isServer = true, config = config))
+        MbedTlsCodec(acquireSession(isServer = true, config = config))
 
     override fun createClientCodec(config: TlsConfig): TlsCodec =
-        MbedTlsCodec(getOrCreateSession(isServer = false, config = config))
+        MbedTlsCodec(acquireSession(isServer = false, config = config))
 
-    private fun getOrCreateSession(isServer: Boolean, config: TlsConfig): MbedTlsServerSession {
+    /**
+     * Returns a [MbedTlsServerSession] with **one extra reference
+     * pre-acquired** for the caller — the [MbedTlsCodec] constructor
+     * inherits this ref and balances it in its `close()`. Doing the
+     * retain inside the construct mutex closes the race window where
+     * `getOrCreateSession` would otherwise return a session and then
+     * release the mutex, letting `close()` drop the factory ref to
+     * zero before the caller could retain.
+     */
+    private fun acquireSession(isServer: Boolean, config: TlsConfig): MbedTlsServerSession {
         // Fast path #1: closed-flag check before touching the mutex.
         // Any caller that arrives after close() committed sees the
         // flag here and bails without contending for the lock.
         if (closed.value != 0) throwClosed()
 
         val key = isServer to config
-        // Fast path #2: wait-free cache hit. Always check before the
-        // mutex so steady-state load (cache populated) skips the
-        // lock entirely.
-        sessions.value[key]?.let { return it }
+        // Fast path #2: wait-free cache hit + tryRetain. The
+        // snapshot returns the Kotlin session object but its
+        // refCount could already have been driven to zero by a
+        // concurrent factory close that won the race. tryRetain
+        // observes that and we fall through to the mutex path
+        // (which will then see closed = 1 and throw cleanly).
+        sessions.value[key]?.let {
+            if (it.tryRetain()) return it
+        }
 
         pthread_mutex_lock(constructMutex.ptr)
         try {
             // Re-check the closed flag inside the lock — close() may
-            // have set it while we were waiting on the mutex. The
-            // closed-then-acquire path is the narrow window where
-            // POSIX would otherwise let us touch a destroyed mutex;
-            // we leave the mutex storage intentionally alive in
-            // close() (see class KDoc) precisely so this re-check
-            // can run safely.
+            // have set it while we were waiting on the mutex.
             if (closed.value != 0) throwClosed()
 
             // Double-check under the lock — another thread may have
             // constructed and installed our session while we were
-            // waiting on the mutex.
-            sessions.value[key]?.let { return it }
+            // waiting on the mutex. Inside the mutex, close() is
+            // blocked, so a session still in the map is guaranteed
+            // alive with at least the factory ref; a plain retain
+            // is safe.
+            sessions.value[key]?.let {
+                it.retain()
+                return it
+            }
 
             // Serialised construction. PSA Crypto's key store is not
             // safe under concurrent `mbedtls_x509_crt_parse` /
@@ -138,7 +151,12 @@ class MbedTlsCodecFactory : TlsCodecFactory {
             // holding the mutex across construction prevents two
             // threads (same-key first burst, or distinct-key
             // multi-connector startup) from PSA-racing.
+            // New session arrives with refCount=1 (the factory's
+            // own cache reference). Retain once more for the codec
+            // we're about to construct — caller invariant is
+            // documented in [acquireSession]'s contract.
             val newSession = MbedTlsServerSession(isServer, config)
+            newSession.retain()
             // Plain set is safe: the construct mutex makes us the
             // sole writer (other constructors are blocked on the
             // mutex; the closed-flag check above blocks close()
@@ -163,7 +181,11 @@ class MbedTlsCodecFactory : TlsCodecFactory {
             closed.value = 1
 
             val drained = sessions.getAndSet(emptyMap())
-            drained.values.forEach { it.close() }
+            // Drop the factory's reference on each cached session.
+            // The session's underlying structs are freed only when
+            // the last referent (this drop or the last live codec's
+            // close, whichever comes second) releases.
+            drained.values.forEach { it.release() }
         } finally {
             pthread_mutex_unlock(constructMutex.ptr)
         }

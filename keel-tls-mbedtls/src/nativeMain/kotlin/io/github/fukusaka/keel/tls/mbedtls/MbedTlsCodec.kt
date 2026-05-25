@@ -51,9 +51,12 @@ import mbedtls.mbedtls_ssl_write
  * pre-K53 per-codec `psa_crypto_init` + `x509_crt_parse` race that
  * crashed multi-worker servers under load.
  *
- * **Lifecycle**: [close] frees only the per-connection
- * `mbedtls_ssl_context` + BIO context. The shared session is freed
- * by [MbedTlsCodecFactory.close].
+ * **Lifecycle**: [close] frees the per-connection
+ * `mbedtls_ssl_context` + BIO context, then releases this codec's
+ * reference to the shared session. The session's underlying
+ * `mbedtls_ssl_config` / cert / key live until the last referent
+ * (factory or in-flight codec) releases, so codec close and factory
+ * close are order-independent.
  */
 class MbedTlsCodec internal constructor(
     private val session: MbedTlsServerSession,
@@ -65,10 +68,25 @@ class MbedTlsCodec internal constructor(
     private var closed = false
 
     init {
-        mbedtls_ssl_init(ssl.ptr)
-        val ret = mbedtls_ssl_setup(ssl.ptr, session.conf.ptr)
-        checkMbedTls(ret, "ssl_setup")
-        keel_mbedtls_bio_setup(ssl.ptr, bioCtx.ptr)
+        // The session arrives with one reference pre-acquired by
+        // MbedTlsCodecFactory.acquireSession on our behalf — see
+        // its KDoc for the race-window rationale. We do *not*
+        // retain again; we only release in close() (or on a
+        // construction-time throw below).
+        try {
+            mbedtls_ssl_init(ssl.ptr)
+            val ret = mbedtls_ssl_setup(ssl.ptr, session.conf.ptr)
+            checkMbedTls(ret, "ssl_setup")
+            keel_mbedtls_bio_setup(ssl.ptr, bioCtx.ptr)
+        } catch (e: Throwable) {
+            // Roll back the partial heap allocations + the
+            // pre-acquired session ref so a failed setup doesn't
+            // leak any of them.
+            nativeHeap.free(ssl.rawPtr)
+            nativeHeap.free(bioCtx.rawPtr)
+            session.release()
+            throw e
+        }
     }
 
     // --- TlsCodec ---
@@ -181,8 +199,11 @@ class MbedTlsCodec internal constructor(
         mbedtls_ssl_free(ssl.ptr)
         nativeHeap.free(ssl.rawPtr)
         nativeHeap.free(bioCtx.rawPtr)
-        // The shared MbedTlsServerSession (cert / key / config) is
-        // owned by MbedTlsCodecFactory and intentionally not freed here.
+        // Release our reference to the shared session — if the
+        // factory has already released, this is the last reference
+        // and the underlying mbedtls_ssl_config / cert / key are
+        // freed exactly once here.
+        session.release()
     }
 
     // --- Internal ---

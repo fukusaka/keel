@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.asPem
+import kotlin.concurrent.AtomicInt
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
@@ -58,9 +59,18 @@ import mbedtls.mbedtls_x509_crt_parse
  * `mbedtls_x509_crt_parse: MBEDTLS_ERR_PK_INVALID_PUBKEY (0x3B00)` —
  * see K53 / `MbedTlsConcurrentCodecCreationTest`.
  *
- * **Lifetime**: must outlive every [MbedTlsCodec] derived from it.
- * Owned by [MbedTlsCodecFactory]; freed in [close]. Calling [close]
- * while live codecs reference this session leads to use-after-free.
+ * **Lifetime**: reference-counted. The constructor seats one
+ * implicit reference for [MbedTlsCodecFactory]'s cache; every
+ * derived [MbedTlsCodec] adds one via [retain] at construction
+ * and removes it via [release] at codec close. The session's
+ * underlying Mbed TLS structs (`mbedtls_ssl_config`, `mbedtls_x509_crt`,
+ * `mbedtls_pk_context`) are freed when the count reaches zero —
+ * whichever party (factory close vs last in-flight codec close)
+ * is the last to release wins, with no UAF either way.
+ *
+ * The refcount is the production-grade replacement for the
+ * pre-existing "caller must drain live codecs before
+ * factory.close()" invariant: now any ordering is safe.
  */
 internal class MbedTlsServerSession(
     isServer: Boolean,
@@ -70,7 +80,10 @@ internal class MbedTlsServerSession(
     val pkey = nativeHeap.alloc<mbedtls_pk_context>()
     val conf = nativeHeap.alloc<mbedtls_ssl_config>()
 
-    private var closed = false
+    // Starts at 1 for MbedTlsCodecFactory's cache reference; each
+    // derived MbedTlsCodec adds +1 on retain() in its constructor
+    // and -1 on release() at close.
+    private val refCount = AtomicInt(1)
 
     init {
         mbedtls_x509_crt_init(srvcert.ptr)
@@ -99,15 +112,55 @@ internal class MbedTlsServerSession(
         )
     }
 
-    fun close() {
-        if (closed) return
-        closed = true
-        mbedtls_ssl_config_free(conf.ptr)
-        mbedtls_x509_crt_free(srvcert.ptr)
-        mbedtls_pk_free(pkey.ptr)
-        nativeHeap.free(conf.rawPtr)
-        nativeHeap.free(srvcert.rawPtr)
-        nativeHeap.free(pkey.rawPtr)
+    /**
+     * Add one reference unconditionally. Caller must already hold
+     * at least one reference (typically inherited from a recent
+     * [tryRetain]) — see [tryRetain] for the safe entry point used
+     * by [MbedTlsCodecFactory] on a session it just looked up in
+     * an unlocked snapshot.
+     */
+    fun retain() {
+        val updated = refCount.incrementAndGet()
+        check(updated > 1) { "retain() on already-freed MbedTlsServerSession" }
+    }
+
+    /**
+     * Atomically increment the reference count **only if it is
+     * currently > 0** (i.e. the session has not yet been freed).
+     * Returns true on success, false if the session has already
+     * dropped to zero and its mbedtls structs are gone.
+     *
+     * This is the safe entry point for any code path that holds a
+     * reference to the Kotlin session object **without** also
+     * holding the construct mutex: a concurrent [release] may have
+     * dropped the count to zero between the look-up and the
+     * retain. The classic `if (count > 0) count++` is racy; the
+     * CAS loop below makes the check + increment atomic.
+     */
+    fun tryRetain(): Boolean {
+        while (true) {
+            val current = refCount.value
+            if (current == 0) return false
+            if (refCount.compareAndSet(current, current + 1)) return true
+        }
+    }
+
+    /**
+     * Drop one reference. When the count reaches zero, the
+     * underlying Mbed TLS structs are freed exactly once. Safe to
+     * call from any thread.
+     */
+    fun release() {
+        val remaining = refCount.decrementAndGet()
+        check(remaining >= 0) { "release() under-balanced MbedTlsServerSession" }
+        if (remaining == 0) {
+            mbedtls_ssl_config_free(conf.ptr)
+            mbedtls_x509_crt_free(srvcert.ptr)
+            mbedtls_pk_free(pkey.ptr)
+            nativeHeap.free(conf.rawPtr)
+            nativeHeap.free(srvcert.rawPtr)
+            nativeHeap.free(pkey.rawPtr)
+        }
     }
 
     private fun parsePemCert(pem: String) {
