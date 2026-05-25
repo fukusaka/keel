@@ -611,10 +611,21 @@ for run in $(seq 1 "$RUNS"); do
     }
 
     # Validate HTTP status, not just TCP connect (5xx would otherwise pass).
+    # Track per-iteration curl exit code distribution so a READY failure
+    # can be attributed (exit 7 = TCP refused, exit 28 = server accepted
+    # TCP but never responded — K55-class hang fingerprint, exit 0 +
+    # non-2xx/3xx = warmup HTTP error). See bench-one.sh for rationale.
     READY=false
+    declare -A CURL_EXIT_COUNTS=()
+    LAST_CURL_EXIT=0
+    LAST_STATUS=000
     for _ in $(seq 1 "$READY_TIMEOUT"); do
         STATUS=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
-            "${SCHEME}://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null) || STATUS=000
+            "${SCHEME}://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null)
+        CURL_EXIT=$?
+        LAST_CURL_EXIT=$CURL_EXIT
+        LAST_STATUS=$STATUS
+        CURL_EXIT_COUNTS[$CURL_EXIT]=$(( ${CURL_EXIT_COUNTS[$CURL_EXIT]:-0} + 1 ))
         case "$STATUS" in
             2??|3??) READY=true; break ;;
         esac
@@ -622,6 +633,17 @@ for run in $(seq 1 "$RUNS"); do
     done
 
     if [ "$READY" = false ]; then
+        # Pick dominant exit as attribution; tie-break favours non-zero.
+        BEST_EXIT=0
+        BEST_COUNT=-1
+        for e in "${!CURL_EXIT_COUNTS[@]}"; do
+            c=${CURL_EXIT_COUNTS[$e]}
+            if [ "$c" -gt "$BEST_COUNT" ] || { [ "$c" -eq "$BEST_COUNT" ] && [ "$e" != 0 ]; }; then
+                BEST_EXIT=$e
+                BEST_COUNT=$c
+            fi
+        done
+        echo "$NAME|FAILED|-|-|[READY_TIMEOUT_${BEST_EXIT}]|READY_TIMEOUT_${BEST_EXIT}" >&2
         echo "$NAME|FAILED|-|-"
         kill_port "$PORT"
         kill_server
