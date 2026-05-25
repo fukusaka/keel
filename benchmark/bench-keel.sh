@@ -224,7 +224,7 @@ build_engine_list() {
     elif [ "$(uname)" = "Linux" ]; then
         NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-keel-epoll pipeline-http-epoll ktor-cio-keel-epoll ktor-keel-io-uring pipeline-http-io-uring ktor-cio-keel-io-uring ktor-cio; do
+            for engine in ktor-keel-epoll pipeline-http-epoll server-http-epoll ktor-cio-keel-epoll ktor-keel-io-uring pipeline-http-io-uring server-http-io-uring ktor-cio-keel-io-uring ktor-cio; do
                 engines+=("kn-engine:native:${engine}:${NATIVE_BIN}")
             done
         fi
