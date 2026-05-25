@@ -29,8 +29,7 @@ object ServerHttpIoUringBenchmark : EngineBenchmark {
         val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
-            get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }
-            get("/large") { call -> call.respond(PipelineHttpResponses.large) }
+            installStreamingBenchRoutes()
             // `/ws-deflate` exercises the WS-3 permessage-deflate path:
             // `webSockets(DeflateCodec)` routes the upgrade through the real
             // `runWebSocketUpgrade` negotiation, so the bench measures the

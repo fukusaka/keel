@@ -35,8 +35,7 @@ object ServerHttpNioBenchmark : EngineBenchmark {
         val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
-            get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }
-            get("/large") { call -> call.respond(PipelineHttpResponses.large) }
+            installStreamingBenchRoutes()
         }
         runBlocking { server.start() }
 
