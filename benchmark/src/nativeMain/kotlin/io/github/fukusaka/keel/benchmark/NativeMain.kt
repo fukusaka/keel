@@ -36,6 +36,10 @@ fun main(args: Array<String>) {
         runChainScanBench()
         return
     }
+    if (args.any { it == "--bench=iobuf-per-byte" }) {
+        runIoBufPerByteDispatchBench()
+        return
+    }
     if (args.any { it == "--bench=nw-recv-cost" }) {
         if (!runNwRecvCostBench()) {
             printErr("--bench=nw-recv-cost is macOS-only (NW engine is not available on this target)")
