@@ -70,6 +70,8 @@ internal class MbedTlsServerSession(
     val pkey = nativeHeap.alloc<mbedtls_pk_context>()
     val conf = nativeHeap.alloc<mbedtls_ssl_config>()
 
+    private var closed = false
+
     init {
         mbedtls_x509_crt_init(srvcert.ptr)
         mbedtls_pk_init(pkey.ptr)
@@ -83,17 +85,23 @@ internal class MbedTlsServerSession(
 
         mbedtls_ssl_config_init(conf.ptr)
         val endpoint = if (isServer) MBEDTLS_SSL_IS_SERVER else MBEDTLS_SSL_IS_CLIENT
-        var ret = mbedtls_ssl_config_defaults(
-            conf.ptr, endpoint, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT,
+        checkMbedTls(
+            mbedtls_ssl_config_defaults(
+                conf.ptr, endpoint, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT,
+            ),
+            "ssl_config_defaults",
         )
-        check(ret == 0) { "ssl_config_defaults failed: ${errorString(ret)}" }
 
         mbedtls_ssl_conf_ca_chain(conf.ptr, srvcert.ptr, null)
-        ret = mbedtls_ssl_conf_own_cert(conf.ptr, srvcert.ptr, pkey.ptr)
-        check(ret == 0) { "ssl_conf_own_cert failed: ${errorString(ret)}" }
+        checkMbedTls(
+            mbedtls_ssl_conf_own_cert(conf.ptr, srvcert.ptr, pkey.ptr),
+            "ssl_conf_own_cert",
+        )
     }
 
     fun close() {
+        if (closed) return
+        closed = true
         mbedtls_ssl_config_free(conf.ptr)
         mbedtls_x509_crt_free(srvcert.ptr)
         mbedtls_pk_free(pkey.ptr)
@@ -107,13 +115,7 @@ internal class MbedTlsServerSession(
         val ret = bytes.usePinned { pinned ->
             mbedtls_x509_crt_parse(srvcert.ptr, pinned.addressOf(0).reinterpret<UByteVar>(), bytes.size.toULong())
         }
-        if (ret != 0) {
-            throw TlsException(
-                "x509_crt_parse failed: ${errorString(ret)}",
-                TlsErrorCategory.HANDSHAKE_FAILED,
-                ret.toLong(),
-            )
-        }
+        checkMbedTls(ret, "x509_crt_parse")
     }
 
     private fun parsePemKey(pem: String) {
@@ -121,9 +123,13 @@ internal class MbedTlsServerSession(
         val ret = bytes.usePinned { pinned ->
             mbedtls_pk_parse_key(pkey.ptr, pinned.addressOf(0).reinterpret<UByteVar>(), bytes.size.toULong(), null, 0u)
         }
+        checkMbedTls(ret, "pk_parse_key")
+    }
+
+    private fun checkMbedTls(ret: Int, op: String) {
         if (ret != 0) {
             throw TlsException(
-                "pk_parse_key failed: ${errorString(ret)}",
+                "$op failed: ${errorString(ret)}",
                 TlsErrorCategory.HANDSHAKE_FAILED,
                 ret.toLong(),
             )
