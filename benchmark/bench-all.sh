@@ -95,14 +95,21 @@ extract_rps() {
     echo "$1" | grep "Requests/sec" | awk '{print $2}'
 }
 
-# --- Compute median of space-separated numbers ---
-
+# --- Compute median over numeric entries only (see bench-one.sh) ---
 median() {
-    echo "$@" | tr ' ' '\n' | sort -n | awk '{a[NR]=$1} END {
-        if (NR%2==1) print a[(NR+1)/2]
-        else printf "%.2f\n", (a[NR/2]+a[NR/2+1])/2
-    }'
+    echo "$@" | tr ' ' '\n' \
+        | awk '/^[0-9]+(\.[0-9]+)?$/' \
+        | sort -n \
+        | awk '{a[NR]=$1} END {
+            if (NR==0) { print "FAILED"; exit }
+            if (NR%2==1) print a[(NR+1)/2]
+            else printf "%.2f\n", (a[NR/2]+a[NR/2+1])/2
+        }'
 }
+
+# --- Per-cell diagnostic log dir (see bench-one.sh) ---
+BENCH_LOG_DIR="${BENCH_LOG_DIR:-/tmp/keel-bench-diag}"
+mkdir -p "$BENCH_LOG_DIR" 2>/dev/null || true
 
 # --- Benchmark runner ---
 
@@ -111,13 +118,19 @@ run_bench() {
     shift
     local cmd=("$@")
     local all_rps=()
+    local all_status=()
     local best_result=""
     local best_rps=0
 
     # Use a dedicated port for this engine, incremented once per engine (not per run).
     local engine_port="$PORT"
+    local log_file="$BENCH_LOG_DIR/${name}-$(date +%Y%m%d-%H%M%S).log"
+    log_msg() { printf '[%s] %s\n' "$(date +%T)" "$*" >> "$log_file"; }
+    log_msg "=== run_bench start name=$name scheme=$SCHEME endpoint=$ENDPOINT port=$engine_port runs=$RUNS ==="
+    log_msg "argv: ${cmd[*]}"
 
     for run in $(seq 1 "$RUNS"); do
+        log_msg "--- run $run/$RUNS ---"
         # Defensive cleanup: kill any process still holding the port from a
         # previous run or a partially-terminated engine. On macOS, server-side
         # sockets can linger if SO_REUSEADDR is not set, blocking a new bind.
@@ -131,28 +144,55 @@ run_bench() {
             "${cmd[@]}" >/dev/null 2>&1 &
         fi
         local pid=$!
+        log_msg "server pid=$pid"
 
         # Wait for server to be ready. Validate HTTP status, not just
         # TCP connect — see bench-one.sh for the rationale.
+        # Track per-iteration curl exit codes so a `FAILED` cell can be
+        # attributed (exit 7 = TCP refused, exit 28 = server hung —
+        # K55-class fingerprint, exit 0 + non-2xx/3xx = warmup error).
         local ready=false
-        for _ in $(seq 1 "$READY_TIMEOUT"); do
-            local status
+        local -A curl_exit_counts=()
+        local last_curl_exit=0
+        local last_status=000
+        local iter status curl_exit
+        for iter in $(seq 1 "$READY_TIMEOUT"); do
             status=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
-                "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null) || status=000
+                "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null)
+            curl_exit=$?
+            last_curl_exit=$curl_exit
+            last_status=$status
+            curl_exit_counts[$curl_exit]=$(( ${curl_exit_counts[$curl_exit]:-0} + 1 ))
             case "$status" in
                 2??|3??) ready=true; break ;;
             esac
             sleep 0.3
         done
+        log_msg "READY phase: $iter iters, curl_exit_dist=$(declare -p curl_exit_counts | sed 's/^[^=]*=//')"
 
         if [ "$ready" = false ]; then
-            printf "  %-24s %s\n" "$name" "FAILED TO START"
+            local best_exit=0 best_count=-1 e c
+            for e in "${!curl_exit_counts[@]}"; do
+                c=${curl_exit_counts[$e]}
+                if [ "$c" -gt "$best_count" ] || { [ "$c" -eq "$best_count" ] && [ "$e" != 0 ]; }; then
+                    best_exit=$e
+                    best_count=$c
+                fi
+            done
+            local status_token="READY_TIMEOUT_${best_exit}"
+            log_msg "READY FAILED attribution=$status_token (count=$best_count/$iter)"
+            all_rps+=("$status_token")
+            all_status+=("$status_token")
             kill_port "$engine_port"
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
-            PORT=$((engine_port + 1))
-            return
+            wait_port_free "$engine_port"
+            if [ "$run" -lt "$RUNS" ]; then
+                sleep "$COOLDOWN"
+            fi
+            continue
         fi
+        log_msg "READY ok after $iter iters (last_status=$last_status)"
 
         # Warmup
         wrk -t2 -c10 -d"${WARMUP_DURATION}" "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" >/dev/null 2>&1
@@ -163,12 +203,35 @@ run_bench() {
 
         local rps
         rps=$(extract_rps "$result")
-        all_rps+=("$rps")
 
-        # Keep result with highest rps for raw output file and display
-        if [ -n "$rps" ] && awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
-            best_rps="$rps"
-            best_result="$result"
+        # Crash vs incomplete-output: kill -0 before kill_server.
+        local server_alive=true
+        if ! kill -0 "$pid" 2>/dev/null; then
+            server_alive=false
+        fi
+
+        if [ -z "$rps" ]; then
+            local status_token
+            if [ "$server_alive" = false ]; then
+                status_token="CRASH"
+                log_msg "RUN $run FAILED: server pid=$pid dead before kill (CRASH)"
+            else
+                status_token="WRK_INCOMPLETE"
+                log_msg "RUN $run FAILED: wrk produced no Requests/sec line, server still alive"
+            fi
+            log_msg "--- wrk output begin ---"
+            echo "$result" >> "$log_file"
+            log_msg "--- wrk output end ---"
+            all_rps+=("$status_token")
+            all_status+=("$status_token")
+        else
+            log_msg "RUN $run OK rps=$rps (server_alive=$server_alive)"
+            all_rps+=("$rps")
+            all_status+=("OK")
+            if awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
+                best_rps="$rps"
+                best_result="$result"
+            fi
         fi
 
         # Stop server
@@ -193,12 +256,36 @@ run_bench() {
     result_file="${RESULTS_DIR}/${safe_name}-${endpoint_name}-${WRK_THREADS}t${WRK_CONNS}c-${TIMESTAMP}.txt"
     echo "$best_result" > "$result_file"
 
+    local ok_count=0 s
+    for s in "${all_status[@]}"; do
+        [ "$s" = "OK" ] && ok_count=$((ok_count + 1))
+    done
+
+    local cell_status
+    if [ "$ok_count" -eq "$RUNS" ]; then
+        cell_status="OK"
+    elif [ "$ok_count" -gt 0 ]; then
+        cell_status="PARTIAL(${ok_count}/${RUNS})"
+    else
+        local first="${all_status[0]}" all_same=true
+        for s in "${all_status[@]}"; do
+            [ "$s" != "$first" ] && { all_same=false; break; }
+        done
+        if [ "$all_same" = true ]; then
+            cell_status="$first"
+        else
+            cell_status="MIXED_FAILED"
+        fi
+    fi
+    log_msg "=== run_bench end status=$cell_status ok=$ok_count/$RUNS ==="
+    log_msg "all_status=(${all_status[*]})"
+
     # Compute median rps
     local median_rps
-    if [ "$RUNS" -gt 1 ]; then
+    if [ "$ok_count" -gt 0 ]; then
         median_rps=$(median "${all_rps[@]}")
     else
-        median_rps="${all_rps[0]}"
+        median_rps="FAILED"
     fi
 
     local lat50 lat99 errors
@@ -209,9 +296,9 @@ run_bench() {
     errors=$(echo "$best_result" | grep "Socket errors" | head -1)
 
     if [ "$RUNS" -gt 1 ]; then
-        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s [%s] (%d runs)" "$name" "$median_rps" "$lat50" "$lat99" "${all_rps[*]}" "$RUNS"
+        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s [%s] (%d runs) [%s]" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "${all_rps[*]}" "$RUNS" "$cell_status"
     else
-        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s" "$name" "$median_rps" "$lat50" "$lat99"
+        printf "  %-24s %12s req/s  p50=%-10s p99=%-10s [%s]" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "$cell_status"
     fi
     if [ -n "$errors" ]; then
         echo "  $errors"
