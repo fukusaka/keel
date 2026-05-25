@@ -46,8 +46,15 @@ import platform.posix.pthread_mutex_unlock
  *
  * **Lifetime**: the factory owns its sessions and the construction
  * mutex. Call [close] to free all cached cert / key / config
- * resources + destroy the mutex; doing so while live codecs
- * reference a session leads to use-after-free.
+ * resources + destroy the mutex. The caller is responsible for
+ * happens-before ordering: no [createServerCodec] /
+ * [createClientCodec] call may overlap [close] (`pthread_mutex_destroy`
+ * on a held mutex is UB), and any live [TlsCodec] previously handed
+ * out by the factory must finish using its session before [close]
+ * runs (the session's `mbedtls_ssl_config` / cert / key are freed
+ * here). The typical server lifecycle — stop accepting new
+ * connections, wait for in-flight handshakes to drain, then close
+ * the factory — satisfies both invariants.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MbedTlsCodecFactory : TlsCodecFactory {
@@ -96,24 +103,23 @@ class MbedTlsCodecFactory : TlsCodecFactory {
             // threads (same-key first burst, or distinct-key
             // multi-connector startup) from PSA-racing.
             val newSession = MbedTlsServerSession(isServer, config)
-            while (true) {
-                val current = sessions.value
-                val updated = current + (key to newSession)
-                if (sessions.compareAndSet(current, updated)) return newSession
-                // The CAS can only lose to a concurrent close() draining
-                // the map (no other writer holds the mutex). Retry the
-                // CAS so the new entry lands on the post-close map.
-            }
+            // Plain set is safe: the construct mutex makes us the
+            // sole writer (other constructors are blocked on the
+            // mutex; the documented invariant forbids concurrent
+            // close()). The AtomicReference still gives the reader
+            // side wait-free volatile semantics on the fast path.
+            sessions.value = sessions.value + (key to newSession)
+            return newSession
         } finally {
             pthread_mutex_unlock(constructMutex.ptr)
         }
     }
 
     override fun close() {
-        // Drain the cache atomically and free each session. The mutex
-        // is left intact across this drain because in-flight
-        // getOrCreateSession callers may still be waiting on it; the
-        // arena destruction below frees the mutex after they unwind.
+        // Caller invariant (see class KDoc): no concurrent
+        // createServerCodec / createClientCodec; no live codec still
+        // holding a session. Under those invariants the mutex has no
+        // waiter to fight and pthread_mutex_destroy is well-defined.
         val drained = sessions.getAndSet(emptyMap())
         drained.values.forEach { it.close() }
 
