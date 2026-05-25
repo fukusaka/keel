@@ -10,6 +10,7 @@ import kotlinx.coroutines.awaitAll
 import kotlin.concurrent.AtomicInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -176,6 +177,13 @@ class MbedTlsConcurrentCodecCreationTest {
                             rejectedCount.incrementAndGet()
                             return@async
                         }
+                        // Yield so the trigger coroutine (which fires
+                        // factory.close()) is never starved by tight
+                        // worker loops on a small-thread-pool host
+                        // (CI Ubuntu runner = 4 cores). Without this,
+                        // the workers monopolise Dispatchers.Default
+                        // and the test hangs to the job timeout.
+                        yield()
                     }
                     @Suppress("UNREACHABLE_CODE")
                     Unit
