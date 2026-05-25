@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.buf
 import kotlin.test.Test
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
+import kotlin.time.measureTime
 
 /**
  * Native per-byte hot-path microbench for [NativeIoBuf] following the
@@ -149,19 +150,22 @@ class IoBufPerBytePathBenchmark {
         while (warmDeadline.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < WARMUP_MS) {
             repeat(1_000) { body() }
         }
-        // 3 trials, take median
+        // 3 trials, take median. Use `measureTime { ... }` to capture
+        // the actual loop duration in one read — `elapsedNow()` twice
+        // (once in the while condition, once for ns) skews the window.
         val nsPerOp = DoubleArray(3)
         for (t in 0 until 3) {
             var iters = 0L
-            val deadline = TimeSource.Monotonic.markNow()
-            while (deadline.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < TRIAL_MS) {
-                repeat(1_000) {
-                    body()
-                    iters++
+            val elapsed = measureTime {
+                val deadline = TimeSource.Monotonic.markNow()
+                while (deadline.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < TRIAL_MS) {
+                    repeat(1_000) {
+                        body()
+                        iters++
+                    }
                 }
             }
-            val ns = deadline.elapsedNow().toDouble(DurationUnit.NANOSECONDS)
-            nsPerOp[t] = ns / iters.toDouble()
+            nsPerOp[t] = elapsed.toDouble(DurationUnit.NANOSECONDS) / iters.toDouble()
         }
         nsPerOp.sort()
         return nsPerOp[1]
