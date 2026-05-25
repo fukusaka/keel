@@ -91,7 +91,17 @@ class AwsLcCodec internal constructor(
 
         val plainPtr = plaintext.unsafePointer
 
-        val ret = if (!isHandshakeComplete) {
+        // Capture which API we are calling — the BoringSSL / OpenSSL
+        // return-value semantics differ between the two: SSL_do_handshake
+        // returns 1 = success, 0/-1 = error; SSL_read returns the number
+        // of plaintext bytes read, or 0/-1 = EOF / error. K54: conflating
+        // SSL_do_handshake's `ret == 1` (success) with SSL_read's
+        // `ret == 1` (one plaintext byte) used to advance the plaintext
+        // writerIndex by 1, leaking a single uninitialised garbage byte
+        // (typically `\x00`) into downstream codec / Ktor parsers and
+        // breaking method-sensitive routing with 405 Method Not Allowed.
+        val isHandshakeCall = !isHandshakeComplete
+        val ret = if (isHandshakeCall) {
             SSL_do_handshake(ssl)
         } else {
             SSL_read(
@@ -107,13 +117,34 @@ class AwsLcCodec internal constructor(
         bioCtx.recv_ptr = null
         bioCtx.recv_remaining = 0u
 
+        if (isHandshakeCall) {
+            // SSL_do_handshake never produces plaintext for the caller.
+            // The handshake bytes consumed from the BIO are reported via
+            // bytesConsumed; written = 0.
+            return when {
+                ret == 1 ->
+                    // Handshake completed (or progressed past this leg).
+                    TlsCodecResult(TlsResult.OK, bytesConsumed, 0)
+                else -> {
+                    val err = SSL_get_error(ssl, ret)
+                    when (err) {
+                        SSL_ERROR_WANT_READ ->
+                            TlsCodecResult(TlsResult.NEED_MORE_INPUT, bytesConsumed, 0)
+                        SSL_ERROR_WANT_WRITE ->
+                            TlsCodecResult(TlsResult.NEED_WRAP, bytesConsumed, 0)
+                        SSL_ERROR_ZERO_RETURN ->
+                            TlsCodecResult(TlsResult.CLOSED, bytesConsumed, 0)
+                        else -> throw tlsError("unprotect/handshake", err)
+                    }
+                }
+            }
+        }
+
+        // SSL_read branch: ret is the plaintext byte count.
         return when {
             ret > 0 -> {
                 plaintext.writerIndex += ret
                 TlsCodecResult(TlsResult.OK, bytesConsumed, ret)
-            }
-            ret == 0 && isHandshakeComplete -> {
-                TlsCodecResult(TlsResult.OK, bytesConsumed, 0)
             }
             else -> {
                 val err = SSL_get_error(ssl, ret)
