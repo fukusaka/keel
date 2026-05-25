@@ -85,6 +85,70 @@ class PoolAllocatorTest {
         assertEquals(1, tracker.releaseCount)
         assertEquals(0, tracker.outstandingCount)
     }
+
+    /**
+     * Decorator-nesting regression test: a [TrackingAllocator] wrapping
+     * a pool allocator must not accumulate nested decorators across
+     * pool recycles. The pool allocator resets the owner to the plain
+     * pool owner on pop (PR #613 invariant), so a fresh `TrackingOwner`
+     * wraps exactly once per cycle.
+     *
+     * Without that fix this test would trip the inner check on cycle 2
+     * (release fires twice, but allocateCount is only 2 — the second
+     * release++ makes releaseCount=3 > allocateCount=2).
+     */
+    @Test
+    fun trackingAllocatorSurvivesMultiCyclePoolReuse() {
+        if (!isPoolAllocator()) return
+        val pool = createPoolAllocator()
+        val tracker = TrackingAllocator(pool)
+        repeat(5) {
+            val buf = tracker.allocate(8192)
+            buf.release()
+        }
+        assertEquals(5, tracker.allocateCount)
+        assertEquals(5, tracker.releaseCount)
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    /**
+     * Same decorator-nesting invariant for [LeakDetectingAllocator].
+     * Without owner reset on pop, repeated wrap would cause the inner
+     * detectors to never see `released = true`.
+     */
+    @Test
+    fun leakDetectingAllocatorSurvivesMultiCyclePoolReuse() {
+        if (!isPoolAllocator()) return
+        val leaks = mutableListOf<String>()
+        val detected = LeakDetectingAllocator(createPoolAllocator()) { leaks.add(it) }
+        repeat(5) {
+            val buf = detected.allocate(8192)
+            buf.release()
+        }
+        assertEquals(0, leaks.size, "released buffers must not be reported as leaks even with pool reuse")
+    }
+
+    /**
+     * `LeakDetectingAllocator` + `TrackingAllocator` stack on a pool
+     * allocator across multiple cycles. Exercises both decorators
+     * being reset to the plain pool owner on pop.
+     */
+    @Test
+    fun stackedDecoratorsSurviveMultiCyclePoolReuse() {
+        if (!isPoolAllocator()) return
+        val leaks = mutableListOf<String>()
+        val tracker = TrackingAllocator(
+            LeakDetectingAllocator(createPoolAllocator()) { leaks.add(it) },
+        )
+        repeat(5) {
+            val buf = tracker.allocate(8192)
+            buf.release()
+        }
+        assertEquals(5, tracker.allocateCount)
+        assertEquals(5, tracker.releaseCount)
+        assertEquals(0, tracker.outstandingCount)
+        assertEquals(0, leaks.size)
+    }
 }
 
 /**
