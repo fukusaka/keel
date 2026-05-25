@@ -3,13 +3,13 @@ package io.github.fukusaka.keel.tls.mbedtls
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
+import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.ptr
 import mbedtls.psa_crypto_init
-import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
@@ -43,18 +43,34 @@ import platform.posix.pthread_mutex_unlock
  *   global key store and crash with `MBEDTLS_ERR_PK_INVALID_PUBKEY`.
  *   The mutex is uncontended once each `(isServer, TlsConfig)` has
  *   its session, so the overhead is bounded to first-burst startup.
+ * - [close] is **race-safe** against concurrent
+ *   [createServerCodec] / [createClientCodec]: the [closed] flag
+ *   is checked before mutex acquisition, a re-check after
+ *   acquisition handles the narrow window where [close] flagged
+ *   while a caller waited on the mutex. Callers that lose the race
+ *   receive [IllegalStateException], never silent UB. The mutex
+ *   itself is intentionally **not** destroyed by [close] and the
+ *   backing [arena] is left uncleared — there is no POSIX-compliant
+ *   way to signal "all waiters have drained" before
+ *   `pthread_mutex_destroy`, so we let the OS reclaim the small
+ *   per-factory allocation at process exit instead of risking
+ *   destroy-while-held UB. Mid-process factory churn therefore
+ *   leaks one `pthread_mutex_t` + Arena bookkeeping per `close()`;
+ *   acceptable for a per-server-lifetime factory.
  *
- * **Lifetime**: the factory owns its sessions and the construction
- * mutex. Call [close] to free all cached cert / key / config
- * resources + destroy the mutex. The caller is responsible for
- * happens-before ordering: no [createServerCodec] /
- * [createClientCodec] call may overlap [close] (`pthread_mutex_destroy`
- * on a held mutex is UB), and any live [TlsCodec] previously handed
- * out by the factory must finish using its session before [close]
- * runs (the session's `mbedtls_ssl_config` / cert / key are freed
- * here). The typical server lifecycle — stop accepting new
- * connections, wait for in-flight handshakes to drain, then close
- * the factory — satisfies both invariants.
+ * **Lifetime — what [close] does and does not protect**:
+ *
+ * - **Protected**: concurrent [createServerCodec] / [createClientCodec]
+ *   during [close] — fails fast with [IllegalStateException], no UB.
+ * - **Not protected (still caller responsibility)**: live [TlsCodec]
+ *   instances previously handed out by the factory must finish
+ *   using their session before [close] runs. [close] frees each
+ *   session's `mbedtls_ssl_config` / cert / key, and any in-flight
+ *   `unprotect` / `protect` call on a live codec at that moment
+ *   would touch freed memory. Solving this without an extra
+ *   refcount on every codec is out of scope; the typical server
+ *   lifecycle (stop accepting → drain in-flight handshakes → close
+ *   factory) satisfies it.
  */
 @OptIn(ExperimentalForeignApi::class)
 class MbedTlsCodecFactory : TlsCodecFactory {
@@ -71,6 +87,11 @@ class MbedTlsCodecFactory : TlsCodecFactory {
 
     private val sessions = AtomicReference<Map<Pair<Boolean, TlsConfig>, MbedTlsServerSession>>(emptyMap())
 
+    // 0 = open, 1 = closed. AtomicInt because K/N's stable
+    // AtomicReference family does not expose a Boolean specialisation;
+    // the integer load is identical in cost.
+    private val closed = AtomicInt(0)
+
     private val arena = Arena()
     private val constructMutex = arena.alloc<pthread_mutex_t>().apply {
         pthread_mutex_init(ptr, null)
@@ -83,13 +104,28 @@ class MbedTlsCodecFactory : TlsCodecFactory {
         MbedTlsCodec(getOrCreateSession(isServer = false, config = config))
 
     private fun getOrCreateSession(isServer: Boolean, config: TlsConfig): MbedTlsServerSession {
+        // Fast path #1: closed-flag check before touching the mutex.
+        // Any caller that arrives after close() committed sees the
+        // flag here and bails without contending for the lock.
+        if (closed.value != 0) throwClosed()
+
         val key = isServer to config
-        // Fast path: wait-free cache hit. Always check before taking the
-        // mutex so steady-state load (cache populated) skips the lock.
+        // Fast path #2: wait-free cache hit. Always check before the
+        // mutex so steady-state load (cache populated) skips the
+        // lock entirely.
         sessions.value[key]?.let { return it }
 
         pthread_mutex_lock(constructMutex.ptr)
         try {
+            // Re-check the closed flag inside the lock — close() may
+            // have set it while we were waiting on the mutex. The
+            // closed-then-acquire path is the narrow window where
+            // POSIX would otherwise let us touch a destroyed mutex;
+            // we leave the mutex storage intentionally alive in
+            // close() (see class KDoc) precisely so this re-check
+            // can run safely.
+            if (closed.value != 0) throwClosed()
+
             // Double-check under the lock — another thread may have
             // constructed and installed our session while we were
             // waiting on the mutex.
@@ -105,9 +141,8 @@ class MbedTlsCodecFactory : TlsCodecFactory {
             val newSession = MbedTlsServerSession(isServer, config)
             // Plain set is safe: the construct mutex makes us the
             // sole writer (other constructors are blocked on the
-            // mutex; the documented invariant forbids concurrent
-            // close()). The AtomicReference still gives the reader
-            // side wait-free volatile semantics on the fast path.
+            // mutex; the closed-flag check above blocks close()
+            // from draining concurrently).
             sessions.value = sessions.value + (key to newSession)
             return newSession
         } finally {
@@ -116,14 +151,34 @@ class MbedTlsCodecFactory : TlsCodecFactory {
     }
 
     override fun close() {
-        // Caller invariant (see class KDoc): no concurrent
-        // createServerCodec / createClientCodec; no live codec still
-        // holding a session. Under those invariants the mutex has no
-        // waiter to fight and pthread_mutex_destroy is well-defined.
-        val drained = sessions.getAndSet(emptyMap())
-        drained.values.forEach { it.close() }
+        // Acquire the construct mutex so we are the sole party
+        // mutating cache + closed flag — any concurrent
+        // getOrCreateSession either already entered and we wait for
+        // it, or arrives later and bails on the closed-flag fast
+        // path.
+        pthread_mutex_lock(constructMutex.ptr)
+        try {
+            // Idempotent close.
+            if (closed.value != 0) return
+            closed.value = 1
 
-        pthread_mutex_destroy(constructMutex.ptr)
-        arena.clear()
+            val drained = sessions.getAndSet(emptyMap())
+            drained.values.forEach { it.close() }
+        } finally {
+            pthread_mutex_unlock(constructMutex.ptr)
+        }
+
+        // Deliberately *do not* call pthread_mutex_destroy or
+        // arena.clear(). POSIX gives us no way to prove "all
+        // would-be waiters have observed closed and bailed" before
+        // destroying the mutex, and destroying a held / racy mutex
+        // is UB. Letting the small per-factory pthread_mutex_t +
+        // Arena bookkeeping outlive close() is the simpler, safer
+        // trade-off for a typical per-server-lifetime factory; the
+        // OS reclaims at process exit. See class KDoc "Concurrency"
+        // for the trade-off rationale.
     }
+
+    private fun throwClosed(): Nothing =
+        throw IllegalStateException("MbedTlsCodecFactory is closed")
 }
