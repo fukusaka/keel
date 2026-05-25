@@ -126,7 +126,7 @@ run_bench() {
         local ready=false
         for _ in $(seq 1 "$READY_TIMEOUT"); do
             local status
-            status=$(curl -sk -o /dev/null -w '%{http_code}' \
+            status=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
                 "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null) || status=000
             case "$status" in
                 2??|3??) ready=true; break ;;

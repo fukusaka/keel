@@ -613,7 +613,7 @@ for run in $(seq 1 "$RUNS"); do
     # Validate HTTP status, not just TCP connect (5xx would otherwise pass).
     READY=false
     for _ in $(seq 1 "$READY_TIMEOUT"); do
-        STATUS=$(curl -sk -o /dev/null -w '%{http_code}' \
+        STATUS=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
             "${SCHEME}://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null) || STATUS=000
         case "$STATUS" in
             2??|3??) READY=true; break ;;
