@@ -27,6 +27,7 @@ object ServerHttpKqueueBenchmark : EngineBenchmark {
         val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
+            installBenchCompression(config.compression)
             installStreamingBenchRoutes()
             installWebSocketBenchRoutes()
         }

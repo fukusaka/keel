@@ -9,11 +9,39 @@ import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
+import io.github.fukusaka.keel.compression.zlib.GzipCodec
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
 import io.github.fukusaka.keel.server.websocket.dsl.webSockets
 import kotlinx.coroutines.delay
 
 private val EMPTY_BODY = ByteArray(0)
+
+/**
+ * Installs the bench's compression configuration on the
+ * [KeelHttpServerBuilder] when [enabled] is true. Registers
+ * [GzipCodec] + [DeflateCodec] as the outbound encoders (gzip wins
+ * priority tie-break, mirroring PipelineHttpRoutes' default), accepts
+ * the built-in pre-compressed MIME exclusions, and enables inbound
+ * request decompression so the `compression-upload` scenario's gzip
+ * body is decoded before the route handler reads `X-Bytes-Received`.
+ *
+ * Calling site is the bench engine startup
+ * (`server-http-{transport}` benchmarks); the `--compression=true`
+ * CLI flag drives [enabled].
+ */
+fun KeelHttpServerBuilder.installBenchCompression(enabled: Boolean) {
+    if (!enabled) return
+    compression {
+        encoder(GzipCodec, priority = 1)
+        encoder(DeflateCodec, priority = 0)
+        requestDecompression {
+            // bench's compression-upload fixture is ~9:1 ratio with payloads up to
+            // ~100 KB compressed; lift the 1 MiB default to keep room for larger
+            // fixtures without hitting RequestDecompressionLimitException.
+            limit = 10L * 1024 * 1024
+        }
+    }
+}
 
 /**
  * Installs the streaming benchmark routes used by `bench-stream-one.sh`
@@ -22,11 +50,10 @@ private val EMPTY_BODY = ByteArray(0)
  * DSL = v1.0 recommended API) against pipeline-http (raw codec, floor)
  * and the Ktor adapters on the same transport.
  *
- * Excluded by intent: response compression (`/large` with `Accept-Encoding`)
- * and request decompression (`/upload-stream` with `Content-Encoding: gzip`).
- * Both need `CompressionHandler` wired into the channel pipeline below the
- * codec, which today is a pipeline-level installer (not exposed by the
- * `KeelHttpServer` DSL). Tracked as follow-up; see status / plan notes.
+ * Response compression and request decompression are configured by the
+ * caller via [installBenchCompression] (gated on the `--compression=true`
+ * CLI flag); the route handlers themselves are agnostic — the
+ * pipeline-level handlers transform the bytes transparently.
  */
 fun KeelHttpServerBuilder.installStreamingBenchRoutes() {
     get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }

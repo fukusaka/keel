@@ -45,6 +45,7 @@ public class KeelHttpServerBuilder internal constructor() {
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
     private val exceptionMappers = mutableListOf<ExceptionMapper>()
+    private var compressionConfig: CompressionPipelineConfig? = null
 
     /**
      * Configures the listening endpoint — bind address, port, transport
@@ -268,6 +269,29 @@ public class KeelHttpServerBuilder internal constructor() {
         exceptionMappers.add(ExceptionMapper(type, handler))
     }
 
+    /**
+     * Configures outbound response compression (`Content-Encoding`) and
+     * optional inbound request decompression for this server. The
+     * `compression { … }` body registers encoders, condition, and
+     * optional `requestDecompression { … }`; see [CompressionBuilder]
+     * for the DSL shape.
+     *
+     * Calling this at least once with an `encoder(...)` makes the
+     * install pass insert a [io.github.fukusaka.keel.codec.http.CompressionHandler]
+     * after the HTTP codec on every accepted channel. Calling with a
+     * `requestDecompression { }` block similarly installs a
+     * [io.github.fukusaka.keel.codec.http.HttpRequestDecompressionHandler].
+     *
+     * May be called at most once per builder.
+     *
+     * @throws IllegalStateException if compression is already configured.
+     */
+    public fun compression(configure: CompressionBuilder.() -> Unit) {
+        check(compressionConfig == null) { "compression is already configured" }
+        val builder = CompressionBuilder().apply(configure)
+        compressionConfig = builder.build()
+    }
+
     internal fun build(engine: StreamEngine): KeelHttpServer =
         KeelHttpServer(
             engine,
@@ -277,6 +301,7 @@ public class KeelHttpServerBuilder internal constructor() {
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
+            compressionConfig,
         )
 }
 

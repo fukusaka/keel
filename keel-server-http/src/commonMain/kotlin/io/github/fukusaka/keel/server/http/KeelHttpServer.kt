@@ -51,6 +51,7 @@ public class KeelHttpServer internal constructor(
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
+    private val compressionConfig: io.github.fukusaka.keel.server.http.dsl.CompressionPipelineConfig? = null,
 ) {
 
     /**
@@ -95,6 +96,7 @@ public class KeelHttpServer internal constructor(
                 headerLimits = headerLimits,
                 scope = scope,
                 connections = connections,
+                compression = compressionConfig,
             )
         }
         run = ServerRun(server, scope, connections)
