@@ -58,8 +58,22 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+    compression: io.github.fukusaka.keel.server.http.dsl.CompressionPipelineConfig? = null,
 ) {
     addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits)
+    // Compression handlers sit between the codec (decoder/encoder) and
+    // HttpServerHandler so they can intercept HttpRequestHead / HttpBody
+    // (inbound, for `Content-Encoding`) and HttpResponseHead / HttpBody
+    // (outbound, for `Accept-Encoding`) before the encoder serialises to
+    // wire bytes. Either branch is a no-op when its config is absent.
+    if (compression != null) {
+        compression.installRequestDecoder(allocator)?.let { handler ->
+            pipeline.addLast("request-decompression", handler)
+        }
+        if (compression.hasResponseEncoder) {
+            pipeline.addLast("compression", compression.installResponseEncoder(allocator))
+        }
+    }
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,
         HttpServerHandler(
