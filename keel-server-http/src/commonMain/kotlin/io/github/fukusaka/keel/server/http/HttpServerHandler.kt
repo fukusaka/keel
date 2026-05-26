@@ -50,6 +50,12 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * [headerLimits] is the matching DoS guard for header parsing
  * (currently `maxHeaderCount`); see [HttpHeaderLimitsConfig].
  */
+// Param count grows by one per new pipeline phase (codec / dispatch /
+// hooks). 8 is detekt's project-wide threshold; the install function
+// is `internal` and called from exactly one site (`KeelHttpServer.start`)
+// so suppressing is bounded. K61 (DSL pluggable redesign) plans to
+// collapse these into a single `HttpServerPipelineConfig` bundle.
+@Suppress("LongParameterList")
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
     middlewares: List<Middleware>,
