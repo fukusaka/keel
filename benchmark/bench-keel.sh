@@ -192,28 +192,59 @@ run_bench() {
         local rps
         rps=$(extract_rps "$result")
 
-        # Crash vs incomplete-output: kill -0 before kill_server.
-        local server_alive=true
-        if ! kill -0 "$pid" 2>/dev/null; then
-            server_alive=false
+        # K57: classify server death by post-`wait` exit-status signal
+        # decode rather than a pre-kill `kill -0` probe. See bench-one.sh
+        # for the full rationale — SIGSEGV / SIGABRT / SIGBUS / SIGFPE /
+        # SIGILL are server-originated crashes and override numeric rps to
+        # CRASH; SIGTERM / SIGKILL stay attributed to our own kill_server.
+        kill_port "$engine_port"
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null
+        local server_exit_status=$?
+
+        local server_died_by=""
+        if [ "$server_exit_status" -gt 128 ]; then
+            case $((server_exit_status - 128)) in
+                15) server_died_by="SIGTERM" ;;
+                9)  server_died_by="SIGKILL" ;;
+                11) server_died_by="SIGSEGV" ;;
+                6)  server_died_by="SIGABRT" ;;
+                10) server_died_by="SIGBUS" ;;
+                7)  server_died_by="SIGBUS" ;;
+                8)  server_died_by="SIGFPE" ;;
+                4)  server_died_by="SIGILL" ;;
+                *)  server_died_by="SIG$((server_exit_status - 128))" ;;
+            esac
         fi
+
+        local server_crashed=false
+        case "$server_died_by" in
+            SIGSEGV|SIGABRT|SIGBUS|SIGFPE|SIGILL) server_crashed=true ;;
+        esac
 
         if [ -z "$rps" ]; then
             local status_token
-            if [ "$server_alive" = false ]; then
+            if [ "$server_crashed" = true ]; then
                 status_token="CRASH"
-                log_msg "RUN $run FAILED: server pid=$pid dead before kill (CRASH)"
+                log_msg "RUN $run FAILED: server died by $server_died_by (exit $server_exit_status)"
             else
                 status_token="WRK_INCOMPLETE"
-                log_msg "RUN $run FAILED: wrk produced no Requests/sec line, server still alive"
+                log_msg "RUN $run FAILED: wrk produced no Requests/sec line, server died_by=$server_died_by (exit $server_exit_status)"
             fi
             log_msg "--- wrk output begin ---"
             echo "$result" >> "$log_file"
             log_msg "--- wrk output end ---"
             all_rps+=("$status_token")
             all_status+=("$status_token")
+        elif [ "$server_crashed" = true ]; then
+            log_msg "RUN $run FAILED: wrk reported rps=$rps but server died by $server_died_by (exit $server_exit_status) — overriding to CRASH"
+            log_msg "--- wrk output begin ---"
+            echo "$result" >> "$log_file"
+            log_msg "--- wrk output end ---"
+            all_rps+=("CRASH")
+            all_status+=("CRASH")
         else
-            log_msg "RUN $run OK rps=$rps (server_alive=$server_alive)"
+            log_msg "RUN $run OK rps=$rps (server_died_by=$server_died_by exit=$server_exit_status)"
             all_rps+=("$rps")
             all_status+=("OK")
             if awk "BEGIN {exit !($rps > $best_rps)}" 2>/dev/null; then
@@ -222,9 +253,6 @@ run_bench() {
             fi
         fi
 
-        kill_port "$engine_port"
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
         wait_port_free "$engine_port"
 
         if [ "$run" -lt "$RUNS" ]; then
