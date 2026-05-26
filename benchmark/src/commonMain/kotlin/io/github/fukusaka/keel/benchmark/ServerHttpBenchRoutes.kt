@@ -109,7 +109,12 @@ fun KeelHttpServerBuilder.installStreamingBenchRoutes() {
                 headers = HttpHeaders.of(
                     HttpHeaderName.CONTENT_LENGTH to "0",
                     "X-Bytes-Received" to total.toString(),
-                    "X-Parts-Received" to parts.toString(),
+                    // PipelineHttpRoutes subtracts 1 from the raw boundary
+                    // count: the multipart wire shape has N parts but
+                    // N+1 boundary markers (the closing `--BOUNDARY--`
+                    // is the +1). k6's `parts received correct` check
+                    // expects N, so report `parts - 1`.
+                    "X-Parts-Received" to (parts - 1).coerceAtLeast(0).toString(),
                 ),
                 body = EMPTY_BODY,
             ),
