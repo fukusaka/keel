@@ -228,29 +228,74 @@ for run in $(seq 1 "$RUNS"); do
     P50=$(echo "$RESULT" | awk '/^[[:space:]]+50%[[:space:]]/ {print $2; exit}')
     P99=$(echo "$RESULT" | awk '/^[[:space:]]+99%[[:space:]]/ {print $2; exit}')
 
-    # Detect crash: PID dead before kill_server means server exited under
-    # load (SIGABRT, SIGSEGV, OOM kill, etc.). Distinguish from "wrk got
-    # incomplete output but server is fine" (network blip / wrk bug).
-    SERVER_ALIVE=true
-    if ! kill -0 "$PID" 2>/dev/null; then
-        SERVER_ALIVE=false
+    # Stop the server and capture its exit status. `wait` returns the
+    # child's real exit code, encoding fatal signals as `128 + signum`.
+    # We need to detect the signal that actually killed the server, not
+    # whatever we sent — `kill_server`'s SIGTERM and `kill_port`'s SIGKILL
+    # are ours, but SIGSEGV / SIGABRT / SIGBUS can only come from the
+    # server itself (we never send those). So an exit of 139 / 134 / 138
+    # is definitive evidence of a server crash, even when our SIGTERM
+    # raced with it.
+    #
+    # K57: the pre-fix logic only did `kill -0 $PID` *before* kill_server,
+    # missing the race where the server SEGV'd between that check and our
+    # SIGTERM arriving. Worse, wrk could already have a numeric Requests/sec
+    # line from the partial run before the crash, so the cell silently
+    # logged as OK with a misleading low rps (one run on
+    # `pipeline-http × nwconn × mbedtls` dropped to 4 K rps vs 47 K sibling).
+    kill_port "$PORT"
+    kill_server
+    wait "$PID" 2>/dev/null
+    SERVER_EXIT_STATUS=$?
+
+    SERVER_DIED_BY=""
+    if [ "$SERVER_EXIT_STATUS" -gt 128 ]; then
+        case $((SERVER_EXIT_STATUS - 128)) in
+            15) SERVER_DIED_BY="SIGTERM" ;;     # our kill_server
+            9)  SERVER_DIED_BY="SIGKILL" ;;     # our kill_port fallback (or OOM)
+            11) SERVER_DIED_BY="SIGSEGV" ;;     # crash
+            6)  SERVER_DIED_BY="SIGABRT" ;;     # crash
+            10) SERVER_DIED_BY="SIGBUS" ;;      # crash
+            7)  SERVER_DIED_BY="SIGBUS" ;;      # crash (Linux numbering)
+            8)  SERVER_DIED_BY="SIGFPE" ;;      # crash
+            4)  SERVER_DIED_BY="SIGILL" ;;      # crash
+            *)  SERVER_DIED_BY="SIG$((SERVER_EXIT_STATUS - 128))" ;;
+        esac
     fi
 
+    # Was it a fatal signal originated by the server itself (i.e. not by us)?
+    SERVER_CRASHED=false
+    case "$SERVER_DIED_BY" in
+        SIGSEGV|SIGABRT|SIGBUS|SIGFPE|SIGILL) SERVER_CRASHED=true ;;
+    esac
+
     if [ -z "$RPS" ]; then
-        if [ "$SERVER_ALIVE" = false ]; then
+        if [ "$SERVER_CRASHED" = true ]; then
             STATUS_TOKEN="CRASH"
-            log "RUN $run FAILED: server pid=$PID dead before kill (CRASH) — wrk output saved below"
+            log "RUN $run FAILED: server died by $SERVER_DIED_BY (exit $SERVER_EXIT_STATUS) — wrk output saved below"
         else
             STATUS_TOKEN="WRK_INCOMPLETE"
-            log "RUN $run FAILED: wrk produced no Requests/sec line, server still alive — wrk output saved below"
+            log "RUN $run FAILED: wrk produced no Requests/sec line, server died_by=$SERVER_DIED_BY (exit $SERVER_EXIT_STATUS) — wrk output saved below"
         fi
         log "--- wrk output begin ---"
         echo "$RESULT" >> "$LOG_FILE"
         log "--- wrk output end ---"
         ALL_RPS+=("$STATUS_TOKEN")
         ALL_STATUS+=("$STATUS_TOKEN")
+    elif [ "$SERVER_CRASHED" = true ]; then
+        # wrk emitted a Requests/sec line, but the server died by a fatal
+        # signal before our shutdown reached it — the partial throughput
+        # is misleading. Override OK to CRASH so the runs array doesn't
+        # hide the failure inside an apparently-numeric value.
+        STATUS_TOKEN="CRASH"
+        log "RUN $run FAILED: wrk reported rps=$RPS but server died by $SERVER_DIED_BY (exit $SERVER_EXIT_STATUS) — partial throughput unreliable, overriding to CRASH; wrk output saved below"
+        log "--- wrk output begin ---"
+        echo "$RESULT" >> "$LOG_FILE"
+        log "--- wrk output end ---"
+        ALL_RPS+=("$STATUS_TOKEN")
+        ALL_STATUS+=("$STATUS_TOKEN")
     else
-        log "RUN $run OK rps=$RPS p50=$P50 p99=$P99 (server_alive=$SERVER_ALIVE)"
+        log "RUN $run OK rps=$RPS p50=$P50 p99=$P99 (server_died_by=$SERVER_DIED_BY exit=$SERVER_EXIT_STATUS)"
         ALL_RPS+=("$RPS")
         ALL_STATUS+=("OK")
         if awk "BEGIN {exit !($RPS > $BEST_RPS)}" 2>/dev/null; then
@@ -260,10 +305,6 @@ for run in $(seq 1 "$RUNS"); do
         fi
     fi
 
-    # Stop server
-    kill_port "$PORT"
-    kill_server
-    wait "$PID" 2>/dev/null || true
     wait_port_free "$PORT"
 
     # Cooldown between runs

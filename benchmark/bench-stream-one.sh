@@ -752,6 +752,34 @@ $K6_OUT"
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)
 
+    # K57: shut down the server now (was after the parse block) so we can
+    # decode its exit signal before classifying the run. See bench-one.sh
+    # for the full rationale.
+    kill_port "$PORT"
+    kill_server
+    wait "$PID" 2>/dev/null
+    SERVER_EXIT_STATUS=$?
+
+    SERVER_DIED_BY=""
+    if [ "$SERVER_EXIT_STATUS" -gt 128 ]; then
+        case $((SERVER_EXIT_STATUS - 128)) in
+            15) SERVER_DIED_BY="SIGTERM" ;;
+            9)  SERVER_DIED_BY="SIGKILL" ;;
+            11) SERVER_DIED_BY="SIGSEGV" ;;
+            6)  SERVER_DIED_BY="SIGABRT" ;;
+            10) SERVER_DIED_BY="SIGBUS" ;;
+            7)  SERVER_DIED_BY="SIGBUS" ;;
+            8)  SERVER_DIED_BY="SIGFPE" ;;
+            4)  SERVER_DIED_BY="SIGILL" ;;
+            *)  SERVER_DIED_BY="SIG$((SERVER_EXIT_STATUS - 128))" ;;
+        esac
+    fi
+
+    SERVER_CRASHED=false
+    case "$SERVER_DIED_BY" in
+        SIGSEGV|SIGABRT|SIGBUS|SIGFPE|SIGILL) SERVER_CRASHED=true ;;
+    esac
+
     # K45 fix: surface k6 wall-clock timeout as a distinct outcome. Without
     # this the parsed RPS / p50 / p99 are all empty and the row looks like
     # a silent "no data" line — operators couldn't tell hang from missing
@@ -767,6 +795,16 @@ $K6_OUT"
         else
             P50="TIMEOUT ${K6_TIMEOUT}"
         fi
+        P99="-"
+    fi
+
+    # K57: server died by a fatal signal mid-run — override RPS / P50 /
+    # P99 to surface the crash even if k6 emitted numeric values for the
+    # part of the run before the crash.
+    if [ "$SERVER_CRASHED" = true ] && [ "$INVALID" != true ]; then
+        INVALID=true
+        RPS=""
+        P50="CRASH ${SERVER_DIED_BY}"
         P99="-"
     fi
 
@@ -798,10 +836,6 @@ $K6_OUT"
         BEST_P50="$P50"
         BEST_P99="$P99"
     fi
-
-    kill_port "$PORT"
-    kill_server
-    wait "$PID" 2>/dev/null || true
 
     if [ "$run" -lt "$RUNS" ]; then
         sleep "$COOLDOWN"
