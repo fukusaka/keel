@@ -3,9 +3,10 @@ package io.github.fukusaka.keel.benchmark
 /** JS default engine — pipeline-http-nodejs (Node.js pipeline). */
 actual fun defaultEngine(): String = "pipeline-http-nodejs"
 
-/** JS engine registry: Node.js pipeline HTTP variant. */
+/** JS engine registry: Node.js pipeline HTTP + keel-server-http variants. */
 actual fun engineRegistry(): Map<String, EngineBenchmark> = mapOf(
     "pipeline-http-nodejs" to PipelineHttpNodejsBenchmark,
+    "server-http-nodejs" to ServerHttpNodejsBenchmark,
 )
 
 /** Print to stderr via [console.error]. */
