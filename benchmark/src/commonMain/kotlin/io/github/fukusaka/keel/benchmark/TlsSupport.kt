@@ -2,9 +2,11 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketOptions
+import io.github.fukusaka.keel.server.ServerTlsStrategy
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.server.TlsServerInstaller
+import io.github.fukusaka.keel.server.http.dsl.HttpConnectorBuilder
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 
 /**
@@ -121,6 +123,56 @@ fun bindConfigFor(config: BenchmarkConfig): Pair<BindConfig, AutoCloseable?> =
     } else {
         BindConfig(childSocketOptions = childSocketOptions(config)) to null
     }
+
+/**
+ * Returns the `connector { … }` configuration lambda the bench's
+ * `keel-server-http` (`server-http-*`) engines pass to
+ * `keelHttpServer { connector { … } }`, plus an [AutoCloseable] that
+ * owns the [TlsCodecFactory] lifecycle (or `null` for plain HTTP).
+ *
+ * For HTTPS runs the returned lambda calls the connector's `tls { }`
+ * sub-block with [ServerTlsStrategy.KeelCodec] (keel's [TlsHandler]
+ * driving the supplied factory). Only the `keel` installer is
+ * supported here — `netty` / `nwconnection` / `node` installers map
+ * to engine-native TLS which the `server-http` connector exposes via
+ * [ServerTlsStrategy.EngineNative]; bench-side dispatch for those is
+ * deferred (separate scope from the server-http coverage closure).
+ */
+fun serverHttpConnectorConfig(config: BenchmarkConfig): Pair<HttpConnectorBuilder.() -> Unit, AutoCloseable?> {
+    val childOpts = childSocketOptions(config)
+    val tlsBackend = config.tls
+    if (tlsBackend == null) {
+        val configure: HttpConnectorBuilder.() -> Unit = {
+            host = "0.0.0.0"
+            port = config.port
+            socketOptions = childOpts
+        }
+        return configure to null
+    }
+    // Only the `keel` installer is supported here; netty / nwconnection / node
+    // map to ServerTlsStrategy.EngineNative which is deferred (separate scope
+    // from the server-http coverage closure). Fail fast so a manual
+    // `bench-one.sh --tls=… --tls-installer=netty` against a server-http
+    // engine doesn't silently get KeelCodec strategy and mislead the
+    // measurement; the sweep scripts pass `--tls-installer=keel` so they
+    // are unaffected.
+    require(config.tlsInstaller == "keel") {
+        "server-http only supports --tls-installer=keel (got '${config.tlsInstaller}'); " +
+            "netty / nwconnection / node installers map to ServerTlsStrategy.EngineNative " +
+            "which the server-http connector does expose, but bench-side dispatch is deferred"
+    }
+    val factory = createTlsCodecFactory(tlsBackend)
+    val configure: HttpConnectorBuilder.() -> Unit = {
+        host = "0.0.0.0"
+        port = config.port
+        socketOptions = childOpts
+        tls {
+            this.config = BenchmarkCertificates.tlsConfig()
+            this.strategy = ServerTlsStrategy.KeelCodec(factory)
+        }
+    }
+    return configure to factory
+}
 
 fun validateTlsBackend(config: BenchmarkConfig) {
     val backend = config.tls ?: return

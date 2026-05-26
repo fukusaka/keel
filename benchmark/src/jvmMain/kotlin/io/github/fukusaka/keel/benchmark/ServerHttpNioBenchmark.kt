@@ -32,8 +32,9 @@ object ServerHttpNioBenchmark : EngineBenchmark {
                 loggerFactory = benchmarkLoggerFactory(),
             ),
         )
+        val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)
         val server = keelHttpServer(engine) {
-            connector { host = "0.0.0.0"; port = config.port }
+            connector(connectorConfigure)
             get("/hello") { call -> call.respond(PipelineHttpResponses.hello) }
             get("/large") { call -> call.respond(PipelineHttpResponses.large) }
         }
@@ -42,6 +43,7 @@ object ServerHttpNioBenchmark : EngineBenchmark {
         return {
             runBlocking {
                 server.stop()
+                tlsCloseable?.close()
                 engine.close()
             }
         }
