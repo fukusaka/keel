@@ -149,6 +149,18 @@ fun serverHttpConnectorConfig(config: BenchmarkConfig): Pair<HttpConnectorBuilde
         }
         return configure to null
     }
+    // Only the `keel` installer is supported here; netty / nwconnection / node
+    // map to ServerTlsStrategy.EngineNative which is deferred (separate scope
+    // from the server-http coverage closure). Fail fast so a manual
+    // `bench-one.sh --tls=… --tls-installer=netty` against a server-http
+    // engine doesn't silently get KeelCodec strategy and mislead the
+    // measurement; the sweep scripts pass `--tls-installer=keel` so they
+    // are unaffected.
+    require(config.tlsInstaller == "keel") {
+        "server-http only supports --tls-installer=keel (got '${config.tlsInstaller}'); " +
+            "netty / nwconnection / node installers map to ServerTlsStrategy.EngineNative " +
+            "which the server-http connector does expose, but bench-side dispatch is deferred"
+    }
     val factory = createTlsCodecFactory(tlsBackend)
     val configure: HttpConnectorBuilder.() -> Unit = {
         host = "0.0.0.0"
