@@ -31,13 +31,7 @@ object ServerHttpEpollBenchmark : EngineBenchmark {
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
             installStreamingBenchRoutes()
-            // `/ws-deflate` exercises the WS-3 permessage-deflate path:
-            // `webSockets(DeflateCodec)` routes the upgrade through the real
-            // `runWebSocketUpgrade` negotiation, so the bench measures the
-            // productized compression stack rather than a hand-wired one.
-            webSockets(DeflateCodec) {
-                webSocket("/ws-deflate") { for (m in incoming) send(m) }
-            }
+            installWebSocketBenchRoutes()
         }
         runBlocking { server.start() }
 

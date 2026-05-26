@@ -28,6 +28,7 @@ object ServerHttpNwConnectionBenchmark : EngineBenchmark {
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
             installStreamingBenchRoutes()
+            installWebSocketBenchRoutes()
         }
         runBlocking { server.start() }
 
