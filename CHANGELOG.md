@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `benchmark`: record per-cell failure attribution across `bench-one.sh` / `bench-keel.sh` / `bench-all.sh` and the READY phase of `bench-stream-one.sh`. READY-loop now captures `curl` exit-code distribution per iteration (7 = TCP refused, 28 = `CURLE_OPERATION_TIMEDOUT` / server accepted TCP but never responded, 0 + non-2xx/3xx = HTTP error) and surfaces the dominant exit as the failed cell's attribution token (`READY_TIMEOUT_NN`). wrk phase distinguishes server crash (`kill -0 $PID` dead before `kill_server`) from incomplete-wrk-output (`WRK_INCOMPLETE`). `all_rps` carries status tokens for failed runs so the runs display reads `[100K 99K CRASH]` and `median()` (rewritten to filter non-numeric entries) no longer reports an empty-as-zero-shifted "median" when any run failed. New 6th result-line field (`OK` / `PARTIAL(N/M)` / `READY_TIMEOUT_NN` / `CRASH` / `WRK_INCOMPLETE` / `MIXED_FAILED`) is additive — sweep scripts parsing fields 2..5 stay unaffected; for single-run mode the line now carries `|[runs]|status` after the historical 4 fields. Per-cell diagnostic log under `$BENCH_LOG_DIR` (default `/tmp/keel-bench-diag`) records iteration-level `curl` exit distribution, per-run outcome, and full `wrk` output on failure (#622)
+
 ### Fixed
 
 - `benchmark`: bound the READY-check `curl` loop in `bench-one.sh` / `bench-keel.sh` / `bench-all.sh` / `bench-stream-one.sh` with `--max-time 2`. The pre-fix loop iterated `seq 1 READY_TIMEOUT` (default 60) with `sleep 0.5` between iterations, expressing a ~30 s wall-clock budget, but each `curl` invocation had no timeout — a server that accepts TCP and then never responds (e.g. an HTTPS endpoint reached by `curl` pointed at a plain-HTTP server) blocked one iteration indefinitely so the budget was never reached and the sweep script hung. (#621)
