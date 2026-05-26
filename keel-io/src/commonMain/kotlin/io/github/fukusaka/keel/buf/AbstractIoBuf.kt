@@ -1,4 +1,8 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package io.github.fukusaka.keel.buf
+
+import kotlin.concurrent.atomics.AtomicInt
 
 /**
  * Common skeleton for the three platform [IoBuf] implementations
@@ -59,8 +63,23 @@ abstract class AbstractIoBuf internal constructor(
     final override val readableBytes: Int get() = writerIndex - readerIndex
     final override val writableBytes: Int get() = capacity - writerIndex
 
-    /** Non-atomic reference count (single-EventLoop ownership invariant). */
-    protected var refCount: Int = 1
+    /**
+     * Atomic reference count.
+     *
+     * Single-EventLoop ownership is the assumed contract for kqueue /
+     * epoll / io_uring / nio / netty / JS engines (each has one pthread
+     * per worker and never migrates a connection's IoBuf calls off it).
+     * GCD-backed engines (NWConnection) serialise blocks per-connection
+     * but migrate them across OS threads, so the refcount must carry
+     * explicit memory-order guarantees or the optimiser may reorder /
+     * cache reads across thread boundaries and observe a stale value.
+     * The race manifested as a sporadic SIGABRT
+     * `Buffer already released` inside `HttpHeaders.resetForReuse()`
+     * on `server-http × nwconnection` HTTPS sweeps at ~7 % per-run rate
+     * (K56). Atomic adds the missing memory barriers without changing
+     * the single-owner contract on the well-behaved engines.
+     */
+    private val refCount = AtomicInt(1)
 
     /**
      * Release-path strategy invoked at [refCount] zero. Mutable so
@@ -71,14 +90,15 @@ abstract class AbstractIoBuf internal constructor(
     final override var owner: IoBufOwner = HeapOwner
 
     final override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released buffer" }
-        refCount++
+        val before = refCount.fetchAndAdd(1)
+        check(before > 0) { "Cannot retain a released buffer" }
         return this
     }
 
     final override fun release(): Boolean {
-        check(refCount > 0) { "Buffer already released" }
-        if (--refCount == 0) {
+        val before = refCount.fetchAndAdd(-1)
+        check(before > 0) { "Buffer already released" }
+        if (before == 1) {
             owner.release(this)
             return true
         }
@@ -105,7 +125,7 @@ abstract class AbstractIoBuf internal constructor(
     internal open fun resetForReuse() {
         readerIndex = 0
         writerIndex = 0
-        refCount = 1
+        refCount.store(1)
     }
 
     /**

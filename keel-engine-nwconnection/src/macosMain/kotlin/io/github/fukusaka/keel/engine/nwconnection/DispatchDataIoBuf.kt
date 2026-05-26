@@ -1,10 +1,11 @@
-@file:OptIn(UnsafeIoBufApi::class)
+@file:OptIn(UnsafeIoBufApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NativePointerAccess
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import kotlin.concurrent.atomics.AtomicInt
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
@@ -50,9 +51,19 @@ import platform.posix.memcpy
  * - Slicing this IoBuf via `ctx.allocator.slice(...)` retains it (one
  *   reference per slice), keeping `zcHandle` alive until every slice
  *   is released.
- * - Single-EventLoop thread invariant: `refCount` is non-atomic.
- *   Read/write happens on the NwConnection's dispatch queue (the
- *   transport's `ioDispatcher`).
+ * - **Atomic [refCount] (K56)**: NWConnection's per-connection dispatch
+ *   queue is a GCD serial queue, which serialises blocks but does NOT
+ *   pin them to one OS thread — GCD migrates blocks across its worker
+ *   pool. The other Native engines (kqueue / epoll / io_uring) all run
+ *   on one pinned EventLoop pthread per worker so a non-atomic int
+ *   refcount is safe under K/N's memory model; GCD migration breaks
+ *   that assumption because subsequent block reads see stale cached
+ *   values of the non-atomic field. Switching to [AtomicInt] adds the
+ *   memory barriers GCD's queue ordering implies but does not enforce
+ *   at the user-code level. The race manifested as a sporadic SIGSEGV
+ *   in `HttpHeaders.resetForReuse()` (which calls `backing.release()`)
+ *   on `server-http × nwconnection` HTTPS sweeps at 30–40 % per-run
+ *   rate.
  *
  * @property ptr      Pointer to the start of the dispatch_data_t region.
  * @property capacity Bytes in the region.
@@ -67,7 +78,7 @@ internal class DispatchDataIoBuf(
     private val zcHandle: COpaquePointer,
 ) : IoBuf, NativePointerAccess {
 
-    private var refCount = 1
+    private val refCount = AtomicInt(1)
 
     @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = ptr
@@ -133,8 +144,8 @@ internal class DispatchDataIoBuf(
 
     /** @throws IllegalStateException if the buffer has already been released. */
     override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released DispatchDataIoBuf" }
-        refCount++
+        val before = refCount.fetchAndAdd(1)
+        check(before > 0) { "Cannot retain a released DispatchDataIoBuf" }
         return this
     }
 
@@ -145,8 +156,9 @@ internal class DispatchDataIoBuf(
      * @throws IllegalStateException if the buffer has already been released.
      */
     override fun release(): Boolean {
-        check(refCount > 0) { "DispatchDataIoBuf already released" }
-        if (--refCount == 0) {
+        val before = refCount.fetchAndAdd(-1)
+        check(before > 0) { "DispatchDataIoBuf already released" }
+        if (before == 1) {
             keel_nw_dispatch_data_release(zcHandle)
             return true
         }
@@ -161,8 +173,9 @@ internal class DispatchDataIoBuf(
      * going through the normal refcount lifecycle.
      */
     override fun close() {
-        if (refCount == 0) return
-        refCount = 0
-        keel_nw_dispatch_data_release(zcHandle)
+        val prior = refCount.exchange(0)
+        if (prior > 0) {
+            keel_nw_dispatch_data_release(zcHandle)
+        }
     }
 }
