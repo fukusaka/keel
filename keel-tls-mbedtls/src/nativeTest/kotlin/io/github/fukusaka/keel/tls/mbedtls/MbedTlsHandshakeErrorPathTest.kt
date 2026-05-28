@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -72,6 +73,26 @@ class MbedTlsHandshakeErrorPathTest {
             driveHandshake(client = client, server = server)
         }
         assertFalse(client.isHandshakeComplete, "client must not report a completed handshake on failure")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `handshake fails when the client and server protocol ranges do not overlap`() {
+        // Version negotiation happens before certificate verification, so
+        // this failure is reachable even though a keel MbedTLS client
+        // cannot complete a full handshake: server requires TLS 1.3,
+        // client caps at TLS 1.2 → no common version → abort.
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE, minVersion = TlsVersion.TLS1_3),
+        )
+        val client = factory.createClientCodec(TlsConfig(maxVersion = TlsVersion.TLS1_2))
+
+        assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
+            driveHandshake(client = client, server = server)
+        }
+        assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
         client.close()
         server.close()

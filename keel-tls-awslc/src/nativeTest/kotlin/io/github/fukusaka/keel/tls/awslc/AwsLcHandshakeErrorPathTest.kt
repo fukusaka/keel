@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -47,8 +48,8 @@ import kotlin.test.assertTrue
  * currently map `TlsVerifyMode.REQUIRED` to `SSL_VERIFY_PEER` without
  * `SSL_VERIFY_FAIL_IF_NO_PEER_CERT`, so a server does not abort on a
  * missing client cert — that gap is tracked separately. Version-downgrade
- * and SNI-mismatch failures are likewise out of scope (no `TlsConfig`
- * knob to induce them).
+ * is covered via [TlsConfig.minVersion] / [maxVersion]; SNI-mismatch
+ * remains out of scope (no hostname-verification knob yet).
  */
 class AwsLcHandshakeErrorPathTest {
 
@@ -73,6 +74,27 @@ class AwsLcHandshakeErrorPathTest {
             driveHandshake(client = client, server = server)
         }
         assertFalse(client.isHandshakeComplete, "client must not report a completed handshake on failure")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `handshake fails when the client and server protocol ranges do not overlap`() {
+        // Server requires TLS 1.3; client caps at TLS 1.2 → no common
+        // version → abort. Client trusts the server (InsecureTrustAll) so
+        // the failure is the version mismatch, not certificate rejection.
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE, minVersion = TlsVersion.TLS1_3),
+        )
+        val client = factory.createClientCodec(
+            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE, maxVersion = TlsVersion.TLS1_2),
+        )
+
+        assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
+            driveHandshake(client = client, server = server)
+        }
+        assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
         client.close()
         server.close()

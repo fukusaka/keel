@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import java.io.ByteArrayInputStream
 import java.io.FileInputStream
 import java.security.KeyFactory
@@ -42,6 +43,7 @@ class JsseTlsCodecFactory : TlsCodecFactory {
         engine.useClientMode = false
         configureVerification(engine, config)
         configureAlpn(engine, config)
+        configureProtocols(engine, config)
         return JsseTlsCodec(engine)
     }
 
@@ -63,6 +65,7 @@ class JsseTlsCodecFactory : TlsCodecFactory {
         engine.useClientMode = true
         configureAlpn(engine, config)
         configureSni(engine, config)
+        configureProtocols(engine, config)
         return JsseTlsCodec(engine)
     }
 
@@ -177,6 +180,22 @@ class JsseTlsCodecFactory : TlsCodecFactory {
         engine.sslParameters = params
     }
 
+    /**
+     * Restricts the enabled protocol versions to the
+     * [TlsConfig.minVersion] .. [TlsConfig.maxVersion] range. Always
+     * applied (never a no-op): [TlsConfig.minVersion] defaults to TLS 1.2
+     * and is enforced so SSLv3 / TLS 1.0 / TLS 1.1 are never enabled. The
+     * range is validated by [TlsConfig], so only the mapping happens here.
+     */
+    private fun configureProtocols(engine: SSLEngine, config: TlsConfig) {
+        val max = config.maxVersion ?: TlsVersion.TLS1_3
+        val enabled = TlsVersion.entries
+            .filter { it >= config.minVersion && it <= max }
+            .map { jsseProtocolName(it) }
+            .toTypedArray()
+        engine.enabledProtocols = enabled
+    }
+
     companion object {
         private const val KEYSTORE_TYPE = "PKCS12"
         private const val KEY_ALIAS = "server"
@@ -188,6 +207,11 @@ class JsseTlsCodecFactory : TlsCodecFactory {
 
         /** JSSE sentinel value for "unspecified port" in [SSLContext.createSSLEngine]. */
         private const val NO_PORT_HINT = -1
+
+        private fun jsseProtocolName(version: TlsVersion): String = when (version) {
+            TlsVersion.TLS1_2 -> "TLSv1.2"
+            TlsVersion.TLS1_3 -> "TLSv1.3"
+        }
 
         private fun parsePemCertificates(pem: String): Array<Certificate> {
             val cf = CertificateFactory.getInstance(X509_CERT_TYPE)

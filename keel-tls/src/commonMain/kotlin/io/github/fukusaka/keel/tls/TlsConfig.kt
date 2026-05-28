@@ -13,7 +13,9 @@ package io.github.fukusaka.keel.tls
  * A single [TlsConfig] can be shared by multiple [TlsCodec] instances.
  *
  * **Current scope**: server certificate + trust anchors + verification mode +
- * ALPN + SNI. mTLS (client auth), session resumption, and 0-RTT are deferred.
+ * ALPN + SNI + protocol version range ([minVersion] / [maxVersion]). mTLS
+ * (client auth), cipher-suite selection, session resumption, and 0-RTT are
+ * deferred.
  */
 data class TlsConfig(
     /**
@@ -51,4 +53,35 @@ data class TlsConfig(
      * hosting multiple domains. null disables SNI.
      */
     val serverName: String? = null,
-)
+
+    /**
+     * Lowest TLS protocol version the handshake may negotiate. Defaults
+     * to [TlsVersion.TLS1_2] and **is always enforced** — keel sets this
+     * floor explicitly on every backend rather than deferring to the
+     * backend / system default, so SSLv3 / TLS 1.0 / TLS 1.1 can never be
+     * negotiated (those versions are also absent from [TlsVersion], so
+     * there is no way to opt back into them). Pin to [TlsVersion.TLS1_3]
+     * to require TLS 1.3.
+     */
+    val minVersion: TlsVersion = TlsVersion.TLS1_2,
+
+    /**
+     * Highest TLS protocol version the handshake may negotiate. null caps
+     * at the newest version keel enumerates ([TlsVersion.TLS1_3] today).
+     * Like [minVersion] the ceiling is set **explicitly** on every backend
+     * — keel never negotiates a version it does not enumerate and test, so
+     * a future TLS version is enabled only by adding it to [TlsVersion]
+     * (not by a backend / system library silently gaining support).
+     * Combined with [minVersion] this bounds the acceptable range; an
+     * empty range (`minVersion > maxVersion`) is rejected at construction.
+     */
+    val maxVersion: TlsVersion? = null,
+) {
+    init {
+        if (maxVersion != null) {
+            require(minVersion <= maxVersion) {
+                "minVersion ($minVersion) must be <= maxVersion ($maxVersion)"
+            }
+        }
+    }
+}
