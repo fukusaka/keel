@@ -22,9 +22,10 @@ import platform.posix.usleep
  * - [liveMode] makes the empty-default `waitEvents` path `usleep` briefly
  *   instead of returning `0` immediately, so the spawned EventLoop thread
  *   polls (drains dispatched tasks each iteration) without pegging a CPU.
- * - [lastAddFilterThread] captures the pthread on which the most recent
- *   `addReadFilter` / `addWriteFilter` executed, so the test can assert
- *   the syscall ran on the EventLoop thread (cross-thread funnel) or the
+ * - [lastAddFilterThreadId] captures the thread id (raw `pthread_self()`
+ *   pointer as a [Long]) on which the most recent `addReadFilter` /
+ *   `addWriteFilter` for [watchedFd] executed, so the test can assert the
+ *   syscall ran on the EventLoop thread (cross-thread funnel) or the
  *   caller thread (inline fast path). It is `@Volatile` because it is
  *   written on the EventLoop thread and read on the test thread — the
  *   only cross-thread access this fake supports.
