@@ -15,6 +15,66 @@ import platform.darwin.dispatch_queue_t
  * a scope, read from inside that scope" shape — but the slot is bound to a
  * GCD dispatch queue rather than an OS thread.
  *
+ * **Usage.** Declare one instance per logical slot (process-singleton),
+ * [install] a fresh value on each queue you own, and [current] from inside
+ * blocks running on that queue. The canonical use is a per-connection-queue
+ * object pool with a `@ThreadLocal` fallback for off-GCD callers:
+ *
+ * ```
+ * // 1. One slot, declared once. Fallback covers non-GCD callers
+ * //    (kqueue / epoll EventLoop threads) where @ThreadLocal is correct.
+ * @ThreadLocal
+ * private val fallbackStack = ArrayDeque<HttpHeaders>()
+ *
+ * private val poolLocal = DispatchQueueLocal<ArrayDeque<HttpHeaders>>(
+ *     fallback = { fallbackStack },
+ * )
+ *
+ * // 2. Engine side: install a fresh per-queue value right after the
+ * //    connection's serial queue is created, before the first callback.
+ * fun onNewConnection(connQueue: dispatch_queue_t) {
+ *     poolLocal.install(connQueue, ArrayDeque())
+ *     // GCD disposes the value's StableRef when connQueue is released —
+ *     // no manual uninstall.
+ * }
+ *
+ * // 3. Hot path: read from inside a block on the queue. No atomics /
+ * //    locks needed — the serial queue guarantees sequential access to
+ * //    the returned container.
+ * fun borrow(): HttpHeaders {
+ *     val stack = poolLocal.current()
+ *     return if (stack.isEmpty()) HttpHeaders() else stack.removeLast()
+ * }
+ * ```
+ *
+ * Other shapes:
+ *
+ * ```
+ * // Per-connection mutable state. Serial-queue execution makes plain
+ * // field mutation safe — that is the whole point vs. @ThreadLocal.
+ * class ConnStats { var requests = 0 }
+ * private val stats = DispatchQueueLocal<ConnStats>(fallback = { ConnStats() })
+ * fun onConnect(q: dispatch_queue_t) = stats.install(q, ConnStats())
+ * fun onRequest() { stats.current().requests++ }
+ *
+ * // Contract assertion: fail fast if a callback runs off its queue.
+ * fun assertOnQueue(op: String) =
+ *     check(poolLocal.isScopedHere()) { "$op must run on the connection queue" }
+ *
+ * // fail-fast fallback: off-queue access is a contract violation.
+ * private val state = DispatchQueueLocal<ConnState>(
+ *     fallback = { error("ConnState accessed off the connection queue") },
+ * )
+ * ```
+ *
+ * Pitfalls:
+ * - Install a **fresh** value per queue. Sharing one value across two
+ *   queues reintroduces the cross-queue aliasing this primitive exists
+ *   to prevent.
+ * - One [DispatchQueueLocal] instance carries exactly one type [T]; use
+ *   separate instances for separate types (their distinct keys never
+ *   collide on the same queue).
+ *
  * **Why a queue-local, not a thread-local.** GCD's serial-queue contract
  * guarantees execution order between blocks on one queue but does **not**
  * pin them to one OS thread. A single GCD worker pthread serves blocks
