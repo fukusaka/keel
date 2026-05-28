@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -30,12 +31,16 @@ import openssl.SSL_VERIFY_PEER
 import openssl.SSL_new
 import openssl.SSL_set_accept_state
 import openssl.SSL_set_connect_state
+import openssl.TLS1_2_VERSION
+import openssl.TLS1_3_VERSION
 import openssl.TLS_method
 import openssl.keel_openssl_bio_setup
 import openssl.keel_openssl_ctx_load_ca_pem
 import openssl.keel_openssl_ctx_load_pem_cert
 import openssl.keel_openssl_ctx_load_pem_key
 import openssl.keel_openssl_err_string
+import openssl.keel_openssl_set_max_proto_version
+import openssl.keel_openssl_set_min_proto_version
 import openssl.keel_openssl_set_sni
 
 /**
@@ -101,8 +106,35 @@ class OpenSslCodecFactory : TlsCodecFactory {
         loadCertificates(ctx, config)
         configureTrust(ctx, config)
         configureVerification(ctx, config)
+        configureProtocols(ctx, config)
 
         return ctx
+    }
+
+    /**
+     * Pins the negotiable protocol version range via
+     * `SSL_CTX_set_min_proto_version` / `set_max_proto_version` (through
+     * the `keel_openssl_*` wrappers — the originals are macros). No-op
+     * when both bounds are null. The range is validated by [TlsConfig].
+     */
+    private fun configureProtocols(ctx: CPointer<SSL_CTX>, config: TlsConfig) {
+        config.minVersion?.let {
+            if (keel_openssl_set_min_proto_version(ctx, opensslVersion(it)) != 1) {
+                SSL_CTX_free(ctx)
+                throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
+            }
+        }
+        config.maxVersion?.let {
+            if (keel_openssl_set_max_proto_version(ctx, opensslVersion(it)) != 1) {
+                SSL_CTX_free(ctx)
+                throw TlsException("Failed to set max proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
+            }
+        }
+    }
+
+    private fun opensslVersion(version: TlsVersion): Int = when (version) {
+        TlsVersion.TLS1_2 -> TLS1_2_VERSION
+        TlsVersion.TLS1_3 -> TLS1_3_VERSION
     }
 
     private fun loadCertificates(ctx: CPointer<SSL_CTX>, config: TlsConfig) {
