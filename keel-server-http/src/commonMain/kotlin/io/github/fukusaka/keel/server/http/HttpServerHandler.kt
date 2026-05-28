@@ -355,14 +355,17 @@ internal class HttpServerHandler(
             handler(call)
             return
         }
-        // No route handler. A 405 routes straight to the built-in
+        // No route handler. A 405 / 406 routes straight to the built-in
         // response — the `notFound` handler answers a genuine miss only,
-        // not a method mismatch. A 404 prefers the custom `notFound`.
-        if (resolution is RouteResolution.MethodNotAllowed) {
-            call.respond(methodNotAllowedResponse(resolution.allowedMethods))
-        } else {
-            val notFound = errorHandlers.notFound
-            if (notFound != null) notFound(call) else call.respond(NOT_FOUND_RESPONSE)
+        // not a method mismatch or a negotiation failure. A 404 prefers the
+        // custom `notFound`.
+        when (resolution) {
+            is RouteResolution.MethodNotAllowed -> call.respond(methodNotAllowedResponse(resolution.allowedMethods))
+            is RouteResolution.NotAcceptable -> call.respond(notAcceptableResponse(resolution.producibleTypes))
+            else -> {
+                val notFound = errorHandlers.notFound
+                if (notFound != null) notFound(call) else call.respond(NOT_FOUND_RESPONSE)
+            }
         }
     }
 
@@ -434,12 +437,22 @@ internal class HttpServerHandler(
          * when the path is registered for other methods, otherwise a
          * `404 Not Found`. Used only when no middleware / `notFound` runs.
          */
-        fun errorResponseFor(resolution: RouteResolution): HttpResponse =
-            if (resolution is RouteResolution.MethodNotAllowed) {
-                methodNotAllowedResponse(resolution.allowedMethods)
-            } else {
-                NOT_FOUND_RESPONSE
-            }
+        fun errorResponseFor(resolution: RouteResolution): HttpResponse = when (resolution) {
+            is RouteResolution.MethodNotAllowed -> methodNotAllowedResponse(resolution.allowedMethods)
+            is RouteResolution.NotAcceptable -> notAcceptableResponse(resolution.producibleTypes)
+            else -> NOT_FOUND_RESPONSE
+        }
+
+        /**
+         * Builds a `406 Not Acceptable` response. The body lists the media
+         * types the matched route can produce (RFC 9110 §15.5.7 suggests
+         * the response include the available representations), comma-space
+         * joined and sorted for determinism.
+         */
+        fun notAcceptableResponse(producibleTypes: Set<String>): HttpResponse {
+            val available = producibleTypes.sorted().joinToString(", ")
+            return HttpResponse.of(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable: $available")
+        }
 
         /**
          * Builds a `405 Method Not Allowed` response whose `Allow` header

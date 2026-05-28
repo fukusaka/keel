@@ -461,8 +461,8 @@ class RouterTest {
         val router = Router()
         val jsonHandler: RouteHandler = { }
         val xmlHandler: RouteHandler = { }
-        router.register(HttpMethod.GET, "/data", header("X-Format", "json"), jsonHandler)
-        router.register(HttpMethod.GET, "/data", header("X-Format", "xml"), xmlHandler)
+        router.register(HttpMethod.GET, "/data", header("X-Format", "json"), handler = jsonHandler)
+        router.register(HttpMethod.GET, "/data", header("X-Format", "xml"), handler = xmlHandler)
         assertSame(jsonHandler, router.match(HttpMethod.GET, "/data", HttpHeaders.of("X-Format" to "json"))?.handler)
         assertSame(xmlHandler, router.match(HttpMethod.GET, "/data", HttpHeaders.of("X-Format" to "xml"))?.handler)
     }
@@ -474,8 +474,8 @@ class RouterTest {
         val second: RouteHandler = { }
         // Both predicates accept a request with X-Tier: gold; registration
         // order decides — the first registered handler wins (WebFlux rule).
-        router.register(HttpMethod.GET, "/p", header("X-Tier", "gold"), first)
-        router.register(HttpMethod.GET, "/p", header("X-Tier", "gold"), second)
+        router.register(HttpMethod.GET, "/p", header("X-Tier", "gold"), handler = first)
+        router.register(HttpMethod.GET, "/p", header("X-Tier", "gold"), handler = second)
         assertSame(first, router.match(HttpMethod.GET, "/p", HttpHeaders.of("X-Tier" to "gold"))?.handler)
     }
 
@@ -487,7 +487,7 @@ class RouterTest {
         // The catch-all is registered FIRST, but the handler list is kept
         // catch-all-last, so the predicated handler still wins its request.
         router.register(HttpMethod.GET, "/q", handler = catchAll)
-        router.register(HttpMethod.GET, "/q", header("X-Beta", "on"), predicated)
+        router.register(HttpMethod.GET, "/q", header("X-Beta", "on"), handler = predicated)
         assertSame(predicated, router.match(HttpMethod.GET, "/q", HttpHeaders.of("X-Beta" to "on"))?.handler)
         // A request the predicate rejects falls through to the catch-all.
         assertSame(catchAll, router.match(HttpMethod.GET, "/q")?.handler)
@@ -496,7 +496,7 @@ class RouterTest {
     @Test
     fun `a path registered for the method whose predicates all fail is Unmatched`() {
         val router = Router()
-        router.register(HttpMethod.GET, "/r", header("X-Key", "secret"), handler)
+        router.register(HttpMethod.GET, "/r", header("X-Key", "secret"), handler = handler)
         // The path and method are registered, but no predicate accepts the
         // request — design §38.9.4 routes this to Unmatched (a 404), not 405.
         assertEquals(
@@ -519,7 +519,7 @@ class RouterTest {
         val router = Router()
         router.register(HttpMethod.GET, "/s", handler = handler)
         // A predicated handler may stack freely...
-        router.register(HttpMethod.GET, "/s", header("X-A", "1"), handler)
+        router.register(HttpMethod.GET, "/s", header("X-A", "1"), handler = handler)
         // ...but a second catch-all is the genuine duplicate.
         assertFailsWith<IllegalArgumentException> {
             router.register(HttpMethod.GET, "/s", handler = handler)

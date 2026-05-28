@@ -83,38 +83,73 @@ public class KeelHttpServerBuilder internal constructor() {
         method: HttpMethod,
         path: String,
         predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
         handler: RouteHandler,
     ) {
-        router.register(method, path, predicate, handler)
+        router.register(method, path, predicate, produces, handler)
     }
 
-    /** Registers a `GET` route, optionally guarded by [predicate]. */
-    public fun get(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.GET, path, predicate, handler)
+    /**
+     * Registers a `GET` route, optionally guarded by [predicate] and/or
+     * declaring the media types it [produces] (content negotiation; see
+     * [Router]). When several handlers share a method × path, the one whose
+     * `produces` the request `Accept` header most prefers is chosen, and a
+     * request accepting none of them gets `406 Not Acceptable`.
+     */
+    public fun get(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.GET, path, predicate, produces, handler)
 
-    /** Registers a `POST` route, optionally guarded by [predicate]. */
-    public fun post(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.POST, path, predicate, handler)
+    /** Registers a `POST` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun post(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.POST, path, predicate, produces, handler)
 
-    /** Registers a `PUT` route, optionally guarded by [predicate]. */
-    public fun put(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.PUT, path, predicate, handler)
+    /** Registers a `PUT` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun put(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.PUT, path, predicate, produces, handler)
 
-    /** Registers a `DELETE` route, optionally guarded by [predicate]. */
-    public fun delete(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.DELETE, path, predicate, handler)
+    /** Registers a `DELETE` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun delete(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.DELETE, path, predicate, produces, handler)
 
-    /** Registers a `PATCH` route, optionally guarded by [predicate]. */
-    public fun patch(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.PATCH, path, predicate, handler)
+    /** Registers a `PATCH` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun patch(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.PATCH, path, predicate, produces, handler)
 
-    /** Registers a `HEAD` route, optionally guarded by [predicate]. */
-    public fun head(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.HEAD, path, predicate, handler)
+    /** Registers a `HEAD` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun head(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.HEAD, path, predicate, produces, handler)
 
-    /** Registers an `OPTIONS` route, optionally guarded by [predicate]. */
-    public fun options(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.OPTIONS, path, predicate, handler)
+    /** Registers an `OPTIONS` route, optionally guarded by [predicate] / declaring [produces] (see [get]). */
+    public fun options(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.OPTIONS, path, predicate, produces, handler)
 
     /**
      * Opens a route group at [prefix] (see [RouteGroupBuilder]).
@@ -129,7 +164,9 @@ public class KeelHttpServerBuilder internal constructor() {
         RouteGroupBuilder(prefix).apply(configure).flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            registerRoute = { method, path, predicate, handler -> route(method, path, predicate, handler) },
+            registerRoute = { method, path, predicate, produces, handler ->
+                route(method, path, predicate, produces, handler)
+            },
             registerUpgrade = { path, protocol, predicate -> upgrade(path, protocol, predicate) },
         )
     }

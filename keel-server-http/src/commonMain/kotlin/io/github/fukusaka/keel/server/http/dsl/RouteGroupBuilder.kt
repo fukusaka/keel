@@ -72,38 +72,71 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
         method: HttpMethod,
         path: String,
         predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
         handler: RouteHandler,
     ) {
-        routes.add(RouteEntry(method, path, predicate, handler))
+        routes.add(RouteEntry(method, path, predicate, produces, handler))
     }
 
-    /** Registers a `GET` route within the group, optionally guarded by [predicate]. */
-    public fun get(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.GET, path, predicate, handler)
+    /**
+     * Registers a `GET` route within the group, optionally guarded by
+     * [predicate] and/or declaring the media types it [produces] (content
+     * negotiation; see [Router] / [KeelHttpServerBuilder.get]).
+     */
+    public fun get(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.GET, path, predicate, produces, handler)
 
-    /** Registers a `POST` route within the group, optionally guarded by [predicate]. */
-    public fun post(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.POST, path, predicate, handler)
+    /** Registers a `POST` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun post(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.POST, path, predicate, produces, handler)
 
-    /** Registers a `PUT` route within the group, optionally guarded by [predicate]. */
-    public fun put(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.PUT, path, predicate, handler)
+    /** Registers a `PUT` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun put(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.PUT, path, predicate, produces, handler)
 
-    /** Registers a `DELETE` route within the group, optionally guarded by [predicate]. */
-    public fun delete(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.DELETE, path, predicate, handler)
+    /** Registers a `DELETE` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun delete(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.DELETE, path, predicate, produces, handler)
 
-    /** Registers a `PATCH` route within the group, optionally guarded by [predicate]. */
-    public fun patch(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.PATCH, path, predicate, handler)
+    /** Registers a `PATCH` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun patch(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.PATCH, path, predicate, produces, handler)
 
-    /** Registers a `HEAD` route within the group, optionally guarded by [predicate]. */
-    public fun head(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.HEAD, path, predicate, handler)
+    /** Registers a `HEAD` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun head(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.HEAD, path, predicate, produces, handler)
 
-    /** Registers an `OPTIONS` route within the group, optionally guarded by [predicate]. */
-    public fun options(path: String, predicate: RoutePredicate? = null, handler: RouteHandler): Unit =
-        route(HttpMethod.OPTIONS, path, predicate, handler)
+    /** Registers an `OPTIONS` route within the group, optionally guarded by [predicate] / declaring [produces]. */
+    public fun options(
+        path: String,
+        predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
+        handler: RouteHandler,
+    ): Unit = route(HttpMethod.OPTIONS, path, predicate, produces, handler)
 
     /**
      * Registers [protocol] as the upgrade endpoint for `prefix` + [path],
@@ -139,7 +172,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
     internal fun flush(
         inheritedMiddleware: List<Middleware>,
         inheritedPrefix: String,
-        registerRoute: (HttpMethod, String, RoutePredicate?, RouteHandler) -> Unit,
+        registerRoute: (HttpMethod, String, RoutePredicate?, List<String>?, RouteHandler) -> Unit,
         registerUpgrade: (String, UpgradeProtocol, RoutePredicate?) -> Unit,
     ) {
         val effectiveMiddleware = inheritedMiddleware + middlewares
@@ -149,6 +182,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
                 entry.method,
                 joinPrefix(effectivePrefix, entry.path),
                 entry.predicate,
+                entry.produces,
                 effectiveMiddleware.wrapHandler(entry.handler),
             )
         }
@@ -169,6 +203,7 @@ public class RouteGroupBuilder internal constructor(private val prefix: String) 
         val method: HttpMethod,
         val path: String,
         val predicate: RoutePredicate?,
+        val produces: List<String>?,
         val handler: RouteHandler,
     )
 
