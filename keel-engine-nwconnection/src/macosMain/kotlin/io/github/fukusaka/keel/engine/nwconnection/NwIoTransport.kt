@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.codec.http.installScopedHeadersPool
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
@@ -162,6 +163,30 @@ internal class NwIoTransport(
      */
     private val connQueueDispatcher = NwConnectionQueueDispatcher(connQueue)
     override val ioDispatcher: CoroutineDispatcher = connQueueDispatcher
+
+    init {
+        // K56b root-cause fix: install a per-connection-queue scoped
+        // `HttpHeadersPool` stack on [connQueue]. Without this, the
+        // default `@ThreadLocal nativeStack` is shared by every
+        // connection whose blocks happen to land on the same GCD worker
+        // pthread, and a borrow on one connection can return an
+        // `HttpHeaders` previously released by another. The aliasing
+        // crashes when one connection's `HttpHeaders.resetForReuse`
+        // races another's `HttpHeaders.contains` lookup (the
+        // `bufFor(i)` → `extras[idx - 1]` path returns null mid-clear
+        // and the subsequent virtual call on a null `IoBuf` faults at
+        // 0x0). Confirmed by a 30-run baseline showing ~10% SIGSEGV /
+        // SIGABRT under `server-http × nwconnection × openssl × /hello`
+        // while a `HttpHeadersPool.bypassPool = true` run on the same
+        // load yields 0 crashes (`KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS=1`).
+        //
+        // The install is idempotent per queue — calling it for a queue
+        // that has already received a scoped pool replaces the previous
+        // `StableRef` via the destructor (a no-op in practice because
+        // every `NwIoTransport` constructs its own queue, but the call
+        // is safe regardless).
+        installScopedHeadersPool(connQueue)
+    }
 
     /**
      * Fails fast if the caller is not currently executing on
