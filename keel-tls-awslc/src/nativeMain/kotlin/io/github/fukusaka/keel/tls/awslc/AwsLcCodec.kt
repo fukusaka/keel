@@ -186,8 +186,13 @@ class AwsLcCodec internal constructor(
         val sendWritten = bioCtx.send_written.toInt()
         ciphertext.writerIndex += sendWritten
 
-        // Reset send pointer.
+        // Reset send pointer AND capacity/written: leaving the latter
+        // stale lets a later BIO write (e.g. SSL_shutdown's close_notify
+        // during close()) see avail > 0 and memcpy into `null + send_written`,
+        // a null-pointer-offset write. Zeroing them forces the retry path.
         bioCtx.send_ptr = null
+        bioCtx.send_capacity = 0u
+        bioCtx.send_written = 0u
 
         return when {
             ret > 0 -> TlsCodecResult(TlsResult.OK, ret, sendWritten)
