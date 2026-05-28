@@ -69,7 +69,9 @@ import platform.darwin.dispatch_queue_t
  * fake transport, which approaches re-implementing the production server.
  * If this test also passes, K56b's residual 3% almost certainly requires
  * the full I/O + handler + response-writer choreography to fire — i.e. it
- * is genuinely a real-NWConnection-only Heisenbug.
+ * is a timing-sensitive intermittent bug that reproduces only under real
+ * NWConnection I/O, where adding instrumentation perturbs the timing
+ * window enough to hide it.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class PocHeadersPoolCoroutineRaceTest {
