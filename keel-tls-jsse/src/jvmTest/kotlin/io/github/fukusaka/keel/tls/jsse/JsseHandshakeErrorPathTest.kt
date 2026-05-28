@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import javax.net.ssl.SSLException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -48,12 +49,12 @@ import kotlin.test.assertTrue
  * machine-readable sub-classification, so the backend keeps the cause
  * for diagnostics instead.
  *
- * **Scope note**: TLS version-downgrade and SNI-hostname-mismatch
- * failures are not covered here because keel's [TlsConfig] surface
- * exposes neither a protocol-version floor nor SSLEngine endpoint
- * identification (`setEndpointIdentificationAlgorithm("HTTPS")`), so
- * neither failure can be induced through the public config. They remain
- * follow-ups gated on those config knobs existing.
+ * **Scope note**: version-downgrade is covered via
+ * [TlsConfig.minVersion] / [maxVersion]. SNI-hostname-mismatch is not yet
+ * covered — keel's [TlsConfig] does not enable SSLEngine endpoint
+ * identification (`setEndpointIdentificationAlgorithm("HTTPS")`), so a
+ * hostname mismatch cannot be induced through the public config; that
+ * remains a follow-up gated on a hostname-verification knob.
  */
 class JsseHandshakeErrorPathTest {
 
@@ -120,6 +121,28 @@ class JsseHandshakeErrorPathTest {
             "a missing required client certificate must surface as a PROTOCOL_ERROR TlsException",
         )
         assertIs<SSLException>(error.cause, "the originating SSLException must be retained as the cause")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `handshake fails when the client and server protocol ranges do not overlap`() {
+        // Server requires TLS 1.3; client caps at TLS 1.2 → no common
+        // version → the handshake aborts. The client trusts the server
+        // (InsecureTrustAll) so the failure is the version mismatch, not
+        // certificate rejection.
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE, minVersion = TlsVersion.TLS1_3),
+        )
+        val client = factory.createClientCodec(
+            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE, maxVersion = TlsVersion.TLS1_2),
+        )
+
+        assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
+            driveHandshake(client = client, server = server)
+        }
+        assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
         client.close()
         server.close()
