@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.codec.http
 
+import kotlin.concurrent.Volatile
+
 /**
  * Thread-local pool of reusable [HttpHeaders] instances.
  *
@@ -59,12 +61,56 @@ package io.github.fukusaka.keel.codec.http
 internal object HttpHeadersPool {
 
     /**
+     * K56b investigation toggle. When `true`, every [borrow] returns a
+     * fresh instance and every [giveBack] drops the instance — the pool
+     * is entirely bypassed and `@ThreadLocal` `nativeStack` never accumulates.
+     *
+     * Used to bisect the K56b crash's causal chain: if disabling the
+     * pool eliminates the residual 3% `HttpHeaders.resetForReuse` SIGSEGV
+     * observed on `server-http × nwconnection × {mbedtls,openssl}`, the
+     * defect lies on the pool-reuse path (cross-connection / cross-worker
+     * instance handoff); if the crash rate is unchanged, the pool is
+     * innocent and the race lives elsewhere (response writer, NWConnection
+     * internal queue, etc.).
+     *
+     * The flag is read on every borrow/giveBack from a `@Volatile` Boolean
+     * (negligible cost — single byte load, no atomic op). Default `false`
+     * preserves production behaviour. Tests set it via the [setBypass]
+     * helper; benchmarks may flip it via env var probing if a launcher
+     * mirrors the variable into Kotlin before server start (see
+     * `benchmark/server-http-*` startup notes for the wiring).
+     *
+     * **Not exposed via public API.** This is a temporary investigation
+     * lever and must be removed once K56b is root-caused. Leaving it as a
+     * private flag avoids contaminating the public surface or
+     * accidentally landing as a long-term tuning knob.
+     */
+    @Volatile
+    private var bypassPool: Boolean = readBypassEnvVar()
+
+    /**
+     * Test/bench-only setter for [bypassPool]. The mutator name is
+     * deliberately verbose so a grep for `setBypassPool` enumerates every
+     * call site; production code must never invoke it.
+     */
+    internal fun setBypassPool(value: Boolean) {
+        bypassPool = value
+    }
+
+    /** Test/bench-only read of [bypassPool]. */
+    internal fun isBypassPool(): Boolean = bypassPool
+
+    /**
      * Returns a reset [HttpHeaders] ready for `add`. Either a pooled
      * instance (with its `ArrayList` backing + `IntArray` hash bucket
      * already allocated) or a fresh construction if this thread's pool
-     * is empty.
+     * is empty. When [bypassPool] is set, always returns a fresh
+     * construction regardless of the per-thread stack.
      */
     fun borrow(): HttpHeaders {
+        if (bypassPool) {
+            return HttpHeaders().also { it.markPooled() }
+        }
         val stack = headersPoolStack()
         return if (stack.isEmpty()) {
             HttpHeaders().also { it.markPooled() }
@@ -96,6 +142,7 @@ internal object HttpHeadersPool {
      *    fresh-from-allocator default-sized instance.
      */
     fun giveBack(headers: HttpHeaders) {
+        if (bypassPool) return
         if (headers.slotCapacity > SHRINK_CAPACITY_THRESHOLD) return
         val stack = headersPoolStack()
         if (stack.size < MAX_POOLED) stack.addLast(headers)
@@ -143,3 +190,14 @@ internal object HttpHeadersPool {
  * (Native, per pthread), and a plain singleton (single-threaded JS).
  */
 internal expect fun headersPoolStack(): ArrayDeque<HttpHeaders>
+
+/**
+ * Reads `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS` from the platform's
+ * process environment. Returns `true` when the value is `"1"`,
+ * `false` otherwise (including "unset"). Used by [HttpHeadersPool] to
+ * initialise the K56b investigation bypass flag at class-init time.
+ *
+ * Single env var probe at codec-http init; the value is captured in
+ * the `bypassPool` field and not re-read.
+ */
+internal expect fun readBypassEnvVar(): Boolean

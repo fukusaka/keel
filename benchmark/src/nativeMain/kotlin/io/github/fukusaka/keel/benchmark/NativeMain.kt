@@ -51,6 +51,15 @@ fun main(args: Array<String>) {
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
 
+    // K56b investigation: opt-in bypass of `HttpHeadersPool` recycling.
+    // The env var `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS=1` is read directly
+    // by `keel-codec-http` (`HttpHeadersPool` init), avoiding a cross-module
+    // call into an `internal` setter from this entry point. The probe is
+    // logged here so the bench log makes the active mode visible.
+    if (getEnvVar("KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS") == "1") {
+        println("KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS=1 — pool recycling disabled")
+    }
+
     val config = BenchmarkConfig.parse(args)
     validateTlsBackend(config)
 

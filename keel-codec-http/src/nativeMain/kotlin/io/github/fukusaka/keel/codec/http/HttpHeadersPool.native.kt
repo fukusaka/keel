@@ -1,6 +1,10 @@
 package io.github.fukusaka.keel.codec.http
 
+import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.concurrent.ThreadLocal
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
+import platform.posix.getenv
 
 /**
  * Per-thread pool stack backed by Kotlin/Native [@ThreadLocal][ThreadLocal].
@@ -15,3 +19,7 @@ import kotlin.native.concurrent.ThreadLocal
 private val nativeStack: ArrayDeque<HttpHeaders> = ArrayDeque()
 
 internal actual fun headersPoolStack(): ArrayDeque<HttpHeaders> = nativeStack
+
+@OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
+internal actual fun readBypassEnvVar(): Boolean =
+    getenv("KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS")?.toKString() == "1"
