@@ -173,7 +173,13 @@ class MbedTlsCodec internal constructor(
         val sendWritten = bioCtx.send_written.toInt()
         ciphertext.writerIndex += sendWritten
 
+        // Reset send pointer AND capacity/written: leaving the latter
+        // stale lets a later BIO write (e.g. mbedtls_ssl_close_notify
+        // during close()) see avail > 0 and memcpy into `null + send_written`,
+        // a null-pointer-offset write. Zeroing them forces the WANT_WRITE path.
         bioCtx.send_ptr = null
+        bioCtx.send_capacity = 0u
+        bioCtx.send_written = 0u
 
         return when {
             ret >= 0 -> TlsCodecResult(TlsResult.OK, if (ret > 0) ret else 0, sendWritten)
