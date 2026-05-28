@@ -66,11 +66,14 @@ data class TlsConfig(
     val minVersion: TlsVersion = TlsVersion.TLS1_2,
 
     /**
-     * Highest TLS protocol version the handshake may negotiate. null
-     * leaves the ceiling at the backend's newest supported version (TLS
-     * 1.3 today), so it stays future-proof. Combined with [minVersion]
-     * this bounds the acceptable range; an empty range
-     * (`minVersion > maxVersion`) is rejected at construction.
+     * Highest TLS protocol version the handshake may negotiate. null caps
+     * at the newest version keel enumerates ([TlsVersion.TLS1_3] today).
+     * Like [minVersion] the ceiling is set **explicitly** on every backend
+     * — keel never negotiates a version it does not enumerate and test, so
+     * a future TLS version is enabled only by adding it to [TlsVersion]
+     * (not by a backend / system library silently gaining support).
+     * Combined with [minVersion] this bounds the acceptable range; an
+     * empty range (`minVersion > maxVersion`) is rejected at construction.
      */
     val maxVersion: TlsVersion? = null,
 ) {
