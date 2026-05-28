@@ -1,17 +1,71 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import kotlin.concurrent.Volatile
+import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.pthread_self
+import platform.posix.pthread_t
+import platform.posix.usleep
+
 /**
  * In-memory [EpollSyscallOps] that lets tests script the outcome of
- * each syscall and inspect the call sequence. Single-threaded — only
- * safe to drive from the test thread.
+ * each syscall and inspect the call sequence. Single-threaded by
+ * default — only safe to drive from the test thread.
  *
  * Each "script" method enqueues a FIFO outcome consumed by the
  * corresponding syscall call. Defaults (when the queue is empty) are
  * the happy path: `0` errno and a synthetic fd counter.
+ *
+ * **Cross-thread funnel testing (live mode).** The I/O ownership
+ * invariant funnel test (`EpollEventLoopFunnelSeamTest`) runs the real
+ * `loop()` on a `start()`-spawned EventLoop pthread while the test
+ * thread issues `registerCallback` cross-thread. For that one scenario:
+ *
+ * - [liveMode] makes the empty-default `waitEvents` path `usleep` briefly
+ *   instead of returning `0` immediately, so the spawned EventLoop thread
+ *   polls (drains dispatched tasks each iteration) without pegging a CPU.
+ * - [lastAddInterestThread] captures the pthread on which the most recent
+ *   `epollAdd` / `epollMod` for [watchedFd] ran, so the test can assert
+ *   the syscall ran on the EventLoop thread (cross-thread funnel) or the
+ *   caller thread (inline fast path), via `pthread_equal`. It is
+ *   `@Volatile` because it is written on the EventLoop thread and read on
+ *   the test thread — the only cross-thread access this fake supports.
  */
+@OptIn(ExperimentalForeignApi::class)
 internal class FakeEpollSyscallOps(
     private val initialFakeFd: Int = 1000,
 ) : EpollSyscallOps {
+
+    /**
+     * When `true`, the empty-default [waitEvents] path sleeps ~200µs
+     * before returning `0` so a real `loop()` running on a spawned
+     * EventLoop thread polls instead of busy-spinning. Default `false`
+     * preserves the immediate-return behaviour the existing
+     * `loop()`-driving seam tests rely on (they script `waitEvents`
+     * failures to terminate and never hit the empty-default spin).
+     */
+    @Volatile
+    var liveMode: Boolean = false
+
+    /**
+     * Only `epollAdd` / `epollMod` calls for this fd update
+     * [lastAddInterestThread]. Default `-1` captures nothing. The funnel
+     * test sets it to the fd under test so the construction-time
+     * wakeup-eventfd `EPOLL_CTL_ADD` (which runs on the constructing
+     * thread) does not pollute the captured thread.
+     */
+    @Volatile
+    var watchedFd: Int = -1
+
+    /**
+     * The pthread on which the most recent `epollAdd` / `epollMod` for
+     * [watchedFd] ran, or `null` if none yet. `@Volatile` for cross-thread
+     * read by the funnel test (written on the EventLoop thread). Compare
+     * with `pthread_self()` via `pthread_equal` to verify funnel routing —
+     * the same idiom `EpollEventLoop.inEventLoop` uses.
+     */
+    @Volatile
+    var lastAddInterestThread: pthread_t? = null
+        private set
 
     // --- epollCreate ---
 
@@ -66,11 +120,13 @@ internal class FakeEpollSyscallOps(
     }
 
     override fun epollAdd(epFd: Int, fd: Int, events: Int): Int {
+        if (fd == watchedFd) lastAddInterestThread = pthread_self()
         ctlCalls.add(CtlCall(CtlOp.ADD, epFd, fd, events))
         return if (addResults.isEmpty()) 0 else addResults.removeFirst()
     }
 
     override fun epollMod(epFd: Int, fd: Int, events: Int): Int {
+        if (fd == watchedFd) lastAddInterestThread = pthread_self()
         ctlCalls.add(CtlCall(CtlOp.MOD, epFd, fd, events))
         return if (modResults.isEmpty()) 0 else modResults.removeFirst()
     }
@@ -100,7 +156,14 @@ internal class FakeEpollSyscallOps(
 
     override fun waitEvents(epFd: Int, eventsOut: Array<EpEvent>, timeoutMs: Int): Int {
         waitCalls++
-        val r = if (waitResults.isEmpty()) return 0 else waitResults.removeFirst()
+        if (waitResults.isEmpty()) {
+            // Empty-default path. In live mode (funnel test), poll-sleep so
+            // a real loop() on a spawned EventLoop thread drains dispatched
+            // tasks each iteration without pegging a CPU.
+            if (liveMode) usleep(POLL_SLEEP_MICROS)
+            return 0
+        }
+        val r = waitResults.removeFirst()
         return when (r) {
             is ScriptedWait.Ok -> {
                 for (i in r.events.indices) {
@@ -141,5 +204,10 @@ internal class FakeEpollSyscallOps(
     override fun eventfdWakeupDrain(eventfd: Int): Int {
         wakeupDrainCalls++
         return if (wakeupDrainResults.isEmpty()) 0 else wakeupDrainResults.removeFirst()
+    }
+
+    private companion object {
+        /** Live-mode poll-sleep between empty `waitEvents` returns (~200µs). */
+        const val POLL_SLEEP_MICROS: UInt = 200u
     }
 }
