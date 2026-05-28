@@ -20,6 +20,23 @@ package io.github.fukusaka.keel.tls
  *   (`SSL_CTX_set_min_proto_version` / `set_max_proto_version`)
  * - Mbed TLS: `MBEDTLS_SSL_VERSION_TLS1_2` / `MBEDTLS_SSL_VERSION_TLS1_3`
  *   (`mbedtls_ssl_conf_min_tls_version` / `max`)
+ *
+ * ## Adding a future version (e.g. TLS 1.3 → TLS 1.4)
+ *
+ * Adding an entry here makes every backend's mapping `when` non-exhaustive,
+ * so the compiler forces each backend to consciously **map or reject** the
+ * new version — there is no silent omission. During the transition where
+ * only some backends' linked libraries support it:
+ *
+ * 1. Backends with library support map the new constant; backends without
+ *    it `throw` a clear "not supported by this backend" [TlsException]
+ *    (honor-or-reject — never a silent downgrade).
+ * 2. **Leave the default ceiling unchanged** (the
+ *    [TlsConfig.maxVersion]`= null` cap stays at the highest version *all*
+ *    backends support) so default connections keep working everywhere;
+ *    callers opt into the newer version explicitly via [TlsConfig.maxVersion]
+ *    on the backends that support it.
+ * 3. Once every backend supports it, raise the default ceiling in one step.
  */
 public enum class TlsVersion {
     /** TLS 1.2 (RFC 5246). */
