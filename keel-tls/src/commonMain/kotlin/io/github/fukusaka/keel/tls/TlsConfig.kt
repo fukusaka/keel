@@ -13,7 +13,9 @@ package io.github.fukusaka.keel.tls
  * A single [TlsConfig] can be shared by multiple [TlsCodec] instances.
  *
  * **Current scope**: server certificate + trust anchors + verification mode +
- * ALPN + SNI. mTLS (client auth), session resumption, and 0-RTT are deferred.
+ * ALPN + SNI + protocol version range ([minVersion] / [maxVersion]). mTLS
+ * (client auth), cipher-suite selection, session resumption, and 0-RTT are
+ * deferred.
  */
 data class TlsConfig(
     /**
@@ -51,4 +53,30 @@ data class TlsConfig(
      * hosting multiple domains. null disables SNI.
      */
     val serverName: String? = null,
-)
+
+    /**
+     * Lowest TLS protocol version the handshake may negotiate. null lets
+     * the backend pick its default floor (TLS 1.2 on every backend keel
+     * targets). Pin to [TlsVersion.TLS1_3] to require TLS 1.3.
+     *
+     * Every backend honours this; a handshake that cannot satisfy the
+     * range fails (the peer offering only a lower version is rejected).
+     */
+    val minVersion: TlsVersion? = null,
+
+    /**
+     * Highest TLS protocol version the handshake may negotiate. null lets
+     * the backend pick its default ceiling (TLS 1.3). Combined with
+     * [minVersion] this bounds the acceptable range; an empty range
+     * (`minVersion > maxVersion`) is rejected at codec creation.
+     */
+    val maxVersion: TlsVersion? = null,
+) {
+    init {
+        if (minVersion != null && maxVersion != null) {
+            require(minVersion <= maxVersion) {
+                "minVersion ($minVersion) must be <= maxVersion ($maxVersion)"
+            }
+        }
+    }
+}
