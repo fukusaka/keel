@@ -55,25 +55,27 @@ data class TlsConfig(
     val serverName: String? = null,
 
     /**
-     * Lowest TLS protocol version the handshake may negotiate. null lets
-     * the backend pick its default floor (TLS 1.2 on every backend keel
-     * targets). Pin to [TlsVersion.TLS1_3] to require TLS 1.3.
-     *
-     * Every backend honours this; a handshake that cannot satisfy the
-     * range fails (the peer offering only a lower version is rejected).
+     * Lowest TLS protocol version the handshake may negotiate. Defaults
+     * to [TlsVersion.TLS1_2] and **is always enforced** — keel sets this
+     * floor explicitly on every backend rather than deferring to the
+     * backend / system default, so SSLv3 / TLS 1.0 / TLS 1.1 can never be
+     * negotiated (those versions are also absent from [TlsVersion], so
+     * there is no way to opt back into them). Pin to [TlsVersion.TLS1_3]
+     * to require TLS 1.3.
      */
-    val minVersion: TlsVersion? = null,
+    val minVersion: TlsVersion = TlsVersion.TLS1_2,
 
     /**
-     * Highest TLS protocol version the handshake may negotiate. null lets
-     * the backend pick its default ceiling (TLS 1.3). Combined with
-     * [minVersion] this bounds the acceptable range; an empty range
-     * (`minVersion > maxVersion`) is rejected at codec creation.
+     * Highest TLS protocol version the handshake may negotiate. null
+     * leaves the ceiling at the backend's newest supported version (TLS
+     * 1.3 today), so it stays future-proof. Combined with [minVersion]
+     * this bounds the acceptable range; an empty range
+     * (`minVersion > maxVersion`) is rejected at construction.
      */
     val maxVersion: TlsVersion? = null,
 ) {
     init {
-        if (minVersion != null && maxVersion != null) {
+        if (maxVersion != null) {
             require(minVersion <= maxVersion) {
                 "minVersion ($minVersion) must be <= maxVersion ($maxVersion)"
             }

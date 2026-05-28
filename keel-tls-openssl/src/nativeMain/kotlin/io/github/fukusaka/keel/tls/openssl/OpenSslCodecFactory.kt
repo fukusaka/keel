@@ -114,15 +114,15 @@ class OpenSslCodecFactory : TlsCodecFactory {
     /**
      * Pins the negotiable protocol version range via
      * `SSL_CTX_set_min_proto_version` / `set_max_proto_version` (through
-     * the `keel_openssl_*` wrappers — the originals are macros). No-op
-     * when both bounds are null. The range is validated by [TlsConfig].
+     * the `keel_openssl_*` wrappers — the originals are macros). The floor
+     * is always set ([TlsConfig.minVersion] defaults to TLS 1.2) so the
+     * system `openssl.cnf` `MinProtocol` cannot lower it below TLS 1.2;
+     * the ceiling is only pinned when [TlsConfig.maxVersion] is non-null.
      */
     private fun configureProtocols(ctx: CPointer<SSL_CTX>, config: TlsConfig) {
-        config.minVersion?.let {
-            if (keel_openssl_set_min_proto_version(ctx, opensslVersion(it)) != 1) {
-                SSL_CTX_free(ctx)
-                throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
-            }
+        if (keel_openssl_set_min_proto_version(ctx, opensslVersion(config.minVersion)) != 1) {
+            SSL_CTX_free(ctx)
+            throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
         }
         config.maxVersion?.let {
             if (keel_openssl_set_max_proto_version(ctx, opensslVersion(it)) != 1) {

@@ -109,17 +109,17 @@ class AwsLcCodecFactory : TlsCodecFactory {
     }
 
     /**
-     * Pins the negotiable protocol version range. No-op when both bounds
-     * are null. Range validated by [TlsConfig]. (AWS-LC honours the
-     * version range; it cannot restrict TLS 1.3 cipher suites, but that
-     * is unrelated to version pinning.)
+     * Pins the negotiable protocol version range. The floor is always set
+     * ([TlsConfig.minVersion] defaults to TLS 1.2) so SSLv3 / TLS 1.0/1.1
+     * are never negotiable; the ceiling is pinned only when
+     * [TlsConfig.maxVersion] is non-null. Range validated by [TlsConfig].
+     * (AWS-LC honours the version range; it cannot restrict TLS 1.3 cipher
+     * suites, but that is unrelated to version pinning.)
      */
     private fun configureProtocols(ctx: CPointer<SSL_CTX>, config: TlsConfig) {
-        config.minVersion?.let {
-            if (keel_awslc_set_min_proto_version(ctx, awslcVersion(it)) != 1) {
-                SSL_CTX_free(ctx)
-                throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
-            }
+        if (keel_awslc_set_min_proto_version(ctx, awslcVersion(config.minVersion)) != 1) {
+            SSL_CTX_free(ctx)
+            throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
         }
         config.maxVersion?.let {
             if (keel_awslc_set_max_proto_version(ctx, awslcVersion(it)) != 1) {

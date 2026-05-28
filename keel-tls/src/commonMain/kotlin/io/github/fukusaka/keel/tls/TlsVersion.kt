@@ -4,10 +4,12 @@ package io.github.fukusaka.keel.tls
  * TLS protocol version, used to pin the negotiated version range via
  * [TlsConfig.minVersion] / [TlsConfig.maxVersion].
  *
- * Only the two currently-recommended versions are exposed. TLS 1.0 / 1.1
- * are deprecated (RFC 8996) and disabled by default in every backend
- * keel targets, so there is no portable, secure reason to surface them;
- * pin [minVersion] to [TLS1_2] to forbid anything older.
+ * Only the two currently-recommended versions are exposed, by design:
+ * SSLv3 / TLS 1.0 / TLS 1.1 are deprecated (RFC 8996) and keel forbids
+ * them outright. They are absent from this enum (so they cannot be
+ * requested) and [TlsConfig.minVersion] defaults to [TLS1_2] and is set
+ * explicitly on every backend (so the backend / system default can never
+ * lower the floor below TLS 1.2).
  *
  * The enum order is ascending (`TLS1_2 < TLS1_3`), so a range is valid
  * when `minVersion <= maxVersion`.

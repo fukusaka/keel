@@ -182,16 +182,15 @@ class JsseTlsCodecFactory : TlsCodecFactory {
 
     /**
      * Restricts the enabled protocol versions to the
-     * [TlsConfig.minVersion] .. [TlsConfig.maxVersion] range. No-op when
-     * both are null (keeps the JSSE default range). The range is
-     * validated by [TlsConfig] itself, so only the mapping happens here.
+     * [TlsConfig.minVersion] .. [TlsConfig.maxVersion] range. Always
+     * applied (never a no-op): [TlsConfig.minVersion] defaults to TLS 1.2
+     * and is enforced so SSLv3 / TLS 1.0 / TLS 1.1 are never enabled. The
+     * range is validated by [TlsConfig], so only the mapping happens here.
      */
     private fun configureProtocols(engine: SSLEngine, config: TlsConfig) {
-        if (config.minVersion == null && config.maxVersion == null) return
-        val min = config.minVersion ?: TlsVersion.TLS1_2
         val max = config.maxVersion ?: TlsVersion.TLS1_3
         val enabled = TlsVersion.entries
-            .filter { it >= min && it <= max }
+            .filter { it >= config.minVersion && it <= max }
             .map { jsseProtocolName(it) }
             .toTypedArray()
         engine.enabledProtocols = enabled

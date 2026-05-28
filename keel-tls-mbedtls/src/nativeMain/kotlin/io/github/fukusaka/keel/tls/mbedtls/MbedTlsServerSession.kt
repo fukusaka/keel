@@ -117,10 +117,11 @@ internal class MbedTlsServerSession(
             "ssl_conf_own_cert",
         )
 
-        // Pin the negotiable protocol version range. No-op when both
-        // bounds are null (keeps the preset default). Range validated by
-        // TlsConfig; a handshake that cannot satisfy it aborts.
-        config.minVersion?.let { mbedtls_ssl_conf_min_tls_version(conf.ptr, mbedtlsVersion(it)) }
+        // Pin the negotiable protocol version range. The floor is always
+        // set (minVersion defaults to TLS 1.2) so anything below TLS 1.2
+        // is never negotiable; the ceiling is pinned only when maxVersion
+        // is non-null. Range validated by TlsConfig.
+        mbedtls_ssl_conf_min_tls_version(conf.ptr, mbedtlsVersion(config.minVersion))
         config.maxVersion?.let { mbedtls_ssl_conf_max_tls_version(conf.ptr, mbedtlsVersion(it)) }
     }
 
