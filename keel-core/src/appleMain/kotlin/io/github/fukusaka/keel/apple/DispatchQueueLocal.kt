@@ -97,6 +97,22 @@ import platform.darwin.dispatch_queue_t
  * untagged queue, or non-GCD pthreads such as a kqueue / epoll EventLoop)
  * [current] falls back to [fallback].
  *
+ * **Prior art.** This is the Kotlin/Native counterpart of Swift's
+ * `DispatchSpecificKey<T>` (`DispatchQueue.setSpecific` /
+ * `getSpecific`) — both are thin typed wrappers over the same
+ * `dispatch_queue_set_specific` / `dispatch_get_specific` C primitive,
+ * and both use an allocated object's pointer purely as the key's
+ * identity. The Kotlin standard library ships no such wrapper, so each
+ * call site would otherwise hand-roll the same `StableRef` + destructor
+ * dance; [DispatchQueueLocal] fills that gap once. It also sidesteps a
+ * documented `DispatchSpecificKey` footgun — a deallocated key whose
+ * address is reused causes false matches — by holding its key
+ * [StableRef] for the process lifetime ([keyRef] is never disposed).
+ * The same "value bound to a logical execution scope, not an OS thread"
+ * shape appears in Tokio's `task_local!` (Rust, bound to an async task)
+ * and Java 21's `ScopedValue` (JEP 446, bound to a dynamic scope); the
+ * difference is only the scope each binds to.
+ *
  * **Layering.** Pure Apple-platform utility — uses only `platform.darwin`
  * `dispatch_*` symbols. Available in `appleMain`, the keel-platform-Apple
  * source set common to macOS / iOS / tvOS / watchOS targets. There is no
