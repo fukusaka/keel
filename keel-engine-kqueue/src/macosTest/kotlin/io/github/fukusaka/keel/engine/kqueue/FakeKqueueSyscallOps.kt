@@ -1,17 +1,73 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import kotlin.concurrent.Volatile
+import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.pthread_self
+import platform.posix.usleep
+
 /**
  * In-memory [KqueueSyscallOps] that lets tests script the outcome of
- * each syscall and inspect the call sequence. Single-threaded — only
- * safe to drive from the test thread.
+ * each syscall and inspect the call sequence. Single-threaded by
+ * default — only safe to drive from the test thread.
  *
  * Each "script" method enqueues a FIFO outcome consumed by the
  * corresponding syscall call. Defaults (when the queue is empty) are
  * the happy path: `0` errno and a synthetic fd counter.
+ *
+ * **Cross-thread funnel testing (live mode).** The I/O ownership
+ * invariant funnel test (`KqueueEventLoopFunnelSeamTest`) runs the real
+ * `loop()` on a `start()`-spawned EventLoop pthread while the test
+ * thread issues `registerCallback` cross-thread. For that one scenario:
+ *
+ * - [liveMode] makes the empty-default `waitEvents` path `usleep` briefly
+ *   instead of returning `0` immediately, so the spawned EventLoop thread
+ *   polls (drains dispatched tasks each iteration) without pegging a CPU.
+ * - [lastAddFilterThreadId] captures the thread id (raw `pthread_self()`
+ *   pointer as a [Long]) on which the most recent `addReadFilter` /
+ *   `addWriteFilter` for [watchedFd] executed, so the test can assert the
+ *   syscall ran on the EventLoop thread (cross-thread funnel) or the
+ *   caller thread (inline fast path). It is `@Volatile` because it is
+ *   written on the EventLoop thread and read on the test thread — the
+ *   only cross-thread access this fake supports.
  */
+@OptIn(ExperimentalForeignApi::class)
 internal class FakeKqueueSyscallOps(
     private val initialFakeFd: Int = 1000,
 ) : KqueueSyscallOps {
+
+    /**
+     * When `true`, the empty-default [waitEvents] path sleeps ~200µs
+     * before returning `0` so a real `loop()` running on a spawned
+     * EventLoop thread polls instead of busy-spinning. Default `false`
+     * preserves the immediate-return behaviour the existing
+     * `loop()`-driving seam tests rely on (they script `waitEvents`
+     * failures to terminate and never hit the empty-default spin).
+     */
+    @Volatile
+    var liveMode: Boolean = false
+
+    /**
+     * Only `addReadFilter` / `addWriteFilter` calls for this fd update
+     * [lastAddFilterThreadId]. Default `-1` captures nothing. The funnel
+     * test sets it to the fd under test so the construction-time wakeup-fd
+     * `EV_ADD` (which runs on the constructing thread) does not pollute
+     * the captured thread id.
+     */
+    @Volatile
+    var watchedFd: Int = -1
+
+    /**
+     * Identity (raw `pthread_self()` pointer as a [Long]) of the thread on
+     * which the most recent `addReadFilter` / `addWriteFilter` for
+     * [watchedFd] ran, or `0` if none yet. `@Volatile` for cross-thread
+     * read by the funnel test (written on the EventLoop thread). A [Long]
+     * is used rather than a `pthread_t` so the value survives `@Volatile`
+     * storage without CPointer wrapping ambiguity; compare with
+     * [currentThreadId] to verify funnel routing.
+     */
+    @Volatile
+    var lastAddFilterThreadId: Long = 0L
+        private set
 
     // --- kqueueCreate ---
 
@@ -86,11 +142,13 @@ internal class FakeKqueueSyscallOps(
     }
 
     override fun addReadFilter(kqFd: Int, fd: Int): Int {
+        if (fd == watchedFd) lastAddFilterThreadId = currentThreadId()
         addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.READ))
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
     }
 
     override fun addWriteFilter(kqFd: Int, fd: Int): Int {
+        if (fd == watchedFd) lastAddFilterThreadId = currentThreadId()
         addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.WRITE))
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
     }
@@ -139,7 +197,14 @@ internal class FakeKqueueSyscallOps(
 
     override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int {
         waitCalls++
-        val r = if (waitResults.isEmpty()) return 0 else waitResults.removeFirst()
+        if (waitResults.isEmpty()) {
+            // Empty-default path. In live mode (funnel test), poll-sleep so
+            // a real loop() on a spawned EventLoop thread drains dispatched
+            // tasks each iteration without pegging a CPU.
+            if (liveMode) usleep(POLL_SLEEP_MICROS)
+            return 0
+        }
+        val r = waitResults.removeFirst()
         return when (r) {
             is ScriptedWait.Ok -> {
                 for (i in r.events.indices) {
@@ -181,5 +246,17 @@ internal class FakeKqueueSyscallOps(
     override fun wakeupDrain(readFd: Int, scratch: ByteArray): Int {
         wakeupDrainCalls++
         return if (wakeupDrainResults.isEmpty()) 0 else wakeupDrainResults.removeFirst()
+    }
+
+    companion object {
+        /** Live-mode poll-sleep between empty `waitEvents` returns (~200µs). */
+        private const val POLL_SLEEP_MICROS: UInt = 200u
+
+        /**
+         * Raw `pthread_self()` pointer of the calling thread as a [Long],
+         * a stable per-thread identity. Used by the funnel test to compare
+         * the caller thread against [lastAddFilterThreadId].
+         */
+        fun currentThreadId(): Long = pthread_self()?.rawValue?.toLong() ?: 0L
     }
 }
