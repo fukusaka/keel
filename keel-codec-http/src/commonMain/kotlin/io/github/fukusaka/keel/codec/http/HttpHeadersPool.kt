@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.codec.http
 
+import kotlin.concurrent.Volatile
+
 /**
  * Thread-local pool of reusable [HttpHeaders] instances.
  *
@@ -59,12 +61,60 @@ package io.github.fukusaka.keel.codec.http
 internal object HttpHeadersPool {
 
     /**
+     * K56b investigation toggle. When `true`, every [borrow] returns a
+     * fresh instance and every [giveBack] drops the instance — the pool
+     * is entirely bypassed and `@ThreadLocal` `nativeStack` never accumulates.
+     *
+     * Used to bisect the K56b crash's causal chain: if disabling the
+     * pool eliminates the residual 3% `HttpHeaders.resetForReuse` SIGSEGV
+     * observed on `server-http × nwconnection × {mbedtls,openssl}`, the
+     * defect lies on the pool-reuse path (cross-connection / cross-worker
+     * instance handoff); if the crash rate is unchanged, the pool is
+     * innocent and the race lives elsewhere (response writer, NWConnection
+     * internal queue, etc.).
+     *
+     * The flag is read on every borrow/giveBack from a `@Volatile` Boolean
+     * (negligible cost — single byte load, no atomic op). It is initialised
+     * once at object init from [readBypassEnvVar] — `true` iff
+     * `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS=1` is set in the process
+     * environment, `false` otherwise — so a benchmark binary launched with
+     * that env var bypasses the pool with no code change. Tests toggle it
+     * at runtime via [setBypassPool].
+     *
+     * **Not exposed via public API.** Even after the K56b root cause was
+     * fixed (per-NWConnection-queue scoped pool, PR #627), this flag is
+     * retained as a diagnostic / benchmarking lever — an A/B switch to
+     * isolate the pool from any future crash's causal chain. Keeping it a
+     * private flag (plus the `internal` [setBypassPool] / [isBypassPool]
+     * accessors) avoids contaminating the public surface or accidentally
+     * landing as a long-term tuning knob.
+     */
+    @Volatile
+    private var bypassPool: Boolean = readBypassEnvVar()
+
+    /**
+     * Test/bench-only setter for [bypassPool]. The mutator name is
+     * deliberately verbose so a grep for `setBypassPool` enumerates every
+     * call site; production code must never invoke it.
+     */
+    internal fun setBypassPool(value: Boolean) {
+        bypassPool = value
+    }
+
+    /** Test/bench-only read of [bypassPool]. */
+    internal fun isBypassPool(): Boolean = bypassPool
+
+    /**
      * Returns a reset [HttpHeaders] ready for `add`. Either a pooled
      * instance (with its `ArrayList` backing + `IntArray` hash bucket
      * already allocated) or a fresh construction if this thread's pool
-     * is empty.
+     * is empty. When [bypassPool] is set, always returns a fresh
+     * construction regardless of the per-thread stack.
      */
     fun borrow(): HttpHeaders {
+        if (bypassPool) {
+            return HttpHeaders().also { it.markPooled() }
+        }
         val stack = headersPoolStack()
         return if (stack.isEmpty()) {
             HttpHeaders().also { it.markPooled() }
@@ -96,6 +146,7 @@ internal object HttpHeadersPool {
      *    fresh-from-allocator default-sized instance.
      */
     fun giveBack(headers: HttpHeaders) {
+        if (bypassPool) return
         if (headers.slotCapacity > SHRINK_CAPACITY_THRESHOLD) return
         val stack = headersPoolStack()
         if (stack.size < MAX_POOLED) stack.addLast(headers)
@@ -143,3 +194,14 @@ internal object HttpHeadersPool {
  * (Native, per pthread), and a plain singleton (single-threaded JS).
  */
 internal expect fun headersPoolStack(): ArrayDeque<HttpHeaders>
+
+/**
+ * Reads `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS` from the platform's
+ * process environment. Returns `true` when the value is `"1"`,
+ * `false` otherwise (including "unset"). Used by [HttpHeadersPool] to
+ * initialise the K56b investigation bypass flag at class-init time.
+ *
+ * Single env var probe at codec-http init; the value is captured in
+ * the `bypassPool` field and not re-read.
+ */
+internal expect fun readBypassEnvVar(): Boolean
