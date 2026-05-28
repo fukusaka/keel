@@ -6,8 +6,8 @@ import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
-import kotlin.test.assertNotEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.delay
