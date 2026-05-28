@@ -14,6 +14,8 @@ import awslc.SSL_VERIFY_PEER
 import awslc.SSL_new
 import awslc.SSL_set_accept_state
 import awslc.SSL_set_connect_state
+import awslc.TLS1_2_VERSION
+import awslc.TLS1_3_VERSION
 import awslc.TLS_method
 import awslc.keel_awslc_bio_ctx
 import awslc.keel_awslc_bio_setup
@@ -21,6 +23,8 @@ import awslc.keel_awslc_ctx_load_ca_pem
 import awslc.keel_awslc_ctx_load_pem_cert
 import awslc.keel_awslc_ctx_load_pem_key
 import awslc.keel_awslc_err_string
+import awslc.keel_awslc_set_max_proto_version
+import awslc.keel_awslc_set_min_proto_version
 import awslc.keel_awslc_set_sni
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.asPem
@@ -31,6 +35,7 @@ import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
+import io.github.fukusaka.keel.tls.TlsVersion
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -98,8 +103,35 @@ class AwsLcCodecFactory : TlsCodecFactory {
         loadCertificates(ctx, config)
         configureTrust(ctx, config)
         configureVerification(ctx, config)
+        configureProtocols(ctx, config)
 
         return ctx
+    }
+
+    /**
+     * Pins the negotiable protocol version range. No-op when both bounds
+     * are null. Range validated by [TlsConfig]. (AWS-LC honours the
+     * version range; it cannot restrict TLS 1.3 cipher suites, but that
+     * is unrelated to version pinning.)
+     */
+    private fun configureProtocols(ctx: CPointer<SSL_CTX>, config: TlsConfig) {
+        config.minVersion?.let {
+            if (keel_awslc_set_min_proto_version(ctx, awslcVersion(it)) != 1) {
+                SSL_CTX_free(ctx)
+                throw TlsException("Failed to set min proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
+            }
+        }
+        config.maxVersion?.let {
+            if (keel_awslc_set_max_proto_version(ctx, awslcVersion(it)) != 1) {
+                SSL_CTX_free(ctx)
+                throw TlsException("Failed to set max proto version: ${errorString()}", TlsErrorCategory.HANDSHAKE_FAILED)
+            }
+        }
+    }
+
+    private fun awslcVersion(version: TlsVersion): Int = when (version) {
+        TlsVersion.TLS1_2 -> TLS1_2_VERSION
+        TlsVersion.TLS1_3 -> TLS1_3_VERSION
     }
 
     private fun loadCertificates(ctx: CPointer<SSL_CTX>, config: TlsConfig) {

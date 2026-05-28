@@ -106,6 +106,23 @@ static int keel_awslc_set_sni(SSL *ssl, const char *hostname) {
 }
 
 // ============================================================
+// Protocol version range
+// ============================================================
+//
+// `version` is the wire constant: TLS1_2_VERSION (0x0303) /
+// TLS1_3_VERSION (0x0304). Wrapped for parity with the OpenSSL backend
+// (where these are macros). Returns 1 on success, 0 on failure. Note
+// BoringSSL / AWS-LC cannot restrict the TLS 1.3 cipher set, but the
+// protocol-version range itself is honoured.
+static int keel_awslc_set_min_proto_version(SSL_CTX *ctx, int version) {
+    return (int)SSL_CTX_set_min_proto_version(ctx, version);
+}
+
+static int keel_awslc_set_max_proto_version(SSL_CTX *ctx, int version) {
+    return (int)SSL_CTX_set_max_proto_version(ctx, version);
+}
+
+// ============================================================
 // ALPN helpers
 // ============================================================
 
