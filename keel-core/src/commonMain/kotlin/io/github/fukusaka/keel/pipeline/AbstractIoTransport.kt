@@ -20,8 +20,7 @@ import kotlin.concurrent.Volatile
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
  * - **Callback properties**: [onRead], [onReadClosed], [onFlushComplete],
  *   [onWritabilityChanged] initialized to `null`.
- * - **Defaults**: [supportsDeferredFlush] = true, [awaitPendingFlush] = no-op,
- *   [awaitClosed] = no-op.
+ * - **Defaults**: [awaitPendingFlush] = no-op, [awaitClosed] = no-op.
  *
  * Engine implementations extend this class and override platform-specific
  * members: [readEnabled] setter, [flush], [shutdownOutput], [close].
@@ -253,7 +252,6 @@ abstract class AbstractIoTransport(
 
     // --- Defaults ---
 
-    override val supportsDeferredFlush: Boolean get() = true
     override suspend fun awaitPendingFlush() {}
     override suspend fun awaitClosed() {}
 

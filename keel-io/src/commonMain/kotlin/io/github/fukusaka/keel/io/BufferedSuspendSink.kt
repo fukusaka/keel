@@ -6,24 +6,25 @@ import io.github.fukusaka.keel.buf.IoBuf
 /**
  * Buffered wrapper over [SuspendSink] providing writeString/writeByte utilities.
  *
- * Uses [IoBuf] instances from [allocator] for zero-copy I/O.
- * The flush strategy is controlled by [deferFlush]:
- *
- * **deferFlush = true** (EventLoop-based engines: kqueue/epoll/NIO):
+ * Uses [IoBuf] instances from [allocator] for zero-copy I/O with a single,
+ * uniform deferred-flush strategy across every engine:
  * ```
  * writeString/writeByte → IoBuf (buffer accumulation)
  *   → when buffer is full:
- *     IoBuf → Channel.write (enqueue) → allocate fresh IoBuf
+ *     IoBuf → sink.write (enqueue, ownership transfer) → allocate fresh IoBuf
  *   → when flush() is called:
- *     Channel.flush → writev (single syscall for all queued buffers)
+ *     sink.flush → single OS write (writev) for all queued buffers
  * ```
- *
- * **deferFlush = false** (push-model engines: Netty/NWConnection/Node.js):
- * ```
- * writeString/writeByte → IoBuf (buffer accumulation)
- *   → when buffer is full:
- *     IoBuf → Channel.write + Channel.flush (immediate OS write) → clear
- * ```
+ * Each filled buffer is handed off to [sink] (which queues it) and a fresh
+ * buffer is allocated; the actual OS write is deferred to [flush]. This
+ * batches a multi-buffer response into one flush and never reuses a handed-off
+ * buffer, so it is safe even when [sink]'s flush runs on a different thread
+ * (push-model engines: Netty / NWConnection). Every keel transport queues
+ * writes (`pendingWrites`) and sends them on flush, so no engine needs a
+ * separate immediate-write path. (An earlier design carried a `deferFlush`
+ * flag with an immediate-write + buffer-reuse branch for Node.js, but Node's
+ * transport also queues + flushes, so the flag was inconsistent dead weight
+ * and was removed.)
  *
  * **Ownership**: this class does NOT own [sink]. Closing this wrapper
  * releases the internal buffer but does not close or flush the underlying
@@ -35,16 +36,10 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * @param sink The underlying [SuspendSink] to write to.
  * @param allocator Buffer allocator for the internal buffer.
- * @param deferFlush When true, [flushBuffer] enqueues buffers without OS write,
- *                   deferring the actual I/O to the caller's [flush]. When false
- *                   (default), each buffer fill triggers an immediate OS write.
- *                   Set to true for EventLoop-based engines (kqueue/epoll/NIO)
- *                   where write and flush run on the same single thread.
  */
 class BufferedSuspendSink(
     private val sink: SuspendSink,
     private val allocator: BufferAllocator,
-    private val deferFlush: Boolean = false,
 ) : AutoCloseable {
 
     private var buf = allocator.allocate(BUFFER_SIZE)
@@ -118,9 +113,9 @@ class BufferedSuspendSink(
             if (wrapped != null) {
                 // Flush any scratch data first to keep ordering (headers before body).
                 flushBuffer()
-                // Ownership transfer: sink.write takes over `wrapped`.
+                // Ownership transfer: sink.write takes over `wrapped`. The OS
+                // write is deferred to the caller's flush().
                 sink.write(wrapped)
-                if (!deferFlush) sink.flush()
                 return
             }
         }
@@ -146,38 +141,21 @@ class BufferedSuspendSink(
     }
 
     /**
-     * Sends the internal buffer's contents to the underlying sink.
+     * Transfers the internal buffer's contents to the underlying sink and
+     * allocates a fresh replacement, deferring the OS write to [flush].
      *
-     * When [deferFlush] is true (EventLoop-based engines: kqueue/epoll/NIO):
-     * transfers the buffer to sink.write() and allocates a fresh replacement.
-     * The old buffer remains in the Channel's pending-write queue until the
+     * The old buffer remains in the transport's pending-write queue until the
      * caller's [flush] sends all accumulated buffers in a single writev()
-     * syscall; the transport releases it when the flush completes.
-     *
-     * When [deferFlush] is false (push-model engines: Netty/NWConnection/Node.js):
-     * retains the buffer so it survives sink.write()'s ownership transfer,
-     * flushes synchronously, then clears indices on our retained reference
-     * so the same buffer can be reused in place. The explicit [IoBuf.retain]
-     * keeps pool pressure down on push-model engines where sink.write() +
-     * sink.flush() would otherwise round-trip the buffer through a
-     * potentially cross-thread pool on every small flush.
+     * syscall; the transport releases it when the flush completes. The
+     * replacement is allocated BEFORE handing `buf` off so that `this.buf`
+     * always points to a valid buffer — if allocate throws, the old buf is
+     * still valid and [close] can release it safely.
      */
     private suspend fun flushBuffer() {
         if (buf.readableBytes > 0) {
-            if (deferFlush) {
-                // Allocate the replacement BEFORE handing `buf` off so that
-                // `this.buf` always points to a valid buffer — if allocate
-                // throws, the old buf is still valid and close() can release
-                // it safely.
-                val oldBuf = buf
-                buf = allocator.allocate(BUFFER_SIZE)
-                sink.write(oldBuf) // transfers ownership of oldBuf to sink
-            } else {
-                // Retain so our reference survives sink.write()'s transfer.
-                sink.write(buf.retain())
-                sink.flush()
-                buf.clear()
-            }
+            val oldBuf = buf
+            buf = allocator.allocate(BUFFER_SIZE)
+            sink.write(oldBuf) // transfers ownership of oldBuf to sink
         }
     }
 

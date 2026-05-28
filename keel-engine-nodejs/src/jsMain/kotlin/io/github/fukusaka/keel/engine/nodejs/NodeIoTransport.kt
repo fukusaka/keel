@@ -46,7 +46,6 @@ internal class NodeIoTransport(
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
-    override val supportsDeferredFlush: Boolean get() = false
 
     // --- Read path ---
 

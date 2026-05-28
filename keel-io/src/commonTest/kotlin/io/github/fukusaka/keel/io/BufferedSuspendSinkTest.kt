@@ -149,13 +149,13 @@ class BufferedSuspendSinkTest {
         }
 
     // ============================================================
-    // deferFlush = true tests
+    // deferred flush behavior (buffer hand-off + batched flush)
     // ============================================================
 
     @Test
     fun deferFlush_writeDoesNotFlushImmediately() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
-        val buffered = BufferedSuspendSink(sink, DefaultAllocator, deferFlush = true)
+        val buffered = BufferedSuspendSink(sink, DefaultAllocator)
         buffered.writeString("hello")
         // Data fits in buffer — no write to sink yet
         assertEquals(0, sink.chunks.size)
@@ -169,7 +169,7 @@ class BufferedSuspendSinkTest {
     fun deferFlush_bufferFullEnqueuesThenFreshBuffer() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val tracker = TrackingAllocator(DefaultAllocator)
-        val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
+        val buffered = BufferedSuspendSink(sink, tracker)
         // Write more than BUFFER_SIZE (8192) to trigger internal flushBuffer
         val large = "x".repeat(10000)
         buffered.writeString(large)
@@ -187,7 +187,7 @@ class BufferedSuspendSinkTest {
     fun deferFlush_noBufferLeakOnClose() = runTest(timeout = 15.seconds) {
         val tracker = TrackingAllocator(DefaultAllocator)
         val sink = CollectingSink()
-        val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
+        val buffered = BufferedSuspendSink(sink, tracker)
         buffered.writeString("some data")
         // Close without flush — data is discarded but buffer is released
         buffered.close()
@@ -198,7 +198,7 @@ class BufferedSuspendSinkTest {
     fun deferFlush_multipleFlushCycles() = runTest(timeout = 15.seconds) {
         val sink = CollectingSink()
         val tracker = TrackingAllocator(DefaultAllocator)
-        val buffered = BufferedSuspendSink(sink, tracker, deferFlush = true)
+        val buffered = BufferedSuspendSink(sink, tracker)
         // Cycle 1
         buffered.writeAscii("AAA")
         buffered.flush()

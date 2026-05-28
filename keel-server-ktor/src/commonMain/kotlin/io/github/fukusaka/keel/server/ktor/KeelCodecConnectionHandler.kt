@@ -342,7 +342,6 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
             val sink = BufferedSuspendSink(
                 channel.asSuspendSink(),
                 channel.allocator,
-                channel.supportsDeferredFlush,
             )
             val headers = HttpHeaders()
             headers.add(HttpHeaderName.CONNECTION, "close")

@@ -28,8 +28,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  * otherwise noted.
  *
  * Pure interface — no default implementations. Use [AbstractIoTransport]
- * for shared defaults (supportsDeferredFlush, awaitPendingFlush,
- * awaitClosed, callback properties).
+ * for shared defaults (awaitPendingFlush, awaitClosed, callback properties).
  *
  * ## Read Path
  *
@@ -220,15 +219,6 @@ interface IoTransport {
      * `channel.read` / `write` / `flush` do not cross threads.
      */
     val ioDispatcher: CoroutineDispatcher
-
-    /**
-     * Whether the transport supports deferred flush (write buffering
-     * followed by explicit flush).
-     *
-     * Most transports return `true`. Node.js returns `false` because
-     * `socket.write()` sends immediately.
-     */
-    val supportsDeferredFlush: Boolean
 
     companion object {
         /** Default high water mark: 64 KB. Stop writing when this much data is buffered. */
