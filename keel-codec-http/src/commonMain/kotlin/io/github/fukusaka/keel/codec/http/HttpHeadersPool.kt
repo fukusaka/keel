@@ -74,16 +74,20 @@ internal object HttpHeadersPool {
      * internal queue, etc.).
      *
      * The flag is read on every borrow/giveBack from a `@Volatile` Boolean
-     * (negligible cost — single byte load, no atomic op). Default `false`
-     * preserves production behaviour. Tests set it via the [setBypass]
-     * helper; benchmarks may flip it via env var probing if a launcher
-     * mirrors the variable into Kotlin before server start (see
-     * `benchmark/server-http-*` startup notes for the wiring).
+     * (negligible cost — single byte load, no atomic op). It is initialised
+     * once at object init from [readBypassEnvVar] — `true` iff
+     * `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS=1` is set in the process
+     * environment, `false` otherwise — so a benchmark binary launched with
+     * that env var bypasses the pool with no code change. Tests toggle it
+     * at runtime via [setBypassPool].
      *
-     * **Not exposed via public API.** This is a temporary investigation
-     * lever and must be removed once K56b is root-caused. Leaving it as a
-     * private flag avoids contaminating the public surface or
-     * accidentally landing as a long-term tuning knob.
+     * **Not exposed via public API.** Even after the K56b root cause was
+     * fixed (per-NWConnection-queue scoped pool, PR #627), this flag is
+     * retained as a diagnostic / benchmarking lever — an A/B switch to
+     * isolate the pool from any future crash's causal chain. Keeping it a
+     * private flag (plus the `internal` [setBypassPool] / [isBypassPool]
+     * accessors) avoids contaminating the public surface or accidentally
+     * landing as a long-term tuning knob.
      */
     @Volatile
     private var bypassPool: Boolean = readBypassEnvVar()
