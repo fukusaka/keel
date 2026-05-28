@@ -66,7 +66,7 @@ public sealed interface RouteResolution {
     /**
      * The path and method matched predicate-accepting handlers, but every
      * one of them declared a `produces` media type and none is acceptable
-     * under the request's `Accept` header (design.md §38.9.9 / router R-5).
+     * under the request's `Accept` header (design.md §38.9.11 / router R-5).
      * The caller answers `406 Not Acceptable`. [producibleTypes] lists the
      * media types those handlers can emit, for diagnostics.
      *
@@ -138,7 +138,7 @@ public sealed interface RouteResolution {
  * registration order cannot let a catch-all shadow a later predicated
  * route. Upgrades are predicated the same way.
  *
- * **Content negotiation** (router R-5, design §38.9.9): a handler may
+ * **Content negotiation** (router R-5, design §38.9.11): a handler may
  * instead (or also) declare the media types it `produces`. When the
  * request carries an `Accept` header, [resolve] scores every
  * predicate-accepting candidate by how much that header prefers its
