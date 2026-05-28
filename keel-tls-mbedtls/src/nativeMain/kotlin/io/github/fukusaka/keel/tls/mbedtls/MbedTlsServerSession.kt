@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
+import io.github.fukusaka.keel.tls.TlsVersion
 import io.github.fukusaka.keel.tls.asPem
 import kotlin.concurrent.AtomicInt
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -21,14 +22,19 @@ import mbedtls.MBEDTLS_SSL_IS_CLIENT
 import mbedtls.MBEDTLS_SSL_IS_SERVER
 import mbedtls.MBEDTLS_SSL_PRESET_DEFAULT
 import mbedtls.MBEDTLS_SSL_TRANSPORT_STREAM
+import mbedtls.MBEDTLS_SSL_VERSION_TLS1_2
+import mbedtls.MBEDTLS_SSL_VERSION_TLS1_3
 import mbedtls.keel_mbedtls_strerror
 import mbedtls.mbedtls_pk_context
 import mbedtls.mbedtls_pk_free
 import mbedtls.mbedtls_pk_init
 import mbedtls.mbedtls_pk_parse_key
 import mbedtls.mbedtls_ssl_conf_ca_chain
+import mbedtls.mbedtls_ssl_conf_max_tls_version
+import mbedtls.mbedtls_ssl_conf_min_tls_version
 import mbedtls.mbedtls_ssl_conf_own_cert
 import mbedtls.mbedtls_ssl_config
+import mbedtls.mbedtls_ssl_protocol_version
 import mbedtls.mbedtls_ssl_config_defaults
 import mbedtls.mbedtls_ssl_config_free
 import mbedtls.mbedtls_ssl_config_init
@@ -110,6 +116,17 @@ internal class MbedTlsServerSession(
             mbedtls_ssl_conf_own_cert(conf.ptr, srvcert.ptr, pkey.ptr),
             "ssl_conf_own_cert",
         )
+
+        // Pin the negotiable protocol version range. No-op when both
+        // bounds are null (keeps the preset default). Range validated by
+        // TlsConfig; a handshake that cannot satisfy it aborts.
+        config.minVersion?.let { mbedtls_ssl_conf_min_tls_version(conf.ptr, mbedtlsVersion(it)) }
+        config.maxVersion?.let { mbedtls_ssl_conf_max_tls_version(conf.ptr, mbedtlsVersion(it)) }
+    }
+
+    private fun mbedtlsVersion(version: TlsVersion): mbedtls_ssl_protocol_version = when (version) {
+        TlsVersion.TLS1_2 -> MBEDTLS_SSL_VERSION_TLS1_2
+        TlsVersion.TLS1_3 -> MBEDTLS_SSL_VERSION_TLS1_3
     }
 
     /**
