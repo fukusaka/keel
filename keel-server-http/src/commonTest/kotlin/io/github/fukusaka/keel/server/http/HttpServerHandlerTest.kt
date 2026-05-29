@@ -119,6 +119,18 @@ class HttpServerHandlerTest {
         )
     }
 
+    /** Feeds a `GET` carrying an `Accept: <value>` header (for content-negotiation tests). */
+    private fun feedWithAccept(path: String, accept: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "GET $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "Accept: $accept\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
     /** Feeds a bodyless request with an arbitrary [method] (for method-mismatch tests). */
     private fun feedMethod(method: String, path: String) {
         channel.pipeline.notifyRead(
@@ -521,7 +533,7 @@ class HttpServerHandlerTest {
         }.flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            registerRoute = { method, path, predicate, handler -> router.register(method, path, predicate, handler) },
+            registerRoute = { method, path, predicate, produces, handler -> router.register(method, path, predicate, produces, handler) },
             registerUpgrade = { path, protocol, predicate -> router.registerUpgrade(path, protocol, predicate) },
         )
         install(router)
@@ -548,7 +560,7 @@ class HttpServerHandlerTest {
         }.flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            registerRoute = { method, path, predicate, handler -> router.register(method, path, predicate, handler) },
+            registerRoute = { method, path, predicate, produces, handler -> router.register(method, path, predicate, produces, handler) },
             registerUpgrade = { path, protocol, predicate -> router.registerUpgrade(path, protocol, predicate) },
         )
         install(router)
@@ -963,6 +975,48 @@ class HttpServerHandlerTest {
         feedWithFormat("GET", "/data", "xml")
 
         assertTrue(responseText().endsWith("xml-body"), "expected the xml handler: ${responseText()}")
+    }
+
+    @Test
+    fun `content negotiation dispatches to the handler whose produces type the Accept header names`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+                register(HttpMethod.GET, "/data", produces = listOf("application/xml")) { call ->
+                    call.respond(HttpResponse.ok("xml-body"))
+                }
+            },
+        )
+
+        feedWithAccept("/data", "application/xml")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.endsWith("xml-body"), "expected the xml handler: $text")
+    }
+
+    @Test
+    fun `content negotiation answers 406 when no produced type is acceptable`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+                register(HttpMethod.GET, "/data", produces = listOf("application/xml")) { call ->
+                    call.respond(HttpResponse.ok("xml-body"))
+                }
+            },
+        )
+
+        feedWithAccept("/data", "text/plain")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 406"), "expected 406: $text")
+        // The body lists the producible types so the client can renegotiate.
+        assertTrue(text.contains("application/json"), "producible json: $text")
+        assertTrue(text.contains("application/xml"), "producible xml: $text")
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */

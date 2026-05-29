@@ -32,7 +32,7 @@ class RouteGroupBuilderTest {
         RouteGroupBuilder(prefix).apply(configure).flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            registerRoute = { method, path, _, h -> registered.add(Triple(method, path, h)) },
+            registerRoute = { method, path, _, _, h -> registered.add(Triple(method, path, h)) },
             registerUpgrade = { _, _, _ -> },
         )
         return registered
@@ -45,7 +45,7 @@ class RouteGroupBuilderTest {
         RouteGroupBuilder(prefix).apply(configure).flush(
             inheritedMiddleware = emptyList(),
             inheritedPrefix = "",
-            registerRoute = { _, _, _, _ -> },
+            registerRoute = { _, _, _, _, _ -> },
             registerUpgrade = { path, protocol, _ -> registered.add(path to protocol) },
         )
         return registered

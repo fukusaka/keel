@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 
@@ -63,6 +64,21 @@ public sealed interface RouteResolution {
     ) : RouteResolution
 
     /**
+     * The path and method matched predicate-accepting handlers, but every
+     * one of them declared a `produces` media type and none is acceptable
+     * under the request's `Accept` header (design.md §38.9.11 / router R-5).
+     * The caller answers `406 Not Acceptable`. [producibleTypes] lists the
+     * media types those handlers can emit, for diagnostics.
+     *
+     * This is decided ahead of [MethodNotAllowed] / [Unmatched]: the method
+     * IS served, the negotiation simply failed.
+     */
+    public class NotAcceptable internal constructor(
+        /** The media types the matched method's handlers can produce — never empty. */
+        public val producibleTypes: Set<String>,
+    ) : RouteResolution
+
+    /**
      * No route matched. Either the path reaches no trie leaf at all, or it
      * does but every candidate handler's predicate rejected the request
      * (design §38.9.4 routes a predicate-only miss here, as WebFlux does).
@@ -116,10 +132,22 @@ public sealed interface RouteResolution {
  * **Predicate routing**: a method × path may carry several handlers, each
  * guarded by a [RoutePredicate] (design §38.9.4). [resolve] reaches the
  * trie leaf, then scans that method's handler list in order — the first
- * handler whose predicate accepts the request wins; a `null`-predicate
- * handler is a catch-all. The list is kept predicate-first, catch-all
- * last (see [register]), so registration order cannot let a catch-all
- * shadow a later predicated route. Upgrades are predicated the same way.
+ * handler whose predicate accepts the request wins; a handler with neither
+ * a predicate nor a `produces` list is the unconditional catch-all. The
+ * list is kept predicate-first, catch-all last (see [register]), so
+ * registration order cannot let a catch-all shadow a later predicated
+ * route. Upgrades are predicated the same way.
+ *
+ * **Content negotiation** (router R-5, design §38.9.11): a handler may
+ * instead (or also) declare the media types it `produces`. When the
+ * request carries an `Accept` header, [resolve] scores every
+ * predicate-accepting candidate by how much that header prefers its
+ * produced types (RFC 9110 §12.5.1 q-value + specificity, see
+ * [scoreProducedType]) and picks the best — not first-match. A
+ * `produces`-declaring handler whose types the `Accept` header refuses is
+ * skipped; when every candidate is a refused `produces` handler (no
+ * catch-all), [resolve] returns [RouteResolution.NotAcceptable] (`406`).
+ * With no `Accept` header, `produces` is ignored and first-match applies.
  *
  * Registration order is significant in exactly two cases: among multiple
  * predicated handlers for one method × path (first accepting predicate
@@ -169,15 +197,16 @@ public class Router {
         method: HttpMethod,
         path: String,
         predicate: RoutePredicate? = null,
+        produces: List<String>? = null,
         handler: RouteHandler,
     ) {
+        val normalizedProduces = validateProduces(produces, method, path)
         for (segments in registrationSegments(path)) {
             val node = walkTo(segments, path)
             val list = node.handlers.getOrPut(method) { mutableListOf() }
             insertCandidate(
                 list,
-                PredicatedHandler(predicate, handler),
-                predicate,
+                PredicatedHandler(predicate, normalizedProduces, handler),
             ) { "duplicate route: $method $path" }
         }
     }
@@ -211,7 +240,6 @@ public class Router {
             insertCandidate(
                 node.upgrades,
                 PredicatedUpgrade(predicate, protocol),
-                predicate,
             ) { "duplicate upgrade route: $path" }
         }
     }
@@ -242,8 +270,17 @@ public class Router {
      */
     public fun resolve(method: HttpMethod, path: String, head: HttpRequestHead): RouteResolution {
         val segments = segmentsOf(path)
-        val matched = resolveNode(root, segments, 0, method, head, HashMap())
+        val accept = parseAcceptHeader(head.headers.getString(HttpHeaderName.ACCEPT))
+        val matched = resolveNode(root, segments, 0, method, head, accept, HashMap())
         if (matched != null) return RouteResolution.Matched(matched)
+        // 406 precedes 405/404: when the method's predicate-accepting
+        // handlers all declared a `produces` type that the Accept header
+        // refuses (and there was no content-negotiation catch-all), the
+        // method IS served — negotiation simply failed.
+        if (accept != null) {
+            val producible = collectNotAcceptable(root, segments, 0, method, head, accept)
+            if (producible.isNotEmpty()) return RouteResolution.NotAcceptable(producible)
+        }
         val allowed = collectAllowedMethods(root, segments, 0)
         return if (allowed.isNotEmpty() && method !in allowed) {
             RouteResolution.MethodNotAllowed(allowed)
@@ -294,12 +331,13 @@ public class Router {
         index: Int,
         method: HttpMethod,
         head: HttpRequestHead,
+        accept: List<AcceptRange>?,
         params: HashMap<String, String>,
     ): RouteMatch? {
         if (index < segments.size) {
             val segment = segments[index]
             node.literalChildren[segment]?.let { child ->
-                resolveNode(child, segments, index + 1, method, head, params)?.let { return it }
+                resolveNode(child, segments, index + 1, method, head, accept, params)?.let { return it }
             }
             // paramChildren is ordered constrained-first, unconstrained
             // last (see childFor), so the most specific branch is tried
@@ -309,34 +347,134 @@ public class Router {
             for (slot in node.paramChildren) {
                 if (slot.constraint != null && !slot.constraint.matches(segment)) continue
                 params[slot.name] = segment
-                resolveNode(slot.node, segments, index + 1, method, head, params)?.let { return it }
+                resolveNode(slot.node, segments, index + 1, method, head, accept, params)?.let { return it }
                 params.remove(slot.name)
             }
         } else {
-            node.matchAt(method, head, params)?.let { return it }
+            node.matchAt(method, head, accept, params)?.let { return it }
         }
         // A trailing wildcard is terminal and matches the remaining segments —
         // zero or more — so a wildcard route also answers its bare prefix path.
         node.wildcardChild?.let { child ->
             params["*"] = segments.subList(index, segments.size).joinToString("/")
-            child.matchAt(method, head, params)?.let { return it }
+            child.matchAt(method, head, accept, params)?.let { return it }
             params.remove("*")
         }
         return null
     }
 
     /**
-     * Scans this node's predicated handlers / upgrades for [method],
-     * returning a [RouteMatch] for the first whose predicate accepts
-     * [head], or null when none does.
+     * Selects this node's handler / upgrade for [method], returning a
+     * [RouteMatch] or null when none is eligible.
+     *
+     * The handler is chosen by [selectHandler] — first accepting predicate
+     * when [accept] is null (no `Accept` header → produces ignored),
+     * otherwise the predicate-accepting candidate whose `produces` the
+     * `Accept` header most prefers (router R-5). Upgrades carry no
+     * `produces` and stay first-accepting-predicate.
      */
-    private fun Node.matchAt(method: HttpMethod, head: HttpRequestHead, params: HashMap<String, String>): RouteMatch? {
-        val handler = handlers[method]?.firstOrNull { it.predicate.acceptsOrNull(head) }?.handler
+    private fun Node.matchAt(
+        method: HttpMethod,
+        head: HttpRequestHead,
+        accept: List<AcceptRange>?,
+        params: HashMap<String, String>,
+    ): RouteMatch? {
+        val handler = selectHandler(handlers[method], head, accept)
         val upgrade = upgrades.firstOrNull { it.predicate.acceptsOrNull(head) }?.protocol
         return if (handler != null || upgrade != null) {
             RouteMatch(handler, upgrade, params.toMap())
         } else {
             null
+        }
+    }
+
+    /**
+     * Picks the winning handler from a method's candidate [list] for [head]
+     * / [accept].
+     *
+     * With [accept] null, returns the first predicate-accepting candidate
+     * (legacy first-match — produces is irrelevant). Otherwise scores each
+     * predicate-accepting candidate by [candidateScore] and returns the
+     * highest; ties keep the earliest registration (forward scan with a
+     * strict `>`), matching the predicate-routing first-wins rule. Returns
+     * null when no candidate is acceptable (every `produces`-declaring
+     * candidate was refused by the `Accept` header and there is no
+     * content-negotiation catch-all) — the caller then reports `406`.
+     */
+    private fun selectHandler(
+        list: List<PredicatedHandler>?,
+        head: HttpRequestHead,
+        accept: List<AcceptRange>?,
+    ): RouteHandler? {
+        if (list == null) return null
+        if (accept == null) return list.firstOrNull { it.predicate.acceptsOrNull(head) }?.handler
+        var best: PredicatedHandler? = null
+        var bestScore = NOT_ACCEPTABLE_SCORE
+        for (candidate in list) {
+            if (!candidate.predicate.acceptsOrNull(head)) continue
+            val score = candidateScore(candidate.produces, accept)
+            if (score > bestScore) {
+                bestScore = score
+                best = candidate
+            }
+        }
+        return if (bestScore > NOT_ACCEPTABLE_SCORE) best?.handler else null
+    }
+
+    /**
+     * Collects the `produces` media types of the [method] handlers that
+     * would have matched [path] (predicate accepts [head]) but whose
+     * `produces` the [accept] header refuses. A non-empty result means
+     * `406` (every such handler declared a type; none acceptable, and the
+     * absence of a catch-all is implied by [resolve] having found no
+     * match). Empty means the miss was a predicate rejection or an
+     * unregistered method, not a negotiation failure.
+     */
+    private fun collectNotAcceptable(
+        node: Node,
+        segments: List<String>,
+        index: Int,
+        method: HttpMethod,
+        head: HttpRequestHead,
+        accept: List<AcceptRange>,
+    ): Set<String> {
+        val producible = linkedSetOf<String>()
+        fun visit(n: Node, i: Int) {
+            if (i < segments.size) {
+                val segment = segments[i]
+                n.literalChildren[segment]?.let { visit(it, i + 1) }
+                for (slot in n.paramChildren) {
+                    if (slot.constraint != null && !slot.constraint.matches(segment)) continue
+                    visit(slot.node, i + 1)
+                }
+            } else {
+                n.collectRefusedProduces(method, head, accept, producible)
+            }
+            n.wildcardChild?.let { it.collectRefusedProduces(method, head, accept, producible) }
+        }
+        visit(node, index)
+        return producible
+    }
+
+    /**
+     * Adds to [out] the `produces` types of this node's predicate-accepting
+     * [method] handlers that the [accept] header refuses. A
+     * content-negotiation catch-all (`produces == null`) among them clears
+     * the contribution: such a handler always matches, so reaching here
+     * means it did not — leave the miss to `404`/`405`.
+     */
+    private fun Node.collectRefusedProduces(
+        method: HttpMethod,
+        head: HttpRequestHead,
+        accept: List<AcceptRange>,
+        out: MutableSet<String>,
+    ) {
+        val candidates = handlers[method] ?: return
+        for (candidate in candidates) {
+            if (!candidate.predicate.acceptsOrNull(head)) continue
+            val produces = candidate.produces ?: return // catch-all present → not a 406
+            if (produces.any { scoreProducedType(it, accept) > NOT_ACCEPTABLE_SCORE }) continue
+            out += produces
         }
     }
 
@@ -371,14 +509,13 @@ public class Router {
     private fun <T> insertCandidate(
         list: MutableList<T>,
         candidate: T,
-        predicate: RoutePredicate?,
         duplicateMessage: () -> String,
     ) where T : PredicatedRoute {
-        if (predicate == null) {
-            require(list.none { it.predicate == null }, duplicateMessage)
+        if (candidate.isCatchAll) {
+            require(list.none { it.isCatchAll }, duplicateMessage)
             list.add(candidate)
         } else {
-            val catchAllAt = list.indexOfFirst { it.predicate == null }
+            val catchAllAt = list.indexOfFirst { it.isCatchAll }
             if (catchAllAt >= 0) list.add(catchAllAt, candidate) else list.add(candidate)
         }
     }
@@ -414,21 +551,41 @@ public class Router {
 
     /** A trie candidate guarded by an optional [predicate] — a handler or an upgrade. */
     private interface PredicatedRoute {
-        /** The guard; `null` means a catch-all that always matches. */
+        /** The guard; `null` means no predicate constraint. */
         val predicate: RoutePredicate?
+
+        /**
+         * True when this candidate matches unconditionally — no predicate
+         * and (for handlers) no `produces`. At most one such catch-all may
+         * exist per method × path, kept last so it never shadows a
+         * predicated or `produces`-declaring sibling.
+         */
+        val isCatchAll: Boolean
     }
 
-    /** A [RouteHandler] guarded by an optional [predicate]. */
+    /**
+     * A [RouteHandler] guarded by an optional [predicate] and an optional
+     * [produces] media-type list (content negotiation, router R-5). A
+     * handler with neither is the unconditional catch-all; a `produces`
+     * list makes it eligible only when the `Accept` header accepts one of
+     * its types (a `produces`-declaring handler is therefore not a
+     * catch-all even with a null predicate — several may coexist).
+     */
     private class PredicatedHandler(
         override val predicate: RoutePredicate?,
+        val produces: List<String>?,
         val handler: RouteHandler,
-    ) : PredicatedRoute
+    ) : PredicatedRoute {
+        override val isCatchAll: Boolean get() = predicate == null && produces == null
+    }
 
     /** An [UpgradeProtocol] guarded by an optional [predicate]. */
     private class PredicatedUpgrade(
         override val predicate: RoutePredicate?,
         val protocol: UpgradeProtocol,
-    ) : PredicatedRoute
+    ) : PredicatedRoute {
+        override val isCatchAll: Boolean get() = predicate == null
+    }
 
     /**
      * A node's `:name` parameter branch. Bundling the parameter name,
@@ -459,11 +616,55 @@ public class Router {
     private class ParsedParam(val name: String, val constraintToken: String?, val constraint: ParamConstraint?)
 
     private companion object {
+        /**
+         * Score of a content-negotiation catch-all (`produces == null`):
+         * acceptable for any `Accept`, but ranked below any `produces`
+         * candidate the client positively prefers (whose score is at least
+         * `1 * SPECIFICITY_STRIDE`). Strictly greater than
+         * [NOT_ACCEPTABLE_SCORE], so a catch-all never triggers a `406`.
+         */
+        const val FALLBACK_SCORE = 0
+
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
         fun segmentsOf(path: String): List<String> = path.split('/').filter { it.isNotEmpty() }
 
         /** True when this predicate is null (a catch-all) or accepts [head]. */
         fun RoutePredicate?.acceptsOrNull(head: HttpRequestHead): Boolean = this == null || test(head)
+
+        /**
+         * Best content-negotiation score of a handler with the given
+         * [produces] under [accept]: [FALLBACK_SCORE] for a catch-all
+         * (null), otherwise the highest [scoreProducedType] across its
+         * types ([NOT_ACCEPTABLE_SCORE] when none is acceptable).
+         */
+        fun candidateScore(produces: List<String>?, accept: List<AcceptRange>): Int {
+            if (produces == null) return FALLBACK_SCORE
+            var best = NOT_ACCEPTABLE_SCORE
+            for (type in produces) {
+                val score = scoreProducedType(type, accept)
+                if (score > best) best = score
+            }
+            return best
+        }
+
+        /**
+         * Validates a route's [produces] list (each entry a non-blank
+         * `type/subtype` token) and returns it trimmed/lower-cased, or null
+         * when [produces] is null or empty.
+         *
+         * @throws IllegalArgumentException if any entry is not `type/subtype`.
+         */
+        fun validateProduces(produces: List<String>?, method: HttpMethod, path: String): List<String>? {
+            if (produces.isNullOrEmpty()) return null
+            return produces.map { raw ->
+                val type = raw.trim().lowercase()
+                val slash = type.indexOf('/')
+                require(slash > 0 && slash < type.length - 1 && '*' !in type) {
+                    "produces media type must be a concrete 'type/subtype': '$raw' ($method $path)"
+                }
+                type
+            }
+        }
 
         /**
          * Expands [path] into the concrete segment lists to register.
