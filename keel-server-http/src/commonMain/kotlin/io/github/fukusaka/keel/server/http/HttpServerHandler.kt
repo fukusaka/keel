@@ -711,29 +711,29 @@ private fun HttpResponseHead.withConnectionClose(): HttpResponseHead =
 private const val ACCEPT_FIELD = "Accept"
 
 /**
- * Builds a copy of [headers] whose `Vary` lists `Accept`, merging with any
- * existing `Vary`.
+ * Builds a copy of [headers] with `Accept` added to `Vary`, **appending**
+ * a `Vary: Accept` field line rather than rewriting what the handler set.
  *
  * `Vary` is a list-based field (RFC 9110 §12.5.5, `#( "*" / field-name )`),
- * so multiple `Vary` lines are equivalent to one comma-joined line
- * (§5.3): every `Vary` line is gathered via [HttpHeaders.getAll] and the
- * union of field-names is collapsed into a single combined line plus
- * `Accept`. A no-op (returns the same instance) when the union already
- * names `Accept`, or contains `*` (which subsumes every field-name, so
- * adding `Accept` is meaningless) — so repeated decoration and a handler
- * that set `Vary` itself do not duplicate or override the field.
+ * so a separate `Vary: Accept` line is equivalent to extending an existing
+ * `Vary` with `, Accept` (§5.3 — multiple lines combine, in order). Keel
+ * therefore leaves the handler's own `Vary` line(s) byte-for-byte intact
+ * and only adds its own, rather than collapsing / rewriting peer-supplied
+ * headers.
+ *
+ * A no-op (returns the same instance) when any existing `Vary` line
+ * already names `Accept`, or contains `*` (which subsumes every
+ * field-name, so adding `Accept` is meaningless) — so repeated decoration
+ * and a handler that set `Vary: Accept` itself do not duplicate the field.
  */
 private fun HttpHeaders.withVaryAccept(): HttpHeaders {
-    val tokens = getAll(HttpHeaderName.VARY)
+    val present = getAll(HttpHeaderName.VARY)
         .flatMap { it.split(',') }
         .map { it.trim() }
-        .filter { it.isNotEmpty() }
-    if (tokens.any { it == "*" || it.equals(ACCEPT_FIELD, ignoreCase = true) }) return this
-    val merged = (tokens + ACCEPT_FIELD).joinToString(", ")
+    if (present.any { it == "*" || it.equals(ACCEPT_FIELD, ignoreCase = true) }) return this
     return HttpHeaders.build {
         this@withVaryAccept.forEach { name, value -> add(name, value) }
-        // `set` removes all existing `Vary` lines, then adds the combined one.
-        set(HttpHeaderName.VARY, merged)
+        add(HttpHeaderName.VARY, ACCEPT_FIELD)
     }
 }
 

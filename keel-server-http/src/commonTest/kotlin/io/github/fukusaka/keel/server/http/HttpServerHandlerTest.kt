@@ -1071,8 +1071,17 @@ class HttpServerHandlerTest {
         assertFalse(responseText().contains("vary: accept", ignoreCase = true), "unexpected Vary: Accept: ${responseText()}")
     }
 
+    /** All `Vary` field-name tokens across every `Vary` line of [responseText]. */
+    private fun varyTokensOf(responseText: String): List<String> =
+        responseText.lineSequence()
+            .filter { it.startsWith("Vary:", ignoreCase = true) }
+            .flatMap { it.substringAfter(':').split(',').asSequence() }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+
     @Test
-    fun `Vary Accept merges with a Vary the handler already set`() {
+    fun `Vary Accept is appended alongside a Vary the handler already set`() {
         install(
             Router().apply {
                 register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
@@ -1090,20 +1099,26 @@ class HttpServerHandlerTest {
 
         feedWithAccept("/data", "application/json")
 
-        val vary = responseText().lineSequence()
-            .firstOrNull { it.startsWith("Vary:", ignoreCase = true) }
-            ?: error("no Vary header: ${responseText()}")
-        assertTrue(vary.contains("Accept-Encoding", ignoreCase = true), "keeps the handler's Vary: $vary")
-        assertTrue(Regex("(^|[,\\s])Accept($|[,\\s])").containsMatchIn(vary), "adds Accept as a distinct field: $vary")
+        // `responseText()` drains the written buffers, so capture it once.
+        val text = responseText()
+        // Keel appends rather than rewriting: the handler's Vary line stays
+        // byte-for-byte, and Accept is added (here as a separate line).
+        assertTrue(
+            text.lineSequence().any { it.trimEnd().equals("Vary: Accept-Encoding", ignoreCase = true) },
+            "handler's Vary line preserved verbatim: $text",
+        )
+        val tokens = varyTokensOf(text)
+        assertTrue(tokens.any { it.equals("Accept-Encoding", ignoreCase = true) }, "keeps Accept-Encoding: $tokens")
+        assertTrue(tokens.any { it.equals("Accept", ignoreCase = true) }, "adds Accept: $tokens")
     }
 
     @Test
-    fun `Vary Accept merges multiple Vary lines into one without dropping fields`() {
+    fun `Vary Accept is appended without dropping multiple handler Vary lines`() {
         install(
             Router().apply {
                 register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
                     val base = HttpResponse.of(HttpStatus.OK, "json-body")
-                    // Two distinct Vary lines — list-based field, so equivalent
+                    // Two distinct Vary lines — list-based field, equivalent
                     // to one comma-joined line (RFC 9110 §5.3 / §12.5.5).
                     val withVary = base.copy(
                         headers = HttpHeaders.build {
@@ -1119,16 +1134,11 @@ class HttpServerHandlerTest {
 
         feedWithAccept("/data", "application/json")
 
-        val varyLines = responseText().lineSequence()
-            .filter { it.startsWith("Vary:", ignoreCase = true) }
-            .toList()
-        // Collapsed to a single combined line that keeps both original
-        // field-names and adds Accept — none dropped.
-        assertEquals(1, varyLines.size, "Vary collapsed to one line: ${responseText()}")
-        val vary = varyLines.single()
-        assertTrue(vary.contains("Accept-Encoding", ignoreCase = true), "keeps Accept-Encoding: $vary")
-        assertTrue(vary.contains("Cookie", ignoreCase = true), "keeps Cookie: $vary")
-        assertTrue(Regex("(^|[,\\s])Accept($|[,\\s])").containsMatchIn(vary), "adds Accept: $vary")
+        // No field-name dropped: both handler lines survive and Accept is added.
+        val tokens = varyTokensOf(responseText())
+        assertTrue(tokens.any { it.equals("Accept-Encoding", ignoreCase = true) }, "keeps Accept-Encoding: $tokens")
+        assertTrue(tokens.any { it.equals("Cookie", ignoreCase = true) }, "keeps Cookie: $tokens")
+        assertTrue(tokens.any { it.equals("Accept", ignoreCase = true) }, "adds Accept: $tokens")
     }
 
     @Test
