@@ -121,7 +121,7 @@ public class CompressionHandler(
             ctx.propagateWrite(response)
             return
         }
-        val encoder = registry.negotiate(accept) ?: run {
+        val encoder = negotiateContentEncoding(registry, accept) ?: run {
             ctx.propagateWrite(response)
             return
         }
@@ -150,7 +150,7 @@ public class CompressionHandler(
             ctx.propagateWrite(head)
             return
         }
-        val encoder = registry.negotiate(accept) ?: run {
+        val encoder = negotiateContentEncoding(registry, accept) ?: run {
             ctx.propagateWrite(head)
             return
         }

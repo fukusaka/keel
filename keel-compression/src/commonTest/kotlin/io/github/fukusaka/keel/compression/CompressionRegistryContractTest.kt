@@ -15,11 +15,12 @@ import kotlin.test.assertSame
  *  - bidirectional registration via [CompressionRegistry.register]
  *  - `findEncoder` / `findDecoder` miss returns `null`
  *  - re-registration overwrites
- *  - decoder lookup is case-insensitive
- *  - blank / whitespace `Accept-Encoding` is parsed as identity-only
- *  - `parseAcceptEncoding` handles edge cases (trailing comma, mixed
- *    case tokens, multiple `;` parameters)
- *  - `*` wildcard interacts correctly with explicit `q=0` exclusions
+ *  - encoder / decoder lookup is case-insensitive
+ *  - [CompressionRegistry.registeredEncoders] exposes the registered set
+ *
+ * HTTP `Accept-Encoding` negotiation moved to `keel-codec-http`
+ * (`ContentEncodingNegotiationTest`); the registry itself is
+ * transport-agnostic.
  */
 class CompressionRegistryContractTest {
 
@@ -102,145 +103,14 @@ class CompressionRegistryContractTest {
     }
 
     @Test
-    fun `negotiate returns null when no encoders are registered`() {
+    fun `registeredEncoders exposes the registered encoders with priority`() {
         val r = CompressionRegistry()
-        assertNull(r.negotiate("gzip"))
-    }
-
-    @Test
-    fun `negotiate blank Accept-Encoding picks identity`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        // Blank / whitespace header is treated as identity-only.
-        assertNull(r.negotiate(""))
-        assertNull(r.negotiate("   "))
-    }
-
-    @Test
-    fun `negotiate explicit identity rejection with no other match returns null`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        // Client rejects gzip AND identity; per KDoc, surfaces as null
-        // so caller can decide 406.
-        val pick = r.negotiate("gzip;q=0, identity;q=0")
-        assertNull(pick)
-    }
-
-    @Test
-    fun `negotiate q-zero on wildcard excludes unlisted encodings`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        // `*;q=0, br;q=1.0` — only `br` is acceptable, gzip is not
-        // registered for `br` so result is null (identity is also
-        // unlisted → q=0 via wildcard, also rejected).
-        val pick = r.negotiate("*;q=0, br;q=1.0")
-        assertNull(pick)
-    }
-
-    @Test
-    fun `negotiate accepts encoding with explicit q=1_0`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        assertEquals("gzip", r.negotiate("gzip;q=1.0")?.name)
-    }
-
-    @Test
-    fun `negotiate picks highest q on multi-entry header`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        r.registerEncoder(StubEncoder("deflate"))
-        r.registerEncoder(StubEncoder("br"))
-
-        val pick = r.negotiate("gzip;q=0.3, deflate;q=0.9, br;q=0.6")
-        assertEquals("deflate", pick?.name)
-    }
-
-    @Test
-    fun `negotiate priority breaks q-tie regardless of registration order`() {
-        val r = CompressionRegistry()
-        // Register low-priority first, high-priority second — priority
-        // (not insertion order) must win.
         r.registerEncoder(StubEncoder("gzip"), priority = 1)
         r.registerEncoder(StubEncoder("br"), priority = 10)
-        val pick = r.negotiate("gzip, br")
-        assertEquals("br", pick?.name)
-    }
 
-    @Test
-    fun `negotiate token match is case-insensitive`() {
-        val r = CompressionRegistry()
-        r.registerEncoder(StubEncoder("gzip"))
-        // Server registers lowercase, client sends uppercase.
-        assertEquals("gzip", r.negotiate("GZIP")?.name)
-    }
-
-    @Test
-    fun `parseAcceptEncoding handles trailing comma`() {
-        val parsed = parseAcceptEncoding("gzip, br,")
-        assertEquals(1.0, parsed["gzip"])
-        assertEquals(1.0, parsed["br"])
-    }
-
-    @Test
-    fun `parseAcceptEncoding lowercases tokens`() {
-        val parsed = parseAcceptEncoding("GZIP;q=0.5, Br;q=1.0")
-        assertEquals(0.5, parsed["gzip"])
-        assertEquals(1.0, parsed["br"])
-    }
-
-    @Test
-    fun `parseAcceptEncoding tolerates blank entries`() {
-        val parsed = parseAcceptEncoding("gzip, , br")
-        assertEquals(1.0, parsed["gzip"])
-        assertEquals(1.0, parsed["br"])
-    }
-
-    @Test
-    fun `parseAcceptEncoding default q is 1_0 when omitted`() {
-        val parsed = parseAcceptEncoding("gzip")
-        assertEquals(1.0, parsed["gzip"])
-    }
-
-    @Test
-    fun `parseAcceptEncoding null returns empty map`() {
-        val parsed = parseAcceptEncoding(null)
-        assertEquals(0, parsed.size)
-    }
-
-    @Test
-    fun `quality helper returns explicit token q over wildcard`() {
-        val accepted = mapOf("gzip" to 0.5, "*" to 0.9)
-        assertEquals(0.5, quality("gzip", accepted))
-    }
-
-    @Test
-    fun `quality helper falls back to wildcard for unlisted token`() {
-        val accepted = mapOf("gzip" to 0.5, "*" to 0.9)
-        assertEquals(0.9, quality("br", accepted))
-    }
-
-    @Test
-    fun `quality helper defaults identity to 1_0 when unlisted and no wildcard`() {
-        val accepted = mapOf("gzip" to 0.5)
-        assertEquals(1.0, quality("identity", accepted))
-    }
-
-    @Test
-    fun `quality helper honours explicit identity q-zero`() {
-        val accepted = mapOf("identity" to 0.0)
-        assertEquals(0.0, quality("identity", accepted))
-    }
-
-    @Test
-    fun `quality helper returns zero for unlisted token with no wildcard`() {
-        val accepted = mapOf("gzip" to 1.0)
-        assertEquals(0.0, quality("br", accepted))
-    }
-
-    @Test
-    fun `quality helper identity match is case-insensitive`() {
-        val accepted = emptyMap<String, Double>()
-        assertEquals(1.0, quality("IDENTITY", accepted))
-        assertEquals(1.0, quality("Identity", accepted))
+        val byName = r.registeredEncoders().associateBy { it.encoder.name }
+        assertEquals(2, byName.size)
+        assertEquals(1, byName["gzip"]?.priority)
+        assertEquals(10, byName["br"]?.priority)
     }
 }
