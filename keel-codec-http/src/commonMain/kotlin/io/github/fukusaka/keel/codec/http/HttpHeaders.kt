@@ -131,6 +131,45 @@ class HttpHeaders {
         return result ?: emptyList()
     }
 
+    /**
+     * The combined value of every [name] field line, comma-joined in wire
+     * order, or `null` when absent.
+     *
+     * For a **list-based** field (`#(...)` in the ABNF — `Accept`,
+     * `Accept-Encoding`, `Vary`, …), RFC 9110 §5.3 makes multiple field
+     * lines equivalent to one line with the values joined by `,` in receipt
+     * order. A list-based-field parser must therefore read this rather than
+     * a single line ([getString] returns only one occurrence — the first)
+     * so it does not silently drop the field-values a client split across
+     * lines.
+     *
+     * The common single-occurrence case allocates nothing (returns the
+     * memoised value `String`); only a genuinely repeated field builds the
+     * joined `String`.
+     *
+     * Not for singleton fields (`Content-Length`, `Host`, …) where repetition
+     * is a protocol error rather than a list — use [getString] there.
+     */
+    fun getCombined(name: CharSequence): String? {
+        if (slotCount == 0) return null
+        var firstIdx = -1
+        var joined: StringBuilder? = null
+        for (i in 0 until slotCount) {
+            if (!nameMatches(i, name)) continue
+            if (firstIdx < 0) {
+                firstIdx = i
+            } else {
+                val sb = joined ?: StringBuilder(valueStringOf(firstIdx)).also { joined = it }
+                sb.append(", ").append(valueStringOf(i))
+            }
+        }
+        return when {
+            firstIdx < 0 -> null
+            joined == null -> valueStringOf(firstIdx)
+            else -> joined.toString()
+        }
+    }
+
     operator fun contains(name: CharSequence): Boolean {
         if (slotCount == 0) return false
         val hash = caseInsensitiveHash(name)
