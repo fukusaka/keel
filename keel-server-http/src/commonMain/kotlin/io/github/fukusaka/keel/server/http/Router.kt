@@ -33,6 +33,16 @@ public class RouteMatch internal constructor(
      * has no parameters.
      */
     public val pathParameters: Map<String, String>,
+    /**
+     * True when the matched method × path carries content-negotiated
+     * handlers (any candidate declared `produces`), so the served
+     * representation depends on the request `Accept` header. The caller
+     * adds `Vary: Accept` to the response (RFC 9110 §12.5.5) so caches key
+     * on `Accept`. Set even when this particular request selected a
+     * no-`produces` catch-all, because a different `Accept` would have
+     * varied the result.
+     */
+    public val varyOnAccept: Boolean = false,
 )
 
 /**
@@ -382,7 +392,10 @@ public class Router {
         val handler = selectHandler(handlers[method], head, accept)
         val upgrade = upgrades.firstOrNull { it.predicate.acceptsOrNull(head) }?.protocol
         return if (handler != null || upgrade != null) {
-            RouteMatch(handler, upgrade, params.toMap())
+            // The resource negotiates on Accept iff a handler matched and
+            // this method × path declares any `produces` candidate.
+            val varyOnAccept = handler != null && handlers[method]?.any { it.produces != null } == true
+            RouteMatch(handler, upgrade, params.toMap(), varyOnAccept)
         } else {
             null
         }

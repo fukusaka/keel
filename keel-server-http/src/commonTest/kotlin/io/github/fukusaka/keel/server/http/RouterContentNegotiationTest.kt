@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequestHead
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -124,6 +125,40 @@ class RouterContentNegotiationTest {
         val resolution = router.resolve(HttpMethod.POST, "/data", headFor(HttpMethod.POST, "/data", "text/plain"))
         val methodNotAllowed = assertIs<RouteResolution.MethodNotAllowed>(resolution)
         assertTrue(HttpMethod.GET in methodNotAllowed.allowedMethods)
+    }
+
+    private fun Router.matchGet(path: String, accept: String? = null): RouteResolution.Matched =
+        assertIs(resolveGet(path, accept))
+
+    @Test
+    fun `a produces route reports varyOnAccept so the caller can add Vary Accept`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/data", produces = listOf("application/json"), handler = {})
+
+        assertTrue(router.matchGet("/data", "application/json").match.varyOnAccept)
+    }
+
+    @Test
+    fun `a route with no produces does not report varyOnAccept`() {
+        val router = Router()
+        router.register(HttpMethod.GET, "/plain", handler = {})
+
+        assertFalse(router.matchGet("/plain").match.varyOnAccept)
+    }
+
+    @Test
+    fun `varyOnAccept holds even when a catch-all on the same path is selected`() {
+        val json: RouteHandler = {}
+        val anyType: RouteHandler = {}
+        val router = Router()
+        router.register(HttpMethod.GET, "/data", produces = listOf("application/json"), handler = json)
+        router.register(HttpMethod.GET, "/data", handler = anyType) // catch-all (no produces)
+
+        // text/plain falls back to the catch-all, but the resource still
+        // varies on Accept (a different Accept would select json).
+        val matched = router.matchGet("/data", "text/plain")
+        assertSame(anyType, matched.match.handler)
+        assertTrue(matched.match.varyOnAccept)
     }
 
     @Test
