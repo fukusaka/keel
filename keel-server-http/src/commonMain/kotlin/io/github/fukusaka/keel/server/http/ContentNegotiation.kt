@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.codec.http.weightMillisOf
+
 /*
  * Server-driven content negotiation against the request `Accept` header
  * (RFC 9110 §12.5.1), backing the Router's `produces` best-match selection
@@ -45,7 +47,7 @@ internal fun parseAcceptHeader(value: String?): List<AcceptRange>? {
         // A subtype wildcard requires a type wildcard or a concrete type;
         // a concrete subtype under a wildcard type ("*/json") is invalid.
         if (type == WILDCARD && subtype != WILDCARD) continue
-        ranges.add(AcceptRange(type, subtype, parseQ(parts)))
+        ranges.add(AcceptRange(type, subtype, weightMillisOf(parts)))
     }
     return ranges
 }
@@ -106,19 +108,7 @@ private fun matchSpecificity(range: AcceptRange, type: String, subtype: String):
     else -> -1
 }
 
-/** Extracts the `q` parameter (scaled to milli, default 1000) from an Accept element's [parts]. */
-private fun parseQ(parts: List<String>): Int {
-    for (i in 1 until parts.size) {
-        val param = parts[i].trim()
-        if (!param.startsWith("q=", ignoreCase = true)) continue
-        val q = param.substring(2).trim().toDoubleOrNull() ?: continue
-        return (q.coerceIn(0.0, 1.0) * MILLI).toInt()
-    }
-    return MILLI
-}
-
 private const val WILDCARD = "*"
-private const val MILLI = 1000
 
 /**
  * Multiplier separating the quality band from the specificity band in a
