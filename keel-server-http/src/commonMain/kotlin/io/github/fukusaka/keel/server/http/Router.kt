@@ -280,7 +280,7 @@ public class Router {
      */
     public fun resolve(method: HttpMethod, path: String, head: HttpRequestHead): RouteResolution {
         val segments = segmentsOf(path)
-        val accept = parseAcceptHeader(head.headers.getString(HttpHeaderName.ACCEPT))
+        val accept = parseAcceptHeader(head.headers.getCombined(HttpHeaderName.ACCEPT))
         val matched = resolveNode(root, segments, 0, method, head, accept, HashMap())
         if (matched != null) return RouteResolution.Matched(matched)
         // 406 precedes 405/404: when the method's predicate-accepting

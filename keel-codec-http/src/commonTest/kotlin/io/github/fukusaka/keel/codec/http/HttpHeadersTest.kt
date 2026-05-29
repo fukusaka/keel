@@ -42,6 +42,35 @@ class HttpHeadersTest {
         assertEquals(emptyList(), HttpHeaders().getAll("Accept"))
     }
 
+    // --- getCombined ---
+
+    @Test
+    fun `getCombined returns the single value when present once`() {
+        val h = HttpHeaders().add("Accept", "text/html")
+        assertEquals("text/html", h.getCombined("accept"))
+    }
+
+    @Test
+    fun `getCombined joins multiple field lines in wire order`() {
+        val h = HttpHeaders()
+            .add("Accept", "text/html")
+            .add("Accept", "application/json;q=0.9")
+            .add("Accept", "*/*;q=0.1")
+        assertEquals("text/html, application/json;q=0.9, */*;q=0.1", h.getCombined("Accept"))
+    }
+
+    @Test
+    fun `getCombined returns null when absent`() {
+        assertEquals(null, HttpHeaders().getCombined("Accept"))
+        assertEquals(null, HttpHeaders().add("Host", "x").getCombined("Accept"))
+    }
+
+    @Test
+    fun `getCombined is case-insensitive on the field name`() {
+        val h = HttpHeaders().add("Accept-Encoding", "gzip").add("ACCEPT-ENCODING", "br")
+        assertEquals("gzip, br", h.getCombined("accept-encoding"))
+    }
+
     // --- set ---
 
     @Test
