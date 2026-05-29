@@ -50,9 +50,10 @@ public class CompressionRegistry {
      * The registered encoders with their priorities, for a negotiator to
      * enumerate (e.g. `keel-codec-http`'s `Accept-Encoding` selection).
      *
-     * Read-only snapshot view; registration is expected to be complete
-     * before the consuming pipeline starts (see the class thread-safety
-     * note). Each encoder's coding token is [Encoder.name].
+     * A read-only view over the registry's current contents (not a copy);
+     * registration is expected to be complete before the consuming
+     * pipeline starts (see the class thread-safety note), so the view is
+     * stable in practice. Each encoder's coding token is [Encoder.name].
      */
     public fun registeredEncoders(): Collection<RegisteredEncoder> = byName.values
 
