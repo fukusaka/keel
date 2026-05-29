@@ -131,6 +131,19 @@ class HttpServerHandlerTest {
         )
     }
 
+    /** Feeds a `GET` carrying two separate `Accept` header lines (list-based field split across lines). */
+    private fun feedWithTwoAccepts(path: String, accept1: String, accept2: String) {
+        channel.pipeline.notifyRead(
+            bufOf(
+                "GET $path HTTP/1.1\r\n" +
+                    "Host: localhost\r\n" +
+                    "Accept: $accept1\r\n" +
+                    "Accept: $accept2\r\n" +
+                    "\r\n",
+            ),
+        )
+    }
+
     /** Feeds a bodyless request with an arbitrary [method] (for method-mismatch tests). */
     private fun feedMethod(method: String, path: String) {
         channel.pipeline.notifyRead(
@@ -995,6 +1008,27 @@ class HttpServerHandlerTest {
         val text = responseText()
         assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
         assertTrue(text.endsWith("xml-body"), "expected the xml handler: $text")
+    }
+
+    @Test
+    fun `content negotiation reads media-ranges split across multiple Accept lines`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+                register(HttpMethod.GET, "/data", produces = listOf("application/xml")) { call ->
+                    call.respond(HttpResponse.ok("xml-body"))
+                }
+            },
+        )
+
+        // Two Accept lines: json at q=0.4 (first line), xml at q=0.9 (second).
+        // If only the first line were read, xml would be unacceptable and json
+        // would win; reading both (RFC 9110 §5.3) makes xml the best match.
+        feedWithTwoAccepts("/data", "application/json;q=0.4", "application/xml;q=0.9")
+
+        assertTrue(responseText().endsWith("xml-body"), "second Accept line must be honoured: ${responseText()}")
     }
 
     @Test

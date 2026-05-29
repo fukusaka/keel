@@ -85,7 +85,7 @@ public class CompressionHandler(
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is HttpRequestHead) {
-            acceptQueue.addLast(msg.headers.getString(HttpHeaderName.ACCEPT_ENCODING))
+            acceptQueue.addLast(msg.headers.getCombined(HttpHeaderName.ACCEPT_ENCODING))
         }
         ctx.propagateRead(msg)
     }

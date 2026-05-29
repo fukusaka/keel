@@ -80,6 +80,15 @@ class RoutePredicateTest {
     }
 
     @Test
+    fun `accept matches a range carried on a second Accept line`() {
+        // Accept is list-based (RFC 9110 §5.3): the predicate must see the
+        // range even when the client split it onto a second header line.
+        val predicate = accept("application/json")
+        val twoLines = HttpHeaders().add("Accept", "text/html").add("Accept", "application/json")
+        assertTrue(predicate.test(headFor("/x", twoLines)))
+    }
+
+    @Test
     fun `accept ignores a q-value parameter on the range`() {
         val predicate = accept("application/json")
         assertTrue(predicate.test(headFor("/x", HttpHeaders.of("Accept" to "application/json;q=0.8"))))

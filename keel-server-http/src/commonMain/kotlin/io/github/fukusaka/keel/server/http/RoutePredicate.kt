@@ -70,7 +70,7 @@ public fun accept(contentType: String): RoutePredicate {
     val wantedType = contentType.substringBefore('/').trim().lowercase()
     val wantedFull = contentType.trim().lowercase()
     return RoutePredicate { head ->
-        acceptMatches(head.headers.getString(HttpHeaderName.ACCEPT), wantedType, wantedFull)
+        acceptMatches(head.headers.getCombined(HttpHeaderName.ACCEPT), wantedType, wantedFull)
     }
 }
 
