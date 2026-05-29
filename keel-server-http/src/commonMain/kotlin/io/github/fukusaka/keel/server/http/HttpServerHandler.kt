@@ -272,7 +272,13 @@ internal class HttpServerHandler(
             if (draining) channel.close()
             return
         }
-        val call = Http1Call(head, ctx, queryParameters, match?.pathParameters ?: emptyMap())
+        val call = Http1Call(
+            head,
+            ctx,
+            queryParameters,
+            match?.pathParameters ?: emptyMap(),
+            varyOnAccept = match?.varyOnAccept == true,
+        )
         if (draining) call.markConnectionClose()
         inFlight = call
         connectionScope.launch(ctx.channel.ioDispatcher) {
@@ -447,11 +453,12 @@ internal class HttpServerHandler(
          * Builds a `406 Not Acceptable` response. The body lists the media
          * types the matched route can produce (RFC 9110 §15.5.7 suggests
          * the response include the available representations), comma-space
-         * joined and sorted for determinism.
+         * joined and sorted for determinism. Carries `Vary: Accept` — the
+         * 406 is itself an `Accept`-negotiation outcome (RFC 9110 §12.5.5).
          */
         fun notAcceptableResponse(producibleTypes: Set<String>): HttpResponse {
             val available = producibleTypes.sorted().joinToString(", ")
-            return HttpResponse.of(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable: $available")
+            return HttpResponse.of(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable: $available").withVaryAccept()
         }
 
         /**
@@ -487,6 +494,12 @@ internal class Http1Call(
     private val ctx: PipelineHandlerContext,
     override val queryParameters: QueryParameters,
     override val pathParameters: Map<String, String>,
+    /**
+     * When true, the matched route negotiates on `Accept` (router R-5), so
+     * this call's response is tagged `Vary: Accept` (RFC 9110 §12.5.5) for
+     * cache correctness. See [RouteMatch.varyOnAccept].
+     */
+    private val varyOnAccept: Boolean = false,
 ) : HttpCall {
 
     override val method: HttpMethod get() = head.method
@@ -606,7 +619,7 @@ internal class Http1Call(
         // The handler coroutine is launched on the channel's ioDispatcher
         // (the EventLoop itself), so this already runs on the owning
         // thread — no withContext hop needed.
-        ctx.propagateWriteAndFlush(if (connectionClose) response.withConnectionClose() else response)
+        ctx.propagateWriteAndFlush(decorate(response))
     }
 
     override suspend fun respondText(text: String, status: HttpStatus) {
@@ -618,9 +631,29 @@ internal class Http1Call(
         block: suspend (HttpResponseBodySink) -> Unit,
     ) {
         markResponded()
-        ctx.propagateWrite(if (connectionClose) head.withConnectionClose() else head)
+        ctx.propagateWrite(decorate(head))
         block(Http1ResponseBodySink(ctx))
         ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
+    }
+
+    /**
+     * Applies this call's response-header decorations — `Vary: Accept` when
+     * the route negotiates on `Accept`, then `Connection: close` while
+     * draining. Each is a no-op header copy when its flag is unset.
+     */
+    private fun decorate(response: HttpResponse): HttpResponse {
+        var out = response
+        if (varyOnAccept) out = out.withVaryAccept()
+        if (connectionClose) out = out.withConnectionClose()
+        return out
+    }
+
+    /** [decorate] for the streaming-response head. */
+    private fun decorate(head: HttpResponseHead): HttpResponseHead {
+        var out = head
+        if (varyOnAccept) out = out.withVaryAccept()
+        if (connectionClose) out = out.withConnectionClose()
+        return out
     }
 
     private fun markResponded() {
@@ -673,3 +706,36 @@ private fun HttpResponse.withConnectionClose(): HttpResponse =
 /** [HttpResponseHead] copy whose headers carry `Connection: close`. */
 private fun HttpResponseHead.withConnectionClose(): HttpResponseHead =
     copy(headers = headers.withConnectionClose())
+
+/** Field name added to / merged into `Vary` for `Accept`-negotiated responses. */
+private const val ACCEPT_FIELD = "Accept"
+
+/**
+ * Builds a copy of [headers] whose `Vary` lists `Accept`, merging with any
+ * existing `Vary`. A no-op (returns the same instance) when `Vary` already
+ * names `Accept` or is the catch-all `*`, so repeated decoration and a
+ * handler that set `Vary: Accept` itself do not duplicate the field.
+ */
+private fun HttpHeaders.withVaryAccept(): HttpHeaders {
+    val existing = getString(HttpHeaderName.VARY)
+    if (existing != null && existing.split(',').any {
+            val token = it.trim()
+            token == "*" || token.equals(ACCEPT_FIELD, ignoreCase = true)
+        }
+    ) {
+        return this
+    }
+    val merged = if (existing.isNullOrBlank()) ACCEPT_FIELD else "$existing, $ACCEPT_FIELD"
+    return HttpHeaders.build {
+        this@withVaryAccept.forEach { name, value -> add(name, value) }
+        set(HttpHeaderName.VARY, merged)
+    }
+}
+
+/** [HttpResponse] copy whose headers carry `Vary: Accept`. */
+private fun HttpResponse.withVaryAccept(): HttpResponse =
+    copy(headers = headers.withVaryAccept())
+
+/** [HttpResponseHead] copy whose headers carry `Vary: Accept`. */
+private fun HttpResponseHead.withVaryAccept(): HttpResponseHead =
+    copy(headers = headers.withVaryAccept())

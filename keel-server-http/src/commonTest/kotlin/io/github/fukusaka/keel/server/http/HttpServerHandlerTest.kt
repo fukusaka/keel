@@ -1017,6 +1017,84 @@ class HttpServerHandlerTest {
         // The body lists the producible types so the client can renegotiate.
         assertTrue(text.contains("application/json"), "producible json: $text")
         assertTrue(text.contains("application/xml"), "producible xml: $text")
+        // A 406 is an Accept-negotiation outcome, so it carries Vary: Accept.
+        assertTrue(text.contains("vary: accept", ignoreCase = true), "expected Vary: Accept: $text")
+    }
+
+    @Test
+    fun `a content-negotiated response carries Vary Accept`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+                register(HttpMethod.GET, "/data", produces = listOf("application/xml")) { call ->
+                    call.respond(HttpResponse.ok("xml-body"))
+                }
+            },
+        )
+
+        feedWithAccept("/data", "application/json")
+
+        val text = responseText()
+        assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.contains("vary: accept", ignoreCase = true), "expected Vary: Accept: $text")
+    }
+
+    @Test
+    fun `a content-negotiated response carries Vary Accept even with no Accept header`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    call.respond(HttpResponse.ok("json-body"))
+                }
+            },
+        )
+
+        // No Accept header: produces is ignored for selection, but the
+        // resource still varies on Accept, so the response advertises it.
+        feedGet("/data")
+
+        assertTrue(responseText().contains("vary: accept", ignoreCase = true), "expected Vary: Accept: ${responseText()}")
+    }
+
+    @Test
+    fun `a non-negotiated response does not carry Vary Accept`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/plain") { call -> call.respond(HttpResponse.ok("ok")) }
+            },
+        )
+
+        feedGet("/plain")
+
+        assertFalse(responseText().contains("vary: accept", ignoreCase = true), "unexpected Vary: Accept: ${responseText()}")
+    }
+
+    @Test
+    fun `Vary Accept merges with a Vary the handler already set`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    val base = HttpResponse.of(HttpStatus.OK, "json-body")
+                    val withVary = base.copy(
+                        headers = HttpHeaders.build {
+                            base.headers.forEach { name, value -> add(name, value) }
+                            set(HttpHeaderName.VARY, "Accept-Encoding")
+                        },
+                    )
+                    call.respond(withVary)
+                }
+            },
+        )
+
+        feedWithAccept("/data", "application/json")
+
+        val vary = responseText().lineSequence()
+            .firstOrNull { it.startsWith("Vary:", ignoreCase = true) }
+            ?: error("no Vary header: ${responseText()}")
+        assertTrue(vary.contains("Accept-Encoding", ignoreCase = true), "keeps the handler's Vary: $vary")
+        assertTrue(Regex("(^|[,\\s])Accept($|[,\\s])").containsMatchIn(vary), "adds Accept as a distinct field: $vary")
     }
 
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
