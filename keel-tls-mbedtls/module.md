@@ -22,6 +22,21 @@ MbedTlsCodecFactory          [stateless; no shared SSL_CTX]
 
 Future optimization: cache `mbedtls_ssl_config` per `TlsConfig` for reuse across connections.
 
+## Build requirement: MBEDTLS_THREADING_C
+
+This backend requires the linked Mbed TLS to be built with the threading
+abstraction layer enabled (`MBEDTLS_THREADING_C` + `MBEDTLS_THREADING_PTHREAD`).
+Mbed TLS defaults it off, leaving the PSA Crypto global key store unguarded;
+keel runs per-connection codecs across multiple EventLoop threads, so
+concurrent `mbedtls_ssl_setup` / handshake / free then race in PSA and corrupt
+the process heap under load. With threading enabled, Mbed TLS guards that
+shared state with internal mutexes.
+
+keel's `scripts/install-mbedtls.sh` (used by CI and host provisioning) enables
+it via `scripts/config.py set MBEDTLS_THREADING_C` before the build; Homebrew's
+`mbedtls` formula enables it too. A distro / hand-built Mbed TLS installed with
+the default config is **not** safe for keel's concurrent use.
+
 ## Certificate Sources
 
 Supported `TlsCertificateSource` variants:

@@ -22,19 +22,28 @@ check_installed() {
     return 0
 }
 
-# Skip if already installed at the expected version.
-if pkg-config --exists mbedtls 2>/dev/null; then
+# Force a rebuild even if the expected version is already installed.
+# The version-based skip / cache-restore below only compares the version
+# string, not the *build configuration* — so a host that already has this
+# version but built with a different config (e.g. MBEDTLS_THREADING_C off)
+# would otherwise be skipped. Set MBEDTLS_FORCE=1 to rebuild from source
+# and overwrite the install regardless.
+FORCE="${MBEDTLS_FORCE:-}"
+
+# Skip if already installed at the expected version (unless forced).
+if [ -z "$FORCE" ] && pkg-config --exists mbedtls 2>/dev/null; then
     installed=$(pkg-config --modversion mbedtls 2>/dev/null || true)
     if [ "$installed" = "$MBEDTLS_VERSION" ] && check_installed; then
-        echo "Mbed TLS $MBEDTLS_VERSION already installed — skipping."
+        echo "Mbed TLS $MBEDTLS_VERSION already installed — skipping (set MBEDTLS_FORCE=1 to rebuild)."
         exit 0
     fi
 fi
 
 CACHE_DIR="${MBEDTLS_CACHE_DIR:-}"
 
-# Validate and restore from cache.
-if [ -n "$CACHE_DIR" ] && [ -f "${CACHE_DIR}/version.txt" ]; then
+# Validate and restore from cache (unless forced — a cache built before a
+# config change would otherwise mask the rebuild).
+if [ -z "$FORCE" ] && [ -n "$CACHE_DIR" ] && [ -f "${CACHE_DIR}/version.txt" ]; then
     cached_version=$(cat "${CACHE_DIR}/version.txt")
     # Validate that cache contains expected libraries before restoring.
     cache_valid=true
@@ -70,6 +79,18 @@ echo "${MBEDTLS_SHA256}  ${WORKDIR}/${TARBALL}" | sha256sum -c -
 
 echo "Extracting..."
 tar xjf "${WORKDIR}/${TARBALL}" -C "$WORKDIR"
+
+# Enable the threading abstraction layer (pthread). Mbed TLS defaults
+# MBEDTLS_THREADING_C off, leaving the PSA Crypto global key store
+# unguarded — concurrent mbedtls_ssl_setup / handshake / free across
+# threads (keel's per-connection codecs on multiple EventLoop threads)
+# then race in PSA and corrupt the heap (K53; deterministic on many-core
+# hosts). Enabling threading makes PSA's shared state mutex-guarded, which
+# keel's multi-threaded server use requires. config.py edits
+# include/mbedtls/mbedtls_config.h in place before the cmake configure.
+echo "Enabling MBEDTLS_THREADING_C + MBEDTLS_THREADING_PTHREAD..."
+python3 "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}/scripts/config.py" set MBEDTLS_THREADING_C
+python3 "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}/scripts/config.py" set MBEDTLS_THREADING_PTHREAD
 
 echo "Building..."
 cmake -S "${WORKDIR}/mbedtls-${MBEDTLS_VERSION}" -B "${WORKDIR}/build" \
