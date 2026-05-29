@@ -1097,6 +1097,65 @@ class HttpServerHandlerTest {
         assertTrue(Regex("(^|[,\\s])Accept($|[,\\s])").containsMatchIn(vary), "adds Accept as a distinct field: $vary")
     }
 
+    @Test
+    fun `Vary Accept merges multiple Vary lines into one without dropping fields`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    val base = HttpResponse.of(HttpStatus.OK, "json-body")
+                    // Two distinct Vary lines — list-based field, so equivalent
+                    // to one comma-joined line (RFC 9110 §5.3 / §12.5.5).
+                    val withVary = base.copy(
+                        headers = HttpHeaders.build {
+                            base.headers.forEach { name, value -> add(name, value) }
+                            add(HttpHeaderName.VARY, "Accept-Encoding")
+                            add(HttpHeaderName.VARY, "Cookie")
+                        },
+                    )
+                    call.respond(withVary)
+                }
+            },
+        )
+
+        feedWithAccept("/data", "application/json")
+
+        val varyLines = responseText().lineSequence()
+            .filter { it.startsWith("Vary:", ignoreCase = true) }
+            .toList()
+        // Collapsed to a single combined line that keeps both original
+        // field-names and adds Accept — none dropped.
+        assertEquals(1, varyLines.size, "Vary collapsed to one line: ${responseText()}")
+        val vary = varyLines.single()
+        assertTrue(vary.contains("Accept-Encoding", ignoreCase = true), "keeps Accept-Encoding: $vary")
+        assertTrue(vary.contains("Cookie", ignoreCase = true), "keeps Cookie: $vary")
+        assertTrue(Regex("(^|[,\\s])Accept($|[,\\s])").containsMatchIn(vary), "adds Accept: $vary")
+    }
+
+    @Test
+    fun `Vary star is left untouched since it already subsumes Accept`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/data", produces = listOf("application/json")) { call ->
+                    val base = HttpResponse.of(HttpStatus.OK, "json-body")
+                    val withVary = base.copy(
+                        headers = HttpHeaders.build {
+                            base.headers.forEach { name, value -> add(name, value) }
+                            set(HttpHeaderName.VARY, "*")
+                        },
+                    )
+                    call.respond(withVary)
+                }
+            },
+        )
+
+        feedWithAccept("/data", "application/json")
+
+        val vary = responseText().lineSequence()
+            .firstOrNull { it.startsWith("Vary:", ignoreCase = true) }
+            ?: error("no Vary header: ${responseText()}")
+        assertEquals("Vary: *", vary.trimEnd(), "`*` subsumes Accept, so it is left as-is: $vary")
+    }
+
     /** An [UpgradeProtocol] test double that records its dispatch and replies. */
     private class RecordingUpgrade(override val name: String) : UpgradeProtocol {
         var invoked: Boolean = false

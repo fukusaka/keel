@@ -712,22 +712,27 @@ private const val ACCEPT_FIELD = "Accept"
 
 /**
  * Builds a copy of [headers] whose `Vary` lists `Accept`, merging with any
- * existing `Vary`. A no-op (returns the same instance) when `Vary` already
- * names `Accept` or is the catch-all `*`, so repeated decoration and a
- * handler that set `Vary: Accept` itself do not duplicate the field.
+ * existing `Vary`.
+ *
+ * `Vary` is a list-based field (RFC 9110 §12.5.5, `#( "*" / field-name )`),
+ * so multiple `Vary` lines are equivalent to one comma-joined line
+ * (§5.3): every `Vary` line is gathered via [HttpHeaders.getAll] and the
+ * union of field-names is collapsed into a single combined line plus
+ * `Accept`. A no-op (returns the same instance) when the union already
+ * names `Accept`, or contains `*` (which subsumes every field-name, so
+ * adding `Accept` is meaningless) — so repeated decoration and a handler
+ * that set `Vary` itself do not duplicate or override the field.
  */
 private fun HttpHeaders.withVaryAccept(): HttpHeaders {
-    val existing = getString(HttpHeaderName.VARY)
-    if (existing != null && existing.split(',').any {
-            val token = it.trim()
-            token == "*" || token.equals(ACCEPT_FIELD, ignoreCase = true)
-        }
-    ) {
-        return this
-    }
-    val merged = if (existing.isNullOrBlank()) ACCEPT_FIELD else "$existing, $ACCEPT_FIELD"
+    val tokens = getAll(HttpHeaderName.VARY)
+        .flatMap { it.split(',') }
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    if (tokens.any { it == "*" || it.equals(ACCEPT_FIELD, ignoreCase = true) }) return this
+    val merged = (tokens + ACCEPT_FIELD).joinToString(", ")
     return HttpHeaders.build {
         this@withVaryAccept.forEach { name, value -> add(name, value) }
+        // `set` removes all existing `Vary` lines, then adds the combined one.
         set(HttpHeaderName.VARY, merged)
     }
 }
