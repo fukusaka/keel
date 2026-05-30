@@ -66,6 +66,7 @@ build_engine_list() {
     JS_BIN="benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js"
     if [ -f "$JS_BIN" ]; then
         engines+=("js:pipeline-http-nodejs|node ${JS_BIN} --engine=pipeline-http-nodejs --port=${PORT}")
+        engines+=("js:server-http-nodejs|node ${JS_BIN} --engine=server-http-nodejs --port=${PORT}")
     fi
 
     # Cross-language reference servers
@@ -97,14 +98,14 @@ build_engine_list() {
             NATIVE_BIN="benchmark/build/bin/macosX64/releaseExecutable/benchmark.kexe"
         fi
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-cio-keel-kqueue ktor-keel-kqueue pipeline-http-kqueue ktor-cio-keel-nwconnection ktor-keel-nwconnection pipeline-http-nwconnection ktor-cio; do
+            for engine in ktor-cio-keel-kqueue ktor-keel-kqueue pipeline-http-kqueue server-http-kqueue ktor-cio-keel-nwconnection ktor-keel-nwconnection pipeline-http-nwconnection server-http-nwconnection ktor-cio; do
                 engines+=("native:${engine}|${NATIVE_BIN} --engine=${engine} --port=${PORT}")
             done
         fi
     elif [ "$(uname)" = "Linux" ]; then
         NATIVE_BIN="benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
         if [ -f "$NATIVE_BIN" ]; then
-            for engine in ktor-cio-keel-epoll ktor-keel-epoll pipeline-http-epoll ktor-cio-keel-io-uring ktor-keel-io-uring pipeline-http-io-uring ktor-cio; do
+            for engine in ktor-cio-keel-epoll ktor-keel-epoll pipeline-http-epoll server-http-epoll ktor-cio-keel-io-uring ktor-keel-io-uring pipeline-http-io-uring server-http-io-uring ktor-cio; do
                 engines+=("native:${engine}|${NATIVE_BIN} --engine=${engine} --port=${PORT}")
             done
         fi
@@ -114,7 +115,7 @@ build_engine_list() {
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
         JVM_CP=$(cat "$JVM_CP_FILE")
-        for engine in ktor-keel-nio pipeline-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
+        for engine in ktor-keel-nio pipeline-http-nio server-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty server-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
             engines+=("jvm:${engine}|java -cp ${JVM_CP} io.github.fukusaka.keel.benchmark.JvmMainKt --engine=${engine} --port=${PORT}")
         done
     fi

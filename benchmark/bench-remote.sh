@@ -83,6 +83,11 @@ REMOTE_HOST="$BENCH_REMOTE_HOST"
 CLIENT_HOST="$BENCH_CLIENT_HOST"
 WORKDIR="${BENCH_REMOTE_WORKDIR:-~/prj/keel-work/keel}"
 SERVER_IP="${BENCH_SERVER_IP:-$REMOTE_HOST}"
+# Probe the server host OS once so the port-management commands pick the right
+# tool: Linux has `fuser` / `ss`, macOS has neither (use `lsof`). Override via
+# BENCH_REMOTE_OS to skip the probe ssh round-trip. Defaults to Linux when the
+# probe fails so existing Linux-server runs are unaffected.
+REMOTE_OS="${BENCH_REMOTE_OS:-$(ssh -n "$REMOTE_HOST" uname 2>/dev/null || echo Linux)}"
 WRK_MODE="${BENCH_WRK_MODE:-auto}"
 WRK_DOCKER_IMAGE="${BENCH_WRK_DOCKER_IMAGE:-williamyeh/wrk:latest}"
 
@@ -164,11 +169,15 @@ run_wrk() {
 # --- Server lifecycle on the remote host ---
 
 kill_server() {
-    # Kill by port binding. `fuser` is widely available on Linux server hosts.
-    # Redirect stdout too — `fuser -k` prints matched PIDs on stdout, and
-    # leaking them into the script's stdout would corrupt the parsed
-    # benchmark output line.
-    ssh -n "$REMOTE_HOST" "fuser -k ${PORT}/tcp >/dev/null 2>&1 || true"
+    # Kill whatever holds the bench port. Redirect stdout — both `fuser -k`
+    # and `lsof -t` print PIDs there, and leaking them into the script's
+    # stdout would corrupt the parsed benchmark output line.
+    if [ "$REMOTE_OS" = "Darwin" ]; then
+        # macOS server: no `fuser` — resolve the listener PID via `lsof`.
+        ssh -n "$REMOTE_HOST" "lsof -ti tcp:${PORT} 2>/dev/null | xargs kill 2>/dev/null || true"
+    else
+        ssh -n "$REMOTE_HOST" "fuser -k ${PORT}/tcp >/dev/null 2>&1 || true"
+    fi
     sleep 1
 }
 
@@ -193,8 +202,15 @@ start_server() {
 }
 
 wait_for_ready() {
+    # Listener probe differs by OS: Linux `ss`, macOS `lsof` (no `ss`).
+    local listen_check
+    if [ "$REMOTE_OS" = "Darwin" ]; then
+        listen_check="lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1"
+    else
+        listen_check="ss -lnt | grep -q ':${PORT}\b'"
+    fi
     for _ in $(seq 1 "$READY_TIMEOUT"); do
-        if ssh -n "$REMOTE_HOST" "ss -lnt | grep -q ':${PORT}\b'"; then
+        if ssh -n "$REMOTE_HOST" "$listen_check"; then
             return 0
         fi
         sleep 1
