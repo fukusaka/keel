@@ -95,8 +95,18 @@ internal class WsFrameAggregator(
     /** Opcode of the message in progress, or null when none is open. */
     private var messageOpcode: WsOpcode? = null
 
-    /** Accumulated payload of the message in progress. */
-    private var buffer = ByteArray(0)
+    /**
+     * Fragments of the message in progress, kept as separate chunks and
+     * joined once on the final frame ([joinChunks]). Appending a reference
+     * here is O(1); the previous `accumulated += payload` per frame was
+     * O(n²) — a 1 MiB message split into 256 × 4 KiB frames copied ~131 MiB
+     * and dominated large-message CPU. The single join at completion copies
+     * each byte exactly once.
+     */
+    private val chunks = ArrayList<ByteArray>()
+
+    /** Running total of [chunks] sizes, for the [checkSize] cap. */
+    private var bufferedSize = 0
 
     /**
      * RSV1 bit of the message's opening frame — true when the message
@@ -146,7 +156,11 @@ internal class WsFrameAggregator(
         } else {
             messageOpcode = frame.opcode
             messageCompressed = frame.rsv1
-            buffer = frame.payload.copyOf()
+            // The decoder hands each frame a freshly-allocated payload, so
+            // retaining the reference (no copy) is safe — the join at
+            // completion is the only copy.
+            chunks.add(frame.payload)
+            bufferedSize = frame.payload.size
             WsAggregateResult.Incomplete
         }
     }
@@ -154,14 +168,15 @@ internal class WsFrameAggregator(
     private fun feedContinuation(frame: WsFrame): WsAggregateResult {
         val opcode = messageOpcode
             ?: return protocolError("CONTINUATION frame with no message in progress")
-        val sizeError = checkSize(buffer.size.toLong() + frame.payload.size)
+        val sizeError = checkSize(bufferedSize.toLong() + frame.payload.size)
         if (sizeError != null) {
             reset()
             return sizeError
         }
-        buffer += frame.payload
+        chunks.add(frame.payload)
+        bufferedSize += frame.payload.size
         return if (frame.fin) {
-            val payload = buffer
+            val payload = joinChunks()
             val compressed = messageCompressed
             reset()
             completeMessage(opcode, payload, compressed)
@@ -238,7 +253,23 @@ internal class WsFrameAggregator(
     private fun reset() {
         messageOpcode = null
         messageCompressed = false
-        buffer = ByteArray(0)
+        chunks.clear()
+        bufferedSize = 0
+    }
+
+    /**
+     * Concatenates [chunks] into one contiguous payload, copying each byte
+     * exactly once. Called once per completed fragmented message.
+     */
+    private fun joinChunks(): ByteArray {
+        if (chunks.size == 1) return chunks[0]
+        val joined = ByteArray(bufferedSize)
+        var offset = 0
+        for (chunk in chunks) {
+            chunk.copyInto(joined, offset)
+            offset += chunk.size
+        }
+        return joined
     }
 
     companion object {
