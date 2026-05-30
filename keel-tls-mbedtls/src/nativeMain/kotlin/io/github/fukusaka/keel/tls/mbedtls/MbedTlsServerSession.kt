@@ -102,9 +102,24 @@ internal class MbedTlsServerSession(
     private val refCount = AtomicInt(1)
 
     init {
+        // Init all three native structs up front so the construction-failure
+        // cleanup ([freeNative]) can always free them safely (Mbed TLS' *_free
+        // tolerate an init-but-not-fully-configured struct). Any throw below —
+        // a malformed cert / key / CA PEM, or an unsupported trustAnchors —
+        // would otherwise leak these nativeHeap allocations, since a failed
+        // constructor never reaches [release].
         mbedtls_x509_crt_init(srvcert.ptr)
         mbedtls_pk_init(pkey.ptr)
+        mbedtls_ssl_config_init(conf.ptr)
+        try {
+            configure(config, isServer)
+        } catch (e: Throwable) {
+            freeNative()
+            throw e
+        }
+    }
 
+    private fun configure(config: TlsConfig, isServer: Boolean) {
         val certSource = config.certificates
         if (certSource is TlsCertificateSource.Pem || certSource is TlsCertificateSource.Der) {
             val pem = certSource.asPem()
@@ -112,7 +127,6 @@ internal class MbedTlsServerSession(
             parsePemKey(pem.privateKeyPem)
         }
 
-        mbedtls_ssl_config_init(conf.ptr)
         val endpoint = if (isServer) MBEDTLS_SSL_IS_SERVER else MBEDTLS_SSL_IS_CLIENT
         checkMbedTls(
             mbedtls_ssl_config_defaults(
@@ -228,18 +242,25 @@ internal class MbedTlsServerSession(
     fun release() {
         val remaining = refCount.decrementAndGet()
         check(remaining >= 0) { "release() under-balanced MbedTlsServerSession" }
-        if (remaining == 0) {
-            mbedtls_ssl_config_free(conf.ptr)
-            mbedtls_x509_crt_free(srvcert.ptr)
-            mbedtls_pk_free(pkey.ptr)
-            cacert?.let {
-                mbedtls_x509_crt_free(it.ptr)
-                nativeHeap.free(it.rawPtr)
-            }
-            nativeHeap.free(conf.rawPtr)
-            nativeHeap.free(srvcert.rawPtr)
-            nativeHeap.free(pkey.rawPtr)
+        if (remaining == 0) freeNative()
+    }
+
+    /**
+     * Frees every native struct this session owns. Called either when the
+     * last reference is released, or from the constructor's failure path
+     * (see [configure]) so a partially-built session does not leak.
+     */
+    private fun freeNative() {
+        mbedtls_ssl_config_free(conf.ptr)
+        mbedtls_x509_crt_free(srvcert.ptr)
+        mbedtls_pk_free(pkey.ptr)
+        cacert?.let {
+            mbedtls_x509_crt_free(it.ptr)
+            nativeHeap.free(it.rawPtr)
         }
+        nativeHeap.free(conf.rawPtr)
+        nativeHeap.free(srvcert.rawPtr)
+        nativeHeap.free(pkey.rawPtr)
     }
 
     private fun parsePemCert(target: mbedtls_x509_crt, pem: String) {

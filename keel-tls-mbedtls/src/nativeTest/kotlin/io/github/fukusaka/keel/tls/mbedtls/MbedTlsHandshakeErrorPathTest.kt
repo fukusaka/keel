@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsResult
+import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
 import kotlin.test.Test
@@ -96,6 +97,17 @@ class MbedTlsHandshakeErrorPathTest {
 
         client.close()
         server.close()
+    }
+
+    @Test
+    fun `SystemDefault trustAnchors is rejected on the Mbed TLS backend`() {
+        // Mbed TLS has no portable system trust store, so SystemDefault must
+        // fail fast at codec creation rather than silently mis-verify.
+        assertFailsWith<TlsException>("SystemDefault must be rejected on Mbed TLS") {
+            factory.createServerCodec(
+                TlsConfig(certificates = serverCerts, trustAnchors = TlsTrustSource.SystemDefault),
+            )
+        }
     }
 
     // --- In-memory handshake pump (mirrors JsseHandshakeErrorPathTest) ---
