@@ -31,7 +31,11 @@ import kotlinx.cinterop.rawValue
  *
  * **Buffer exhaustion**: if all buffers are consumed and the ring is empty,
  * the kernel returns `-ENOBUFS` in the CQE and terminates the multi-shot SQE.
- * The caller must re-arm the multi-shot recv after recycling buffers.
+ * The caller must re-arm the multi-shot recv **after** recycling buffers, not
+ * immediately — re-arming on an empty ring just re-triggers `-ENOBUFS` and
+ * busy-loops the EventLoop. A starved transport registers a re-arm via
+ * [requestRearmOnAvailable]; [returnBuffer] fires those callbacks once a
+ * buffer is back in the ring.
  *
  * @param eventLoop Owning EventLoop. Provides ring pointer and thread-affinity assertion target.
  * @param logger Logger for warn-level diagnostics.
@@ -67,6 +71,15 @@ internal class ProvidedBufferRing(
     // Guards [close] against a double `nativeHeap.free(basePtr)`: freeing
     // the same native allocation twice is undefined behaviour.
     private var closed = false
+
+    // Re-arm callbacks for multishot recvs that terminated with `-ENOBUFS`
+    // while this shared ring was empty. Drained — each invoked exactly once —
+    // the next time a buffer is returned (see [returnBuffer]). One ring is
+    // shared by every connection on the owning EventLoop, so a single buffer
+    // return may need to re-arm several starved transports. EventLoop-thread
+    // only (both [returnBuffer] and [requestRearmOnAvailable] run there), so
+    // no synchronisation is needed.
+    private val pendingRearm = ArrayList<() -> Unit>()
 
     init {
         check(bufferCount > 0 && (bufferCount and (bufferCount - 1)) == 0) {
@@ -114,6 +127,34 @@ internal class ProvidedBufferRing(
         val handle = bufRing ?: error("ProvidedBufferRing not yet initialised")
         bufferRingOps.addBuffer(handle, (basePtr + bufId * bufferSize)!!, bufferSize, bid = bufId, offset = 0)
         bufferRingOps.advance(handle, 1)
+        // A buffer is now available again — re-arm any recvs that gave up on
+        // `-ENOBUFS`. Snapshot + clear before invoking: a re-arm that hits
+        // `-ENOBUFS` again immediately re-registers, and must land in a fresh
+        // list rather than the one being iterated. Allocation only happens on
+        // the recovery path (the list is empty in steady state).
+        if (pendingRearm.isNotEmpty()) {
+            val toRearm = pendingRearm.toTypedArray()
+            pendingRearm.clear()
+            for (rearm in toRearm) rearm()
+        }
+    }
+
+    /**
+     * Registers a [rearm] callback to run the next time a buffer is returned
+     * to this ring (see [returnBuffer]).
+     *
+     * Called by a transport when its multishot recv terminated with
+     * `-ENOBUFS`: re-arming immediately would busy-loop because the kernel
+     * keeps re-issuing `-ENOBUFS` for as long as the ring stays empty,
+     * burning 100% of the EventLoop. Deferring the re-arm until a buffer is
+     * actually available breaks that loop. The callback fires at most once
+     * per registration; a still-starved transport re-registers from inside
+     * its own re-arm.
+     *
+     * Must be called on the owning EventLoop pthread.
+     */
+    fun requestRearmOnAvailable(rearm: () -> Unit) {
+        pendingRearm.add(rearm)
     }
 
     /**

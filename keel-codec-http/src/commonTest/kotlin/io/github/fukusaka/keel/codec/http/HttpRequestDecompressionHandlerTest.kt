@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -94,6 +95,77 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals("hello", decodedBytes)
 
         assertNotNull(state.reads.last() as? HttpBodyEnd)
+    }
+
+    // -------------------------------------------------- recv-buffer release (K62)
+
+    // Builds a pooled HttpHeaders whose single `Content-Encoding` entry is a
+    // zero-copy range view over [backing], mirroring a decoder-sourced head.
+    // [backing] is retained by addRange; the headers' `release()` balances it.
+    private fun rangeBackedEncodingHeaders(encoding: String, backing: IoBuf): HttpHeaders {
+        val name = "Content-Encoding"
+        val hash = HttpHeaders.caseInsensitiveHashOfBuf(backing, 0, name.length)
+        return HttpHeaders.borrow().addRange(backing, hash, 0, name.length, name.length, encoding.length)
+    }
+
+    private fun encodingBuffer(encoding: String): IoBuf {
+        val bytes = ("Content-Encoding" + encoding).encodeToByteArray()
+        // Power-of-two capacity so HttpHeaders.addRange takes the zero-copy
+        // retain path — for a non-power-of-two buffer it materialises the
+        // value to a String and retains nothing, which would make the recv
+        // buffer release impossible to observe (a vacuous test).
+        var cap = 1
+        while (cap < bytes.size) cap = cap shl 1
+        val buf = DefaultAllocator.allocate(cap)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
+    @Test
+    fun `streaming decode releases the original head headers buffer at body end`() {
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        // Decoder-sourced head: its headers retain `backing` behind a range
+        // view. The handler rewrites the head with a buffer-free copy, so
+        // nothing downstream releases the original — the handler must, or one
+        // recv buffer leaks per request (K62: io_uring's fixed provided-buffer
+        // ring drains and wedges the EventLoop in an -ENOBUFS storm).
+        val backing = encodingBuffer("lower")
+        val headers = rangeBackedEncodingHeaders("lower", backing) // refCount 2 (alloc + addRange)
+        handler.onRead(ctx, HttpRequestHead(HttpMethod.POST, "/upload", headers = headers))
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+
+        // Mid-request the buffer must stay retained: streaming body chunks may
+        // still alias it, so releasing the head's headers early would recycle
+        // bytes the decoder has not yet decoded.
+        assertFalse(backing.release(), "head buffer must stay retained until HttpBodyEnd")
+        backing.retain() // undo the probe decrement
+
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        // After HttpBodyEnd the handler has released the original headers,
+        // dropping their retain — the test's own reference is now the last one.
+        assertTrue(backing.release(), "head buffer must be released after HttpBodyEnd")
+    }
+
+    @Test
+    fun `aggregated decode releases the original request headers buffer`() {
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        val backing = encodingBuffer("lower")
+        val headers = rangeBackedEncodingHeaders("lower", backing)
+        handler.onRead(
+            ctx,
+            HttpRequest(HttpMethod.POST, "/upload", headers = headers, body = "HELLO".encodeToByteArray()),
+        )
+
+        // The aggregated body is a self-contained ByteArray, so the buffer is
+        // released immediately after the rewrite — only the test's ref remains.
+        assertTrue(backing.release(), "request buffer must be released after aggregated decode")
     }
 
     @Test
