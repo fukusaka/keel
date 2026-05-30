@@ -81,6 +81,19 @@ internal class ProvidedBufferRing(
     // no synchronisation is needed.
     private val pendingRearm = ArrayList<() -> Unit>()
 
+    // Best-effort count of buffers currently sitting in the kernel ring (i.e.
+    // returned and not yet handed to a recv CQE). Used to decide, on `-ENOBUFS`,
+    // whether a re-arm can succeed *now*: when a single read delivery is larger
+    // than the whole ring (e.g. a ~1 MiB WebSocket frame vs a 512 KiB ring) the
+    // kernel fills + reports every buffer and raises `-ENOBUFS` all within one
+    // CQE batch, and the application returns those buffers *before* the
+    // `-ENOBUFS` CQE is processed — so the [returnBuffer]-triggered re-arm has
+    // no later return to fire it and the recv stalls forever. Re-arming
+    // immediately when [hasAvailable] is true avoids that stall without
+    // reintroducing the busy-loop (we only re-arm when buffers are genuinely
+    // back in the ring). EventLoop-thread only.
+    private var available = 0
+
     init {
         check(bufferCount > 0 && (bufferCount and (bufferCount - 1)) == 0) {
             "bufferCount must be a power of 2, got $bufferCount"
@@ -108,6 +121,7 @@ internal class ProvidedBufferRing(
             bufferRingOps.addBuffer(handle, (basePtr + i * bufferSize)!!, bufferSize, bid = i, offset = i)
         }
         bufferRingOps.advance(handle, bufferCount)
+        available = bufferCount
     }
 
     /**
@@ -127,6 +141,7 @@ internal class ProvidedBufferRing(
         val handle = bufRing ?: error("ProvidedBufferRing not yet initialised")
         bufferRingOps.addBuffer(handle, (basePtr + bufId * bufferSize)!!, bufferSize, bid = bufId, offset = 0)
         bufferRingOps.advance(handle, 1)
+        available++
         // A buffer is now available again — re-arm any recvs that gave up on
         // `-ENOBUFS`. Snapshot + clear before invoking: a re-arm that hits
         // `-ENOBUFS` again immediately re-registers, and must land in a fresh
@@ -156,6 +171,25 @@ internal class ProvidedBufferRing(
     fun requestRearmOnAvailable(rearm: () -> Unit) {
         pendingRearm.add(rearm)
     }
+
+    /**
+     * Records that the kernel handed one buffer to a multishot recv CQE — the
+     * buffer has left the ring until the application returns it via
+     * [returnBuffer]. Called once per `res > 0` recv CQE so [hasAvailable]
+     * tracks the ring's current occupancy. Clamped at zero so a miscount can
+     * never drive [available] negative. Must run on the owning EventLoop pthread.
+     */
+    fun onConsumed() {
+        if (available > 0) available--
+    }
+
+    /**
+     * True when at least one buffer currently sits in the ring (returned and
+     * not yet selected by the kernel). A transport whose multishot recv hit
+     * `-ENOBUFS` re-arms immediately when this is true rather than deferring to
+     * [requestRearmOnAvailable] — see [available].
+     */
+    val hasAvailable: Boolean get() = available > 0
 
     /**
      * Unregisters the buffer ring from the kernel and frees all memory.

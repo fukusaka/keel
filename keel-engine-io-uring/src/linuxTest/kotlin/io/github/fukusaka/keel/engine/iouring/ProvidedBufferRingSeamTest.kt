@@ -7,6 +7,7 @@ import platform.posix.ENOMEM
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -174,6 +175,49 @@ class ProvidedBufferRingSeamTest {
             assertEquals(1, fired, "re-registration must defer to the next return")
             ring.returnBuffer(bufId = 0)
             assertEquals(2, fired)
+        }
+    }
+
+    // --- buffer availability tracking (large-frame re-arm) ---
+
+    @Test
+    fun `hasAvailable tracks ring occupancy via onConsumed and returnBuffer`() {
+        withRing(FakeIoUringBufferRingOps(), bufferCount = 4) { ring ->
+            ring.initOnEventLoop()
+            assertTrue(ring.hasAvailable, "all buffers available after init")
+            repeat(4) { ring.onConsumed() }
+            assertFalse(ring.hasAvailable, "ring empty after every buffer consumed")
+            ring.returnBuffer(bufId = 0)
+            assertTrue(ring.hasAvailable, "available again after a buffer is returned")
+        }
+    }
+
+    @Test
+    fun `returns within one CQE batch keep the ring non-empty at -ENOBUFS`() {
+        // Models a single read delivery larger than the whole ring: the kernel
+        // fills + reports every buffer and raises -ENOBUFS in one CQE batch, and
+        // the app consumes + returns each buffer before the terminal -ENOBUFS CQE
+        // is processed. The ring is therefore non-empty when -ENOBUFS arrives, so
+        // the transport re-arms immediately instead of stalling (a deferred re-arm
+        // would never fire — no later returnBuffer remains).
+        withRing(FakeIoUringBufferRingOps(), bufferCount = 4) { ring ->
+            ring.initOnEventLoop()
+            repeat(4) { bid ->
+                ring.onConsumed()
+                ring.returnBuffer(bufId = bid)
+            }
+            assertTrue(ring.hasAvailable, "batch returns leave buffers in the ring")
+        }
+    }
+
+    @Test
+    fun `onConsumed clamps at zero so availability never drifts negative`() {
+        withRing(FakeIoUringBufferRingOps(), bufferCount = 2) { ring ->
+            ring.initOnEventLoop()
+            repeat(5) { ring.onConsumed() } // more than bufferCount
+            assertFalse(ring.hasAvailable)
+            ring.returnBuffer(bufId = 0)
+            assertTrue(ring.hasAvailable, "a single return restores availability (no negative drift)")
         }
     }
 
