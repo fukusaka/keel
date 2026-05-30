@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
+import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
 import io.github.fukusaka.keel.tls.asPem
@@ -91,6 +92,10 @@ internal class MbedTlsServerSession(
     val pkey = nativeHeap.alloc<mbedtls_pk_context>()
     val conf = nativeHeap.alloc<mbedtls_ssl_config>()
 
+    // The trust-anchor CA chain, allocated only when [TlsConfig.trustAnchors]
+    // is a `Pem` source (peer-certificate verification). Freed in [release].
+    private var cacert: mbedtls_x509_crt? = null
+
     // Starts at 1 for MbedTlsCodecFactory's cache reference; each
     // derived MbedTlsCodec adds +1 on retain() in its constructor
     // and -1 on release() at close.
@@ -103,7 +108,7 @@ internal class MbedTlsServerSession(
         val certSource = config.certificates
         if (certSource is TlsCertificateSource.Pem || certSource is TlsCertificateSource.Der) {
             val pem = certSource.asPem()
-            parsePemCert(pem.certificatePem)
+            parsePemCert(srvcert, pem.certificatePem)
             parsePemKey(pem.privateKeyPem)
         }
 
@@ -116,18 +121,41 @@ internal class MbedTlsServerSession(
             "ssl_config_defaults",
         )
 
-        mbedtls_ssl_conf_ca_chain(conf.ptr, srvcert.ptr, null)
         checkMbedTls(
             mbedtls_ssl_conf_own_cert(conf.ptr, srvcert.ptr, pkey.ptr),
             "ssl_conf_own_cert",
         )
 
+        // Trust anchors used to verify the peer certificate. Only `Pem`
+        // installs a CA chain; `InsecureTrustAll` disables verification
+        // (below), and `SystemDefault` has no portable Mbed TLS equivalent.
+        when (val trust = config.trustAnchors) {
+            is TlsTrustSource.Pem -> {
+                val ca = nativeHeap.alloc<mbedtls_x509_crt>().also { mbedtls_x509_crt_init(it.ptr) }
+                cacert = ca
+                parsePemCert(ca, trust.caPem)
+                mbedtls_ssl_conf_ca_chain(conf.ptr, ca.ptr, null)
+            }
+            is TlsTrustSource.SystemDefault -> throw TlsException(
+                "TlsTrustSource.SystemDefault is not supported by the Mbed TLS backend " +
+                    "(no portable system trust store); use TlsTrustSource.Pem",
+                TlsErrorCategory.HANDSHAKE_FAILED,
+            )
+            is TlsTrustSource.InsecureTrustAll, null -> Unit // no CA chain
+        }
+
         // Apply the peer-verification mode. Without this, Mbed TLS leaves a
         // server at its default `VERIFY_NONE` — it would never request a
         // client certificate, so `REQUIRED` (mutual TLS) silently accepted a
-        // cert-less client. `REQUIRED` aborts the handshake when the peer
-        // presents no certificate; `OPTIONAL` verifies one if presented.
-        mbedtls_ssl_conf_authmode(conf.ptr, mbedtlsAuthMode(config.verifyMode, isServer))
+        // cert-less client. `REQUIRED` aborts when the peer presents no
+        // certificate; `OPTIONAL` verifies one if presented. `InsecureTrustAll`
+        // overrides to `VERIFY_NONE` (trust anything), matching OpenSSL.
+        val authmode = if (config.trustAnchors is TlsTrustSource.InsecureTrustAll) {
+            MBEDTLS_SSL_VERIFY_NONE
+        } else {
+            mbedtlsAuthMode(config.verifyMode, isServer)
+        }
+        mbedtls_ssl_conf_authmode(conf.ptr, authmode)
 
         // Pin the negotiable protocol version range. Both bounds are set
         // explicitly: the floor (minVersion, default TLS 1.2) so anything
@@ -204,16 +232,20 @@ internal class MbedTlsServerSession(
             mbedtls_ssl_config_free(conf.ptr)
             mbedtls_x509_crt_free(srvcert.ptr)
             mbedtls_pk_free(pkey.ptr)
+            cacert?.let {
+                mbedtls_x509_crt_free(it.ptr)
+                nativeHeap.free(it.rawPtr)
+            }
             nativeHeap.free(conf.rawPtr)
             nativeHeap.free(srvcert.rawPtr)
             nativeHeap.free(pkey.rawPtr)
         }
     }
 
-    private fun parsePemCert(pem: String) {
+    private fun parsePemCert(target: mbedtls_x509_crt, pem: String) {
         val bytes = pem.encodeToByteArray() + byteArrayOf(0)
         val ret = bytes.usePinned { pinned ->
-            mbedtls_x509_crt_parse(srvcert.ptr, pinned.addressOf(0).reinterpret<UByteVar>(), bytes.size.toULong())
+            mbedtls_x509_crt_parse(target.ptr, pinned.addressOf(0).reinterpret<UByteVar>(), bytes.size.toULong())
         }
         checkMbedTls(ret, "x509_crt_parse")
     }

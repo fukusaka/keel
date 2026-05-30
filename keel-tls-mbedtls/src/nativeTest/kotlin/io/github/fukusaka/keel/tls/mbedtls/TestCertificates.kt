@@ -65,4 +65,90 @@ s0/JN9iAF2/A2ct6J46JuRo8bxt+LdZY2znb8weICRpxx7/Sf+lswHA7OiUJT8UG
 XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
 """.trimIndent() + "\n"
+
+    // --- Mutual-TLS test material ---
+    // A client CA (self-signed) and a client certificate signed by it, for
+    // testing that a `REQUIRED` server validates a presented client cert
+    // against its configured `trustAnchors`. Generated with:
+    //   openssl req -x509 -newkey rsa:2048 -keyout ca.key -out ca.crt \
+    //     -days 3650 -nodes -subj "/CN=keel-test-client-ca"
+    //   openssl req -newkey rsa:2048 -keyout client.key -out client.csr \
+    //     -nodes -subj "/CN=keel-test-client"
+    //   openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
+    //     -CAcreateserial -out client.crt -days 3650
+
+    val CLIENT_CA_CERT = """
+-----BEGIN CERTIFICATE-----
+MIIDHTCCAgWgAwIBAgIUMew2SLfE51igIDq864OnJUAi4HQwDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTa2VlbC10ZXN0LWNsaWVudC1jYTAeFw0yNjA1MzAwMjM5
+MjRaFw0zNjA1MjcwMjM5MjRaMB4xHDAaBgNVBAMME2tlZWwtdGVzdC1jbGllbnQt
+Y2EwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDBlr+ES7+qv1GbDCQq
+fAs4nIa9zv4ZR2xyHoo+qPdd3rLdDkG0Un0/xtzomF98zMIJ/C5bt4CyCm8cHkvc
+DHXgrn/XaTwqYO2TwmV8dvziNls2anCNdH3xpn/LWQ/hYEyFOaErzfpwGYeVSxNN
+IRV54Z3ORHVVnCRWO7mLFlCp7Sz2nOt0PM8kLSQNuQuvc59rNrqnavaEeMDhZE9k
+XiO1rJ3xEvpRheaxigFt/2URTd8CQasrWaVh3nHUv61ydEMf7/zgKBNFvXOhrg4A
+B7/BNKe51249p5ymAphvFzhmbGSBBjvJ7AZRHnLQEnTwI5ZMKjqDlt0P4oTZi1DX
+DsiZAgMBAAGjUzBRMB0GA1UdDgQWBBRv40oD3eCEDhe8OAXi9QGL8BtWzTAfBgNV
+HSMEGDAWgBRv40oD3eCEDhe8OAXi9QGL8BtWzTAPBgNVHRMBAf8EBTADAQH/MA0G
+CSqGSIb3DQEBCwUAA4IBAQBsb2FJUQDcZvHRSoch+AwWDGtmmmWYA6B4y9y5yMpb
+cRe73tY7PypLPWe0Dwl/dp87y0Q76ChHxnt5Ucv7aCwlQDjivOXMPZPEIPo5BpVv
+a7omISym2O+UA/9pB8hY8P+d46WBnm+qPelNbR3x1mbgTyddPW2pg60IRrrQBYeS
+sRvtg6+FkAt/W3iR8aJ9rQddvLnM5tYK8xSd/GiE3XS6XOpImgcierzIgZaaDCif
+c+2EM1rwl0DuKVcfOjOLlwSk9rYPwoZSphhCV2xKs8gEAP7wrJ9Coe/5u0mEdeo1
+F1n/hcr7SImvdjcT85WEDf/dfkBK9dvTRZN+DFC5s3Zg
+-----END CERTIFICATE-----
+""".trimIndent() + "\n"
+
+    val CLIENT_CERT = """
+-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUc7Kq8u8ojqfJG523cOmN7iegjKUwDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTa2VlbC10ZXN0LWNsaWVudC1jYTAeFw0yNjA1MzAwMjM5
+MjRaFw0zNjA1MjcwMjM5MjRaMBsxGTAXBgNVBAMMEGtlZWwtdGVzdC1jbGllbnQw
+ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCv8fK7SJvkPtvlKNyxQ7Pk
+268f//+FVFXybtLVHxVuLOoGKkaxG++b1HLXQaXpG/szAjmr+Qk9RRNUjQxoi5jF
+agzSfVAsIY/WApXoPjA9gTOzUg+BkhG4SgGeP8anMvMgOlosGmEtpm5IdrPFLhNI
+BFY+EhCTKvIrWanwf9CfpkgU08eQkv21GBOrNvuamdOq2LmDzOWS8REHANWjRXEN
+oyJHu9BljOb3v26GwzQV4dDz3/3zGEpuWc+LFXJ/2fX/SV5WZnUrIImezWWiAiZX
+nGBaMsVnPNMJ/gk5hJkzlp8swb90ytZDgUyHshEri+LIRtn6hSX3pjjqsaRNKq8b
+AgMBAAGjQjBAMB0GA1UdDgQWBBTErbi60RWfIqEAo2UoOJABqRzsgzAfBgNVHSME
+GDAWgBRv40oD3eCEDhe8OAXi9QGL8BtWzTANBgkqhkiG9w0BAQsFAAOCAQEAgA82
+6ZXOb339SYoyZw89TRA7r9w6zPABtuKZzl6GLOqk77gANXwwtoWnnQHBBT5hXxj1
+RfpY7Qbepxb9ZLOsdIi1H/NiGRnZxE4fu7ktKPHgpDutZx4V5BuyLxrIVEpsnWJy
+qfTvwLx7/82IKEPta6GNKLvbKTef9XcwwsoJeMfp74Gcjd7S9/7g3PmdTwkHyR1F
+PDadoQXSTtYBP5CB6W9KHjMUE8UKLjovWg1vvCKGi0vsN0hJlL89ZWxkCEbVELUC
+en4mee+VvtzJB0RVu3cLIH6bte2aO+rQsxDO3sjJ4ythZvWV0tiQLZO4zs8YOcyx
+6yH5pLwn6/CJsR99JQ==
+-----END CERTIFICATE-----
+""".trimIndent() + "\n"
+
+    val CLIENT_KEY = """
+-----BEGIN PRIVATE KEY-----
+MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCv8fK7SJvkPtvl
+KNyxQ7Pk268f//+FVFXybtLVHxVuLOoGKkaxG++b1HLXQaXpG/szAjmr+Qk9RRNU
+jQxoi5jFagzSfVAsIY/WApXoPjA9gTOzUg+BkhG4SgGeP8anMvMgOlosGmEtpm5I
+drPFLhNIBFY+EhCTKvIrWanwf9CfpkgU08eQkv21GBOrNvuamdOq2LmDzOWS8REH
+ANWjRXENoyJHu9BljOb3v26GwzQV4dDz3/3zGEpuWc+LFXJ/2fX/SV5WZnUrIIme
+zWWiAiZXnGBaMsVnPNMJ/gk5hJkzlp8swb90ytZDgUyHshEri+LIRtn6hSX3pjjq
+saRNKq8bAgMBAAECgf9Gchk941SHjqN8nV+/mdvtRghYR6eHOr0u1DCWJFvwQQty
+bHrhbs4BFo7koORM8WcihUGSGaQZZA7ZS6AsO7hvUobPwFzZTpbImUBsPHoUJicN
+JU4QEuwFXZxIQEDJsRynSrXP8r/2By0g1mYkDM6rhxEAyTrZsdhEgyIHqSVexgse
+k07o+lw5Sy2x5yXSwWcAoZTWxU7NZcB2PlIA4oCcAxM6uzrfPcRi7mzXKlmvOZgx
+sE308ucr/QN4ah5tUY4OSQR9V1tt1jzAltIASSGw75Y/JVCYqXaeMtc2CDPtlB7p
+M+frPeJfmLgORiq/zwS8ZT1edtxhplV86DtbXMECgYEA10RUtltydgBwyfZQr3RF
+peOaCInKgVjWH8CTX21XqSWnqSOvdZmhy2Kq7eWRa01MH4RBzaDkPuG17l5v/MZR
+2cqpQlt56rf4CBrD9lhjqu1saIsQ6aSAbOSaP0cc3ujo1gSGbP84WqYjVr/8oOO0
+H4yNBP5Rra9+QaQVjw8UWNsCgYEA0TzX6UhkibMFMMJuzrTuds/nETUSQlPRIRR8
+/bYKfP5spr4hr3STWHQdtuWmsW58BU5xPHIJ78Za/MAumlXJF4YyCI/hrzz54rKs
+1/Wvoi9TfPkCfD+sBArCzKuK6JimK9ZAxkq+robv1i4gRwM4f7ATzhSqx1cdcBBP
+W8N4tsECgYEAiuYFPxEsfuVz4Wz0zPFaS1rbteyq5OEccKqCrQ1RhcvNLf7fpSL3
+WdOVdSEuvqzGlINzLipFfCmJiYAYBGM2xy/UHQQHW6NPAHO8xARucwj1bVNmG0vQ
+rfKncHMDNvXT3txWnJflleAjZ0NDz9B9FepLx9ANheN5tQMaAg/50gcCgYBF50Tf
+DC+CjYuTYbHxXyM4EHdLGWbzP9tjaNvlS1cvsTSNdIH+gzzi1VBEFW9eYeIPR8iv
+AA5vy94ECRTIvRZExLGciK1GhWGaqkTylYNK9PK4ktyQtBj89Ldl932d/bmudZMI
+bFpOJoikDp77+oh6qFHFjMQNev47vUc2ChUfQQKBgGjGrjpnF5KLl/tVfj541F8H
+nHC2R7cVDjdJjz4lWUOrhaYAFh+vwvu/dSkWVPMhB7NhcmDW3HGK6iqKb7ZXqQ3A
+JTcPZjukAqrn3BFvs5JCyfqdN1iRCJ1UIv4UgGlZf0Cyc2Q/w4L/FCsFaLVRB4AV
+BMQUaN68Zpzysj1HXecj
+-----END PRIVATE KEY-----
+""".trimIndent() + "\n"
 }

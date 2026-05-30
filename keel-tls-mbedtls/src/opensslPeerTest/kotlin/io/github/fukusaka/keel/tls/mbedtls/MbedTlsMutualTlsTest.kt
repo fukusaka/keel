@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.tls.openssl.OpenSslCodecFactory
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * Mutual-TLS enforcement for the MbedTLS **server** authmode (the K53
@@ -62,6 +63,36 @@ class MbedTlsMutualTlsTest {
             driveHandshake(client = client, server = server)
         }
         assertFalse(server.isHandshakeComplete, "server must not complete without the required client cert")
+
+        server.close()
+        client.close()
+    }
+
+    @Test
+    fun `a REQUIRED MbedTLS server accepts a client whose cert its trustAnchors validate`() {
+        // Positive control: the server requires a client cert AND trusts the
+        // CA that signed it (trustAnchors → mbedtls_ssl_conf_ca_chain), and
+        // the client presents that cert — so the mutual-TLS handshake
+        // completes.
+        val server = mbedTlsFactory.createServerCodec(
+            TlsConfig(
+                certificates = serverCerts,
+                verifyMode = TlsVerifyMode.REQUIRED,
+                trustAnchors = TlsTrustSource.Pem(TestCertificates.CLIENT_CA_CERT),
+            ),
+        )
+        val client = openSslFactory.createClientCodec(
+            TlsConfig(
+                certificates = TlsCertificateSource.Pem(TestCertificates.CLIENT_CERT, TestCertificates.CLIENT_KEY),
+                trustAnchors = TlsTrustSource.InsecureTrustAll,
+                verifyMode = TlsVerifyMode.NONE,
+            ),
+        )
+
+        driveHandshake(client = client, server = server)
+
+        assertTrue(server.isHandshakeComplete, "server validates the client cert against trustAnchors and completes")
+        assertTrue(client.isHandshakeComplete, "client completes the mutual-TLS handshake")
 
         server.close()
         client.close()
