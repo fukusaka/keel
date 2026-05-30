@@ -96,6 +96,22 @@ public class HttpRequestDecompressionHandler(
     /** Active decoder session for the in-flight request body, or `null`. */
     private var activeSession: DecoderSession? = null
 
+    /**
+     * Original (decoder-sourced) headers of the in-flight *streaming* request,
+     * stashed by [handleRequestHead] and released by [handleBodyEnd].
+     *
+     * These headers retain the recv buffer behind the head's zero-copy views
+     * (see [HttpRequestHead]'s buffer-lifetime contract). This handler rewrites
+     * the head with a buffer-free copy, so nothing downstream will release the
+     * original — without releasing it here, one recv buffer leaks per request,
+     * which on io_uring's fixed-slot provided-buffer ring wedges the EventLoop
+     * (K62). The release is deferred to end-of-request because the streaming
+     * body chunks that follow may alias the same recv buffer; freeing it at
+     * [handleRequestHead] would recycle bytes the decoder has not yet decoded.
+     * Null between requests.
+     */
+    private var pendingRequestHeaders: HttpHeaders? = null
+
     /** Per-channel reusable output scratch — allocated lazily on first decoded request. */
     private var scratch: IoBuf? = null
 
@@ -125,6 +141,10 @@ public class HttpRequestDecompressionHandler(
         scratch = null
         activeSession?.close()
         activeSession = null
+        // Release a head whose request never reached HttpBodyEnd (connection
+        // closed mid-request) so its retained recv buffer is not leaked.
+        pendingRequestHeaders?.release()
+        pendingRequestHeaders = null
     }
 
     // ---- Aggregated ----
@@ -142,13 +162,13 @@ public class HttpRequestDecompressionHandler(
         }
         val body = request.body
         if (body == null || body.isEmpty()) {
-            ctx.propagateRead(request.copy(headers = stripDecodedHeaders(request.headers), body = body))
+            ctx.propagateRead(request.copy(headers = rewriteAndReleaseHeaders(request.headers), body = body))
             return
         }
         val decoded = decodeAggregated(decoder, body)
         ctx.propagateRead(
             request.copy(
-                headers = stripDecodedHeaders(request.headers),
+                headers = rewriteAndReleaseHeaders(request.headers),
                 body = decoded,
             ),
         )
@@ -254,7 +274,37 @@ public class HttpRequestDecompressionHandler(
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
         ensureScratch()
-        ctx.propagateRead(head.copy(headers = stripDecodedHeaders(head.headers)))
+        // Stash the original headers (which retain the recv buffer) and release
+        // them at HttpBodyEnd — see [pendingRequestHeaders]. A previous stash
+        // that never reached HttpBodyEnd (malformed / aborted request) is
+        // released defensively here.
+        pendingRequestHeaders?.release()
+        val rewritten = stripDecodedHeaders(head.headers)
+        pendingRequestHeaders = head.headers
+        ctx.propagateRead(head.copy(headers = rewritten))
+    }
+
+    /**
+     * Builds the decoded-header view ([stripDecodedHeaders]) and then releases
+     * the original [src] immediately.
+     *
+     * Used by the **aggregated** path only, where the body is a self-contained
+     * `ByteArray` that no longer references the recv buffer — so the buffer the
+     * headers retain can be freed as soon as the values are copied out. The
+     * streaming path must instead defer the release to end-of-request (see
+     * [pendingRequestHeaders]) because the body chunks may still alias the
+     * buffer.
+     *
+     * Without this release the recv buffer leaks one per decoded request (see
+     * [HttpRequestHead]'s buffer-lifetime contract). Release is safe because
+     * [stripDecodedHeaders] copies every retained value into a freshly
+     * allocated `String` ([HttpHeaders.valueAt] returns a copy), so the
+     * rewritten headers no longer alias [src]'s buffer.
+     */
+    private fun rewriteAndReleaseHeaders(src: HttpHeaders): HttpHeaders {
+        val rewritten = stripDecodedHeaders(src)
+        src.release()
+        return rewritten
     }
 
     private fun handleBody(ctx: PipelineHandlerContext, body: HttpBody) {
@@ -322,6 +372,11 @@ public class HttpRequestDecompressionHandler(
 
         session.close()
         activeSession = null
+        // The body is fully consumed — the recv buffer the head's headers
+        // retained is no longer aliased by any pending body chunk, so release
+        // it now (see [pendingRequestHeaders]).
+        pendingRequestHeaders?.release()
+        pendingRequestHeaders = null
         ctx.propagateRead(HttpBodyEnd.EMPTY)
     }
 
