@@ -124,6 +124,59 @@ class ProvidedBufferRingSeamTest {
         }
     }
 
+    // --- deferred re-arm on buffer availability (K62) ---
+
+    @Test
+    fun `requestRearmOnAvailable fires once on the next buffer return`() {
+        withRing(FakeIoUringBufferRingOps()) { ring ->
+            ring.initOnEventLoop()
+            var fired = 0
+            ring.requestRearmOnAvailable { fired++ }
+            ring.returnBuffer(bufId = 0)
+            assertEquals(1, fired, "re-arm must fire when a buffer becomes available")
+            // No re-arm is pending now, so a further return does not re-fire.
+            ring.returnBuffer(bufId = 0)
+            assertEquals(1, fired, "re-arm must fire at most once per registration")
+        }
+    }
+
+    @Test
+    fun `a single buffer return drains every pending re-arm`() {
+        withRing(FakeIoUringBufferRingOps()) { ring ->
+            ring.initOnEventLoop()
+            var a = 0
+            var b = 0
+            // One shared ring serves all connections, so a single return must
+            // re-arm every transport that gave up on -ENOBUFS.
+            ring.requestRearmOnAvailable { a++ }
+            ring.requestRearmOnAvailable { b++ }
+            ring.returnBuffer(bufId = 1)
+            assertEquals(1, a)
+            assertEquals(1, b)
+        }
+    }
+
+    @Test
+    fun `a re-arm that re-registers waits for the next return instead of the current drain`() {
+        withRing(FakeIoUringBufferRingOps()) { ring ->
+            ring.initOnEventLoop()
+            var fired = 0
+            // A transport still starved after re-arming re-registers itself.
+            // The snapshot-then-drain order in returnBuffer must keep that
+            // re-registration out of the current drain (else it loops forever).
+            lateinit var rearm: () -> Unit
+            rearm = {
+                fired++
+                ring.requestRearmOnAvailable(rearm)
+            }
+            ring.requestRearmOnAvailable(rearm)
+            ring.returnBuffer(bufId = 0)
+            assertEquals(1, fired, "re-registration must defer to the next return")
+            ring.returnBuffer(bufId = 0)
+            assertEquals(2, fired)
+        }
+    }
+
     // --- close ---
 
     @Test

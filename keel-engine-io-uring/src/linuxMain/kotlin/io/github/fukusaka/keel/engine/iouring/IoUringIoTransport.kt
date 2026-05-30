@@ -137,6 +137,30 @@ internal class IoUringIoTransport(
     private var multishotSlot = -1
 
     /**
+     * True when the last multishot recv terminated with `-ENOBUFS` (the
+     * shared provided-buffer ring was empty) and re-arming has been deferred
+     * until a buffer is returned. Re-arming immediately would busy-loop: the
+     * kernel keeps re-issuing `-ENOBUFS` for as long as the ring stays empty,
+     * burning 100% of the EventLoop on a connection that cannot progress
+     * (K62 — surfaced under `server-http × compression-upload` where the
+     * pull-model body conduit holds buffers long enough to drain the ring).
+     * Cleared by [rearmRecvAfterStarvation]. EventLoop-thread only.
+     */
+    private var recvStarved = false
+
+    /**
+     * Deferred re-arm registered with the shared [ProvidedBufferRing] when a
+     * recv hits `-ENOBUFS`. Allocated once per transport (a field, not a
+     * per-operation lambda) so the starvation path stays allocation-free. The
+     * ring invokes it when a buffer is returned; it re-arms only if the
+     * channel is still open and reading.
+     */
+    private val rearmRecvAfterStarvation: () -> Unit = {
+        recvStarved = false
+        if (opened && readEnabled) armRecv()
+    }
+
+    /**
      * Slot tracking the single-shot `IORING_OP_POLL_ADD` SQE that watches
      * for peer FIN / hangup / error events. Negative when no POLL_ADD is
      * armed; non-negative once [armPollAddForFin] has registered the SQE.
@@ -281,7 +305,20 @@ internal class IoUringIoTransport(
                         buf.writerIndex = res
                         onRead?.invoke(buf)
                     }
-                    res == -ENOBUFS -> armRecv()
+                    res == -ENOBUFS -> {
+                        // Shared provided-buffer ring is empty. Defer re-arm
+                        // until a buffer is returned instead of busy-looping
+                        // (K62). The kernel drops IORING_CQE_F_MORE on -ENOBUFS
+                        // so the CQE drain already released the slot; reflect
+                        // that here and register a one-shot re-arm. The
+                        // recvStarved guard collapses repeat -ENOBUFS (only one
+                        // registration per starvation episode).
+                        multishotSlot = -1
+                        if (!recvStarved) {
+                            recvStarved = true
+                            ring.requestRearmOnAvailable(rearmRecvAfterStarvation)
+                        }
+                    }
                     else -> fireReadClosedOnce()
                 }
             },
