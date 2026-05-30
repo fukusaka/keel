@@ -299,6 +299,9 @@ internal class IoUringIoTransport(
                 }
                 when {
                     res > 0 -> {
+                        // One buffer left the ring for this CQE; record it so
+                        // the ring's `hasAvailable` reflects current occupancy.
+                        ring.onConsumed()
                         val bufId = keel_cqe_get_buf_id(flags).toInt()
                         val buf = wrappers!![bufId]
                         buf.reset()
@@ -306,15 +309,26 @@ internal class IoUringIoTransport(
                         onRead?.invoke(buf)
                     }
                     res == -ENOBUFS -> {
-                        // Shared provided-buffer ring is empty. Defer re-arm
-                        // until a buffer is returned instead of busy-looping
-                        // (K62). The kernel drops IORING_CQE_F_MORE on -ENOBUFS
-                        // so the CQE drain already released the slot; reflect
-                        // that here and register a one-shot re-arm. The
-                        // recvStarved guard collapses repeat -ENOBUFS (only one
-                        // registration per starvation episode).
+                        // Shared provided-buffer ring ran out. The kernel drops
+                        // IORING_CQE_F_MORE on -ENOBUFS so the CQE drain already
+                        // released the slot.
                         multishotSlot = -1
-                        if (!recvStarved) {
+                        if (ring.hasAvailable) {
+                            // Buffers are already back in the ring — typically
+                            // within this same CQE batch, when a single read
+                            // delivery exceeds the whole ring (e.g. a ~1 MiB WS
+                            // frame vs a 512 KiB ring): the kernel fills + reports
+                            // every buffer and raises -ENOBUFS, and the app returns
+                            // them before this CQE is processed. Re-arm now;
+                            // deferring would stall forever (no later returnBuffer
+                            // to fire the re-arm).
+                            recvStarved = false
+                            armRecv()
+                        } else if (!recvStarved) {
+                            // Ring genuinely empty (buffers still held downstream).
+                            // Defer the re-arm to the next returnBuffer instead of
+                            // busy-looping (K62). The recvStarved guard collapses
+                            // repeat -ENOBUFS into one registration.
                             recvStarved = true
                             ring.requestRearmOnAvailable(rearmRecvAfterStarvation)
                         }
