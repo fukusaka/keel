@@ -66,6 +66,38 @@ class WsFrameAggregatorTest {
     }
 
     @Test
+    fun `a message split into many continuation fragments is reassembled in order`() {
+        // The 1 MiB-as-256x4-KiB fragmentation that large WebSocket sends
+        // produce on the wire. Exercises joinChunks' offset arithmetic across
+        // many chunks — the single O(n) join that replaced the former
+        // per-frame O(n^2) accumulation — and confirms byte-exact, in-order
+        // assembly. Each fragment is filled with its own index so a
+        // misordered or misaligned join is caught at every chunk boundary.
+        val fragmentCount = 256
+        val fragmentSize = 4096
+        val aggregator = WsFrameAggregator()
+        repeat(fragmentCount - 1) { i ->
+            val chunk = ByteArray(fragmentSize) { i.toByte() }
+            val result = if (i == 0) {
+                aggregator.feed(WsFrame.binary(chunk, fin = false))
+            } else {
+                aggregator.feed(WsFrame.continuation(chunk, fin = false))
+            }
+            assertIs<WsAggregateResult.Incomplete>(result)
+        }
+        val last = ByteArray(fragmentSize) { (fragmentCount - 1).toByte() }
+        val completed = assertIs<WsAggregateResult.Completed>(
+            aggregator.feed(WsFrame.continuation(last, fin = true)),
+        )
+        val bytes = assertIs<WsMessage.Binary>(completed.message).bytes
+        assertEquals(fragmentCount * fragmentSize, bytes.size)
+        for (f in 0 until fragmentCount) {
+            assertEquals(f.toByte(), bytes[f * fragmentSize], "fragment $f start byte")
+            assertEquals(f.toByte(), bytes[f * fragmentSize + fragmentSize - 1], "fragment $f end byte")
+        }
+    }
+
+    @Test
     fun `the aggregator is reusable for a second message after one completes`() {
         val aggregator = WsFrameAggregator()
         assertIs<WsAggregateResult.Completed>(aggregator.feed(WsFrame.text("first")))
