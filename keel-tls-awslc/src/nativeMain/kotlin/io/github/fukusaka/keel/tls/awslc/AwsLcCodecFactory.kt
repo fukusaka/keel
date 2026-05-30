@@ -9,6 +9,7 @@ import awslc.SSL_CTX_free
 import awslc.SSL_CTX_new
 import awslc.SSL_CTX_set_default_verify_paths
 import awslc.SSL_CTX_set_verify
+import awslc.SSL_VERIFY_FAIL_IF_NO_PEER_CERT
 import awslc.SSL_VERIFY_NONE
 import awslc.SSL_VERIFY_PEER
 import awslc.SSL_new
@@ -193,8 +194,14 @@ class AwsLcCodecFactory : TlsCodecFactory {
         when (config.verifyMode) {
             TlsVerifyMode.NONE ->
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, null)
-            TlsVerifyMode.PEER, TlsVerifyMode.REQUIRED ->
+            TlsVerifyMode.PEER ->
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, null)
+            // REQUIRED adds FAIL_IF_NO_PEER_CERT so a server aborts the
+            // handshake when the peer presents no certificate (mutual TLS);
+            // PEER would silently accept a missing cert. (Server-only flag —
+            // BoringSSL / AWS-LC ignores it on a client.)
+            TlsVerifyMode.REQUIRED ->
+                SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER or SSL_VERIFY_FAIL_IF_NO_PEER_CERT, null)
         }
     }
 

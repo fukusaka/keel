@@ -26,6 +26,7 @@ import openssl.SSL_CTX_free
 import openssl.SSL_CTX_new
 import openssl.SSL_CTX_set_default_verify_paths
 import openssl.SSL_CTX_set_verify
+import openssl.SSL_VERIFY_FAIL_IF_NO_PEER_CERT
 import openssl.SSL_VERIFY_NONE
 import openssl.SSL_VERIFY_PEER
 import openssl.SSL_new
@@ -198,8 +199,15 @@ class OpenSslCodecFactory : TlsCodecFactory {
         when (config.verifyMode) {
             TlsVerifyMode.NONE ->
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, null)
-            TlsVerifyMode.PEER, TlsVerifyMode.REQUIRED ->
+            TlsVerifyMode.PEER ->
                 SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, null)
+            // REQUIRED adds FAIL_IF_NO_PEER_CERT so a server aborts the
+            // handshake when the peer presents no certificate (mutual TLS);
+            // PEER would silently accept a missing cert. (Server-only flag —
+            // OpenSSL ignores it on a client, where the server always sends
+            // a cert.)
+            TlsVerifyMode.REQUIRED ->
+                SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER or SSL_VERIFY_FAIL_IF_NO_PEER_CERT, null)
         }
     }
 

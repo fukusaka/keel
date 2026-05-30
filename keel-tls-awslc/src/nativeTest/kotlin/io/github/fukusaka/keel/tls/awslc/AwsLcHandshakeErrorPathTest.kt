@@ -43,13 +43,12 @@ import kotlin.test.assertTrue
  * so `PEER` is required here — `NONE` would disable verification and the
  * handshake would succeed.
  *
- * **Scope note**: the mutual-TLS "missing required client certificate"
- * case is intentionally NOT covered here. keel's OpenSSL/AWS-LC factories
- * currently map `TlsVerifyMode.REQUIRED` to `SSL_VERIFY_PEER` without
- * `SSL_VERIFY_FAIL_IF_NO_PEER_CERT`, so a server does not abort on a
- * missing client cert — that gap is tracked separately. Version-downgrade
- * is covered via [TlsConfig.minVersion] / [maxVersion]; SNI-mismatch
- * remains out of scope (no hostname-verification knob yet).
+ * Also pins mutual-TLS enforcement: a `REQUIRED` server aborts when the
+ * client presents no certificate (`SSL_VERIFY_PEER |
+ * SSL_VERIFY_FAIL_IF_NO_PEER_CERT`), while a `PEER` server accepts the
+ * cert-less client. Version-downgrade is covered via [TlsConfig.minVersion]
+ * / [maxVersion]; SNI-mismatch remains out of scope (no
+ * hostname-verification knob yet).
  */
 class AwsLcHandshakeErrorPathTest {
 
@@ -113,6 +112,42 @@ class AwsLcHandshakeErrorPathTest {
 
         assertTrue(client.isHandshakeComplete, "client handshake must complete in the control case")
         assertTrue(server.isHandshakeComplete, "server handshake must complete in the control case")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `a REQUIRED server aborts when the client presents no certificate`() {
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.REQUIRED),
+        )
+        val client = factory.createClientCodec(
+            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE),
+        )
+
+        assertFailsWith<TlsException>("a missing required client certificate must abort the handshake") {
+            driveHandshake(client = client, server = server)
+        }
+        assertFalse(server.isHandshakeComplete, "server must not complete without the required client cert")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `a PEER server completes when the client presents no certificate`() {
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.PEER),
+        )
+        val client = factory.createClientCodec(
+            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE),
+        )
+
+        driveHandshake(client = client, server = server)
+
+        assertTrue(server.isHandshakeComplete, "a PEER server accepts a cert-less client")
+        assertTrue(client.isHandshakeComplete, "client handshake completes against a PEER server")
 
         client.close()
         server.close()

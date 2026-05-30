@@ -26,17 +26,16 @@ import kotlin.test.assertFalse
  * pins that a failed handshake surfaces as a structured [TlsException]
  * rather than a hang.
  *
- * **Why only the failure case** (unlike the JSSE / OpenSSL / AWS-LC
- * sibling tests, which also drive a success-then-close control): keel's
- * MbedTLS factory does not wire [TlsConfig.verifyMode],
- * [TlsConfig.trustAnchors], or [TlsConfig.serverName] into the
- * `mbedtls_ssl_config`. A keel MbedTLS *client* therefore always runs
- * the default preset's peer verification but is never given the hostname
- * MbedTLS requires (`mbedtls_ssl_set_hostname`), so an in-memory
- * client↔server handshake cannot be completed through the public API —
- * the client aborts with "verify a certificate without an expected
- * hostname". That same unconfigurable verification is the failure
- * vehicle here.
+ * **Why only the failure case**: keel's MbedTLS factory wires
+ * [TlsConfig.verifyMode] (server / client authmode) but not yet
+ * [TlsConfig.trustAnchors] or [TlsConfig.serverName]. A *verifying* MbedTLS
+ * client (`verifyMode` PEER / REQUIRED) is never given the hostname MbedTLS
+ * requires (`mbedtls_ssl_set_hostname`), so it aborts with "verify a
+ * certificate without an expected hostname" — the failure vehicle here. A
+ * full MbedTLS-to-MbedTLS handshake therefore cannot complete through the
+ * public API, so the mutual-TLS "REQUIRED server rejects a cert-less
+ * client" case (which needs a completing peer) lives in
+ * [MbedTlsServerCloseRegressionTest]'s file, paired with an OpenSSL client.
  *
  * The companion close-path bug — `protect()` leaving `send_capacity` /
  * `send_written` stale so `close()`'s `mbedtls_ssl_close_notify` writes

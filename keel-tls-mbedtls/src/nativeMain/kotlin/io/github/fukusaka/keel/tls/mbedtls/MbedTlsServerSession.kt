@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
+import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
 import io.github.fukusaka.keel.tls.asPem
 import kotlin.concurrent.AtomicInt
@@ -22,6 +23,9 @@ import mbedtls.MBEDTLS_SSL_IS_CLIENT
 import mbedtls.MBEDTLS_SSL_IS_SERVER
 import mbedtls.MBEDTLS_SSL_PRESET_DEFAULT
 import mbedtls.MBEDTLS_SSL_TRANSPORT_STREAM
+import mbedtls.MBEDTLS_SSL_VERIFY_NONE
+import mbedtls.MBEDTLS_SSL_VERIFY_OPTIONAL
+import mbedtls.MBEDTLS_SSL_VERIFY_REQUIRED
 import mbedtls.MBEDTLS_SSL_VERSION_TLS1_2
 import mbedtls.MBEDTLS_SSL_VERSION_TLS1_3
 import mbedtls.keel_mbedtls_strerror
@@ -29,6 +33,7 @@ import mbedtls.mbedtls_pk_context
 import mbedtls.mbedtls_pk_free
 import mbedtls.mbedtls_pk_init
 import mbedtls.mbedtls_pk_parse_key
+import mbedtls.mbedtls_ssl_conf_authmode
 import mbedtls.mbedtls_ssl_conf_ca_chain
 import mbedtls.mbedtls_ssl_conf_max_tls_version
 import mbedtls.mbedtls_ssl_conf_min_tls_version
@@ -117,6 +122,13 @@ internal class MbedTlsServerSession(
             "ssl_conf_own_cert",
         )
 
+        // Apply the peer-verification mode. Without this, Mbed TLS leaves a
+        // server at its default `VERIFY_NONE` — it would never request a
+        // client certificate, so `REQUIRED` (mutual TLS) silently accepted a
+        // cert-less client. `REQUIRED` aborts the handshake when the peer
+        // presents no certificate; `OPTIONAL` verifies one if presented.
+        mbedtls_ssl_conf_authmode(conf.ptr, mbedtlsAuthMode(config.verifyMode, isServer))
+
         // Pin the negotiable protocol version range. Both bounds are set
         // explicitly: the floor (minVersion, default TLS 1.2) so anything
         // below TLS 1.2 is never negotiable, and the ceiling (maxVersion,
@@ -129,6 +141,22 @@ internal class MbedTlsServerSession(
     private fun mbedtlsVersion(version: TlsVersion): mbedtls_ssl_protocol_version = when (version) {
         TlsVersion.TLS1_2 -> MBEDTLS_SSL_VERSION_TLS1_2
         TlsVersion.TLS1_3 -> MBEDTLS_SSL_VERSION_TLS1_3
+    }
+
+    /**
+     * Maps keel's [TlsVerifyMode] to the Mbed TLS `MBEDTLS_SSL_VERIFY_*`
+     * authmode, role-aware: `PEER` means "request a client cert but accept
+     * its absence" on a **server** (`OPTIONAL`), but on a **client** there
+     * is no useful "verify yet continue on failure" mode — a client that
+     * verifies the server must abort on failure, so `PEER` maps to
+     * `REQUIRED` there (matching OpenSSL / AWS-LC, where client-side
+     * `SSL_VERIFY_PEER` aborts on a bad server cert). `REQUIRED` is
+     * `REQUIRED` for both roles; `NONE` disables verification.
+     */
+    private fun mbedtlsAuthMode(mode: TlsVerifyMode, isServer: Boolean): Int = when (mode) {
+        TlsVerifyMode.NONE -> MBEDTLS_SSL_VERIFY_NONE
+        TlsVerifyMode.PEER -> if (isServer) MBEDTLS_SSL_VERIFY_OPTIONAL else MBEDTLS_SSL_VERIFY_REQUIRED
+        TlsVerifyMode.REQUIRED -> MBEDTLS_SSL_VERIFY_REQUIRED
     }
 
     /**
