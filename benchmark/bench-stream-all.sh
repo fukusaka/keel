@@ -177,10 +177,14 @@ for scenario in $SCENARIOS; do
 
         row=$(./benchmark/bench-stream-one.sh "$display" "$scenario" "${cmd[@]}" 2>/dev/null | tail -1)
         if [ -n "$row" ]; then
-            # Parse pipe-separated: name|rps|p50|p99
-            IFS='|' read -r rname rps rp50 rp99 <<< "$row"
-            printf "  %-32s %12s  %-10s  %-10s\n" "$rname" "$rps" "$rp50" "$rp99"
-            printf "  %-32s %12s  %-10s  %-10s\n" "$rname" "$rps" "$rp50" "$rp99" >> "$OUTFILE"
+            # Parse pipe-separated: name|rps|p50|p99[|temp=...]. The trailing
+            # `rest` catch-all keeps p99 clean when BENCH_TEMP_CAPTURE adds a
+            # `temp=...` field (without it, a 4-var read would absorb temp into
+            # p99). `rest` is surfaced after p99 so the sweep table still shows
+            # the per-engine temperature when capture is enabled.
+            IFS='|' read -r rname rps rp50 rp99 rest <<< "$row"
+            printf "  %-32s %12s  %-10s  %-10s%s\n" "$rname" "$rps" "$rp50" "$rp99" "${rest:+  $rest}"
+            printf "  %-32s %12s  %-10s  %-10s%s\n" "$rname" "$rps" "$rp50" "$rp99" "${rest:+  $rest}" >> "$OUTFILE"
         else
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED"
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED" >> "$OUTFILE"
