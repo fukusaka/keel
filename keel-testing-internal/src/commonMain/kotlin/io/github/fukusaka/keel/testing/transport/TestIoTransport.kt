@@ -31,7 +31,7 @@ import kotlinx.coroutines.Dispatchers
  * fixes it.
  *
  * **Use with `TrackingAllocator`** — pass an explicit [allocator] (typically
- * `TrackingAllocator(DefaultAllocator)` from `keel-io`) to drive K4-class
+ * `TrackingAllocator(DefaultAllocator)` from `keel-io`) to drive IoBuf-leak
  * regression checks where `outstandingCount` must be 0 after teardown:
  *
  * ```kotlin
@@ -74,7 +74,7 @@ import kotlinx.coroutines.Dispatchers
  *   (ownership-transfer)
  * - `keel-engine-netty/src/jvmTest/.../engine/netty/TestIoTransport.kt`
  *   (ownership-transfer + `BufferAllocator` parameter — adopted into the
- *   canonical class; this is what enabled the K4 seam tests in PR #485)
+ *   canonical class; this is what enabled the IoBuf-leak seam tests in PR #485)
  *
  * @param allocator buffer allocator forwarded to [AbstractIoTransport]'s
  *   constructor. Default [DefaultAllocator] keeps existing call sites

@@ -315,10 +315,10 @@ class EpollTransportSeamTest {
         fake.assertAllConsumed()
     }
 
-    // --- awaitPendingFlush / teardown cancellation (K20 regression) ---
+    // --- awaitPendingFlush / teardown cancellation regression ---
 
     /**
-     * Regression test for K20: `teardownOnEventLoop` must cancel
+     * Regression test for teardown cancellation: `teardownOnEventLoop` must cancel
      * any coroutine suspended in `awaitPendingFlush` so the caller
      * does not hang indefinitely.
      *
@@ -384,10 +384,10 @@ class EpollTransportSeamTest {
         }
     }
 
-    // --- awaitPendingFlush TOCTOU race fix (K34) ---
+    // --- awaitPendingFlush TOCTOU race fix ---
 
     /**
-     * Regression test for K34: verifies that `awaitPendingFlush` correctly
+     * Regression test for the awaitPendingFlush TOCTOU race: verifies that `awaitPendingFlush` correctly
      * handles the case where flush completes on the EventLoop thread while
      * the continuation is being registered.
      *

@@ -496,12 +496,12 @@ private class BenchmarkRoutingHandler : InboundHandler {
      * SSE handler for the `pipeline-http-*` engines.
      *
      * **Per-frame flush is intentional and load-bearing.** Prior to PR
-     * #440 (K25) the loop did `propagateWrite(HttpBody(buf))` × N + a
+     * #440 the loop did `propagateWrite(HttpBody(buf))` × N + a
      * single trailing `propagateFlush`, which let the engine batch all
      * 100 chunks into one socket write. The bench then reported a 4-5×
      * inflated `pipeline-http-*` SSE row vs the `ktor-keel-*` Ktor path
      * (which had always called `flush()` per frame from
-     * [BenchmarkModule]). That artefact is what the K25 fix removes —
+     * [BenchmarkModule]). That artefact is what the PR #440 fix removes —
      * per-frame `propagateFlush` after every `propagateWrite(HttpBody)`
      * makes the bench measure real per-event throughput.
      *
@@ -531,7 +531,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
             val buf = ctx.channel.allocator.allocate(payload.size)
             buf.writeByteArray(payload, 0, payload.size)
             ctx.propagateWrite(HttpBody(buf))
-            // K25 (PR #440) — flush per frame so the bench measures real
+            // PR #440 — flush per frame so the bench measures real
             // per-event throughput, not bulk delivery. Removing this turns
             // the `pipeline-http-*` SSE row back into the inflated
             // batching number.

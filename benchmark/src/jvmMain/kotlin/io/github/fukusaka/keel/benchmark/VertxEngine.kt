@@ -127,7 +127,7 @@ object VertxEngine : EngineBenchmark {
         }
 
         // Vertx SSE — `response.write(frame)` × N + `response.end()`.
-        // Audit during PR #442 (K30) measured the `vertx` SSE row at
+        // Audit during PR #442 measured the `vertx` SSE row at
         // ~2× the per-frame keel ceiling, not the 3-4× inflation that
         // `netty-raw` / `zig-bench` / `rust-bench` showed before their
         // fixes — so Vertx's HttpServerResponse already delivers chunks

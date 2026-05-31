@@ -9,7 +9,7 @@ import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
 
 /**
- * Correctness tests for the K56b investigation toggle
+ * Correctness tests for the cross-queue header-pool investigation toggle
  * [HttpHeadersPool.setBypassPool].
  *
  * When the bypass flag is set, the pool must:
@@ -19,9 +19,9 @@ import kotlin.test.assertTrue
  *   the per-thread stack),
  * - still respect the `pooled` flag (a fresh borrow returns a `pooled = true`
  *   instance so [HttpHeaders.release] still runs `resetForReuse` — that
- *   is the path K56b crashes on, and the whole point of bypassing pool
+ *   is the path the cross-queue header-pool race crashes on, and the whole point of bypassing pool
  *   reuse is to determine whether the cross-instance handoff is on the
- *   K56b causal chain).
+ *   race's causal chain).
  *
  * These tests cover only the new flag's semantics. The full pool
  * semantics are still verified in [HttpHeadersPoolTest] under the

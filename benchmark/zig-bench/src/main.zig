@@ -328,8 +328,8 @@ fn handleSseStream(req: *http.Server.Request, target: []const u8, keep_alive: bo
     // Per-frame flush: the 16 KB stream_buf above otherwise accumulates
     // ~15 frames before flushing to the wire, so an apparent throughput
     // ~15× the real per-frame number leaks into the SSE bench. Match the
-    // per-frame send semantics that pipeline-http-* (PR #440 / K25),
-    // ktor-keel-* (PR #441 / K29), and netty-raw (PR #442 / K30) enforce.
+    // per-frame send semantics that pipeline-http-* (PR #440),
+    // ktor-keel-* (PR #441), and netty-raw (PR #442) enforce.
     const out = &body.writer;
     var i: usize = 0;
     while (i < count) : (i += 1) {

@@ -150,7 +150,7 @@ run_bench() {
         # TCP connect — see bench-one.sh for the rationale.
         # Track per-iteration curl exit codes so a `FAILED` cell can be
         # attributed (exit 7 = TCP refused, exit 28 = server hung —
-        # K55-class fingerprint, exit 0 + non-2xx/3xx = warmup error).
+        # warmup-hang fingerprint, exit 0 + non-2xx/3xx = warmup error).
         local ready=false
         local -A curl_exit_counts=()
         local last_curl_exit=0
@@ -204,7 +204,7 @@ run_bench() {
         local rps
         rps=$(extract_rps "$result")
 
-        # K57: classify server death by post-`wait` exit-status signal
+        # Classify server death by post-`wait` exit-status signal
         # decode rather than a pre-kill `kill -0` probe. See bench-one.sh
         # for the full rationale.
         kill_port "$engine_port"

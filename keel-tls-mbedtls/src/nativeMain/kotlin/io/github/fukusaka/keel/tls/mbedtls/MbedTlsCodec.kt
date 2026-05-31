@@ -48,7 +48,7 @@ import mbedtls.mbedtls_ssl_write
  * shared across every codec derived from it via
  * `mbedtls_ssl_setup(ssl, conf)`. Mbed TLS treats config as read-only
  * after setup, so concurrent ssl_context use is safe. This avoids the
- * pre-K53 per-codec `psa_crypto_init` + `x509_crt_parse` race that
+ * pre-threading per-codec `psa_crypto_init` + `x509_crt_parse` race that
  * crashed multi-worker servers under load.
  *
  * **Lifecycle**: [close] frees the per-connection

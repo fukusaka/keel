@@ -25,7 +25,7 @@ import platform.darwin.dispatch_queue_set_specific
 import platform.darwin.dispatch_queue_t
 
 /**
- * Synthetic K56b repro — hypothesis (a)/(f): does a **suspending coroutine**
+ * Synthetic cross-queue header-pool repro — hypothesis (a)/(f): does a **suspending coroutine**
  * on a GCD serial-queue-backed [CoroutineDispatcher] interleave
  * [HttpHeadersPool.borrow] / [HttpHeaders.release] in a way that confuses
  * pool ownership across worker-thread migrations?
@@ -33,7 +33,7 @@ import platform.darwin.dispatch_queue_t
  * **Why this scenario is different from the tight-loop synthetics.** The
  * other Phase 4 tests in this module (`PocHeadersPoolGcdRaceTest`) drive
  * borrow/release inside `dispatch_async { ... }` blocks. Each block is
- * atomic — no suspension between borrow and release. K56b in production
+ * atomic — no suspension between borrow and release. The cross-queue header-pool race in production
  * involves **HttpServerHandler** coroutines that:
  *
  * 1. Parse a request → `HttpHeadersPool.borrow()` returns h1 on worker A.
@@ -67,7 +67,7 @@ import platform.darwin.dispatch_queue_t
  * request N+1's parser). Reproducing the full keep-alive scenario
  * synthetically requires wiring an actual `HttpServerHandler` against a
  * fake transport, which approaches re-implementing the production server.
- * If this test also passes, K56b's residual 3% almost certainly requires
+ * If this test also passes, the cross-queue header-pool race's residual 3% almost certainly requires
  * the full I/O + handler + response-writer choreography to fire — i.e. it
  * is a timing-sensitive intermittent bug that reproduces only under real
  * NWConnection I/O, where adding instrumentation perturbs the timing
@@ -170,7 +170,7 @@ class PocHeadersPoolCoroutineRaceTest {
                     actual = observed,
                     message = "Coroutine + dispatcher + suspending borrow/release threw " +
                         "$observed times across $coroutineCount coroutines × $cyclesPerCoroutine " +
-                        "cycles. Suggests the K56b race fires when borrow and release straddle " +
+                        "cycles. Suggests the cross-queue header-pool race fires when borrow and release straddle " +
                         "a suspension point — hypothesis (a)/(f) confirmed in isolation.",
                 )
             }

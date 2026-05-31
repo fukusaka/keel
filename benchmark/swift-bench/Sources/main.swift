@@ -310,7 +310,7 @@ if config.showConfig {
     // each `try await writer.write(payload)` resolves on the SwiftNIO
     // EventLoop after the chunk has been written to the channel, so
     // Hummingbird honours per-`write` semantics. Audit during PR #442
-    // (K30) confirmed the `swift-bench` SSE row sits at the same
+    // confirmed the `swift-bench` SSE row sits at the same
     // per-frame ceiling as `pipeline-http-netty` — no change needed.
     // If Hummingbird's writer contract ever changes to coalesce
     // `await write` calls before flushing, this loop will need an

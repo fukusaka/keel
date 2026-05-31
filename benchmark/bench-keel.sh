@@ -140,7 +140,7 @@ run_bench() {
         # Track per-iteration curl exit codes so a `FAILED` cell can be
         # attributed to "TCP refused" (exit 7), "server accepted TCP but
         # never responded" (exit 28 = CURLE_OPERATION_TIMEDOUT — the
-        # K55-class hang fingerprint), or "server returned 4xx/5xx" (status).
+        # server-hang fingerprint), or "server returned 4xx/5xx" (status).
         local ready=false
         local -A curl_exit_counts=()
         local last_curl_exit=0
@@ -192,7 +192,7 @@ run_bench() {
         local rps
         rps=$(extract_rps "$result")
 
-        # K57: classify server death by post-`wait` exit-status signal
+        # Classify server death by post-`wait` exit-status signal
         # decode rather than a pre-kill `kill -0` probe. See bench-one.sh
         # for the full rationale — SIGSEGV / SIGABRT / SIGBUS / SIGFPE /
         # SIGILL are server-originated crashes and override numeric rps to

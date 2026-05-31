@@ -17,7 +17,7 @@ import platform.darwin.dispatch_queue_create
 import platform.darwin.DISPATCH_TIME_FOREVER
 
 /**
- * Synthetic K56b repro: exercise [HttpHeadersPool.borrow] / [HttpHeaders.release]
+ * Synthetic cross-queue header-pool repro: exercise [HttpHeadersPool.borrow] / [HttpHeaders.release]
  * cycles on a GCD serial queue (the NWConnection engine pattern) to test
  * whether the `@ThreadLocal nativeStack` design survives GCD's worker-thread
  * migration.
@@ -49,7 +49,7 @@ import platform.darwin.DISPATCH_TIME_FOREVER
  *    cap intention. No crash but the per-thread cap (`MAX_POOLED = 64`)
  *    is silently violated in aggregate.
  *
- * 3. **Aliasing / double-borrow (severe — matches K56b crash signature)** —
+ * 3. **Aliasing / double-borrow (severe — matches the cross-queue header-pool crash signature)** —
  *    if a suspending handler `borrow`s on worker A, suspends, and resumes
  *    on worker B, then a fresh callback on worker A may `borrow` and get
  *    a different instance while the original handler still owns the first.
@@ -57,7 +57,7 @@ import platform.darwin.DISPATCH_TIME_FOREVER
  *    can fire while the instance is still in use by a concurrent block
  *    on a sibling queue — see the multi-queue stress test below.
  *
- * The K56b crash pattern (`HttpHeaders.resetForReuse → null deref`,
+ * The crash pattern (`HttpHeaders.resetForReuse → null deref`,
  * `slotCount=1 + extras empty + segmentLog2 stale`) is consistent with
  * symptom (3) — the instance was reset mid-mutation by a concurrent
  * sibling, leaving torn internal state. This test attempts to surface
@@ -75,7 +75,7 @@ import platform.darwin.DISPATCH_TIME_FOREVER
  *   corruption / double-pop is possible.
  *
  * A pass on both tests means the `@ThreadLocal` design is robust under
- * NWConnection's GCD model and K56b's root cause is elsewhere. A failure
+ * NWConnection's GCD model and the race's root cause is elsewhere. A failure
  * (any thrown exception, hang, or crash) pinpoints the design defect.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
@@ -129,7 +129,7 @@ class PocHeadersPoolGcdRaceTest {
 
     /**
      * Multiple serial queues hitting the pool in parallel. This is the
-     * direct K56b shape: NWConnection assigns each connection its own
+     * direct cross-queue header-pool shape: NWConnection assigns each connection its own
      * `connectionQueue`; under load, many connections' queues map to the
      * same small GCD worker thread pool concurrently. If the
      * `@ThreadLocal nativeStack` ever has two queues' blocks executing
@@ -179,7 +179,7 @@ class PocHeadersPoolGcdRaceTest {
             fail(
                 "Multi-queue concurrent borrow/release threw $observed times / " +
                     "$totalIterations. Indicates @ThreadLocal pool corruption under GCD " +
-                    "cross-queue worker sharing — confirms the K56b root-cause hypothesis: " +
+                    "cross-queue worker sharing — confirms the cross-queue header-pool root-cause hypothesis: " +
                     "HttpHeadersPool's per-thread design is unsafe when multiple GCD serial " +
                     "queues compete for the same worker thread pool.",
             )
@@ -195,7 +195,7 @@ class PocHeadersPoolGcdRaceTest {
      * refcount delta per block is zero, but every block briefly toggles
      * [sharedBuf]'s refcount across the +1/−1 boundary.
      *
-     * If the K56b crash stack (`HttpHeaders.resetForReuse → backing.release()`
+     * If the crash stack (`HttpHeaders.resetForReuse → backing.release()`
      * UAF) is rooted in a refcount race on a shared backing buffer — e.g.
      * the `backing = buf` store visible to a sibling block before the
      * paired `retain()` lands, or the `backing?.release(); backing = null`
@@ -265,8 +265,8 @@ class PocHeadersPoolGcdRaceTest {
                 actual = observed,
                 message = "Backing-IoBuf race fired: $observed errors / $totalIterations. " +
                     "Either `backing = buf; buf.retain()` ordering is exposed across queues, " +
-                    "or `backing?.release(); backing = null` exposes a freed pointer. K56b " +
-                    "hypothesis (e) confirmed: shared backing IoBuf needs cross-queue protection.",
+                    "or `backing?.release(); backing = null` exposes a freed pointer. " +
+                    "Hypothesis (e) confirmed: shared backing IoBuf needs cross-queue protection.",
             )
         } finally {
             // Release the initial allocator-issued reference. If the race

@@ -613,7 +613,7 @@ for run in $(seq 1 "$RUNS"); do
     # Validate HTTP status, not just TCP connect (5xx would otherwise pass).
     # Track per-iteration curl exit code distribution so a READY failure
     # can be attributed (exit 7 = TCP refused, exit 28 = server accepted
-    # TCP but never responded — K55-class hang fingerprint, exit 0 +
+    # TCP but never responded — server-hang fingerprint, exit 0 +
     # non-2xx/3xx = warmup HTTP error). See bench-one.sh for rationale.
     READY=false
     declare -A CURL_EXIT_COUNTS=()
@@ -752,7 +752,7 @@ $K6_OUT"
     P50=$(echo "$PARSED" | cut -d'|' -f2)
     P99=$(echo "$PARSED" | cut -d'|' -f3)
 
-    # K57: shut down the server now (was after the parse block) so we can
+    # Shut down the server now (was after the parse block) so we can
     # decode its exit signal before classifying the run. See bench-one.sh
     # for the full rationale.
     kill_port "$PORT"
@@ -780,7 +780,7 @@ $K6_OUT"
         SIGSEGV|SIGABRT|SIGBUS|SIGFPE|SIGILL) SERVER_CRASHED=true ;;
     esac
 
-    # K45 fix: surface k6 wall-clock timeout as a distinct outcome. Without
+    # Surface k6 wall-clock timeout as a distinct outcome. Without
     # this the parsed RPS / p50 / p99 are all empty and the row looks like
     # a silent "no data" line — operators couldn't tell hang from missing
     # measurement.
@@ -798,7 +798,7 @@ $K6_OUT"
         P99="-"
     fi
 
-    # K57: server died by a fatal signal mid-run — override RPS / P50 /
+    # Server died by a fatal signal mid-run — override RPS / P50 /
     # P99 to surface the crash even if k6 emitted numeric values for the
     # part of the run before the crash.
     if [ "$SERVER_CRASHED" = true ] && [ "$INVALID" != true ]; then

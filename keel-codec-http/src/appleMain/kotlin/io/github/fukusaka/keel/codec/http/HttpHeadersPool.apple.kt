@@ -20,7 +20,7 @@ import platform.posix.getenv
  * for its entire lifetime), so the `@ThreadLocal` slot is the correct
  * isolation primitive.
  *
- * The K56b race only fires on **GCD serial queues** because GCD
+ * The cross-queue header-pool race only fires on **GCD serial queues** because GCD
  * serialises blocks but migrates them across the worker pool — fixed
  * by the per-queue scoped stack via [poolLocal] / [installScopedHeadersPool].
  */
@@ -62,7 +62,7 @@ internal actual fun headersPoolStack(): ArrayDeque<HttpHeaders> = poolLocal.curr
  * binds). Production code should only invoke it once per queue,
  * immediately after queue creation.
  *
- * This is the engine-side hook that closes K56b. Engines that do not
+ * This is the engine-side hook that closes the cross-queue header-pool race. Engines that do not
  * call it inherit the [nativeStack] @ThreadLocal fallback, which is
  * correct as long as their EventLoop is pthread-pinned (every keel
  * engine today is, except NWConnection).

@@ -32,7 +32,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * K54 contract pin for the OpenSSL backend.
+ * Handshake byte-count contract pin for the OpenSSL backend.
  *
  * The pre-fix `SSL_do_handshake` / `SSL_read` return-value conflation
  * in [OpenSslCodec.unprotect] (see PR #620) was **latent** on this
@@ -42,7 +42,7 @@ import kotlin.time.Duration.Companion.seconds
  * `SSL_read` branch and the conflation never fires in practice.
  * BoringSSL / AWS-LC uses strict semantics (handshake done only after
  * verifying client Finished), keeping the buggy path live for every
- * connection — that is how K54 surfaced.
+ * connection — that is how the byte-count conflation surfaced.
  *
  * This test is therefore Green-only — pre-fix and post-fix both
  * pass on OpenSSL — but it pins the post-fix contract so any future

@@ -36,7 +36,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Regression test for K54 — pre-fix the first byte AWS-LC's
+ * Regression test for the handshake byte-count conflation — pre-fix the first byte AWS-LC's
  * [AwsLcCodec.unprotect] delivered to the downstream pipeline was a
  * spurious uninitialised `\x00` (a side effect of conflating
  * `SSL_do_handshake`'s `ret == 1` success return with `SSL_read`'s

@@ -23,7 +23,7 @@ import platform.posix.pthread_mutex_unlock
  * `mbedtls_ssl_config`) across every codec the factory produces;
  * per-connection [MbedTlsCodec] instances only allocate
  * `mbedtls_ssl_context` + BIO context and attach to the shared
- * config via `mbedtls_ssl_setup`. This avoids the pre-K53
+ * config via `mbedtls_ssl_setup`. This avoids the pre-threading
  * per-codec `psa_crypto_init` + `x509_crt_parse` race that crashed
  * the multi-worker pipeline-http-epoll path under load.
  *
@@ -78,7 +78,7 @@ class MbedTlsCodecFactory : TlsCodecFactory {
         // this before any other PSA / TLS operation; calling it once
         // up front (rather than per-codec) avoids racing against
         // concurrent createServerCodec invocations on the homebrew /
-        // distro builds that disable MBEDTLS_THREADING_C — see K53.
+        // distro builds that disable MBEDTLS_THREADING_C — see the PSA threading race.
         val ret = psa_crypto_init().toInt()
         check(ret == 0) { "psa_crypto_init failed: $ret" }
     }

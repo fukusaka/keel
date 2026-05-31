@@ -94,7 +94,7 @@ class AwsLcCodec internal constructor(
         // Capture which API we are calling — the BoringSSL / OpenSSL
         // return-value semantics differ between the two: SSL_do_handshake
         // returns 1 = success, 0/-1 = error; SSL_read returns the number
-        // of plaintext bytes read, or 0/-1 = EOF / error. K54: conflating
+        // of plaintext bytes read, or 0/-1 = EOF / error. Handshake byte-count: conflating
         // SSL_do_handshake's `ret == 1` (success) with SSL_read's
         // `ret == 1` (one plaintext byte) used to advance the plaintext
         // writerIndex by 1, leaking a single uninitialised garbage byte

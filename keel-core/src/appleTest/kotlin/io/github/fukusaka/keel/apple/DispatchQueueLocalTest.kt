@@ -22,7 +22,7 @@ import platform.darwin.DISPATCH_TIME_FOREVER
 
 /**
  * Behavioural tests for [DispatchQueueLocal] — the Apple-platform
- * per-`dispatch_queue_t` storage primitive used by the K56b fix.
+ * per-`dispatch_queue_t` storage primitive used by the per-connection-queue `HttpHeadersPool` fix.
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class DispatchQueueLocalTest {

@@ -136,7 +136,7 @@ class KeelByteWriteChannelTest {
     }
 
     /**
-     * K38b regression test: [KeelByteWriteChannel.cancel] without a re-throw must not leave
+     * Cancel-without-rethrow regression test: [KeelByteWriteChannel.cancel] without a re-throw must not leave
      * the keep-alive loop running with the encoder still in `CHUNKED` mode.
      *
      * **Scenario**: a handler calls `cancel(cause)` inside [io.ktor.server.response.respondBytesWriter]
@@ -158,7 +158,7 @@ class KeelByteWriteChannelTest {
      * fails; restore it and confirm it passes.
      */
     @Test
-    fun `cancel without rethrow closes keep-alive connection before next request — K38b`() {
+    fun `cancel without rethrow closes keep-alive connection before next request`() {
         val sentinelInvoked = AtomicBoolean(false)
 
         withKeelServer({
@@ -215,14 +215,14 @@ class KeelByteWriteChannelTest {
             // (Red) or never at all (Green), so no further delay is needed.
             assertFalse(
                 sentinelInvoked.get(),
-                "K38b: /sentinel handler was invoked — writeChannelCancelled check is absent or not firing; " +
+                "cancel-without-rethrow: /sentinel handler was invoked — writeChannelCancelled check is absent or not firing; " +
                     "the encoder was left in CHUNKED mode after cancel()-without-rethrow",
             )
         }
     }
 
     /**
-     * K39a regression test: `terminate()` in [AbstractPipelinedWriteChannel] must dispatch
+     * FIFO-ordering regression test: `terminate()` in [AbstractPipelinedWriteChannel] must dispatch
      * [writeTerminator] via [kotlinx.coroutines.CoroutineDispatcher.dispatch] rather than
      * `withContext`, so the terminator task is always enqueued after pending emit tasks —
      * even on Netty whose [io.github.fukusaka.keel.engine.netty.NettyEventLoopDispatcher]
@@ -255,7 +255,7 @@ class KeelByteWriteChannelTest {
      * (received = frameCount - 1). Restore [dispatch] and confirm it passes (received = frameCount).
      */
     @Test
-    fun `K39a — Netty SSE all frames arrive before chunked terminator`() {
+    fun `SSE FIFO ordering — Netty SSE all frames arrive before chunked terminator`() {
         val frameCount = 5
         withKeelNettyServer({
             routing {
@@ -287,13 +287,13 @@ class KeelByteWriteChannelTest {
                 var received = 0
                 while (true) {
                     val chunk = readNextChunk(reader) ?: break
-                    assertEquals("data: event-$received\n\n", chunk, "K39a: frame $received mismatch")
+                    assertEquals("data: event-$received\n\n", chunk, "FIFO ordering: frame $received mismatch")
                     received++
                 }
                 assertEquals(
                     frameCount,
                     received,
-                    "K39a: expected $frameCount frames but got $received — " +
+                    "FIFO ordering: expected $frameCount frames but got $received — " +
                         "terminate() placed writeTerminator before the final buffered emit task (FIFO violation)",
                 )
             }
@@ -301,7 +301,7 @@ class KeelByteWriteChannelTest {
     }
 
     /**
-     * K37 audit follow-up: [AbstractPipelinedWriteChannel.flush] must suspend on
+     * Slow-reader high-water audit follow-up: [AbstractPipelinedWriteChannel.flush] must suspend on
      * [PipelinedChannel.awaitFlushComplete] when [PipelinedChannel.isWritable] is `false`,
      * preventing unbounded `pendingWrites` growth when the producer outruns the consumer.
      *
@@ -330,12 +330,12 @@ class KeelByteWriteChannelTest {
      * Restore the gate and the test passes.
      */
     @Test
-    fun `K37-audit — flush suspends slow-reader producer beyond high-water mark`() {
+    fun `slow-reader high-water audit — flush suspends slow-reader producer beyond high-water mark`() {
         slowReaderBackpressureScenario(::withKeelServer, label = "NioEngine")
     }
 
     @Test
-    fun `K37-audit — flush suspends slow-reader producer beyond high-water mark on Netty`() {
+    fun `slow-reader high-water audit — flush suspends slow-reader producer beyond high-water mark on Netty`() {
         slowReaderBackpressureScenario(::withKeelNettyServer, label = "NettyEngine")
     }
 
@@ -517,7 +517,7 @@ class KeelByteWriteChannelTest {
         private const val HEX_RADIX = 16
 
         /**
-         * Pause window for `K37-audit — flush suspends slow-reader producer` tests.
+         * Pause window for `slow-reader high-water audit — flush suspends slow-reader producer` tests.
          * Must be long enough that a Red (gate-disabled) producer would have completed
          * its full N × chunkSize dispatch loop, but short enough to keep the test fast.
          * 1 second comfortably exceeds the few-millisecond Red-state runtime.

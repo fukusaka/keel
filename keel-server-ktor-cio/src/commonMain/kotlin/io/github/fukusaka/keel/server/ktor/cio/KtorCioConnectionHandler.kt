@@ -254,7 +254,7 @@ internal class KtorCioConnectionHandler(
                 output.flush()
             }
 
-            // K38b: if the streaming write channel was terminated via cancel() (e.g. a
+            // Cancel-without-rethrow: if the streaming write channel was terminated via cancel() (e.g. a
             // client disconnection during SSE, or application code that calls cancel()
             // without rethrowing), the chunked terminator `0\r\n\r\n` (or the full
             // Content-Length body) was never written. Advancing to the next keep-alive
@@ -375,7 +375,7 @@ internal class KtorCioConnectionHandler(
      * send buffer, every `write(2)` returns `EAGAIN`, and the tight read-ahead loop
      * never yields — the EventLoop thread never reaches `kevent(2)` / `epoll_wait(2)`,
      * so write-readiness events are never processed and throughput collapses. Mirrors
-     * the K37 fix on the upgrade pump (see `KeelApplicationResponse.pumpOutputToRaw`).
+     * the slow-reader high-water fix on the upgrade pump (see `KeelApplicationResponse.pumpOutputToRaw`).
      */
     private suspend fun pumpOutputToChannel(
         input: ByteReadChannel,

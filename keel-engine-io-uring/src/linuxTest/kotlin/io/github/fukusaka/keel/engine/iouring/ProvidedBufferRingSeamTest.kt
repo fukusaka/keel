@@ -125,7 +125,7 @@ class ProvidedBufferRingSeamTest {
         }
     }
 
-    // --- deferred re-arm on buffer availability (K62) ---
+    // --- deferred re-arm on buffer availability (-ENOBUFS busy-loop fix) ---
 
     @Test
     fun `requestRearmOnAvailable fires once on the next buffer return`() {

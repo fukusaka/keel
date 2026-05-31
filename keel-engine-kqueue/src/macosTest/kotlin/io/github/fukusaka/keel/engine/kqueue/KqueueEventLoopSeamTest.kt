@@ -185,12 +185,12 @@ class KqueueEventLoopSeamTest {
         assertTrue(errors.first().contains("kevent()"))
     }
 
-    // --- dispatchReady stale-filter removal tests (K22/K33 regression) ---
+    // --- dispatchReady stale-filter removal tests (stale-event filter starvation) ---
     //
     // kqueue uses persistent EV_ADD filters: EVFILT_WRITE fires on every kevent()
     // call while the fd is writable. Without EV_DELETE after a completed flush,
     // the EventLoop spins in a busy loop — saturating the EventLoop thread and
-    // starving accept() / reads under load (same root cause as epoll K22 / PR #447).
+    // starving accept() / reads under load (same root cause as the epoll stale-filter fix / PR #447).
     //
     // Drive `loop()` directly on the test thread. Each test scripts exactly one
     // EVFILT_WRITE event followed by a fatal EBADF to terminate the loop.

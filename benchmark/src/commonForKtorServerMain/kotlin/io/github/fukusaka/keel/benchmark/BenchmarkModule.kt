@@ -176,7 +176,7 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
             //
             // Whether `flush()` actually reaches the wire as a per-frame
             // `requestFlush` depends on the engine adapter:
-            //   * `ktor-keel-*` and `ktor-cio-keel-*` (PR #441 / K29) now
+            //   * `ktor-keel-*` and `ktor-cio-keel-*` (PR #441) now
             //     own a `BufferedByteWriteChannel` impl that maps each user
             //     `flush()` to one `requestWrite + requestFlush` on the
             //     pipelined channel.
@@ -185,7 +185,7 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
             // History: prior to PR #441 the keel-server-ktor adapter
             // bridged Ktor's `ByteChannel` through a `readAvailable(8 KB)`
             // worker, coalescing multiple per-user flushes into one engine
-            // flush. The K29 fix removed that bridge.
+            // flush. The PR #441 fix removed that bridge.
             val count = call.request.queryParameters["count"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_COUNT
             val size = call.request.queryParameters["size"]?.toIntOrNull() ?: BENCHMARK_SSE_DEFAULT_SIZE
             val payload = sseFramePayload(size)

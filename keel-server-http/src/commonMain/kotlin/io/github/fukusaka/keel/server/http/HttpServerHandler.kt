@@ -53,7 +53,7 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
 // Param count grows by one per new pipeline phase (codec / dispatch /
 // hooks). 8 is detekt's project-wide threshold; the install function
 // is `internal` and called from exactly one site (`KeelHttpServer.start`)
-// so suppressing is bounded. K61 (DSL pluggable redesign) plans to
+// so suppressing is bounded. The planned DSL pluggable redesign will
 // collapse these into a single `HttpServerPipelineConfig` bundle.
 @Suppress("LongParameterList")
 internal fun PipelinedChannel.installHttpServerPipeline(

@@ -51,7 +51,7 @@ import platform.posix.memcpy
  * - Slicing this IoBuf via `ctx.allocator.slice(...)` retains it (one
  *   reference per slice), keeping `zcHandle` alive until every slice
  *   is released.
- * - **Atomic [refCount] (K56)**: NWConnection's per-connection dispatch
+ * - **Atomic [refCount] (GCD cross-worker refcount race)**: NWConnection's per-connection dispatch
  *   queue is a GCD serial queue, which serialises blocks but does NOT
  *   pin them to one OS thread — GCD migrates blocks across its worker
  *   pool. The other Native engines (kqueue / epoll / io_uring) all run

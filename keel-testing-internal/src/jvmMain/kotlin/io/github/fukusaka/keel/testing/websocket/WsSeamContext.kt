@@ -23,7 +23,7 @@ import kotlinx.io.readByteArray
  * `WsFrame` events directly into [channel] without first staging the HTTP
  * upgrade handshake.
  *
- * Used by per-frame K4 leak detection seam tests (e.g.
+ * Used by per-frame IoBuf leak detection seam tests (e.g.
  * `NettyPipelineWsEchoSeamTest`) and by large-payload / fragmented seam
  * tests (e.g. `NettyPipelineWsLargePayloadTest`). The full HTTP→WS upgrade
  * flow stays inline in those test classes because it builds its own

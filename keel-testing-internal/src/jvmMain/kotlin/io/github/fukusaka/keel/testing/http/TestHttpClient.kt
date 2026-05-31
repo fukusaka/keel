@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
  * shutdown the selector + executor threads survived the test method, accumulating across
  * the suite and amplifying scheduler-contention slowdowns on resource-constrained CI
  * runners (the symptom that motivated this helper: `NettyPipelineWsEchoTest` on GHA macOS
- * Apple Silicon, where K40-fixed tests still drifted from sub-second locally to
+ * Apple Silicon, where SIGKILL-flake-fixed tests still drifted from sub-second locally to
  * multi-minute on CI before the explicit-lifecycle pattern was introduced).
  *
  * Using a fixed-size daemon executor (instead of the implicit `ForkJoinPool.commonPool()`

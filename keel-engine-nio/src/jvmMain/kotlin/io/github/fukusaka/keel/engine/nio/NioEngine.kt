@@ -73,7 +73,7 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
  *               on both macOS M1 and luna 32-core, because each keel
  *               EventLoop already saturates its core under per-frame-flush
  *               SSE and extra workers buy more cross-thread coordination
- *               than parallelism (K31 candidate (c) — rejected).
+ *               than parallelism (worker-thread-count candidate (c) — rejected).
  */
 class NioEngine(
     override val config: IoEngineConfig = IoEngineConfig(),

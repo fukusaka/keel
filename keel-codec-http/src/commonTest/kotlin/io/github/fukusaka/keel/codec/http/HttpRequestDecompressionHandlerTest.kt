@@ -97,7 +97,7 @@ class HttpRequestDecompressionHandlerTest {
         assertNotNull(state.reads.last() as? HttpBodyEnd)
     }
 
-    // -------------------------------------------------- recv-buffer release (K62)
+    // -------------------------------------------------- recv-buffer release
 
     // Builds a pooled HttpHeaders whose single `Content-Encoding` entry is a
     // zero-copy range view over [backing], mirroring a decoder-sourced head.
@@ -130,7 +130,7 @@ class HttpRequestDecompressionHandlerTest {
         // Decoder-sourced head: its headers retain `backing` behind a range
         // view. The handler rewrites the head with a buffer-free copy, so
         // nothing downstream releases the original — the handler must, or one
-        // recv buffer leaks per request (K62: io_uring's fixed provided-buffer
+        // recv buffer leaks per request (io_uring's fixed provided-buffer
         // ring drains and wedges the EventLoop in an -ENOBUFS storm).
         val backing = encodingBuffer("lower")
         val headers = rangeBackedEncodingHeaders("lower", backing) // refCount 2 (alloc + addRange)

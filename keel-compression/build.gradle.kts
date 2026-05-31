@@ -22,8 +22,8 @@ plugins {
 // / `keel-codec-http3` as their own implementations.
 //
 // History:
-//   - Designed in PR #492 (this) alongside the K16 (Native response
-//     compression) gate. Pluggable backend SPI emerged from the
+//   - Designed in PR #492 (this) alongside the Native response-compression
+//     wiring. Pluggable backend SPI emerged from the
 //     Phase 11 / `keel-server-http` work — protocols beyond HTTP
 //     server response (HTTP client decode, WebSocket permessage-deflate,
 //     gRPC per-message) all want to share this SPI.

@@ -94,7 +94,7 @@ class OpenSslCodec internal constructor(
         // Capture which API we are calling — OpenSSL / BoringSSL return-
         // value semantics differ between SSL_do_handshake (1 = success,
         // 0/-1 = error) and SSL_read (positive = plaintext byte count,
-        // 0/-1 = EOF / error). K54: conflating SSL_do_handshake's
+        // 0/-1 = EOF / error). Handshake byte-count: conflating SSL_do_handshake's
         // `ret == 1` (success) with SSL_read's `ret == 1` (one byte
         // read) used to advance the plaintext writerIndex by 1, leaking
         // a single uninitialised garbage byte (typically `\x00`) into
