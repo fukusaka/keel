@@ -120,6 +120,19 @@ private class JvmZlibEncoderSession(
         return drainEncode(input, output, flushFlag, isFinish = false)
     }
 
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        // Emit a Z_SYNC_FLUSH boundary (raw DEFLATE ends in 00 00 FF FF) and
+        // keep the stream open. A gzip stream still needs its header before
+        // the first bytes, even when flushed before any update().
+        if (wrap == WrapFormat.Gzip && !headerEmitted) {
+            if (output.writableBytes < GZIP_HEADER_SIZE) return CodecStatus.NEED_OUTPUT
+            writeGzipHeader(output)
+            headerEmitted = true
+        }
+        return drainEncode(input = null, output = output, effectiveFlush = Deflater.SYNC_FLUSH, isFinish = false)
+    }
+
     override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         if (finishedReturned) return CodecStatus.FINISHED
@@ -294,6 +307,13 @@ private class JvmZlibDecoderSession(
         }
 
         return drainDecode(input, output)
+    }
+
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        // Drain the plaintext decoded so far (one Z_SYNC_FLUSH'd block / WS
+        // frame), leaving the inflate stream open — no trailer validation.
+        return drainDecode(input = null, output = output)
     }
 
     override fun finish(output: IoBuf): CodecStatus {

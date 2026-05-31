@@ -73,6 +73,43 @@ private class JsZlibEncoderSession(
         return CodecStatus.NEED_INPUT
     }
 
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Compress everything buffered so far with Z_SYNC_FLUSH (boundary,
+        // stream stays open). Correct for one accumulation per flush — the
+        // WebSocket permessage-deflate per-message case (one update + one
+        // flush). The deferred sync API cannot carry an LZ77 window across
+        // separate flush() calls (context takeover) — see module limitation.
+        if (compressedOutput == null) {
+            val u8 = pending.toUint8Array()
+            val opts: dynamic = js("({})")
+            opts.finishFlush = constants.Z_SYNC_FLUSH
+            val resultDyn: dynamic = when (wrap) {
+                WrapFormat.Gzip, WrapFormat.Default -> gzipSync(u8, opts)
+                WrapFormat.Zlib -> deflateSync(u8, opts)
+                WrapFormat.Raw -> deflateRawSync(u8, opts)
+            }
+            compressedOutput = resultDyn.unsafeCast<Uint8Array>().toByteArray()
+            compressedOffset = 0
+        }
+        val src = compressedOutput!!
+        val remaining = src.size - compressedOffset
+        val toWrite = minOf(remaining, output.writableBytes)
+        if (toWrite > 0) {
+            output.writeByteArray(src, compressedOffset, toWrite)
+            compressedOffset += toWrite
+        }
+        if (compressedOffset >= src.size) {
+            // Boundary fully emitted: clear for the next message, stay open.
+            pending = ByteArray(0)
+            compressedOutput = null
+            compressedOffset = 0
+            return CodecStatus.NEED_INPUT
+        }
+        return CodecStatus.NEED_OUTPUT
+    }
+
     override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         if (finishedReturned) return CodecStatus.FINISHED
@@ -152,6 +189,51 @@ private class JsZlibDecoderSession(
             totalInput += n
         }
         return CodecStatus.NEED_INPUT
+    }
+
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        // Decode the buffered Z_SYNC_FLUSH'd block (one WS frame). Pass
+        // finishFlush=Z_SYNC_FLUSH so Node tolerates the missing final block,
+        // then clear for the next message and keep the stream open.
+        if (decodedOutput == null) {
+            val u8 = pendingInput.toUint8Array()
+            val opts: dynamic = js("({})")
+            opts.finishFlush = constants.Z_SYNC_FLUSH
+            val decoded = try {
+                when (wrap) {
+                    WrapFormat.Gzip, WrapFormat.Default -> gunzipSync(u8, opts)
+                    WrapFormat.Zlib -> inflateSync(u8, opts)
+                    WrapFormat.Raw -> inflateRawSync(u8, opts)
+                }
+            } catch (e: Throwable) {
+                throw DecompressionException("inflate failed: ${e.message}", e)
+            }
+            val out = decoded.unsafeCast<Uint8Array>().toByteArray()
+            options.maxOutputSize?.let { cap ->
+                if (out.size > cap) throw DecompressionLimitException("max-output-size exceeded: ${out.size} > $cap")
+            }
+            options.maxRatio?.let { ratio ->
+                if (totalInput > 0 && out.size > totalInput * ratio) {
+                    throw DecompressionLimitException("max-ratio exceeded: ${out.size} > $totalInput * $ratio")
+                }
+            }
+            decodedOutput = out
+            decodedOffset = 0
+        }
+        val src = decodedOutput!!
+        val toWrite = minOf(src.size - decodedOffset, output.writableBytes)
+        if (toWrite > 0) {
+            output.writeByteArray(src, decodedOffset, toWrite)
+            decodedOffset += toWrite
+        }
+        if (decodedOffset >= src.size) {
+            pendingInput = ByteArray(0)
+            decodedOutput = null
+            decodedOffset = 0
+            return CodecStatus.NEED_INPUT
+        }
+        return CodecStatus.NEED_OUTPUT
     }
 
     override fun finish(output: IoBuf): CodecStatus {
