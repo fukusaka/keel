@@ -307,7 +307,7 @@ func main() {
 	// gin's Context.Stream calls w.Flush() (which casts to
 	// http.Flusher and writes the chunk to the wire) after each `step`
 	// returns, so each `w.Write(payload)` becomes one flushed HTTP
-	// chunk. Audit during PR #442 (K30) confirmed the `go-bench` SSE
+	// chunk. Audit during PR #442 confirmed the `go-bench` SSE
 	// row sits at the same per-frame ceiling as `pipeline-http-netty`
 	// — no change needed. If gin's Stream contract ever changes (or
 	// the body switches off `c.Stream`), restore an explicit

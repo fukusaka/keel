@@ -161,7 +161,7 @@ for run in $(seq 1 "$RUNS"); do
     #
     # Track per-iteration curl exit codes so a `FAILED` cell can later be
     # attributed to "TCP refused throughout" (exit 7), "server accepted TCP
-    # but never responded" (exit 28 = CURLE_OPERATION_TIMEDOUT, the K55-class
+    # but never responded" (exit 28 = CURLE_OPERATION_TIMEDOUT, the server-hang
     # signal), or "server returned a 4xx/5xx during warmup" (status code).
     READY=false
     declare -A CURL_EXIT_COUNTS=()
@@ -237,7 +237,7 @@ for run in $(seq 1 "$RUNS"); do
     # is definitive evidence of a server crash, even when our SIGTERM
     # raced with it.
     #
-    # K57: the pre-fix logic only did `kill -0 $PID` *before* kill_server,
+    # Exit-status decode: the pre-fix logic only did `kill -0 $PID` *before* kill_server,
     # missing the race where the server SEGV'd between that check and our
     # SIGTERM arriving. Worse, wrk could already have a numeric Requests/sec
     # line from the partial run before the crash, so the cell silently

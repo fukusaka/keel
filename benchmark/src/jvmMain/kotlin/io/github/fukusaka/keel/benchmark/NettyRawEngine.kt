@@ -287,7 +287,7 @@ private class BenchmarkHandler(
         head.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED)
         applyConnectionHeader(head)
         // Per-frame writeAndFlush: matches the per-frame flush semantics
-        // that pipeline-http (PR #440 / K25) and ktor-keel (PR #441 / K29)
+        // that pipeline-http (PR #440) and ktor-keel (PR #441)
         // enforce. The previous `ctx.write` × N + a single trailing
         // `writeAndFlush(LAST_CONTENT)` queued every frame in Netty's
         // ChannelOutboundBuffer until the terminator triggered one flush —

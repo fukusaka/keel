@@ -127,7 +127,7 @@ class PipelineHttpRoutesTest {
 
     @Test
     fun `sse-stream emits exactly one response and does not send unsolicited second response on keep-alive`() {
-        // Regression test for K3: BenchmarkRoutingHandler was resetting currentPath
+        // Regression test for the routing-handler currentPath reset bug: BenchmarkRoutingHandler was resetting currentPath
         // to null inside emitSseStream (called on HttpRequestHead) but did NOT set a
         // flag to suppress the HttpBodyEnd handler. When HttpBodyEnd arrived, it fell
         // to emitResponse(currentPath=null) → 404 Not Found. That second, unsolicited

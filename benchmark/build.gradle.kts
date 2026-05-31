@@ -56,7 +56,7 @@ kotlin {
                 // keel-server-websocket is `api(keel-server-http)`, so this
                 // does not conflict with the existing keel-server-http dep.
                 implementation(project(":keel-server-websocket"))
-                // K16 fix: pipeline-http engines wire `keel-compression-zlib`
+                // pipeline-http engines wire `keel-compression-zlib`
                 // (gzip / deflate backend) when `--compression=true`.
                 implementation(project(":keel-compression-zlib"))
                 implementation(libs.kotlinx.coroutines.core)
