@@ -101,7 +101,7 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
 SCHEME=${BENCH_SCHEME:-http}
 GC_CAPTURE=${BENCH_GC_CAPTURE:-0}
-READY_TIMEOUT=60
+READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
 
 # Raw jstat samples land alongside other bench artifacts so
 # `bench-snapshot.sh` can pick them up. `bench-keel.sh` writes results

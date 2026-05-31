@@ -137,7 +137,7 @@ WS_COMPRESSION=${BENCH_WS_COMPRESSION:-true}
 WS_PATH="${BENCH_WS_PATH:-}"
 SCHEME=${BENCH_SCHEME:-ws}
 TC_HANDLE="1:"
-READY_TIMEOUT=60
+READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
 
 # Docker invocation per host, resolved lazily by resolve_docker(): either
 # "docker", "sudo -n docker", or "" when Docker is unavailable.
