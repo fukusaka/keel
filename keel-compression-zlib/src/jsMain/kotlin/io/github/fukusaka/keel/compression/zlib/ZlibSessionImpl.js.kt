@@ -56,6 +56,11 @@ private class JsZlibEncoderSession(
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+    private var pending: ByteArray = ByteArray(0)
+    private var compressedOutput: ByteArray? = null
+    private var compressedOffset: Int = 0
+    private var closed: Boolean = false
+    private var finishedReturned: Boolean = false
 
     /**
      * Builds the Node `zlib` options object for one sync compress call,
@@ -72,11 +77,6 @@ private class JsZlibEncoderSession(
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts
     }
-    private var pending: ByteArray = ByteArray(0)
-    private var compressedOutput: ByteArray? = null
-    private var compressedOffset: Int = 0
-    private var closed: Boolean = false
-    private var finishedReturned: Boolean = false
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
