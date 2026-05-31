@@ -53,8 +53,11 @@ build_engine_list() {
     # `net.inet.tcp.msl` default 15000 ms). With only a 2s inter-engine
     # cooldown, the macOS ephemeral pool (49152-65535 = 16,384 ports) drains
     # within ~3-4 engines and stays at saturation for the rest of the chain.
+    # NOTE: this is *client-side ephemeral* port exhaustion, distinct from the
+    # *server listening* port. The latter is now a per-engine port (see the run
+    # loop below) so no engine binds a port a prior engine left in TIME_WAIT.
     # Multi-threaded engines (kqueue / nio / netty / nwconnection / Phase 2
-    # natives) absorb the resulting connection setup pressure transparently;
+    # natives) absorb the ephemeral-port setup pressure transparently;
     # Node.js's single-threaded libuv event loop is materially slower at
     # completing a WebSocket upgrade on the loopback path, so it is the
     # canary that surfaces the saturation as `k6 ws-large status 101 0%`
@@ -154,14 +157,25 @@ for scenario in $SCENARIOS; do
         printf "  %-32s %12s  %-10s  %-10s\n" "--------------------------------" "------------" "----------" "----------"
     } >> "$OUTFILE"
 
+    # Give each engine a distinct listening port (base + index). The NWConnection
+    # engine cannot rebind a port a prior engine left in TIME_WAIT (Apple Radar
+    # FB8658821); sharing one port across the sequential sweep made the first
+    # nwconnection server fail its READY check with EADDRINUSE. The HTTP sweep
+    # (bench-all.sh) already increments the port per engine for the same reason.
+    engine_index=0
     while IFS= read -r entry; do
         display="${entry%%|*}"
         cmdstr="${entry#*|}"
 
+        # Rewrite the server's --port to a per-engine port (base + index) so no
+        # two engines in the sweep share a listening port (TIME_WAIT note above).
+        engine_port=$((PORT + engine_index))
+        cmdstr="${cmdstr//--port=$PORT/--port=$engine_port}"
+
         # Split command string into array
         read -ra cmd <<< "$cmdstr"
 
-        row=$(BENCH_PORT="$PORT" ./benchmark/bench-stream-one.sh "$display" "$scenario" "${cmd[@]}" 2>/dev/null | tail -1)
+        row=$(./benchmark/bench-stream-one.sh "$display" "$scenario" "${cmd[@]}" 2>/dev/null | tail -1)
         if [ -n "$row" ]; then
             # Parse pipe-separated: name|rps|p50|p99
             IFS='|' read -r rname rps rp50 rp99 <<< "$row"
@@ -171,6 +185,7 @@ for scenario in $SCENARIOS; do
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED"
             printf "  %-32s %s\n" "$display" "FAILED / SKIPPED" >> "$OUTFILE"
         fi
+        engine_index=$((engine_index + 1))
         sleep "$COOLDOWN"
     done < <(build_engine_list "$scenario")
 
