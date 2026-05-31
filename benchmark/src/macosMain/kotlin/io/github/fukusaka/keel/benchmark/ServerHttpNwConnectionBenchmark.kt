@@ -28,7 +28,7 @@ object ServerHttpNwConnectionBenchmark : EngineBenchmark {
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
             installBenchCompression(config.compression)
-            installBenchMiddleware(config.middlewareDepth)
+            installBenchFeatureRoutes(config)
             installStreamingBenchRoutes()
             installWebSocketBenchRoutes()
         }
