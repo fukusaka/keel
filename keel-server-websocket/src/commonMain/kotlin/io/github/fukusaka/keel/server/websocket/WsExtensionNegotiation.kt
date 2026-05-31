@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.compression.CompressionCodec
+import io.github.fukusaka.keel.compression.DeflateCapabilities
 
 /** `Sec-WebSocket-Extensions` header name (RFC 6455 §9.1 / RFC 7692 §5). */
 internal const val SEC_WEBSOCKET_EXTENSIONS: String = "Sec-WebSocket-Extensions"
@@ -73,10 +74,16 @@ internal sealed interface WsExtensionResult {
  * Because keel's default is no context takeover, the response always
  * carries `server_no_context_takeover` + `client_no_context_takeover`
  * when [options].`contextTakeover` is false — that holds the
- * per-connection memory to a single window. Offered `*_max_window_bits`
- * values in the legal range 8..15 are honoured; an offer with no
- * `permessage-deflate` token (or a null [codec]) yields
- * [WsExtensionResult.None].
+ * per-connection memory to a single window. An offered
+ * `client_max_window_bits` (8..15) is always honoured — the server's
+ * inflater handles any client window. An offered `server_max_window_bits`
+ * is honoured only when [codec]'s encoder can actually produce that window
+ * (its [io.github.fukusaka.keel.compression.DeflateCapabilities] window
+ * range); an offer asking for a smaller window than the backend supports
+ * is declined (the loop tries the next offer) rather than over-promised.
+ * Context takeover is likewise forced off when the encoder / decoder
+ * cannot honor it. An offer with no `permessage-deflate` token (or a null
+ * [codec]) yields [WsExtensionResult.None].
  *
  * Only the *first* well-formed `permessage-deflate` offer is accepted —
  * RFC 7692 §5.1 lets a client list several with different parameters and
@@ -101,7 +108,21 @@ internal fun negotiatePermessageDeflate(
         val tokens = offer.split(';').map { it.trim() }.filter { it.isNotEmpty() }
         if (tokens.isEmpty() || !tokens[0].equals(PERMESSAGE_DEFLATE, ignoreCase = true)) continue
         val parsed = parseDeflateParams(tokens.drop(1)) ?: continue
-        return buildDeflateResult(parsed, options)
+        // Consult the backend's DEFLATE capabilities (null / non-DEFLATE
+        // type → handled conservatively below).
+        val encoderCaps = codec.encoder.capabilities as? DeflateCapabilities
+        val decoderCaps = codec.decoder.capabilities as? DeflateCapabilities
+        // Decline an offer whose server_max_window_bits is below what the
+        // backend's compressor can actually produce. Echoing a window the
+        // server cannot honor (e.g. java.util.zip.Deflater is fixed at 15)
+        // corrupts the client's inflater, which sized its window for the
+        // smaller value (RFC 7692 §7.1.2.1). Falling through lets a later,
+        // unconstrained offer — or no compression — win instead. An unknown
+        // backend is treated as fixed-full-window (declines any shrink).
+        val minWindowBits = encoderCaps?.windowBits?.first ?: MAX_WINDOW_BITS
+        val serverBits = parsed.serverMaxWindowBits
+        if (serverBits != null && serverBits < minWindowBits) continue
+        return buildDeflateResult(parsed, options, encoderCaps, decoderCaps)
     }
     return WsExtensionResult.None
 }
@@ -157,11 +178,22 @@ private fun parseDeflateParams(params: List<String>): DeflateParams? {
  * and the server's [options], assembling the `Sec-WebSocket-Extensions`
  * response header value per RFC 7692 §5.1.
  */
-private fun buildDeflateResult(parsed: DeflateParams, options: WsDeflateOptions): WsExtensionResult.Deflate {
-    // keel disables context takeover whenever its own config asks for it
-    // or the client demands it; the response advertises that decision.
-    val noServerCtx = !options.contextTakeover || parsed.serverNoContextTakeover
-    val noClientCtx = !options.contextTakeover || parsed.clientNoContextTakeover
+private fun buildDeflateResult(
+    parsed: DeflateParams,
+    options: WsDeflateOptions,
+    encoderCaps: DeflateCapabilities?,
+    decoderCaps: DeflateCapabilities?,
+): WsExtensionResult.Deflate {
+    // keel disables context takeover whenever its own config asks for it,
+    // the client demands it, or the backend cannot honor it — the server
+    // encoder must be able to carry the window across messages, and the
+    // server decoder must be able to follow a client that does. An unknown
+    // backend is treated as unable (forces no-takeover). The response
+    // advertises the decision.
+    val canServerCtx = encoderCaps?.supportsContextTakeover ?: false
+    val canClientCtx = decoderCaps?.supportsContextTakeover ?: false
+    val noServerCtx = !options.contextTakeover || parsed.serverNoContextTakeover || !canServerCtx
+    val noClientCtx = !options.contextTakeover || parsed.clientNoContextTakeover || !canClientCtx
 
     val responseParts = mutableListOf(PERMESSAGE_DEFLATE)
     if (noServerCtx) responseParts.add(SERVER_NO_CONTEXT_TAKEOVER)

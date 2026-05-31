@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.compression.DeflateCapabilities
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -15,6 +16,14 @@ import kotlin.test.assertTrue
  * All cases are pure (no I/O, no coroutines) so no timeouts are needed —
  * the streaming compression sessions run synchronously.
  */
+/** Smallest DEFLATE window-bits RFC 7692 §7.1.2 permits — nothing below this exists to decline. */
+private const val DEFLATE_WINDOW_FLOOR = 8
+
+/** This target's deflate-backend capabilities (native 8..15/ctx; JVM 15..15/ctx; JS 15..15/no-ctx). */
+private val deflateEncoderCaps: DeflateCapabilities = DeflateCodec.encoder.capabilities as DeflateCapabilities
+private val deflateDecoderCaps: DeflateCapabilities = DeflateCodec.decoder.capabilities as DeflateCapabilities
+private val deflateMinWindowBits: Int = deflateEncoderCaps.windowBits.first
+
 class WsPermessageDeflateTest {
 
     private fun engine(options: WsDeflateOptions = WsDeflateOptions.Default): WsPermessageDeflate =
@@ -164,15 +173,108 @@ class WsPermessageDeflateTest {
     }
 
     @Test
-    fun `server_max_window_bits is echoed in the response when offered`() {
+    fun `server_max_window_bits is honored or declined per backend capability`() {
+        // A backend that can shrink its window (native libz, minWindowBits=8)
+        // agrees to and echoes server_max_window_bits=12; one that is fixed at
+        // 15 (JVM Deflater / JS one-shot) must decline rather than over-promise
+        // a window it cannot produce.
+        val minBits = deflateMinWindowBits
         val result = negotiatePermessageDeflate(
             "permessage-deflate; server_max_window_bits=12",
             DeflateCodec,
             WsDeflateOptions.Default,
         )
+        if (minBits <= 12) {
+            val deflate = assertIs<WsExtensionResult.Deflate>(result)
+            assertEquals(12, deflate.serverMaxWindowBits)
+            assertTrue(deflate.responseHeaderValue.contains("server_max_window_bits=12"))
+        } else {
+            assertIs<WsExtensionResult.None>(result)
+        }
+    }
+
+    @Test
+    fun `server_max_window_bits=15 is always honored`() {
+        // 15 is the largest legal window, so every backend (minWindowBits <= 15)
+        // can produce it — the offer is accepted regardless of platform.
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; server_max_window_bits=15",
+            DeflateCodec,
+            WsDeflateOptions.Default,
+        )
         val deflate = assertIs<WsExtensionResult.Deflate>(result)
-        assertEquals(12, deflate.serverMaxWindowBits)
-        assertTrue(deflate.responseHeaderValue.contains("server_max_window_bits=12"))
+        assertEquals(15, deflate.serverMaxWindowBits)
+        assertTrue(deflate.responseHeaderValue.contains("server_max_window_bits=15"))
+    }
+
+    @Test
+    fun `a server_max_window_bits below the backend minimum is never over-promised`() {
+        // Regression for the over-promise bug: a fixed-15 backend used to echo
+        // server_max_window_bits=N (N<15) it could not honor, corrupting the
+        // client's inflater. It must now decline the offer instead.
+        val minBits = deflateMinWindowBits
+        if (minBits <= DEFLATE_WINDOW_FLOOR) return // backend honors all; nothing below to test
+        val below = minBits - 1
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; server_max_window_bits=$below",
+            DeflateCodec,
+            WsDeflateOptions.Default,
+        )
+        assertIs<WsExtensionResult.None>(result)
+    }
+
+    @Test
+    fun `an unhonorable server_max_window_bits offer falls back to a later bare offer`() {
+        val minBits = deflateMinWindowBits
+        if (minBits <= DEFLATE_WINDOW_FLOOR) return // no decline path on a full-feature backend
+        // First offer asks for a window the backend can't produce → declined;
+        // the bare second offer is accepted with no server_max_window_bits.
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; server_max_window_bits=${minBits - 1}, permessage-deflate",
+            DeflateCodec,
+            WsDeflateOptions.Default,
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        assertFalse(deflate.responseHeaderValue.contains("server_max_window_bits"))
+    }
+
+    @Test
+    fun `server context takeover is honored or forced off per backend capability`() {
+        // With context takeover requested, a backend that supports it (native
+        // libz / JVM Deflater) keeps the window across messages — no
+        // server_no_context_takeover. One that cannot (JS one-shot) must force
+        // it off rather than over-promise a takeover the encoder cannot honor.
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate",
+            DeflateCodec,
+            WsDeflateOptions(contextTakeover = true),
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        if (deflateEncoderCaps.supportsContextTakeover) {
+            assertFalse(deflate.responseHeaderValue.contains("server_no_context_takeover"))
+            assertTrue(deflate.effectiveOptions.contextTakeover)
+        } else {
+            assertTrue(deflate.responseHeaderValue.contains("server_no_context_takeover"))
+            assertFalse(deflate.effectiveOptions.contextTakeover)
+        }
+    }
+
+    @Test
+    fun `client context takeover is forced off when the server decoder cannot follow it`() {
+        // The server's decoder must follow a client that keeps its window across
+        // messages; a JS one-shot decoder cannot, so client_no_context_takeover
+        // is forced rather than accepting a stream it cannot decode.
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate",
+            DeflateCodec,
+            WsDeflateOptions(contextTakeover = true),
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        if (deflateDecoderCaps.supportsContextTakeover) {
+            assertFalse(deflate.responseHeaderValue.contains("client_no_context_takeover"))
+        } else {
+            assertTrue(deflate.responseHeaderValue.contains("client_no_context_takeover"))
+        }
     }
 
     @Test
@@ -220,12 +322,14 @@ class WsPermessageDeflateTest {
 
     @Test
     fun `the first valid deflate offer of several is accepted`() {
+        // server_max_window_bits=15 is honorable on every backend, so the
+        // assertion is deterministic across platforms.
         val result = negotiatePermessageDeflate(
-            "permessage-deflate; bogus_param, permessage-deflate; server_max_window_bits=11",
+            "permessage-deflate; bogus_param, permessage-deflate; server_max_window_bits=15",
             DeflateCodec,
             WsDeflateOptions.Default,
         )
         val deflate = assertIs<WsExtensionResult.Deflate>(result)
-        assertEquals(11, deflate.serverMaxWindowBits)
+        assertEquals(15, deflate.serverMaxWindowBits)
     }
 }

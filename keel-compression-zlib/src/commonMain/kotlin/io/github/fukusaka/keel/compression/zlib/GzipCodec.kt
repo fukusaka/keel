@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.compression.CompressionCodec
 import io.github.fukusaka.keel.compression.Decoder
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
+import io.github.fukusaka.keel.compression.DeflateCapabilities
 import io.github.fukusaka.keel.compression.Encoder
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
@@ -38,27 +39,48 @@ public object DeflateCodec : CompressionCodec {
 
 public object GzipEncoder : Encoder {
     override val name: String = "gzip"
+    override val capabilities: DeflateCapabilities get() = deflateEncoderCapabilities
     override fun newSession(allocator: BufferAllocator, options: EncoderOptions): EncoderSession =
         newZlibEncoderSession(allocator, options, defaultWrap = WrapFormat.Gzip)
 }
 
 public object GzipDecoder : Decoder {
     override val name: String = "gzip"
+    override val capabilities: DeflateCapabilities get() = deflateDecoderCapabilities
     override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession =
         newZlibDecoderSession(allocator, options, defaultWrap = WrapFormat.Gzip)
 }
 
 public object DeflateEncoder : Encoder {
     override val name: String = "deflate"
+    override val capabilities: DeflateCapabilities get() = deflateEncoderCapabilities
     override fun newSession(allocator: BufferAllocator, options: EncoderOptions): EncoderSession =
         newZlibEncoderSession(allocator, options, defaultWrap = WrapFormat.Zlib)
 }
 
 public object DeflateDecoder : Decoder {
     override val name: String = "deflate"
+    override val capabilities: DeflateCapabilities get() = deflateDecoderCapabilities
     override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession =
         newZlibDecoderSession(allocator, options, defaultWrap = WrapFormat.Zlib)
 }
+
+/**
+ * Per-platform [DeflateCapabilities] for the zlib encoders, modelling the
+ * irreducible target differences: native libz emits `windowBits` down to
+ * 8 and supports context takeover; `java.util.zip.Deflater` (JVM) is
+ * fixed at a 15-bit window; the Node one-shot API (JS) cannot carry the
+ * LZ77 window across messages.
+ */
+internal expect val deflateEncoderCapabilities: DeflateCapabilities
+
+/**
+ * Per-platform [DeflateCapabilities] for the zlib decoders. The relevant
+ * axis is context takeover: native libz and the JVM `Inflater` decode a
+ * peer stream that preserved its window across messages; the Node
+ * one-shot inflate API cannot.
+ */
+internal expect val deflateDecoderCapabilities: DeflateCapabilities
 
 internal expect fun newZlibEncoderSession(
     allocator: BufferAllocator,
