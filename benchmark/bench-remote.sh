@@ -49,12 +49,21 @@
 #                        themselves are exact and need no recomputation).
 #                        Requires `jstat` on the remote host PATH; Native
 #                        servers silently skip (no JVM to attach to).
+#     BENCH_TEMP_CAPTURE (default: 0). When 1, reads the CPU temperature of
+#                        the server host and the wrk client host at the start
+#                        and end of the measured window and appends
+#                        `temp=srv:S->EC(dN)/cli:S->EC(dN)` to the result
+#                        line. No sudo / no install (see bench-temp.sh: macOS
+#                        ioreg VirtualTemperature, Linux thermal_zone / hwmon).
+#                        Like GC counters it spans the whole window, not
+#                        per-run. A host with no readable sensor shows `n/a`.
 #
 # Output format:
 #   Default            : <name>|<rps>|<p50>|<p99>
 #   Default + multi-run: <name>|<median_rps>|<p50>|<p99>|[<all_rps>]
 #   With GC capture    : <name>|<rps>|<p50>|<p99>|GC:<alloc_MB/s>|<ygc>|<ygc_ms>|<fgc>|<fgc_ms>|<gc_pct>
 #   GC + multi-run     : <name>|<median_rps>|<p50>|<p99>|[<all_rps>]|GC:<alloc_MB/s>|<ygc>|<ygc_ms>|<fgc>|<fgc_ms>|<gc_pct>
+#   With temp capture  : ...|temp=srv:<S>-><E>C(d<N>)/cli:<S>-><E>C(d<N>)   (appended after any GC field)
 #   (GC counters report the last run's deltas; multi-run medians of the
 #    GC counters are not computed because the sample size is small.)
 #
@@ -101,6 +110,9 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
 SCHEME=${BENCH_SCHEME:-http}
 GC_CAPTURE=${BENCH_GC_CAPTURE:-0}
+# Optional CPU-temperature capture (BENCH_TEMP_CAPTURE=1) for the server host
+# and the wrk client host — see bench-temp.sh. Sourced after SCRIPT_DIR below.
+TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
 READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
 
 # Raw jstat samples land alongside other bench artifacts so
@@ -109,6 +121,8 @@ READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
 # didn't, but the GC capture additions need a place for raw artifacts
 # that supersedes the inline summary line.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=benchmark/bench-temp.sh
+. "${SCRIPT_DIR}/bench-temp.sh"
 RESULTS_DIR="${BENCH_RESULTS_DIR:-${SCRIPT_DIR}/results/${BENCH_REMOTE_HOST%%.*}}"
 mkdir -p "$RESULTS_DIR"
 GC_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -323,6 +337,14 @@ BEST_P50=""
 BEST_P99=""
 LAST_GC_SUMMARY=""
 
+# Server-host and client-host temperature at the start of the measured window.
+TEMP_SRV_START=""
+TEMP_CLI_START=""
+if [ "$TEMP_CAPTURE" = 1 ]; then
+    TEMP_SRV_START=$(read_temp_c "$REMOTE_HOST")
+    TEMP_CLI_START=$(read_temp_c "$CLIENT_HOST")
+fi
+
 # Convert wrk duration token (e.g. "10s", "30s", "1m") into seconds.
 duration_to_seconds() {
     local d="$1"
@@ -423,9 +445,21 @@ if [ -n "$LAST_GC_SUMMARY" ]; then
     GC_SUFFIX="|$LAST_GC_SUMMARY"
 fi
 
+# Server / client temperature at the end of the measured window, rendered as
+# `temp=srv:SS->EEC(dN)/cli:SS->EEC(dN)`. Like GC counters this is the whole
+# window (first run start -> last run end), not per-run. Empty unless enabled.
+TEMP_SUFFIX=""
+if [ "$TEMP_CAPTURE" = 1 ]; then
+    srv_temp=$(format_temp_delta "$TEMP_SRV_START" "$(read_temp_c "$REMOTE_HOST")")
+    cli_temp=$(format_temp_delta "$TEMP_CLI_START" "$(read_temp_c "$CLIENT_HOST")")
+    if [ -n "$srv_temp" ] || [ -n "$cli_temp" ]; then
+        TEMP_SUFFIX="|temp=srv:${srv_temp:-n/a}/cli:${cli_temp:-n/a}"
+    fi
+fi
+
 if [ "$RUNS" -gt 1 ]; then
     MEDIAN_RPS=$(median "${ALL_RPS[@]}")
-    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]${GC_SUFFIX}"
+    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]${GC_SUFFIX}${TEMP_SUFFIX}"
 else
-    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99${GC_SUFFIX}"
+    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99${GC_SUFFIX}${TEMP_SUFFIX}"
 fi

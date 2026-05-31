@@ -47,6 +47,10 @@
 #                                 servers that respond fast but corruptly
 #                                 (e.g. a chunked-encoder bug that fails
 #                                 99.98% of SSE body-size checks).
+#   BENCH_TEMP_CAPTURE            1 = append `temp=START->ENDC(dN)` (CPU temp at
+#                                 the start/end of the measured window) to the
+#                                 result row. No sudo / no install (see
+#                                 bench-temp.sh). Default 0.
 #
 # Environment variables forwarded to k6 (script-specific defaults apply):
 #   BENCH_K6_VUS            k6 virtual users          (default: 50)
@@ -306,6 +310,10 @@ PORT=18090
 RUNS=${BENCH_RUNS:-1}
 COOLDOWN=${BENCH_COOLDOWN:-2}
 READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
+# Optional CPU-temperature capture (BENCH_TEMP_CAPTURE=1) — see bench-temp.sh.
+TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
+# shellcheck source=benchmark/bench-temp.sh
+. "$(dirname "$0")/bench-temp.sh"
 K6_VUS=${BENCH_K6_VUS:-50}
 K6_DURATION=${BENCH_K6_DURATION:-15s}
 K6_TIMEOUT=${BENCH_K6_TIMEOUT:-90s}
@@ -562,6 +570,9 @@ ALL_RPS=()
 BEST_RPS=0
 BEST_P50=""
 BEST_P99=""
+
+TEMP_START=""
+[ "$TEMP_CAPTURE" = 1 ] && TEMP_START=$(read_temp_c)
 
 for run in $(seq 1 "$RUNS"); do
     kill_port "$PORT"
@@ -842,11 +853,15 @@ $K6_OUT"
     fi
 done
 
+TEMP_END=""
+[ "$TEMP_CAPTURE" = 1 ] && TEMP_END=$(read_temp_c)
+TEMP_FIELD=$(format_temp_delta "$TEMP_START" "$TEMP_END")
+
 if [ "$RUNS" -gt 1 ]; then
     MEDIAN_RPS=$(median "${ALL_RPS[@]}")
-    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]"
+    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]${TEMP_FIELD:+|temp=$TEMP_FIELD}"
 else
-    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99"
+    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99${TEMP_FIELD:+|temp=$TEMP_FIELD}"
 fi
 
 # Surface JFR / GC log paths so the operator knows where the artefacts
