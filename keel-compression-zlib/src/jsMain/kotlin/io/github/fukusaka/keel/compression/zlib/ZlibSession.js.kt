@@ -36,10 +36,22 @@ internal external fun deflateSync(buf: Uint8Array): dynamic
 @JsName("inflateSync")
 internal external fun inflateSync(buf: Uint8Array): dynamic
 
+// The raw-DEFLATE variants take an optional `{ finishFlush }` so the codec
+// can terminate with `Z_SYNC_FLUSH` instead of `Z_FINISH`. RFC 7692
+// permessage-deflate frames are sync-flushed raw-DEFLATE streams (each
+// message ends in the `00 00 FF FF` empty-block marker, no final block);
+// `deflateRawSync(buf, { finishFlush: Z_SYNC_FLUSH })` produces exactly the
+// bytes the native / JVM streaming backends emit for `FlushMode.Sync`, and
+// `inflateRawSync(buf, { finishFlush: Z_SYNC_FLUSH })` tolerates that
+// non-final input instead of throwing "unexpected end of file".
 @Suppress("FunctionName", "FunctionNaming")
 @JsName("deflateRawSync")
-internal external fun deflateRawSync(buf: Uint8Array): dynamic
+internal external fun deflateRawSync(buf: Uint8Array, options: dynamic = definedExternally): dynamic
 
 @Suppress("FunctionName", "FunctionNaming")
 @JsName("inflateRawSync")
-internal external fun inflateRawSync(buf: Uint8Array): dynamic
+internal external fun inflateRawSync(buf: Uint8Array, options: dynamic = definedExternally): dynamic
+
+/** Node `zlib.constants` (`Z_SYNC_FLUSH` / `Z_FULL_FLUSH` / `Z_FINISH` …). */
+@JsName("constants")
+internal external val constants: dynamic

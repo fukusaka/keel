@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.DecompressionLimitException
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
+import io.github.fukusaka.keel.compression.FlushMode
 import io.github.fukusaka.keel.compression.WrapFormat
 import org.khronos.webgl.Uint8Array
 import org.khronos.webgl.get
@@ -53,6 +54,7 @@ private class JsZlibEncoderSession(
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+    private val flushMode: FlushMode = options.flushMode
     private var pending: ByteArray = ByteArray(0)
     private var compressedOutput: ByteArray? = null
     private var compressedOffset: Int = 0
@@ -80,10 +82,25 @@ private class JsZlibEncoderSession(
         // First invocation: run sync compress.
         if (compressedOutput == null) {
             val u8 = pending.toUint8Array()
+            // Wrapped formats (Gzip/Zlib) must terminate with Z_FINISH so the
+            // trailer (CRC32/ISIZE or Adler-32) is written. Raw DEFLATE honours
+            // the session flushMode at the terminal boundary: FlushMode.Sync
+            // produces the `00 00 FF FF` sync-flush tail (RFC 7692
+            // permessage-deflate) instead of a final block, matching the
+            // native / JVM streaming backends byte-for-byte.
             val resultDyn: dynamic = when (wrap) {
                 WrapFormat.Gzip, WrapFormat.Default -> gzipSync(u8)
                 WrapFormat.Zlib -> deflateSync(u8)
-                WrapFormat.Raw -> deflateRawSync(u8)
+                WrapFormat.Raw -> {
+                    val flushFlag = rawFinishFlush(flushMode)
+                    if (flushFlag == null) {
+                        deflateRawSync(u8)
+                    } else {
+                        val opts: dynamic = js("({})")
+                        opts.finishFlush = flushFlag
+                        deflateRawSync(u8, opts)
+                    }
+                }
             }
             compressedOutput = resultDyn.unsafeCast<Uint8Array>().toByteArray()
             compressedOffset = 0
@@ -164,7 +181,14 @@ private class JsZlibDecoderSession(
                 when (wrap) {
                     WrapFormat.Gzip, WrapFormat.Default -> gunzipSync(u8)
                     WrapFormat.Zlib -> inflateSync(u8)
-                    WrapFormat.Raw -> inflateRawSync(u8)
+                    // Raw DEFLATE inbound is a sync-flushed (non-final) stream
+                    // for permessage-deflate: tell Node to finish on Z_SYNC_FLUSH
+                    // so it does not throw on the missing final block.
+                    WrapFormat.Raw -> {
+                        val opts: dynamic = js("({})")
+                        opts.finishFlush = constants.Z_SYNC_FLUSH
+                        inflateRawSync(u8, opts)
+                    }
                 }
             } catch (e: Throwable) {
                 throw DecompressionException("inflate failed: ${e.message}", e)
@@ -219,6 +243,23 @@ private class JsZlibDecoderSession(
         decodedOutput = null
         closed = true
     }
+}
+
+// ---- flush mapping ----
+
+/**
+ * Node `zlib` `finishFlush` constant for a raw-DEFLATE terminal compress, or
+ * `null` to use the default `Z_FINISH`.
+ *
+ * Only raw DEFLATE honours [FlushMode] at the terminal boundary — wrapped
+ * formats (Gzip/Zlib) must terminate with `Z_FINISH` to write their trailer.
+ * [FlushMode.Sync] / [FlushMode.Block] yield the `00 00 FF FF` sync-flush tail
+ * that RFC 7692 permessage-deflate frames require.
+ */
+private fun rawFinishFlush(flushMode: FlushMode): Int? = when (flushMode) {
+    FlushMode.Sync, FlushMode.Block -> constants.Z_SYNC_FLUSH.unsafeCast<Int>()
+    FlushMode.Full -> constants.Z_FULL_FLUSH.unsafeCast<Int>()
+    FlushMode.NoFlush -> null
 }
 
 // ---- conversion helpers ----
