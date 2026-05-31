@@ -20,7 +20,7 @@
 #   BENCH_RUNS=2 ./benchmark/bench-stream-all.sh upload sse
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 SHUFFLE=${BENCH_SHUFFLE:-false}
 PORT=${BENCH_PORT:-18090}

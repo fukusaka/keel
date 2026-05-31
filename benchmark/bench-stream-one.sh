@@ -628,14 +628,10 @@ for run in $(seq 1 "$RUNS"); do
     # non-2xx/3xx = warmup HTTP error). See bench-one.sh for rationale.
     READY=false
     declare -A CURL_EXIT_COUNTS=()
-    LAST_CURL_EXIT=0
-    LAST_STATUS=000
     for _ in $(seq 1 "$READY_TIMEOUT"); do
         STATUS=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
             "${SCHEME}://127.0.0.1:${PORT}${READY_ENDPOINT}" 2>/dev/null)
         CURL_EXIT=$?
-        LAST_CURL_EXIT=$CURL_EXIT
-        LAST_STATUS=$STATUS
         CURL_EXIT_COUNTS[$CURL_EXIT]=$(( ${CURL_EXIT_COUNTS[$CURL_EXIT]:-0} + 1 ))
         case "$STATUS" in
             2??|3??) READY=true; break ;;

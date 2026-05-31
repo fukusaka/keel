@@ -12,7 +12,7 @@
 #   BENCH_PORT, BENCH_HOST_LABEL, BENCH_SCHEME, BENCH_TLS
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 PROFILE="${1:-default}"
 PORT=${BENCH_PORT:-18090}
@@ -121,7 +121,8 @@ run_bench() {
     [ "$TEMP_CAPTURE" = 1 ] && temp_start=$(read_temp_c)
 
     local engine_port="$PORT"
-    local log_file="$BENCH_LOG_DIR/${name}-$(date +%Y%m%d-%H%M%S).log"
+    local log_file
+    log_file="$BENCH_LOG_DIR/${name}-$(date +%Y%m%d-%H%M%S).log"
     log_msg() { printf '[%s] %s\n' "$(date +%T)" "$*" >> "$log_file"; }
     log_msg "=== run_bench start name=$name scheme=$SCHEME endpoint=$ENDPOINT port=$engine_port runs=$RUNS ==="
     log_msg "argv: ${cmd[*]}"
@@ -150,14 +151,12 @@ run_bench() {
         # server-hang fingerprint), or "server returned 4xx/5xx" (status).
         local ready=false
         local -A curl_exit_counts=()
-        local last_curl_exit=0
         local last_status=000
         local iter status curl_exit
         for iter in $(seq 1 "$READY_TIMEOUT"); do
             status=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
                 "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null)
             curl_exit=$?
-            last_curl_exit=$curl_exit
             last_status=$status
             curl_exit_counts[$curl_exit]=$(( ${curl_exit_counts[$curl_exit]:-0} + 1 ))
             case "$status" in
