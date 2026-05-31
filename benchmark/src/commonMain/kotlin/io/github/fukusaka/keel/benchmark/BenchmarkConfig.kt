@@ -60,6 +60,19 @@ data class BenchmarkConfig(
      *   on the leaderboard rather than silent.
      */
     val compression: Boolean = false,
+    /**
+     * Number of pass-through middlewares to install ahead of the route
+     * handlers on `server-http-*` engines (0 = none, the default). Each
+     * middleware does nothing but call `next()`, so the bench isolates the
+     * per-hop dispatch cost of the [io.github.fukusaka.keel.server.http.Middleware]
+     * chain: sweep `--middleware-depth` over `/hello` and the throughput
+     * delta per added depth is the framework's middleware overhead.
+     *
+     * `pipeline-http-*` engines have no framework middleware concept, so
+     * the flag is a no-op there (the bench compares server-http depths
+     * against the pipeline-http floor as depth 0).
+     */
+    val middlewareDepth: Int = 0,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -81,6 +94,7 @@ data class BenchmarkConfig(
                     "profile" -> config = config.copy(profile = value)
                     "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
                     "compression" -> config = config.copy(compression = value.toBooleanStrict())
+                    "middleware-depth" -> config = config.copy(middlewareDepth = value.toInt())
                     "tls" -> config = config.copy(tls = value)
                     "tls-installer" -> config = config.copy(tlsInstaller = value)
                     // Socket options
@@ -147,6 +161,7 @@ data class BenchmarkConfig(
         if (tls != null) append(", tls=$tls, tls-installer=$tlsInstaller")
         if (connectionClose) append(", connection=close")
         if (compression) append(", compression=on")
+        if (middlewareDepth > 0) append(", middleware-depth=$middlewareDepth")
         socket.appendTo(this)
         if (engineConfig !is EngineConfig.None) append(", $engineConfig")
     }
@@ -170,6 +185,7 @@ data class BenchmarkConfig(
             fmtLine("connection-close:", "$connectionClose")
         }
         fmtLine("compression:", if (compression) "enabled (gzip / deflate)" else "disabled")
+        fmtLine("middleware-depth:", "$middlewareDepth")
         appendLine()
         socket.displayTo(this, engine)
         appendLine()
