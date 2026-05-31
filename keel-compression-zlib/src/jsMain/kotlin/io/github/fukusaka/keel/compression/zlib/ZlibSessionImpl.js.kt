@@ -77,10 +77,28 @@ private class JsZlibEncoderSession(
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before flush()" }
         // Compress everything buffered so far with Z_SYNC_FLUSH (boundary,
-        // stream stays open). Correct for one accumulation per flush — the
-        // WebSocket permessage-deflate per-message case (one update + one
-        // flush). The deferred sync API cannot carry an LZ77 window across
-        // separate flush() calls (context takeover) — see module limitation.
+        // stream stays open). Correct for the WebSocket permessage-deflate
+        // case this PR targets: WrapFormat.Raw, one update + one flush per
+        // message, then reset() (no_context_takeover).
+        //
+        // Single-flush only for this deferred backend. Each flush() runs a
+        // fresh one-shot compress over `pending`, so:
+        //  - **Wrapped (Gzip/Zlib)**: a second flush() on the same open stream
+        //    would emit a new header, producing two concatenated sub-streams —
+        //    invalid. No current consumer flushes a wrapped JS stream (HTTP
+        //    terminates with finish(); WS uses Raw); the native / JVM streaming
+        //    backends do support multi-flush wrapped output. Left general here
+        //    rather than throwing so the byte path mirrors finish(); a capability
+        //    surface (research.md / plan.md) is the proper place to express this.
+        //  - **Context takeover**: the one-shot sync API cannot carry an LZ77
+        //    window across separate flush() calls, so contextTakeover=true is
+        //    not honoured on JS (native / JVM honour it).
+        //
+        // Remaining debt (separate PR — see .claude/rules/buffer-usage.md,
+        // plan.md): update() buffers all input via `pending = pending + tmp`
+        // (O(n²) for multi-chunk HTTP) and this whole deferred shape is a GC
+        // hot-spot. The fix is a streaming `zlib.createDeflateRaw()` Transform,
+        // which also resolves both limitations above.
         if (compressedOutput == null) {
             val u8 = pending.toUint8Array()
             val opts: dynamic = js("({})")
@@ -193,6 +211,10 @@ private class JsZlibDecoderSession(
 
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        // Single-flush only (same deferred-backend limitation as the encoder
+        // flush() above): one update + one flush per WS frame, no context
+        // takeover. `pendingInput = pendingInput + tmp` in update() is the same
+        // O(n²) GC debt; the streaming Transform rework is the fix (plan.md).
         // Decode the buffered Z_SYNC_FLUSH'd block (one WS frame). Pass
         // finishFlush=Z_SYNC_FLUSH so Node tolerates the missing final block,
         // then clear for the next message and keep the stream open.
