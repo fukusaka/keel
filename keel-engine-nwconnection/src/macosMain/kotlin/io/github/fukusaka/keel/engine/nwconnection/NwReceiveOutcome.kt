@@ -54,8 +54,12 @@ internal sealed interface NwReceiveOutcome {
      * Peer closed / EOF (`is_complete` with zero bytes) or receive
      * failed. Caller signals `onReadClosed` and discards the fallback
      * buffer.
+     *
+     * [errno] is the POSIX errno of a failed receive (e.g. `ECONNRESET`),
+     * or `0` for a clean EOF — so the caller can log the real reason and
+     * distinguish an error-close from an orderly peer FIN.
      */
-    data object Closed : NwReceiveOutcome
+    data class Closed(val errno: Int) : NwReceiveOutcome
 
     /**
      * Spurious 0-byte completion without `is_complete`. Caller

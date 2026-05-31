@@ -36,6 +36,7 @@ import nwconnection.keel_nw_create_tcp_params_unix_listener
 import nwconnection.keel_nw_create_tcp_params_unix_listener_with_options
 import nwconnection.keel_nw_create_tcp_params_with_options
 import nwconnection.keel_nw_endpoint_create_unix
+import nwconnection.keel_nw_error_posix_code
 import nwconnection.keel_nw_start_conn_async
 import nwconnection.keel_nw_unix_path_max
 import platform.Network.nw_connection_create
@@ -158,14 +159,19 @@ class NwEngine(
             // The state_changed_handler resumes the coroutine via CallbackContext.
             // CallbackContext prevents double-resume if the state handler fires
             // multiple times (e.g. ready then cancelled) or after coroutine cancel.
+            var listenerErrno = 0
             val assignedPort = suspendCancellableCoroutine<Int> { cont ->
                 val cbCtx = CallbackContext(cont)
 
-                nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                nw_listener_set_state_changed_handler(lsnr) { state, error ->
                     if (state == nw_listener_state_ready) {
                         val p = nw_listener_get_port(lsnr).toInt()
                         cbCtx.tryResume(p)
                     } else if (state == nw_listener_state_failed) {
+                        // Capture the POSIX errno (e.g. EADDRINUSE) before
+                        // resuming so the failure carries the real kernel
+                        // reason rather than an opaque port=-1.
+                        listenerErrno = keel_nw_error_posix_code(error)
                         cbCtx.tryResume(-1)
                     }
                 }
@@ -180,8 +186,14 @@ class NwEngine(
                 cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
 
+            // errno 48 (EADDRINUSE) on a port that should be free is usually
+            // the Network.framework reuse limitation: NWListener does not
+            // honour reuse_local_address over a local-port TIME_WAIT, so an
+            // immediate same-port restart fails. See keel_nw_create_tcp_params
+            // (Apple Radar FB8658821); use the kqueue engine if reliable
+            // same-port restart is required.
             check(assignedPort > 0) {
-                "NWListener failed to start (port=$assignedPort)"
+                "NWListener failed to start (port=$assignedPort, errno=$listenerErrno)"
             }
 
             // Update the local address with the assigned port
@@ -267,12 +279,16 @@ class NwEngine(
             // Block until listener reaches ready state.
             val sem = dispatch_semaphore_create(0)
             var assignedPort = -1
+            var listenerErrno = 0
 
-            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+            nw_listener_set_state_changed_handler(lsnr) { state, error ->
                 if (state == nw_listener_state_ready) {
                     assignedPort = nw_listener_get_port(lsnr).toInt()
                     dispatch_semaphore_signal(sem)
                 } else if (state == nw_listener_state_failed) {
+                    // Surface the POSIX errno (e.g. EADDRINUSE) instead of an
+                    // opaque failure — see bindInet for the rationale.
+                    listenerErrno = keel_nw_error_posix_code(error)
                     dispatch_semaphore_signal(sem)
                 }
             }
@@ -288,7 +304,7 @@ class NwEngine(
                     // internally until the connection reaches the ready state.
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy)
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger)
                     val channel = NwPipelinedChannel(transport, logger)
                     // Listener-level TLS: connections arrive already TLS-encrypted,
                     // so skip per-connection TLS initialization.
@@ -310,7 +326,9 @@ class NwEngine(
             check(waitResult == 0L) {
                 "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
             }
-            check(assignedPort > 0) { "NWListener failed to start" }
+            // errno 48 (EADDRINUSE) here is usually the Network.framework
+            // reuse limitation over a TIME_WAIT port — see bindInet.
+            check(assignedPort > 0) { "NWListener failed to start (port=$assignedPort, errno=$listenerErrno)" }
             val localAddr = InetSocketAddress(host, assignedPort)
             logger.debug { "Pipeline bound to $host:$assignedPort" }
 
@@ -377,7 +395,7 @@ class NwEngine(
             )
             cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
-        check(rc == 0) { "connect to $host:$port failed" }
+        check(rc == 0) { "connect to $host:$port failed (errno=$rc)" }
 
         val remoteAddr = InetSocketAddress(
             nw_endpoint_get_hostname(endpoint)?.toKString() ?: host,
@@ -386,7 +404,7 @@ class NwEngine(
 
         logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy)
+        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
@@ -427,12 +445,14 @@ class NwEngine(
             )
             nw_listener_set_queue(lsnr, listenerQueue)
 
+            var listenerErrno = 0
             val rc = suspendCancellableCoroutine<Int> { cont ->
                 val cbCtx = CallbackContext(cont)
-                nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+                nw_listener_set_state_changed_handler(lsnr) { state, error ->
                     if (state == nw_listener_state_ready) {
                         cbCtx.tryResume(0)
                     } else if (state == nw_listener_state_failed) {
+                        listenerErrno = keel_nw_error_posix_code(error)
                         cbCtx.tryResume(-1)
                     }
                 }
@@ -444,7 +464,7 @@ class NwEngine(
                 nw_listener_start(lsnr)
                 cont.invokeOnCancellation { cbCtx.markCancelled() }
             }
-            check(rc == 0) { "NWListener failed to start on ${address.path}" }
+            check(rc == 0) { "NWListener failed to start on ${address.path} (errno=$listenerErrno)" }
 
             logger.debug { "Bound UDS ${address.path}" }
             return serverChannel
@@ -479,11 +499,11 @@ class NwEngine(
             keel_nw_start_conn_async(conn, connQueue, startCallback, ref.asCPointer())
             cont.invokeOnCancellation { cbCtx.markCancelled() }
         }
-        check(rc == 0) { "connect to UDS ${address.path} failed" }
+        check(rc == 0) { "connect to UDS ${address.path} failed (errno=$rc)" }
 
         logger.debug { "Connected to UDS ${address.path}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy)
+        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger)
         return NwPipelinedChannel(transport, channelLogger, address, address)
     }
 
@@ -518,11 +538,13 @@ class NwEngine(
 
             val sem = dispatch_semaphore_create(0)
             var ready = false
-            nw_listener_set_state_changed_handler(lsnr) { state, _ ->
+            var listenerErrno = 0
+            nw_listener_set_state_changed_handler(lsnr) { state, error ->
                 if (state == nw_listener_state_ready) {
                     ready = true
                     dispatch_semaphore_signal(sem)
                 } else if (state == nw_listener_state_failed) {
+                    listenerErrno = keel_nw_error_posix_code(error)
                     dispatch_semaphore_signal(sem)
                 }
             }
@@ -534,7 +556,7 @@ class NwEngine(
                     nw_connection_set_queue(conn, connQueue)
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy)
+                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger)
                     val channel = NwPipelinedChannel(transport, logger)
                     config.initializeConnection(channel)
                     pipelineInitializer(channel)
@@ -548,7 +570,7 @@ class NwEngine(
             check(waitResult == 0L) {
                 "NWListener startup timed out after ${BIND_TIMEOUT_NS / 1_000_000_000L}s"
             }
-            check(ready) { "NWListener failed to start on ${address.path}" }
+            check(ready) { "NWListener failed to start on ${address.path} (errno=$listenerErrno)" }
             logger.debug { "Pipeline bound UDS ${address.path}" }
             return NwPipelinedServer(lsnr, address)
         } catch (t: Throwable) {
