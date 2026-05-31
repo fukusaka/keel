@@ -146,6 +146,7 @@ fun serverHttpConnectorConfig(config: BenchmarkConfig): Pair<HttpConnectorBuilde
             host = "0.0.0.0"
             port = config.port
             socketOptions = childOpts
+            applyBenchDosHardening(config.dosHardening)
         }
         return configure to null
     }
@@ -166,12 +167,33 @@ fun serverHttpConnectorConfig(config: BenchmarkConfig): Pair<HttpConnectorBuilde
         host = "0.0.0.0"
         port = config.port
         socketOptions = childOpts
+        applyBenchDosHardening(config.dosHardening)
         tls {
             this.config = BenchmarkCertificates.tlsConfig()
             this.strategy = ServerTlsStrategy.KeelCodec(factory)
         }
     }
     return configure to factory
+}
+
+/**
+ * Applies the strict DoS-hardening connector limits when [enabled], for
+ * the `--dos-hardening=true` micro-bench. Turns on query control-char /
+ * malformed-encoding rejection and tightens the parameter / header caps
+ * so a query-heavy request pays the full validation cost; a no-op when
+ * disabled (relaxed defaults, the baseline arm of the sweep).
+ */
+private fun HttpConnectorBuilder.applyBenchDosHardening(enabled: Boolean) {
+    if (!enabled) return
+    queryParameters {
+        rejectControlCharacters = true
+        rejectMalformedEncoding = true
+        maxParameterCount = 64
+    }
+    headerLimits {
+        maxHeaderCount = 50
+        maxHeaderBytes = 8192
+    }
 }
 
 fun validateTlsBackend(config: BenchmarkConfig) {
