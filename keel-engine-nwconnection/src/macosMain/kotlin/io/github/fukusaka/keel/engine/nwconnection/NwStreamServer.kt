@@ -177,7 +177,7 @@ internal class NwStreamServer(
 
         val remoteAddr = extractAddress(conn)
         val logger = loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, allocator, idleReadPolicy)
+        val transport = NwIoTransport(conn, connQueue, allocator, idleReadPolicy, logger)
         val channel = NwPipelinedChannel(transport, logger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel

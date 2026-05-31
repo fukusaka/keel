@@ -8,6 +8,8 @@ import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.codec.http.installScopedHeadersPool
 import io.github.fukusaka.keel.core.IdleReadPolicy
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.IoTransport
@@ -124,6 +126,7 @@ internal class NwIoTransport(
     private val connQueue: dispatch_queue_t,
     allocator: BufferAllocator,
     private val idleReadPolicy: IdleReadPolicy,
+    private val logger: Logger,
 ) : AbstractIoTransport(allocator) {
 
     /**
@@ -316,7 +319,12 @@ internal class NwIoTransport(
                 onRead?.invoke(fallbackBuf)
                 armRead()
             }
-            NwReceiveOutcome.Closed -> {
+            is NwReceiveOutcome.Closed -> {
+                // A real receive failure (errno != 0, e.g. ECONNRESET) is
+                // logged; a clean EOF (errno == 0) closes silently.
+                if (outcome.errno != 0) {
+                    logger.warn { "NWConnection receive failed (errno=${outcome.errno}); closing connection" }
+                }
                 fallbackBuf.release()
                 onReadClosed?.invoke()
             }
@@ -396,7 +404,7 @@ internal class NwIoTransport(
             val ptr = checkNotNull(pw.buf.unsafePointer + pw.offset) {
                 "buf.unsafePointer + offset returned null; IoBuf pointer must be valid"
             }
-            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
+            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion, logger) { delta ->
                 transport.updatePendingBytes(delta)
             })
             keel_nw_write_async(conn, ptr, pw.length.toUInt(), flushCallback, ref.asCPointer())
@@ -411,7 +419,7 @@ internal class NwIoTransport(
                     bufs[i] = p.reinterpret()
                     lens[i] = writes[i].length.toUInt()
                 }
-                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion) { delta ->
+                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion, logger) { delta ->
                     transport.updatePendingBytes(delta)
                 })
                 keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
@@ -482,6 +490,7 @@ internal class NwIoTransport(
         val totalBytes: Int,
         val onComplete: (() -> Unit)?,
         val completion: CompletableDeferred<Unit>,
+        val logger: Logger,
         val onPendingBytesUpdate: (Int) -> Unit,
     )
 
@@ -505,7 +514,7 @@ internal class NwIoTransport(
                 zcPtr = zcPtr,
                 bytesRead = len.toInt(),
                 isComplete = isComplete != 0,
-                failed = error != 0,
+                errno = error,
             )
             readCtx.transport.onReadComplete(readCtx.buf, outcome)
         }
@@ -527,9 +536,12 @@ internal class NwIoTransport(
             zcPtr: COpaquePointer?,
             bytesRead: Int,
             isComplete: Boolean,
-            failed: Boolean,
+            errno: Int,
         ): NwReceiveOutcome = when {
-            failed || (bytesRead == 0 && isComplete) -> NwReceiveOutcome.Closed
+            // errno != 0 is a real receive failure; errno == 0 with
+            // is_complete + 0 bytes is a clean EOF. Closed carries the
+            // errno so onReadComplete can log the reason.
+            errno != 0 || (bytesRead == 0 && isComplete) -> NwReceiveOutcome.Closed(errno)
             zcHandle != null && bytesRead > 0 -> {
                 val ptr = checkNotNull(zcPtr) {
                     "zcPtr must be non-null when zcHandle is non-null (zero-copy single-region contract)"
@@ -544,6 +556,13 @@ internal class NwIoTransport(
             val ref = checkNotNull(ctx) { "flush callback ctx is null" }.asStableRef<FlushContext>()
             val flushCtx = ref.get()
             ref.dispose()
+            // A send failure (e.g. EPIPE / ECONNRESET) was previously
+            // discarded here, completing the flush as if it succeeded. Log
+            // it so a broken write is no longer silent; the peer-gone read
+            // close still drives connection teardown.
+            if (error != 0) {
+                flushCtx.logger.warn { "NWConnection send failed (errno=$error)" }
+            }
             for (pw in flushCtx.writes) pw.buf.release()
             flushCtx.onPendingBytesUpdate(-flushCtx.totalBytes)
             // Resume any awaitPendingFlush() waiter before invoking onComplete

@@ -35,11 +35,45 @@ static void keel_nw_configure_tcp_options(nw_protocol_options_t tcp_options,
  * C macros that cast extern block constants. They cannot be bound directly by
  * cinterop; this wrapper creates plain TCP parameters without TLS.
  */
+/*
+ * reuse_local_address: the documented Network.framework analogue of
+ * SO_REUSEADDR, set on every listener parameter below. Best-effort only —
+ * on the tested macOS, NWListener does NOT honour it when binding over a
+ * local-port TIME_WAIT (it still fails EADDRINUSE), even though a POSIX
+ * socket with SO_REUSEADDR or SO_REUSEPORT binds the identical state. So a
+ * NWConnection server cannot immediately rebind a port whose prior
+ * server-side connections linger in TIME_WAIT, unlike the POSIX engines.
+ * A known Network.framework bug (Apple Radar FB8658821); the bind failure
+ * now reports the errno (keel_nw_error_posix_code) for diagnosis.
+ */
 nw_parameters_t keel_nw_create_tcp_params(void) {
-    return nw_parameters_create_secure_tcp(
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
         NW_PARAMETERS_DISABLE_PROTOCOL,
         NW_PARAMETERS_DEFAULT_CONFIGURATION
     );
+    if (params) nw_parameters_set_reuse_local_address(params, true);
+    return params;
+}
+
+/*
+ * Test helper: reads back the reuse_local_address flag (the SO_REUSEADDR
+ * equivalent) the keel_nw_create_*params wrappers set, so a seam test can
+ * pin that every listener parameter enables address reuse. Returns 1 when
+ * set, 0 otherwise. (nw_parameters_get_reuse_local_address returns bool,
+ * normalised to int for a stable cinterop signature.)
+ */
+int keel_nw_get_reuse_local_address(nw_parameters_t params) {
+    return nw_parameters_get_reuse_local_address(params) ? 1 : 0;
+}
+
+/*
+ * Extracts the POSIX errno from an nw_error (0 when null or non-POSIX
+ * domain). Lets the listener / connection failure paths surface the real
+ * kernel reason (e.g. EADDRINUSE) instead of an opaque "failed" state.
+ */
+int keel_nw_error_posix_code(nw_error_t error) {
+    if (!error) return 0;
+    return nw_error_get_error_code(error);
 }
 
 /*
@@ -49,12 +83,14 @@ nw_parameters_t keel_nw_create_tcp_params(void) {
  */
 nw_parameters_t keel_nw_create_tcp_params_with_options(int no_delay,
                                                        int enable_keepalive) {
-    return nw_parameters_create_secure_tcp(
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
         NW_PARAMETERS_DISABLE_PROTOCOL,
         ^(nw_protocol_options_t tcp_options) {
             keel_nw_configure_tcp_options(tcp_options, no_delay, enable_keepalive);
         }
     );
+    if (params) nw_parameters_set_reuse_local_address(params, true);
+    return params;
 }
 
 /*
@@ -70,13 +106,15 @@ nw_parameters_t keel_nw_create_tcp_params_with_options(int no_delay,
  */
 nw_parameters_t keel_nw_create_tls_tcp_params(sec_identity_t identity) {
     if (!identity) return NULL;
-    return nw_parameters_create_secure_tcp(
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
         ^(nw_protocol_options_t tls_options) {
             sec_protocol_options_t proto = nw_tls_copy_sec_protocol_options(tls_options);
             sec_protocol_options_set_local_identity(proto, identity);
         },
         NW_PARAMETERS_DEFAULT_CONFIGURATION
     );
+    if (params) nw_parameters_set_reuse_local_address(params, true);
+    return params;
 }
 
 /*
@@ -88,7 +126,7 @@ nw_parameters_t keel_nw_create_tls_tcp_params_with_options(sec_identity_t identi
                                                            int no_delay,
                                                            int enable_keepalive) {
     if (!identity) return NULL;
-    return nw_parameters_create_secure_tcp(
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
         ^(nw_protocol_options_t tls_options) {
             sec_protocol_options_t proto = nw_tls_copy_sec_protocol_options(tls_options);
             sec_protocol_options_set_local_identity(proto, identity);
@@ -97,6 +135,8 @@ nw_parameters_t keel_nw_create_tls_tcp_params_with_options(sec_identity_t identi
             keel_nw_configure_tcp_options(tcp_options, no_delay, enable_keepalive);
         }
     );
+    if (params) nw_parameters_set_reuse_local_address(params, true);
+    return params;
 }
 
 /*
@@ -253,6 +293,16 @@ nw_parameters_t keel_nw_create_tcp_params_unix_listener_with_options(const char 
  * remains a first-class case (TLS framework / future protocol
  * additions / kernel version differences may produce multi-region).
  */
+/*
+ * Callback `error` / `result` carry the POSIX errno of the underlying
+ * failure (0 = success), extracted via keel_nw_error_posix_code — not a
+ * bare 0/1 boolean. This lets the Kotlin side surface the real reason
+ * (e.g. ECONNREFUSED on connect, EPIPE on write) instead of an opaque
+ * "failed", the same diagnostic gap that hid the TIME_WAIT bind limitation
+ * for the listener path.
+ * `keel_nw_start_callback.result` is 0 on ready and the errno (or -1 when
+ * the failure carries no errno, e.g. a plain cancellation) on failure.
+ */
 typedef void (*keel_nw_read_callback)(void *zc_handle,
                                        const void *zc_ptr,
                                        uint32_t len,
@@ -368,7 +418,7 @@ void keel_nw_read_async(nw_connection_t conn,
           bool is_complete, nw_error_t error)
         {
             keel_nw_dispatch_received(content, buf, buf_len,
-                is_complete ? 1 : 0, error ? 1 : 0, callback, ctx);
+                is_complete ? 1 : 0, keel_nw_error_posix_code(error), callback, ctx);
         });
 }
 
@@ -412,7 +462,7 @@ void keel_nw_write_async(nw_connection_t conn,
 
     nw_connection_send(conn, data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false,
         ^(nw_error_t error) {
-            callback(error ? 1 : 0, ctx);
+            callback(keel_nw_error_posix_code(error), ctx);
         });
 }
 
@@ -448,7 +498,7 @@ void keel_nw_writev_async(nw_connection_t conn,
     }
     nw_connection_send(conn, combined, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, false,
         ^(nw_error_t error) {
-            callback(error ? 1 : 0, ctx);
+            callback(keel_nw_error_posix_code(error), ctx);
         });
 }
 
@@ -465,7 +515,10 @@ void keel_nw_writev_async(nw_connection_t conn,
 void keel_nw_shutdown_output(nw_connection_t conn) {
     nw_connection_send(conn, NULL, NW_CONNECTION_FINAL_MESSAGE_CONTEXT, true,
         ^(nw_error_t error) {
-            /* no-op: fire and forget */
+            /* Intentionally ignored: a half-close FIN is best-effort on an
+             * already-closing connection. Any send error here means the
+             * peer is gone, which the read side surfaces as a close — there
+             * is no caller waiting on this completion to act on the errno. */
         });
 }
 
@@ -478,7 +531,8 @@ void keel_nw_shutdown_output(nw_connection_t conn) {
  *
  * @param conn     NWConnection to start.
  * @param queue    Dispatch queue for the connection's callbacks.
- * @param callback Invoked with 0 on ready, -1 on failure.
+ * @param callback Invoked with 0 on ready, or the POSIX errno (or -1 when
+ *                 the failure carries no errno) on failure / cancellation.
  * @param ctx      Opaque pointer passed to callback (StableRef to continuation).
  */
 void keel_nw_start_conn_async(nw_connection_t conn, dispatch_queue_t queue,
@@ -497,7 +551,11 @@ void keel_nw_start_conn_async(nw_connection_t conn, dispatch_queue_t queue,
             } else if (state == nw_connection_state_failed ||
                        state == nw_connection_state_cancelled) {
                 called = 1;
-                callback(-1, ctx);
+                /* Carry the connect errno (e.g. ECONNREFUSED) when present;
+                 * fall back to -1 for an errno-less cancellation so failure
+                 * always stays non-zero. */
+                int ec = keel_nw_error_posix_code(error);
+                callback(ec != 0 ? ec : -1, ctx);
             }
         });
     nw_connection_start(conn);
