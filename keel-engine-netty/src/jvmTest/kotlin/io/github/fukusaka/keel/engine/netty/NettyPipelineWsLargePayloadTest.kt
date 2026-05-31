@@ -40,7 +40,7 @@ import kotlin.test.assertEquals
  *
  * Each test asserts (i) the echo round-trip produces the correct bytes and
  * (ii) [io.github.fukusaka.keel.buf.TrackingAllocator] reports
- * `outstandingCount == 0` on tear-down — direct K4 leak detection that
+ * `outstandingCount == 0` on tear-down — direct IoBuf-leak detection that
  * scales with the payload size as well as the frame count.
  */
 class NettyPipelineWsLargePayloadTest {

@@ -142,7 +142,7 @@ internal class IoUringIoTransport(
      * until a buffer is returned. Re-arming immediately would busy-loop: the
      * kernel keeps re-issuing `-ENOBUFS` for as long as the ring stays empty,
      * burning 100% of the EventLoop on a connection that cannot progress
-     * (K62 — surfaced under `server-http × compression-upload` where the
+     * (the recv-buffer-leak / -ENOBUFS busy-loop — surfaced under `server-http × compression-upload` where the
      * pull-model body conduit holds buffers long enough to drain the ring).
      * Cleared by [rearmRecvAfterStarvation]. EventLoop-thread only.
      */
@@ -327,7 +327,7 @@ internal class IoUringIoTransport(
                         } else if (!recvStarved) {
                             // Ring genuinely empty (buffers still held downstream).
                             // Defer the re-arm to the next returnBuffer instead of
-                            // busy-looping (K62). The recvStarved guard collapses
+                            // busy-looping (the -ENOBUFS busy-loop). The recvStarved guard collapses
                             // repeat -ENOBUFS into one registration.
                             recvStarved = true
                             ring.requestRearmOnAvailable(rearmRecvAfterStarvation)

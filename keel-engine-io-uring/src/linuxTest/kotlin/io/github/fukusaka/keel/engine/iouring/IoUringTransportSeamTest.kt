@@ -201,7 +201,7 @@ class IoUringTransportSeamTest {
         assertEquals(1, readClosedFired, "send()==0 must still tear down the connection")
     }
 
-    // --- awaitPendingFlush (K20 regression) ---
+    // --- awaitPendingFlush (teardown cancellation regression) ---
 
     /**
      * `awaitPendingFlush` returns immediately when no async flush is in flight
@@ -227,14 +227,14 @@ class IoUringTransportSeamTest {
         }
     }
 
-    // --- awaitPendingFlush TOCTOU race fix (K34) ---
+    // --- awaitPendingFlush TOCTOU race fix ---
 
     /**
-     * Verifies the K34 fix for the `asyncFlushPending = false` fast path: when
+     * Verifies the TOCTOU-race fix for the `asyncFlushPending = false` fast path: when
      * the EL-dispatched check+register lambda sees no pending flush, the
      * continuation is resumed immediately rather than stored (post-fix invariant).
      *
-     * The full K34 race (asyncFlushPending=true → write CQE fires between check
+     * The full TOCTOU race (asyncFlushPending=true → write CQE fires between check
      * and cont store → deadlock) requires a real io_uring ring to trigger
      * `submitAsyncSend`; that path is covered by the integration tests in
      * `IoModeTest` and `IoUringEngineReadWriteTest`.

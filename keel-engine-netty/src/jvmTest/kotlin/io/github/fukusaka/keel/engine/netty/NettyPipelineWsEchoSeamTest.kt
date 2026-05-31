@@ -19,17 +19,17 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Deterministic seam test for the K4 IoBuf-leak regression and the surrounding
+ * Deterministic seam test for the per-frame IoBuf-leak regression and the surrounding
  * `WsEchoHandler` behaviour, replacing the original 5-conn × 3-round
  * integration test (`NettyPipelineWsEchoTest.\`ws-echo five concurrent connections
  * all complete multiple rounds\``) with sub-second multi-thousand-frame coverage
  * driven by [TestIoTransport] + [TrackingAllocator].
  *
- * **Why a seam test, not just an extended integration test**: K4 was about
+ * **Why a seam test, not just an extended integration test**: the leak was about
  * [io.github.fukusaka.keel.pipeline.TypedInboundHandler] failing to release the
  * input [IoBuf] when a transforming handler propagated a different output type
  * (`WsFrameDecoder` consumes `IoBuf`, produces `WsFrame`). The original
- * 5×3=15-frame integration test detected K4 indirectly — "test must complete"
+ * 5×3=15-frame integration test detected the leak indirectly — "test must complete"
  * was the proxy for "no leak" — at a scale far below what could actually
  * trigger the SIGKILL in production (50-VU sustained 60 s benchmark).
  * [TrackingAllocator] makes the leak detection direct (alloc count must equal
@@ -38,7 +38,7 @@ import kotlin.test.assertTrue
  *
  * **Coverage relative to the deleted integration test**:
  *
- * - 1000-frame K4 leak detection (this file): far stronger than the original
+ * - 1000-frame IoBuf-leak detection (this file): far stronger than the original
  *   15-frame indirect indicator, deterministic.
  * - Multi-channel state isolation (this file): same as the deleted test's
  *   "5 connections each get their own echoes" property, exercised at the
@@ -76,7 +76,7 @@ class NettyPipelineWsEchoSeamTest {
     /**
      * 1000 frames sustained — alloc count must equal release count.
      *
-     * Direct K4 regression detection: the count comparison flags a single
+     * Direct IoBuf-leak regression detection: the count comparison flags a single
      * leaked IoBuf, no matter how rare. A regression that re-introduces the
      * `TypedInboundHandler` non-release on type change would fail this test
      * deterministically with `outstanding = 1000`.
@@ -161,7 +161,7 @@ class NettyPipelineWsEchoSeamTest {
      * shuffled order. The total alloc count across the shared
      * [TrackingAllocator] must equal the total release count. Catches an
      * IoBuf-release race that only surfaces when frames from different
-     * channels interleave (the K4 multi-channel sub-case the deleted
+     * channels interleave (the multi-channel sub-case the deleted
      * integration test could not exercise — its 5 conn × 3 round × all-
      * sequential ordering is a single point in the operation order space).
      */
@@ -248,7 +248,7 @@ class NettyPipelineWsEchoSeamTest {
      * into [HttpRequestDecoder] → `WsEchoHandler`, observe the 101 response
      * + pipeline mutation (HTTP codec removed, WS codec added), then drive
      * a frame and verify echo. Asserts no IoBuf leak across the pipeline-
-     * mutation boundary, exercising the K4 release path through both the
+     * mutation boundary, exercising the IoBuf release path through both the
      * HTTP and WS decoder transformers.
      */
     @Test

@@ -4,7 +4,7 @@ name: engine-netty WS stress
 # The class `NettyPipelineWsStressTest` is gated by the system property
 # `keel.stress=true` so the default PR-gate run skips it; this workflow
 # sets the property and runs the suite on macOS Apple Silicon — the same
-# runner family where the original K40 / K4 SIGKILL flake surfaced.
+# runner family where the original macOS-runner IoBuf-leak SIGKILL flake surfaced.
 #
 # Triggers:
 #   - workflow_dispatch: manual run with configurable iteration count

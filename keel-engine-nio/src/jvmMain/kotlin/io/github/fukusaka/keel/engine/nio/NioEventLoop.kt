@@ -186,7 +186,7 @@ internal class NioEventLoop(
      * was registered) the earlier callback was dropped. The lost callback
      * caused [NioIoTransport]'s `onReadable` to never observe the peer FIN
      * that follows a WebSocket close handshake on macOS, deadlocking the
-     * upgrade session (K23). `OP_ACCEPT` and `OP_CONNECT` get their own
+     * upgrade session (the SelectionKey per-op callback drop). `OP_ACCEPT` and `OP_CONNECT` get their own
      * slots too — they never overlap with `OP_READ` / `OP_WRITE` on the same
      * key in practice, but having a dedicated slot keeps
      * [processSelectedKeys] uniform and avoids re-introducing the
@@ -376,7 +376,7 @@ internal class NioEventLoop(
                 // is back-pressured (and vice versa). The previous
                 // implementation cleared all interest + the single
                 // `attach`ment unconditionally, dropping the
-                // not-yet-fired direction (K23 root cause).
+                // not-yet-fired direction (the per-op callback drop root cause).
                 val readyOps = key.readyOps()
                 val readReady = (readyOps and SelectionKey.OP_READ) != 0
                 val writeReady = (readyOps and SelectionKey.OP_WRITE) != 0

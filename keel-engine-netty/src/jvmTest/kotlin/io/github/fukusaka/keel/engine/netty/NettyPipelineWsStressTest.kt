@@ -25,12 +25,12 @@ import kotlin.time.Duration.Companion.nanoseconds
 /**
  * Sustained-load stress test for the NettyEngine WebSocket pipeline.
  *
- * **Purpose**: catches regressions of the K4-class IoBuf leak (and any
+ * **Purpose**: catches regressions of the per-frame IoBuf leak (and any
  * sibling failure mode that only surfaces at production load — kernel
  * pressure, scheduler contention, real-network back-pressure) at the scale
  * the original SIGKILL was observed in a 50-VU 60 s benchmark. The seam
  * tests in [NettyPipelineWsEchoSeamTest] / [NettyPipelineWsLargePayloadTest]
- * detect K4 deterministically through alloc-vs-release counting at far
+ * detect the leak deterministically through alloc-vs-release counting at far
  * cheaper cost; this file exists for the failure classes that scale only
  * with sustained-load * timing * concurrency and for which the seam path
  * cannot reproduce.
@@ -45,7 +45,7 @@ import kotlin.time.Duration.Companion.nanoseconds
  *
  * The dedicated CI workflow `.github/workflows/netty-ws-stress.yml` (manual
  * `workflow_dispatch` trigger) sets the property and runs the suite on a
- * `macos-15` runner — the same runner family where the original K40 flake
+ * `macos-15` runner — the same runner family where the original macOS-runner SIGKILL flake
  * was observed.
  *
  * **Why not `@Tag("stress")`**: kotlin-test on the JVM target uses JUnit 4
@@ -70,7 +70,7 @@ class NettyPipelineWsStressTest {
      *
      * The success criterion is binary — every connection completes every
      * round without exception or timeout, and the engine shuts down cleanly.
-     * Underlying K4 leak would manifest as either OOM during the run or a
+     * The underlying IoBuf leak would manifest as either OOM during the run or a
      * `BufferAllocator` leak on engine close; neither is asserted directly
      * here because the seam tests already catch the IoBuf-counting class
      * deterministically. This test's value is the *combination* of real

@@ -372,7 +372,7 @@ internal class KqueueEventLoop(
         // always found.
         withRegLock { appendRegistration(key, newReg) }
 
-        // K50 fix (Option D — EventLoop-funneled submission): only the
+        // EventLoop-funneled submission fix (Option D): only the
         // EventLoop thread issues kevent submissions, so a concurrent
         // dispatchReady's stale-filter EV_DELETE cannot race against an
         // EV_ADD from another thread. Matches Netty / libuv's "I/O ops on
@@ -533,7 +533,7 @@ internal class KqueueEventLoop(
             callbackRegistrations[key] = listener
         }
 
-        // K50 fix (Option D — EventLoop-funneled submission). See [register]
+        // EventLoop-funneled submission fix (Option D). See [register]
         // for the rationale.
         if (eventLoopThread == null || inEventLoop()) {
             submitAddCallbackFilter(fd, interest, key)

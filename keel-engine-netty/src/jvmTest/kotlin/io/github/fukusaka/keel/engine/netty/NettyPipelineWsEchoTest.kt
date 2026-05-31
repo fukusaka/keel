@@ -28,11 +28,11 @@ import kotlin.test.assertEquals
  * 2. Multi-connection state isolation (the `two concurrent` test) — two channels
  *    must not cross-talk.
  *
- * **K4 IoBuf-leak regression coverage moved to [NettyPipelineWsEchoSeamTest]**:
+ * **IoBuf-leak regression coverage moved to [NettyPipelineWsEchoSeamTest]**:
  * the original `five concurrent connections all complete multiple rounds` test was
- * an indirect K4 indicator (5 conn × 3 round = 15 frames was several orders of
+ * an indirect leak indicator (5 conn × 3 round = 15 frames was several orders of
  * magnitude below the 50-VU sustained 60 s scale required to actually trigger the
- * SIGKILL the bug originally produced). The seam test detects K4 directly through
+ * SIGKILL the bug originally produced). The seam test detects the leak directly through
  * [io.github.fukusaka.keel.buf.TrackingAllocator] alloc/release count comparison
  * across 1000+ frames per channel, with deterministic interleaved-multi-channel
  * scenarios that the integration test could not produce. Sustained-load OOM at
