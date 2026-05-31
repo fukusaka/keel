@@ -84,7 +84,7 @@ tar xjf "${WORKDIR}/${TARBALL}" -C "$WORKDIR"
 # MBEDTLS_THREADING_C off, leaving the PSA Crypto global key store
 # unguarded — concurrent mbedtls_ssl_setup / handshake / free across
 # threads (keel's per-connection codecs on multiple EventLoop threads)
-# then race in PSA and corrupt the heap (K53; deterministic on many-core
+# then race in PSA and corrupt the heap (deterministic on many-core
 # hosts). Enabling threading makes PSA's shared state mutex-guarded, which
 # keel's multi-threaded server use requires. config.py edits
 # include/mbedtls/mbedtls_config.h in place before the cmake configure.

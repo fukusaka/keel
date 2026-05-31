@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Regression test for K53 — `pipeline-http-epoll × mbedtls` core dump
+ * Regression test for the PSA threading race — `pipeline-http-epoll × mbedtls` core dump
  * under sustained load.
  *
  * **Root cause** (pre-fix): [MbedTlsCodecFactory.createServerCodec]

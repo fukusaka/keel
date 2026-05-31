@@ -69,7 +69,7 @@ import mbedtls.mbedtls_x509_crt_parse
  * pipeline-http-epoll multi-worker path) raced in PSA's global key
  * store and crashed the process with
  * `mbedtls_x509_crt_parse: MBEDTLS_ERR_PK_INVALID_PUBKEY (0x3B00)` —
- * see K53 / `MbedTlsConcurrentCodecCreationTest`.
+ * see the PSA threading race / `MbedTlsConcurrentCodecCreationTest`.
  *
  * **Lifetime**: reference-counted. The constructor seats one
  * implicit reference for [MbedTlsCodecFactory]'s cache; every

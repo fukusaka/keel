@@ -16,8 +16,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Mutual-TLS enforcement for the MbedTLS **server** authmode (the K53
- * sibling fix: keel's MbedTLS factory now wires [TlsConfig.verifyMode]
+ * Mutual-TLS enforcement for the MbedTLS **server** authmode (the
+ * threading-fix sibling: keel's MbedTLS factory now wires [TlsConfig.verifyMode]
  * into `mbedtls_ssl_conf_authmode`, which it previously omitted — so a
  * `REQUIRED` server stayed at MbedTLS's default `VERIFY_NONE` and silently
  * accepted a cert-less client).
