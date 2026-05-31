@@ -140,7 +140,7 @@ internal class KeelCioApplicationResponse(
             // pumpOutputToChannel ByteChannel relay.  This avoids one EL
             // wake-up cycle per frame (eventfd write + SQE/CQE round-trip for
             // io_uring; epoll syscall round-trip for epoll) that the relay
-            // imposes, matching the K29 optimisation applied to ktor-keel.
+            // imposes, matching the per-frame flush optimisation applied to ktor-keel.
             //
             // Headers were written to `output` above; the EventLoop's FIFO
             // task queue ensures pumpOutputToChannel forwards them to the

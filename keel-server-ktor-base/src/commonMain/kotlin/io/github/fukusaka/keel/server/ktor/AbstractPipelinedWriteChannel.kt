@@ -96,7 +96,7 @@ abstract class AbstractPipelinedWriteChannel(
         // that calls flush() per frame can outpace the EventLoop's write-readiness
         // processing — the EL keeps servicing emit tasks and never reaches
         // kevent(2) / epoll_wait(2), so write-readiness is observed late and
-        // throughput collapses. Mirrors the K37 fix on the upgrade pump
+        // throughput collapses. Mirrors the slow-reader high-water fix on the upgrade pump
         // (KeelApplicationResponse.pumpOutputToRaw).
         if (!pipelinedChannel.isWritable) {
             pipelinedChannel.awaitFlushComplete()
@@ -190,7 +190,7 @@ abstract class AbstractPipelinedWriteChannel(
      * connection handler can await termination before reading the next request.
      * Idempotent.
      *
-     * **K39a — FIFO ordering**: [writeTerminator] is dispatched via explicit
+     * **FIFO ordering**: [writeTerminator] is dispatched via explicit
      * [kotlinx.coroutines.CoroutineDispatcher.dispatch] rather than
      * [kotlinx.coroutines.withContext]. Some EL dispatchers (e.g. Netty's)
      * override [kotlinx.coroutines.CoroutineDispatcher.isDispatchNeeded] to

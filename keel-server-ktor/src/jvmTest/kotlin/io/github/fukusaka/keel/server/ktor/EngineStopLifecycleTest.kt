@@ -156,11 +156,11 @@ class EngineStopLifecycleTest {
      *    underlying socket — naive shutdown would simply RST the connections
      *    and clients would see an abrupt EOF.
      *
-     * The defect was originally observed as a hypothesis from the K40 / K4
-     * SIGKILL flake on macOS Apple Silicon; the seam tests in
+     * The defect was originally observed as a hypothesis from the macOS-runner
+     * IoBuf-leak SIGKILL flake on Apple Silicon; the seam tests in
      * [io.github.fukusaka.keel.engine.netty.NettyPipelineWsEchoSeamTest] /
      * [io.github.fukusaka.keel.engine.netty.NettyPipelineWsLargePayloadTest]
-     * cover the per-frame K4 invariant deterministically, but graceful-stop
+     * cover the per-frame IoBuf invariant deterministically, but graceful-stop
      * timing under sustained connection counts is a separate failure class
      * scoped to the integration layer (engine + Ktor adapter).
      *

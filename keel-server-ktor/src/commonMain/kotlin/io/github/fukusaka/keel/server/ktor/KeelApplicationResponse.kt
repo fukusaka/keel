@@ -89,7 +89,7 @@ internal class KeelApplicationResponse(
             pipelinedChannel.pipeline.requestWrite(head)
             pipelinedChannel.pipeline.requestFlush()
         }
-        // K29: return a frame-aware ByteWriteChannel. Each user `flush()`
+        // Per-frame flush: return a frame-aware ByteWriteChannel. Each user `flush()`
         // dispatches one `requestWrite + requestFlush` pair directly through
         // the pipeline; the body terminator (HttpBodyEnd) is emitted on the
         // first close / flushAndClose / cancel. The previous bridge
@@ -241,7 +241,7 @@ internal class KeelApplicationResponse(
 
     override suspend fun respondOutgoingContent(content: OutgoingContent) {
         super.respondOutgoingContent(content)
-        // K29: body completion is awaited inside KeelByteWriteChannel.flushAndClose
+        // Per-frame flush: body completion is awaited inside KeelByteWriteChannel.flushAndClose
         // (via awaitFlushComplete on the terminating HttpBodyEnd). The previous
         // responseBodyJob.join() guarded the bridge coroutine, which no longer
         // exists.

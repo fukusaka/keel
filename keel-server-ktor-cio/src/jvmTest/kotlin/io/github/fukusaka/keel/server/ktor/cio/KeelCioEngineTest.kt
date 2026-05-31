@@ -211,7 +211,7 @@ class KeelCioEngineTest {
     }
 
     /**
-     * K38b regression test for the ktor-cio path.
+     * Cancel-without-rethrow regression test for the ktor-cio path.
      *
      * **Scenario**: a handler calls `cancel(cause)` inside [io.ktor.server.response.respondBytesWriter]
      * without rethrowing. [CioKeelStreamChannel] (via [AbstractPipelinedWriteChannel.cancel])
@@ -228,7 +228,7 @@ class KeelCioEngineTest {
      * before reading the next request → `sentinelInvoked` stays `false`.
      */
     @Test
-    fun `cancel without rethrow closes keep-alive connection before next request — K38b`() {
+    fun `cancel without rethrow closes keep-alive connection before next request`() {
         val sentinelInvoked = AtomicBoolean(false)
 
         withKeelCioServer({
@@ -268,19 +268,19 @@ class KeelCioEngineTest {
 
             assertFalse(
                 sentinelInvoked.get(),
-                "K38b (ktor-cio): /sentinel handler was invoked — writeChannelCancelled check " +
+                "cancel-without-rethrow (ktor-cio): /sentinel handler was invoked — writeChannelCancelled check " +
                     "is absent or not firing; the connection was not closed after cancel()-without-rethrow",
             )
         }
     }
 
     /**
-     * K37 audit follow-up (ktor-cio variant): the chunked streaming path through
+     * Slow-reader high-water audit follow-up (ktor-cio variant): the chunked streaming path through
      * [CioKeelStreamChannel] (which inherits [io.github.fukusaka.keel.server.ktor.AbstractPipelinedWriteChannel])
      * must apply the high-water backpressure gate so a slow reader cannot drive
      * unbounded `pendingWrites` growth on the server.
      *
-     * Mirrors `K37-audit — flush suspends slow-reader producer beyond high-water mark`
+     * Mirrors `slow-reader high-water audit — flush suspends slow-reader producer beyond high-water mark`
      * in `KeelByteWriteChannelTest`, but exercised through the ktor-cio adapter
      * so the `:keel-server-ktor-cio` half of the audit is also Red-Green covered.
      *
@@ -291,7 +291,7 @@ class KeelCioEngineTest {
      * Restore the gate and the test passes.
      */
     @Test
-    fun `K37-audit — chunked streaming flush suspends slow-reader producer past high-water`() {
+    fun `slow-reader high-water audit — chunked streaming flush suspends slow-reader producer past high-water`() {
         val writerStarted = CompletableDeferred<Unit>()
         val iterationsCompleted = java.util.concurrent.atomic.AtomicInteger(0)
         val chunkSize = 16 * 1024
