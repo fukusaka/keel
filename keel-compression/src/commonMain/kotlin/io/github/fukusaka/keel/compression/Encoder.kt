@@ -28,6 +28,17 @@ public interface Encoder {
     public val name: String
 
     /**
+     * What this backend can honor on the current target, as a
+     * format-specific [CompressionCapabilities] (e.g.
+     * [DeflateCapabilities]) — or null when the encoder does not publish
+     * any. A negotiator matches on the concrete type and treats null /
+     * an unexpected type conservatively (advertising nothing the backend
+     * might not honor).
+     */
+    public val capabilities: CompressionCapabilities?
+        get() = null
+
+    /**
      * Open a new session. The session owns mutable state (Deflater
      * context, scratch buffers) and must be released by the caller
      * via [EncoderSession.close].
@@ -54,6 +65,19 @@ public interface Encoder {
 public interface Decoder {
     /** The `Content-Encoding` token this decoder consumes. */
     public val name: String
+
+    /**
+     * What this backend can honor on the current target, as a
+     * format-specific [CompressionCapabilities] (e.g.
+     * [DeflateCapabilities]) — or null when none is published. For a
+     * decoder the relevant axis is
+     * [DeflateCapabilities.supportsContextTakeover]: whether it can decode
+     * a peer stream that carried the LZ77 window across messages
+     * (permessage-deflate consults it to avoid accepting a `client`
+     * context takeover the server decoder cannot follow).
+     */
+    public val capabilities: CompressionCapabilities?
+        get() = null
 
     /**
      * Open a new session.
