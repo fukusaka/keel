@@ -10,10 +10,16 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.compression.zlib.GzipCodec
+import io.github.fukusaka.keel.server.http.Asset
+import io.github.fukusaka.keel.server.http.AssetSource
 import io.github.fukusaka.keel.server.http.Middleware
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
+import io.github.fukusaka.keel.server.http.header
 import io.github.fukusaka.keel.server.websocket.dsl.webSockets
 import kotlinx.coroutines.delay
+import kotlinx.io.Buffer
+import kotlinx.io.RawSource
+import kotlin.time.Instant
 
 private val EMPTY_BODY = ByteArray(0)
 
@@ -59,6 +65,150 @@ fun KeelHttpServerBuilder.installBenchCompression(enabled: Boolean) {
 fun KeelHttpServerBuilder.installBenchMiddleware(depth: Int) {
     repeat(depth.coerceAtLeast(0)) {
         install(Middleware { _, next -> next() })
+    }
+}
+
+/**
+ * Installs the `KeelHttpServer` feature micro-bench surface driven by the
+ * `BenchmarkConfig` flags: the [Middleware] chain depth plus the router
+ * scale, predicate, path-parameter, and static-file sub-benches. Each is
+ * a no-op at its zero default, so a plain `/hello` run is unaffected and
+ * a sweep enables exactly the one feature it measures.
+ *
+ * Called by every `server-http-*` engine startup (alongside
+ * [installBenchCompression] / [installStreamingBenchRoutes]).
+ * `pipeline-http-*` engines have no framework feature surface and never
+ * call this — they stay the raw-codec floor.
+ */
+fun KeelHttpServerBuilder.installBenchFeatureRoutes(config: BenchmarkConfig) {
+    installBenchMiddleware(config.middlewareDepth)
+    installBenchRouterScale(config.routerExtraRoutes, config.routerGrouped)
+    installBenchPredicates(config.predicateCount)
+    installBenchPathParam(config.pathParamMode)
+    installBenchStaticFile(config.staticFileBytes)
+}
+
+/**
+ * Registers [extraRoutes] synthetic GET routes under `/bench-route/<i>` so
+ * a sweep can grow the route table and measure how the router's match
+ * cost scales. Each route returns the standard `/hello` body.
+ *
+ * When [grouped] is false the routes are flat (`get("/bench-route/$i")`);
+ * when true they are nested under a single `route("/bench-route") { … }`
+ * group. Both compile to the same segment trie, so the pair isolates DSL
+ * registration cost from per-request match cost (which is identical) —
+ * the bench confirms grouping sugar is request-path zero-cost.
+ *
+ * No-op when [extraRoutes] <= 0. To probe sibling lookup among the N
+ * literal children the bench hits `/bench-route/<N/2>`; to probe
+ * unrelated-path overhead it hits `/hello`.
+ */
+fun KeelHttpServerBuilder.installBenchRouterScale(extraRoutes: Int, grouped: Boolean) {
+    val n = extraRoutes.coerceAtLeast(0)
+    if (n == 0) return
+    if (grouped) {
+        route("/bench-route") {
+            repeat(n) { i -> get("/$i") { call -> call.respond(PipelineHttpResponses.hello) } }
+        }
+    } else {
+        repeat(n) { i -> get("/bench-route/$i") { call -> call.respond(PipelineHttpResponses.hello) } }
+    }
+}
+
+/**
+ * Registers [count] header-guarded handlers on `/bench-predicate`, each
+ * gated by a distinct `X-Bench-Sel: v<i>` predicate, plus a final
+ * unguarded catch-all. A client sending `X-Bench-Sel: v<count-1>` forces
+ * the router to evaluate every predicate before the last one accepts, so
+ * the throughput delta per added [count] is the per-predicate evaluation
+ * cost. All handlers return the standard `/hello` body.
+ *
+ * No-op when [count] <= 0.
+ */
+fun KeelHttpServerBuilder.installBenchPredicates(count: Int) {
+    val n = count.coerceAtLeast(0)
+    if (n == 0) return
+    repeat(n) { i ->
+        get("/bench-predicate", predicate = header("X-Bench-Sel", "v$i")) { call ->
+            call.respond(PipelineHttpResponses.hello)
+        }
+    }
+    // Unguarded catch-all kept last so a request whose X-Bench-Sel matches
+    // none of the predicates still gets a 200 rather than a 404.
+    get("/bench-predicate") { call -> call.respond(PipelineHttpResponses.hello) }
+}
+
+/**
+ * Registers the `/bench-param/:id` route with the path-parameter
+ * constraint selected by [mode] (`"plain"` / `"int"` / `"uuid"` /
+ * `"regex"`; `"none"` disables the route). The handler echoes the
+ * extracted id via `X-Item-Id`, so sweeping the mode against a matching
+ * value isolates the constraint-check overhead on the extraction hot
+ * path versus the unconstrained `:id` baseline.
+ */
+fun KeelHttpServerBuilder.installBenchPathParam(mode: String) {
+    val pattern = when (mode) {
+        "plain" -> "/bench-param/:id"
+        "int" -> "/bench-param/:id(int)"
+        "uuid" -> "/bench-param/:id(uuid)"
+        "regex" -> "/bench-param/:id(^[a-z0-9-]+\$)"
+        else -> return
+    }
+    get(pattern) { call ->
+        call.respond(
+            HttpResponse(
+                status = HttpStatus.OK,
+                version = HttpVersion.HTTP_1_1,
+                headers = HttpHeaders.of(
+                    HttpHeaderName.CONTENT_LENGTH to "0",
+                    "X-Item-Id" to call.pathParameters["id"].orEmpty(),
+                ),
+                body = EMPTY_BODY,
+            ),
+        )
+    }
+}
+
+/**
+ * Serves an in-memory static asset of [bytes] bytes at `/bench-static`
+ * (no-op when [bytes] <= 0). Backed by [BenchAssetSource] so the bench
+ * can exercise the static-file serve path — full `200`, single-range
+ * `206` (`Range: bytes=…`), and conditional GET (`If-None-Match` against
+ * the fixed weak ETag) — against an asset of known size without touching
+ * the filesystem (keeps the bench portable across native / JS / JVM).
+ */
+fun KeelHttpServerBuilder.installBenchStaticFile(bytes: Int) {
+    if (bytes <= 0) return
+    staticAssets("/bench-static", BenchAssetSource(bytes))
+}
+
+/**
+ * Fixed-size in-memory [AssetSource] for the static-file bench. Resolves
+ * every path to the same [BenchAsset] of [size] bytes filled with `'x'`.
+ */
+private class BenchAssetSource(private val size: Int) : AssetSource {
+    private val asset = BenchAsset(size)
+    override fun resolve(path: String): Asset = asset
+}
+
+/**
+ * In-memory [Asset] of [byteSize] bytes (all `'x'`) with a fixed weak
+ * ETag so `If-None-Match` conditional GET is exercisable. [open] returns
+ * a fresh [Buffer] over the requested `[offset, offset + length)` slice,
+ * so Range requests are served without re-reading any backing store.
+ */
+private class BenchAsset(private val byteSize: Int) : Asset {
+    private val data = ByteArray(byteSize) { 'x'.code.toByte() }
+
+    override val size: Long = byteSize.toLong()
+    override val contentType: String = "application/octet-stream"
+    override val lastModified: Instant? = null
+    override val etag: String = "W/\"bench-$byteSize\""
+
+    override fun open(offset: Long, length: Long): RawSource {
+        val start = offset.toInt().coerceIn(0, byteSize)
+        val end = (offset + length).toInt().coerceIn(start, byteSize)
+        return Buffer().apply { write(data, start, end) }
     }
 }
 
