@@ -60,6 +60,11 @@ kotlin {
                 // (gzip / deflate backend) when `--compression=true`.
                 implementation(project(":keel-compression-zlib"))
                 implementation(libs.kotlinx.coroutines.core)
+                // ServerHttpBenchRoutes' in-memory static-asset bench (the
+                // `--static-file-bytes` micro-bench) returns a kotlinx.io
+                // RawSource from Asset.open, so the symbol must be a direct
+                // dependency (transitive resolution is JS-target unreliable).
+                implementation(libs.kotlinx.io.core)
             }
         }
         commonTest {
