@@ -60,6 +60,70 @@ data class BenchmarkConfig(
      *   on the leaderboard rather than silent.
      */
     val compression: Boolean = false,
+    /**
+     * Number of pass-through middlewares to install ahead of the route
+     * handlers on `server-http-*` engines (0 = none, the default). Each
+     * middleware does nothing but call `next()`, so the bench isolates the
+     * per-hop dispatch cost of the [io.github.fukusaka.keel.server.http.Middleware]
+     * chain: sweep `--middleware-depth` over `/hello` and the throughput
+     * delta per added depth is the framework's middleware overhead.
+     *
+     * `pipeline-http-*` engines have no framework middleware concept, so
+     * the flag is a no-op there (the bench compares server-http depths
+     * against the pipeline-http floor as depth 0).
+     */
+    val middlewareDepth: Int = 0,
+    /**
+     * Number of synthetic GET routes to register under `/bench-route/<i>`
+     * ahead of the real routes (0 = none). Lets a sweep grow the route
+     * table and measure how match cost scales: hit `/hello` (unrelated
+     * path) to see the per-table-size overhead, or `/bench-route/<N/2>`
+     * to probe sibling lookup among the N literal children. See
+     * [routerGrouped] for the registration-style axis.
+     */
+    val routerExtraRoutes: Int = 0,
+    /**
+     * When true, [routerExtraRoutes] routes are registered via nested
+     * `route("/bench-route") { get("/$i") }` groups; when false, flat
+     * `get("/bench-route/$i")`. Both compile to the same segment trie, so
+     * the pair isolates DSL-registration cost (startup) from match cost
+     * (per-request, identical) — the bench confirms grouping sugar is
+     * zero-cost at the request path.
+     */
+    val routerGrouped: Boolean = false,
+    /**
+     * Number of `permessage`-style guarded handlers to register on
+     * `/bench-predicate` (0 = none), each gated by a distinct
+     * `X-Bench-Sel: v<i>` header predicate plus a final catch-all. A
+     * client sending `X-Bench-Sel: v<count-1>` forces evaluating every
+     * predicate, so the throughput delta per added count is the
+     * per-predicate evaluation cost.
+     */
+    val predicateCount: Int = 0,
+    /**
+     * Path-parameter constraint mode for the `/bench-param/:id` route:
+     * `"none"` (route disabled), `"plain"` (`:id`), `"int"` (`:id(int)`),
+     * `"uuid"` (`:id(uuid)`), or `"regex"` (`:id(^[a-z0-9-]+$)`). Sweeping
+     * the mode over a matching value isolates the constraint-check
+     * overhead on the extraction hot path.
+     */
+    val pathParamMode: String = "none",
+    /**
+     * Size in bytes of the in-memory static asset served at
+     * `/bench-static` (0 = route disabled). Lets the bench measure
+     * static-file serving throughput and the Range / conditional-GET
+     * paths (`Range: bytes=…`, `If-None-Match`) against an asset of known
+     * size without touching the filesystem.
+     */
+    val staticFileBytes: Int = 0,
+    /**
+     * When true, the `server-http-*` connector is configured with the
+     * strict DoS-hardening limits (reject control chars / malformed
+     * encoding in query, tighter header / parameter caps) instead of the
+     * relaxed defaults. Sweeping it against a query-heavy request
+     * isolates the validation overhead on the parse hot path.
+     */
+    val dosHardening: Boolean = false,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -81,6 +145,13 @@ data class BenchmarkConfig(
                     "profile" -> config = config.copy(profile = value)
                     "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
                     "compression" -> config = config.copy(compression = value.toBooleanStrict())
+                    "middleware-depth" -> config = config.copy(middlewareDepth = value.toInt())
+                    "router-extra-routes" -> config = config.copy(routerExtraRoutes = value.toInt())
+                    "router-grouped" -> config = config.copy(routerGrouped = value.toBooleanStrict())
+                    "predicate-count" -> config = config.copy(predicateCount = value.toInt())
+                    "path-param-mode" -> config = config.copy(pathParamMode = value)
+                    "static-file-bytes" -> config = config.copy(staticFileBytes = value.toInt())
+                    "dos-hardening" -> config = config.copy(dosHardening = value.toBooleanStrict())
                     "tls" -> config = config.copy(tls = value)
                     "tls-installer" -> config = config.copy(tlsInstaller = value)
                     // Socket options
@@ -147,6 +218,12 @@ data class BenchmarkConfig(
         if (tls != null) append(", tls=$tls, tls-installer=$tlsInstaller")
         if (connectionClose) append(", connection=close")
         if (compression) append(", compression=on")
+        if (middlewareDepth > 0) append(", middleware-depth=$middlewareDepth")
+        if (routerExtraRoutes > 0) append(", router-extra-routes=$routerExtraRoutes${if (routerGrouped) " (grouped)" else ""}")
+        if (predicateCount > 0) append(", predicate-count=$predicateCount")
+        if (pathParamMode != "none") append(", path-param-mode=$pathParamMode")
+        if (staticFileBytes > 0) append(", static-file-bytes=$staticFileBytes")
+        if (dosHardening) append(", dos-hardening=on")
         socket.appendTo(this)
         if (engineConfig !is EngineConfig.None) append(", $engineConfig")
     }
@@ -170,6 +247,12 @@ data class BenchmarkConfig(
             fmtLine("connection-close:", "$connectionClose")
         }
         fmtLine("compression:", if (compression) "enabled (gzip / deflate)" else "disabled")
+        fmtLine("middleware-depth:", "$middlewareDepth")
+        fmtLine("router-extra-routes:", "$routerExtraRoutes${if (routerGrouped) " (grouped)" else " (flat)"}")
+        fmtLine("predicate-count:", "$predicateCount")
+        fmtLine("path-param-mode:", pathParamMode)
+        fmtLine("static-file-bytes:", "$staticFileBytes")
+        fmtLine("dos-hardening:", if (dosHardening) "enabled (strict limits)" else "disabled")
         appendLine()
         socket.displayTo(this, engine)
         appendLine()
