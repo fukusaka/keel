@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.HttpVersion
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.compression.zlib.GzipCodec
+import io.github.fukusaka.keel.server.http.Middleware
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
 import io.github.fukusaka.keel.server.websocket.dsl.webSockets
 import kotlinx.coroutines.delay
@@ -40,6 +41,24 @@ fun KeelHttpServerBuilder.installBenchCompression(enabled: Boolean) {
             // fixtures without hitting RequestDecompressionLimitException.
             limit = 10L * 1024 * 1024
         }
+    }
+}
+
+/**
+ * Installs [depth] pass-through middlewares on the [KeelHttpServerBuilder]
+ * so the bench can measure the per-hop dispatch cost of the
+ * [Middleware] chain. Each installed middleware does nothing but call
+ * `next()`, so sweeping `--middleware-depth` over `/hello` isolates the
+ * framework's middleware overhead: the throughput delta per added depth
+ * is the cost of one extra chain hop.
+ *
+ * No-op when [depth] <= 0 (the default). `pipeline-http-*` engines have
+ * no framework middleware concept and never call this; they serve as the
+ * depth-0 floor in the sweep.
+ */
+fun KeelHttpServerBuilder.installBenchMiddleware(depth: Int) {
+    repeat(depth.coerceAtLeast(0)) {
+        install(Middleware { _, next -> next() })
     }
 }
 
