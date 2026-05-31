@@ -70,7 +70,10 @@ internal class WsPermessageDeflate(
         EncoderOptions(
             level = options.level,
             wrapFormat = WrapFormat.Raw,
-            flushMode = FlushMode.Sync,
+            // update() feeds without flushing; the per-message Z_SYNC_FLUSH
+            // boundary is emitted explicitly via flush(), so the stream stays
+            // open (no finish() abuse, and context takeover stays expressible).
+            flushMode = FlushMode.NoFlush,
             contextTakeover = options.contextTakeover,
             windowBits = serverMaxWindowBits,
         ),
@@ -169,7 +172,10 @@ internal class WsPermessageDeflate(
                 }
             }
             drain(output, collected)
-            while (encoder.finish(output) != CodecStatus.FINISHED) {
+            // Z_SYNC_FLUSH boundary (NOT finish): emits the compressed message
+            // ending in 00 00 FF FF, leaving the stream open. flush() returns
+            // NEED_INPUT once the boundary is fully drained.
+            while (encoder.flush(output) != CodecStatus.NEED_INPUT) {
                 drain(output, collected)
             }
             drain(output, collected)
@@ -198,11 +204,12 @@ internal class WsPermessageDeflate(
                 }
             }
             drain(output, collected)
-            while (true) {
-                val status = decoder.finish(output)
+            // flush() (NOT finish): drain this frame's plaintext, leave the
+            // inflate stream open. Returns NEED_INPUT when the boundary is done.
+            while (decoder.flush(output) != CodecStatus.NEED_INPUT) {
                 drain(output, collected)
-                if (status == CodecStatus.FINISHED || status == CodecStatus.NEED_INPUT) break
             }
+            drain(output, collected)
         } finally {
             src.release()
             output.release()

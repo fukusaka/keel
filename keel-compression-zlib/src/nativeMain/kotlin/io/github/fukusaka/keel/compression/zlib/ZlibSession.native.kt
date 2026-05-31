@@ -142,6 +142,14 @@ private class NativeZlibEncoderSession(
         return drive(input, output, flushFlag, isFinish = false)
     }
 
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Z_SYNC_FLUSH on no new input: emit the byte-aligned boundary
+        // (raw DEFLATE ends in 00 00 FF FF), stream stays open.
+        return drive(input = null, output = output, flag = keel_zlib_flag_sync_flush(), isFinish = false)
+    }
+
     override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         if (finishedReturned) return CodecStatus.FINISHED
@@ -268,6 +276,15 @@ private class NativeZlibDecoderSession(
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         return drive(input, output)
+    }
+
+    override fun flush(output: IoBuf): CodecStatus {
+        check(!closed) { "session closed" }
+        // Inflate emits plaintext as it decodes, so by the time a
+        // Z_SYNC_FLUSH'd block has been fed via update() the output is
+        // already drained; flush() drains any tail and keeps the stream
+        // open (no trailer validation, unlike finish()).
+        return drive(input = null, output = output)
     }
 
     override fun finish(output: IoBuf): CodecStatus {

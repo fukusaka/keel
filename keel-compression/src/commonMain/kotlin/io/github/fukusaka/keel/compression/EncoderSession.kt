@@ -57,8 +57,35 @@ public interface EncoderSession : AutoCloseable {
     public fun update(input: IoBuf, output: IoBuf): CodecStatus
 
     /**
+     * Emit a byte-aligned **message boundary** (`Z_SYNC_FLUSH`) without
+     * ending the stream.
+     *
+     * All buffered input is compressed and flushed so a receiver can
+     * decode everything fed so far; for raw DEFLATE the boundary ends in
+     * the empty-block marker `00 00 FF FF`. Unlike [finish] the stream
+     * stays open — the next [update] continues the same DEFLATE stream
+     * (preserving the LZ77 window when [EncoderOptions.contextTakeover] is
+     * set), so this is the correct primitive for per-message framing such
+     * as WebSocket `permessage-deflate` (RFC 7692 §7.2.1) and chunk-level
+     * HTTP flushing. **Do not** abuse [finish] for a boundary: [finish]
+     * terminates the stream with `Z_FINISH` and a trailer.
+     *
+     * Returns [CodecStatus.NEED_OUTPUT] until all flushed bytes are
+     * written (caller drains [output] and re-calls), then
+     * [CodecStatus.NEED_INPUT] when the boundary is complete and the
+     * session is ready for more [update] / another [flush] / [finish].
+     *
+     * The default implementation throws — backends that cannot emit a
+     * sync-flush boundary (none of the keel zlib backends) must document
+     * the limitation; callers that require framing should check support.
+     */
+    public fun flush(output: IoBuf): CodecStatus =
+        throw UnsupportedOperationException("flush() not supported by this encoder")
+
+    /**
      * Finalize the stream — flush internal buffer + emit format trailer
-     * (gzip CRC32 + ISIZE, zlib Adler-32, etc.) into [output].
+     * (gzip CRC32 + ISIZE, zlib Adler-32, etc.) into [output] via
+     * `Z_FINISH`.
      *
      * Returns [CodecStatus.NEED_OUTPUT] until all trailer bytes have
      * been written; caller flushes [output] and re-calls [finish]
@@ -66,7 +93,8 @@ public interface EncoderSession : AutoCloseable {
      *
      * After [CodecStatus.FINISHED], the session is in a finished state.
      * Call [reset] to reuse for another message, or [close] to release
-     * resources.
+     * resources. For a per-message boundary that keeps the stream open,
+     * use [flush] instead.
      */
     public fun finish(output: IoBuf): CodecStatus
 
@@ -114,6 +142,25 @@ public interface DecoderSession : AutoCloseable {
      *   or [DecoderOptions.maxRatio] would be exceeded
      */
     public fun update(input: IoBuf, output: IoBuf): CodecStatus
+
+    /**
+     * Emit all output decoded up to a **message boundary** without
+     * requiring the stream to end.
+     *
+     * The symmetric counterpart of [EncoderSession.flush]: a
+     * `Z_SYNC_FLUSH`-terminated DEFLATE block (e.g. one WebSocket
+     * `permessage-deflate` frame) is decoded and its plaintext drained,
+     * with the inflate stream left open for the next [update] (preserving
+     * the window when [DecoderOptions.contextTakeover] is set). Unlike
+     * [finish] it does not require / validate a stream-end trailer.
+     *
+     * Returns [CodecStatus.NEED_OUTPUT] until drained, then
+     * [CodecStatus.NEED_INPUT].
+     *
+     * The default implementation throws; keel zlib decoders override it.
+     */
+    public fun flush(output: IoBuf): CodecStatus =
+        throw UnsupportedOperationException("flush() not supported by this decoder")
 
     /**
      * Finalize the stream and validate any trailing checksum / length
