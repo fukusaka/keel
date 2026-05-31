@@ -61,11 +61,11 @@ import kotlin.concurrent.Volatile
 internal object HttpHeadersPool {
 
     /**
-     * K56b investigation toggle. When `true`, every [borrow] returns a
+     * Cross-queue header-pool investigation toggle. When `true`, every [borrow] returns a
      * fresh instance and every [giveBack] drops the instance — the pool
      * is entirely bypassed and `@ThreadLocal` `nativeStack` never accumulates.
      *
-     * Used to bisect the K56b crash's causal chain: if disabling the
+     * Used to bisect the cross-queue header-pool crash's causal chain: if disabling the
      * pool eliminates the residual 3% `HttpHeaders.resetForReuse` SIGSEGV
      * observed on `server-http × nwconnection × {mbedtls,openssl}`, the
      * defect lies on the pool-reuse path (cross-connection / cross-worker
@@ -81,7 +81,7 @@ internal object HttpHeadersPool {
      * that env var bypasses the pool with no code change. Tests toggle it
      * at runtime via [setBypassPool].
      *
-     * **Not exposed via public API.** Even after the K56b root cause was
+     * **Not exposed via public API.** Even after the cross-queue header-pool root cause was
      * fixed (per-NWConnection-queue scoped pool, PR #627), this flag is
      * retained as a diagnostic / benchmarking lever — an A/B switch to
      * isolate the pool from any future crash's causal chain. Keeping it a
@@ -199,7 +199,7 @@ internal expect fun headersPoolStack(): ArrayDeque<HttpHeaders>
  * Reads `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS` from the platform's
  * process environment. Returns `true` when the value is `"1"`,
  * `false` otherwise (including "unset"). Used by [HttpHeadersPool] to
- * initialise the K56b investigation bypass flag at class-init time.
+ * initialise the cross-queue header-pool investigation bypass flag at class-init time.
  *
  * Single env var probe at codec-http init; the value is captured in
  * the `bypassPool` field and not re-read.

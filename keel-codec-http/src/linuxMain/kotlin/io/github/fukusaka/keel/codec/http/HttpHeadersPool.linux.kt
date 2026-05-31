@@ -18,7 +18,7 @@ import platform.posix.getenv
  * On Linux there is no GCD, so the per-thread invariant is trivially
  * preserved by every keel engine: each pthread is owned by exactly one
  * EventLoop, and a given connection's borrow/release pair always runs
- * on that same EventLoop thread. No K56b-style cross-queue aliasing is
+ * on that same EventLoop thread. No cross-queue header-pool aliasing is
  * possible on this platform.
  */
 @ThreadLocal

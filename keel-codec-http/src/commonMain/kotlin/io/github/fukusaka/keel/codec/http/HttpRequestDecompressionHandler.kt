@@ -105,7 +105,7 @@ public class HttpRequestDecompressionHandler(
      * the head with a buffer-free copy, so nothing downstream will release the
      * original — without releasing it here, one recv buffer leaks per request,
      * which on io_uring's fixed-slot provided-buffer ring wedges the EventLoop
-     * (K62). The release is deferred to end-of-request because the streaming
+     * (the decompression recv-buffer leak). The release is deferred to end-of-request because the streaming
      * body chunks that follow may alias the same recv buffer; freeing it at
      * [handleRequestHead] would recycle bytes the decoder has not yet decoded.
      * Null between requests.

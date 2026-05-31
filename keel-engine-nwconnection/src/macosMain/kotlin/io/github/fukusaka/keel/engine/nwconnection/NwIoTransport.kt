@@ -168,7 +168,7 @@ internal class NwIoTransport(
     override val ioDispatcher: CoroutineDispatcher = connQueueDispatcher
 
     init {
-        // K56b root-cause fix: install a per-connection-queue scoped
+        // Per-connection-queue header-pool fix: install a per-connection-queue scoped
         // `HttpHeadersPool` stack on [connQueue]. Without this, the
         // default `@ThreadLocal nativeStack` is shared by every
         // connection whose blocks happen to land on the same GCD worker

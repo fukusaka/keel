@@ -32,7 +32,7 @@ kotlin {
                 implementation(project(":keel-tls"))
                 implementation(project(":keel-server"))
                 // `keel-codec-http` provides `installScopedHeadersPool`
-                // for the K56b root-cause fix — every per-connection
+                // for the per-connection-queue header-pool fix — every per-connection
                 // dispatch queue gets its own `HttpHeadersPool` stack
                 // so GCD worker-thread migration cannot alias instances
                 // across connections.

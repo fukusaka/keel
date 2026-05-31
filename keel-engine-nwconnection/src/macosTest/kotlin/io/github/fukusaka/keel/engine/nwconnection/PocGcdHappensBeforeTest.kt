@@ -58,7 +58,7 @@ import platform.darwin.DISPATCH_TIME_FOREVER
  * the asserting thread without confounding the experiment.
  *
  * **Expected outcome.** If K/N honours GCD HB (the optimistic case the
- * K56b investigation is trying to confirm), the mismatch count should be
+ * GCD cross-worker refcount investigation is trying to confirm), the mismatch count should be
  * exactly 0 across all iterations. Any non-zero result is direct evidence
  * that NWConnection-based engines need explicit `@Volatile` / `AtomicInt`
  * coverage on every cross-block-visible field.

@@ -76,7 +76,7 @@ abstract class AbstractIoBuf internal constructor(
      * The race manifested as a sporadic SIGABRT
      * `Buffer already released` inside `HttpHeaders.resetForReuse()`
      * on `server-http × nwconnection` HTTPS sweeps at ~7 % per-run rate
-     * (K56). Atomic adds the missing memory barriers without changing
+     * (the GCD cross-worker refcount race). Atomic adds the missing memory barriers without changing
      * the single-owner contract on the well-behaved engines.
      */
     private val refCount = AtomicInt(1)

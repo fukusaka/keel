@@ -82,8 +82,8 @@ import platform.darwin.dispatch_queue_t
  * blocks migrate across the worker pool. A naive `@ThreadLocal` therefore
  * collocates state belonging to different queues on the same worker
  * pthread, breaking any "exactly one owner" invariant that downstream
- * consumers rely on — see the K56b investigation
- * (`HttpHeadersPool` cross-connection aliasing) for the canonical example
+ * consumers rely on — see the `HttpHeadersPool` cross-connection
+ * aliasing investigation for the canonical example
  * of how a `@ThreadLocal` design fails when handed GCD queues.
  *
  * **Mechanism.** Each [DispatchQueueLocal] instance owns a process-lifetime
