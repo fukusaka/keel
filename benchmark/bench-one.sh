@@ -11,6 +11,9 @@
 #   BENCH_WRK_CONNS      wrk connections (default: 100)
 #   BENCH_WRK_DURATION   wrk duration (default: 10s)
 #   BENCH_SCHEME         http or https (default: http)
+#   BENCH_TEMP_CAPTURE   1 = append `temp=START->ENDC(dN)` (CPU temp at the
+#                        start/end of the measured window) to the result row.
+#                        No sudo / no install (see bench-temp.sh). Default 0.
 #
 # Example:
 #   ./benchmark/bench-one.sh rust-bench benchmark/rust-bench/target/release/rust-bench --port=18090
@@ -31,6 +34,13 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
 SCHEME=${BENCH_SCHEME:-http}
 READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
+
+# Optional CPU-temperature capture (BENCH_TEMP_CAPTURE=1). Records the host
+# temperature at the start and end of the measured window so a reviewer can
+# tell a real engine delta from thermal drift over a long sweep.
+TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
+# shellcheck source=benchmark/bench-temp.sh
+. "$(dirname "$0")/bench-temp.sh"
 
 # Extract --port=N from args if present
 for arg in "$@"; do
@@ -123,6 +133,9 @@ ALL_STATUS=()    # Mirror of ALL_RPS but always a status token ("OK" / "READY_TI
 BEST_RPS=0
 BEST_P50=""
 BEST_P99=""
+
+TEMP_START=""
+[ "$TEMP_CAPTURE" = 1 ] && TEMP_START=$(read_temp_c)
 
 for run in $(seq 1 "$RUNS"); do
     log "--- run $run/$RUNS ---"
@@ -313,6 +326,11 @@ for run in $(seq 1 "$RUNS"); do
     fi
 done
 
+TEMP_END=""
+[ "$TEMP_CAPTURE" = 1 ] && TEMP_END=$(read_temp_c)
+# Empty (and the trailing field omitted) unless capture was enabled.
+TEMP_FIELD=$(format_temp_delta "$TEMP_START" "$TEMP_END")
+
 # --- Compute summary status ---
 ok_count=0
 for s in "${ALL_STATUS[@]}"; do
@@ -351,14 +369,14 @@ if [ "$RUNS" -gt 1 ]; then
     else
         MEDIAN_RPS="FAILED"
     fi
-    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]|$CELL_STATUS"
+    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]|$CELL_STATUS${TEMP_FIELD:+|temp=$TEMP_FIELD}"
 else
     SINGLE_VAL="${ALL_RPS[0]:-FAILED}"
     # If the single run failed, normalise to FAILED for the rps field.
     case "$SINGLE_VAL" in
         READY_TIMEOUT_*|CRASH|WRK_INCOMPLETE) SINGLE_VAL="FAILED" ;;
     esac
-    echo "$NAME|$SINGLE_VAL|${BEST_P50:--}|${BEST_P99:--}|[${ALL_RPS[*]}]|$CELL_STATUS"
+    echo "$NAME|$SINGLE_VAL|${BEST_P50:--}|${BEST_P99:--}|[${ALL_RPS[*]}]|$CELL_STATUS${TEMP_FIELD:+|temp=$TEMP_FIELD}"
 fi
 
 # Exit non-zero if no successful runs, matching the old contract that a

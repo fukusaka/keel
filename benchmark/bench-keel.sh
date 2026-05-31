@@ -12,7 +12,7 @@
 #   BENCH_PORT, BENCH_HOST_LABEL, BENCH_SCHEME, BENCH_TLS
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 PROFILE="${1:-default}"
 PORT=${BENCH_PORT:-18090}
@@ -22,6 +22,11 @@ WRK_DURATION=${BENCH_WRK_DURATION:-10s}
 ENDPOINT="${BENCH_ENDPOINT:-/hello}"
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
 READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
+# Optional CPU-temperature capture (BENCH_TEMP_CAPTURE=1) — see bench-temp.sh.
+# Sourced relative to the repo root (the `cd` above moved us there).
+TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
+# shellcheck source=benchmark/bench-temp.sh
+. benchmark/bench-temp.sh
 RUNS=${BENCH_RUNS:-1}
 SHUFFLE=${BENCH_SHUFFLE:-false}
 COOLDOWN=${BENCH_COOLDOWN:-2}
@@ -112,9 +117,12 @@ run_bench() {
     local all_status=()
     local best_result=""
     local best_rps=0
+    local temp_start=""
+    [ "$TEMP_CAPTURE" = 1 ] && temp_start=$(read_temp_c)
 
     local engine_port="$PORT"
-    local log_file="$BENCH_LOG_DIR/${name}-$(date +%Y%m%d-%H%M%S).log"
+    local log_file
+    log_file="$BENCH_LOG_DIR/${name}-$(date +%Y%m%d-%H%M%S).log"
     log_msg() { printf '[%s] %s\n' "$(date +%T)" "$*" >> "$log_file"; }
     log_msg "=== run_bench start name=$name scheme=$SCHEME endpoint=$ENDPOINT port=$engine_port runs=$RUNS ==="
     log_msg "argv: ${cmd[*]}"
@@ -143,14 +151,12 @@ run_bench() {
         # server-hang fingerprint), or "server returned 4xx/5xx" (status).
         local ready=false
         local -A curl_exit_counts=()
-        local last_curl_exit=0
         local last_status=000
         local iter status curl_exit
         for iter in $(seq 1 "$READY_TIMEOUT"); do
             status=$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' \
                 "${SCHEME}://127.0.0.1:${engine_port}${ENDPOINT}" 2>/dev/null)
             curl_exit=$?
-            last_curl_exit=$curl_exit
             last_status=$status
             curl_exit_counts[$curl_exit]=$(( ${curl_exit_counts[$curl_exit]:-0} + 1 ))
             case "$status" in
@@ -306,10 +312,15 @@ run_bench() {
     lat99=$(echo "$best_result" | awk '/^[[:space:]]+99%[[:space:]]/ {print $2; exit}')
     errors=$(echo "$best_result" | grep "Socket errors" | head -1)
 
+    local temp_field=""
+    if [ "$TEMP_CAPTURE" = 1 ]; then
+        temp_field=$(format_temp_delta "$temp_start" "$(read_temp_c)")
+    fi
+
     if [ "$RUNS" -gt 1 ]; then
-        printf "  %-28s %12s req/s  p50=%-10s p99=%-10s [%s] (%d runs) [%s]" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "${all_rps[*]}" "$RUNS" "$cell_status"
+        printf "  %-28s %12s req/s  p50=%-10s p99=%-10s [%s] (%d runs) [%s]%s" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "${all_rps[*]}" "$RUNS" "$cell_status" "${temp_field:+ temp=$temp_field}"
     else
-        printf "  %-28s %12s req/s  p50=%-10s p99=%-10s [%s]" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "$cell_status"
+        printf "  %-28s %12s req/s  p50=%-10s p99=%-10s [%s]%s" "$name" "$median_rps" "${lat50:--}" "${lat99:--}" "$cell_status" "${temp_field:+ temp=$temp_field}"
     fi
     if [ -n "$errors" ]; then
         echo "  $errors"
