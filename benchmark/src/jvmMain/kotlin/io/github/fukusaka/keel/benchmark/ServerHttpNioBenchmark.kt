@@ -36,6 +36,7 @@ object ServerHttpNioBenchmark : EngineBenchmark {
         val server = keelHttpServer(engine) {
             connector(connectorConfigure)
             installBenchCompression(config.compression)
+            installBenchMiddleware(config.middlewareDepth)
             installStreamingBenchRoutes()
             installWebSocketBenchRoutes()
         }
