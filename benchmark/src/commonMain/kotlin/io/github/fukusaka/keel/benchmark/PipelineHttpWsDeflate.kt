@@ -48,8 +48,10 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
     private val encoder: EncoderSession = DeflateCodec.encoder.newSession(
         allocator,
         EncoderOptions(
+            // update() feeds; the per-message Z_SYNC_FLUSH boundary is emitted
+            // explicitly via flush() (mirrors WsPermessageDeflate after #650).
             wrapFormat = WrapFormat.Raw,
-            flushMode = FlushMode.Sync,
+            flushMode = FlushMode.NoFlush,
             contextTakeover = false,
         ),
     )
@@ -109,7 +111,9 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
                 }
             }
             drain(output, collected)
-            while (encoder.finish(output) != CodecStatus.FINISHED) {
+            // Z_SYNC_FLUSH boundary (NOT finish): ends in 00 00 FF FF, stream
+            // stays open. flush() returns NEED_INPUT once fully drained.
+            while (encoder.flush(output) != CodecStatus.NEED_INPUT) {
                 drain(output, collected)
             }
             drain(output, collected)
@@ -135,11 +139,11 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
                 }
             }
             drain(output, collected)
-            while (true) {
-                val status = decoder.finish(output)
+            // flush() (NOT finish): drain this frame's plaintext, stream open.
+            while (decoder.flush(output) != CodecStatus.NEED_INPUT) {
                 drain(output, collected)
-                if (status == CodecStatus.FINISHED || status == CodecStatus.NEED_INPUT) break
             }
+            drain(output, collected)
         } finally {
             src.release()
             output.release()
