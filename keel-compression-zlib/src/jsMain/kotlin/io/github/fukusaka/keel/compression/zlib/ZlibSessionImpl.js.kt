@@ -35,6 +35,9 @@ import org.khronos.webgl.get
  * stream-based impl can replace this later if per-input-chunk
  * compression becomes a hot path; the SPI shape supports either model.
  */
+/** keel's "use the backend default level" sentinel ([EncoderOptions.level] default). */
+private const val DEFAULT_LEVEL = -1
+
 internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
@@ -48,11 +51,27 @@ internal actual fun newZlibDecoderSession(
 ): DecoderSession = JsZlibDecoderSession(options, defaultWrap)
 
 private class JsZlibEncoderSession(
-    options: EncoderOptions,
+    private val options: EncoderOptions,
     defaultWrap: WrapFormat,
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+
+    /**
+     * Builds the Node `zlib` options object for one sync compress call,
+     * forwarding the configured compression [EncoderOptions.level] (so a
+     * non-default level set via, e.g., the WebSocket `deflate { level }`
+     * DSL is honoured instead of silently using Node's default 6). `-1`
+     * (keel's "backend default") is left unset so the call stays
+     * byte-identical to the previous behaviour. [syncFlush] adds the
+     * `Z_SYNC_FLUSH` boundary used by per-message [flush].
+     */
+    private fun nodeOptions(syncFlush: Boolean): dynamic {
+        val opts: dynamic = js("({})")
+        if (options.level != DEFAULT_LEVEL) opts.level = options.level
+        if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
+        return opts
+    }
     private var pending: ByteArray = ByteArray(0)
     private var compressedOutput: ByteArray? = null
     private var compressedOffset: Int = 0
@@ -101,8 +120,7 @@ private class JsZlibEncoderSession(
         // which also resolves both limitations above.
         if (compressedOutput == null) {
             val u8 = pending.toUint8Array()
-            val opts: dynamic = js("({})")
-            opts.finishFlush = constants.Z_SYNC_FLUSH
+            val opts = nodeOptions(syncFlush = true)
             val resultDyn: dynamic = when (wrap) {
                 WrapFormat.Gzip, WrapFormat.Default -> gzipSync(u8, opts)
                 WrapFormat.Zlib -> deflateSync(u8, opts)
@@ -135,10 +153,11 @@ private class JsZlibEncoderSession(
         // First invocation: run sync compress.
         if (compressedOutput == null) {
             val u8 = pending.toUint8Array()
+            val opts = nodeOptions(syncFlush = false)
             val resultDyn: dynamic = when (wrap) {
-                WrapFormat.Gzip, WrapFormat.Default -> gzipSync(u8)
-                WrapFormat.Zlib -> deflateSync(u8)
-                WrapFormat.Raw -> deflateRawSync(u8)
+                WrapFormat.Gzip, WrapFormat.Default -> gzipSync(u8, opts)
+                WrapFormat.Zlib -> deflateSync(u8, opts)
+                WrapFormat.Raw -> deflateRawSync(u8, opts)
             }
             compressedOutput = resultDyn.unsafeCast<Uint8Array>().toByteArray()
             compressedOffset = 0

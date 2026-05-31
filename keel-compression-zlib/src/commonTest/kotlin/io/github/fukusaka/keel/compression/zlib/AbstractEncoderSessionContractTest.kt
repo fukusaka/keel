@@ -252,6 +252,42 @@ public abstract class AbstractEncoderSessionContractTest {
         }
     }
 
+    // ---- options honoring ----
+
+    @Test
+    public fun `compression level is honored`() {
+        // A compressible payload: level 0 (stored, no compression) produces a
+        // much larger stream than level 9 (max compression). If the backend
+        // ignored level (e.g. the JS one-shot path not forwarding it to Node,
+        // so everything used the default 6) the two sizes would be equal.
+        val payload = "the quick brown fox jumps over the lazy dog. ".repeat(64).encodeToByteArray()
+        val stored = encodeSize(EncoderOptions(level = 0), payload)
+        val maxed = encodeSize(EncoderOptions(level = 9), payload)
+        assertTrue(
+            maxed < stored,
+            "level 9 ($maxed B) must compress smaller than level 0 ($stored B) — level not honored?",
+        )
+    }
+
+    private fun encodeSize(options: EncoderOptions, payload: ByteArray): Int {
+        val session = newSessionWithOptions(options)
+        val output = allocator.allocate(outputCap)
+        val sink = ByteCollector()
+        try {
+            val input = allocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
+            try {
+                driveUpdateToNeedInput(session, input, output, sink, maxIterations = 256)
+                driveToFinished(session, output, sink, maxIterations = 256)
+            } finally {
+                input.release()
+            }
+        } finally {
+            output.release()
+            session.close()
+        }
+        return sink.size
+    }
+
     // ---- close lifecycle ----
 
     @Test
