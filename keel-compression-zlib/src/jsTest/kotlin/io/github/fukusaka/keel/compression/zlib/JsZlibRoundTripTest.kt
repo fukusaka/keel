@@ -8,10 +8,12 @@ import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.WrapFormat
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * JS (Node) zlib backend round-trip tests, streaming SPI shape.
@@ -51,6 +53,20 @@ class JsZlibRoundTripTest {
         val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, encOpts))
         val decoded = decodeAll(compressed, GzipDecoder.newSession(allocator, decOpts))
         assertContentEquals(payload, decoded)
+    }
+
+    @Test
+    fun `strategy HuffmanOnly produces larger output than default for repetitive data`() {
+        // HuffmanOnly disables LZ77 string matching, so repetitive data (which
+        // the default strategy dedups via back-references) compresses much worse.
+        // If strategy were dropped on the JS path, the two sizes would match.
+        val payload = "ABCD".repeat(500).encodeToByteArray()
+        val default = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(strategy = Strategy.Default)))
+        val huffman = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(strategy = Strategy.HuffmanOnly)))
+        assertTrue(
+            huffman.size > default.size,
+            "HuffmanOnly (${huffman.size} B) should exceed default (${default.size} B) for repetitive data",
+        )
     }
 
     private fun encodeAll(payload: ByteArray, session: EncoderSession): ByteArray {

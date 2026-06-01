@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.DecompressionLimitException
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.WrapFormat
 import org.khronos.webgl.Uint8Array
 import org.khronos.webgl.get
@@ -52,6 +53,15 @@ private const val MIN_WINDOW_BITS = 9
 /** Largest LZ77 window-bits (32 KiB); Node throws for `windowBits > 15`. */
 private const val MAX_WINDOW_BITS = 15
 
+/** Maps keel's [Strategy] to the Node `zlib` strategy constant. */
+private fun jsStrategy(strategy: Strategy): dynamic = when (strategy) {
+    Strategy.Default -> constants.Z_DEFAULT_STRATEGY
+    Strategy.Filtered -> constants.Z_FILTERED
+    Strategy.HuffmanOnly -> constants.Z_HUFFMAN_ONLY
+    Strategy.RunLength -> constants.Z_RLE
+    Strategy.Fixed -> constants.Z_FIXED
+}
+
 internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
@@ -86,13 +96,16 @@ private class JsZlibEncoderSession(
      * null `windowBits` are left unset so the call stays byte-identical to
      * the previous behaviour. A `windowBits` below [MIN_WINDOW_BITS] is
      * clamped to 9 (zlib coerces it anyway, and Node's gzip throws on 8).
-     * [syncFlush] adds the `Z_SYNC_FLUSH` boundary used by per-message
-     * [flush].
+     * A non-default [EncoderOptions.strategy] is forwarded too; the default
+     * (`Strategy.Default`) is left unset so the call stays byte-identical to
+     * the previous behaviour. [syncFlush] adds the `Z_SYNC_FLUSH` boundary
+     * used by per-message [flush].
      */
     private fun nodeOptions(syncFlush: Boolean): dynamic {
         val opts: dynamic = js("({})")
         if (options.level != DEFAULT_LEVEL) opts.level = options.level
         options.windowBits?.let { opts.windowBits = it.coerceIn(MIN_WINDOW_BITS, MAX_WINDOW_BITS) }
+        if (options.strategy != Strategy.Default) opts.strategy = jsStrategy(options.strategy)
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts
     }
