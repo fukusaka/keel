@@ -195,6 +195,40 @@ staticFiles("/assets", "./public")   // GET /assets/css/site.css → ./public/cs
 ファイルを、`staticAssets(urlPath, source)` はカスタムアセットソースを
 配信します。
 
+## 圧縮
+
+`compression { }` は gzip / deflate のレスポンス圧縮（リクエストの
+`Accept-Encoding` に対して交渉）と、任意でリクエストボディの展開
+（`Content-Encoding`）を追加します:
+
+```kotlin
+compression {
+    encoder(GzipCodec, priority = 1)       // コーデック登録。priority が高いほど q 値同点で勝つ
+    encoder(DeflateCodec, priority = 0)
+
+    level = 6                              // 全 encoder の圧縮レベル（-1 = backend default）
+    deflate {                              // DEFLATE 系の調整（gzip + deflate）
+        windowBits = 15                    // LZ77 window 8..15
+        strategy = Strategy.HuffmanOnly    // strategy ヒント（advisory）
+    }
+
+    responseCondition {
+        minContentLength = 1024            // 小さいレスポンスはスキップ
+        excludeContentTypePrefix("image/", "video/")   // 圧縮済みタイプ（既定でもカバー）
+    }
+
+    requestDecompression {                 // 任意: Content-Encoding のリクエストボディを展開
+        limit = 10L * 1024 * 1024          // 展開後の最大サイズ（zip-bomb 防御）
+        ratioLimit = 100                   // 出力:入力 比の上限
+    }
+}
+```
+
+`level` は形式非依存、`deflate { }` が DEFLATE 固有の `windowBits` /
+`strategy` を持ちます。tuning は DEFLATE 系 encoder に global です（将来の
+zstd コーデックは自前の tuning を持つ）。`requestDecompression { }` ブロック
+が無ければ、`Content-Encoding` ヘッダ付きのリクエストボディは素通りします。
+
 ## WebSocket
 
 `webSockets { }` は WebSocket エンドポイントを登録します。その中の各
@@ -222,10 +256,19 @@ webSockets {
 
 ```kotlin
 webSockets(DeflateCodec) {
-    deflate { contextTakeover = false; threshold = 1024 }
+    deflate {
+        contextTakeover = false             // RFC 7692; 既定 false（接続ごとのメモリを抑える）
+        threshold = 1024                     // これより小さいメッセージは非圧縮で送る
+        level = 6                            // DEFLATE レベル: -1 = backend default, 0..9
+        strategy = Strategy.HuffmanOnly      // DEFLATE strategy ヒント（advisory）
+    }
     webSocket("/chat") { for (m in incoming) send(m) }
 }
 ```
+
+WebSocket では `windowBits` は `deflate { }` の knob ではありません — LZ77
+window はハンドシェイクで交渉される `server_max_window_bits` で決まり、
+サーバ設定では決まりません。
 
 `webSockets { }` ブロックは `route(prefix) { }` グループ内にも置けます —
 その場合 WebSocket エンドポイントはグループの prefix とミドルウェアを
