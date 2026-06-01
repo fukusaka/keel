@@ -278,7 +278,14 @@ private class JvmZlibDecoderSession(
     private var finishedReturned: Boolean = false
 
     init {
-        options.dictionary?.let { inflater.setDictionary(it) }
+        // A raw / gzip stream carries no preset-dictionary signal, so the
+        // dictionary must be primed before the first inflate. A zlib stream
+        // signals it (the header's Adler-32) and `Inflater.setDictionary`
+        // rejects an early call, so its dictionary is applied lazily in
+        // drainDecode when `needsDictionary()` becomes true.
+        if (nowrap) {
+            options.dictionary?.let { inflater.setDictionary(it) }
+        }
     }
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
@@ -368,7 +375,12 @@ private class JvmZlibDecoderSession(
                     return CodecStatus.NEED_INPUT
                 }
                 if (inflater.needsDictionary()) {
-                    throw DecompressionException("inflate needs dictionary")
+                    // A zlib stream that used a preset dictionary asks for it
+                    // here; apply the configured one and let the loop continue.
+                    val dict = options.dictionary
+                        ?: throw DecompressionException("inflate needs dictionary")
+                    inflater.setDictionary(dict)
+                    continue
                 }
                 if (n == 0) break
             }
