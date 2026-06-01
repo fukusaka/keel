@@ -5,12 +5,14 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
+import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode
 import io.github.fukusaka.keel.compression.WrapFormat
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -41,6 +43,22 @@ class DeflateDictionaryTest {
         val withDict = encode(EncoderOptions(wrapFormat = WrapFormat.Raw, dictionary = DICTIONARY), PAYLOAD).size
         val noDict = encode(EncoderOptions(wrapFormat = WrapFormat.Raw), PAYLOAD).size
         assertTrue(withDict < noDict, "dictionary ($withDict B) should shrink output vs none ($noDict B)")
+    }
+
+    @Test
+    fun `decoding a zlib stream with the wrong dictionary fails with DecompressionException`() {
+        // A zlib stream carries the dictionary's Adler-32, so the decoder can tell
+        // it was handed a different dictionary. It must surface a clean
+        // DecompressionException rather than hanging (native: an ignored
+        // inflateSetDictionary return code leaves the stream in Z_NEED_DICT and
+        // drive() retries forever) or escaping as a raw IllegalArgumentException
+        // (JVM Inflater.setDictionary).
+        val correct = "the quick brown fox jumps over the lazy dog".encodeToByteArray()
+        val wrong = "an entirely different preset dictionary string".encodeToByteArray()
+        val compressed = encode(EncoderOptions(wrapFormat = WrapFormat.Zlib, dictionary = correct), PAYLOAD)
+        assertFailsWith<DecompressionException> {
+            decode(DecoderOptions(wrapFormat = WrapFormat.Zlib, dictionary = wrong), compressed)
+        }
     }
 
     private fun roundTripWithDictionary(wrap: WrapFormat) {
