@@ -405,7 +405,7 @@ private class JvmZlibDecoderSession(
                     // here; apply the configured one and let the loop continue.
                     val dict = options.dictionary
                         ?: throw DecompressionException("inflate needs dictionary")
-                    inflater.setDictionary(dict)
+                    applyDictionaryChecked(dict)
                     continue
                 }
                 if (n == 0) break
@@ -415,6 +415,20 @@ private class JvmZlibDecoderSession(
         }
         advanceInputReaderIndex(input)
         return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
+    }
+
+    /**
+     * Applies the preset dictionary, translating the `IllegalArgumentException`
+     * that `Inflater.setDictionary` throws on an Adler-32 mismatch (a zlib
+     * stream primed with a different dictionary) into a [DecompressionException]
+     * so callers see a clean codec error instead of a raw JDK exception.
+     */
+    private fun applyDictionaryChecked(dict: ByteArray) {
+        try {
+            inflater.setDictionary(dict)
+        } catch (e: IllegalArgumentException) {
+            throw DecompressionException("inflate dictionary mismatch (wrong dictionary?)", e)
+        }
     }
 
     private fun advanceInputReaderIndex(input: IoBuf?) {
