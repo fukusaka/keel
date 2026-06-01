@@ -64,16 +64,19 @@ private class JsZlibEncoderSession(
 
     /**
      * Builds the Node `zlib` options object for one sync compress call,
-     * forwarding the configured compression [EncoderOptions.level] (so a
-     * non-default level set via, e.g., the WebSocket `deflate { level }`
-     * DSL is honoured instead of silently using Node's default 6). `-1`
-     * (keel's "backend default") is left unset so the call stays
-     * byte-identical to the previous behaviour. [syncFlush] adds the
-     * `Z_SYNC_FLUSH` boundary used by per-message [flush].
+     * forwarding the configured [EncoderOptions.level] and
+     * [EncoderOptions.windowBits] (so a non-default level set via, e.g.,
+     * the WebSocket `deflate { level }` DSL, and a negotiated
+     * `server_max_window_bits`, are honoured instead of silently using
+     * Node's defaults). `level == -1` (keel's "backend default") and a
+     * null `windowBits` are left unset so the call stays byte-identical to
+     * the previous behaviour. [syncFlush] adds the `Z_SYNC_FLUSH` boundary
+     * used by per-message [flush].
      */
     private fun nodeOptions(syncFlush: Boolean): dynamic {
         val opts: dynamic = js("({})")
         if (options.level != DEFAULT_LEVEL) opts.level = options.level
+        options.windowBits?.let { opts.windowBits = it }
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts
     }
