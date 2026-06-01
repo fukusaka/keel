@@ -278,7 +278,14 @@ private class JvmZlibDecoderSession(
     private var finishedReturned: Boolean = false
 
     init {
-        options.dictionary?.let { inflater.setDictionary(it) }
+        // A raw / gzip stream carries no preset-dictionary signal, so the
+        // dictionary must be primed before the first inflate. A zlib stream
+        // signals it (the header's Adler-32) and `Inflater.setDictionary`
+        // rejects an early call, so its dictionary is applied lazily in
+        // drainDecode when `needsDictionary()` becomes true.
+        if (nowrap) {
+            options.dictionary?.let { inflater.setDictionary(it) }
+        }
     }
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
@@ -333,6 +340,15 @@ private class JvmZlibDecoderSession(
     override fun reset() {
         check(!closed) { "session closed" }
         inflater.reset()
+        // See init: `Inflater.reset()` drops the dictionary, so a
+        // no-context-takeover session (which clears the window every message)
+        // must re-prime the eager raw / gzip dictionary the way the encoder
+        // does. With context takeover the window is kept and the encoder does
+        // not re-prime, so neither do we. The zlib wrap re-signals
+        // needsDictionary() in the next stream.
+        if (!options.contextTakeover && nowrap) {
+            options.dictionary?.let { inflater.setDictionary(it) }
+        }
         gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
         totalDecoded = 0
         totalInput = 0
@@ -368,7 +384,12 @@ private class JvmZlibDecoderSession(
                     return CodecStatus.NEED_INPUT
                 }
                 if (inflater.needsDictionary()) {
-                    throw DecompressionException("inflate needs dictionary")
+                    // A zlib stream that used a preset dictionary asks for it
+                    // here; apply the configured one and let the loop continue.
+                    val dict = options.dictionary
+                        ?: throw DecompressionException("inflate needs dictionary")
+                    inflater.setDictionary(dict)
+                    continue
                 }
                 if (n == 0) break
             }
