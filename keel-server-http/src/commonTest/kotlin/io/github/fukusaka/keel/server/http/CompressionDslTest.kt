@@ -98,6 +98,18 @@ class CompressionDslTest {
     }
 
     @Test
+    fun `level is forwarded to the encoder options`() {
+        val tuned = CompressionBuilder().apply {
+            encoder(FakeCodec("gzip"))
+            level = 9
+        }.build()
+        assertEquals(9, tuned!!.encoderOptions.level)
+        // Default (no level set) stays the backend-default sentinel.
+        val default = CompressionBuilder().apply { encoder(FakeCodec("gzip")) }.build()
+        assertEquals(-1, default!!.encoderOptions.level)
+    }
+
+    @Test
     fun `responseCondition minContentLength threshold gates compression on small responses`() {
         val cfg = CompressionBuilder().apply {
             encoder(FakeCodec("gzip"))

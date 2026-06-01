@@ -89,6 +89,15 @@ public class CompressionBuilder internal constructor() {
     private var deflateTuning: DeflateTuning? = null
 
     /**
+     * Compression level applied to every registered [encoder]. `-1` (the
+     * default) means the backend default (`Z_DEFAULT_COMPRESSION` for zlib);
+     * `0` = no compression, `1` = fastest, `9` = best ratio. Format-independent
+     * (every backend has an effort dial); format-specific knobs go in
+     * [deflate].
+     */
+    public var level: Int = DEFAULT_LEVEL
+
+    /**
      * Registers [codec] (both encoder + decoder halves) with the given
      * tie-break [priority] (higher wins when multiple encodings share the
      * same `q` value in `Accept-Encoding`).
@@ -151,8 +160,13 @@ public class CompressionBuilder internal constructor() {
             responseCondition = conditionBuilder.build(),
             requestDecompression = requestDecompressionBuilder?.build(),
             // Keep flushMode = Sync (CompressionHandler default) for chunked streaming.
-            encoderOptions = EncoderOptions(tuning = deflateTuning),
+            encoderOptions = EncoderOptions(level = level, tuning = deflateTuning),
         )
+    }
+
+    private companion object {
+        /** Backend-default compression level sentinel (`Z_DEFAULT_COMPRESSION`). */
+        const val DEFAULT_LEVEL: Int = -1
     }
 }
 
