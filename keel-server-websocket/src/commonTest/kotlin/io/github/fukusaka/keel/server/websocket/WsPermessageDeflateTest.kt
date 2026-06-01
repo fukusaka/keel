@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.compression.DeflateCapabilities
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -30,6 +31,26 @@ class WsPermessageDeflateTest {
         WsPermessageDeflate(DeflateCodec, options, serverMaxWindowBits = null, clientMaxWindowBits = null)
 
     // --- compress / decompress round-trip ---
+
+    @Test
+    fun `the configured deflate strategy is honored end-to-end`() {
+        // HuffmanOnly disables LZ77 string matching, so repetitive data compresses
+        // far worse than the default. A larger HuffmanOnly output proves the
+        // `deflate { strategy = … }` DSL knob flows through WsDeflateOptions to the
+        // encoder's DeflateTuning.
+        val payload = "ABCD".repeat(500).encodeToByteArray()
+        fun compressedSize(strategy: Strategy): Int {
+            val engine = engine(WsDeflateOptions(threshold = 0, strategy = strategy))
+            try {
+                return engine.compress(payload).bytes.size
+            } finally {
+                engine.close()
+            }
+        }
+        val default = compressedSize(Strategy.Default)
+        val huffman = compressedSize(Strategy.HuffmanOnly)
+        assertTrue(huffman > default, "HuffmanOnly ($huffman B) should exceed default ($default B)")
+    }
 
     @Test
     fun `a compressible payload round-trips through compress and decompress`() {

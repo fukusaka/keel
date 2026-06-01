@@ -76,7 +76,7 @@ internal class WsPermessageDeflate(
             // open (no finish() abuse, and context takeover stays expressible).
             flushMode = FlushMode.NoFlush,
             contextTakeover = options.contextTakeover,
-            tuning = serverMaxWindowBits?.let { DeflateTuning(windowBits = it) },
+            tuning = DeflateTuning(windowBits = serverMaxWindowBits, strategy = options.strategy),
         ),
     )
 
