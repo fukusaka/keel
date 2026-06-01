@@ -80,7 +80,7 @@ private class JsZlibEncoderSession(
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
-    private var pending: ByteArray = ByteArray(0)
+    private val pending = ByteAccumulator()
     private var compressedOutput: ByteArray? = null
     private var compressedOffset: Int = 0
     private var closed: Boolean = false
@@ -117,11 +117,7 @@ private class JsZlibEncoderSession(
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before update()" }
         val n = input.readableBytes
-        if (n > 0) {
-            val tmp = ByteArray(n)
-            input.readByteArray(tmp, 0, n)
-            pending = pending + tmp
-        }
+        if (n > 0) pending.appendFrom(input, n)
         // Sync API impl: defer all output until finish. Caller may reduce
         // memory peak by calling finish more frequently if needed.
         return CodecStatus.NEED_INPUT
@@ -136,23 +132,22 @@ private class JsZlibEncoderSession(
         // message, then reset() (no_context_takeover).
         //
         // Single-flush only for this deferred backend. Each flush() runs a
-        // fresh one-shot compress over `pending`, so:
+        // fresh one-shot compress over the buffered input, so:
         //  - **Wrapped (Gzip/Zlib)**: a second flush() on the same open stream
         //    would emit a new header, producing two concatenated sub-streams —
         //    invalid. No current consumer flushes a wrapped JS stream (HTTP
         //    terminates with finish(); WS uses Raw); the native / JVM streaming
         //    backends do support multi-flush wrapped output. Left general here
-        //    rather than throwing so the byte path mirrors finish(); a capability
-        //    surface (research.md / plan.md) is the proper place to express this.
+        //    rather than throwing so the byte path mirrors finish().
         //  - **Context takeover**: the one-shot sync API cannot carry an LZ77
         //    window across separate flush() calls, so contextTakeover=true is
-        //    not honoured on JS (native / JVM honour it).
+        //    not honoured on JS (native / JVM honour it; the backend reports
+        //    supportsContextTakeover=false). Honouring it needs a stateful
+        //    streaming / async codec SPI — a larger rework, deliberately deferred.
         //
-        // Remaining debt (separate PR — see .claude/rules/buffer-usage.md,
-        // plan.md): update() buffers all input via `pending = pending + tmp`
-        // (O(n²) for multi-chunk HTTP) and this whole deferred shape is a GC
-        // hot-spot. The fix is a streaming `zlib.createDeflateRaw()` Transform,
-        // which also resolves both limitations above.
+        // Input accumulation itself is amortized O(n): [ByteAccumulator] grows
+        // its backing array by doubling instead of reallocating the whole array
+        // per chunk, and reads straight from the IoBuf (no per-chunk scratch).
         if (compressedOutput == null) {
             val u8 = pending.toUint8Array()
             val opts = nodeOptions(syncFlush = true)
@@ -173,7 +168,7 @@ private class JsZlibEncoderSession(
         }
         if (compressedOffset >= src.size) {
             // Boundary fully emitted: clear for the next message, stay open.
-            pending = ByteArray(0)
+            pending.clear()
             compressedOutput = null
             compressedOffset = 0
             return CodecStatus.NEED_INPUT
@@ -205,7 +200,7 @@ private class JsZlibEncoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        pending = ByteArray(0)
+        pending.clear()
         compressedOutput = null
         compressedOffset = 0
         finishedReturned = false
@@ -213,7 +208,7 @@ private class JsZlibEncoderSession(
 
     override fun close() {
         if (closed) return
-        pending = ByteArray(0)
+        pending.clear()
         compressedOutput = null
         closed = true
     }
@@ -243,7 +238,7 @@ private class JsZlibDecoderSession(
 ) : DecoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
-    private var pendingInput: ByteArray = ByteArray(0)
+    private val pendingInput = ByteAccumulator()
     private var decodedOutput: ByteArray? = null
     private var decodedOffset: Int = 0
     private var closed: Boolean = false
@@ -268,9 +263,7 @@ private class JsZlibDecoderSession(
         check(!closed) { "session closed" }
         val n = input.readableBytes
         if (n > 0) {
-            val tmp = ByteArray(n)
-            input.readByteArray(tmp, 0, n)
-            pendingInput = pendingInput + tmp
+            pendingInput.appendFrom(input, n)
             totalInput += n
         }
         return CodecStatus.NEED_INPUT
@@ -280,8 +273,7 @@ private class JsZlibDecoderSession(
         check(!closed) { "session closed" }
         // Single-flush only (same deferred-backend limitation as the encoder
         // flush() above): one update + one flush per WS frame, no context
-        // takeover. `pendingInput = pendingInput + tmp` in update() is the same
-        // O(n²) GC debt; the streaming Transform rework is the fix (plan.md).
+        // takeover. Input accumulation is amortized O(n) via [ByteAccumulator].
         // Decode the buffered Z_SYNC_FLUSH'd block (one WS frame). Pass
         // finishFlush=Z_SYNC_FLUSH so Node tolerates the missing final block,
         // then clear for the next message and keep the stream open.
@@ -316,7 +308,7 @@ private class JsZlibDecoderSession(
             decodedOffset += toWrite
         }
         if (decodedOffset >= src.size) {
-            pendingInput = ByteArray(0)
+            pendingInput.clear()
             decodedOutput = null
             decodedOffset = 0
             return CodecStatus.NEED_INPUT
@@ -376,7 +368,7 @@ private class JsZlibDecoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        pendingInput = ByteArray(0)
+        pendingInput.clear()
         decodedOutput = null
         decodedOffset = 0
         totalDecoded = 0
@@ -386,7 +378,7 @@ private class JsZlibDecoderSession(
 
     override fun close() {
         if (closed) return
-        pendingInput = ByteArray(0)
+        pendingInput.clear()
         decodedOutput = null
         closed = true
     }
@@ -405,4 +397,57 @@ private fun ByteArray.toUint8Array(): Uint8Array {
 private fun Uint8Array.toByteArray(): ByteArray {
     val n = length
     return ByteArray(n) { i -> this[i] }
+}
+
+/**
+ * Append-only byte buffer that grows its backing array by doubling, so
+ * accumulating a multi-chunk message across `update()` calls is amortized
+ * O(n) total. This replaces the previous `pending = pending + tmp`, which
+ * reallocated (and copied) the whole array on every chunk — O(n²) for a
+ * message split into many chunks. [appendFrom] reads straight from the
+ * caller's [IoBuf], so there is no per-chunk scratch `ByteArray` either.
+ *
+ * [clear] keeps the backing array, so a long-lived session (e.g. a
+ * WebSocket connection) reuses one buffer across messages instead of
+ * re-growing from empty each time.
+ */
+private class ByteAccumulator {
+    private var buf = ByteArray(INITIAL_CAPACITY)
+    private var len = 0
+
+    val size: Int get() = len
+
+    /** Reads [count] bytes from [input] (advancing its readerIndex) onto the end. */
+    fun appendFrom(input: IoBuf, count: Int) {
+        if (count <= 0) return
+        ensureCapacity(len + count)
+        input.readByteArray(buf, len, count)
+        len += count
+    }
+
+    /** A fresh [Uint8Array] of the [size] valid bytes, for a Node sync call. */
+    fun toUint8Array(): Uint8Array {
+        val u8 = Uint8Array(len)
+        val src = buf
+        for (i in 0 until len) {
+            u8.asDynamic()[i] = src[i]
+        }
+        return u8
+    }
+
+    /** Drops the accumulated bytes but keeps the backing array for reuse. */
+    fun clear() {
+        len = 0
+    }
+
+    private fun ensureCapacity(min: Int) {
+        if (min <= buf.size) return
+        val doubled = buf.size * 2
+        // `doubled < min` also covers Int overflow on a very large single append.
+        buf = buf.copyOf(if (doubled < min) min else doubled)
+    }
+
+    private companion object {
+        const val INITIAL_CAPACITY = 64
+    }
 }
