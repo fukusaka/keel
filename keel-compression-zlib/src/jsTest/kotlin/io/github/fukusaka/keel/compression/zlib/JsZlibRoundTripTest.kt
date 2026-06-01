@@ -69,6 +69,78 @@ class JsZlibRoundTripTest {
         )
     }
 
+    @Test
+    fun `round-trip with input fed across many small chunks`() {
+        // Exercises ByteAccumulator's incremental growth: a ~3 KiB payload fed in
+        // small, non-power-of-two update() chunks (as a chunked HTTP body or
+        // fragmented frames would arrive) must reassemble byte-for-byte. The
+        // previous `pending = pending + tmp` was O(n²) over these chunks.
+        val payload = "the quick brown fox. ".repeat(160).encodeToByteArray()
+        val compressed = encodeChunked(payload, chunkSize = 7, DeflateEncoder.newSession(allocator, EncoderOptions()))
+        val decoded = decodeChunked(compressed, chunkSize = 5, DeflateDecoder.newSession(allocator, DecoderOptions()))
+        assertContentEquals(payload, decoded)
+    }
+
+    private fun encodeChunked(payload: ByteArray, chunkSize: Int, session: EncoderSession): ByteArray {
+        val output = allocator.allocate(outputCap)
+        val total = mutableListOf<Byte>()
+        var off = 0
+        while (off < payload.size) {
+            val len = minOf(chunkSize, payload.size - off)
+            val src = allocator.allocate(len).apply { writeByteArray(payload, off, len) }
+            when (session.update(src, output)) {
+                CodecStatus.NEED_INPUT -> Unit
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+            src.release()
+            off += len
+        }
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        session.close()
+        return ByteArray(total.size) { i -> total[i] }
+    }
+
+    private fun decodeChunked(compressed: ByteArray, chunkSize: Int, session: DecoderSession): ByteArray {
+        val output = allocator.allocate(outputCap)
+        val total = mutableListOf<Byte>()
+        var off = 0
+        while (off < compressed.size) {
+            val len = minOf(chunkSize, compressed.size - off)
+            val src = allocator.allocate(len).apply { writeByteArray(compressed, off, len) }
+            when (session.update(src, output)) {
+                CodecStatus.NEED_INPUT -> Unit
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.FINISHED -> error("update should not return FINISHED")
+            }
+            src.release()
+            off += len
+        }
+        var finishing = true
+        while (finishing) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT -> drainOutput(output, total)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    drainOutput(output, total)
+                    finishing = false
+                }
+            }
+        }
+        output.release()
+        session.close()
+        return ByteArray(total.size) { i -> total[i] }
+    }
+
     private fun encodeAll(payload: ByteArray, session: EncoderSession): ByteArray {
         val src = allocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
         val output = allocator.allocate(outputCap)
