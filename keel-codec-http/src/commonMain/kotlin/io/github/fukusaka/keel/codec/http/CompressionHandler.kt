@@ -46,6 +46,14 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * pipelined client (sequential request/response on one connection)
  * still gets the right value matched to each response.
  *
+ * **Mid-stream failure recovery**: if a response aborts mid-stream (a
+ * downstream write throws, or an emit allocation fails), the handler
+ * closes the in-flight [EncoderSession] and clears the scratch buffer
+ * before re-throwing, and also discards any such leftover state at the
+ * start of every new response. This keeps a keep-alive connection from
+ * leaking the aborted response's session or bleeding its partial output
+ * into the head of the next response.
+ *
  * **Threading**: pipeline handlers are single-threaded (run on the
  * EventLoop pinned to the channel), so internal state needs no
  * synchronization.
@@ -109,7 +117,27 @@ public class CompressionHandler(
         }
     }
 
+    /**
+     * Discard any state left over from a previous response before starting a
+     * new one. A response that aborted mid-stream — a downstream write threw,
+     * or an emit allocation failed — can leave [activeSession] open and
+     * [scratch] holding partially compressed bytes. Because one handler
+     * instance serves every response on a keep-alive connection, starting the
+     * next response without discarding them would leak the encoder session and
+     * bleed the leftover bytes into the head of the new response.
+     *
+     * [EncoderSession.close] is idempotent, so calling this after a response
+     * that ended cleanly (session already closed and nulled, scratch already
+     * cleared) is a no-op.
+     */
+    private fun discardPendingResponse() {
+        activeSession?.close()
+        activeSession = null
+        scratch?.clear()
+    }
+
     private fun handleAggregatedResponse(ctx: PipelineHandlerContext, response: HttpResponse) {
+        discardPendingResponse()
         val accept = if (acceptQueue.isNotEmpty()) acceptQueue.removeFirst() else null
 
         if (isNoBodyStatus(response.status.code) || response.body == null || response.body.isEmpty()) {
@@ -144,6 +172,7 @@ public class CompressionHandler(
     }
 
     private fun handleResponseHead(ctx: PipelineHandlerContext, head: HttpResponseHead) {
+        discardPendingResponse()
         val accept = if (acceptQueue.isNotEmpty()) acceptQueue.removeFirst() else null
 
         if (isNoBodyStatus(head.status.code) || !condition.shouldCompress(head)) {
@@ -180,6 +209,12 @@ public class CompressionHandler(
             }
             // Emit any pending output bytes from this update.
             if (out.readableBytes > 0) emitChunk(ctx, out)
+        } catch (e: Throwable) {
+            // The response aborted mid-stream — close the session and clear
+            // scratch now so the next response on this connection starts clean
+            // (no leaked session, no bled-over bytes), then re-throw.
+            discardPendingResponse()
+            throw e
         } finally {
             src.release()
         }
@@ -192,10 +227,9 @@ public class CompressionHandler(
             return
         }
         val out = scratch!!
-
-        // Drain any trailing input from the terminal HttpBody first.
-        if (end.content.readableBytes > 0) {
-            try {
+        try {
+            // Drain any trailing input from the terminal HttpBody first.
+            if (end.content.readableBytes > 0) {
                 while (true) {
                     when (session.update(end.content, out)) {
                         CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
@@ -204,27 +238,31 @@ public class CompressionHandler(
                     }
                 }
                 if (out.readableBytes > 0) emitChunk(ctx, out)
-            } finally {
-                end.content.release()
             }
-        } else {
-            end.content.release()
-        }
 
-        // Drive finish to emit the format trailer.
-        var finishing = true
-        while (finishing) {
-            when (session.finish(out)) {
-                CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
-                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                    if (out.readableBytes > 0) emitChunk(ctx, out)
-                    finishing = false
+            // Drive finish to emit the format trailer.
+            var finishing = true
+            while (finishing) {
+                when (session.finish(out)) {
+                    CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
+                    CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                        if (out.readableBytes > 0) emitChunk(ctx, out)
+                        finishing = false
+                    }
                 }
             }
-        }
 
-        session.close()
-        activeSession = null
+            session.close()
+            activeSession = null
+        } catch (e: Throwable) {
+            // The response aborted mid-finish — close the session and clear
+            // scratch now so the next response on this connection starts clean,
+            // then re-throw.
+            discardPendingResponse()
+            throw e
+        } finally {
+            end.content.release()
+        }
         ctx.propagateWrite(HttpBodyEnd.EMPTY)
     }
 
