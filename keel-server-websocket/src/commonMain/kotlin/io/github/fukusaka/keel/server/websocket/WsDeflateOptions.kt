@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.compression.Strategy
+
 /**
  * Server-side configuration for the WebSocket `permessage-deflate`
  * extension (RFC 7692).
@@ -23,11 +25,17 @@ package io.github.fukusaka.keel.server.websocket
  * @property level DEFLATE compression level passed to the backend.
  *   `-1` means the backend default (`Z_DEFAULT_COMPRESSION` for zlib);
  *   `0` = no compression, `1` = fastest, `9` = best ratio.
+ * @property strategy DEFLATE compression strategy hint passed to the
+ *   backend (advisory; a backend that cannot honor it falls back to
+ *   [Strategy.Default]). `windowBits` is not exposed here because the
+ *   permessage-deflate window is set by the negotiated
+ *   `server_max_window_bits` rather than this configuration.
  */
 public class WsDeflateOptions(
     public val contextTakeover: Boolean = false,
     public val threshold: Int = DEFAULT_THRESHOLD,
     public val level: Int = DEFAULT_LEVEL,
+    public val strategy: Strategy = Strategy.Default,
 ) {
     init {
         require(threshold >= 0) { "threshold must be non-negative, got $threshold" }

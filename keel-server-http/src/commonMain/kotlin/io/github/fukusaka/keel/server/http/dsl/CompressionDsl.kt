@@ -8,6 +8,9 @@ import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.UnknownEncodingPolicy
 import io.github.fukusaka.keel.compression.CompressionCodec
 import io.github.fukusaka.keel.compression.CompressionRegistry
+import io.github.fukusaka.keel.compression.DeflateTuning
+import io.github.fukusaka.keel.compression.EncoderOptions
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.server.dsl.KeelServerDsl
 
 /**
@@ -83,6 +86,16 @@ public class CompressionBuilder internal constructor() {
     private var encoderCount: Int = 0
     private var conditionBuilder = CompressionConditionBuilder()
     private var requestDecompressionBuilder: RequestDecompressionBuilder? = null
+    private var deflateTuning: DeflateTuning? = null
+
+    /**
+     * Compression level applied to every registered [encoder]. `-1` (the
+     * default) means the backend default (`Z_DEFAULT_COMPRESSION` for zlib);
+     * `0` = no compression, `1` = fastest, `9` = best ratio. Format-independent
+     * (every backend has an effort dial); format-specific knobs go in
+     * [deflate].
+     */
+    public var level: Int = DEFAULT_LEVEL
 
     /**
      * Registers [codec] (both encoder + decoder halves) with the given
@@ -126,6 +139,17 @@ public class CompressionBuilder internal constructor() {
         requestDecompressionBuilder = builder
     }
 
+    /**
+     * Tunes the DEFLATE-family encoders (`gzip` / `deflate`) registered via
+     * [encoder]. The block sets a [DeflateTuning] (`windowBits` / `strategy`)
+     * applied to every response the encoders compress; non-DEFLATE codecs
+     * (e.g. a future zstd) ignore it. Omitting the block uses the backend
+     * defaults.
+     */
+    public fun deflate(configure: DeflateTuningBuilder.() -> Unit) {
+        deflateTuning = DeflateTuningBuilder().apply(configure).build()
+    }
+
     internal fun build(): CompressionPipelineConfig? {
         if (encoderCount == 0 && requestDecompressionBuilder == null) {
             return null
@@ -135,8 +159,34 @@ public class CompressionBuilder internal constructor() {
             hasResponseEncoder = encoderCount > 0,
             responseCondition = conditionBuilder.build(),
             requestDecompression = requestDecompressionBuilder?.build(),
+            // Keep flushMode = Sync (CompressionHandler default) for chunked streaming.
+            encoderOptions = EncoderOptions(level = level, tuning = deflateTuning),
         )
     }
+
+    private companion object {
+        /** Backend-default compression level sentinel (`Z_DEFAULT_COMPRESSION`). */
+        const val DEFAULT_LEVEL: Int = -1
+    }
+}
+
+/**
+ * Mutable builder for the DEFLATE-family encoder tuning of a
+ * `compression { deflate { } }` block.
+ *
+ * `windowBits` is exposed here (unlike WebSocket, where it is negotiated)
+ * because an HTTP response stream sets its own window. See [DeflateTuning].
+ */
+@KeelServerDsl
+public class DeflateTuningBuilder internal constructor() {
+
+    /** See [DeflateTuning.windowBits]. Null = backend default (15). */
+    public var windowBits: Int? = null
+
+    /** See [DeflateTuning.strategy]. */
+    public var strategy: Strategy = Strategy.Default
+
+    internal fun build(): DeflateTuning = DeflateTuning(windowBits = windowBits, strategy = strategy)
 }
 
 /**
@@ -252,6 +302,7 @@ public class CompressionPipelineConfig internal constructor(
     public val hasResponseEncoder: Boolean,
     public val responseCondition: CompressionCondition,
     public val requestDecompression: RequestDecompressionConfig?,
+    public val encoderOptions: EncoderOptions = EncoderOptions(),
 ) {
 
     internal fun installResponseEncoder(
@@ -260,6 +311,7 @@ public class CompressionPipelineConfig internal constructor(
         registry = registry,
         allocator = allocator,
         condition = responseCondition,
+        defaultEncoderOptions = encoderOptions,
     )
 
     internal fun installRequestDecoder(

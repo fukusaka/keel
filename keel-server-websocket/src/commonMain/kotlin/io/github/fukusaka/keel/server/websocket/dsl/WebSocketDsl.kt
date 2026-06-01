@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.websocket.dsl
 
 import io.github.fukusaka.keel.compression.CompressionCodec
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.server.dsl.KeelServerDsl
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
 import io.github.fukusaka.keel.server.http.dsl.RouteGroupBuilder
@@ -60,8 +61,11 @@ public class WsDeflateOptionsBuilder internal constructor() {
     /** See [WsDeflateOptions.level]. */
     public var level: Int = WsDeflateOptions.Default.level
 
+    /** See [WsDeflateOptions.strategy]. */
+    public var strategy: Strategy = WsDeflateOptions.Default.strategy
+
     internal fun build(): WsDeflateOptions =
-        WsDeflateOptions(contextTakeover = contextTakeover, threshold = threshold, level = level)
+        WsDeflateOptions(contextTakeover = contextTakeover, threshold = threshold, level = level, strategy = strategy)
 }
 
 /**

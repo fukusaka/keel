@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.server.http
 import io.github.fukusaka.keel.codec.http.HttpRequestDecompressionHandler
 import io.github.fukusaka.keel.codec.http.UnknownEncodingPolicy
 import io.github.fukusaka.keel.compression.CompressionRegistry
+import io.github.fukusaka.keel.compression.DeflateTuning
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.server.http.dsl.CompressionBuilder
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -71,6 +73,40 @@ class CompressionDslTest {
         assertEquals(HttpRequestDecompressionHandler.DEFAULT_RATIO_LIMIT, req.ratioLimit)
         assertEquals(HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST, req.ratioBurst)
         assertEquals(UnknownEncodingPolicy.UnsupportedMediaType, req.unknownEncoding)
+    }
+
+    @Test
+    fun `deflate block sets the encoder DeflateTuning forwarded to the handler`() {
+        val cfg = CompressionBuilder().apply {
+            encoder(FakeCodec("gzip"))
+            deflate {
+                windowBits = 12
+                strategy = Strategy.HuffmanOnly
+            }
+        }.build()
+        val tuning = cfg!!.encoderOptions.tuning as DeflateTuning
+        assertEquals(12, tuning.windowBits)
+        assertEquals(Strategy.HuffmanOnly, tuning.strategy)
+    }
+
+    @Test
+    fun `without a deflate block the encoder options carry no tuning`() {
+        val cfg = CompressionBuilder().apply {
+            encoder(FakeCodec("gzip"))
+        }.build()
+        assertNull(cfg!!.encoderOptions.tuning)
+    }
+
+    @Test
+    fun `level is forwarded to the encoder options`() {
+        val tuned = CompressionBuilder().apply {
+            encoder(FakeCodec("gzip"))
+            level = 9
+        }.build()
+        assertEquals(9, tuned!!.encoderOptions.level)
+        // Default (no level set) stays the backend-default sentinel.
+        val default = CompressionBuilder().apply { encoder(FakeCodec("gzip")) }.build()
+        assertEquals(-1, default!!.encoderOptions.level)
     }
 
     @Test
