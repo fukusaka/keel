@@ -40,13 +40,21 @@ public sealed interface CompressionCapabilities
  *   cannot carry the window across messages (no context takeover), and
  *   until its `windowBits` option is wired it emits the full window.
  *
- * These two axes are exactly what RFC 7692 permessage-deflate negotiates
- * (`server_max_window_bits` and `*_no_context_takeover`), so the
- * negotiator consults them to avoid advertising a window the backend
- * cannot produce or a context takeover it cannot honor. Other knobs
- * (`level`, `strategy`, `dictionary`) are wireable on every backend, so a
- * missing one is a keel wiring gap to close (not a capability) and is not
- * modelled here.
+ * [windowBits] and [supportsContextTakeover] are exactly what RFC 7692
+ * permessage-deflate negotiates (`server_max_window_bits` and
+ * `*_no_context_takeover`), so the negotiator consults them as a **gate**
+ * to avoid advertising a window the backend cannot produce or a context
+ * takeover it cannot honor.
+ *
+ * [supportedStrategies] is different: a DEFLATE [Strategy] only affects the
+ * compression ratio / speed, never the decodability of the output (any
+ * strategy yields a valid DEFLATE stream the decoder reads identically).
+ * So it is **informational**, not a gate — a backend that does not support
+ * a requested strategy silently falls back to [Strategy.Default] rather
+ * than declining. It is modelled because the JVM `Deflater` lacks
+ * `Z_RLE` / `Z_FIXED` entirely (an irreducible gap), unlike `level` and
+ * `dictionary`, which are wireable on every backend (a missing one is a
+ * keel wiring gap to close, not a capability).
  *
  * @property windowBits the LZ77 window-bits range the backend's
  *   compressor can emit. `15..15` means "fixed full window" (the JVM and,
@@ -56,10 +64,18 @@ public sealed interface CompressionCapabilities
  *   LZ77 window across messages — for an encoder, compress with takeover;
  *   for a decoder, decode a peer stream that used it. The Node one-shot
  *   backend reports false.
+ * @property supportedStrategies the [Strategy] values the backend's
+ *   compressor honors. native libz and Node support all five; the JVM
+ *   `Deflater` supports only [Strategy.Default] / [Strategy.Filtered] /
+ *   [Strategy.HuffmanOnly] (no `Z_RLE` / `Z_FIXED`). A strategy outside
+ *   this set is coerced to [Strategy.Default] by the backend — this is
+ *   advisory, so callers need not consult it for correctness; it exists
+ *   for tuning diagnostics.
  */
 public class DeflateCapabilities(
     public val windowBits: IntRange = FULL_WINDOW_ONLY,
     public val supportsContextTakeover: Boolean = true,
+    public val supportedStrategies: Set<Strategy> = ALL_STRATEGIES,
 ) : CompressionCapabilities {
     public companion object {
         /**
@@ -68,5 +84,11 @@ public class DeflateCapabilities(
          * RFC 7692 §7.1.2 caps `*_max_window_bits` at 15.
          */
         public val FULL_WINDOW_ONLY: IntRange = 15..15
+
+        /**
+         * Every [Strategy] — the default for a backend (native libz, Node)
+         * whose compressor maps all five to a `Z_*` strategy constant.
+         */
+        public val ALL_STRATEGIES: Set<Strategy> = Strategy.entries.toSet()
     }
 }
