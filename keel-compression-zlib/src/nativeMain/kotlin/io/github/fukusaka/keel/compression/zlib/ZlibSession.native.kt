@@ -308,6 +308,15 @@ private class NativeZlibDecoderSession(
     override fun reset() {
         check(!closed) { "session closed" }
         keel_inflate_reset(z)
+        // A no-context-takeover session clears the window every message, so a
+        // raw-wrap dictionary (primed once in init) must be re-primed to mirror
+        // the encoder, or message 2 onward fails to decode. With context
+        // takeover the window is kept and the encoder does not re-prime, so
+        // neither do we. The zlib wrap re-signals Z_NEED_DICT in the next
+        // stream, so only the raw wrap needs this here.
+        if (!options.contextTakeover && wrap == WrapFormat.Raw) {
+            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+        }
         totalDecoded = 0
         totalInput = 0
         finishedReturned = false

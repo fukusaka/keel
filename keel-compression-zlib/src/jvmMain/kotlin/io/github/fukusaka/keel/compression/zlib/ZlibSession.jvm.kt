@@ -340,6 +340,15 @@ private class JvmZlibDecoderSession(
     override fun reset() {
         check(!closed) { "session closed" }
         inflater.reset()
+        // See init: `Inflater.reset()` drops the dictionary, so a
+        // no-context-takeover session (which clears the window every message)
+        // must re-prime the eager raw / gzip dictionary the way the encoder
+        // does. With context takeover the window is kept and the encoder does
+        // not re-prime, so neither do we. The zlib wrap re-signals
+        // needsDictionary() in the next stream.
+        if (!options.contextTakeover && nowrap) {
+            options.dictionary?.let { inflater.setDictionary(it) }
+        }
         gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
         totalDecoded = 0
         totalInput = 0
