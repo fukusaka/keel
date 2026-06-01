@@ -38,6 +38,20 @@ import org.khronos.webgl.get
 /** keel's "use the backend default level" sentinel ([EncoderOptions.level] default). */
 private const val DEFAULT_LEVEL = -1
 
+/**
+ * Smallest LZ77 window-bits the zlib backends can faithfully produce.
+ * zlib coerces a requested 8 to 9 (a 256-byte window is unsupported by
+ * `deflate`), and Node's `gzipSync` is stricter still — it *throws* for
+ * `windowBits < 9` rather than coercing. keel clamps a below-floor request
+ * to 9 so every wrap (gzip / zlib / raw) behaves uniformly (window 9)
+ * instead of crashing the JS gzip path; the negotiated value never goes
+ * below 9 anyway (`DeflateCapabilities.windowBits` floor).
+ */
+private const val MIN_WINDOW_BITS = 9
+
+/** Largest LZ77 window-bits (32 KiB); Node throws for `windowBits > 15`. */
+private const val MAX_WINDOW_BITS = 15
+
 internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
@@ -64,16 +78,21 @@ private class JsZlibEncoderSession(
 
     /**
      * Builds the Node `zlib` options object for one sync compress call,
-     * forwarding the configured compression [EncoderOptions.level] (so a
-     * non-default level set via, e.g., the WebSocket `deflate { level }`
-     * DSL is honoured instead of silently using Node's default 6). `-1`
-     * (keel's "backend default") is left unset so the call stays
-     * byte-identical to the previous behaviour. [syncFlush] adds the
-     * `Z_SYNC_FLUSH` boundary used by per-message [flush].
+     * forwarding the configured [EncoderOptions.level] and
+     * [EncoderOptions.windowBits] (so a non-default level set via, e.g.,
+     * the WebSocket `deflate { level }` DSL, and a negotiated
+     * `server_max_window_bits`, are honoured instead of silently using
+     * Node's defaults). `level == -1` (keel's "backend default") and a
+     * null `windowBits` are left unset so the call stays byte-identical to
+     * the previous behaviour. A `windowBits` below [MIN_WINDOW_BITS] is
+     * clamped to 9 (zlib coerces it anyway, and Node's gzip throws on 8).
+     * [syncFlush] adds the `Z_SYNC_FLUSH` boundary used by per-message
+     * [flush].
      */
     private fun nodeOptions(syncFlush: Boolean): dynamic {
         val opts: dynamic = js("({})")
         if (options.level != DEFAULT_LEVEL) opts.level = options.level
+        options.windowBits?.let { opts.windowBits = it.coerceIn(MIN_WINDOW_BITS, MAX_WINDOW_BITS) }
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts
     }

@@ -31,19 +31,30 @@ static inline void keel_zstream_free(z_stream* z) {
 }
 
 /*
- * deflateInit2 wrapper. Maps `wrap_format` directly to the windowBits
- * convention used by deflateInit2:
- *   - 0  = pick from `windowBits_override` (raw if negative, gzip if +16 or higher)
- *   - 1  = zlib  (windowBits  15)
- *   - 2  = raw   (windowBits -15)
- *   - 3  = gzip  (windowBits +31, i.e. 15 + 16)
+ * deflateInit2 wrapper. The window magnitude comes from
+ * `windowBits_override` (9..15, or 15 when 0 = "backend default"); the
+ * `wrap_kind` only decides the sign / offset of the deflateInit2
+ * windowBits value:
+ *   - 0  = raw `windowBits_override` (already sign/offset-encoded if non-zero)
+ *   - 1  = zlib  (+magnitude)
+ *   - 2  = raw   (-magnitude)
+ *   - 3  = gzip  (+magnitude + 16)
+ * A magnitude of 8 is left to zlib, which coerces it to 9 (a 256-byte
+ * window is unsupported by deflate). Default (override 0) keeps the
+ * historical full-window behaviour byte-for-byte.
  */
 static int keel_deflate_init(z_stream* z, int level, int wrap_kind, int strategy, int windowBits_override) {
+    int mag = (windowBits_override != 0) ? windowBits_override : 15;
+    /* Clamp to the faithfully-producible range 9..15: zlib coerces 8 to 9 and
+       a gzip windowBits of 8 (24) is rejected outright; a value > 15 is out of
+       range. Keeps a below/over-floor request uniform with the JS backend. */
+    if (mag < 9) mag = 9;
+    else if (mag > 15) mag = 15;
     int wb;
     switch (wrap_kind) {
-        case 1: wb = 15; break;
-        case 2: wb = -15; break;
-        case 3: wb = 31; break;
+        case 1: wb = mag; break;
+        case 2: wb = -mag; break;
+        case 3: wb = mag + 16; break;
         default: wb = (windowBits_override != 0) ? windowBits_override : 15; break;
     }
     return deflateInit2(z, level, Z_DEFLATED, wb, 8 /* memLevel default */, strategy);
