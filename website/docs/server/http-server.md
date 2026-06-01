@@ -197,6 +197,41 @@ and has a five-layer path-traversal defense. `staticFile(urlPath, file)`
 serves one file; `staticAssets(urlPath, source)` serves a custom asset
 source.
 
+## Compression
+
+`compression { }` adds gzip / deflate response compression (negotiated
+against the request `Accept-Encoding`) and, optionally, inbound
+request-body decompression (`Content-Encoding`):
+
+```kotlin
+compression {
+    encoder(GzipCodec, priority = 1)       // register codecs; higher priority wins q-value ties
+    encoder(DeflateCodec, priority = 0)
+
+    level = 6                              // compression level for every encoder (-1 = backend default)
+    deflate {                              // DEFLATE-family tuning (gzip + deflate)
+        windowBits = 15                    // LZ77 window, 8..15
+        strategy = Strategy.HuffmanOnly    // strategy hint (advisory)
+    }
+
+    responseCondition {
+        minContentLength = 1024            // skip tiny responses
+        excludeContentTypePrefix("image/", "video/")   // already-compressed types (defaults cover these)
+    }
+
+    requestDecompression {                 // optional: decode Content-Encoding request bodies
+        limit = 10L * 1024 * 1024          // max decoded size (zip-bomb guard)
+        ratioLimit = 100                   // max output:input ratio
+    }
+}
+```
+
+`level` is format-independent; `deflate { }` carries the DEFLATE-specific
+`windowBits` / `strategy`. The tuning is global to the DEFLATE-family
+encoders (a future zstd codec would carry its own tuning). Without a
+`requestDecompression { }` block, request bodies with a `Content-Encoding`
+header pass through untouched.
+
 ## WebSocket
 
 `webSockets { }` registers WebSocket endpoints. Inside it, each
@@ -224,10 +259,19 @@ To enable `permessage-deflate` compression, pass a codec and tune it:
 
 ```kotlin
 webSockets(DeflateCodec) {
-    deflate { contextTakeover = false; threshold = 1024 }
+    deflate {
+        contextTakeover = false             // RFC 7692; default false (bounds per-connection memory)
+        threshold = 1024                     // messages smaller than this are sent uncompressed
+        level = 6                            // DEFLATE level: -1 = backend default, 0..9
+        strategy = Strategy.HuffmanOnly      // DEFLATE strategy hint (advisory)
+    }
     webSocket("/chat") { for (m in incoming) send(m) }
 }
 ```
+
+`windowBits` is not a `deflate { }` knob for WebSocket — the LZ77 window is
+set by the `server_max_window_bits` the handshake negotiates, not the server
+configuration.
 
 A `webSockets { }` block can also sit inside a `route(prefix) { }` group —
 the WebSocket endpoints then inherit the group's prefix and middleware
