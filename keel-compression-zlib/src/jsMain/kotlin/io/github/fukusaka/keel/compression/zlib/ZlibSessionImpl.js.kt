@@ -98,14 +98,17 @@ private class JsZlibEncoderSession(
      * clamped to 9 (zlib coerces it anyway, and Node's gzip throws on 8).
      * A non-default [EncoderOptions.strategy] is forwarded too; the default
      * (`Strategy.Default`) is left unset so the call stays byte-identical to
-     * the previous behaviour. [syncFlush] adds the `Z_SYNC_FLUSH` boundary
-     * used by per-message [flush].
+     * the previous behaviour. A preset [EncoderOptions.dictionary] is
+     * forwarded so the decoder (given the same dictionary) can reconstruct
+     * the stream. [syncFlush] adds the `Z_SYNC_FLUSH` boundary used by
+     * per-message [flush].
      */
     private fun nodeOptions(syncFlush: Boolean): dynamic {
         val opts: dynamic = js("({})")
         if (options.level != DEFAULT_LEVEL) opts.level = options.level
         options.windowBits?.let { opts.windowBits = it.coerceIn(MIN_WINDOW_BITS, MAX_WINDOW_BITS) }
         if (options.strategy != Strategy.Default) opts.strategy = jsStrategy(options.strategy)
+        options.dictionary?.takeIf { it.isNotEmpty() }?.let { opts.dictionary = it.toUint8Array() }
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts
     }
@@ -248,6 +251,19 @@ private class JsZlibDecoderSession(
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
 
+    /**
+     * Node decode options. Forwards a preset [DecoderOptions.dictionary]
+     * (Node applies it to both the raw and zlib inflate paths) and, for the
+     * per-message [flush] boundary, the `Z_SYNC_FLUSH` `finishFlush` so Node
+     * tolerates the missing final block.
+     */
+    private fun decoderOptions(syncFlush: Boolean): dynamic {
+        val opts: dynamic = js("({})")
+        if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
+        options.dictionary?.takeIf { it.isNotEmpty() }?.let { opts.dictionary = it.toUint8Array() }
+        return opts
+    }
+
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         val n = input.readableBytes
@@ -271,8 +287,7 @@ private class JsZlibDecoderSession(
         // then clear for the next message and keep the stream open.
         if (decodedOutput == null) {
             val u8 = pendingInput.toUint8Array()
-            val opts: dynamic = js("({})")
-            opts.finishFlush = constants.Z_SYNC_FLUSH
+            val opts = decoderOptions(syncFlush = true)
             val decoded = try {
                 when (wrap) {
                     WrapFormat.Gzip, WrapFormat.Default -> gunzipSync(u8, opts)
@@ -315,11 +330,12 @@ private class JsZlibDecoderSession(
 
         if (decodedOutput == null) {
             val u8 = pendingInput.toUint8Array()
+            val opts = decoderOptions(syncFlush = false)
             val decoded = try {
                 when (wrap) {
-                    WrapFormat.Gzip, WrapFormat.Default -> gunzipSync(u8)
-                    WrapFormat.Zlib -> inflateSync(u8)
-                    WrapFormat.Raw -> inflateRawSync(u8)
+                    WrapFormat.Gzip, WrapFormat.Default -> gunzipSync(u8, opts)
+                    WrapFormat.Zlib -> inflateSync(u8, opts)
+                    WrapFormat.Raw -> inflateRawSync(u8, opts)
                 }
             } catch (e: Throwable) {
                 throw DecompressionException("inflate failed: ${e.message}", e)
