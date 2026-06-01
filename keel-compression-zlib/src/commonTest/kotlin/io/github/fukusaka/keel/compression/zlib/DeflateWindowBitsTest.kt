@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DeflateCapabilities
+import io.github.fukusaka.keel.compression.Encoder
 import io.github.fukusaka.keel.compression.EncoderOptions
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -28,16 +29,27 @@ class DeflateWindowBitsTest {
         // use the full window and the two sizes would match.
         val block = ByteArray(1024) { (it * 131 + 7).toByte() }
         val payload = block + block
-        val small = encodeSize(EncoderOptions(windowBits = 9), payload)
-        val full = encodeSize(EncoderOptions(windowBits = FULL_WINDOW), payload)
+        val small = encodeSize(DeflateEncoder, EncoderOptions(windowBits = 9), payload)
+        val full = encodeSize(DeflateEncoder, EncoderOptions(windowBits = FULL_WINDOW), payload)
         assertTrue(
             small > full,
             "windowBits=9 ($small B) must compress worse than windowBits=15 ($full B) — windowBits not honored?",
         )
     }
 
-    private fun encodeSize(options: EncoderOptions, payload: ByteArray): Int {
-        val session = DeflateEncoder.newSession(DefaultAllocator, options)
+    @Test
+    fun `gzip with windowBits below the floor is clamped to 9 and does not throw`() {
+        // Node's gzipSync rejects windowBits < 9 (ERR_OUT_OF_RANGE) — stricter
+        // than raw/zlib which coerce 8 to 9. keel clamps a below-floor request
+        // to 9, so the JS gzip path produces a valid window-9 stream instead of
+        // crashing. native libz coerces 8 to 9 too; the JVM ignores windowBits.
+        val payload = "abcabcabc".repeat(50).encodeToByteArray()
+        val size = encodeSize(GzipEncoder, EncoderOptions(windowBits = 8), payload)
+        assertTrue(size > 0, "gzip encode with windowBits=8 should succeed (clamped to 9), got empty")
+    }
+
+    private fun encodeSize(encoder: Encoder, options: EncoderOptions, payload: ByteArray): Int {
+        val session = encoder.newSession(DefaultAllocator, options)
         val output = DefaultAllocator.allocate(OUTPUT_CAP)
         val sink = ByteCollector()
         try {

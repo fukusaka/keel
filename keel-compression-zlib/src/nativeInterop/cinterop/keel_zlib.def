@@ -45,6 +45,11 @@ static inline void keel_zstream_free(z_stream* z) {
  */
 static int keel_deflate_init(z_stream* z, int level, int wrap_kind, int strategy, int windowBits_override) {
     int mag = (windowBits_override != 0) ? windowBits_override : 15;
+    /* Clamp to the faithfully-producible range 9..15: zlib coerces 8 to 9 and
+       a gzip windowBits of 8 (24) is rejected outright; a value > 15 is out of
+       range. Keeps a below/over-floor request uniform with the JS backend. */
+    if (mag < 9) mag = 9;
+    else if (mag > 15) mag = 15;
     int wb;
     switch (wrap_kind) {
         case 1: wb = mag; break;
