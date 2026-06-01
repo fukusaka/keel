@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.DecompressionLimitException
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode
@@ -68,6 +69,7 @@ private class JvmZlibEncoderSession(
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val nowrap: Boolean = wrap != WrapFormat.Zlib
+    private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
 
     private var deflater: Deflater = newDeflater()
     private val crc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
@@ -90,7 +92,7 @@ private class JvmZlibEncoderSession(
 
     private fun newDeflater(): Deflater {
         val d = Deflater(level(options.level), nowrap)
-        d.setStrategy(jvmStrategy(options.strategy))
+        d.setStrategy(jvmStrategy(tuning?.strategy ?: Strategy.Default))
         options.dictionary?.let { d.setDictionary(it) }
         return d
     }

@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.DecompressionLimitException
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode
@@ -106,6 +107,7 @@ private class NativeZlibEncoderSession(
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+    private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
 
     private val flushFlag: Int = when (options.flushMode) {
@@ -123,8 +125,8 @@ private class NativeZlibEncoderSession(
             z,
             level = if (options.level == -1) -1 else options.level.coerceIn(0, 9),
             wrap_kind = wrapKind(wrap),
-            strategy = strategy(options.strategy),
-            windowBits_override = options.windowBits ?: 0,
+            strategy = strategy(tuning?.strategy ?: Strategy.Default),
+            windowBits_override = tuning?.windowBits ?: 0,
         )
         check(rc == keel_zlib_status_ok()) { "deflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
         options.dictionary?.let { dict ->
@@ -175,8 +177,8 @@ private class NativeZlibEncoderSession(
                 z,
                 level = if (options.level == -1) -1 else options.level.coerceIn(0, 9),
                 wrap_kind = wrapKind(wrap),
-                strategy = strategy(options.strategy),
-                windowBits_override = options.windowBits ?: 0,
+                strategy = strategy(tuning?.strategy ?: Strategy.Default),
+                windowBits_override = tuning?.windowBits ?: 0,
             )
             check(rc == keel_zlib_status_ok()) { "deflateInit2 rc=$rc on reset" }
             options.dictionary?.let { dict ->
@@ -264,6 +266,7 @@ private class NativeZlibDecoderSession(
 ) : DecoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+    private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
 
     private var closed: Boolean = false
@@ -272,7 +275,7 @@ private class NativeZlibDecoderSession(
     private var totalInput: Long = 0
 
     init {
-        val rc = keel_inflate_init(z, wrap_kind = wrapKind(wrap), windowBits_override = options.windowBits ?: 0)
+        val rc = keel_inflate_init(z, wrap_kind = wrapKind(wrap), windowBits_override = tuning?.windowBits ?: 0)
         check(rc == keel_zlib_status_ok()) { "inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
         // A raw stream carries no header, so inflate never signals
         // Z_NEED_DICT; the dictionary must be primed before the first

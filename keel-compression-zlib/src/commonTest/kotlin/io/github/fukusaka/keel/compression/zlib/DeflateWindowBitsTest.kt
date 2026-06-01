@@ -3,13 +3,14 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DeflateCapabilities
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.Encoder
 import io.github.fukusaka.keel.compression.EncoderOptions
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Pins that the DEFLATE encoder actually honors [EncoderOptions.windowBits]
+ * Pins that the DEFLATE encoder actually honors [DeflateTuning.windowBits]
  * on backends that can shrink the LZ77 window (native libz / Node) — the
  * JVM `java.util.zip.Deflater` is fixed at 15 and is skipped.
  *
@@ -29,8 +30,8 @@ class DeflateWindowBitsTest {
         // use the full window and the two sizes would match.
         val block = ByteArray(1024) { (it * 131 + 7).toByte() }
         val payload = block + block
-        val small = encodeSize(DeflateEncoder, EncoderOptions(windowBits = 9), payload)
-        val full = encodeSize(DeflateEncoder, EncoderOptions(windowBits = FULL_WINDOW), payload)
+        val small = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(windowBits = 9)), payload)
+        val full = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(windowBits = FULL_WINDOW)), payload)
         assertTrue(
             small > full,
             "windowBits=9 ($small B) must compress worse than windowBits=15 ($full B) — windowBits not honored?",
@@ -44,7 +45,7 @@ class DeflateWindowBitsTest {
         // to 9, so the JS gzip path produces a valid window-9 stream instead of
         // crashing. native libz coerces 8 to 9 too; the JVM ignores windowBits.
         val payload = "abcabcabc".repeat(50).encodeToByteArray()
-        val size = encodeSize(GzipEncoder, EncoderOptions(windowBits = 8), payload)
+        val size = encodeSize(GzipEncoder, EncoderOptions(tuning = DeflateTuning(windowBits = 8)), payload)
         assertTrue(size > 0, "gzip encode with windowBits=8 should succeed (clamped to 9), got empty")
     }
 

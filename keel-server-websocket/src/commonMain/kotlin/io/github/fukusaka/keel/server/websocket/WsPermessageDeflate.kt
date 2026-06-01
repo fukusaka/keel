@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionCodec
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode
@@ -75,7 +76,7 @@ internal class WsPermessageDeflate(
             // open (no finish() abuse, and context takeover stays expressible).
             flushMode = FlushMode.NoFlush,
             contextTakeover = options.contextTakeover,
-            windowBits = serverMaxWindowBits,
+            tuning = serverMaxWindowBits?.let { DeflateTuning(windowBits = it) },
         ),
     )
 
@@ -84,7 +85,7 @@ internal class WsPermessageDeflate(
         DecoderOptions(
             wrapFormat = WrapFormat.Raw,
             contextTakeover = options.contextTakeover,
-            windowBits = clientMaxWindowBits,
+            tuning = clientMaxWindowBits?.let { DeflateTuning(windowBits = it) },
             // Cap decoded output one byte past the message limit: that
             // lets the aggregator observe a `cap + 1` payload and report
             // the precise CLOSE `1009` (message too big), while a true

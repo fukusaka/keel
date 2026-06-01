@@ -49,13 +49,15 @@ class EncoderOptionsTest {
     }
 
     @Test
-    fun `EncoderOptions default windowBits is null`() {
-        assertNull(EncoderOptions.Default.windowBits)
+    fun `EncoderOptions default tuning is null`() {
+        assertNull(EncoderOptions.Default.tuning)
     }
 
     @Test
-    fun `EncoderOptions default strategy is Default`() {
-        assertEquals(Strategy.Default, EncoderOptions.Default.strategy)
+    fun `DeflateTuning defaults to null windowBits and default strategy`() {
+        val tuning = DeflateTuning()
+        assertNull(tuning.windowBits)
+        assertEquals(Strategy.Default, tuning.strategy)
     }
 
     @Test
@@ -69,8 +71,8 @@ class EncoderOptionsTest {
     }
 
     @Test
-    fun `DecoderOptions default windowBits is null`() {
-        assertNull(DecoderOptions.Default.windowBits)
+    fun `DecoderOptions default tuning is null`() {
+        assertNull(DecoderOptions.Default.tuning)
     }
 
     @Test
@@ -109,16 +111,16 @@ class EncoderOptionsTest {
             flushMode = FlushMode.NoFlush,
             contextTakeover = false,
             dictionary = dict,
-            windowBits = -15,
-            strategy = Strategy.HuffmanOnly,
+            tuning = DeflateTuning(windowBits = -15, strategy = Strategy.HuffmanOnly),
         )
         assertEquals(9, opts.level)
         assertEquals(WrapFormat.Raw, opts.wrapFormat)
         assertEquals(FlushMode.NoFlush, opts.flushMode)
         assertEquals(false, opts.contextTakeover)
         assertSame(dict, opts.dictionary)
-        assertEquals(-15, opts.windowBits)
-        assertEquals(Strategy.HuffmanOnly, opts.strategy)
+        val tuning = opts.tuning as DeflateTuning
+        assertEquals(-15, tuning.windowBits)
+        assertEquals(Strategy.HuffmanOnly, tuning.strategy)
     }
 
     @Test
@@ -126,14 +128,14 @@ class EncoderOptionsTest {
         val dict = ByteArray(4) { it.toByte() }
         val opts = DecoderOptions(
             wrapFormat = WrapFormat.Gzip,
-            windowBits = 15,
             dictionary = dict,
             contextTakeover = false,
             maxOutputSize = 1024L,
             maxRatio = 100,
+            tuning = DeflateTuning(windowBits = 15),
         )
         assertEquals(WrapFormat.Gzip, opts.wrapFormat)
-        assertEquals(15, opts.windowBits)
+        assertEquals(15, (opts.tuning as DeflateTuning).windowBits)
         assertSame(dict, opts.dictionary)
         assertEquals(false, opts.contextTakeover)
         assertEquals(1024L, opts.maxOutputSize)

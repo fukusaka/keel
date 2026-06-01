@@ -27,13 +27,11 @@ package io.github.fukusaka.keel.compression
  *   `deflate` / `brotli` / `zstd`. Significantly improves compression
  *   ratio for short messages (gRPC, WS small frames). Both encoder and
  *   decoder must use the same dictionary
- * @property windowBits explicit window bits override (zlib family only).
- *   `-15..-8` = raw deflate, `8..15` = zlib wrapper, `+16` over zlib =
- *   gzip wrapper. Most callers should use [wrapFormat] instead;
- *   [windowBits] is provided for protocols that need a specific value
- *   (WebSocket negotiates `client_max_window_bits` / `server_max_window_bits`)
- * @property strategy zlib compression strategy hint. Low-priority;
- *   most callers leave it at [Strategy.Default]
+ * @property tuning format-specific tuning ([DeflateTuning] for the
+ *   DEFLATE family — `windowBits` / `strategy`). Null = backend defaults.
+ *   Knobs that have no cross-format equivalent live here rather than on
+ *   this generic type, so adding a zstd / brotli backend stays
+ *   non-breaking. See [CodecTuning]
  */
 public class EncoderOptions(
     public val level: Int = -1,
@@ -41,8 +39,7 @@ public class EncoderOptions(
     public val flushMode: FlushMode = FlushMode.Sync,
     public val contextTakeover: Boolean = true,
     public val dictionary: ByteArray? = null,
-    public val windowBits: Int? = null,
-    public val strategy: Strategy = Strategy.Default,
+    public val tuning: CodecTuning? = null,
 ) {
     public companion object {
         public val Default: EncoderOptions = EncoderOptions()
@@ -55,8 +52,9 @@ public class EncoderOptions(
  * @property wrapFormat expected framing of input bytes. [WrapFormat.Default]
  *   lets the decoder auto-detect when the backend supports it (zlib's
  *   `inflateInit2` with `windowBits = 47` does gzip + zlib auto-detect)
- * @property windowBits explicit window bits override (zlib family only).
- *   See [EncoderOptions.windowBits]
+ * @property tuning format-specific tuning ([DeflateTuning] for the DEFLATE
+ *   family). The decoder reads `windowBits` and ignores `strategy`. Null =
+ *   backend defaults. See [CodecTuning]
  * @property dictionary optional pre-shared dictionary bytes. Must match
  *   the dictionary used during encoding
  * @property contextTakeover whether internal decompression state
@@ -74,11 +72,11 @@ public class EncoderOptions(
  */
 public class DecoderOptions(
     public val wrapFormat: WrapFormat = WrapFormat.Default,
-    public val windowBits: Int? = null,
     public val dictionary: ByteArray? = null,
     public val contextTakeover: Boolean = true,
     public val maxOutputSize: Long? = null,
     public val maxRatio: Int? = null,
+    public val tuning: CodecTuning? = null,
 ) {
     public companion object {
         public val Default: DecoderOptions = DecoderOptions()

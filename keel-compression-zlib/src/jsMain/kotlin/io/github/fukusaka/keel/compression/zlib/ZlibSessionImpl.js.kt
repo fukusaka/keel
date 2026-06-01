@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DecompressionException
 import io.github.fukusaka.keel.compression.DecompressionLimitException
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.Strategy
@@ -80,6 +81,7 @@ private class JsZlibEncoderSession(
 ) : EncoderSession {
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
+    private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val pending = ByteAccumulator()
     private var compressedOutput: ByteArray? = null
     private var compressedOffset: Int = 0
@@ -106,8 +108,9 @@ private class JsZlibEncoderSession(
     private fun nodeOptions(syncFlush: Boolean): dynamic {
         val opts: dynamic = js("({})")
         if (options.level != DEFAULT_LEVEL) opts.level = options.level
-        options.windowBits?.let { opts.windowBits = it.coerceIn(MIN_WINDOW_BITS, MAX_WINDOW_BITS) }
-        if (options.strategy != Strategy.Default) opts.strategy = jsStrategy(options.strategy)
+        tuning?.windowBits?.let { opts.windowBits = it.coerceIn(MIN_WINDOW_BITS, MAX_WINDOW_BITS) }
+        val strategy = tuning?.strategy ?: Strategy.Default
+        if (strategy != Strategy.Default) opts.strategy = jsStrategy(strategy)
         options.dictionary?.takeIf { it.isNotEmpty() }?.let { opts.dictionary = it.toUint8Array() }
         if (syncFlush) opts.finishFlush = constants.Z_SYNC_FLUSH
         return opts

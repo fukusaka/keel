@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DeflateCapabilities
+import io.github.fukusaka.keel.compression.DeflateTuning
 import io.github.fukusaka.keel.compression.Encoder
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.Strategy
@@ -11,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Pins that the DEFLATE encoder actually honors [EncoderOptions.strategy]
+ * Pins that the DEFLATE encoder actually honors [DeflateTuning.strategy]
  * across every backend.
  *
  * [Strategy.HuffmanOnly] is honored by all three backends (native libz,
@@ -33,8 +34,8 @@ class DeflateStrategyTest {
         // worse. If strategy were ignored (the JVM Deflater not calling
         // setStrategy) the two sizes would match.
         val payload = "ABCD".repeat(500).encodeToByteArray()
-        val default = encodeSize(DeflateEncoder, EncoderOptions(strategy = Strategy.Default), payload)
-        val huffman = encodeSize(DeflateEncoder, EncoderOptions(strategy = Strategy.HuffmanOnly), payload)
+        val default = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
+        val huffman = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly)), payload)
         assertTrue(
             huffman > default,
             "HuffmanOnly ($huffman B) must exceed default ($default B) for repetitive data — strategy not honored?",
@@ -52,8 +53,8 @@ class DeflateStrategyTest {
         // output, identical bytes) rather than throw — strategy is advisory and
         // never affects decodability.
         val payload = "the quick brown fox jumps over the lazy dog. ".repeat(64).encodeToByteArray()
-        val coerced = encodeSize(DeflateEncoder, EncoderOptions(strategy = unsupported), payload)
-        val default = encodeSize(DeflateEncoder, EncoderOptions(strategy = Strategy.Default), payload)
+        val coerced = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = unsupported)), payload)
+        val default = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
         assertEquals(
             default,
             coerced,
