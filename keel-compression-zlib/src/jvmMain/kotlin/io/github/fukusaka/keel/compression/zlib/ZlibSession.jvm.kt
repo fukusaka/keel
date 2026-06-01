@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.compression.DecompressionLimitException
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode
+import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.WrapFormat
 import java.nio.ByteBuffer
 import java.util.zip.CRC32
@@ -89,6 +90,7 @@ private class JvmZlibEncoderSession(
 
     private fun newDeflater(): Deflater {
         val d = Deflater(level(options.level), nowrap)
+        d.setStrategy(jvmStrategy(options.strategy))
         options.dictionary?.let { d.setDictionary(it) }
         return d
     }
@@ -461,3 +463,22 @@ private fun buildGzipTrailer(crcValue: Long, isize: Long): ByteArray {
 
 private fun level(level: Int): Int =
     if (level == -1) Deflater.DEFAULT_COMPRESSION else level.coerceIn(0, 9)
+
+/**
+ * Maps keel's [Strategy] to a `java.util.zip.Deflater` strategy constant.
+ *
+ * `Deflater` only exposes `DEFAULT_STRATEGY` / `FILTERED` / `HUFFMAN_ONLY`
+ * — it has no `Z_RLE` / `Z_FIXED` equivalent — so [Strategy.RunLength] and
+ * [Strategy.Fixed] are coerced to `DEFAULT_STRATEGY`. This is advisory:
+ * a strategy only affects the ratio / speed, never the validity of the
+ * output, so an unsupported value degrades compression rather than
+ * breaking the stream. `DeflateCapabilities.supportedStrategies` reports
+ * the honored subset for callers that want to detect the coercion.
+ */
+private fun jvmStrategy(strategy: Strategy): Int = when (strategy) {
+    Strategy.Default -> Deflater.DEFAULT_STRATEGY
+    Strategy.Filtered -> Deflater.FILTERED
+    Strategy.HuffmanOnly -> Deflater.HUFFMAN_ONLY
+    Strategy.RunLength -> Deflater.DEFAULT_STRATEGY
+    Strategy.Fixed -> Deflater.DEFAULT_STRATEGY
+}
