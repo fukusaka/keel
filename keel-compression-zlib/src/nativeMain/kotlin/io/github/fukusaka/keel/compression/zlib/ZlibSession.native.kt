@@ -19,7 +19,6 @@ import io.github.fukusaka.keel.compression.WrapFormat
 import keel_zlib.keel_deflate
 import keel_zlib.keel_deflate_end
 import keel_zlib.keel_deflate_init
-import keel_zlib.keel_deflate_reset
 import keel_zlib.keel_deflate_set_dictionary
 import keel_zlib.keel_inflate
 import keel_zlib.keel_inflate_end
@@ -163,11 +162,14 @@ private class NativeZlibEncoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        if (options.contextTakeover) {
-            keel_deflate_reset(z)
-        } else {
-            // libz deflateReset clears state fully; the end + re-init mirrors
-            // the JVM Netty no-takeover pattern for parity.
+        // Keep the LZ77 window only for an OPEN context-takeover stream: the next
+        // update() continues the same deflate stream so the window carries across
+        // messages (RFC 7692 §7.1.1, the WS permessage-deflate flush lifecycle).
+        // A stream terminated by finish() (Z_FINISH) cannot continue, and a
+        // no-context-takeover stream clears its window per message — both
+        // re-initialize (end + re-init also re-primes any dictionary; a bare
+        // deflateReset would keep stale dictionary state).
+        if (!options.contextTakeover || finishedReturned) {
             keel_deflate_end(z)
             val rc = keel_deflate_init(
                 z,
@@ -307,16 +309,21 @@ private class NativeZlibDecoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        keel_inflate_reset(z)
-        // A no-context-takeover session clears the window every message, so a
-        // raw-wrap dictionary (primed once in init) must be re-primed to mirror
-        // the encoder, or message 2 onward fails to decode. With context
-        // takeover the window is kept and the encoder does not re-prime, so
-        // neither do we. The zlib wrap re-signals Z_NEED_DICT in the next
-        // stream, so only the raw wrap needs this here.
-        if (!options.contextTakeover && wrap == WrapFormat.Raw) {
-            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+        // Keep the inflate window only for an OPEN context-takeover stream so the
+        // decoder can follow a peer that back-references earlier messages
+        // (RFC 7692 §7.1.1, the WS flush lifecycle) — calling inflateReset there
+        // would drop the window and throw "invalid distance too far back" on the
+        // next cross-message reference. A stream terminated by finish(), or a
+        // no-context-takeover stream (window cleared per message), re-initializes;
+        // the raw wrap then re-primes its dictionary to mirror the encoder (the
+        // zlib wrap re-signals Z_NEED_DICT, so only raw needs it here).
+        if (!options.contextTakeover || finishedReturned) {
+            keel_inflate_reset(z)
+            if (wrap == WrapFormat.Raw) {
+                options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+            }
         }
+        // Per-message limit counters reset regardless.
         totalDecoded = 0
         totalInput = 0
         finishedReturned = false
