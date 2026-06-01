@@ -25,6 +25,7 @@ import keel_zlib.keel_inflate
 import keel_zlib.keel_inflate_end
 import keel_zlib.keel_inflate_init
 import keel_zlib.keel_inflate_reset
+import keel_zlib.keel_inflate_set_dictionary
 import keel_zlib.keel_zlib_flag_finish
 import keel_zlib.keel_zlib_flag_full_flush
 import keel_zlib.keel_zlib_flag_no_flush
@@ -271,6 +272,14 @@ private class NativeZlibDecoderSession(
     init {
         val rc = keel_inflate_init(z, wrap_kind = wrapKind(wrap), windowBits_override = options.windowBits ?: 0)
         check(rc == keel_zlib_status_ok()) { "inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
+        // A raw stream carries no header, so inflate never signals
+        // Z_NEED_DICT; the dictionary must be primed before the first
+        // inflate. A zlib stream signals Z_NEED_DICT (it carries the
+        // dictionary's Adler-32), so its dictionary is applied lazily in
+        // drive(). gzip (RFC 1952) has no preset-dictionary mechanism.
+        if (wrap == WrapFormat.Raw) {
+            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+        }
     }
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
@@ -311,6 +320,12 @@ private class NativeZlibDecoderSession(
         closed = true
     }
 
+    private fun applyDictionary(dict: ByteArray) {
+        dict.usePinned { pinned ->
+            keel_inflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
+        }
+    }
+
     private fun drive(input: IoBuf?, output: IoBuf): CodecStatus {
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
@@ -329,8 +344,14 @@ private class NativeZlibDecoderSession(
                 keel_zlib_status_stream_end() -> return CodecStatus.NEED_INPUT
                 keel_zlib_status_data_error() ->
                     throw DecompressionException("inflate data error: ${keel_zlib_msg(z)?.toKString()}")
-                keel_zlib_status_need_dict() ->
-                    throw DecompressionException("inflate needs dictionary")
+                keel_zlib_status_need_dict() -> {
+                    // A zlib stream that used a preset dictionary signals
+                    // Z_NEED_DICT once the header's Adler-32 is read; apply the
+                    // configured dictionary and let the loop re-inflate.
+                    val dict = options.dictionary?.takeIf { it.isNotEmpty() }
+                        ?: throw DecompressionException("inflate needs dictionary")
+                    applyDictionary(dict)
+                }
                 keel_zlib_status_buf_error() -> {
                     if (output.writableBytes == 0) return CodecStatus.NEED_OUTPUT
                     if (input == null || input.readableBytes == 0) return CodecStatus.NEED_INPUT
