@@ -215,6 +215,7 @@ private fun buildDeflateResult(
             contextTakeover = options.contextTakeover && !noServerCtx,
             threshold = options.threshold,
             level = options.level,
+            strategy = options.strategy,
         ),
         serverMaxWindowBits = parsed.serverMaxWindowBits,
         clientMaxWindowBits = clientBits,

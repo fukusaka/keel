@@ -194,6 +194,20 @@ class WsPermessageDeflateTest {
     }
 
     @Test
+    fun `negotiation preserves the configured strategy in the effective options`() {
+        // The negotiated effectiveOptions are what reaches WsPermessageDeflate, so
+        // a strategy set in the deflate DSL must survive negotiation (it rebuilds
+        // WsDeflateOptions). Dropping it would silently force Default on the wire.
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate",
+            DeflateCodec,
+            WsDeflateOptions(strategy = Strategy.HuffmanOnly),
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        assertEquals(Strategy.HuffmanOnly, deflate.effectiveOptions.strategy)
+    }
+
+    @Test
     fun `server_max_window_bits is honored or declined per backend capability`() {
         // A backend that can shrink its window (native libz, minWindowBits=8)
         // agrees to and echoes server_max_window_bits=12; one that is fixed at
