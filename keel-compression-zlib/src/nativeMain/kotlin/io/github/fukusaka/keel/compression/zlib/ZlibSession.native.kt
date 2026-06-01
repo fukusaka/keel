@@ -128,13 +128,27 @@ private class NativeZlibEncoderSession(
             strategy = strategy(tuning?.strategy ?: Strategy.Default),
             windowBits_override = tuning?.windowBits ?: 0,
         )
-        check(rc == keel_zlib_status_ok()) { "deflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
-        options.dictionary?.let { dict ->
-            if (dict.isNotEmpty()) {
-                dict.usePinned { pinned ->
-                    keel_deflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
-                }
-            }
+        if (rc != keel_zlib_status_ok()) {
+            // Free the C-allocated z_stream before the constructor aborts —
+            // close() (which frees it) is never reached when init throws.
+            keel_zstream_free(z)
+            error("deflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+        }
+        try {
+            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+        } catch (e: Throwable) {
+            keel_deflate_end(z)
+            keel_zstream_free(z)
+            throw e
+        }
+    }
+
+    private fun applyDictionary(dict: ByteArray) {
+        val rc = dict.usePinned { pinned ->
+            keel_deflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
+        }
+        if (rc != keel_zlib_status_ok()) {
+            error("deflateSetDictionary failed (rc=$rc): ${keel_zlib_msg(z)?.toKString()}")
         }
     }
 
@@ -181,13 +195,7 @@ private class NativeZlibEncoderSession(
                 windowBits_override = tuning?.windowBits ?: 0,
             )
             check(rc == keel_zlib_status_ok()) { "deflateInit2 rc=$rc on reset" }
-            options.dictionary?.let { dict ->
-                if (dict.isNotEmpty()) {
-                    dict.usePinned { pinned ->
-                        keel_deflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
-                    }
-                }
-            }
+            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
         }
         finishedReturned = false
     }
@@ -276,14 +284,25 @@ private class NativeZlibDecoderSession(
 
     init {
         val rc = keel_inflate_init(z, wrap_kind = wrapKind(wrap), windowBits_override = tuning?.windowBits ?: 0)
-        check(rc == keel_zlib_status_ok()) { "inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}" }
+        if (rc != keel_zlib_status_ok()) {
+            // Free the C-allocated z_stream before the constructor aborts —
+            // close() (which frees it) is never reached when init throws.
+            keel_zstream_free(z)
+            error("inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+        }
         // A raw stream carries no header, so inflate never signals
         // Z_NEED_DICT; the dictionary must be primed before the first
         // inflate. A zlib stream signals Z_NEED_DICT (it carries the
         // dictionary's Adler-32), so its dictionary is applied lazily in
         // drive(). gzip (RFC 1952) has no preset-dictionary mechanism.
         if (wrap == WrapFormat.Raw) {
-            options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+            try {
+                options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
+            } catch (e: Throwable) {
+                keel_inflate_end(z)
+                keel_zstream_free(z)
+                throw e
+            }
         }
     }
 
@@ -340,8 +359,17 @@ private class NativeZlibDecoderSession(
     }
 
     private fun applyDictionary(dict: ByteArray) {
-        dict.usePinned { pinned ->
+        val rc = dict.usePinned { pinned ->
             keel_inflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
+        }
+        // A zlib stream validates the dictionary against the header's Adler-32;
+        // a wrong dictionary returns Z_DATA_ERROR. Ignoring it would leave the
+        // stream stuck in Z_NEED_DICT — drive() retries set-dictionary every
+        // loop, hanging forever. Surface it as a clean DecompressionException.
+        if (rc != keel_zlib_status_ok()) {
+            throw DecompressionException(
+                "inflateSetDictionary failed (rc=$rc — wrong dictionary?): ${keel_zlib_msg(z)?.toKString()}",
+            )
         }
     }
 
