@@ -180,11 +180,22 @@ private class JvmZlibEncoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        if (options.contextTakeover) {
-            deflater.reset()
+        if (options.contextTakeover && !finishedReturned) {
+            // Keep the deflater (and its LZ77 window) for an OPEN context-takeover
+            // stream so context carries across messages (RFC 7692 §7.1.1); flush()
+            // left it at a byte boundary, so the next update() continues the same
+            // stream. deflater.reset() would discard the window and make context
+            // takeover a no-op. A stream terminated by finish() cannot continue,
+            // so it falls through to the re-init branch. bytesRead is NOT zeroed
+            // (no reset), so sync the delta-tracking watermark to the live counter.
+            deflaterBytesReadAtLastUpdate = deflater.bytesRead
         } else {
             deflater.end()
             deflater = newDeflater()
+            // The new Deflater zeros bytesRead — reset the watermark so the next
+            // update doesn't compute a negative delta (which would skip the
+            // input.readerIndex advance and cause an infinite loop).
+            deflaterBytesReadAtLastUpdate = 0
         }
         crc?.reset()
         inputBytesTotal = 0
@@ -193,11 +204,6 @@ private class JvmZlibEncoderSession(
         trailerBuf = null
         trailerOffset = 0
         finishedReturned = false
-        // Deflater.reset / new Deflater zeros bytesRead — sync our
-        // delta-tracking watermark so the next update doesn't compute
-        // a negative delta (which would skip input.readerIndex advance
-        // and cause an infinite loop).
-        deflaterBytesReadAtLastUpdate = 0
     }
 
     override fun close() {
@@ -339,20 +345,29 @@ private class JvmZlibDecoderSession(
 
     override fun reset() {
         check(!closed) { "session closed" }
-        inflater.reset()
-        // See init: `Inflater.reset()` drops the dictionary, so a
-        // no-context-takeover session (which clears the window every message)
-        // must re-prime the eager raw / gzip dictionary the way the encoder
-        // does. With context takeover the window is kept and the encoder does
-        // not re-prime, so neither do we. The zlib wrap re-signals
-        // needsDictionary() in the next stream.
-        if (!options.contextTakeover && nowrap) {
-            options.dictionary?.let { inflater.setDictionary(it) }
+        if (options.contextTakeover && !finishedReturned) {
+            // Keep the inflater (and its window) for an OPEN context-takeover
+            // stream so the decoder can follow a peer that back-references earlier
+            // messages (RFC 7692 §7.1.1). inflater.reset() would drop the window
+            // and throw "invalid distance too far back" on the next cross-message
+            // reference. A stream terminated by finish() cannot continue, so it
+            // falls through to the re-init branch. bytesRead is NOT zeroed (no
+            // reset), so sync the watermark to the live counter.
+            inflaterBytesReadAtLastUpdate = inflater.bytesRead
+        } else {
+            inflater.reset()
+            // See init: `Inflater.reset()` drops the dictionary, so a
+            // no-context-takeover session (window cleared every message) must
+            // re-prime the eager raw / gzip dictionary the way the encoder does.
+            // The zlib wrap re-signals needsDictionary() in the next stream.
+            if (nowrap) {
+                options.dictionary?.let { inflater.setDictionary(it) }
+            }
+            inflaterBytesReadAtLastUpdate = 0
         }
         gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
         totalDecoded = 0
         totalInput = 0
-        inflaterBytesReadAtLastUpdate = 0
         finishedReturned = false
     }
 
