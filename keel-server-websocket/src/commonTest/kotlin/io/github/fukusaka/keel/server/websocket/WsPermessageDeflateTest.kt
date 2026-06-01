@@ -208,6 +208,21 @@ class WsPermessageDeflateTest {
     }
 
     @Test
+    fun `server_max_window_bits=8 is declined because zlib coerces 8 to 9`() {
+        // zlib (native libz / Node) coerces a requested windowBits=8 to 9 — a
+        // 256-byte window is not supported by deflate — so no zlib backend can
+        // produce a true window-8 stream. Echoing 8 while emitting window-9
+        // would over-promise (RFC 7692 §7.1.2.1), so the offer is declined on
+        // every backend (the floor is 9).
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; server_max_window_bits=8",
+            DeflateCodec,
+            WsDeflateOptions.Default,
+        )
+        assertIs<WsExtensionResult.None>(result)
+    }
+
+    @Test
     fun `a server_max_window_bits below the backend minimum is never over-promised`() {
         // Regression for the over-promise bug: a fixed-15 backend used to echo
         // server_max_window_bits=N (N<15) it could not honor, corrupting the
