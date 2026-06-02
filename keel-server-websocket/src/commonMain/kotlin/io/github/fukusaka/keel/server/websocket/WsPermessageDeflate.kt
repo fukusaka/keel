@@ -96,40 +96,49 @@ internal class WsPermessageDeflate(
     )
 
     /**
-     * Result of [compress]: the wire bytes of one outbound message and
-     * whether DEFLATE was actually applied (so the caller can set RSV1).
+     * Result of [compress]: either the original payload passed through
+     * uncompressed (below [WsDeflateOptions.threshold]), or the
+     * raw-DEFLATE output as pooled [IoBufChunks] with the `00 00 FF FF`
+     * sync tail stripped. [compressed] tells the caller whether to set the
+     * frame's RSV1 bit.
+     *
+     * [Compressed] **owns** its chunks: the caller must hand them to a
+     * [io.github.fukusaka.keel.codec.websocket.WsFrame.payloadChunks]
+     * (transferring ownership to the encoder / transport) or release them.
      */
-    data class CompressResult(val bytes: ByteArray, val compressed: Boolean) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (other !is CompressResult) return false
-            return compressed == other.compressed && bytes.contentEquals(other.bytes)
+    sealed interface CompressResult {
+        val compressed: Boolean
+
+        /** Below-threshold passthrough — the original payload, verbatim. */
+        class Uncompressed(val payload: ByteArray) : CompressResult {
+            override val compressed: Boolean get() = false
         }
 
-        override fun hashCode(): Int = 31 * bytes.contentHashCode() + compressed.hashCode()
+        /** Compressed raw-DEFLATE chunks, sync tail stripped. Owns [chunks]. */
+        class Compressed(val chunks: IoBufChunks) : CompressResult {
+            override val compressed: Boolean get() = true
+        }
     }
 
     /**
      * Compresses one outbound message payload (RFC 7692 §7.2.1).
      *
-     * Returns the original [payload] with `compressed = false` when it
-     * is shorter than [WsDeflateOptions.threshold]; otherwise returns
-     * the raw-DEFLATE bytes with the `00 00 FF FF` sync tail stripped
-     * and `compressed = true`.
+     * Returns [CompressResult.Uncompressed] (the original [payload]) when
+     * it is shorter than [WsDeflateOptions.threshold]; otherwise drives the
+     * encoder into pooled [IoBufChunks], strips the `00 00 FF FF` sync tail,
+     * and returns [CompressResult.Compressed] — the compressed bytes never
+     * materialise as a contiguous `ByteArray`.
      */
     fun compress(payload: ByteArray): CompressResult {
         if (payload.size < options.threshold) {
-            return CompressResult(payload, compressed = false)
+            return CompressResult.Uncompressed(payload)
         }
-        val deflated = runEncoder(payload)
-        // After finish() the session is in a finished state; reset() is
-        // mandatory before the next message. The session's own
-        // contextTakeover option decides whether reset() keeps the LZ77
-        // window (RFC 7692 §7.1.1) — it preserves with true, clears with
-        // false.
+        val chunks = runEncoderChunks(payload)
+        // After the Z_SYNC_FLUSH boundary the stream stays open; reset()
+        // per message decides (via contextTakeover) whether the LZ77 window
+        // carries over (RFC 7692 §7.1.1).
         encoder.reset()
-        val stripped = stripSyncTail(deflated)
-        return CompressResult(stripped, compressed = true)
+        return CompressResult.Compressed(stripSyncTail(chunks))
     }
 
     /**
@@ -152,29 +161,6 @@ internal class WsPermessageDeflate(
     override fun close() {
         encoder.close()
         decoder.close()
-    }
-
-    /**
-     * P1 bridge: drives the encoder into [IoBufChunks] (see
-     * [runEncoderChunks]), then flattens them to a contiguous `ByteArray`
-     * for the current `ByteArray`-typed [CompressResult]. A later phase will
-     * carry the [IoBufChunks] straight to the frame encoder for gather-write,
-     * dropping this flatten.
-     */
-    private fun runEncoder(input: ByteArray): ByteArray {
-        val chunks = runEncoderChunks(input)
-        try {
-            val result = ByteArray(chunks.totalSize)
-            var offset = 0
-            chunks.forEach { chunk ->
-                val n = chunk.readableBytes
-                chunk.readByteArray(result, offset, n)
-                offset += n
-            }
-            return result
-        } finally {
-            chunks.release()
-        }
     }
 
     /**
@@ -284,17 +270,34 @@ internal class WsPermessageDeflate(
     }
 
     /**
-     * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from a
-     * DEFLATE stream. The tail is always present when [FlushMode.Sync]
-     * was used; a non-empty payload always yields at least those four
-     * bytes, so the check guards only the degenerate empty case.
+     * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from the
+     * deflated [chunks] by trimming the trailing [SYNC_TAIL]`.size` bytes
+     * from the last chunk(s). A `NoFlush` stream terminated by `flush()`
+     * always ends in those four bytes, so the trim is unconditional except
+     * for the degenerate sub-4-byte case. Any chunk fully consumed by the
+     * trim is released; the rest are rewrapped into a fresh [IoBufChunks].
      */
-    private fun stripSyncTail(deflated: ByteArray): ByteArray =
-        if (deflated.size >= SYNC_TAIL.size && deflated.takeLast(SYNC_TAIL.size) == SYNC_TAIL.toList()) {
-            deflated.copyOf(deflated.size - SYNC_TAIL.size)
-        } else {
-            deflated
+    private fun stripSyncTail(chunks: IoBufChunks): IoBufChunks {
+        var remaining = SYNC_TAIL.size
+        if (chunks.totalSize < remaining) return chunks
+        val list = ArrayList<IoBuf>(chunks.chunkCount)
+        for (i in 0 until chunks.chunkCount) list.add(chunks.chunkAt(i))
+        var idx = list.size - 1
+        while (remaining > 0 && idx >= 0) {
+            val chunk = list[idx]
+            val n = chunk.readableBytes
+            if (n <= remaining) {
+                chunk.release()
+                list.removeAt(idx)
+                remaining -= n
+                idx--
+            } else {
+                chunk.writerIndex -= remaining
+                remaining = 0
+            }
         }
+        return IoBufChunks(list)
+    }
 
     companion object {
         /**
