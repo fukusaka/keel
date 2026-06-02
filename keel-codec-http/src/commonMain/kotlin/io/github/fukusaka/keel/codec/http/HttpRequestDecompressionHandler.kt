@@ -49,6 +49,21 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *    registered in [registry] — default
  *    [UnknownEncodingPolicy.UnsupportedMediaType] (HTTP 415).
  *
+ * **Multi-token `Content-Encoding` (chained encodings)**: RFC 9110
+ * §8.4.1 defines `Content-Encoding` as a list and permits stacking
+ * (e.g. `Content-Encoding: deflate, gzip` = deflate-then-gzip, decoded
+ * in reverse). keel **does not** implement chained decoding: the full
+ * header value is looked up as a single codec name, so anything other
+ * than one registered token falls through to [unknownEncodingPolicy]
+ * (HTTP 415 by default). This is intentional — major HTTP servers and
+ * frameworks (Netty, Go `net/http`, nginx, Apache `mod_deflate`,
+ * Node.js `zlib`) likewise do not support chained inbound decoding,
+ * clients do not send stacked encodings in practice, and stacked
+ * `Content-Encoding` headers seen on the wire are typically the result
+ * of a CDN / proxy double-compression bug rather than a legitimate
+ * request. Rejecting them outright follows the modern "strict in what
+ * you accept + safe defaults" convention.
+ *
  * The handler does **not** itself emit HTTP status responses on
  * failure. Limit / unknown-encoding exceptions propagate through the
  * pipeline; callers (typically a Ktor plugin or application-level

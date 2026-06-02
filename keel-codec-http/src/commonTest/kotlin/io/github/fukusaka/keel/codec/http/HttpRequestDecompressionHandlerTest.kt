@@ -329,6 +329,37 @@ class HttpRequestDecompressionHandlerTest {
     }
 
     @Test
+    fun `multi-token Content-Encoding is rejected by the unknown-encoding policy`() {
+        // RFC 9110 §8.4.1 lets a request stack encodings (e.g. "deflate, gzip"
+        // = deflate-then-gzip, decoded in reverse). keel intentionally does not
+        // implement chained inbound decoding: the full header value is looked
+        // up as a single codec name, so anything other than one registered
+        // token falls through to unknownEncodingPolicy. This pins the
+        // documented behaviour — a multi-token header is *not* silently
+        // accepted with the first token (the Netty approach) and must trip the
+        // configured rejection policy (415 by default).
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registryWithLower, DefaultAllocator,
+            unknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType,
+        )
+        val ctx = TestCtx(state)
+        val ex = assertFailsWith<UnsupportedContentEncodingException> {
+            handler.onRead(
+                ctx,
+                HttpRequestHead(
+                    HttpMethod.POST, "/upload",
+                    // "lower" alone is registered; with another token it must be rejected.
+                    headers = HttpHeaders().apply { add("Content-Encoding", "lower, gzip") },
+                ),
+            )
+        }
+        assertEquals("lower, gzip", ex.encoding)
+        assertEquals(UnknownEncodingPolicy.UnsupportedMediaType, ex.policy)
+        assertTrue(state.reads.isEmpty(), "multi-token head must not propagate when rejected")
+    }
+
+    @Test
     fun `Passthrough policy forwards unknown encoding unchanged`() {
         val state = ChainState()
         val handler = HttpRequestDecompressionHandler(
