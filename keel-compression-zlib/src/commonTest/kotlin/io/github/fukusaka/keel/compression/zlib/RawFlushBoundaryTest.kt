@@ -58,6 +58,32 @@ class RawFlushBoundaryTest {
     }
 
     @Test
+    fun `a frame compressing to more than one output buffer round-trips without truncation`() {
+        // High-entropy bytes barely compress, so the raw-DEFLATE frame spans
+        // many output buffers. Regression for the encoder drive returning
+        // NEED_INPUT when a single deflate step both filled the output and
+        // consumed all input: the still-buffered compressed tail was dropped,
+        // silently truncating any flush-framed message (WebSocket
+        // permessage-deflate) whose compressed form exceeded one buffer.
+        val payload = ByteArray(8192).also { kotlin.random.Random(seed = 7).nextBytes(it) }
+        val encoder = DeflateEncoder.newSession(
+            allocator,
+            EncoderOptions(wrapFormat = WrapFormat.Raw, flushMode = FlushMode.NoFlush),
+        )
+        val framed = feedThenFlush(payload, encoder)
+        encoder.close()
+        assertTrue(
+            framed.size > outputCap,
+            "an incompressible 8 KiB frame must span more than the ${outputCap}-byte output buffer, was ${framed.size}",
+        )
+
+        val decoder = DeflateDecoder.newSession(allocator, DecoderOptions(wrapFormat = WrapFormat.Raw))
+        val decoded = feedThenFlushDecode(framed, decoder)
+        decoder.close()
+        assertContentEquals(payload, decoded, "the full frame must round-trip (no truncated tail)")
+    }
+
+    @Test
     fun `two frames on one open stream both round-trip`() {
         // flush() keeps the stream open, so a single session frames many
         // messages (the WebSocket per-connection encoder lifetime).
