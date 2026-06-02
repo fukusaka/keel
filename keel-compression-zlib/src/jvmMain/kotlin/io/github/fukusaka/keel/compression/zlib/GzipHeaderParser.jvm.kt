@@ -70,14 +70,24 @@ internal class GzipHeaderParser {
      * @throws DecompressionException on invalid magic, unsupported CM,
      *   or reserved FLG bits.
      */
-    fun consume(bytes: ByteArray): ByteArray? {
+    fun consume(bytes: ByteArray): ByteArray? = consume(bytes, bytes.size)
+
+    /**
+     * Length-aware variant: only the first [length] bytes of [bytes] are
+     * consumed. Lets the caller hand in a reusable scratch array that may be
+     * larger than the actual input — eliminates the `ByteArray(n)` per-update
+     * allocation on the gzip-header parse path. Returned tail (when non-null)
+     * is sized to the unconsumed portion, not to the full backing array.
+     */
+    fun consume(bytes: ByteArray, length: Int): ByteArray? {
+        require(length in 0..bytes.size) { "length=$length out of bounds for bytes.size=${bytes.size}" }
         var i = 0
-        while (i < bytes.size) {
+        while (i < length) {
             val b = bytes[i].toInt() and 0xFF
             i++
             advance(b)
             if (state == State.DONE) {
-                return if (i < bytes.size) bytes.copyOfRange(i, bytes.size) else EMPTY_BYTES
+                return if (i < length) bytes.copyOfRange(i, length) else EMPTY_BYTES
             }
         }
         return null
