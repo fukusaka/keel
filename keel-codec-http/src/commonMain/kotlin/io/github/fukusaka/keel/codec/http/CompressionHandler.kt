@@ -179,8 +179,14 @@ public class CompressionHandler(
         ensureScratch()
         ctx.propagateWrite(mutatedHead)
 
+        // Feed the body to the encoder as a zero-copy view where the allocator
+        // supports it (NIO heap-ByteBuffer / Native pinned-pointer); the codec
+        // consumes `src` synchronously within handleBody / handleBodyEnd, so the
+        // app's array is never read after this call returns. Allocators without
+        // zero-copy wrap (DefaultAllocator / Netty) return null → owned copy.
         val body = response.body
-        val src = allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
+        val src = allocator.wrapBytes(body, 0, body.size)
+            ?: allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
         handleBody(ctx, HttpBody(src))
         handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
     }
