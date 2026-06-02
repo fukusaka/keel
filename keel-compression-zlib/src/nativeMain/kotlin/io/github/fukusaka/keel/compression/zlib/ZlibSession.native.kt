@@ -227,7 +227,9 @@ private class NativeZlibEncoderSession(
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
             val outCap = output.writableBytes
-            val (rc, consumed, produced) = step(input, inAvail, output, outCap, flag)
+            val rc = step(input, inAvail, output, outCap, flag)
+            val consumed = consumedVar.value
+            val produced = producedVar.value
             if (consumed > 0) input?.let { it.readerIndex += consumed }
             if (produced > 0) output.writerIndex += produced
             when (rc) {
@@ -256,29 +258,33 @@ private class NativeZlibEncoderSession(
         return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
     }
 
+    /**
+     * Invokes `keel_deflate`. The C call writes the consumed / produced
+     * byte counts into the session-scoped [consumedVar] / [producedVar],
+     * so this returns only the libz status code; the caller reads the
+     * out-params off the session fields. Avoids per-call `Triple`
+     * allocation on the deflate hot loop.
+     */
     private fun step(
         input: IoBuf?,
         inAvail: Int,
         output: IoBuf,
         outCap: Int,
         flag: Int,
-    ): Triple<Int, Int, Int> {
-        val rc = keel_deflate(
-            z,
-            in_buf = if (input != null && inAvail > 0) {
-                offsetPtr(input.unsafePointer, input.readerIndex)
-            } else {
-                null
-            },
-            in_len = inAvail,
-            out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
-            out_cap = outCap,
-            flush_flag = flag,
-            consumed_in = consumedVar.ptr,
-            produced_out = producedVar.ptr,
-        )
-        return Triple(rc, consumedVar.value, producedVar.value)
-    }
+    ): Int = keel_deflate(
+        z,
+        in_buf = if (input != null && inAvail > 0) {
+            offsetPtr(input.unsafePointer, input.readerIndex)
+        } else {
+            null
+        },
+        in_len = inAvail,
+        out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
+        out_cap = outCap,
+        flush_flag = flag,
+        consumed_in = consumedVar.ptr,
+        produced_out = producedVar.ptr,
+    )
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -399,7 +405,9 @@ private class NativeZlibDecoderSession(
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
             val outCap = output.writableBytes
-            val (rc, consumed, produced) = step(input, inAvail, output, outCap)
+            val rc = step(input, inAvail, output, outCap)
+            val consumed = consumedVar.value
+            val produced = producedVar.value
             if (consumed > 0) {
                 input?.let { it.readerIndex += consumed }
                 totalInput += consumed
@@ -441,28 +449,31 @@ private class NativeZlibDecoderSession(
         return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
     }
 
+    /**
+     * Invokes `keel_inflate`. Same out-param pattern as the encoder
+     * [step]: the libz status is returned, the consumed / produced
+     * counts are read off the session-scoped [consumedVar] / [producedVar]
+     * to avoid a per-call `Triple` allocation on the inflate hot loop.
+     */
     private fun step(
         input: IoBuf?,
         inAvail: Int,
         output: IoBuf,
         outCap: Int,
-    ): Triple<Int, Int, Int> {
-        val rc = keel_inflate(
-            z,
-            in_buf = if (input != null && inAvail > 0) {
-                offsetPtr(input.unsafePointer, input.readerIndex)
-            } else {
-                null
-            },
-            in_len = inAvail,
-            out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
-            out_cap = outCap,
-            flush_flag = keel_zlib_flag_no_flush(),
-            consumed_in = consumedVar.ptr,
-            produced_out = producedVar.ptr,
-        )
-        return Triple(rc, consumedVar.value, producedVar.value)
-    }
+    ): Int = keel_inflate(
+        z,
+        in_buf = if (input != null && inAvail > 0) {
+            offsetPtr(input.unsafePointer, input.readerIndex)
+        } else {
+            null
+        },
+        in_len = inAvail,
+        out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
+        out_cap = outCap,
+        flush_flag = keel_zlib_flag_no_flush(),
+        consumed_in = consumedVar.ptr,
+        produced_out = producedVar.ptr,
+    )
 
     private fun enforceLimits(produced: Int) {
         val newTotal = totalDecoded + produced
