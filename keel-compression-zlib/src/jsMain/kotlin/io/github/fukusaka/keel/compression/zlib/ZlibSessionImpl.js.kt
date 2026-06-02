@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.WrapFormat
+import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import org.khronos.webgl.get
 
@@ -401,18 +402,32 @@ private class JsZlibDecoderSession(
 
 // ---- conversion helpers ----
 
+/**
+ * Zero-copy view of [this] as a [Uint8Array] sharing the same [ArrayBuffer].
+ *
+ * Kotlin/JS represents `ByteArray` as a backing `Int8Array` at runtime, so
+ * casting and wrapping its buffer as a `Uint8Array` view costs only the small
+ * `Uint8Array` header — no per-byte copy. Caller must not mutate [this] while
+ * the returned view is in use by a downstream consumer; here every call site
+ * hands the view straight to a synchronous Node API (`gzipSync` / `deflateRaw`
+ * / etc.) that finishes consuming before returning, so the share is safe.
+ */
 private fun ByteArray.toUint8Array(): Uint8Array {
-    val u8 = Uint8Array(size)
-    for (i in indices) {
-        u8.asDynamic()[i] = this[i]
-    }
-    return u8
+    val int8 = unsafeCast<Int8Array>()
+    return Uint8Array(int8.buffer, int8.byteOffset, int8.length)
 }
 
-private fun Uint8Array.toByteArray(): ByteArray {
-    val n = length
-    return ByteArray(n) { i -> this[i] }
-}
+/**
+ * Zero-copy view of [this] as a [ByteArray] sharing the same [ArrayBuffer].
+ *
+ * Mirror of [ByteArray.toUint8Array]: wrap the same buffer as an `Int8Array`
+ * and `unsafeCast` it to `ByteArray` (Kotlin/JS's runtime representation
+ * lets this aliasing work). The two arrays share memory until either is
+ * dropped; current call sites hand the result straight into the caller's
+ * `IoBuf` and discard the Uint8Array, so the aliasing is safe.
+ */
+private fun Uint8Array.toByteArray(): ByteArray =
+    Int8Array(buffer, byteOffset, length).unsafeCast<ByteArray>()
 
 /**
  * Append-only byte buffer that grows its backing array by doubling, so
@@ -440,14 +455,18 @@ private class ByteAccumulator {
         len += count
     }
 
-    /** A fresh [Uint8Array] of the [size] valid bytes, for a Node sync call. */
+    /**
+     * Returns a [Uint8Array] view over the first [size] valid bytes of the
+     * backing array, sharing the same [ArrayBuffer] (no copy). Sized to [len]
+     * — not the larger backing capacity — so a Node sync API sees only the
+     * accumulated bytes. Safe because every call site passes the view to a
+     * synchronous Node call that finishes consuming before returning, and the
+     * accumulator's [clear] only resets the length cursor (does not realloc),
+     * so the buffer stays valid for the duration of the call.
+     */
     fun toUint8Array(): Uint8Array {
-        val u8 = Uint8Array(len)
-        val src = buf
-        for (i in 0 until len) {
-            u8.asDynamic()[i] = src[i]
-        }
-        return u8
+        val int8 = buf.unsafeCast<Int8Array>()
+        return Uint8Array(int8.buffer, int8.byteOffset, len)
     }
 
     /** Drops the accumulated bytes but keeps the backing array for reuse. */
