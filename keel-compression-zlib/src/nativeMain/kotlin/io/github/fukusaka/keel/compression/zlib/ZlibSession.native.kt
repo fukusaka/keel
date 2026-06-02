@@ -38,13 +38,13 @@ import keel_zlib.keel_zlib_status_ok
 import keel_zlib.keel_zlib_status_stream_end
 import keel_zlib.keel_zstream_alloc
 import keel_zlib.keel_zstream_free
+import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
@@ -109,6 +109,14 @@ private class NativeZlibEncoderSession(
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
+
+    // Per-session arena hosting the consumed/produced out-params handed to
+    // keel_deflate. Hoisting them out of the per-call `memScoped { alloc<IntVar>×2 }`
+    // drops the two allocations from every encoder step (and the deflate drive
+    // loop calls step() many times per message). Freed in close() via arena.clear().
+    private val arena = Arena()
+    private val consumedVar: IntVar = arena.alloc()
+    private val producedVar: IntVar = arena.alloc()
 
     private val flushFlag: Int = when (options.flushMode) {
         FlushMode.NoFlush -> keel_zlib_flag_no_flush()
@@ -204,6 +212,7 @@ private class NativeZlibEncoderSession(
         if (closed) return
         keel_deflate_end(z)
         keel_zstream_free(z)
+        arena.clear()
         closed = true
     }
 
@@ -253,9 +262,7 @@ private class NativeZlibEncoderSession(
         output: IoBuf,
         outCap: Int,
         flag: Int,
-    ): Triple<Int, Int, Int> = memScoped {
-        val consumed = alloc<IntVar>()
-        val produced = alloc<IntVar>()
+    ): Triple<Int, Int, Int> {
         val rc = keel_deflate(
             z,
             in_buf = if (input != null && inAvail > 0) {
@@ -267,10 +274,10 @@ private class NativeZlibEncoderSession(
             out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
             out_cap = outCap,
             flush_flag = flag,
-            consumed_in = consumed.ptr,
-            produced_out = produced.ptr,
+            consumed_in = consumedVar.ptr,
+            produced_out = producedVar.ptr,
         )
-        Triple(rc, consumed.value, produced.value)
+        return Triple(rc, consumedVar.value, producedVar.value)
     }
 }
 
@@ -283,6 +290,13 @@ private class NativeZlibDecoderSession(
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
+
+    // Per-session arena hosting the consumed/produced out-params handed to
+    // keel_inflate. Hoisting them out of the per-call `memScoped { alloc<IntVar>×2 }`
+    // drops the two allocations from every decoder step. Freed in close().
+    private val arena = Arena()
+    private val consumedVar: IntVar = arena.alloc()
+    private val producedVar: IntVar = arena.alloc()
 
     private var closed: Boolean = false
     private var finishedReturned: Boolean = false
@@ -362,6 +376,7 @@ private class NativeZlibDecoderSession(
         if (closed) return
         keel_inflate_end(z)
         keel_zstream_free(z)
+        arena.clear()
         closed = true
     }
 
@@ -431,9 +446,7 @@ private class NativeZlibDecoderSession(
         inAvail: Int,
         output: IoBuf,
         outCap: Int,
-    ): Triple<Int, Int, Int> = memScoped {
-        val consumed = alloc<IntVar>()
-        val produced = alloc<IntVar>()
+    ): Triple<Int, Int, Int> {
         val rc = keel_inflate(
             z,
             in_buf = if (input != null && inAvail > 0) {
@@ -445,10 +458,10 @@ private class NativeZlibDecoderSession(
             out_buf = offsetPtr(output.unsafePointer, output.writerIndex),
             out_cap = outCap,
             flush_flag = keel_zlib_flag_no_flush(),
-            consumed_in = consumed.ptr,
-            produced_out = produced.ptr,
+            consumed_in = consumedVar.ptr,
+            produced_out = producedVar.ptr,
         )
-        Triple(rc, consumed.value, produced.value)
+        return Triple(rc, consumedVar.value, producedVar.value)
     }
 
     private fun enforceLimits(produced: Int) {
@@ -459,8 +472,14 @@ private class NativeZlibDecoderSession(
             }
         }
         options.maxRatio?.let { ratio ->
-            if (totalInput > 0 && newTotal > totalInput * ratio) {
-                throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+            if (totalInput > 0) {
+                // `totalInput * ratio` (Long * Int) overflows Long once
+                // totalInput crosses Long.MAX_VALUE / ratio; the wrap to a
+                // negative value would silently bypass the cap. Treat
+                // would-overflow as "ratio exceeded".
+                if (totalInput > Long.MAX_VALUE / ratio || newTotal > totalInput * ratio) {
+                    throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+                }
             }
         }
     }

@@ -285,6 +285,16 @@ private class JvmZlibDecoderSession(
     private var gzipHeaderParser: GzipHeaderParser? =
         if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
 
+    /**
+     * Reusable scratch for the gzip header parse step in [update]: a long-
+     * running stream that delivers its header across many `update` calls would
+     * otherwise allocate a fresh `ByteArray(n)` on each one. The scratch grows
+     * monotonically to the largest header chunk seen, then is reused; the
+     * length-aware `GzipHeaderParser.consume(bytes, length)` lets the parser
+     * ignore the unused tail of the array.
+     */
+    private var gzipHeaderScratch: ByteArray? = null
+
     private var totalDecoded: Long = 0
     private var totalInput: Long = 0
     private var inflaterBytesReadAtLastUpdate: Long = 0
@@ -310,10 +320,15 @@ private class JvmZlibDecoderSession(
             if (!parser.done) {
                 val n = input.readableBytes
                 if (n == 0) return CodecStatus.NEED_INPUT
-                val tmp = ByteArray(n)
-                input.readByteArray(tmp, 0, n) // advances input.readerIndex
+                val existing = gzipHeaderScratch
+                val scratch = if (existing != null && existing.size >= n) {
+                    existing
+                } else {
+                    ByteArray(n).also { gzipHeaderScratch = it }
+                }
+                input.readByteArray(scratch, 0, n) // advances input.readerIndex
                 totalInput += n
-                val tail = parser.consume(tmp)
+                val tail = parser.consume(scratch, n)
                 if (tail == null) return CodecStatus.NEED_INPUT
                 if (tail.isNotEmpty()) {
                     inflater.setInput(ByteBuffer.wrap(tail))
@@ -454,8 +469,16 @@ private class JvmZlibDecoderSession(
             }
         }
         options.maxRatio?.let { ratio ->
-            if (totalInput > 0 && newTotal > totalInput * ratio) {
-                throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+            if (totalInput > 0) {
+                // `totalInput * ratio` (Long * Int) overflows Long once
+                // totalInput crosses Long.MAX_VALUE / ratio (~9.2e18 / ratio).
+                // The overflow wraps to a negative value, making `newTotal >
+                // totalInput * ratio` falsely false and silently bypassing the
+                // ratio cap. Detect would-overflow as "ratio definitely
+                // exceeded" before computing the product.
+                if (totalInput > Long.MAX_VALUE / ratio || newTotal > totalInput * ratio) {
+                    throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+                }
             }
         }
     }

@@ -33,12 +33,18 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *      `RequestDecompressionLimitException(AbsoluteSizeExceeded)` when
  *      cumulative decoded bytes per request exceed the cap.
  *    - **Decoded:input ratio cap** ([ratioLimit], default 100):
- *      `RequestDecompressionLimitException(RatioExceeded)` when the
- *      ratio cap is exceeded more than [ratioBurst] times in a row
- *      (default 3, mirrors Apache `DeflateInflateRatioBurst`). Single
- *      high-ratio chunks (gzip header parse, dictionary hits) are
- *      tolerated so legitimate but bursty inputs are not falsely
- *      rejected.
+ *      `RequestDecompressionLimitException(RatioExceeded)` after the
+ *      ratio cap has been exceeded a cumulative [ratioBurst] + 1 times
+ *      across the request (default 3, i.e. abort on the 4th violation).
+ *      The burst budget is set once per request and decremented on each
+ *      violation — it is *not* reset when a chunk respects the ratio
+ *      again. A handful of incidental high-ratio chunks (gzip header
+ *      parse, dictionary hits, short high-entropy blocks) are tolerated,
+ *      but a stream that keeps producing high-ratio chunks aborts even
+ *      if they are interspersed with low-ratio ones. (Looser, true
+ *      consecutive-only burst semantics — Apache's
+ *      `DeflateInflateRatioBurst` — would require a reset-on-recovery
+ *      counter; that variation is tracked as a future design judgement.)
  * 5. **Applies** [unknownEncodingPolicy] when the encoding is not
  *    registered in [registry] — default
  *    [UnknownEncodingPolicy.UnsupportedMediaType] (HTTP 415).
@@ -71,10 +77,14 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *   session update. Apache `mod_deflate` pattern. Default 100
  *   ([DEFAULT_RATIO_LIMIT]); Apache uses 200, keel is more
  *   conservative. Set to [Int.MAX_VALUE] to opt out.
- * @param ratioBurst consecutive ratio-violations tolerated before
- *   aborting. Default 3 ([DEFAULT_RATIO_BURST], mirrors Apache
- *   `DeflateInflateRatioBurst`). Allows legitimate high-ratio chunks
- *   (gzip header / dictionary hits / short high-entropy blocks).
+ * @param ratioBurst cumulative ratio-violations tolerated before
+ *   aborting; the request is rejected on the `ratioBurst + 1`-th
+ *   violation. Default 3 ([DEFAULT_RATIO_BURST]). The budget is set
+ *   once per request and decremented per violation — it is not reset
+ *   when a chunk respects the ratio again, so a stream that repeatedly
+ *   violates (even with low-ratio chunks in between) still aborts.
+ *   Allows a handful of legitimate high-ratio chunks (gzip header /
+ *   dictionary hits / short high-entropy blocks).
  * @param unknownEncodingPolicy behaviour when `Content-Encoding` is not
  *   registered. Default [UnknownEncodingPolicy.UnsupportedMediaType]
  *   (HTTP 415).
@@ -486,10 +496,11 @@ public class HttpRequestDecompressionHandler(
         public const val DEFAULT_RATIO_LIMIT: Int = 100
 
         /**
-         * Default ratio-violation burst tolerance — 3, mirrors Apache
-         * `DeflateInflateRatioBurst`. Allows transient high-ratio
-         * chunks (gzip header parse, dictionary hits, short high-entropy
-         * runs) without aborting the request.
+         * Default ratio-violation burst tolerance — 3 (i.e. abort on the
+         * 4th violation). Cumulative across the request, not "in a row";
+         * see the [HttpRequestDecompressionHandler] class KDoc for the
+         * exact semantics and the rationale for not matching Apache's
+         * consecutive-only `DeflateInflateRatioBurst`.
          */
         public const val DEFAULT_RATIO_BURST: Int = 3
 

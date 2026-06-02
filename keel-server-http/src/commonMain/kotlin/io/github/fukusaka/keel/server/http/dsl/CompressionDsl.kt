@@ -270,9 +270,14 @@ public class RequestDecompressionBuilder internal constructor() {
     public var ratioLimit: Int = HttpRequestDecompressionHandler.DEFAULT_RATIO_LIMIT
 
     /**
-     * Initial bytes admitted before [ratioLimit] starts being enforced.
-     * Defaults to [HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST]
-     * (3 chunks).
+     * Cumulative ratio-violation tolerance: the request is aborted on
+     * the `ratioBurst + 1`-th chunk whose decoded:input ratio exceeds
+     * [ratioLimit]. The budget is *not* reset when a chunk respects the
+     * ratio, so legitimate streams that produce many incidental
+     * high-ratio chunks (dictionary heavy, header-only-in-first-chunk)
+     * may need a higher value. Defaults to
+     * [HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST] (3 → abort
+     * on the 4th violation).
      */
     public var ratioBurst: Int = HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST
 

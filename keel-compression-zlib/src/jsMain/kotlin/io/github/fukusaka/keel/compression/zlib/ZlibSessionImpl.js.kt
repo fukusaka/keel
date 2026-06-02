@@ -297,8 +297,14 @@ private class JsZlibDecoderSession(
                 if (out.size > cap) throw DecompressionLimitException("max-output-size exceeded: ${out.size} > $cap")
             }
             options.maxRatio?.let { ratio ->
-                if (totalInput > 0 && out.size > totalInput * ratio) {
-                    throw DecompressionLimitException("max-ratio exceeded: ${out.size} > $totalInput * $ratio")
+                if (totalInput > 0) {
+                    // `totalInput * ratio` (Long * Int) overflows Long once
+                    // totalInput crosses Long.MAX_VALUE / ratio; the wrap to a
+                    // negative value would silently bypass the cap. Treat
+                    // would-overflow as "ratio exceeded".
+                    if (totalInput > Long.MAX_VALUE / ratio || out.size > totalInput * ratio) {
+                        throw DecompressionLimitException("max-ratio exceeded: ${out.size} > $totalInput * $ratio")
+                    }
                 }
             }
             decodedOutput = out
@@ -342,8 +348,14 @@ private class JsZlibDecoderSession(
                 }
             }
             options.maxRatio?.let { ratio ->
-                if (totalInput > 0 && out.size > totalInput * ratio) {
-                    throw DecompressionLimitException("max-ratio exceeded: ${out.size} > $totalInput * $ratio")
+                if (totalInput > 0) {
+                    // `totalInput * ratio` (Long * Int) overflows Long once
+                    // totalInput crosses Long.MAX_VALUE / ratio; the wrap to a
+                    // negative value would silently bypass the cap. Treat
+                    // would-overflow as "ratio exceeded".
+                    if (totalInput > Long.MAX_VALUE / ratio || out.size > totalInput * ratio) {
+                        throw DecompressionLimitException("max-ratio exceeded: ${out.size} > $totalInput * $ratio")
+                    }
                 }
             }
             decodedOutput = out

@@ -32,8 +32,9 @@ public class RequestDecompressionLimitException(
         AbsoluteSizeExceeded,
 
         /**
-         * The decoded:input ratio exceeded `ratioLimit` more times in a
-         * row than `ratioBurst` allows — typical zip-bomb signature.
+         * The decoded:input ratio exceeded `ratioLimit` more than
+         * `ratioBurst` times cumulatively across the request — typical
+         * zip-bomb signature.
          */
         RatioExceeded,
     }
