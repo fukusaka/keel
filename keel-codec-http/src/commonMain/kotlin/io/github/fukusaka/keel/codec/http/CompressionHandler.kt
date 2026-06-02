@@ -29,6 +29,14 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * 4. **Skips compression** when the request did not accept any
  *    registered encoding, the response status is no-body (1xx / 204 /
  *    304), or the optional [condition] rejects.
+ * 5. **Converts an aggregated [HttpResponse]** (full-body) into the same
+ *    chunked streaming sequence: it emits the head, then drives the
+ *    encoder over the body emitting [HttpBody] chunks as they are
+ *    produced, then [HttpBodyEnd]. The compressed output is never
+ *    buffered into one contiguous `ByteArray`, and the response becomes
+ *    `Transfer-Encoding: chunked` (the compressed size is no longer
+ *    materialised) — the same trade-off nginx / Netty / Ktor make for
+ *    on-the-fly compression.
  *
  * **Per-channel scratch buffer**: a single output [IoBuf] of
  * [SCRATCH_CAPACITY] bytes is allocated once per channel attach and
@@ -154,21 +162,27 @@ public class CompressionHandler(
             return
         }
 
-        // Run the streaming SPI to compress the entire body, accumulating
-        // chunks into a single ByteArray (aggregated response shape needs
-        // a contiguous body). For aggregated responses the streaming win
-        // is moot, but we still go through the streaming SPI for code
-        // path consistency + per-chunk zip-bomb defence (encoder side
-        // doesn't need it but symmetry).
-        val session = encoder.newSession(allocator, defaultEncoderOptions)
-        val srcBuf = allocator.allocate(response.body.size)
-        srcBuf.writeByteArray(response.body, 0, response.body.size)
-        val out = encodeAggregated(session, srcBuf)
-        srcBuf.release()
-        session.close()
+        // Stream-compress the aggregated body through the chunked path: emit the
+        // head (Transfer-Encoding: chunked), then drive the encoder over the body
+        // emitting HttpBody chunks *as they are produced*, then HttpBodyEnd. This
+        // never buffers the whole compressed output (no contiguous ByteArray) —
+        // memory is bounded to one scratch buffer — and matches how nginx / Netty
+        // / Ktor compress dynamically. Content-Length is replaced by chunked
+        // since the compressed size is no longer materialised (RFC 9112 §6.1
+        // forbids both). The head + body + end reuse the streaming handlers.
+        val mutatedHead = HttpResponseHead(
+            response.status,
+            response.version,
+            rewriteHeaders(response.headers, encoder.name, fixedLength = null),
+        )
+        activeSession = encoder.newSession(allocator, defaultEncoderOptions)
+        ensureScratch()
+        ctx.propagateWrite(mutatedHead)
 
-        val newHeaders = rewriteHeaders(response.headers, encoder.name, fixedLength = out.size.toString())
-        ctx.propagateWrite(response.copy(headers = newHeaders, body = out))
+        val body = response.body
+        val src = allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
+        handleBody(ctx, HttpBody(src))
+        handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
     }
 
     private fun handleResponseHead(ctx: PipelineHandlerContext, head: HttpResponseHead) {
@@ -291,57 +305,6 @@ public class CompressionHandler(
     }
 
     /**
-     * Drive the streaming SPI, accumulating compressed output into a
-     * primitive `ByteArray` (no `ArrayList<Byte>` boxing). Used by the
-     * aggregated `HttpResponse` path where the result must end up as a
-     * single contiguous byte array — bench `/large` 100 KB takes this
-     * path on `pipeline-http-*`.
-     *
-     * Initial estimate is pessimistic (`max(input/4, 256)` — typical
-     * gzip output for text payloads is ≤ ¼ of input); growth doubles
-     * on overflow.
-     */
-    private fun encodeAggregated(session: EncoderSession, src: IoBuf): ByteArray {
-        ensureScratch()
-        val s = scratch!!
-        var result = ByteArray((src.readableBytes / 4).coerceAtLeast(MIN_AGGREGATED_BUF))
-        var resultLen = 0
-
-        fun appendScratch() {
-            val n = s.readableBytes
-            if (n == 0) return
-            if (resultLen + n > result.size) {
-                val newSize = (result.size + n).coerceAtLeast(result.size * 2)
-                result = result.copyOf(newSize)
-            }
-            s.readByteArray(result, resultLen, n)
-            resultLen += n
-            s.clear()
-        }
-
-        while (true) {
-            when (session.update(src, s)) {
-                CodecStatus.NEED_OUTPUT -> appendScratch()
-                CodecStatus.NEED_INPUT -> break
-                CodecStatus.FINISHED -> error("update should not return FINISHED")
-            }
-        }
-        appendScratch()
-
-        var finishing = true
-        while (finishing) {
-            when (session.finish(s)) {
-                CodecStatus.NEED_OUTPUT -> appendScratch()
-                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                    appendScratch()
-                    finishing = false
-                }
-            }
-        }
-        return if (resultLen == result.size) result else result.copyOf(resultLen)
-    }
-
-    /**
      * Build the post-compression header set:
      *
      * - drop the original `Content-Length` (compressed size differs)
@@ -390,7 +353,6 @@ public class CompressionHandler(
 
     public companion object {
         public const val SCRATCH_CAPACITY: Int = 8 * 1024
-        private const val MIN_AGGREGATED_BUF: Int = 256
     }
 }
 
