@@ -229,6 +229,13 @@ private class NativeZlibEncoderSession(
                     break
                 }
                 keel_zlib_status_ok() -> {
+                    // Output-full must be checked BEFORE input-consumed: deflate
+                    // can fill the output and consume all input in one step
+                    // (Z_NO_FLUSH) while still holding buffered output. Returning
+                    // NEED_INPUT there makes the caller stop draining and the
+                    // buffered tail is lost — truncating any message whose
+                    // compressed form exceeds one output buffer.
+                    if (output.writableBytes == 0) return CodecStatus.NEED_OUTPUT
                     if (!isFinish && (input == null || input.readableBytes == 0)) {
                         return CodecStatus.NEED_INPUT
                     }
@@ -405,6 +412,11 @@ private class NativeZlibDecoderSession(
                     break
                 }
                 keel_zlib_status_ok() -> {
+                    // Output-full before input-consumed: inflate can fill the
+                    // output and consume all input in one step while still
+                    // holding buffered decoded bytes; returning NEED_INPUT there
+                    // would drop them.
+                    if (output.writableBytes == 0) return CodecStatus.NEED_OUTPUT
                     if (input == null || input.readableBytes == 0) return CodecStatus.NEED_INPUT
                     if (produced == 0 && consumed == 0) break
                 }

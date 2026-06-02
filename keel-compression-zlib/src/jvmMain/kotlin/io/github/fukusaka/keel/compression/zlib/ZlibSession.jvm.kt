@@ -241,8 +241,14 @@ private class JvmZlibEncoderSession(
         if (input != null) advanceInputReaderIndex(input)
         return when {
             isFinish && deflater.finished() -> CodecStatus.NEED_INPUT
-            !isFinish && deflater.needsInput() -> CodecStatus.NEED_INPUT
+            // Output-full must be checked BEFORE needsInput: the Deflater can
+            // both fill the output and consume all input in one call (common
+            // with NO_FLUSH), leaving more compressed bytes buffered. Returning
+            // NEED_INPUT there makes the caller stop draining and the buffered
+            // tail is lost — truncating any message whose compressed form
+            // exceeds one output buffer.
             output.writableBytes == 0 -> CodecStatus.NEED_OUTPUT
+            !isFinish && deflater.needsInput() -> CodecStatus.NEED_INPUT
             else -> CodecStatus.NEED_INPUT
         }
     }
