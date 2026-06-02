@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.codec.websocket
 
+import io.github.fukusaka.keel.buf.IoBufChunks
+
 /**
  * A WebSocket frame as defined in RFC 6455 §5.2.
  *
@@ -9,7 +11,14 @@ package io.github.fukusaka.keel.codec.websocket
  * @param rsv3 Reserved bit 3; must be false unless an extension is negotiated.
  * @param opcode Frame type.
  * @param maskKey 32-bit masking key; non-null for client-to-server frames.
- * @param payload Unmasked payload data.
+ * @param payload Unmasked payload data. Ignored when [payloadChunks] is set.
+ * @param payloadChunks Optional pre-built pooled-`IoBuf` payload (e.g. the
+ *   raw-DEFLATE output of `permessage-deflate`). When non-null the encoder
+ *   gather-writes these chunks instead of copying [payload], so the
+ *   compressed bytes never round-trip through a `ByteArray`. Server-outbound
+ *   only: must be `null` for masked (client) frames and for control frames.
+ *   The frame owns the chunks — the encoder releases them after writing (or
+ *   on failure); a frame carrying chunks must be written exactly once.
  */
 data class WsFrame(
     val fin: Boolean,
@@ -19,11 +28,16 @@ data class WsFrame(
     val opcode: WsOpcode,
     val maskKey: Int? = null,
     val payload: ByteArray = ByteArray(0),
+    val payloadChunks: IoBufChunks? = null,
 ) {
     init {
         if (opcode.isControl) {
             require(fin) { "Control frames must not be fragmented (fin must be true)" }
             require(payload.size <= 125) { "Control frame payload must not exceed 125 bytes, got ${payload.size}" }
+            require(payloadChunks == null) { "Control frames must not use payloadChunks" }
+        }
+        require(payloadChunks == null || maskKey == null) {
+            "payloadChunks is server-outbound only and cannot be masked"
         }
     }
 
