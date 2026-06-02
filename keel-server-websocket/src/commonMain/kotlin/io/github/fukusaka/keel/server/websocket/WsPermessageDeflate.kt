@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionCodec
@@ -154,81 +155,133 @@ internal class WsPermessageDeflate(
     }
 
     /**
-     * Drives [encoder] to completion over [input], emitting the
-     * `Z_SYNC_FLUSH` boundary via [EncoderSession.finish]. The standard
-     * keel SPI loop: `update` until `NEED_INPUT`, then `finish` until
-     * `FINISHED`, draining [output] on every `NEED_OUTPUT`.
+     * P1 bridge: drives the encoder into [IoBufChunks] (see
+     * [runEncoderChunks]), then flattens them to a contiguous `ByteArray`
+     * for the current `ByteArray`-typed [CompressResult]. A later phase will
+     * carry the [IoBufChunks] straight to the frame encoder for gather-write,
+     * dropping this flatten.
      */
     private fun runEncoder(input: ByteArray): ByteArray {
+        val chunks = runEncoderChunks(input)
+        try {
+            val result = ByteArray(chunks.totalSize)
+            var offset = 0
+            chunks.forEach { chunk ->
+                val n = chunk.readableBytes
+                chunk.readByteArray(result, offset, n)
+                offset += n
+            }
+            return result
+        } finally {
+            chunks.release()
+        }
+    }
+
+    /**
+     * Drives [encoder] over [input] into a fresh pooled chunk per output
+     * step. The keel SPI loop: `update` until `NEED_INPUT`, then `flush`
+     * until `NEED_INPUT` (the `Z_SYNC_FLUSH` boundary is fully drained).
+     * Each step that fills the output buffer keeps it as a chunk and swaps
+     * in a fresh one ([keepChunk]), so the codec output buffers *become* the
+     * payload chunks — no intermediate copy, no `ByteArray`, no boxing.
+     */
+    private fun runEncoderChunks(input: ByteArray): IoBufChunks {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
-        val output = allocator.allocate(OUTPUT_CHUNK)
-        val collected = ArrayList<Byte>(input.size)
+        val chunks = ArrayList<IoBuf>()
+        var out = allocator.allocate(OUTPUT_CHUNK)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
             while (true) {
-                when (encoder.update(src, output)) {
-                    CodecStatus.NEED_OUTPUT -> drain(output, collected)
+                when (encoder.update(src, out)) {
+                    CodecStatus.NEED_OUTPUT -> out = keepChunk(chunks, out)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            drain(output, collected)
+            out = keepChunk(chunks, out)
             // Z_SYNC_FLUSH boundary (NOT finish): emits the compressed message
             // ending in 00 00 FF FF, leaving the stream open. flush() returns
             // NEED_INPUT once the boundary is fully drained.
-            while (encoder.flush(output) != CodecStatus.NEED_INPUT) {
-                drain(output, collected)
+            while (encoder.flush(out) != CodecStatus.NEED_INPUT) {
+                out = keepChunk(chunks, out)
             }
-            drain(output, collected)
+            out = keepChunk(chunks, out)
+        } catch (t: Throwable) {
+            chunks.forEach { it.release() }
+            throw t
         } finally {
             src.release()
-            output.release()
+            out.release()
         }
-        return collected.toByteArray()
+        return IoBufChunks(chunks)
     }
 
     /**
-     * Drives [decoder] to completion over [input]. Same SPI loop shape
-     * as [runEncoder]; `finish` validates the stream end.
+     * If [out] holds bytes, appends it to [chunks] and returns a fresh pooled
+     * buffer for the next codec step; otherwise returns [out] unchanged (no
+     * empty chunk, no wasted allocation).
+     */
+    private fun keepChunk(chunks: MutableList<IoBuf>, out: IoBuf): IoBuf {
+        if (out.readableBytes == 0) return out
+        chunks.add(out)
+        return allocator.allocate(OUTPUT_CHUNK)
+    }
+
+    /**
+     * Drives [decoder] over [input] into a growable primitive `ByteArray`
+     * sink. Inbound messages reach the application as `ByteArray`
+     * (`onMessage`), so — unlike the encoder — chunking has no gather-write
+     * payoff; the sink just avoids the per-byte boxing the old
+     * `ArrayList<Byte>` accumulation incurred. The per-frame `flush` (NOT
+     * `finish`) drains this frame's plaintext and leaves the stream open.
      */
     private fun runDecoder(input: ByteArray): ByteArray {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
         val output = allocator.allocate(OUTPUT_CHUNK)
-        val collected = ArrayList<Byte>(input.size * INFLATE_GUESS_RATIO)
+        val sink = ByteSink(input.size * INFLATE_GUESS_RATIO)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
             while (true) {
                 when (decoder.update(src, output)) {
-                    CodecStatus.NEED_OUTPUT -> drain(output, collected)
+                    CodecStatus.NEED_OUTPUT -> sink.drain(output)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            drain(output, collected)
+            sink.drain(output)
             // flush() (NOT finish): drain this frame's plaintext, leave the
             // inflate stream open. Returns NEED_INPUT when the boundary is done.
             while (decoder.flush(output) != CodecStatus.NEED_INPUT) {
-                drain(output, collected)
+                sink.drain(output)
             }
-            drain(output, collected)
+            sink.drain(output)
         } finally {
             src.release()
             output.release()
         }
-        return collected.toByteArray()
+        return sink.toByteArray()
     }
 
-    /** Copies all readable bytes out of [output] into [dest] and clears it. */
-    private fun drain(output: IoBuf, dest: ArrayList<Byte>) {
-        val n = output.readableBytes
-        if (n == 0) return
-        val tmp = ByteArray(n)
-        output.readByteArray(tmp, 0, n)
-        for (b in tmp) dest.add(b)
-        output.clear()
-    }
+    /**
+     * Growable primitive-`ByteArray` sink. Reads each codec output chunk
+     * straight from the [IoBuf] into the backing array (no intermediate copy,
+     * no boxing) and doubles capacity on overflow for amortized O(n) growth.
+     */
+    private class ByteSink(initialCapacity: Int) {
+        private var buf = ByteArray(initialCapacity.coerceAtLeast(1))
+        private var len = 0
 
-    private fun ArrayList<Byte>.toByteArray(): ByteArray = ByteArray(size) { this[it] }
+        fun drain(output: IoBuf) {
+            val n = output.readableBytes
+            if (n == 0) return
+            if (len + n > buf.size) buf = buf.copyOf((len + n).coerceAtLeast(buf.size * 2))
+            output.readByteArray(buf, len, n)
+            len += n
+            output.clear()
+        }
+
+        fun toByteArray(): ByteArray = buf.copyOf(len)
+    }
 
     /**
      * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from a
