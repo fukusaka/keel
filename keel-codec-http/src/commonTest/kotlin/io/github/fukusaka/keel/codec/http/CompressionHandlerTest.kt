@@ -76,6 +76,48 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `an aggregated compressed response is emitted as a chunked stream`() {
+        // A compressed aggregated HttpResponse is converted to the streaming
+        // chunked path (matches nginx / Netty / Ktor dynamic compression):
+        // a HttpResponseHead with Content-Encoding + Transfer-Encoding: chunked
+        // (Content-Length dropped, since the compressed size is no longer
+        // materialised), then HttpBody chunks, then HttpBodyEnd — no aggregated
+        // HttpResponse is emitted, and the chunks decode to the body.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(HttpMethod.GET, "/x", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }),
+        )
+
+        val body = "hello aggregated world".encodeToByteArray()
+        handler.onWrite(
+            ctx,
+            HttpResponse(
+                status = HttpStatus(200),
+                headers = HttpHeaders().apply {
+                    add("Content-Length", body.size.toString())
+                    add("Content-Type", "text/plain")
+                },
+                body = body,
+            ),
+        )
+
+        val head = state.writes.filterIsInstance<HttpResponseHead>().single()
+        assertEquals("upper", head.headers.getString("Content-Encoding"))
+        assertNull(head.headers.getString("Content-Length"), "Content-Length is dropped for the chunked stream")
+        assertEquals("chunked", head.headers.getString("Transfer-Encoding"))
+        assertTrue(state.writes.none { it is HttpResponse }, "must not emit an aggregated HttpResponse")
+
+        val bodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
+        val encoded = bodies.joinToString("") { ioBufAsString(it.content) }
+        assertEquals(body.decodeToString().uppercase(), encoded)
+        assertNotNull(state.writes.lastOrNull() as? HttpBodyEnd)
+    }
+
+    @Test
     fun `streaming response sets Transfer-Encoding chunked when Content-Length stripped`() {
         // Regression test for the Native ktor-keel-* compression wiring bug:
         // when the streaming HttpResponseHead path strips Content-Length,
