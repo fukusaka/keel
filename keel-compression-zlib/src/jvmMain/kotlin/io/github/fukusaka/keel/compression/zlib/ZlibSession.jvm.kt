@@ -469,8 +469,16 @@ private class JvmZlibDecoderSession(
             }
         }
         options.maxRatio?.let { ratio ->
-            if (totalInput > 0 && newTotal > totalInput * ratio) {
-                throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+            if (totalInput > 0) {
+                // `totalInput * ratio` (Long * Int) overflows Long once
+                // totalInput crosses Long.MAX_VALUE / ratio (~9.2e18 / ratio).
+                // The overflow wraps to a negative value, making `newTotal >
+                // totalInput * ratio` falsely false and silently bypassing the
+                // ratio cap. Detect would-overflow as "ratio definitely
+                // exceeded" before computing the product.
+                if (totalInput > Long.MAX_VALUE / ratio || newTotal > totalInput * ratio) {
+                    throw DecompressionLimitException("max-ratio exceeded: $newTotal > $totalInput * $ratio")
+                }
             }
         }
     }
