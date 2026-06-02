@@ -162,6 +162,24 @@ class WsPermessageDeflateTest {
         }
     }
 
+    @Test
+    fun `a large payload spanning multiple codec output chunks round-trips`() {
+        // The encoder drains its output into a fresh pooled chunk per step and
+        // the decoder grows its byte sink; a payload several chunks long
+        // exercises both the multi-chunk accumulation and the sink's capacity
+        // doubling. Pseudo-random bytes barely compress, so the deflated stream
+        // also spans multiple chunks (it also guards against the flush-framed
+        // truncation fixed in #666 — a message compressing past one buffer).
+        val engine = engine(WsDeflateOptions(threshold = 0))
+        try {
+            val payload = ByteArray(64 * 1024).also { kotlin.random.Random(seed = 42).nextBytes(it) }
+            val result = engine.compress(payload)
+            assertContentEquals(payload, engine.decompress(result.bytes))
+        } finally {
+            engine.close()
+        }
+    }
+
     // --- negotiation ---
 
     @Test
