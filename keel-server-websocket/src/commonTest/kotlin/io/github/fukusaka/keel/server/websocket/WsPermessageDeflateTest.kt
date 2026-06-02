@@ -42,7 +42,7 @@ class WsPermessageDeflateTest {
         fun compressedSize(strategy: Strategy): Int {
             val engine = engine(WsDeflateOptions(threshold = 0, strategy = strategy))
             try {
-                return engine.compress(payload).bytes.size
+                return wireBytes(engine.compress(payload)).size
             } finally {
                 engine.close()
             }
@@ -59,8 +59,9 @@ class WsPermessageDeflateTest {
             val payload = "permessage-deflate ".repeat(64).encodeToByteArray()
             val result = engine.compress(payload)
             assertTrue(result.compressed, "a large compressible payload must be compressed")
-            assertTrue(result.bytes.size < payload.size, "compressed output should be smaller")
-            assertContentEquals(payload, engine.decompress(result.bytes))
+            val bytes = wireBytes(result)
+            assertTrue(bytes.size < payload.size, "compressed output should be smaller")
+            assertContentEquals(payload, engine.decompress(bytes))
         } finally {
             engine.close()
         }
@@ -73,7 +74,7 @@ class WsPermessageDeflateTest {
             val payload = ByteArray(1023) { 'x'.code.toByte() }
             val result = engine.compress(payload)
             assertFalse(result.compressed, "below-threshold payload must not be compressed")
-            assertContentEquals(payload, result.bytes)
+            assertContentEquals(payload, wireBytes(result))
         } finally {
             engine.close()
         }
@@ -86,7 +87,7 @@ class WsPermessageDeflateTest {
             val payload = ByteArray(1024) { 'x'.code.toByte() }
             val result = engine.compress(payload)
             assertTrue(result.compressed, "at-threshold payload must be compressed")
-            assertContentEquals(payload, engine.decompress(result.bytes))
+            assertContentEquals(payload, engine.decompress(wireBytes(result)))
         } finally {
             engine.close()
         }
@@ -97,15 +98,15 @@ class WsPermessageDeflateTest {
         val engine = engine(WsDeflateOptions(threshold = 0))
         try {
             val payload = "hello world".encodeToByteArray()
-            val result = engine.compress(payload)
+            val bytes = wireBytes(engine.compress(payload))
             // RFC 7692 §7.2.1: the sync tail must not be on the wire.
-            val tail = result.bytes.takeLast(4)
+            val tail = bytes.takeLast(4)
             assertFalse(
                 tail == listOf<Byte>(0x00, 0x00, 0xFF.toByte(), 0xFF.toByte()),
                 "the 00 00 FF FF sync tail must be stripped",
             )
             // Decompress re-appends the tail and recovers the payload.
-            assertContentEquals(payload, engine.decompress(result.bytes))
+            assertContentEquals(payload, engine.decompress(bytes))
         } finally {
             engine.close()
         }
@@ -117,8 +118,8 @@ class WsPermessageDeflateTest {
         try {
             for (i in 0 until 5) {
                 val payload = "message number $i ".repeat(8).encodeToByteArray()
-                val result = engine.compress(payload)
-                assertContentEquals(payload, engine.decompress(result.bytes))
+                val bytes = wireBytes(engine.compress(payload))
+                assertContentEquals(payload, engine.decompress(bytes))
             }
         } finally {
             engine.close()
@@ -142,8 +143,8 @@ class WsPermessageDeflateTest {
         try {
             for (i in 0 until 5) {
                 val payload = "context takeover message $i ".repeat(8).encodeToByteArray()
-                val compressed = encoder.compress(payload)
-                assertContentEquals(payload, decoder.decompress(compressed.bytes))
+                val bytes = wireBytes(encoder.compress(payload))
+                assertContentEquals(payload, decoder.decompress(bytes))
             }
         } finally {
             encoder.close()
@@ -155,8 +156,8 @@ class WsPermessageDeflateTest {
     fun `an empty payload round-trips`() {
         val engine = engine(WsDeflateOptions(threshold = 0))
         try {
-            val result = engine.compress(ByteArray(0))
-            assertContentEquals(ByteArray(0), engine.decompress(result.bytes))
+            val bytes = wireBytes(engine.compress(ByteArray(0)))
+            assertContentEquals(ByteArray(0), engine.decompress(bytes))
         } finally {
             engine.close()
         }
@@ -173,8 +174,8 @@ class WsPermessageDeflateTest {
         val engine = engine(WsDeflateOptions(threshold = 0))
         try {
             val payload = ByteArray(64 * 1024).also { kotlin.random.Random(seed = 42).nextBytes(it) }
-            val result = engine.compress(payload)
-            assertContentEquals(payload, engine.decompress(result.bytes))
+            val bytes = wireBytes(engine.compress(payload))
+            assertContentEquals(payload, engine.decompress(bytes))
         } finally {
             engine.close()
         }

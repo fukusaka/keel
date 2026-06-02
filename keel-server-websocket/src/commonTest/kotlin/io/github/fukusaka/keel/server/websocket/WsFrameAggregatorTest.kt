@@ -202,7 +202,7 @@ class WsFrameAggregatorTest {
             assertTrue(compressed.compressed)
             val aggregator = WsFrameAggregator(WsMessageInflater { engine.decompress(it) })
             val result = aggregator.feed(
-                WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.TEXT, payload = compressed.bytes),
+                WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.TEXT, payload = wireBytes(compressed)),
             )
             val completed = assertIs<WsAggregateResult.Completed>(result)
             assertEquals(WsMessage.Text(original), completed.message)
@@ -216,7 +216,7 @@ class WsFrameAggregatorTest {
         val engine = deflateEngine()
         try {
             val original = ByteArray(2048) { (it and 0x3F).toByte() }
-            val compressed = engine.compress(original).bytes
+            val compressed = wireBytes(engine.compress(original))
             // Split the compressed bytes across an opening frame (rsv1=1)
             // and a CONTINUATION frame (rsv1=0, fin=1).
             val mid = compressed.size / 2

@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.codec.websocket
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
@@ -68,6 +70,46 @@ class WsFrameEncoderTest {
 
         assertEquals(1, transport.written.size)
         assertContentEquals(expectedWireBytes(frame), transport.written[0].readBytesToArray())
+    }
+
+    @Test
+    fun `a frame with payloadChunks gather-writes the same bytes as a single-payload frame`() {
+        // permessage-deflate output rides on payloadChunks: the encoder writes
+        // the header into one IoBuf and propagates each pooled chunk as-is. The
+        // header + chunks, concatenated, must equal the wire bytes of an
+        // equivalent single-`payload` frame (length from totalSize, no copy).
+        val pipeline = createPipeline()
+        val payload = ByteArray(200) { (it * 7 + 3).toByte() }
+        val frame = WsFrame(
+            fin = true,
+            rsv1 = true,
+            opcode = WsOpcode.BINARY,
+            payloadChunks = chunksOf(payload, parts = 3),
+        )
+        pipeline.requestWrite(frame)
+
+        // Header write plus one write per chunk (the transport gathers them).
+        assertTrue(transport.written.size >= 2, "expected a header write plus chunk writes")
+        val actual = transport.written.fold(ByteArray(0)) { acc, buf -> acc + buf.readBytesToArray() }
+        val expected = expectedWireBytes(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.BINARY, payload = payload),
+        )
+        assertContentEquals(expected, actual)
+    }
+
+    /** Splits [payload] into [parts] pooled IoBuf chunks for the gather-write path. */
+    private fun chunksOf(payload: ByteArray, parts: Int): IoBufChunks {
+        val list = ArrayList<IoBuf>(parts)
+        val step = (payload.size + parts - 1) / parts
+        var offset = 0
+        while (offset < payload.size) {
+            val n = minOf(step, payload.size - offset)
+            val buf = DefaultAllocator.allocate(n)
+            buf.writeByteArray(payload, offset, n)
+            list.add(buf)
+            offset += n
+        }
+        return IoBufChunks(list)
     }
 
     @Test

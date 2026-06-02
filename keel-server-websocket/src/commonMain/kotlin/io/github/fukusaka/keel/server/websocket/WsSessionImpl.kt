@@ -176,8 +176,14 @@ internal class WsSessionImpl(
         if (closed) return
         val engine = deflate
         val frame = if (engine != null) {
-            val result = engine.compress(payload)
-            WsFrame(fin = true, rsv1 = result.compressed, opcode = opcode, payload = result.bytes)
+            when (val result = engine.compress(payload)) {
+                // The frame takes ownership of the compressed chunks; the
+                // encoder gather-writes them and releases each after the send.
+                is WsPermessageDeflate.CompressResult.Compressed ->
+                    WsFrame(fin = true, rsv1 = true, opcode = opcode, payloadChunks = result.chunks)
+                is WsPermessageDeflate.CompressResult.Uncompressed ->
+                    WsFrame(fin = true, opcode = opcode, payload = result.payload)
+            }
         } else {
             WsFrame(fin = true, opcode = opcode, payload = payload)
         }
