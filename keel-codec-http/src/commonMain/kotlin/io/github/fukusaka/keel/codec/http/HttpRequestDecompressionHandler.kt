@@ -282,6 +282,14 @@ public class HttpRequestDecompressionHandler(
     // ---- Streaming ----
 
     private fun handleRequestHead(ctx: PipelineHandlerContext, head: HttpRequestHead) {
+        // Discard any state left over from a previous request that aborted
+        // mid-body. Without this, the prior session would leak and — more
+        // importantly — the scratch buffer could still hold un-emitted
+        // decoded bytes from the aborted request, which the next
+        // `emitDecodedChunk` would silently prepend to this new request's
+        // first decoded chunk (symmetric to the CompressionHandler
+        // cross-response bleed fix).
+        discardPendingRequestState()
         val encoding = head.headers.getString(HttpHeaderName.CONTENT_ENCODING)?.lowercase()
         if (encoding == null || encoding == ENCODING_IDENTITY) {
             ctx.propagateRead(head)
@@ -293,20 +301,32 @@ public class HttpRequestDecompressionHandler(
             return
         }
         // Open a fresh session for this request.
-        activeSession?.close()
         activeSession = decoder.newSession(allocator, DecoderOptions())
         bytesIn = 0
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
         ensureScratch()
         // Stash the original headers (which retain the recv buffer) and release
-        // them at HttpBodyEnd — see [pendingRequestHeaders]. A previous stash
-        // that never reached HttpBodyEnd (malformed / aborted request) is
-        // released defensively here.
-        pendingRequestHeaders?.release()
+        // them at HttpBodyEnd — see [pendingRequestHeaders].
         val rewritten = stripDecodedHeaders(head.headers)
         pendingRequestHeaders = head.headers
         ctx.propagateRead(head.copy(headers = rewritten))
+    }
+
+    /**
+     * Releases the active decoder session, clears the scratch (so leftover
+     * decoded bytes from an aborted body never bleed into the next request),
+     * and releases the stashed request headers. Called at the start of every
+     * new streaming request and in the catch path of [handleBody] /
+     * [handleBodyEnd] so a mid-stream failure cannot leave half-decoded
+     * state behind for the next request to inherit.
+     */
+    private fun discardPendingRequestState() {
+        activeSession?.close()
+        activeSession = null
+        scratch?.clear()
+        pendingRequestHeaders?.release()
+        pendingRequestHeaders = null
     }
 
     /**
@@ -350,6 +370,13 @@ public class HttpRequestDecompressionHandler(
                 }
             }
             if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
+        } catch (t: Throwable) {
+            // Decoder / limit / downstream failure mid-body: drop the session
+            // and any partially-decoded scratch state so the next request
+            // does not inherit a broken decoder or leftover bytes. The src
+            // release happens in finally so we run it on the abort path too.
+            discardPendingRequestState()
+            throw t
         } finally {
             src.release()
         }
@@ -363,56 +390,77 @@ public class HttpRequestDecompressionHandler(
         }
         val out = scratch!!
 
-        // Drain any trailing input from the terminal HttpBody first.
-        if (end.content.readableBytes > 0) {
-            try {
-                bytesIn += end.content.readableBytes
-                while (true) {
-                    when (session.update(end.content, out)) {
-                        CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
-                        CodecStatus.NEED_INPUT -> break
-                        CodecStatus.FINISHED -> error("update should not return FINISHED")
+        try {
+            // Drain any trailing input from the terminal HttpBody first.
+            if (end.content.readableBytes > 0) {
+                try {
+                    bytesIn += end.content.readableBytes
+                    while (true) {
+                        when (session.update(end.content, out)) {
+                            CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
+                            CodecStatus.NEED_INPUT -> break
+                            CodecStatus.FINISHED -> error("update should not return FINISHED")
+                        }
                     }
+                    if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
+                } finally {
+                    end.content.release()
                 }
-                if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
-            } finally {
+            } else {
                 end.content.release()
             }
-        } else {
-            end.content.release()
-        }
 
-        // Drive finish — decoders typically have nothing left to emit
-        // beyond the trailer-validated state, but be defensive.
-        var finishing = true
-        while (finishing) {
-            when (session.finish(out)) {
-                CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
-                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                    if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
-                    finishing = false
+            // Drive finish — decoders typically have nothing left to emit
+            // beyond the trailer-validated state, but be defensive.
+            var finishing = true
+            while (finishing) {
+                when (session.finish(out)) {
+                    CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
+                    CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                        if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
+                        finishing = false
+                    }
                 }
             }
-        }
 
-        session.close()
-        activeSession = null
-        // The body is fully consumed — the recv buffer the head's headers
-        // retained is no longer aliased by any pending body chunk, so release
-        // it now (see [pendingRequestHeaders]).
-        pendingRequestHeaders?.release()
-        pendingRequestHeaders = null
+            session.close()
+            activeSession = null
+            // The body is fully consumed — the recv buffer the head's headers
+            // retained is no longer aliased by any pending body chunk, so
+            // release it now (see [pendingRequestHeaders]).
+            pendingRequestHeaders?.release()
+            pendingRequestHeaders = null
+        } catch (t: Throwable) {
+            // Finish / limit / downstream failure: same hygiene as handleBody.
+            discardPendingRequestState()
+            throw t
+        }
         ctx.propagateRead(HttpBodyEnd.EMPTY)
     }
 
     private fun emitDecodedChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
         val n = scratchBuf.readableBytes
         if (n == 0) return
-        bytesOut += n
-        checkLimits()
+        // Drain the scratch into `emit` *first*, then update the counter and
+        // run checkLimits. If `checkLimits` then throws (zip-bomb defence,
+        // RatioExceeded / AbsoluteSizeExceeded), the scratch is already
+        // cleared — otherwise the un-drained bytes would survive into the
+        // next request and bleed into its first decoded chunk.
         val emit = allocator.allocate(n)
-        scratchBuf.copyTo(emit, n)
+        try {
+            scratchBuf.copyTo(emit, n)
+        } catch (t: Throwable) {
+            emit.release()
+            throw t
+        }
         scratchBuf.clear()
+        bytesOut += n
+        try {
+            checkLimits()
+        } catch (t: Throwable) {
+            emit.release()
+            throw t
+        }
         ctx.propagateRead(HttpBody(emit))
     }
 
