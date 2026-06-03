@@ -156,7 +156,7 @@ public class CompressionHandler(
         discardPendingResponse()
         val accept = if (acceptQueue.isNotEmpty()) acceptQueue.removeFirst() else null
 
-        if (isNoBodyStatus(response.status.code) || response.body == null || response.body.isEmpty()) {
+        if (isCompressionExempt(response.status.code) || response.body == null || response.body.isEmpty()) {
             ctx.propagateWrite(response)
             return
         }
@@ -214,7 +214,7 @@ public class CompressionHandler(
         discardPendingResponse()
         val accept = if (acceptQueue.isNotEmpty()) acceptQueue.removeFirst() else null
 
-        if (isNoBodyStatus(head.status.code) || !condition.shouldCompress(head)) {
+        if (isCompressionExempt(head.status.code) || !condition.shouldCompress(head)) {
             ctx.propagateWrite(head)
             return
         }
@@ -426,5 +426,24 @@ public class CompressionCondition(
     }
 }
 
-private fun isNoBodyStatus(code: Int): Boolean =
-    code in 100..199 || code == 204 || code == 304
+/**
+ * Status codes the compression layer never re-encodes.
+ *
+ * - **1xx, 204, 304** carry no body; compressing nothing is at best wasteful
+ *   and risks emitting a non-zero gzip / deflate envelope on a status the
+ *   protocol assumes is body-less (RFC 9110 §15.4 1xx informational, §15.3.5
+ *   204 No Content, §15.4.5 304 Not Modified — the latter only re-validates
+ *   a cached representation and must carry whatever Content-Encoding the
+ *   origin used, not a fresh one).
+ * - **206 Partial Content**: a 206 body is a byte range of the *unencoded*
+ *   representation that the `Content-Range` header points at. Compressing it
+ *   would silently invalidate Content-Range (the client requested bytes
+ *   X..Y of the entity and now receives a deflated payload that no longer
+ *   maps to that range), and there is no in-band way to signal "this 206
+ *   was re-encoded after the Range was computed". This is exactly why nginx
+ *   (`gzip_proxied` default), Apache mod_deflate, and major CDNs skip
+ *   compression on 206 (RFC 9110 §15.3.7 Content-Range + §8.4 Content-Coding
+ *   interaction). keel follows the same convention.
+ */
+private fun isCompressionExempt(code: Int): Boolean =
+    code in 100..199 || code == 204 || code == 206 || code == 304

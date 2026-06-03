@@ -104,6 +104,13 @@ public suspend fun runWebSocketUpgrade(
             options = extension.effectiveOptions,
             serverMaxWindowBits = extension.serverMaxWindowBits,
             clientMaxWindowBits = extension.clientMaxWindowBits,
+            // RFC 7692 negotiates the two takeover directions independently;
+            // fall back to effectiveOptions.contextTakeover would mistakenly
+            // bind the decoder to the server-side decision, breaking
+            // asymmetric offers (e.g. client offered `server_no_context_takeover`
+            // while keeping its own client-side takeover on).
+            serverContextTakeover = extension.effectiveServerContextTakeover,
+            clientContextTakeover = extension.effectiveClientContextTakeover,
         )
     }
     val compressionActive = deflateEngine != null

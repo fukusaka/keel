@@ -126,6 +126,7 @@ private class JvmZlibEncoderSession(
 
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
         // Emit a Z_SYNC_FLUSH boundary (raw DEFLATE ends in 00 00 FF FF) and
         // keep the stream open. A gzip stream still needs its header before
         // the first bytes, even when flushed before any update().
@@ -340,6 +341,7 @@ private class JvmZlibDecoderSession(
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before update()" }
 
         // Step 1: chunk-aware gzip header parse.
         gzipHeaderParser?.let { parser ->
@@ -375,6 +377,7 @@ private class JvmZlibDecoderSession(
 
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
         // Drain the plaintext decoded so far (one Z_SYNC_FLUSH'd block / WS
         // frame), leaving the inflate stream open — no trailer validation.
         return drainDecode(input = null, output = output)

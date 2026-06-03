@@ -63,6 +63,18 @@ internal class WsPermessageDeflate(
     private val options: WsDeflateOptions,
     serverMaxWindowBits: Int?,
     clientMaxWindowBits: Int?,
+    // RFC 7692 negotiates the server-side and client-side context takeover
+    // independently. The server's encoder follows the
+    // `server_no_context_takeover` decision, while the server's decoder
+    // follows `client_no_context_takeover` (because the inbound bytes are
+    // produced by the client encoder and must be inflated with the same
+    // window policy the client used). Pre-this-split the two derived from
+    // the same `options.contextTakeover` flag, which broke any asymmetric
+    // offer with `Z_DATA_ERROR` once the back-reference window was
+    // surprise-reset. Defaults to `options.contextTakeover` for the
+    // backwards-compatible symmetric case.
+    serverContextTakeover: Boolean = options.contextTakeover,
+    clientContextTakeover: Boolean = options.contextTakeover,
 ) : AutoCloseable {
 
     private val allocator: BufferAllocator = defaultAllocator()
@@ -76,7 +88,7 @@ internal class WsPermessageDeflate(
             // boundary is emitted explicitly via flush(), so the stream stays
             // open (no finish() abuse, and context takeover stays expressible).
             flushMode = FlushMode.NoFlush,
-            contextTakeover = options.contextTakeover,
+            contextTakeover = serverContextTakeover,
             tuning = DeflateTuning(windowBits = serverMaxWindowBits, strategy = options.strategy),
         ),
     )
@@ -85,7 +97,7 @@ internal class WsPermessageDeflate(
         allocator,
         DecoderOptions(
             wrapFormat = WrapFormat.Raw,
-            contextTakeover = options.contextTakeover,
+            contextTakeover = clientContextTakeover,
             tuning = clientMaxWindowBits?.let { DeflateTuning(windowBits = it) },
             // Cap decoded output one byte past the message limit: that
             // lets the aggregator observe a `cap + 1` payload and report

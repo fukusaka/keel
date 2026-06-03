@@ -265,6 +265,7 @@ private class JsZlibDecoderSession(
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before update()" }
         val n = input.readableBytes
         if (n > 0) {
             pendingInput.appendFrom(input, n)
@@ -275,6 +276,7 @@ private class JsZlibDecoderSession(
 
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
         // Single-flush only (same deferred-backend limitation as the encoder
         // flush() above): one update + one flush per WS frame, no context
         // takeover. Input accumulation is amortized O(n) via [ByteAccumulator].
