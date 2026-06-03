@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.compression.Encoder
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -471,6 +472,70 @@ class CompressionHandlerTest {
             // for the assertion (which only checks that wrapBytes was called).
             return DefaultAllocator.allocate(length).apply { writeByteArray(bytes, offset, length) }
         }
+    }
+
+    // ---- status-code exemptions (RFC 9110 §15) ----
+
+    @Test
+    fun `compression is skipped on 206 Partial Content responses`() {
+        // Compressing a 206 body invalidates Content-Range: the header points
+        // at a byte range of the *unencoded* representation, so post-encode
+        // the body is no longer the bytes the client asked for. nginx,
+        // Apache mod_deflate, and major CDNs all skip 206 for this reason.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+        handler.onRead(ctx, reqUpper("/range"))
+
+        val head = HttpResponseHead(
+            status = HttpStatus(206),
+            headers = HttpHeaders().apply {
+                add("Content-Length", "5")
+                add("Content-Range", "bytes 0-4/100")
+                add("Content-Type", "text/plain")
+            },
+        )
+        handler.onWrite(ctx, head)
+        handler.onWrite(ctx, HttpBody(bufOf("hello")))
+        handler.onWrite(ctx, HttpBodyEnd.EMPTY)
+
+        val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
+        assertNull(emittedHead.headers.getString("Content-Encoding"), "206 must not be re-encoded")
+        assertEquals("bytes 0-4/100", emittedHead.headers.getString("Content-Range"))
+        assertEquals("5", emittedHead.headers.getString("Content-Length"))
+
+        // Body is passed through verbatim (no codec involvement).
+        val emittedBodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
+        assertEquals("hello", emittedBodies.joinToString("") { ioBufAsString(it.content) })
+    }
+
+    @Test
+    fun `compression is skipped on aggregated 206 Partial Content responses`() {
+        // Same skip applies on the aggregated branch (handleAggregatedResponse).
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+        handler.onRead(ctx, reqUpper("/range"))
+
+        val response = HttpResponse(
+            status = HttpStatus(206),
+            version = HttpVersion.HTTP_1_1,
+            headers = HttpHeaders().apply {
+                add("Content-Length", "5")
+                add("Content-Range", "bytes 0-4/100")
+                add("Content-Type", "text/plain")
+            },
+            body = "hello".encodeToByteArray(),
+        )
+        handler.onWrite(ctx, response)
+
+        // 206 should remain as a single aggregated HttpResponse — no
+        // chunked conversion, no Content-Encoding.
+        val emitted = state.writes.single() as HttpResponse
+        assertEquals(206, emitted.status.code)
+        assertNull(emitted.headers.getString("Content-Encoding"), "206 must not be re-encoded")
+        assertEquals("bytes 0-4/100", emitted.headers.getString("Content-Range"))
+        assertContentEquals("hello".encodeToByteArray(), emitted.body)
     }
 
     // ---- helpers ----
