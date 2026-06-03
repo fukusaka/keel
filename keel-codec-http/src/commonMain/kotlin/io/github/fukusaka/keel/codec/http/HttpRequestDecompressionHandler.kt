@@ -201,7 +201,16 @@ public class HttpRequestDecompressionHandler(
 
     private fun decodeAggregated(decoder: Decoder, src: ByteArray): ByteArray {
         val session = decoder.newSession(allocator, DecoderOptions())
-        val input = allocator.allocate(src.size)
+        // Feed the decoder a zero-copy view of `src` when the allocator
+        // supports it (NIO heap-ByteBuffer / Native pinned-pointer); the
+        // codec consumes the view synchronously inside this function — the
+        // caller's `src` is never read after `decodeAggregated` returns —
+        // so the view is safe even though `src` is caller-owned. Allocators
+        // without zero-copy wrap (DefaultAllocator / Netty) return null and
+        // we fall back to the owned-copy path. Symmetric to the outbound
+        // `CompressionHandler` wrapBytes view (#670).
+        val input = allocator.wrapBytes(src, 0, src.size)
+            ?: allocator.allocate(src.size).apply { writeByteArray(src, 0, src.size) }
         ensureScratch()
         val out = scratch!!
         bytesIn = 0
@@ -210,7 +219,6 @@ public class HttpRequestDecompressionHandler(
         var result = ByteArray((src.size * INITIAL_DECODE_RATIO_GUESS).coerceAtLeast(MIN_AGGREGATED_BUF))
         var resultLen = 0
         try {
-            input.writeByteArray(src, 0, src.size)
             bytesIn = src.size.toLong()
             // Drain update loop.
             while (true) {
