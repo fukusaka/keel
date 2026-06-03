@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.compression.CodecStatus
@@ -768,6 +769,124 @@ class HttpRequestDecompressionHandlerTest {
                 output.writeByteArray(pending, 0, take)
                 pending = pending.copyOfRange(take, pending.size)
                 return if (pending.isEmpty()) CodecStatus.NEED_INPUT else CodecStatus.NEED_OUTPUT
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ deep-review regressions
+
+    @Test
+    fun `a mid-stream limit failure does not bleed leftover decoded bytes into the next request`() {
+        // Symmetric to the `CompressionHandler` cross-response bleed fix
+        // (#665) on the inbound side. A 200× expansion blows the ratio cap
+        // mid-body and throws; without the fix the partially-decoded scratch
+        // would survive into the next request and prefix the first emit.
+        val registry = CompressionRegistry().apply {
+            registerDecoder(LowerDecoder)
+            registerDecoder(MultiplyDecoder(factor = 200))
+        }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = Long.MAX_VALUE,
+            ratioLimit = 100,
+            ratioBurst = 0,
+        )
+        val ctx = TestCtx(state)
+
+        // Request A: x200 decoder + ratio cap 100 → first chunk trips.
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/a",
+                headers = HttpHeaders().apply { add("Content-Encoding", "x200") },
+            ),
+        )
+        assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, HttpBody(bufOf("A")))
+        }
+
+        // Request B: lower-cases the body. Without the fix the scratch
+        // would still hold "AAA…" from request A and the first emit on
+        // request B would be that 200-byte prefix followed by "hello".
+        state.reads.clear()
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/b",
+                headers = HttpHeaders().apply { add("Content-Encoding", "lower") },
+            ),
+        )
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        val decoded = state.reads.filterIsInstance<HttpBody>()
+            .filter { it !is HttpBodyEnd }
+            .joinToString("") { ioBufAsString(it.content) }
+        assertEquals("hello", decoded, "request B must not carry request A's leftover scratch bytes")
+    }
+
+    @Test
+    fun `a mid-stream limit failure does not leak the decoder session into the next request`() {
+        // Same scenario as above, but observed via the decoder factory's
+        // open-session counter so we can pin the session-lifecycle fix
+        // separately from the scratch-bleed fix.
+        val multiply = CountingMultiplyDecoder(factor = 200)
+        val registry = CompressionRegistry().apply {
+            registerDecoder(LowerDecoder)
+            registerDecoder(multiply)
+        }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = Long.MAX_VALUE,
+            ratioLimit = 100,
+            ratioBurst = 0,
+        )
+        val ctx = TestCtx(state)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/a",
+                headers = HttpHeaders().apply { add("Content-Encoding", "x200") },
+            ),
+        )
+        assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, HttpBody(bufOf("A")))
+        }
+        // Request B: completes normally.
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/b",
+                headers = HttpHeaders().apply { add("Content-Encoding", "lower") },
+            ),
+        )
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        assertEquals(0, multiply.openSessions, "request A's aborted decoder session must be closed, not leaked")
+    }
+
+    /**
+     * Counts open sessions for the multiplier decoder so a leak across
+     * requests is observable.
+     */
+    private class CountingMultiplyDecoder(private val factor: Int) : Decoder {
+        var openSessions: Int = 0
+            private set
+
+        override val name: String = "x$factor"
+
+        override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession {
+            openSessions++
+            val delegate = MultiplyDecoder(factor).newSession(allocator, options)
+            return object : DecoderSession by delegate {
+                override fun close() {
+                    delegate.close()
+                    openSessions--
+                }
             }
         }
     }
