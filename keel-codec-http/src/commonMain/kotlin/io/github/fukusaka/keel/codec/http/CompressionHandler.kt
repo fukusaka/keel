@@ -38,6 +38,14 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *    materialised) — the same trade-off nginx / Netty / Ktor make for
  *    on-the-fly compression.
  *
+ * **`identity;q=0` handling.** RFC 9110 §12.5.3 lets a client explicitly
+ * forbid identity (uncompressed) responses, in which case a server with no
+ * acceptable encoding should return `406 Not Acceptable`. keel's handler
+ * resolves `identity;q=0` plus no registered encoder accepted to the same
+ * outcome as "no encoder picked" — the response is forwarded uncompressed
+ * (identity) rather than rewritten as 406. Applications that need strict
+ * RFC compliance should layer their own 406 check upstream of this handler.
+ *
  * **Per-channel scratch buffer**: a single output [IoBuf] of
  * [SCRATCH_CAPACITY] bytes is allocated once per channel attach and
  * reused across every emit. When the buffer fills, the handler copies
@@ -355,11 +363,16 @@ public class CompressionHandler(
         return HttpHeaders().apply {
             for (i in 0 until src.size) {
                 val name = src.nameAt(i)
-                val value = src.valueAt(i)
                 if (name.equals(HttpHeaderName.CONTENT_LENGTH, ignoreCase = true)) continue
                 if (name.equals(HttpHeaderName.CONTENT_ENCODING, ignoreCase = true)) continue
                 if (name.equals(HttpHeaderName.TRANSFER_ENCODING, ignoreCase = true)) continue
-                add(name, value)
+                // Skip every Vary entry; we rebuild it once below from the
+                // combined view so a response carrying multiple Vary lines
+                // (`Vary: User-Agent` + `Vary: Cookie`) doesn't lose any
+                // existing value to the subsequent `this["Vary"] = …` set —
+                // that `set` clears every Vary and re-adds a single line.
+                if (name.equals("Vary", ignoreCase = true)) continue
+                add(name, src.valueAt(i))
             }
             this[HttpHeaderName.CONTENT_ENCODING] = encoding
             if (fixedLength != null) {
@@ -367,7 +380,10 @@ public class CompressionHandler(
             } else {
                 this[HttpHeaderName.TRANSFER_ENCODING] = "chunked"
             }
-            val existingVary = src.getString("Vary")
+            // Combine every Vary value the caller supplied so multi-line
+            // `Vary` (RFC 9110 §12.5.5) survives the rewrite. `getCombined`
+            // joins repeated header lines with `, ` per HTTP field rules.
+            val existingVary = src.getCombined("Vary")
             this["Vary"] = if (existingVary.isNullOrBlank()) {
                 "Accept-Encoding"
             } else if (existingVary.contains("accept-encoding", ignoreCase = true)) {
