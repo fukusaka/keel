@@ -276,6 +276,26 @@ class WsFrameAggregatorTest {
     }
 
     @Test
+    fun `a decompression cap firing is message too big 1009 not protocol error 1002`() {
+        // An inflater that throws DecompressionLimitException — what the
+        // real `WsPermessageDeflate` decoder does when its `maxOutputSize`
+        // cap fires (zip-bomb scenario). RFC 6455 §7.4.1 assigns 1009
+        // (MESSAGE_TOO_BIG) to this case; the prior `runCatching.getOrNull`
+        // collapsed every codec throw to 1002 (PROTOCOL_ERROR) and
+        // misled the peer about whether the size constraint or the framing
+        // failed.
+        val limitInflater = WsMessageInflater {
+            throw io.github.fukusaka.keel.compression.DecompressionLimitException("test cap")
+        }
+        val aggregator = WsFrameAggregator(limitInflater)
+        val result = aggregator.feed(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.BINARY, payload = byteArrayOf(0x42)),
+        )
+        val error = assertIs<WsAggregateResult.ProtocolError>(result)
+        assertEquals(WsFrameAggregator.MESSAGE_TOO_BIG_CODE, error.closeCode)
+    }
+
+    @Test
     fun `a decompression failure is a protocol error 1002`() {
         val engine = deflateEngine()
         try {

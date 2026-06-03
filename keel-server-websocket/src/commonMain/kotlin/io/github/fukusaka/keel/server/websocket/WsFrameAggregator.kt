@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
+import io.github.fukusaka.keel.compression.DecompressionLimitException
 
 /**
  * Upper bound on a reassembled WebSocket message, in bytes (16 MiB).
@@ -195,13 +196,30 @@ internal class WsFrameAggregator(
      */
     private fun completeMessage(opcode: WsOpcode, payload: ByteArray, compressed: Boolean): WsAggregateResult {
         val bytes = if (compressed) {
-            val inflated = inflateOrError(payload) ?: return WsAggregateResult.ProtocolError(
-                closeCode = PROTOCOL_ERROR_CODE,
-                reason = "permessage-deflate decompression failed",
-            )
-            val sizeError = checkSize(inflated.size.toLong())
-            if (sizeError != null) return sizeError
-            inflated
+            when (val r = inflate(payload)) {
+                is InflateResult.Ok -> {
+                    val sizeError = checkSize(r.bytes.size.toLong())
+                    if (sizeError != null) return sizeError
+                    r.bytes
+                }
+                // RFC 6455 §7.4.1: 1002 = protocol error (we cannot read the
+                // bytes the peer sent, framing-level confusion equivalent).
+                InflateResult.Malformed -> return WsAggregateResult.ProtocolError(
+                    closeCode = PROTOCOL_ERROR_CODE,
+                    reason = "permessage-deflate decompression failed",
+                )
+                // RFC 6455 §7.4.1: 1009 = message too big. The codec's
+                // maxOutputSize cap can fire before the aggregator's own
+                // size check on inflated.size — without the dispatch below
+                // both paths collapsed to 1002, which mislead a client
+                // about whether to retry with the same payload (no — still
+                // too big) or treat it as a transient framing error (no —
+                // semantic).
+                InflateResult.TooBig -> return WsAggregateResult.ProtocolError(
+                    closeCode = MESSAGE_TOO_BIG_CODE,
+                    reason = "permessage-deflate decompression cap exceeded",
+                )
+            }
         } else {
             payload
         }
@@ -219,15 +237,40 @@ internal class WsFrameAggregator(
     }
 
     /**
-     * Inflates [payload] via [inflater], returning null when the
-     * backend rejects the input as malformed (mapped to a `1002`
-     * protocol error by the caller). [inflater] is non-null whenever a
-     * message is flagged compressed — [feedDataStart] rejects an RSV1
-     * frame upfront when no inflater is configured.
+     * Inflates [payload] via [inflater], distinguishing the two failure
+     * modes the WS close-code spec assigns separate values to:
+     *
+     * - [DecompressionLimitException] (codec's `maxOutputSize` /
+     *   `maxRatio` cap) → [InflateResult.TooBig] → close `1009`.
+     * - Any other [Throwable] (malformed DEFLATE bytes, bad dictionary,
+     *   stray Z_DATA_ERROR, etc.) → [InflateResult.Malformed] → close
+     *   `1002`.
+     *
+     * [inflater] is non-null whenever a message is flagged compressed —
+     * [feedDataStart] rejects an RSV1 frame upfront when no inflater is
+     * configured.
      */
-    private fun inflateOrError(payload: ByteArray): ByteArray? {
-        val decompressor = inflater ?: return null
-        return runCatching { decompressor.inflate(payload) }.getOrNull()
+    @Suppress("SwallowedException")
+    private fun inflate(payload: ByteArray): InflateResult {
+        val decompressor = inflater ?: return InflateResult.Malformed
+        // We only need to map a throw to a WebSocket close code; the
+        // exception cause is not propagated to the peer over the wire.
+        // Logging / preserving the cause is the caller's responsibility
+        // (the aggregator surfaces a `ProtocolError` result with a static
+        // reason string).
+        return try {
+            InflateResult.Ok(decompressor.inflate(payload))
+        } catch (e: DecompressionLimitException) {
+            InflateResult.TooBig
+        } catch (e: Throwable) {
+            InflateResult.Malformed
+        }
+    }
+
+    private sealed interface InflateResult {
+        data class Ok(val bytes: ByteArray) : InflateResult
+        data object Malformed : InflateResult
+        data object TooBig : InflateResult
     }
 
     /**
