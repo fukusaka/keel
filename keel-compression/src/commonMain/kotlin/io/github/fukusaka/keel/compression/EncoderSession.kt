@@ -95,6 +95,13 @@ public interface EncoderSession : AutoCloseable {
      * Call [reset] to reuse for another message, or [close] to release
      * resources. For a per-message boundary that keeps the stream open,
      * use [flush] instead.
+     *
+     * **Idempotency.** Calling [finish] again after it returned
+     * [CodecStatus.FINISHED] keeps returning [CodecStatus.FINISHED] until
+     * [reset] is called — the caller does not need to remember whether the
+     * stream is already drained. [update] / [flush], by contrast, throw
+     * once [CodecStatus.FINISHED] has been seen because the stream is no
+     * longer open.
      */
     public fun finish(output: IoBuf): CodecStatus
 

@@ -411,6 +411,13 @@ private class JsZlibDecoderSession(
  * the returned view is in use by a downstream consumer; here every call site
  * hands the view straight to a synchronous Node API (`gzipSync` / `deflateRaw`
  * / etc.) that finishes consuming before returning, so the share is safe.
+ *
+ * **Compiler-representation dependency.** This relies on the Kotlin/JS IR
+ * runtime aliasing `ByteArray` with `Int8Array`. The aliasing is also used
+ * by kotlinx-io and Ktor, so it is well-trodden territory on the current
+ * Kotlin/JS backend, but a future backend (Kotlin/Wasm or a re-architected
+ * Kotlin/JS) could in principle move `ByteArray` off `Int8Array`. Revisit if
+ * the existing `jsNodeTest` round-trips start failing on a new Kotlin version.
  */
 private fun ByteArray.toUint8Array(): Uint8Array {
     val int8 = unsafeCast<Int8Array>()
@@ -424,7 +431,8 @@ private fun ByteArray.toUint8Array(): Uint8Array {
  * and `unsafeCast` it to `ByteArray` (Kotlin/JS's runtime representation
  * lets this aliasing work). The two arrays share memory until either is
  * dropped; current call sites hand the result straight into the caller's
- * `IoBuf` and discard the Uint8Array, so the aliasing is safe.
+ * `IoBuf` and discard the Uint8Array, so the aliasing is safe. See
+ * [ByteArray.toUint8Array] for the compiler-representation caveat.
  */
 private fun Uint8Array.toByteArray(): ByteArray =
     Int8Array(buffer, byteOffset, length).unsafeCast<ByteArray>()
