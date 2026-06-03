@@ -68,7 +68,12 @@ public class EncoderOptions(
  * @property maxRatio hard cap on output-to-input ratio. Complements
  *   [maxOutputSize] for streams where total input size is unknown
  *   upfront; e.g. `1000` rejects any input that has expanded by more
- *   than 1000× during decode. `null` = unchecked
+ *   than 1000× during decode. Must be > 0 if set (the limit check is
+ *   `output > input * maxRatio`, which is meaningless when
+ *   `maxRatio == 0` and dividing by it would `ArithmeticException`).
+ *   `null` = unchecked
+ * @throws IllegalArgumentException if [maxRatio] is zero or negative,
+ *   or if [maxOutputSize] is zero or negative.
  */
 public class DecoderOptions(
     public val wrapFormat: WrapFormat = WrapFormat.Default,
@@ -78,6 +83,15 @@ public class DecoderOptions(
     public val maxRatio: Int? = null,
     public val tuning: CodecTuning? = null,
 ) {
+    init {
+        require(maxRatio == null || maxRatio > 0) {
+            "DecoderOptions.maxRatio must be > 0 if set (got $maxRatio)"
+        }
+        require(maxOutputSize == null || maxOutputSize > 0) {
+            "DecoderOptions.maxOutputSize must be > 0 if set (got $maxOutputSize)"
+        }
+    }
+
     public companion object {
         public val Default: DecoderOptions = DecoderOptions()
     }
