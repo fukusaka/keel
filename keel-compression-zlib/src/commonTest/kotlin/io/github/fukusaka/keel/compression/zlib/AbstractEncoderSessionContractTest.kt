@@ -337,6 +337,28 @@ public abstract class AbstractEncoderSessionContractTest {
         }
     }
 
+    @Test
+    public fun `flush after finish throws IllegalStateException`() {
+        // Symmetric to `update after finish` (already covered in concrete tests).
+        // The EncoderSession KDoc invariant: after FINISHED, both update() and
+        // flush() must reject — the stream is no longer open.
+        val payload = "Hello, finish-then-flush".encodeToByteArray()
+        val session = newSession()
+        val output = allocator.allocate(outputCap)
+        try {
+            encodeOnce(session, payload, output)
+            // `encodeOnce` drives the session to FINISHED. flush() must now
+            // reject — the stream is closed.
+            output.clear()
+            assertFailsWith<IllegalStateException> {
+                session.flush(output)
+            }
+        } finally {
+            output.release()
+            session.close()
+        }
+    }
+
     // ---- helpers ----
 
     private fun encodeOnce(session: EncoderSession, payload: ByteArray, output: IoBuf) {

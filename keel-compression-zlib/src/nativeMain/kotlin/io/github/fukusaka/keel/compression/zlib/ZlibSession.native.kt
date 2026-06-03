@@ -352,11 +352,13 @@ private class NativeZlibDecoderSession(
 
     override fun update(input: IoBuf, output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before update()" }
         return drive(input, output)
     }
 
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
+        check(!finishedReturned) { "session finished — call reset() before flush()" }
         // Inflate emits plaintext as it decodes, so by the time a
         // Z_SYNC_FLUSH'd block has been fed via update() the output is
         // already drained; flush() drains any tail and keeps the stream

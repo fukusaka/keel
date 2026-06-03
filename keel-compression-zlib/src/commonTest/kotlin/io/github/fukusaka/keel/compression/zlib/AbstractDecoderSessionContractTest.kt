@@ -275,6 +275,75 @@ public abstract class AbstractDecoderSessionContractTest {
         }
     }
 
+    @Test
+    public fun `update after finish throws IllegalStateException`() {
+        // Symmetric to the encoder's `update after finish` invariant. After
+        // FINISHED the decoder stream is no longer open and must reject
+        // further `update` calls (caller error: forgot `reset` between
+        // messages).
+        val payload = "Hello, decoder finish-then-update".encodeToByteArray()
+        val encoded = encodeForDecode(payload)
+        val session = newSession()
+        val input = allocator.allocate(encoded.size).apply { writeByteArray(encoded, 0, encoded.size) }
+        val output = allocator.allocate(outputCap)
+        try {
+            driveToFinished(session, input, output)
+            input.clear()
+            output.clear()
+            assertFailsWith<IllegalStateException> {
+                session.update(input, output)
+            }
+        } finally {
+            output.release()
+            input.release()
+            session.close()
+        }
+    }
+
+    @Test
+    public fun `flush after finish throws IllegalStateException`() {
+        // Same invariant as `update after finish` — flush() must also reject
+        // a finished session (no Z_SYNC_FLUSH boundary exists after the
+        // stream has terminated).
+        val payload = "Hello, decoder finish-then-flush".encodeToByteArray()
+        val encoded = encodeForDecode(payload)
+        val session = newSession()
+        val input = allocator.allocate(encoded.size).apply { writeByteArray(encoded, 0, encoded.size) }
+        val output = allocator.allocate(outputCap)
+        try {
+            driveToFinished(session, input, output)
+            output.clear()
+            assertFailsWith<IllegalStateException> {
+                session.flush(output)
+            }
+        } finally {
+            output.release()
+            input.release()
+            session.close()
+        }
+    }
+
+    private fun driveToFinished(session: DecoderSession, input: IoBuf, output: IoBuf) {
+        var iters = 0
+        while (iters < 256) {
+            when (session.update(input, output)) {
+                CodecStatus.NEED_OUTPUT -> output.clear()
+                CodecStatus.NEED_INPUT -> break
+                CodecStatus.FINISHED -> fail("update must not return FINISHED")
+            }
+            iters++
+        }
+        iters = 0
+        while (iters < 256) {
+            when (session.finish(output)) {
+                CodecStatus.NEED_OUTPUT, CodecStatus.NEED_INPUT -> output.clear()
+                CodecStatus.FINISHED -> return
+            }
+            iters++
+        }
+        fail("finish did not converge in 256 iterations")
+    }
+
     // ---- helpers ----
 
     private fun runDecode(encoded: ByteArray): ByteArray = runDecodeWithChunkCount(encoded).first
