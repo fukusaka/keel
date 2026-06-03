@@ -160,10 +160,21 @@ public class CompressionHandler(
             ctx.propagateWrite(response)
             return
         }
-        val asHead = HttpResponseHead(response.status, response.version, response.headers)
-        if (!condition.shouldCompress(asHead)) {
+        // The headers-only static checks are sufficient when no custom
+        // predicate is configured (the common case), so skip allocating
+        // an `HttpResponseHead` purely for the condition lookup. When a
+        // custom predicate is set we still need a real head — materialise
+        // it lazily.
+        if (!condition.shouldCompressStatic(response.headers)) {
             ctx.propagateWrite(response)
             return
+        }
+        if (condition.hasCustomPredicate) {
+            val asHead = HttpResponseHead(response.status, response.version, response.headers)
+            if (!condition.shouldCompress(asHead)) {
+                ctx.propagateWrite(response)
+                return
+            }
         }
         val encoder = negotiateContentEncoding(registry, accept) ?: run {
             ctx.propagateWrite(response)
@@ -202,6 +213,13 @@ public class CompressionHandler(
             val body = response.body
             val src = allocator.wrapBytes(body, 0, body.size)
                 ?: allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
+            // Internal direct dispatch to the streaming handlers — safe
+            // because `CompressionHandler` is `public final`, so a
+            // subclass cannot override `handleBody` / `handleBodyEnd`
+            // and divert the aggregated branch's body emission. If this
+            // class is ever made `open`, this dispatch must be rerouted
+            // through `ctx.onWrite(...)` so a subclass's override sees
+            // both branches' chunks identically.
             handleBody(ctx, HttpBody(src))
             handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
         } catch (t: Throwable) {
@@ -410,15 +428,36 @@ public class CompressionCondition(
     ),
     private val custom: ((HttpResponseHead) -> Boolean)? = null,
 ) {
+    /**
+     * Whether a [custom] predicate is configured. Alloc-sensitive call
+     * sites (the aggregated-response path) use this to skip constructing
+     * an [HttpResponseHead] purely for the condition check when the
+     * static headers-only checks are sufficient.
+     */
+    public val hasCustomPredicate: Boolean get() = custom != null
+
     public fun shouldCompress(head: HttpResponseHead): Boolean {
-        if (head.headers[HttpHeaderName.CONTENT_ENCODING] != null) return false
+        if (!shouldCompressStatic(head.headers)) return false
+        return custom?.invoke(head) ?: true
+    }
+
+    /**
+     * Runs the headers-only checks (existing `Content-Encoding`, minimum
+     * `Content-Length`, MIME-type skip list). Sufficient when
+     * [hasCustomPredicate] is false; the aggregated-response path uses
+     * this overload first so it can skip allocating an
+     * [HttpResponseHead] when no custom predicate needs the status /
+     * version.
+     */
+    public fun shouldCompressStatic(headers: HttpHeaders): Boolean {
+        if (headers[HttpHeaderName.CONTENT_ENCODING] != null) return false
         if (minContentLength > 0) {
-            val len = head.headers.getString(HttpHeaderName.CONTENT_LENGTH)?.toLongOrNull() ?: -1L
+            val len = headers.getString(HttpHeaderName.CONTENT_LENGTH)?.toLongOrNull() ?: -1L
             if (len in 0L until minContentLength.toLong()) return false
         }
-        val ctype = head.headers.getString("Content-Type")?.lowercase().orEmpty()
+        val ctype = headers.getString("Content-Type")?.lowercase().orEmpty()
         if (skipMimeTypes.any { ctype.startsWith(it) }) return false
-        return custom?.invoke(head) ?: true
+        return true
     }
 
     public companion object {

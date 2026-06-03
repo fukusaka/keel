@@ -155,15 +155,18 @@ internal class WsPermessageDeflate(
 
     /**
      * Decompresses one inbound compressed message payload
-     * (RFC 7692 §7.2.2): appends the `00 00 FF FF` sync tail, then
-     * inflates.
+     * (RFC 7692 §7.2.2): appends the `00 00 FF FF` sync tail and
+     * inflates. The tail is written directly into the input IoBuf
+     * instead of concatenated onto a fresh `payload + SYNC_TAIL`
+     * ByteArray, so the inbound zip-bomb-spike path holds zero
+     * intermediate ByteArray allocs (the codec output still grows
+     * the [ByteSink] backing array, capped by `maxOutputSize`).
      *
      * @throws io.github.fukusaka.keel.compression.DecompressionException
      *   if the input is malformed or expands past the message size cap.
      */
     fun decompress(payload: ByteArray): ByteArray {
-        val withTail = payload + SYNC_TAIL
-        val inflated = runDecoder(withTail)
+        val inflated = runDecoder(payload)
         // reset() per message — the session's contextTakeover option
         // decides whether the inflate window is preserved.
         decoder.reset()
@@ -241,11 +244,16 @@ internal class WsPermessageDeflate(
      * `finish`) drains this frame's plaintext and leaves the stream open.
      */
     private fun runDecoder(input: ByteArray): ByteArray {
-        val src = allocator.allocate(input.size.coerceAtLeast(1))
+        val totalIn = input.size + SYNC_TAIL.size
+        val src = allocator.allocate(totalIn)
         val output = allocator.allocate(OUTPUT_CHUNK)
-        val sink = ByteSink(input.size * INFLATE_GUESS_RATIO)
+        val sink = ByteSink(totalIn * INFLATE_GUESS_RATIO)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
+            // Append the Z_SYNC_FLUSH boundary directly into the input
+            // IoBuf instead of concatenating onto a fresh ByteArray. Zero
+            // intermediate heap alloc on the inbound-message hot path.
+            src.writeByteArray(SYNC_TAIL, 0, SYNC_TAIL.size)
             while (true) {
                 when (decoder.update(src, output)) {
                     CodecStatus.NEED_OUTPUT -> sink.drain(output)

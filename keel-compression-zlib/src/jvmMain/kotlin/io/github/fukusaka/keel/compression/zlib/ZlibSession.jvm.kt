@@ -111,8 +111,20 @@ private class JvmZlibEncoderSession(
         // Step 2: hand the input ByteBuffer view to Deflater + CRC.
         if (deflater.needsInput() && input.readableBytes > 0) {
             val view = sliceForReader(input)
-            crc?.update(view.duplicate()) // duplicate to preserve position
-            inputBytesTotal += view.remaining()
+            val len = view.remaining()
+            // CRC32.update(ByteBuffer) advances the buffer's position, and
+            // Deflater.setInput needs `view` left at its original position
+            // so it can read the same byte range. Previously we duplicated
+            // `view` to feed the CRC, allocating a fresh ByteBuffer every
+            // encode chunk; save+restore the position instead so the
+            // gzip-streaming path holds zero per-chunk ByteBuffer allocs.
+            val crcLocal = crc
+            if (crcLocal != null) {
+                val pos = view.position()
+                crcLocal.update(view)
+                view.position(pos)
+            }
+            inputBytesTotal += len
             deflater.setInput(view)
             // Deflater holds the ByteBuffer reference; do not advance
             // input.readerIndex yet — the caller's input is "given" to

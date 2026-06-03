@@ -216,42 +216,32 @@ public class HttpRequestDecompressionHandler(
         bytesIn = 0
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
-        var result = ByteArray((src.size * INITIAL_DECODE_RATIO_GUESS).coerceAtLeast(MIN_AGGREGATED_BUF))
-        var resultLen = 0
+        // Mutable holder so `drainTo` updates `buf` / `len` in place
+        // instead of returning a `Pair<ByteArray, Int>` per drain. A
+        // long compressed body produces many NEED_OUTPUT rounds; the
+        // per-drain Pair allocation showed up as residual GC pressure
+        // in the codec-http alloc backlog.
+        val sink = AggregatedDecodeSink(
+            initialCapacity = (src.size * INITIAL_DECODE_RATIO_GUESS).coerceAtLeast(MIN_AGGREGATED_BUF),
+        )
         try {
             bytesIn = src.size.toLong()
             // Drain update loop.
             while (true) {
                 when (session.update(input, out)) {
-                    CodecStatus.NEED_OUTPUT -> {
-                        val (newResult, newLen) = drainTo(out, result, resultLen)
-                        result = newResult
-                        resultLen = newLen
-                    }
+                    CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
                 }
             }
-            if (out.readableBytes > 0) {
-                val (newResult, newLen) = drainTo(out, result, resultLen)
-                result = newResult
-                resultLen = newLen
-            }
+            if (out.readableBytes > 0) drainTo(out, sink)
             // Drive finish.
             var finishing = true
             while (finishing) {
                 when (session.finish(out)) {
-                    CodecStatus.NEED_OUTPUT -> {
-                        val (newResult, newLen) = drainTo(out, result, resultLen)
-                        result = newResult
-                        resultLen = newLen
-                    }
+                    CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
                     CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                        if (out.readableBytes > 0) {
-                            val (newResult, newLen) = drainTo(out, result, resultLen)
-                            result = newResult
-                            resultLen = newLen
-                        }
+                        if (out.readableBytes > 0) drainTo(out, sink)
                         finishing = false
                     }
                 }
@@ -260,17 +250,29 @@ public class HttpRequestDecompressionHandler(
             session.close()
             input.release()
         }
-        return if (resultLen == result.size) result else result.copyOf(resultLen)
+        return if (sink.len == sink.buf.size) sink.buf else sink.buf.copyOf(sink.len)
     }
 
     /**
-     * Resize [dst] (if necessary) to fit [out]'s readable bytes plus
-     * the existing [dstOffset], copy them in, advance [bytesOut], and
-     * enforce limits.
-     *
-     * Returns `(possiblyResizedDst, newDstOffset)`. Pair allocation per
-     * drain is cheap relative to the decompression itself; the
-     * aggregated path runs a bounded number of times per request.
+     * Per-call mutable buffer state for [decodeAggregated]'s drain loop.
+     * Replaces a `var result: ByteArray; var resultLen: Int` plus a
+     * `Pair<ByteArray, Int>` return on every drain — the holder is
+     * allocated once per aggregated request and mutated in place across
+     * the (potentially many) update / finish rounds. The handler reuses
+     * its per-channel scratch [IoBuf]; this holder is per-request only
+     * because the result buffer is the request's decoded body and is
+     * handed off to the next handler at the end of the call.
+     */
+    private class AggregatedDecodeSink(initialCapacity: Int) {
+        var buf: ByteArray = ByteArray(initialCapacity)
+        var len: Int = 0
+    }
+
+    /**
+     * Resize [sink].buf (if necessary) to fit [out]'s readable bytes
+     * plus the existing [sink].len, copy them in, advance [bytesOut],
+     * and enforce limits. Mutates [sink] in place — see
+     * [AggregatedDecodeSink] for why this is not a Pair-returning function.
      *
      * **Critical**: clears [out] after the drain. `readByteArray` only
      * advances `readerIndex`; without resetting `writerIndex` via
@@ -285,20 +287,18 @@ public class HttpRequestDecompressionHandler(
      * `aggregated decode drains output beyond a single scratch fill
      * without spinning`.
      */
-    private fun drainTo(out: IoBuf, dst: ByteArray, dstOffset: Int): Pair<ByteArray, Int> {
+    private fun drainTo(out: IoBuf, sink: AggregatedDecodeSink) {
         val n = out.readableBytes
-        if (n == 0) return dst to dstOffset
+        if (n == 0) return
         bytesOut += n
         checkLimits()
-        val needed = dstOffset + n
-        val resized = if (needed > dst.size) {
-            dst.copyOf(needed.coerceAtLeast(dst.size * 2))
-        } else {
-            dst
+        val needed = sink.len + n
+        if (needed > sink.buf.size) {
+            sink.buf = sink.buf.copyOf(needed.coerceAtLeast(sink.buf.size * 2))
         }
-        out.readByteArray(resized, dstOffset, n)
+        out.readByteArray(sink.buf, sink.len, n)
         out.clear()
-        return resized to needed
+        sink.len = needed
     }
 
     // ---- Streaming ----
