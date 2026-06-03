@@ -175,20 +175,31 @@ public class CompressionHandler(
             response.version,
             rewriteHeaders(response.headers, encoder.name, fixedLength = null),
         )
+        // From here on the handler owns an EncoderSession and (after
+        // ensureScratch) a scratch IoBuf. Any throw before handleBody /
+        // handleBodyEnd reach their own discardPendingResponse() catch would
+        // orphan the session and bleed scratch bytes into the next response,
+        // so we own the cleanup ourselves until the streaming handlers do.
         activeSession = encoder.newSession(allocator, defaultEncoderOptions)
-        ensureScratch()
-        ctx.propagateWrite(mutatedHead)
+        try {
+            ensureScratch()
+            ctx.propagateWrite(mutatedHead)
 
-        // Feed the body to the encoder as a zero-copy view where the allocator
-        // supports it (NIO heap-ByteBuffer / Native pinned-pointer); the codec
-        // consumes `src` synchronously within handleBody / handleBodyEnd, so the
-        // app's array is never read after this call returns. Allocators without
-        // zero-copy wrap (DefaultAllocator / Netty) return null → owned copy.
-        val body = response.body
-        val src = allocator.wrapBytes(body, 0, body.size)
-            ?: allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
-        handleBody(ctx, HttpBody(src))
-        handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
+            // Feed the body to the encoder as a zero-copy view where the
+            // allocator supports it (NIO heap-ByteBuffer / Native pinned-
+            // pointer); the codec consumes `src` synchronously within
+            // handleBody / handleBodyEnd, so the app's array is never read
+            // after this call returns. Allocators without zero-copy wrap
+            // (DefaultAllocator / Netty) return null → owned copy.
+            val body = response.body
+            val src = allocator.wrapBytes(body, 0, body.size)
+                ?: allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
+            handleBody(ctx, HttpBody(src))
+            handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
+        } catch (t: Throwable) {
+            discardPendingResponse()
+            throw t
+        }
     }
 
     private fun handleResponseHead(ctx: PipelineHandlerContext, head: HttpResponseHead) {
@@ -205,9 +216,19 @@ public class CompressionHandler(
         }
 
         val mutated = head.copy(headers = rewriteHeaders(head.headers, encoder.name, fixedLength = null))
+        // Same ownership window as handleAggregatedResponse: once newSession
+        // ran, an exception from ensureScratch() or the downstream
+        // propagateWrite (a later handler in the pipeline rejecting the
+        // head) would otherwise leak the session and the next response would
+        // get a fresh one on top of it.
         activeSession = encoder.newSession(allocator, defaultEncoderOptions)
-        ensureScratch()
-        ctx.propagateWrite(mutated)
+        try {
+            ensureScratch()
+            ctx.propagateWrite(mutated)
+        } catch (t: Throwable) {
+            discardPendingResponse()
+            throw t
+        }
     }
 
     private fun handleBody(ctx: PipelineHandlerContext, body: HttpBody) {
