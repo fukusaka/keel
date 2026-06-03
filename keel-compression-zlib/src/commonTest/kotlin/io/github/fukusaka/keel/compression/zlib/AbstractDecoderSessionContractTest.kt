@@ -207,6 +207,47 @@ public abstract class AbstractDecoderSessionContractTest {
         }
     }
 
+    @Test
+    public fun `maxRatio eventually triggers DecompressionLimitException`() {
+        // 10 KB highly-compressible payload — a repeated single byte
+        // compresses to a tiny envelope, so its decoded:compressed ratio
+        // is dramatically above the 8 cap we set. The session MUST throw
+        // DecompressionLimitException somewhere along the decode (per-chunk
+        // for backends that check incrementally, at finish for backends
+        // that buffer). The parallel `maxOutputSize` test above pins the
+        // absolute-size cap; this test pins the ratio cap.
+        val payload = "x".repeat(10_000).encodeToByteArray()
+        val encoded = encodeForDecode(payload)
+        // Sanity: the payload is actually compressed enough that a ratio of
+        // 8 would be exceeded; otherwise the test does not exercise the cap.
+        assertTrue(encoded.size * 8 < payload.size, "test setup: encoded size should be << payload / ratio")
+        val session = newSessionWithOptions(DecoderOptions(maxRatio = 8))
+        val input = allocator.allocate(encoded.size).apply { writeByteArray(encoded, 0, encoded.size) }
+        val output = allocator.allocate(outputCap)
+        try {
+            assertFailsWith<DecompressionLimitException> {
+                var iters = 0
+                while (iters < 4096) {
+                    val st = session.update(input, output)
+                    if (st == CodecStatus.NEED_INPUT) break
+                    output.clear()
+                    iters++
+                }
+                iters = 0
+                while (iters < 256) {
+                    val st = session.finish(output)
+                    if (st == CodecStatus.FINISHED || st == CodecStatus.NEED_INPUT) break
+                    output.clear()
+                    iters++
+                }
+            }
+        } finally {
+            output.release()
+            input.release()
+            session.close()
+        }
+    }
+
     // ---- reset semantics ----
 
     @Test
