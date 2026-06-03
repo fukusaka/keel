@@ -391,38 +391,8 @@ public class HttpRequestDecompressionHandler(
         val out = scratch!!
 
         try {
-            // Drain any trailing input from the terminal HttpBody first.
-            if (end.content.readableBytes > 0) {
-                try {
-                    bytesIn += end.content.readableBytes
-                    while (true) {
-                        when (session.update(end.content, out)) {
-                            CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
-                            CodecStatus.NEED_INPUT -> break
-                            CodecStatus.FINISHED -> error("update should not return FINISHED")
-                        }
-                    }
-                    if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
-                } finally {
-                    end.content.release()
-                }
-            } else {
-                end.content.release()
-            }
-
-            // Drive finish — decoders typically have nothing left to emit
-            // beyond the trailer-validated state, but be defensive.
-            var finishing = true
-            while (finishing) {
-                when (session.finish(out)) {
-                    CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
-                    CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                        if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
-                        finishing = false
-                    }
-                }
-            }
-
+            drainTerminalBody(ctx, session, end, out)
+            driveFinish(ctx, session, out)
             session.close()
             activeSession = null
             // The body is fully consumed — the recv buffer the head's headers
@@ -436,6 +406,54 @@ public class HttpRequestDecompressionHandler(
             throw t
         }
         ctx.propagateRead(HttpBodyEnd.EMPTY)
+    }
+
+    /**
+     * Drain whatever input the terminal [HttpBodyEnd] carries through the
+     * decoder. Split out of [handleBodyEnd] so that method does not exceed
+     * detekt's nested-block-depth limit and so the inner `try/finally` that
+     * pairs the input release with its consumption stays local.
+     */
+    private fun drainTerminalBody(
+        ctx: PipelineHandlerContext,
+        session: DecoderSession,
+        end: HttpBodyEnd,
+        out: IoBuf,
+    ) {
+        if (end.content.readableBytes == 0) {
+            end.content.release()
+            return
+        }
+        try {
+            bytesIn += end.content.readableBytes
+            while (true) {
+                when (session.update(end.content, out)) {
+                    CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
+                    CodecStatus.NEED_INPUT -> break
+                    CodecStatus.FINISHED -> error("update should not return FINISHED")
+                }
+            }
+            if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
+        } finally {
+            end.content.release()
+        }
+    }
+
+    /**
+     * Drive `session.finish()` to completion, emitting any final decoded
+     * bytes. Split out of [handleBodyEnd] for the same reason as
+     * [drainTerminalBody].
+     */
+    private fun driveFinish(ctx: PipelineHandlerContext, session: DecoderSession, out: IoBuf) {
+        while (true) {
+            when (session.finish(out)) {
+                CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
+                CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
+                    if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
+                    return
+                }
+            }
+        }
     }
 
     private fun emitDecodedChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
