@@ -52,11 +52,26 @@ package io.github.fukusaka.keel.buf
  *   construction for the length prefix (chunks are produced in full before
  *   the prefix is written).
  */
-public class IoBufChunks(chunks: List<IoBuf>) : Releasable {
+public class IoBufChunks private constructor(
+    chunks: List<IoBuf>,
+    defensiveCopy: Boolean,
+) : Releasable {
 
-    // Defensive copy so the caller can't mutate the backing list after
-    // construction; iteration cost is one walk per chunk anyway.
-    private val chunks: List<IoBuf> = chunks.toList()
+    /**
+     * Constructs an [IoBufChunks] holding a defensive copy of [chunks]. Safe
+     * to call from anywhere — the returned object cannot be affected by
+     * later mutation of [chunks]. The defensive copy costs one [ArrayList]
+     * allocation per construction.
+     *
+     * Hot paths that have just constructed a fresh `ArrayList<IoBuf>` and
+     * have no use for it afterwards should call [takeOwnership] instead.
+     */
+    public constructor(chunks: List<IoBuf>) : this(chunks, defensiveCopy = true)
+
+    // The defensive copy guards against external mutation; hot paths that
+    // can prove the source list is not touched afterwards use
+    // `takeOwnership` to skip the copy.
+    private val chunks: List<IoBuf> = if (defensiveCopy) chunks.toList() else chunks
 
     public val totalSize: Int = this.chunks.sumOf { it.readableBytes }
 
@@ -95,5 +110,31 @@ public class IoBufChunks(chunks: List<IoBuf>) : Releasable {
             if (chunk.release()) freedAny = true
         }
         return freedAny
+    }
+
+    public companion object {
+        /**
+         * Constructs an [IoBufChunks] that takes ownership of [chunks]
+         * **without** the defensive copy the standard [IoBufChunks]
+         * constructor makes.
+         *
+         * **Caller contract.** After this call, [chunks] is owned by the
+         * returned [IoBufChunks]:
+         *   - the caller MUST NOT mutate it (add / remove / clear);
+         *   - the caller MUST NOT release individual entries (the
+         *     returned [IoBufChunks] will);
+         *   - the caller MUST NOT keep a reference to entries past the
+         *     [IoBufChunks]'s single-use lifetime (transport hand-off or
+         *     [release]).
+         *
+         * Use on a hot path that has just constructed a fresh mutable
+         * list (typically `ArrayList<IoBuf>`) the caller no longer needs
+         * — eliminates the per-message defensive-copy allocation. Misuse
+         * leads to either double-release or use-after-free of the
+         * underlying pooled buffers, so prefer the safe constructor
+         * unless the allocation savings are measured.
+         */
+        public fun takeOwnership(chunks: List<IoBuf>): IoBufChunks =
+            IoBufChunks(chunks, defensiveCopy = false)
     }
 }

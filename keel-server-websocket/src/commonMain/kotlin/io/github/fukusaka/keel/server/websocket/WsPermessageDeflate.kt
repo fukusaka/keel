@@ -145,12 +145,19 @@ internal class WsPermessageDeflate(
         if (payload.size < options.threshold) {
             return CompressResult.Uncompressed(payload)
         }
+        // The encoder emits compressed bytes into a single `ArrayList<IoBuf>`
+        // and `stripSyncTail` mutates that list in place; the final
+        // `IoBufChunks` takes ownership without a defensive copy. One
+        // ArrayList allocation per message — the previous flow allocated
+        // four (encoder list + IoBufChunks defensive copy + stripSyncTail
+        // rebuild + second defensive copy).
         val chunks = runEncoderChunks(payload)
         // After the Z_SYNC_FLUSH boundary the stream stays open; reset()
         // per message decides (via contextTakeover) whether the LZ77 window
         // carries over (RFC 7692 §7.1.1).
         encoder.reset()
-        return CompressResult.Compressed(stripSyncTail(chunks))
+        stripSyncTailInPlace(chunks)
+        return CompressResult.Compressed(IoBufChunks.takeOwnership(chunks))
     }
 
     /**
@@ -186,7 +193,7 @@ internal class WsPermessageDeflate(
      * in a fresh one ([keepChunk]), so the codec output buffers *become* the
      * payload chunks — no intermediate copy, no `ByteArray`, no boxing.
      */
-    private fun runEncoderChunks(input: ByteArray): IoBufChunks {
+    private fun runEncoderChunks(input: ByteArray): ArrayList<IoBuf> {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
         val chunks = ArrayList<IoBuf>()
         var out = allocator.allocate(OUTPUT_CHUNK)
@@ -214,7 +221,7 @@ internal class WsPermessageDeflate(
             src.release()
             out.release()
         }
-        return IoBufChunks(chunks)
+        return chunks
     }
 
     /**
@@ -297,12 +304,17 @@ internal class WsPermessageDeflate(
     }
 
     /**
-     * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from the
-     * deflated [chunks] by trimming the trailing [SYNC_TAIL]`.size` bytes
-     * from the last chunk(s). A `NoFlush` stream terminated by `flush()`
-     * always ends in those four bytes, so the trim is unconditional. Any
-     * chunk fully consumed by the trim is released; the rest are rewrapped
-     * into a fresh [IoBufChunks].
+     * Trims the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from the
+     * deflated [chunks] **in place** — releases any chunk fully consumed
+     * by the trim, decrements the last partial chunk's `writerIndex`, and
+     * leaves the rest untouched. A `NoFlush` stream terminated by `flush()`
+     * always ends in those four bytes, so the trim is unconditional.
+     *
+     * Mutates [chunks] (removes trailing entries); the caller hands the
+     * trimmed list straight to [IoBufChunks.takeOwnership] for a
+     * defensive-copy-free wrap. The previous flow rebuilt the list and
+     * wrapped twice, allocating three extra `ArrayList`s per message —
+     * a residual GC cost #668's per-drain chunking did not address.
      *
      * The "fewer than 4 compressed bytes" case is reachable only if the
      * encoder violated its own contract — `update` + `flush()` on
@@ -310,20 +322,20 @@ internal class WsPermessageDeflate(
      * so we fail fast instead of letting an under-trimmed payload reach the
      * wire (which would put random uncompressed bytes there).
      */
-    private fun stripSyncTail(chunks: IoBufChunks): IoBufChunks {
+    private fun stripSyncTailInPlace(chunks: ArrayList<IoBuf>) {
         var remaining = SYNC_TAIL.size
-        check(chunks.totalSize >= remaining) {
-            "permessage-deflate encoder emitted ${chunks.totalSize} bytes (< sync tail size ${SYNC_TAIL.size}); contract broken"
+        var totalSize = 0
+        for (i in chunks.indices) totalSize += chunks[i].readableBytes
+        check(totalSize >= remaining) {
+            "permessage-deflate encoder emitted $totalSize bytes (< sync tail size ${SYNC_TAIL.size}); contract broken"
         }
-        val list = ArrayList<IoBuf>(chunks.chunkCount)
-        for (i in 0 until chunks.chunkCount) list.add(chunks.chunkAt(i))
-        var idx = list.size - 1
+        var idx = chunks.size - 1
         while (remaining > 0 && idx >= 0) {
-            val chunk = list[idx]
+            val chunk = chunks[idx]
             val n = chunk.readableBytes
             if (n <= remaining) {
                 chunk.release()
-                list.removeAt(idx)
+                chunks.removeAt(idx)
                 remaining -= n
                 idx--
             } else {
@@ -331,7 +343,6 @@ internal class WsPermessageDeflate(
                 remaining = 0
             }
         }
-        return IoBufChunks(list)
     }
 
     companion object {

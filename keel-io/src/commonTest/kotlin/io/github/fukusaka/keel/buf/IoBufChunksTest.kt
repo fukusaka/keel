@@ -101,6 +101,36 @@ class IoBufChunksTest {
     }
 
     @Test
+    fun `takeOwnership skips the defensive copy and exposes the backing list directly`() {
+        // The hot-path factory transfers ownership of the caller's list to
+        // the returned IoBufChunks: subsequent reads through chunkAt /
+        // chunkCount must reflect the entries that were in the list at
+        // construction time. We deliberately do NOT test "later mutation
+        // by the caller leaks through" — that is the documented unsafe
+        // path the factory's KDoc forbids, not a behavioural guarantee.
+        val a = bufOf(byteArrayOf(1))
+        val b = bufOf(byteArrayOf(2))
+        val source = arrayListOf(a, b)
+        val chunks = IoBufChunks.takeOwnership(source)
+        try {
+            assertEquals(2, chunks.chunkCount)
+            assertSame(a, chunks.chunkAt(0))
+            assertSame(b, chunks.chunkAt(1))
+            assertEquals(2, chunks.totalSize)
+        } finally {
+            chunks.release()
+        }
+    }
+
+    @Test
+    fun `takeOwnership release frees the chunks just like the safe constructor`() {
+        val a = bufOf(byteArrayOf(1, 2))
+        val b = bufOf(byteArrayOf(3))
+        val chunks = IoBufChunks.takeOwnership(arrayListOf(a, b))
+        assertTrue(chunks.release(), "release must report a freed buffer")
+    }
+
+    @Test
     fun `mutating the source list after construction does not affect the chunks`() {
         // The carrier defensively copies the source list so caller-side
         // mutations cannot reach the held chunks (otherwise an encoder could
