@@ -67,6 +67,16 @@ public class WsFrameEncoder : OutboundHandler {
      * into a contiguous `ByteArray`. Server-outbound only (unmasked, per
      * the [WsFrame] invariant). The frame owns the chunks; on any failure
      * before hand-off the un-propagated chunks are released here.
+     *
+     * **Flush invariant.** Coalescing the header IoBuf and the chunks into a
+     * single `writev` relies on every downstream handler in the chain
+     * passing the writes through to the transport's `pendingWrites` queue
+     * without interposing a `requestFlush()` between them. The
+     * `WsSessionImpl.sendInternal()` site that drives this encoder issues
+     * exactly one `requestFlush()` after the encoder is done; any handler
+     * inserted between this encoder and the transport that flushes early
+     * would split the frame across two `writev`s — still correct on the
+     * wire, but the gather-write performance benefit disappears.
      */
     private fun writeChunkedFrame(ctx: PipelineHandlerContext, frame: WsFrame, chunks: IoBufChunks) {
         // Phases 1-3 share the same cleanup (release every still-owned buffer,
