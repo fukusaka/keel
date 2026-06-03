@@ -222,6 +222,16 @@ private class NativeZlibEncoderSession(
      *  - input IoBuf fully consumed (and not finishing) → [CodecStatus.NEED_INPUT]
      *  - libz reports stream end (finishing) → [CodecStatus.NEED_INPUT] (caller's
      *    [finish] then transitions to [CodecStatus.FINISHED])
+     *
+     * **Termination guarantee.** The loop's primary upper bound is
+     * `output.writableBytes`; libz cannot make zero progress on a buffer
+     * with room because every successful `deflate` either consumes input,
+     * produces output, or transitions to a terminal status. The explicit
+     * `produced == 0 && consumed == 0 → break` in the `OK` branch is a
+     * defence-in-depth backstop that handles the rare case where libz
+     * returns `Z_OK` without progress (e.g. an internal flush-only step
+     * with no room left in its window); without that break the loop would
+     * call `step` indefinitely.
      */
     private fun drive(input: IoBuf?, output: IoBuf, flag: Int, isFinish: Boolean): CodecStatus {
         while (output.writableBytes > 0) {
@@ -408,6 +418,13 @@ private class NativeZlibDecoderSession(
         }
     }
 
+    /**
+     * Drive inflate against caller IoBufs directly. Same termination contract
+     * as the encoder's `drive`: the loop exits via `output.writableBytes`
+     * exhaustion, `Z_STREAM_END`, `Z_NEED_DICT`, or — as a defence-in-depth
+     * backstop in the `OK` branch — a `produced == 0 && consumed == 0` step
+     * that would otherwise spin indefinitely.
+     */
     private fun drive(input: IoBuf?, output: IoBuf): CodecStatus {
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
