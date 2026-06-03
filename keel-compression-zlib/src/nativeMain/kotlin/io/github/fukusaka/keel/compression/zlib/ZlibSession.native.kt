@@ -264,6 +264,13 @@ private class NativeZlibEncoderSession(
      * so this returns only the libz status code; the caller reads the
      * out-params off the session fields. Avoids per-call `Triple`
      * allocation on the deflate hot loop.
+     *
+     * **Caller contract.** The caller MUST read [consumedVar].value and
+     * [producedVar].value *immediately* after this call returns and before
+     * the next [step] (or any other method that may invoke `keel_deflate`)
+     * runs — those fields are reused across invocations and will be
+     * overwritten. The current `drive()` loop is the only call site and
+     * already reads them on the next line.
      */
     private fun step(
         input: IoBuf?,
@@ -454,6 +461,12 @@ private class NativeZlibDecoderSession(
      * [step]: the libz status is returned, the consumed / produced
      * counts are read off the session-scoped [consumedVar] / [producedVar]
      * to avoid a per-call `Triple` allocation on the inflate hot loop.
+     *
+     * **Caller contract.** Read [consumedVar].value / [producedVar].value
+     * immediately after this returns and before the next [step] (or any
+     * other `keel_inflate` call) — those fields are reused across
+     * invocations and will be overwritten. `drive()` is the only call site
+     * and already does so on the next line.
      */
     private fun step(
         input: IoBuf?,
