@@ -330,6 +330,49 @@ class HttpRequestDecompressionHandlerTest {
     }
 
     @Test
+    fun `multi-token Content-Encoding rejection covers common lexical variants`() {
+        // The Netty-style "split on comma, take the first token" shortcut would
+        // accept every one of these as `lower` and silently misinterpret the
+        // request body. keel intentionally rejects any value whose verbatim
+        // string is not a single registered codec name — verbatim lookup means
+        // whitespace, parameters (`;q=`), and stray separators all defeat the
+        // match. Pin the policy against a representative set of lexical
+        // variants so a future refactor that tries to "normalise" the lookup
+        // (which would inadvertently re-enable the Netty shortcut) trips here.
+        val variants = listOf(
+            "lower, gzip",       // canonical multi-token with a space
+            "lower,gzip",        // no whitespace
+            "lower , gzip",      // leading space before the comma
+            "lower ,gzip",       // trailing space after the first token
+            "lower;q=1",         // accept-encoding-style q-value parameter (illegal here)
+            "lower\tgzip",       // tab as separator (not legal but plausible mistake)
+        )
+        for (encoding in variants) {
+            val state = ChainState()
+            val handler = HttpRequestDecompressionHandler(
+                registryWithLower, DefaultAllocator,
+                unknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType,
+            )
+            val ctx = TestCtx(state)
+            val ex = assertFailsWith<UnsupportedContentEncodingException>(
+                "expected to reject `$encoding`, but it slipped through",
+            ) {
+                handler.onRead(
+                    ctx,
+                    HttpRequestHead(
+                        HttpMethod.POST, "/upload",
+                        headers = HttpHeaders().apply { add("Content-Encoding", encoding) },
+                    ),
+                )
+            }
+            // Header values fed through `getString(...).lowercase()`, so the
+            // exception's `encoding` reports the lower-cased form of `encoding`.
+            assertEquals(encoding.lowercase(), ex.encoding, "wrong rejected encoding for `$encoding`")
+            assertTrue(state.reads.isEmpty(), "head must not propagate when `$encoding` is rejected")
+        }
+    }
+
+    @Test
     fun `multi-token Content-Encoding is rejected by the unknown-encoding policy`() {
         // RFC 9110 §8.4.1 lets a request stack encodings (e.g. "deflate, gzip"
         // = deflate-then-gzip, decoded in reverse). keel intentionally does not
