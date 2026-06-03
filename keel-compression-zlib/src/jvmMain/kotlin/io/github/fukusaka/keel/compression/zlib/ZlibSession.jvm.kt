@@ -239,14 +239,31 @@ private class JvmZlibEncoderSession(
             if (produced == 0) break
         }
         if (input != null) advanceInputReaderIndex(input)
+        // The terminal status is one of three:
+        //   - FINISHED-equivalent (`NEED_INPUT` from a `finish()` whose
+        //     deflater has fully flushed): caller stops calling `update`,
+        //     `finish` from the outer SPI handles the trailer state.
+        //   - NEED_OUTPUT: caller must drain `output` and call again.
+        //   - NEED_INPUT: caller must feed more input (or call `finish`).
+        //
+        // Output-full MUST be checked BEFORE needsInput: a single `deflate`
+        // step can both fill the output and consume all input (common with
+        // `NO_FLUSH`), leaving more compressed bytes buffered inside the
+        // Deflater. Returning NEED_INPUT there makes the caller stop draining
+        // and the buffered tail is lost — truncating any message whose
+        // compressed form exceeds one output buffer (#666).
+        //
+        // The remaining branches — `!isFinish && needsInput()` and the
+        // `else` — both return NEED_INPUT, intentionally: the loop above
+        // already drained until `produced == 0`, so when output isn't full
+        // there is no buffered output left, and what the caller needs to do
+        // next is feed more input (or call `finish`, which is what the
+        // `isFinish` case routes through). Keeping the explicit
+        // `needsInput()` branch documents the canonical reason for that
+        // verdict; the trailing `else` covers the rare flush-mode case where
+        // the deflater drained to zero-produce without flipping `needsInput`.
         return when {
             isFinish && deflater.finished() -> CodecStatus.NEED_INPUT
-            // Output-full must be checked BEFORE needsInput: the Deflater can
-            // both fill the output and consume all input in one call (common
-            // with NO_FLUSH), leaving more compressed bytes buffered. Returning
-            // NEED_INPUT there makes the caller stop draining and the buffered
-            // tail is lost — truncating any message whose compressed form
-            // exceeds one output buffer.
             output.writableBytes == 0 -> CodecStatus.NEED_OUTPUT
             !isFinish && deflater.needsInput() -> CodecStatus.NEED_INPUT
             else -> CodecStatus.NEED_INPUT
@@ -292,6 +309,15 @@ private class JvmZlibDecoderSession(
      * monotonically to the largest header chunk seen, then is reused; the
      * length-aware `GzipHeaderParser.consume(bytes, length)` lets the parser
      * ignore the unused tail of the array.
+     *
+     * **Lifecycle.** This is *not* cleared by [reset] — the per-message-boundary
+     * reset only re-creates the [GzipHeaderParser] state machine, so the
+     * backing array can keep growing across reset cycles for amortised
+     * O(largest-header-chunk) total cost. [close] does not null it either;
+     * the field is held by the session instance and goes away with it.
+     * Treating it as a leak is a false positive: a single header-sized
+     * `ByteArray` per *session*, not per *message*, is well within the
+     * documented memory budget for a streaming decoder.
      */
     private var gzipHeaderScratch: ByteArray? = null
 
