@@ -315,6 +315,67 @@ class CompressionHandlerTest {
         assertEquals("WORLDWIDE", decoded, "response B must not carry response A's leftover scratch bytes")
     }
 
+    @Test
+    fun `aggregated response that fails after session creation does not leak the session`() {
+        // Regression for the deep-review MUST: handleAggregatedResponse
+        // creates the EncoderSession before ensureScratch / propagateWrite,
+        // so a throw from either window would orphan the session. Inject the
+        // failure via the scratch IoBuf allocate (size = SCRATCH_CAPACITY)
+        // and confirm the encoder's open-session counter is back to zero on
+        // the next response.
+        val encoder = CountingUpperEncoder()
+        val registry = CompressionRegistry().apply { registerEncoder(encoder) }
+        val state = ChainState()
+        val handler = CompressionHandler(
+            registry,
+            FailOnSizeAllocator(failSize = CompressionHandler.SCRATCH_CAPACITY),
+        )
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, reqUpper("/a"))
+        var aborted = false
+        try {
+            handler.onWrite(
+                ctx,
+                HttpResponse(
+                    status = HttpStatus(200),
+                    headers = HttpHeaders().apply {
+                        add("Content-Length", "5")
+                        add("Content-Type", "text/plain")
+                    },
+                    body = "hello".encodeToByteArray(),
+                ),
+            )
+        } catch (e: IllegalStateException) {
+            aborted = true
+        }
+        assertTrue(aborted, "scratch allocation failure must propagate out of handleAggregatedResponse")
+        assertEquals(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")
+    }
+
+    @Test
+    fun `streaming response head that fails after session creation does not leak the session`() {
+        // Symmetric to the aggregated test above, for handleResponseHead.
+        val encoder = CountingUpperEncoder()
+        val registry = CompressionRegistry().apply { registerEncoder(encoder) }
+        val state = ChainState()
+        val handler = CompressionHandler(
+            registry,
+            FailOnSizeAllocator(failSize = CompressionHandler.SCRATCH_CAPACITY),
+        )
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, reqUpper("/a"))
+        var aborted = false
+        try {
+            handler.onWrite(ctx, head200())
+        } catch (e: IllegalStateException) {
+            aborted = true
+        }
+        assertTrue(aborted, "scratch allocation failure must propagate out of handleResponseHead")
+        assertEquals(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")
+    }
+
     // ---- helpers ----
 
     private fun reqUpper(uri: String): HttpRequestHead = HttpRequestHead(
