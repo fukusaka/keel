@@ -376,6 +376,103 @@ class CompressionHandlerTest {
         assertEquals(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")
     }
 
+    @Test
+    fun `multiple Vary entries on the source response are preserved`() {
+        // Regression for the rewriteHeaders deep-review finding: a response
+        // carrying multiple `Vary` lines (e.g. `Vary: User-Agent` and
+        // `Vary: Cookie`) was dropping every entry past the first because
+        // the rewrite used `getString("Vary")`, which only returns the first
+        // header value. With `getCombined`, all entries survive and the
+        // `this["Vary"] = …` set then collapses them into one merged line
+        // that also includes `Accept-Encoding`.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, reqUpper("/x"))
+        handler.onWrite(
+            ctx,
+            HttpResponseHead(
+                status = HttpStatus(200),
+                headers = HttpHeaders().apply {
+                    add("Content-Type", "text/plain")
+                    add("Vary", "User-Agent")
+                    add("Vary", "Cookie")
+                },
+            ),
+        )
+
+        val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
+        val vary = emittedHead.headers.getCombined("Vary")
+        assertNotNull(vary, "Vary header must be present after compression")
+        // Order is "the existing entries (in their input order) + Accept-Encoding".
+        // Combining repeated header lines yields a comma-joined value.
+        for (expected in listOf("User-Agent", "Cookie", "Accept-Encoding")) {
+            assertTrue(expected in vary, "Vary must keep '$expected' (got: $vary)")
+        }
+    }
+
+    @Test
+    fun `aggregated response uses the allocator's wrapBytes view for the codec input when supported`() {
+        // Pins the #670 zero-copy view path: when the allocator returns a
+        // non-null `wrapBytes`, CompressionHandler feeds the codec that view
+        // instead of allocating + copying. Up to now every test exercised the
+        // null-returning DefaultAllocator only, so the view path itself was
+        // untested. A stub allocator records every `wrapBytes` call and the
+        // assertions confirm the handler took the view path.
+        val tracker = WrapBytesTrackingAllocator()
+        val state = ChainState()
+        val handler = CompressionHandler(registry, tracker)
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, reqUpper("/x"))
+        val body = "wrap-bytes view test".encodeToByteArray()
+        handler.onWrite(
+            ctx,
+            HttpResponse(
+                status = HttpStatus(200),
+                headers = HttpHeaders().apply {
+                    add("Content-Length", body.size.toString())
+                    add("Content-Type", "text/plain")
+                },
+                body = body,
+            ),
+        )
+
+        assertEquals(1, tracker.wrapBytesCalls, "the aggregated path must feed the codec a wrapBytes view")
+        // The view must show the full body, not a pre-truncated slice.
+        assertEquals(body.size, tracker.lastWrapBytesLength)
+        // Output bytes are still produced correctly via the chunked stream.
+        val bodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
+        val encoded = bodies.joinToString("") { ioBufAsString(it.content) }
+        assertEquals(body.decodeToString().uppercase(), encoded)
+    }
+
+    /**
+     * Allocator that delegates to [DefaultAllocator] but records every
+     * `wrapBytes` call so a test can confirm the handler took the view path
+     * rather than the allocate-and-copy fallback.
+     */
+    private class WrapBytesTrackingAllocator : BufferAllocator {
+        var wrapBytesCalls: Int = 0
+            private set
+        var lastWrapBytesLength: Int = -1
+            private set
+
+        override fun allocate(capacity: Int): IoBuf = DefaultAllocator.allocate(capacity)
+        override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+            DefaultAllocator.slice(source, offset, length)
+
+        override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf {
+            wrapBytesCalls++
+            lastWrapBytesLength = length
+            // Hand back a real heap-backed buffer so the codec can read from
+            // it; the view aliasing the underlying ByteArray is not required
+            // for the assertion (which only checks that wrapBytes was called).
+            return DefaultAllocator.allocate(length).apply { writeByteArray(bytes, offset, length) }
+        }
+    }
+
     // ---- helpers ----
 
     private fun reqUpper(uri: String): HttpRequestHead = HttpRequestHead(
