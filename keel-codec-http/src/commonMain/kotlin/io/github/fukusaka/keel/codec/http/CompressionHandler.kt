@@ -213,6 +213,13 @@ public class CompressionHandler(
             val body = response.body
             val src = allocator.wrapBytes(body, 0, body.size)
                 ?: allocator.allocate(body.size).apply { writeByteArray(body, 0, body.size) }
+            // Internal direct dispatch to the streaming handlers — safe
+            // because `CompressionHandler` is `public final`, so a
+            // subclass cannot override `handleBody` / `handleBodyEnd`
+            // and divert the aggregated branch's body emission. If this
+            // class is ever made `open`, this dispatch must be rerouted
+            // through `ctx.onWrite(...)` so a subclass's override sees
+            // both branches' chunks identically.
             handleBody(ctx, HttpBody(src))
             handleBodyEnd(ctx, HttpBodyEnd.EMPTY)
         } catch (t: Throwable) {
