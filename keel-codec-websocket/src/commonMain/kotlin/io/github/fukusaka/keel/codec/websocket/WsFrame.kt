@@ -11,14 +11,21 @@ import io.github.fukusaka.keel.buf.IoBufChunks
  * @param rsv3 Reserved bit 3; must be false unless an extension is negotiated.
  * @param opcode Frame type.
  * @param maskKey 32-bit masking key; non-null for client-to-server frames.
- * @param payload Unmasked payload data. Ignored when [payloadChunks] is set.
+ * @param payload Unmasked payload data. Ignored when [payloadChunks] is set;
+ *   `init` rejects the inconsistent combination of a non-empty [payload] with
+ *   a non-null [payloadChunks] so the silent discard cannot happen.
  * @param payloadChunks Optional pre-built pooled-`IoBuf` payload (e.g. the
  *   raw-DEFLATE output of `permessage-deflate`). When non-null the encoder
  *   gather-writes these chunks instead of copying [payload], so the
  *   compressed bytes never round-trip through a `ByteArray`. Server-outbound
  *   only: must be `null` for masked (client) frames and for control frames.
  *   The frame owns the chunks — the encoder releases them after writing (or
- *   on failure); a frame carrying chunks must be written exactly once.
+ *   on failure); **a frame carrying chunks must be written exactly once**, so
+ *   the auto-generated [copy] is dangerous (both copies would share the same
+ *   chunks and the encoder would either release them twice or leak them).
+ *   [equals] / [hashCode] intentionally ignore this field — comparing pooled
+ *   `IoBuf` identity would be misleading and a structural comparison would
+ *   require iterating the chunks (a side-effect on a value type).
  */
 data class WsFrame(
     val fin: Boolean,
@@ -39,8 +46,23 @@ data class WsFrame(
         require(payloadChunks == null || maskKey == null) {
             "payloadChunks is server-outbound only and cannot be masked"
         }
+        // Defending against the silent-discard foot-gun the class KDoc warns
+        // about: `payload` is ignored when `payloadChunks` is set, so a caller
+        // who supplied both is at least confused. Reject the inconsistency.
+        require(payloadChunks == null || payload.isEmpty()) {
+            "When payloadChunks is set, payload must be empty (got payload.size=${payload.size})"
+        }
     }
 
+    /**
+     * Structural equality on the public fields except [payloadChunks].
+     *
+     * Comparing the chunk list either by identity (meaningless — the same
+     * logical payload may live in different pooled buffers) or structurally
+     * (would have to iterate the chunks, a side-effect on a value type, and
+     * the underlying `IoBuf`s have no defined `equals`) is the wrong contract.
+     * Two frames that differ only in [payloadChunks] therefore compare equal.
+     */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is WsFrame) return false

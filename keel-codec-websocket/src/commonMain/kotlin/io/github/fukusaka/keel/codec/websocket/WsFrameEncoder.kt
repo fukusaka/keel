@@ -69,15 +69,22 @@ public class WsFrameEncoder : OutboundHandler {
      * before hand-off the un-propagated chunks are released here.
      */
     private fun writeChunkedFrame(ctx: PipelineHandlerContext, frame: WsFrame, chunks: IoBufChunks) {
-        val headerBuf = ctx.allocator.allocate(headerSize(frame, chunks.totalSize))
-        try {
-            writeHeader(frame, headerBuf, chunks.totalSize)
-        } catch (t: Throwable) {
-            headerBuf.release()
-            chunks.release()
-            throw t
+        // Phases 1-3 share the same cleanup (release every still-owned buffer,
+        // rethrow): factor it into `runOrRelease`. Phase 4 has a different
+        // cleanup — only the un-propagated chunks remain.
+        val headerBuf = runOrRelease(headerOwned = null, chunks = chunks) {
+            ctx.allocator.allocate(headerSize(frame, chunks.totalSize))
         }
-        ctx.propagateWrite(headerBuf)
+        runOrRelease(headerOwned = headerBuf, chunks = chunks) {
+            writeHeader(frame, headerBuf, chunks.totalSize)
+        }
+        runOrRelease(headerOwned = headerBuf, chunks = chunks) {
+            ctx.propagateWrite(headerBuf)
+        }
+        // Phase 4: hand each chunk to the transport in order. If
+        // propagateWrite throws partway through, the chunks already
+        // propagated are owned by the transport and only the remaining
+        // un-propagated chunks need to be released here.
         var i = 0
         try {
             while (i < chunks.chunkCount) {
@@ -85,11 +92,33 @@ public class WsFrameEncoder : OutboundHandler {
                 i++
             }
         } catch (t: Throwable) {
-            while (i < chunks.chunkCount) {
-                chunks.chunkAt(i).release()
-                i++
-            }
+            releaseRemainingChunks(chunks, i)
             throw t
+        }
+    }
+
+    /**
+     * Runs [block] and, on any throw, releases the still-owned resources
+     * (`headerOwned` if non-null, every chunk in [chunks]) before rethrowing.
+     * Used by the chunked-frame encoder to keep its per-phase failure paths
+     * to a single throw site instead of one per phase.
+     */
+    private inline fun <T> runOrRelease(headerOwned: IoBuf?, chunks: IoBufChunks, block: () -> T): T {
+        try {
+            return block()
+        } catch (t: Throwable) {
+            headerOwned?.release()
+            chunks.release()
+            throw t
+        }
+    }
+
+    /** Releases every chunk at and after [fromIndex] in [chunks]. */
+    private fun releaseRemainingChunks(chunks: IoBufChunks, fromIndex: Int) {
+        var j = fromIndex
+        while (j < chunks.chunkCount) {
+            chunks.chunkAt(j).release()
+            j++
         }
     }
 

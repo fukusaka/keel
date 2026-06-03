@@ -209,8 +209,15 @@ internal class WsPermessageDeflate(
      */
     private fun keepChunk(chunks: MutableList<IoBuf>, out: IoBuf): IoBuf {
         if (out.readableBytes == 0) return out
+        // Allocate the fresh chunk BEFORE handing `out` to the list. If
+        // `allocate` throws, `chunks` is unmodified and the caller's `out`
+        // variable still owns the original buffer — the catch path then
+        // releases each chunk plus `out` exactly once. Adding to `chunks`
+        // first would leave `out` aliased both in the list and in the local
+        // variable, causing a double release when the catch path runs.
+        val fresh = allocator.allocate(OUTPUT_CHUNK)
         chunks.add(out)
-        return allocator.allocate(OUTPUT_CHUNK)
+        return fresh
     }
 
     /**
