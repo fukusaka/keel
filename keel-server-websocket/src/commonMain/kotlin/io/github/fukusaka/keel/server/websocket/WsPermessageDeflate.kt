@@ -280,13 +280,21 @@ internal class WsPermessageDeflate(
      * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from the
      * deflated [chunks] by trimming the trailing [SYNC_TAIL]`.size` bytes
      * from the last chunk(s). A `NoFlush` stream terminated by `flush()`
-     * always ends in those four bytes, so the trim is unconditional except
-     * for the degenerate sub-4-byte case. Any chunk fully consumed by the
-     * trim is released; the rest are rewrapped into a fresh [IoBufChunks].
+     * always ends in those four bytes, so the trim is unconditional. Any
+     * chunk fully consumed by the trim is released; the rest are rewrapped
+     * into a fresh [IoBufChunks].
+     *
+     * The "fewer than 4 compressed bytes" case is reachable only if the
+     * encoder violated its own contract — `update` + `flush()` on
+     * `FlushMode.NoFlush` always emits at least the `00 00 FF FF` marker —
+     * so we fail fast instead of letting an under-trimmed payload reach the
+     * wire (which would put random uncompressed bytes there).
      */
     private fun stripSyncTail(chunks: IoBufChunks): IoBufChunks {
         var remaining = SYNC_TAIL.size
-        if (chunks.totalSize < remaining) return chunks
+        check(chunks.totalSize >= remaining) {
+            "permessage-deflate encoder emitted ${chunks.totalSize} bytes (< sync tail size ${SYNC_TAIL.size}); contract broken"
+        }
         val list = ArrayList<IoBuf>(chunks.chunkCount)
         for (i in 0 until chunks.chunkCount) list.add(chunks.chunkAt(i))
         var idx = list.size - 1
