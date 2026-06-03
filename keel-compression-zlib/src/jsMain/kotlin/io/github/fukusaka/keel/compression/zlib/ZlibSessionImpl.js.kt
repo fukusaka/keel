@@ -323,6 +323,17 @@ private class JsZlibDecoderSession(
             pendingInput.clear()
             decodedOutput = null
             decodedOffset = 0
+            // Reset the per-message ratio counters now that the message has
+            // fully drained. Otherwise `totalInput` / `totalDecoded` would
+            // accumulate across messages on a long-lived connection and the
+            // ratio cap `out.size > totalInput * ratio` would progressively
+            // loosen — a slow tunnel that lets a zip-bomb through after
+            // enough benign traffic has been seen. Today's only caller
+            // (`WsPermessageDeflate`) does its own `decoder.reset()` between
+            // messages so the bug is latent, but a future flush-only caller
+            // would silently degrade without this.
+            totalInput = 0L
+            totalDecoded = 0L
             return CodecStatus.NEED_INPUT
         }
         return CodecStatus.NEED_OUTPUT
