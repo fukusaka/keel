@@ -271,6 +271,19 @@ public class HttpRequestDecompressionHandler(
      * Returns `(possiblyResizedDst, newDstOffset)`. Pair allocation per
      * drain is cheap relative to the decompression itself; the
      * aggregated path runs a bounded number of times per request.
+     *
+     * **Critical**: clears [out] after the drain. `readByteArray` only
+     * advances `readerIndex`; without resetting `writerIndex` via
+     * [IoBuf.clear], the scratch buffer accumulates writes across drains
+     * until `writableBytes == 0`. Once that happens the next
+     * `session.update` cannot make progress (its internal drain loop
+     * exits on `writableBytes == 0`), returns NEED_OUTPUT, this drain
+     * sees `readableBytes == 0`, and the `while (true)` loop in
+     * [decodeAggregated] spins. Triggered by any decoded body that
+     * exceeds [SCRATCH_CAPACITY] (8 KiB by default) in one update round
+     * — i.e. a routine compressed POST > 8 KiB. Regression-pinned by
+     * `aggregated decode drains output beyond a single scratch fill
+     * without spinning`.
      */
     private fun drainTo(out: IoBuf, dst: ByteArray, dstOffset: Int): Pair<ByteArray, Int> {
         val n = out.readableBytes
@@ -284,6 +297,7 @@ public class HttpRequestDecompressionHandler(
             dst
         }
         out.readByteArray(resized, dstOffset, n)
+        out.clear()
         return resized to needed
     }
 

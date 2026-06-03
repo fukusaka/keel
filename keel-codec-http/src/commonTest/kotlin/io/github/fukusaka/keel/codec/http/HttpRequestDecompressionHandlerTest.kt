@@ -243,6 +243,43 @@ class HttpRequestDecompressionHandlerTest {
     }
 
     @Test
+    fun `aggregated decode drains output beyond a single scratch fill without spinning`() {
+        // Regression: prior to the fix, `decodeAggregated`'s `drainTo` only
+        // advanced the scratch IoBuf's readerIndex via `readByteArray`, leaving
+        // writerIndex pinned at capacity. Once the decoder produced more than
+        // one scratch-worth of output (8 KiB default), the next `session.update`
+        // saw `writableBytes == 0`, immediately returned NEED_OUTPUT, drainTo
+        // saw `readableBytes == 0`, and the `while (true)` loop spun forever
+        // (EventLoop DoS on any aggregated decompressed request > 8 KiB).
+        //
+        // `BoundedCallMultiplyDecoder` throws once `update` is called more
+        // times than the decoded body legitimately needs; on the buggy code
+        // path the call count blows that ceiling. On the fixed path it
+        // completes in ~3 calls.
+        val factor = 200
+        val inputBytes = 100 // 100 -> 20 KiB decoded; spans multiple 8 KiB drains
+        val callCeiling = 32 // far above the ~3 calls a healthy decode needs
+        val bounded = BoundedCallMultiplyDecoder(factor, maxCalls = callCeiling)
+        val registry = CompressionRegistry().apply { registerDecoder(bounded) }
+        val handler = HttpRequestDecompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(ChainState())
+        val request = HttpRequest(
+            method = HttpMethod.POST,
+            uri = "/upload",
+            headers = HttpHeaders().apply {
+                add("Content-Encoding", "x$factor")
+                add("Content-Length", inputBytes.toString())
+            },
+            body = ByteArray(inputBytes) { 'A'.code.toByte() },
+        )
+
+        handler.onRead(ctx, request)
+
+        val out = ctx.state.reads.single() as HttpRequest
+        assertEquals(inputBytes * factor, out.body!!.size)
+    }
+
+    @Test
     fun `aggregated HttpRequest with null body forwards stripped head`() {
         val state = ChainState()
         val handler = HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator)
@@ -929,6 +966,31 @@ class HttpRequestDecompressionHandlerTest {
                 override fun close() {
                     delegate.close()
                     openSessions--
+                }
+            }
+        }
+    }
+
+    /**
+     * Bounded variant of [MultiplyDecoder] that throws `IllegalStateException`
+     * once `update` is called more than [maxCalls] times. Used to detect
+     * `decodeAggregated` infinite-loop regressions without relying on a wall-
+     * clock timeout (the bug is a synchronous tight loop).
+     */
+    private class BoundedCallMultiplyDecoder(
+        private val factor: Int,
+        private val maxCalls: Int,
+    ) : Decoder {
+        override val name: String = "x$factor"
+        override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession {
+            val delegate = MultiplyDecoder(factor).newSession(allocator, options)
+            return object : DecoderSession by delegate {
+                private var calls = 0
+                override fun update(input: IoBuf, output: IoBuf): CodecStatus {
+                    if (++calls > maxCalls) {
+                        error("update() exceeded $maxCalls calls — likely infinite loop in decodeAggregated")
+                    }
+                    return delegate.update(input, output)
                 }
             }
         }
