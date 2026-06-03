@@ -213,6 +213,63 @@ class WsPermessageDeflateTest {
     }
 
     @Test
+    fun `asymmetric server_no_context_takeover offer keeps client-side decoder takeover on`() {
+        // RFC 7692 negotiates the two takeover directions independently. A
+        // client offering only `server_no_context_takeover` (forcing the
+        // server's encoder to reset its window every message while keeping
+        // its own client-side takeover) used to collapse into a single
+        // boolean in `effectiveOptions.contextTakeover` and propagate down
+        // to BOTH the encoder and the decoder. The server's decoder then
+        // reset its window between messages, and the next inbound message
+        // that LZ77-back-referenced the old window surfaced `Z_DATA_ERROR`
+        // ("invalid distance too far back").
+        //
+        // Backends that cannot honour takeover (JS one-shot zlib) force both
+        // flags off regardless of the offer; the asymmetric-decoupling
+        // invariant only has bite when the backend can actually keep windows.
+        if (!deflateEncoderCaps.supportsContextTakeover || !deflateDecoderCaps.supportsContextTakeover) return
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; server_no_context_takeover",
+            DeflateCodec,
+            WsDeflateOptions(contextTakeover = true),
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        assertFalse(
+            deflate.effectiveServerContextTakeover,
+            "server-side encoder must honour the client's `server_no_context_takeover` offer",
+        )
+        assertTrue(
+            deflate.effectiveClientContextTakeover,
+            "client-side decoder must keep takeover on when the client did not opt out",
+        )
+        assertTrue(deflate.responseHeaderValue.contains("server_no_context_takeover"))
+        assertFalse(deflate.responseHeaderValue.contains("client_no_context_takeover"))
+    }
+
+    @Test
+    fun `asymmetric client_no_context_takeover offer keeps server-side encoder takeover on`() {
+        // Mirror of the test above: client opts out of its own takeover
+        // while letting the server keep its window.
+        if (!deflateEncoderCaps.supportsContextTakeover || !deflateDecoderCaps.supportsContextTakeover) return
+        val result = negotiatePermessageDeflate(
+            "permessage-deflate; client_no_context_takeover",
+            DeflateCodec,
+            WsDeflateOptions(contextTakeover = true),
+        )
+        val deflate = assertIs<WsExtensionResult.Deflate>(result)
+        assertTrue(
+            deflate.effectiveServerContextTakeover,
+            "server-side encoder must keep takeover on when the server did not opt out",
+        )
+        assertFalse(
+            deflate.effectiveClientContextTakeover,
+            "server-side decoder must honour the client's `client_no_context_takeover` offer",
+        )
+        assertFalse(deflate.responseHeaderValue.contains("server_no_context_takeover"))
+        assertTrue(deflate.responseHeaderValue.contains("client_no_context_takeover"))
+    }
+
+    @Test
     fun `negotiation preserves the configured strategy in the effective options`() {
         // The negotiated effectiveOptions are what reaches WsPermessageDeflate, so
         // a strategy set in the deflate DSL must survive negotiation (it rebuilds

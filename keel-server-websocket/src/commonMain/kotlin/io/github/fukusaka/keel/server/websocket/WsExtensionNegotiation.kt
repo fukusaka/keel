@@ -48,20 +48,39 @@ internal sealed interface WsExtensionResult {
      *
      * @property responseHeaderValue the `Sec-WebSocket-Extensions` value
      *   to put on the `101` response (RFC 7692 §5.1).
-     * @property effectiveOptions the options the server side applies —
-     *   [WsDeflateOptions.contextTakeover] is forced off when the offer
-     *   (or keel's own config) demands it.
+     * @property effectiveOptions the options the server side applies. **For
+     *   backward compatibility** [WsDeflateOptions.contextTakeover] here
+     *   carries the **server-side (encoder)** decision; consumers wiring an
+     *   actual `permessage-deflate` engine must use
+     *   [effectiveServerContextTakeover] and [effectiveClientContextTakeover]
+     *   instead, because RFC 7692 negotiates the two sides independently
+     *   (a client may offer `server_no_context_takeover` while keeping
+     *   takeover on its own outbound direction).
      * @property serverMaxWindowBits negotiated server LZ77 window-bits
      *   cap (8..15), or `null` to use the backend default (15).
      * @property clientMaxWindowBits negotiated client LZ77 window-bits
      *   cap (8..15), or `null` for the default (15). The inbound
      *   decompressor uses this value.
+     * @property effectiveServerContextTakeover whether the server-side
+     *   **encoder** keeps its LZ77 window across outbound messages
+     *   (`true` = takeover, `false` = reset per message). Negotiated from
+     *   the offer's `server_no_context_takeover` parameter and keel's own
+     *   [WsDeflateOptions.contextTakeover] and the backend's capability.
+     * @property effectiveClientContextTakeover whether the server-side
+     *   **decoder** keeps its LZ77 window across inbound messages. The
+     *   relevant offer parameter is `client_no_context_takeover` — when
+     *   the client demands no takeover for its own outbound direction,
+     *   the server decoder must follow the same policy (otherwise inflate
+     *   spuriously back-references a now-reset window and surfaces
+     *   `Z_DATA_ERROR`).
      */
     data class Deflate(
         val responseHeaderValue: String,
         val effectiveOptions: WsDeflateOptions,
         val serverMaxWindowBits: Int?,
         val clientMaxWindowBits: Int?,
+        val effectiveServerContextTakeover: Boolean = effectiveOptions.contextTakeover,
+        val effectiveClientContextTakeover: Boolean = effectiveOptions.contextTakeover,
     ) : WsExtensionResult
 }
 
@@ -212,6 +231,11 @@ private fun buildDeflateResult(
     return WsExtensionResult.Deflate(
         responseHeaderValue = responseParts.joinToString("; "),
         effectiveOptions = WsDeflateOptions(
+            // Backwards-compat surface: this single flag reflects the
+            // server-side encoder decision. The full server / client split
+            // is exposed via the two `effective*ContextTakeover` properties
+            // below — consumers wiring `WsPermessageDeflate` must use those
+            // to avoid asymmetric-offer breakage.
             contextTakeover = options.contextTakeover && !noServerCtx,
             threshold = options.threshold,
             level = options.level,
@@ -219,5 +243,7 @@ private fun buildDeflateResult(
         ),
         serverMaxWindowBits = parsed.serverMaxWindowBits,
         clientMaxWindowBits = clientBits,
+        effectiveServerContextTakeover = options.contextTakeover && !noServerCtx,
+        effectiveClientContextTakeover = options.contextTakeover && !noClientCtx,
     )
 }
