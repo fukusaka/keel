@@ -64,6 +64,24 @@ internal class WsSessionImpl(
      */
     private val closeLock = Mutex()
 
+    /**
+     * Serialises every outbound frame so that:
+     * 1. Concurrent callers of [send] cannot corrupt the shared
+     *    [WsPermessageDeflate] encoder state (the engine is documented
+     *    as not thread-safe — concurrent `compress()` produces a DEFLATE
+     *    stream the peer rejects with `Z_DATA_ERROR`).
+     * 2. A DATA frame whose `compress()` started before [close] claimed
+     *    the close cannot land on the wire **after** the CLOSE frame
+     *    (RFC 6455 §5.5.1 forbids any frame after CLOSE in either
+     *    direction).
+     *
+     * Held across the whole `compress` + `requestWrite` + `requestFlush`
+     * sequence so the encoder run and the frame emission are atomic.
+     * The lock nests inside [closeLock] (CLOSE-once decision happens
+     * first; the lock then orders the actual frame emission).
+     */
+    private val sendLock = Mutex()
+
     /** Captured peer CLOSE frame (if any) so the upgrade flow can echo it back. */
     @Volatile
     var peerCloseFrame: WsFrame? = null
@@ -137,17 +155,25 @@ internal class WsSessionImpl(
      */
     private suspend fun failConnection(code: Int, reason: String) {
         if (!claimClose()) return
-        runCatching { sendInternal(WsFrame.close(WsCloseCode(code), reason)) }
+        // Same CLOSE-after-DATA ordering rationale as [close].
+        sendLock.withLock {
+            runCatching { sendInternal(WsFrame.close(WsCloseCode(code), reason)) }
+        }
     }
 
     override suspend fun send(frame: WsFrame) {
-        if (closed) return
-        // RFC 6455 §5.3 forbids the server from masking outbound
-        // frames. Echo handlers naturally feed received (masked)
-        // client frames back into send(); strip the mask key here so
-        // such code does not need to know about the rule.
-        val outgoing = if (frame.maskKey != null) frame.copy(maskKey = null) else frame
-        sendInternal(outgoing)
+        // Serialised through [sendLock] for the same reason as sendData:
+        // a raw-frame send racing a close() must not put a DATA frame
+        // after CLOSE on the wire (RFC 6455 §5.5.1).
+        sendLock.withLock {
+            if (closed) return
+            // RFC 6455 §5.3 forbids the server from masking outbound
+            // frames. Echo handlers naturally feed received (masked)
+            // client frames back into send(); strip the mask key here so
+            // such code does not need to know about the rule.
+            val outgoing = if (frame.maskKey != null) frame.copy(maskKey = null) else frame
+            sendInternal(outgoing)
+        }
     }
 
     override suspend fun send(message: WsMessage) {
@@ -173,26 +199,57 @@ internal class WsSessionImpl(
      * verbatim with RSV1=0.
      */
     private suspend fun sendData(opcode: WsOpcode, payload: ByteArray) {
-        if (closed) return
-        val engine = deflate
-        val frame = if (engine != null) {
-            when (val result = engine.compress(payload)) {
-                // The frame takes ownership of the compressed chunks; the
-                // encoder gather-writes them and releases each after the send.
-                is WsPermessageDeflate.CompressResult.Compressed ->
-                    WsFrame(fin = true, rsv1 = true, opcode = opcode, payloadChunks = result.chunks)
-                is WsPermessageDeflate.CompressResult.Uncompressed ->
-                    WsFrame(fin = true, opcode = opcode, payload = result.payload)
+        // The compress + emit pair runs entirely under [sendLock]: the
+        // deflate engine is not thread-safe, and the `closed`-after-lock
+        // check holds the "no DATA after CLOSE" invariant against a
+        // concurrent close() racing in after our pre-lock check.
+        sendLock.withLock {
+            if (closed) return
+            val engine = deflate
+            val frame = if (engine != null) {
+                when (val result = engine.compress(payload)) {
+                    // The frame takes ownership of the compressed chunks; the
+                    // encoder gather-writes them and releases each after the
+                    // send. If anything between here and a successful
+                    // sendInternal throws, the chunks would be orphaned with
+                    // no other reference — release them on the catch path.
+                    is WsPermessageDeflate.CompressResult.Compressed -> {
+                        val chunks = result.chunks
+                        try {
+                            WsFrame(fin = true, rsv1 = true, opcode = opcode, payloadChunks = chunks)
+                        } catch (t: Throwable) {
+                            chunks.release()
+                            throw t
+                        }
+                    }
+                    is WsPermessageDeflate.CompressResult.Uncompressed ->
+                        WsFrame(fin = true, opcode = opcode, payload = result.payload)
+                }
+            } else {
+                WsFrame(fin = true, opcode = opcode, payload = payload)
             }
-        } else {
-            WsFrame(fin = true, opcode = opcode, payload = payload)
+            try {
+                sendInternal(frame)
+            } catch (t: Throwable) {
+                // sendInternal could not enqueue the frame; the chunks
+                // never reached the encoder, so we still own them.
+                frame.payloadChunks?.release()
+                throw t
+            }
         }
-        sendInternal(frame)
     }
 
     override suspend fun close(code: WsCloseCode, reason: String) {
         if (!claimClose()) return
-        runCatching { sendInternal(WsFrame.close(code, reason)) }
+        // Take [sendLock] so the CLOSE frame is sequenced after any
+        // in-flight send() that won the pre-lock `if (closed) return`
+        // check before we set `closed = true` in claimClose. Inside
+        // those sends the post-lock re-check then sees `closed == true`
+        // and the send returns without emitting — leaving CLOSE as the
+        // final wire-level frame, as RFC 6455 §5.5.1 requires.
+        sendLock.withLock {
+            runCatching { sendInternal(WsFrame.close(code, reason)) }
+        }
         applicationFrames.close()
     }
 
@@ -207,7 +264,8 @@ internal class WsSessionImpl(
      */
     suspend fun sendRaw(frame: WsFrame) {
         if (!claimClose()) return
-        sendInternal(frame)
+        // Same CLOSE-after-DATA ordering rationale as [close].
+        sendLock.withLock { sendInternal(frame) }
     }
 
     /**
