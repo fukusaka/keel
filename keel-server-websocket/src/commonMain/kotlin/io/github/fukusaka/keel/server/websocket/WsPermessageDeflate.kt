@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufAccumulator
 import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
@@ -145,19 +145,12 @@ internal class WsPermessageDeflate(
         if (payload.size < options.threshold) {
             return CompressResult.Uncompressed(payload)
         }
-        // The encoder emits compressed bytes into a single `ArrayList<IoBuf>`
-        // and `stripSyncTail` mutates that list in place; the final
-        // `IoBufChunks` takes ownership without a defensive copy. One
-        // ArrayList allocation per message — the previous flow allocated
-        // four (encoder list + IoBufChunks defensive copy + stripSyncTail
-        // rebuild + second defensive copy).
         val chunks = runEncoderChunks(payload)
         // After the Z_SYNC_FLUSH boundary the stream stays open; reset()
         // per message decides (via contextTakeover) whether the LZ77 window
         // carries over (RFC 7692 §7.1.1).
         encoder.reset()
-        stripSyncTailInPlace(chunks)
-        return CompressResult.Compressed(IoBufChunks.takeOwnership(chunks))
+        return CompressResult.Compressed(chunks)
     }
 
     /**
@@ -165,9 +158,9 @@ internal class WsPermessageDeflate(
      * (RFC 7692 §7.2.2): appends the `00 00 FF FF` sync tail and
      * inflates. The tail is written directly into the input IoBuf
      * instead of concatenated onto a fresh `payload + SYNC_TAIL`
-     * ByteArray, so the inbound zip-bomb-spike path holds zero
-     * intermediate ByteArray allocs (the codec output still grows
-     * the [ByteSink] backing array, capped by `maxOutputSize`).
+     * ByteArray, and the inflated output accumulates into pooled
+     * [io.github.fukusaka.keel.buf.IoBufAccumulator] chunks (capped by
+     * `maxOutputSize`) flattened once to the returned `ByteArray`.
      *
      * @throws io.github.fukusaka.keel.compression.DecompressionException
      *   if the input is malformed or expands past the message size cap.
@@ -186,75 +179,58 @@ internal class WsPermessageDeflate(
     }
 
     /**
-     * Drives [encoder] over [input] into a fresh pooled chunk per output
-     * step. The keel SPI loop: `update` until `NEED_INPUT`, then `flush`
-     * until `NEED_INPUT` (the `Z_SYNC_FLUSH` boundary is fully drained).
-     * Each step that fills the output buffer keeps it as a chunk and swaps
-     * in a fresh one ([keepChunk]), so the codec output buffers *become* the
-     * payload chunks — no intermediate copy, no `ByteArray`, no boxing.
+     * Drives [encoder] over [input] into an [IoBufAccumulator]: the codec
+     * writes straight into pooled chunks (`NEED_OUTPUT` seals a full chunk),
+     * so the compressed output buffers *become* the [IoBufChunks] payload —
+     * no intermediate copy, no `ByteArray`, no boxing. The accumulator's
+     * [IoBufAccumulator.trimTail] strips the RFC 7692 `00 00 FF FF`
+     * `Z_SYNC_FLUSH` marker before the chunks are handed off.
      */
-    private fun runEncoderChunks(input: ByteArray): ArrayList<IoBuf> {
+    private fun runEncoderChunks(input: ByteArray): IoBufChunks {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
-        val chunks = ArrayList<IoBuf>()
-        var out = allocator.allocate(OUTPUT_CHUNK)
+        val acc = IoBufAccumulator(allocator, OUTPUT_CHUNK)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
             while (true) {
-                when (encoder.update(src, out)) {
-                    CodecStatus.NEED_OUTPUT -> out = keepChunk(chunks, out)
+                when (encoder.update(src, acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> acc.commit()
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            out = keepChunk(chunks, out)
+            acc.commit()
             // Z_SYNC_FLUSH boundary (NOT finish): emits the compressed message
             // ending in 00 00 FF FF, leaving the stream open. flush() returns
             // NEED_INPUT once the boundary is fully drained.
-            while (encoder.flush(out) != CodecStatus.NEED_INPUT) {
-                out = keepChunk(chunks, out)
+            while (encoder.flush(acc.writableChunk()) != CodecStatus.NEED_INPUT) {
+                acc.commit()
             }
-            out = keepChunk(chunks, out)
+            acc.commit()
+            // Strip the trailing 00 00 FF FF marker. Fail-fast guard inside
+            // trimTail covers a contract-violating encoder (a NoFlush stream
+            // terminated by flush() always emits at least those four bytes).
+            acc.trimTail(SYNC_TAIL.size)
+            return acc.toIoBufChunks()
         } catch (t: Throwable) {
-            chunks.forEach { it.release() }
+            acc.release()
             throw t
         } finally {
             src.release()
-            out.release()
         }
-        return chunks
     }
 
     /**
-     * If [out] holds bytes, appends it to [chunks] and returns a fresh pooled
-     * buffer for the next codec step; otherwise returns [out] unchanged (no
-     * empty chunk, no wasted allocation).
-     */
-    private fun keepChunk(chunks: MutableList<IoBuf>, out: IoBuf): IoBuf {
-        if (out.readableBytes == 0) return out
-        // Allocate the fresh chunk BEFORE handing `out` to the list. If
-        // `allocate` throws, `chunks` is unmodified and the caller's `out`
-        // variable still owns the original buffer — the catch path then
-        // releases each chunk plus `out` exactly once. Adding to `chunks`
-        // first would leave `out` aliased both in the list and in the local
-        // variable, causing a double release when the catch path runs.
-        val fresh = allocator.allocate(OUTPUT_CHUNK)
-        chunks.add(out)
-        return fresh
-    }
-
-    /**
-     * Drives [decoder] over [input] into a growable primitive `ByteArray`
-     * sink. Inbound messages reach the application as `ByteArray`
-     * (`onMessage`), so — unlike the encoder — chunking has no gather-write
-     * payoff; the sink just avoids the per-byte boxing the old
-     * `ArrayList<Byte>` accumulation incurred. The per-frame `flush` (NOT
-     * `finish`) drains this frame's plaintext and leaves the stream open.
+     * Drives [decoder] over [input] into an [IoBufAccumulator], flattened to
+     * a contiguous `ByteArray` for the application message API. The codec
+     * writes straight into pooled chunks (`NEED_OUTPUT` seals a full chunk),
+     * so accumulation copies nothing and [IoBufAccumulator.toByteArray] does
+     * a single flatten — no per-drain copy and no doubling-realloc churn (the
+     * previous growable-`ByteArray` sink did both). The per-frame `flush`
+     * (NOT `finish`) drains this frame's plaintext and leaves the stream open.
      */
     private fun runDecoder(input: ByteArray): ByteArray {
-        val totalIn = input.size + SYNC_TAIL.size
-        val src = allocator.allocate(totalIn)
-        val output = allocator.allocate(OUTPUT_CHUNK)
-        val sink = ByteSink(totalIn * INFLATE_GUESS_RATIO)
+        val src = allocator.allocate(input.size + SYNC_TAIL.size)
+        val acc = IoBufAccumulator(allocator, OUTPUT_CHUNK)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
             // Append the Z_SYNC_FLUSH boundary directly into the input
@@ -262,90 +238,25 @@ internal class WsPermessageDeflate(
             // intermediate heap alloc on the inbound-message hot path.
             src.writeByteArray(SYNC_TAIL, 0, SYNC_TAIL.size)
             while (true) {
-                when (decoder.update(src, output)) {
-                    CodecStatus.NEED_OUTPUT -> sink.drain(output)
+                when (decoder.update(src, acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> acc.commit()
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            sink.drain(output)
+            acc.commit()
             // flush() (NOT finish): drain this frame's plaintext, leave the
             // inflate stream open. Returns NEED_INPUT when the boundary is done.
-            while (decoder.flush(output) != CodecStatus.NEED_INPUT) {
-                sink.drain(output)
+            while (decoder.flush(acc.writableChunk()) != CodecStatus.NEED_INPUT) {
+                acc.commit()
             }
-            sink.drain(output)
+            acc.commit()
+            return acc.toByteArray()
+        } catch (t: Throwable) {
+            acc.release()
+            throw t
         } finally {
             src.release()
-            output.release()
-        }
-        return sink.toByteArray()
-    }
-
-    /**
-     * Growable primitive-`ByteArray` sink. Reads each codec output chunk
-     * straight from the [IoBuf] into the backing array (no intermediate copy,
-     * no boxing) and doubles capacity on overflow for amortized O(n) growth.
-     */
-    private class ByteSink(initialCapacity: Int) {
-        private var buf = ByteArray(initialCapacity.coerceAtLeast(1))
-        private var len = 0
-
-        fun drain(output: IoBuf) {
-            val n = output.readableBytes
-            if (n == 0) return
-            if (len + n > buf.size) buf = buf.copyOf((len + n).coerceAtLeast(buf.size * 2))
-            output.readByteArray(buf, len, n)
-            len += n
-            output.clear()
-        }
-
-        // Skip the right-size copy when the backing array is already exactly
-        // full (the growth heuristic happened to land on the decompressed
-        // size). The sink is single-use per decompress() call, so returning
-        // `buf` directly cannot alias a future message.
-        fun toByteArray(): ByteArray = if (len == buf.size) buf else buf.copyOf(len)
-    }
-
-    /**
-     * Trims the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from the
-     * deflated [chunks] **in place** — releases any chunk fully consumed
-     * by the trim, decrements the last partial chunk's `writerIndex`, and
-     * leaves the rest untouched. A `NoFlush` stream terminated by `flush()`
-     * always ends in those four bytes, so the trim is unconditional.
-     *
-     * Mutates [chunks] (removes trailing entries); the caller hands the
-     * trimmed list straight to [IoBufChunks.takeOwnership] for a
-     * defensive-copy-free wrap. The previous flow rebuilt the list and
-     * wrapped twice, allocating three extra `ArrayList`s per message —
-     * a residual GC cost #668's per-drain chunking did not address.
-     *
-     * The "fewer than 4 compressed bytes" case is reachable only if the
-     * encoder violated its own contract — `update` + `flush()` on
-     * `FlushMode.NoFlush` always emits at least the `00 00 FF FF` marker —
-     * so we fail fast instead of letting an under-trimmed payload reach the
-     * wire (which would put random uncompressed bytes there).
-     */
-    private fun stripSyncTailInPlace(chunks: ArrayList<IoBuf>) {
-        var remaining = SYNC_TAIL.size
-        var totalSize = 0
-        for (i in chunks.indices) totalSize += chunks[i].readableBytes
-        check(totalSize >= remaining) {
-            "permessage-deflate encoder emitted $totalSize bytes (< sync tail size ${SYNC_TAIL.size}); contract broken"
-        }
-        var idx = chunks.size - 1
-        while (remaining > 0 && idx >= 0) {
-            val chunk = chunks[idx]
-            val n = chunk.readableBytes
-            if (n <= remaining) {
-                chunk.release()
-                chunks.removeAt(idx)
-                remaining -= n
-                idx--
-            } else {
-                chunk.writerIndex -= remaining
-                remaining = 0
-            }
         }
     }
 
@@ -357,10 +268,7 @@ internal class WsPermessageDeflate(
          */
         private val SYNC_TAIL: ByteArray = byteArrayOf(0x00, 0x00, 0xFF.toByte(), 0xFF.toByte())
 
-        /** Output IoBuf size for the streaming codec drive loop. */
+        /** Per-chunk IoBuf size for the streaming codec drive loop. */
         private const val OUTPUT_CHUNK: Int = 8192
-
-        /** Rough initial-capacity multiplier for the inflate accumulator. */
-        private const val INFLATE_GUESS_RATIO: Int = 4
     }
 }
