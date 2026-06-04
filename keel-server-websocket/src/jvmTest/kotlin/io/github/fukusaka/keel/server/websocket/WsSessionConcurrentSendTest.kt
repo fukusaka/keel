@@ -41,6 +41,14 @@ import kotlin.time.Duration.Companion.seconds
  * The test exercises the full JVM path (NIO engine + real DEFLATE codec
  * + Inflater round-trip), so it doubles as integration coverage for the
  * upgrade-time deflate negotiation and the gather-write frame encoder.
+ *
+ * **Why jvmTest, not commonTest**: the test needs a multi-threaded
+ * dispatcher to actually force overlapping `compress()` entries
+ * (`Dispatchers.Default` on JVM), a real engine to round-trip frames
+ * (`NioEngine`), a raw TCP client to read wire bytes (`java.net.Socket`),
+ * and an Inflater that surfaces `DataFormatException` on corrupted
+ * streams (`java.util.zip.Inflater`). None of these have a portable
+ * commonMain analogue today.
  */
 class WsSessionConcurrentSendTest {
 

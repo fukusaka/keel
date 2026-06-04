@@ -99,6 +99,16 @@ internal class WsSessionImpl(
      * freely (RFC 6455 §5.4) and bypass [aggregator] entirely, so the
      * in-progress message state is never disturbed.
      *
+     * **PONG path is deliberately outside [sendLock]**: RFC 6455 §5.5.1
+     * constrains DATA-frame ordering against CLOSE, not control frames,
+     * so making the PING→PONG reply wait on a user `send()` that is
+     * mid-compress would degrade ping latency for no protocol benefit.
+     * The underlying transport's `ioDispatcher` still serialises every
+     * `requestWrite` at the byte level, so the wire ordering between
+     * PONG and any concurrent DATA frame is well-defined; only the
+     * encoder-state sharing concern (which control frames don't touch)
+     * requires the lock.
+     *
      * Does **not** echo a peer CLOSE — [runWebSocketUpgrade] does that
      * after the user handler has finished draining any messages already
      * buffered, so a tail-end echo cannot race ahead of in-flight `send`
