@@ -173,7 +173,25 @@ internal class WsPermessageDeflate(
         return inflated
     }
 
+    /** Tracks whether [close] has run so a second call no-ops instead of
+     * relying on each backend honouring the SPI's idempotency promise. */
+    private var closed: Boolean = false
+
+    /**
+     * Releases the encoder and decoder sessions. Idempotent — a second
+     * call is a no-op.
+     *
+     * The SPI documents `EncoderSession.close` / `DecoderSession.close`
+     * as idempotent on each backend, but two upstream callers can now
+     * close the engine on overlapping error paths (the upgrade-time
+     * guard introduced for the deflate-engine leak fix, and the
+     * post-handler `releaseDeflate` in the inner finally). Guarding here
+     * means the engine remains safe even if a future backend refactor
+     * dropped the per-session idempotency.
+     */
     override fun close() {
+        if (closed) return
+        closed = true
         encoder.close()
         decoder.close()
     }
