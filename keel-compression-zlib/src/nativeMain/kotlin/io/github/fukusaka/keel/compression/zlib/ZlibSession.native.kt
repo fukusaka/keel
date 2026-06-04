@@ -140,6 +140,11 @@ private class NativeZlibEncoderSession(
     private var closed: Boolean = false
     private var finishedReturned: Boolean = false
 
+    // True once finish() has driven Z_FINISH at least once (the trailer is
+    // draining) but FINISHED has not yet been returned. Guards flush()
+    // against a mid-trailer boundary request — see flush().
+    private var finishStarted: Boolean = false
+
     init {
         val rc = keel_deflate_init(
             z,
@@ -181,6 +186,11 @@ private class NativeZlibEncoderSession(
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Reject a flush issued mid-trailer (symmetric to the JVM backend):
+        // once finish() has driven Z_FINISH, the stream is terminating and a
+        // SYNC_FLUSH boundary is no longer meaningful — native zlib would
+        // error or ignore it. Drive finish() to FINISHED (or reset()) first.
+        check(!finishStarted) { "session is finishing — drive finish() to FINISHED before flush()" }
         // Z_SYNC_FLUSH on no new input: emit the byte-aligned boundary
         // (raw DEFLATE ends in 00 00 FF FF), stream stays open.
         return drive(input = null, output = output, flag = keel_zlib_flag_sync_flush(), isFinish = false)
@@ -189,6 +199,7 @@ private class NativeZlibEncoderSession(
     override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         if (finishedReturned) return CodecStatus.FINISHED
+        finishStarted = true
         // Empty input IoBuf — pass null in_buf via the cinterop wrapper.
         val s = drive(input = null, output = output, flag = keel_zlib_flag_finish(), isFinish = true)
         if (s == CodecStatus.NEED_OUTPUT) return CodecStatus.NEED_OUTPUT
@@ -218,6 +229,7 @@ private class NativeZlibEncoderSession(
             options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
         }
         finishedReturned = false
+        finishStarted = false
     }
 
     override fun close() {

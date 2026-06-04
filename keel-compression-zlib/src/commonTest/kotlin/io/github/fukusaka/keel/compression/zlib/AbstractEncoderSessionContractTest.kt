@@ -461,6 +461,53 @@ public abstract class AbstractEncoderSessionContractTest {
         }
     }
 
+    @Test
+    public fun `flush after finish has started throws IllegalStateException`() {
+        // S-B2 (4th deep-review): flush() only guarded on `finishedReturned`,
+        // so a flush() issued while a finish() trailer was still draining
+        // (finish returned NEED_OUTPUT but not yet FINISHED) slipped past the
+        // guard and silently downgraded to a no-op (the backend ignores a
+        // SYNC_FLUSH once the stream is terminating). flush() now also
+        // rejects the mid-trailer state. To force the mid-trailer window
+        // deterministically across backends, finish() is driven into a
+        // 1-byte output so it cannot emit the whole trailer in one call.
+        val payload = "Hello, flush-after-finish-started".encodeToByteArray()
+        val session = newSession()
+        val output = allocator.allocate(outputCap)
+        val tiny = allocator.allocate(1)
+        try {
+            // Consume the input.
+            val sink = ByteCollector()
+            val input = allocator.allocate(payload.size).apply { writeByteArray(payload, 0, payload.size) }
+            try {
+                driveUpdateToNeedInput(session, input, output, sink, maxIterations = 64)
+            } finally {
+                input.release()
+            }
+            // Start finishing into a 1-byte buffer: drains a byte at a time
+            // until the (small) trailer is exhausted. The first call that
+            // emits a byte leaves the session mid-trailer (NEED_OUTPUT).
+            var firstStatus = session.finish(tiny)
+            tiny.clear()
+            // Gzip emits its header first; keep draining until past it so the
+            // finish trailer (not the header) is what is in flight.
+            var guard = 0
+            while (firstStatus == CodecStatus.NEED_OUTPUT && guard < 64) {
+                // While mid-trailer, flush() must reject.
+                assertFailsWith<IllegalStateException> { session.flush(output) }
+                firstStatus = session.finish(tiny)
+                tiny.clear()
+                guard++
+            }
+            // After FINISHED, flush() still rejects (the existing guard).
+            assertFailsWith<IllegalStateException> { session.flush(output) }
+        } finally {
+            tiny.release()
+            output.release()
+            session.close()
+        }
+    }
+
     // ---- helpers ----
 
     private fun encodeOnce(session: EncoderSession, payload: ByteArray, output: IoBuf) {

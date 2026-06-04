@@ -14,23 +14,55 @@ package io.github.fukusaka.keel.compression
  * registered encoders via [registeredEncoders]; the registry itself knows
  * nothing about HTTP headers.
  *
- * Thread-safety: instances are immutable from a registration standpoint
- * once handed to the consuming pipeline. Registration happens at
- * server / client setup; runtime lookups via [find][findEncoder] /
- * [registeredEncoders] are read-only.
+ * **Thread-safety: register before use, then read-only.** The backing
+ * maps are plain (unsynchronized) [LinkedHashMap]s, built on the setup
+ * thread and read concurrently by EventLoop threads at runtime. That is
+ * safe **only** while registration completes before the registry is
+ * handed to the pipeline — a lazy `registerEncoder` from a per-request
+ * handler would race the concurrent lookups and corrupt the map. To make
+ * that misuse fail fast instead of silently corrupting, the registry can
+ * be **sealed** ([seal]): once sealed, any `register*` throws
+ * [IllegalStateException] while lookups stay open. The `keel-server-http`
+ * compression DSL seals the registry when it finalizes the pipeline
+ * config, so a register() after server setup fails loudly; registries
+ * built directly (e.g. in tests) are unsealed until [seal] is called.
  */
 public class CompressionRegistry {
 
     private val byName: MutableMap<String, RegisteredEncoder> = LinkedHashMap()
     private val decoderByName: MutableMap<String, Decoder> = LinkedHashMap()
 
+    // Once true, register* throws. Flipped by seal() at the setup→runtime
+    // boundary; lookups never touch it (no hot-path write).
+    private var sealed: Boolean = false
+
+    /**
+     * Mark the registry read-only at the setup→runtime boundary. After
+     * this, any `register*` throws [IllegalStateException]; lookups stay
+     * open. Idempotent. Called by the consuming pipeline (e.g. the
+     * `keel-server-http` compression DSL) once registration is complete,
+     * so a late registration races nothing — it fails fast instead.
+     */
+    public fun seal() {
+        sealed = true
+    }
+
+    private fun checkMutable() {
+        check(!sealed) {
+            "CompressionRegistry is sealed: register all codecs at setup, before the registry is handed " +
+                "to a pipeline (a late register() would race concurrent lookups on the unsynchronized map)"
+        }
+    }
+
     /** Register an [Encoder] (server-side). Higher [priority] wins ties. */
     public fun registerEncoder(encoder: Encoder, priority: Int = 0) {
+        checkMutable()
         byName[encoder.name.lowercase()] = RegisteredEncoder(encoder, priority)
     }
 
     /** Register a [Decoder] (client-side). */
     public fun registerDecoder(decoder: Decoder) {
+        checkMutable()
         decoderByName[decoder.name.lowercase()] = decoder
     }
 

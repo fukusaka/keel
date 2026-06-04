@@ -151,6 +151,13 @@ private class JvmZlibEncoderSession(
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Reject a flush issued mid-trailer: once finish() has called
+        // deflater.finish() (finish returned NEED_OUTPUT and is draining the
+        // Z_FINISH trailer), the stream is terminating and the JDK silently
+        // ignores the SYNC_FLUSH flag — flush() would be a no-op that returns
+        // misleading status. The caller must drive finish() to FINISHED (or
+        // reset()) before a boundary flush makes sense again.
+        check(!deflaterFinishStarted) { "session is finishing — drive finish() to FINISHED before flush()" }
         // Emit a Z_SYNC_FLUSH boundary (raw DEFLATE ends in 00 00 FF FF) and
         // keep the stream open. A gzip stream still needs its header before
         // the first bytes, even when flushed before any update().
