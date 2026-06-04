@@ -173,8 +173,17 @@ internal class WsPermessageDeflate(
         return inflated
     }
 
-    /** Tracks whether [close] has run so a second call no-ops instead of
-     * relying on each backend honouring the SPI's idempotency promise. */
+    /**
+     * Tracks whether [close] has run so a second call no-ops instead of
+     * relying on each backend honouring the SPI's idempotency promise.
+     *
+     * Not [@Volatile] because the engine is owned by exactly one upgrade
+     * coroutine: every close() site (the upgrade-time catch wrapper and
+     * the post-handler `releaseDeflate` finally) is sequenced by the
+     * outer flow with no inter-thread visibility hazard. If a future
+     * caller publishes the engine across coroutines, switch to
+     * `kotlin.concurrent.Volatile`.
+     */
     private var closed: Boolean = false
 
     /**
