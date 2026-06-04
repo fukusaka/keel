@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.codec.http
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionRegistry
 import io.github.fukusaka.keel.compression.Encoder
@@ -261,9 +262,10 @@ class CompressionHandlerTest {
         val encoder = CountingUpperEncoder()
         val registry = CompressionRegistry().apply { registerEncoder(encoder) }
         val state = ChainState()
-        // body A "hello" -> "HELLO" emits 5 bytes; the allocator fails that emit.
-        val handler = CompressionHandler(registry, FailOnSizeAllocator(failSize = 5))
-        val ctx = TestCtx(state)
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        // body A "hello" -> "HELLO" is handed downstream, where the chain
+        // rejects the body chunk (throws) — aborting response A mid-stream.
+        val ctx = ctxAbortingFirstBody(state)
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200())
@@ -273,7 +275,7 @@ class CompressionHandlerTest {
         } catch (e: IllegalStateException) {
             aborted = true
         }
-        assertTrue(aborted, "expected the injected allocation failure to abort response A")
+        assertTrue(aborted, "expected the injected downstream rejection to abort response A")
 
         // Response B completes normally on the same handler (keep-alive reuse).
         handler.onRead(ctx, reqUpper("/b"))
@@ -285,16 +287,46 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `a mid-stream encoder failure releases the held working buffer`() {
+        // When the abort comes from inside the codec (session.update throws)
+        // the handler still holds the working buffer it acquired for that
+        // update — it was not handed off. discardPendingResponse must release
+        // it (the old persistent-scratch shape only cleared it, but the new
+        // per-emit buffer must be freed or it leaks one pooled buffer per
+        // aborted response on a keep-alive connection). TrackingAllocator's
+        // outstandingCount surfaces the leak.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val registry = CompressionRegistry().apply { registerEncoder(ThrowOnUpdateEncoder()) }
+        val handler = CompressionHandler(registry, tracker)
+        val ctx = TestCtx(ChainState())
+
+        handler.onRead(ctx, reqUpper("/a"))
+        handler.onWrite(ctx, head200()) // ensureWorking allocates the working buffer
+        var aborted = false
+        try {
+            handler.onWrite(ctx, HttpBody(bufOf("hello")))
+        } catch (e: IllegalStateException) {
+            aborted = true
+        }
+        assertTrue(aborted, "expected the encoder update failure to abort the response")
+        // The working buffer acquired in handleResponseHead must have been
+        // released by discardPendingResponse — nothing left outstanding.
+        tracker.assertNoLeaks("working buffer leaked on mid-update abort")
+    }
+
+    @Test
     fun `a mid-stream failure does not bleed leftover bytes into the next response`() {
-        // The per-channel scratch buffer is reused across responses. When a
-        // response aborts mid-emit, scratch can retain partially compressed
-        // bytes. Pre-fix: the next response appended its output to that
-        // leftover, so response B's body started with response A's bytes.
+        // When a response aborts mid-stream the handler must not carry any
+        // partially-compressed bytes into the next response on the same
+        // keep-alive connection. The streaming path hands the working buffer
+        // straight downstream and `discardPendingResponse` releases + nulls it
+        // on abort, so the next response acquires a fresh buffer — response B's
+        // body must decode to exactly its own bytes.
         val encoder = CountingUpperEncoder()
         val registry = CompressionRegistry().apply { registerEncoder(encoder) }
         val state = ChainState()
-        val handler = CompressionHandler(registry, FailOnSizeAllocator(failSize = 5))
-        val ctx = TestCtx(state)
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = ctxAbortingFirstBody(state)
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200())
@@ -313,7 +345,7 @@ class CompressionHandlerTest {
 
         val bodies = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
         val decoded = bodies.joinToString("") { ioBufAsString(it.content) }
-        assertEquals("WORLDWIDE", decoded, "response B must not carry response A's leftover scratch bytes")
+        assertEquals("WORLDWIDE", decoded, "response B must not carry response A's leftover bytes")
     }
 
     @Test
@@ -576,6 +608,26 @@ class CompressionHandlerTest {
      * tracks how many sessions are currently open, so a leak across responses
      * is observable as a non-zero count.
      */
+    /**
+     * Encoder whose session throws from [EncoderSession.update] — simulates a
+     * codec-internal failure mid-stream so the handler aborts while still
+     * holding the working buffer it acquired for that update.
+     */
+    private class ThrowOnUpdateEncoder : Encoder {
+        override val name: String = "upper"
+        override fun newSession(allocator: BufferAllocator, options: EncoderOptions): EncoderSession =
+            object : EncoderSession {
+                override fun update(input: IoBuf, output: IoBuf): CodecStatus {
+                    input.readByteArray(ByteArray(input.readableBytes), 0, input.readableBytes)
+                    throw IllegalStateException("simulated codec-internal failure")
+                }
+
+                override fun finish(output: IoBuf): CodecStatus = CodecStatus.FINISHED
+                override fun reset() {}
+                override fun close() {}
+            }
+    }
+
     private class CountingUpperEncoder : Encoder {
         var openSessions: Int = 0
             private set
@@ -696,7 +748,17 @@ class CompressionHandlerTest {
         val reads: MutableList<Any> = mutableListOf()
     }
 
-    private class TestCtx(val state: ChainState) : io.github.fukusaka.keel.pipeline.PipelineHandlerContext {
+    private class TestCtx(
+        val state: ChainState,
+        // Injects a mid-stream failure: invoked before each outbound message is
+        // recorded, so returning normally records the write and throwing aborts
+        // it (simulating a downstream handler rejecting the body). Used by the
+        // mid-stream-recovery tests now that the streaming path hands the
+        // working buffer straight downstream (no exact-size emit allocation to
+        // target via the allocator).
+        private val beforeWrite: ((Any) -> Unit)? = null,
+        override val allocator: io.github.fukusaka.keel.buf.BufferAllocator = DefaultAllocator,
+    ) : io.github.fukusaka.keel.pipeline.PipelineHandlerContext {
         override val name: String get() = "test"
         override val pipeline: io.github.fukusaka.keel.pipeline.Pipeline
             get() = error("not used")
@@ -704,7 +766,6 @@ class CompressionHandlerTest {
             get() = error("not used")
         override val handler: io.github.fukusaka.keel.pipeline.PipelineHandler
             get() = error("not used")
-        override val allocator: io.github.fukusaka.keel.buf.BufferAllocator = DefaultAllocator
         override fun propagateRead(msg: Any) { state.reads.add(msg) }
         override fun propagateActive() {}
         override fun propagateInactive() {}
@@ -712,9 +773,30 @@ class CompressionHandlerTest {
         override fun propagateError(cause: Throwable) {}
         override fun propagateUserEvent(event: Any) {}
         override fun propagateWritabilityChanged(isWritable: Boolean) {}
-        override fun propagateWrite(msg: Any) { state.writes.add(msg) }
+        override fun propagateWrite(msg: Any) {
+            beforeWrite?.invoke(msg)
+            state.writes.add(msg)
+        }
         override fun propagateFlush() {}
         override fun propagateClose() {}
+    }
+
+    /**
+     * Builds a [TestCtx] that throws once on the first [HttpBody] (non-end)
+     * write — aborting a response mid-stream after its head was emitted. The
+     * thrown [HttpBody]'s buffer is released here so the test does not leak it
+     * (production hands the buffer downstream where the transport releases it
+     * after `writev`; in-test there is no transport).
+     */
+    private fun ctxAbortingFirstBody(state: ChainState): TestCtx {
+        var thrown = false
+        return TestCtx(state, beforeWrite = { msg ->
+            if (!thrown && msg is HttpBody && msg !is HttpBodyEnd) {
+                thrown = true
+                msg.content.release()
+                throw IllegalStateException("simulated downstream rejection of body chunk")
+            }
+        })
     }
 
     private fun bufOf(text: String): IoBuf {
