@@ -510,6 +510,12 @@ public class HttpRequestDecompressionHandler(
         }
     }
 
+    // Three release-on-throw rethrow sites guard distinct ownership
+    // transitions (scratch→emit copy, limit check after counter update,
+    // and the propagateRead hand-off). Each one re-uses the same `emit`
+    // reference so a shared catch helper would obscure the read order;
+    // collapse is not safe.
+    @Suppress("ThrowsCount")
     private fun emitDecodedChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
         val n = scratchBuf.readableBytes
         if (n == 0) return
