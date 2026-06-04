@@ -41,6 +41,20 @@ class WsFrameParserTest {
     }
 
     @Test
+    fun parseMaskedBinaryFrameLongerThanOneMaskCycle() {
+        // Pins the unmask key indexing across more than two full 4-byte
+        // cycles (the in-place unmask uses `i and 3` for the key byte).
+        // A 10-byte payload exercises key positions 0,1,2,3,0,1,2,3,0,1.
+        val mask = byteArrayOf(0x12, 0x34, 0x56.b, 0x78)
+        val plain = ByteArray(10) { (it * 7 + 3).toByte() }
+        val masked = ByteArray(plain.size) { i -> (plain[i].toInt() xor mask[i % 4].toInt()).toByte() }
+        val frame = byteArrayOf(0x82.b, (0x80 or plain.size).b) + mask + masked
+        val f = parseFrame(buf(frame))
+        assertEquals(WsOpcode.BINARY, f.opcode)
+        assertContentEquals(plain, f.payload)
+    }
+
+    @Test
     fun parseUnmaskedBinaryFrame() {
         val data = byteArrayOf(0x01, 0x02, 0x03)
         val src = buf(byteArrayOf(0x82.b, 0x03) + data)
