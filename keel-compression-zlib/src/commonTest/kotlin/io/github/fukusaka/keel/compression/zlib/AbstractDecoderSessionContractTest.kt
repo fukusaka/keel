@@ -364,6 +364,24 @@ public abstract class AbstractDecoderSessionContractTest {
         }
     }
 
+    @Test
+    public fun `flush after close throws IllegalStateException`() {
+        // Symmetric to `update / finish / reset after close throws`. The
+        // close() KDoc states any other method after close throws
+        // IllegalStateException — flush() was the one variant the decoder
+        // suite did not pin, so a backend could silently drop the guard.
+        val session = newSession()
+        session.close()
+        val output = allocator.allocate(outputCap)
+        try {
+            assertFailsWith<IllegalStateException> {
+                session.flush(output)
+            }
+        } finally {
+            output.release()
+        }
+    }
+
     private fun driveToFinished(session: DecoderSession, input: IoBuf, output: IoBuf) {
         var iters = 0
         while (iters < 256) {

@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -339,9 +340,12 @@ public abstract class AbstractEncoderSessionContractTest {
 
     @Test
     public fun `flush after finish throws IllegalStateException`() {
-        // Symmetric to `update after finish` (already covered in concrete tests).
-        // The EncoderSession KDoc invariant: after FINISHED, both update() and
-        // flush() must reject — the stream is no longer open.
+        // The EncoderSession KDoc invariant: after FINISHED, both update()
+        // and flush() must reject — the stream is no longer open. The
+        // `update after finish` half of that invariant is pinned by its own
+        // test below (previously this comment claimed it was "already
+        // covered in concrete tests", which was not true for the encoder —
+        // the decoder had it but the encoder abstract suite did not).
         val payload = "Hello, finish-then-flush".encodeToByteArray()
         val session = newSession()
         val output = allocator.allocate(outputCap)
@@ -353,6 +357,104 @@ public abstract class AbstractEncoderSessionContractTest {
             assertFailsWith<IllegalStateException> {
                 session.flush(output)
             }
+        } finally {
+            output.release()
+            session.close()
+        }
+    }
+
+    @Test
+    public fun `update after finish throws IllegalStateException`() {
+        // Pins the other half of the post-FINISHED invariant (symmetric to
+        // the decoder's `update after finish throws` and to the encoder's
+        // `flush after finish throws` above). After FINISHED the stream is
+        // no longer open; update() is a caller error (forgot reset()).
+        val payload = "Hello, finish-then-update".encodeToByteArray()
+        val session = newSession()
+        val output = allocator.allocate(outputCap)
+        val input = allocator.allocate(8)
+        try {
+            encodeOnce(session, payload, output)
+            output.clear()
+            assertFailsWith<IllegalStateException> {
+                session.update(input, output)
+            }
+        } finally {
+            output.release()
+            input.release()
+            session.close()
+        }
+    }
+
+    @Test
+    public fun `finish after FINISHED keeps returning FINISHED idempotently`() {
+        // EncoderSession KDoc: "Calling finish again after it returned
+        // FINISHED keeps returning FINISHED until reset is called". Unlike
+        // update() / flush() (which throw), finish() is idempotent so the
+        // caller need not remember whether the stream is already drained.
+        val payload = "Hello, idempotent-finish".encodeToByteArray()
+        val session = newSession()
+        val output = allocator.allocate(outputCap)
+        try {
+            encodeOnce(session, payload, output) // drives to FINISHED
+            output.clear()
+            // Two more finish() calls on a drained stream must each return
+            // FINISHED and write nothing.
+            assertEquals(CodecStatus.FINISHED, session.finish(output))
+            assertEquals(0, output.readableBytes, "idempotent finish must not emit bytes")
+            assertEquals(CodecStatus.FINISHED, session.finish(output))
+            assertEquals(0, output.readableBytes, "idempotent finish must not emit bytes")
+        } finally {
+            output.release()
+            session.close()
+        }
+    }
+
+    @Test
+    public fun `flush after close throws IllegalStateException`() {
+        // Symmetric to `update / finish / reset after close throws`. The
+        // close() KDoc states any other method after close throws
+        // IllegalStateException — flush() was the one variant the suite did
+        // not pin, so a backend could silently drop the guard.
+        val session = newSession()
+        session.close()
+        val output = allocator.allocate(outputCap)
+        try {
+            assertFailsWith<IllegalStateException> {
+                session.flush(output)
+            }
+        } finally {
+            output.release()
+        }
+    }
+
+    @Test
+    public fun `reset after finish discards pending state and allows reuse`() {
+        // reset() on a finished session must return it to a clean state so
+        // the next message encodes correctly — independent of whether the
+        // caller fully drained the previous finish() output. Pins the
+        // "reset() is always safe and discards any undrained output"
+        // contract (EncoderSession.reset KDoc).
+        val first = "first message payload".encodeToByteArray()
+        val second = "an entirely different second message".encodeToByteArray()
+        val session = newSession()
+        val output = allocator.allocate(outputCap)
+        try {
+            encodeOnce(session, first, output) // drives to FINISHED
+            output.clear()
+            session.reset()
+            // The session must now encode `second` from scratch and reach
+            // FINISHED again; a leftover-state bug would corrupt the output
+            // or fail to converge.
+            val sink = ByteCollector()
+            val input = allocator.allocate(second.size).apply { writeByteArray(second, 0, second.size) }
+            try {
+                driveUpdateToNeedInput(session, input, output, sink, maxIterations = 64)
+                driveToFinished(session, output, sink, maxIterations = 64)
+            } finally {
+                input.release()
+            }
+            assertTrue(sink.size > 0, "re-encode after reset must produce output")
         } finally {
             output.release()
             session.close()
