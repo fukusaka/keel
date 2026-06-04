@@ -28,13 +28,26 @@ public class RequestDecompressionLimitException(
 ) : DecompressionException(buildMessage(reason, bytesDecoded, bytesIn)) {
 
     public enum class Reason {
+        /**
+         * The `Content-Length` header advertised a compressed body
+         * larger than `decompressionLimit` would ever permit decoded —
+         * the request is rejected at handler entry, before any decoder
+         * is instantiated. The cheapest defense layer: even an honest
+         * client paying the bandwidth to send a multi-MiB compressed
+         * body that could only expand into a violation gets a 413
+         * without the server doing any inflate work.
+         */
+        CompressedSizeExceeded,
+
         /** The cumulative decoded byte count exceeded `decompressionLimit`. */
         AbsoluteSizeExceeded,
 
         /**
-         * The decoded:input ratio exceeded `ratioLimit` more than
-         * `ratioBurst` times cumulatively across the request — typical
-         * zip-bomb signature.
+         * The decoded:input ratio exceeded `ratioLimit` — typical
+         * zip-bomb signature. With the default single-shot trip
+         * (`ratioBurst = 0`) any violation aborts; with a positive
+         * `ratioBurst`, the request is aborted after `ratioBurst + 1`
+         * cumulative violations.
          */
         RatioExceeded,
     }

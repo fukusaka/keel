@@ -270,14 +270,16 @@ public class RequestDecompressionBuilder internal constructor() {
     public var ratioLimit: Int = HttpRequestDecompressionHandler.DEFAULT_RATIO_LIMIT
 
     /**
-     * Cumulative ratio-violation tolerance: the request is aborted on
-     * the `ratioBurst + 1`-th chunk whose decoded:input ratio exceeds
-     * [ratioLimit]. The budget is *not* reset when a chunk respects the
-     * ratio, so legitimate streams that produce many incidental
-     * high-ratio chunks (dictionary heavy, header-only-in-first-chunk)
-     * may need a higher value. Defaults to
-     * [HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST] (3 → abort
-     * on the 4th violation).
+     * Ratio-violation tolerance. Defaults to
+     * [HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST] (**0** =
+     * single-shot trip): the first chunk whose decoded:input ratio
+     * exceeds [ratioLimit] aborts the request. Set to a positive value
+     * only when you knowingly need to tolerate transient high-ratio
+     * chunks (dictionary-heavy / gzip-header-in-first-chunk streams).
+     * A positive `ratioBurst` budget is cumulative — not reset when a
+     * subsequent chunk respects the ratio — so a stream that
+     * intermittently violates still aborts after `ratioBurst + 1`
+     * cumulative violations.
      */
     public var ratioBurst: Int = HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST
 

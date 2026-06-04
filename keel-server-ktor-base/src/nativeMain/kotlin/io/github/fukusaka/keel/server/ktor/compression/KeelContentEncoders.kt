@@ -269,10 +269,14 @@ public object KeelDeflateEncoder : KeelContentEncoder(
  * - [ratioLimit]: decoded:input ratio cap evaluated after each
  *   [io.github.fukusaka.keel.compression.DecoderSession.update] /
  *   [io.github.fukusaka.keel.compression.DecoderSession.finish] returns.
- *   `Int.MAX_VALUE` opts out. Violation increments the burst counter;
- *   when [ratioBurst] consecutive violations occur, the pump throws
+ *   `Int.MAX_VALUE` opts out. With [ratioBurst] at the default `0`
+ *   (single-shot trip), the first violation throws
  *   [io.github.fukusaka.keel.codec.http.RequestDecompressionLimitException]
- *   with `Reason.RatioExceeded`.
+ *   with `Reason.RatioExceeded`. A positive `ratioBurst` tolerates that
+ *   many *consecutive* violations; the burst counter resets on a
+ *   non-violating chunk (Apache `mod_deflate` semantics, divergent from
+ *   `keel-codec-http`'s cumulative-counter handler — both shapes are
+ *   intentional, see each KDoc).
  *
  * The exceptions propagate up through the writer's coroutine and
  * surface as read errors on the returned channel. Callers (typically a
