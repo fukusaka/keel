@@ -48,7 +48,7 @@ import io.ktor.utils.io.ByteReadChannel
  *         // Inbound zip-bomb defence (defaults shown):
  *         decompressionLimit = 1L * 1024 * 1024  // 1 MiB
  *         ratioLimit = 100
- *         ratioBurst = 3
+ *         ratioBurst = 0                         // single-shot trip
  *     }
  *     routing { get("/") { call.respondText("hello") } }
  * }

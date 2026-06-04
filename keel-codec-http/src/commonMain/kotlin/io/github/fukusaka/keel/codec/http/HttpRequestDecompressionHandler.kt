@@ -27,24 +27,42 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *    request head — the downstream handler sees the request as if the
  *    client had sent it uncompressed (decoded length is unknown until
  *    [DecoderSession.finish] reports `FINISHED`).
- * 4. **Enforces** a dual-gate zip-bomb defence (Apache `mod_deflate`
- *    pattern + Nginx `client_max_body_size` integration):
- *    - **Absolute byte cap** ([decompressionLimit], default 1 MiB):
- *      `RequestDecompressionLimitException(AbsoluteSizeExceeded)` when
- *      cumulative decoded bytes per request exceed the cap.
- *    - **Decoded:input ratio cap** ([ratioLimit], default 100):
- *      `RequestDecompressionLimitException(RatioExceeded)` after the
- *      ratio cap has been exceeded a cumulative [ratioBurst] + 1 times
- *      across the request (default 3, i.e. abort on the 4th violation).
- *      The burst budget is set once per request and decremented on each
- *      violation — it is *not* reset when a chunk respects the ratio
- *      again. A handful of incidental high-ratio chunks (gzip header
- *      parse, dictionary hits, short high-entropy blocks) are tolerated,
- *      but a stream that keeps producing high-ratio chunks aborts even
- *      if they are interspersed with low-ratio ones. (Looser, true
- *      consecutive-only burst semantics — Apache's
- *      `DeflateInflateRatioBurst` — would require a reset-on-recovery
- *      counter; that variation is tracked as a future design judgement.)
+ * 4. **Enforces** layered zip-bomb defence — five independent gates,
+ *    each cheap and each closing a different escape:
+ *
+ *    - **L1: `Content-Length` pre-reject** at handler entry. If the
+ *      advertised compressed size exceeds [decompressionLimit], throw
+ *      `CompressedSizeExceeded` before any decoder is instantiated.
+ *      Closes: honest clients sending bodies that can only ever exceed
+ *      the decoded cap — rejected with zero inflate cost.
+ *    - **L2: absolute decoded byte cap** ([decompressionLimit], default
+ *      1 MiB): `AbsoluteSizeExceeded` when cumulative decoded bytes per
+ *      request exceed the cap. Closes: bombs that are valid compressed
+ *      data and slip past L1 (chunked transfer-encoding has no
+ *      `Content-Length`, or an attacker omits the header).
+ *    - **L3: single-shot ratio trip** ([ratioLimit], default 100, with
+ *      [ratioBurst] default 0): `RatioExceeded` on the first chunk
+ *      whose cumulative decoded:input ratio exceeds the cap. Closes:
+ *      the "front-load benign / back-load bomb" shape — a single
+ *      high-ratio chunk aborts immediately, no time for the decoder to
+ *      do meaningful work past the trip point.
+ *    - **L4: per-update output ceiling**, mechanical via
+ *      [scratchCapacity] (default 8 KiB). Every `DecoderSession.update`
+ *      writes into the shared scratch IoBuf, so one inflate call
+ *      cannot produce more than [scratchCapacity] bytes before the
+ *      handler drains and re-checks L2 + L3. Closes: backend-side "one
+ *      inflate call producing N MiB into the caller's buffer" — the
+ *      buffer is bounded by the handler, not by the decoder.
+ *    - **L5: chained-encoding rejected**. `Content-Encoding: gzip, gzip,
+ *      …` is treated as one unregistered token → 415 by default (see
+ *      the *Multi-token* note below). Closes: multi-stage decompression
+ *      bombs whose small outer body, after the first inflate, expands
+ *      into a body the second inflate then makes massive.
+ *
+ *    The gates are independent: L1 fires on header parse only, L2 / L3
+ *    fire on every drain, L4 is a property of the buffer the decoder is
+ *    handed, L5 is a property of the codec-lookup step. A defender does
+ *    not need to know which one will trip to be safe.
  * 5. **Applies** [unknownEncodingPolicy] when the encoding is not
  *    registered in [registry] — default
  *    [UnknownEncodingPolicy.UnsupportedMediaType] (HTTP 415).
@@ -89,23 +107,28 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *   `client_max_body_size`). Set to [Long.MAX_VALUE] to opt out (e.g.
  *   for large uploads with separate chunk-level validation).
  * @param ratioLimit decoded:input ratio cap evaluated after each
- *   session update. Apache `mod_deflate` pattern. Default 100
- *   ([DEFAULT_RATIO_LIMIT]); Apache uses 200, keel is more
- *   conservative. Set to [Int.MAX_VALUE] to opt out.
- * @param ratioBurst cumulative ratio-violations tolerated before
- *   aborting; the request is rejected on the `ratioBurst + 1`-th
- *   violation. Default 3 ([DEFAULT_RATIO_BURST]). The budget is set
- *   once per request and decremented per violation — it is not reset
- *   when a chunk respects the ratio again, so a stream that repeatedly
- *   violates (even with low-ratio chunks in between) still aborts.
- *   Allows a handful of legitimate high-ratio chunks (gzip header /
- *   dictionary hits / short high-entropy blocks).
+ *   session update. Default 100 ([DEFAULT_RATIO_LIMIT]). Set to
+ *   [Int.MAX_VALUE] to opt out.
+ * @param ratioBurst ratio-violation tolerance. Default 0
+ *   ([DEFAULT_RATIO_BURST], single-shot trip): the first chunk that
+ *   exceeds [ratioLimit] aborts the request — the safest baseline and
+ *   the convention used by the majority of HTTP server implementations.
+ *   A positive value tolerates `ratioBurst + 1` cumulative violations
+ *   before aborting; the budget is set once per request and decremented
+ *   per violation (not reset when a chunk respects the ratio again).
+ *   Increase only if you knowingly need to accept dictionary-heavy /
+ *   header-only-first-chunk streams whose initial chunks exceed
+ *   [ratioLimit].
  * @param unknownEncodingPolicy behaviour when `Content-Encoding` is not
  *   registered. Default [UnknownEncodingPolicy.UnsupportedMediaType]
  *   (HTTP 415).
  * @param scratchCapacity per-channel scratch IoBuf size for decoded
- *   output. Higher = fewer emit cycles + larger emit size, lower =
- *   bounded peak. Default 8 KiB matches `CompressionHandler` /
+ *   output. This also acts as the **per-update output ceiling** (L4 in
+ *   the layered defense table above): the decoder cannot produce more
+ *   bytes in a single `update` call than the scratch can hold, which
+ *   bounds how much work a misbehaving / hostile codec can do between
+ *   limit checks. Higher = fewer emit cycles + larger emit size, lower
+ *   = tighter per-call cap. Default 8 KiB matches `CompressionHandler` /
  *   Netty `JdkZlibEncoder` emit chunk size.
  */
 public class HttpRequestDecompressionHandler(
@@ -180,6 +203,10 @@ public class HttpRequestDecompressionHandler(
             ctx.propagateRead(request)
             return
         }
+        // L1: reject on advertised compressed size before any decoder runs.
+        // `decodeAggregated` would also enforce L2 / L3 on cumulative output,
+        // but doing that costs an inflate pass; this short-circuit doesn't.
+        rejectIfAdvertisedTooLarge(request.headers)
         val decoder = registry.findDecoder(encoding)
         if (decoder == null) {
             applyUnknownEncodingPolicy(ctx, request, encoding)
@@ -317,6 +344,11 @@ public class HttpRequestDecompressionHandler(
             ctx.propagateRead(head)
             return
         }
+        // L1: reject on advertised compressed size before opening a session
+        // (same rationale as the aggregated path; symmetry matters because
+        // chunked transfer-encoding requests with no Content-Length will
+        // still fall through to L2 / L3 during streaming).
+        rejectIfAdvertisedTooLarge(head.headers)
         val decoder = registry.findDecoder(encoding)
         if (decoder == null) {
             applyUnknownEncodingPolicy(ctx, head, encoding)
@@ -513,6 +545,35 @@ public class HttpRequestDecompressionHandler(
     }
 
     /**
+     * L1: short-circuit at handler entry when the request advertises a
+     * compressed body larger than [decompressionLimit].
+     *
+     * Compressed bytes are a lower bound on what the decoded body would
+     * have to weigh — even at a 1:1 ratio the decoded result still
+     * exceeds the cap, so there is no way for the request to succeed
+     * past L2 / L3. Rejecting here saves the decoder allocation, the
+     * pending-header retention, and (depending on the engine) the recv
+     * buffer churn of streaming the compressed body off the wire.
+     *
+     * Missing or malformed `Content-Length` is a no-op — chunked
+     * transfer-encoding has no advertised size, and L2 / L3 still catch
+     * the bomb during streaming. Negative values are likewise ignored;
+     * the decoder is the wrong layer to enforce header-syntax rules.
+     */
+    private fun rejectIfAdvertisedTooLarge(headers: HttpHeaders) {
+        if (decompressionLimit == Long.MAX_VALUE) return
+        val advertised = headers.contentLength ?: return
+        if (advertised < 0) return
+        if (advertised > decompressionLimit) {
+            throw RequestDecompressionLimitException(
+                RequestDecompressionLimitException.Reason.CompressedSizeExceeded,
+                bytesDecoded = 0,
+                bytesIn = advertised,
+            )
+        }
+    }
+
+    /**
      * Enforce absolute byte cap + decoded:input ratio cap with burst
      * tolerance. Throws [RequestDecompressionLimitException] when a
      * gate fires.
@@ -591,21 +652,31 @@ public class HttpRequestDecompressionHandler(
         public const val DEFAULT_DECOMPRESSION_LIMIT: Long = 1L * 1024 * 1024
 
         /**
-         * Default decoded:input ratio cap — 100, more conservative than
-         * Apache `mod_deflate`'s 200. Typical gzip ratios for text /
-         * JSON are ≤ 50:1, so 100:1 leaves comfortable headroom while
-         * rejecting clear zip-bomb signatures.
+         * Default decoded:input ratio cap — 100. Typical gzip ratios
+         * for text / JSON are ≤ 50:1, so 100:1 leaves comfortable
+         * headroom while rejecting clear zip-bomb signatures.
          */
         public const val DEFAULT_RATIO_LIMIT: Int = 100
 
         /**
-         * Default ratio-violation burst tolerance — 3 (i.e. abort on the
-         * 4th violation). Cumulative across the request, not "in a row";
-         * see the [HttpRequestDecompressionHandler] class KDoc for the
-         * exact semantics and the rationale for not matching Apache's
-         * consecutive-only `DeflateInflateRatioBurst`.
+         * Default ratio-violation burst tolerance — **0** (single-shot
+         * trip). The first chunk whose cumulative decoded:input ratio
+         * exceeds [DEFAULT_RATIO_LIMIT] aborts the request: the safest
+         * baseline and the convention followed by the majority of HTTP
+         * server implementations (single ratio cap, no burst window).
+         *
+         * **Behaviour change**: earlier keel releases defaulted to 3
+         * (abort on the 4th cumulative violation, an Apache-flavoured
+         * burst-tolerance variation). The relaxation has been retired
+         * because (a) zip-bomb payloads typically violate on every
+         * chunk so the burst budget added no real headroom against the
+         * threat, and (b) the legitimate streams the budget was meant
+         * to protect (dictionary-heavy / gzip-header-in-first-chunk)
+         * fit comfortably under a 100:1 ratio in practice. Set
+         * [ratioBurst] to a positive value to re-enable burst tolerance
+         * when you actively need it.
          */
-        public const val DEFAULT_RATIO_BURST: Int = 3
+        public const val DEFAULT_RATIO_BURST: Int = 0
 
         /** `Content-Encoding: identity` (RFC 9110 §8.4.1) — no transformation. */
         private const val ENCODING_IDENTITY: String = "identity"

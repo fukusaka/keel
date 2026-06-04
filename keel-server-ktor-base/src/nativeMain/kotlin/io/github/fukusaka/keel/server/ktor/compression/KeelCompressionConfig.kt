@@ -63,17 +63,20 @@ public class KeelCompressionConfig : KeelConditionsHolderBuilder {
     public var decompressionLimit: Long = DEFAULT_DECOMPRESSION_LIMIT
 
     /**
-     * Decoded:input ratio cap (inbound side only). Apache `mod_deflate`
-     * pattern. Default 100 (more conservative than Apache's 200). Set
-     * to [Int.MAX_VALUE] to opt out.
+     * Decoded:input ratio cap (inbound side only). Default 100. Set to
+     * [Int.MAX_VALUE] to opt out.
      */
     public var ratioLimit: Int = DEFAULT_RATIO_LIMIT
 
     /**
-     * Consecutive ratio-violations tolerated before aborting (inbound
-     * side only). Default 3 — mirrors Apache `DeflateInflateRatioBurst`.
-     * Allows transient high-ratio chunks (gzip header / dictionary
-     * hits / short high-entropy blocks) without rejecting the request.
+     * Ratio-violation tolerance (inbound side only). Default **0** =
+     * single-shot trip: the first chunk whose decoded:input ratio
+     * exceeds [ratioLimit] aborts the request. Set to a positive value
+     * only when transient high-ratio chunks (dictionary-heavy /
+     * gzip-header-in-first-chunk streams) must be tolerated; a
+     * positive budget is cumulative and not reset on recovery, so a
+     * stream that intermittently violates still aborts after
+     * `ratioBurst + 1` cumulative violations.
      */
     public var ratioBurst: Int = DEFAULT_RATIO_BURST
 
@@ -285,7 +288,11 @@ public const val DEFAULT_DECOMPRESSION_LIMIT: Long = 1L * 1024 * 1024
 public const val DEFAULT_RATIO_LIMIT: Int = 100
 
 /**
- * Default ratio-violation burst tolerance for inbound request bodies — 3,
- * matches `HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST`.
+ * Default ratio-violation burst tolerance for inbound request bodies —
+ * **0** (single-shot trip), matches
+ * `HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST`. The first
+ * chunk whose decoded:input ratio exceeds [DEFAULT_RATIO_LIMIT] aborts;
+ * raise to a positive value only when transient high-ratio chunks must
+ * be tolerated.
  */
-public const val DEFAULT_RATIO_BURST: Int = 3
+public const val DEFAULT_RATIO_BURST: Int = 0

@@ -118,7 +118,7 @@ class KeelCompressionConfigTest {
         val config = KeelCompressionConfig()
         assertEquals(1L * 1024 * 1024, config.decompressionLimit, "1 MiB absolute cap")
         assertEquals(100, config.ratioLimit, "100:1 decoded:input ratio cap")
-        assertEquals(3, config.ratioBurst, "burst tolerance 3 (Apache mod_deflate)")
+        assertEquals(0, config.ratioBurst, "single-shot ratio trip (no burst tolerance)")
         assertEquals(
             UnknownEncodingPolicy.UnsupportedMediaType,
             config.unknownEncodingPolicy,

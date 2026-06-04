@@ -261,7 +261,14 @@ class HttpRequestDecompressionHandlerTest {
         val callCeiling = 32 // far above the ~3 calls a healthy decode needs
         val bounded = BoundedCallMultiplyDecoder(factor, maxCalls = callCeiling)
         val registry = CompressionRegistry().apply { registerDecoder(bounded) }
-        val handler = HttpRequestDecompressionHandler(registry, DefaultAllocator)
+        // The scratch-drain spin regression is independent of the ratio
+        // gate; disable L3 so the 200× decoder reaches the drain loop
+        // (the default single-shot ratio trip would otherwise abort the
+        // 200:1 expansion on the first chunk).
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            ratioLimit = Int.MAX_VALUE,
+        )
         val ctx = TestCtx(ChainState())
         val request = HttpRequest(
             method = HttpMethod.POST,
@@ -715,6 +722,176 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals(RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded, ex.reason)
     }
 
+    // -------------------------------------------------------------- L1: Content-Length pre-reject
+
+    @Test
+    fun `Content-Length exceeding decompressionLimit aborts aggregated request without running decoder`() {
+        // L1: the advertised compressed size is a lower bound on what the
+        // decoded body would weigh, so even at a 1:1 ratio the request can
+        // not succeed past L2. The handler must throw at entry, never
+        // instantiating a decoder session.
+        val decoder = CountingDecoder(factor = 1)
+        val registry = CompressionRegistry().apply { registerDecoder(decoder) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = 10L,
+        )
+        val ctx = TestCtx(state)
+        val req = HttpRequest(
+            HttpMethod.POST, "/upload",
+            headers = HttpHeaders().apply {
+                add("Content-Encoding", "x1")
+                add("Content-Length", "100")
+            },
+            body = ByteArray(100),
+        )
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, req)
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.CompressedSizeExceeded, ex.reason)
+        assertEquals(100L, ex.bytesIn)
+        assertEquals(0L, ex.bytesDecoded)
+        assertEquals(0, decoder.sessionsOpened)
+        assertTrue(state.reads.isEmpty())
+    }
+
+    @Test
+    fun `Content-Length exceeding decompressionLimit aborts streaming head before opening a session`() {
+        // Streaming variant of the entry-level pre-reject.
+        val decoder = CountingDecoder(factor = 1)
+        val registry = CompressionRegistry().apply { registerDecoder(decoder) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = 10L,
+        )
+        val ctx = TestCtx(state)
+        val head = HttpRequestHead(
+            HttpMethod.POST, "/upload",
+            headers = HttpHeaders().apply {
+                add("Content-Encoding", "x1")
+                add("Content-Length", "100")
+            },
+        )
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, head)
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.CompressedSizeExceeded, ex.reason)
+        assertEquals(100L, ex.bytesIn)
+        assertEquals(0, decoder.sessionsOpened)
+    }
+
+    @Test
+    fun `Content-Length within decompressionLimit passes the entry-level pre-reject`() {
+        // 5 byte compressed body ≤ 10 byte cap → L1 must not fire. The
+        // request then proceeds through L2 / L3 as before.
+        val registry = CompressionRegistry().apply { registerDecoder(LowerDecoder) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = 10L,
+        )
+        val ctx = TestCtx(state)
+        handler.onRead(
+            ctx,
+            HttpRequest(
+                HttpMethod.POST, "/upload",
+                headers = HttpHeaders().apply {
+                    add("Content-Encoding", "lower")
+                    add("Content-Length", "5")
+                },
+                body = "HELLO".encodeToByteArray(),
+            ),
+        )
+        val emitted = state.reads.single() as HttpRequest
+        assertContentEquals("hello".encodeToByteArray(), emitted.body!!)
+    }
+
+    @Test
+    fun `missing Content-Length lets the request fall through to L2 and L3 during streaming`() {
+        // chunked transfer-encoding has no Content-Length; L1 must no-op
+        // so the streaming gates (L2 / L3) still get to run.
+        val registry = CompressionRegistry().apply { registerDecoder(LowerDecoder) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = 10L,
+        )
+        val ctx = TestCtx(state)
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/upload",
+                headers = HttpHeaders().apply { add("Content-Encoding", "lower") },
+            ),
+        )
+        // 5-byte chunk fits under the absolute cap, no throw.
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+        val decoded = state.reads.filterIsInstance<HttpBody>()
+            .filter { it !is HttpBodyEnd }
+            .sumOf { it.content.readableBytes }
+        assertEquals(5, decoded)
+    }
+
+    @Test
+    fun `decompressionLimit opt-out disables the Content-Length pre-reject`() {
+        // Long.MAX_VALUE is the documented opt-out for the absolute cap;
+        // L1 must respect it too, otherwise opting out of L2 would still
+        // leave the request rejected on a huge Content-Length.
+        val registry = CompressionRegistry().apply { registerDecoder(LowerDecoder) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = Long.MAX_VALUE,
+        )
+        val ctx = TestCtx(state)
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/upload",
+                headers = HttpHeaders().apply {
+                    add("Content-Encoding", "lower")
+                    add("Content-Length", "999999999")
+                },
+            ),
+        )
+        // No throw — head propagated stripped.
+        assertEquals(1, state.reads.size)
+    }
+
+    // -------------------------------------------------------------- L3: single-shot trip default
+
+    @Test
+    fun `default ratioBurst aborts on the first ratio violation`() {
+        // The class default ratioBurst = 0 means the first chunk whose
+        // cumulative decoded:input ratio exceeds ratioLimit aborts —
+        // single-shot trip, the safest baseline. This pins that default.
+        val registry = CompressionRegistry().apply { registerDecoder(MultiplyDecoder(factor = 200)) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = Long.MAX_VALUE,
+            ratioLimit = 100,
+            // ratioBurst left at default (= 0).
+        )
+        val ctx = TestCtx(state)
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/upload",
+                headers = HttpHeaders().apply { add("Content-Encoding", "x200") },
+            ),
+        )
+        // First chunk: 1 byte → 200 byte (ratio 200:1, > 100 cap). Default
+        // burst of 0 → trip on this single violation.
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, HttpBody(bufOf("A")))
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.RatioExceeded, ex.reason)
+    }
+
     // -------------------------------------------------------------- header mutation safety
 
     @Test
@@ -802,6 +979,31 @@ class HttpRequestDecompressionHandlerTest {
                 output.writeByteArray(pending, 0, take)
                 pending = pending.copyOfRange(take, pending.size)
                 return if (pending.isEmpty()) CodecStatus.NEED_INPUT else CodecStatus.NEED_OUTPUT
+            }
+        }
+    }
+
+    /**
+     * MultiplyDecoder variant that records how many sessions it has
+     * been asked to instantiate. Used by the L1 pre-reject tests to
+     * assert that the handler short-circuits at entry without calling
+     * `newSession` (i.e. no inflate cost paid for an obviously-too-big
+     * advertised body).
+     */
+    private class CountingDecoder(private val factor: Int) : Decoder {
+        override val name: String = "x$factor"
+        var sessionsOpened: Int = 0
+            private set
+        override fun newSession(
+            allocator: io.github.fukusaka.keel.buf.BufferAllocator,
+            options: DecoderOptions,
+        ): DecoderSession {
+            sessionsOpened++
+            return object : DecoderSession {
+                override fun update(input: IoBuf, output: IoBuf): CodecStatus = CodecStatus.NEED_INPUT
+                override fun finish(output: IoBuf): CodecStatus = CodecStatus.FINISHED
+                override fun reset() = Unit
+                override fun close() = Unit
             }
         }
     }
