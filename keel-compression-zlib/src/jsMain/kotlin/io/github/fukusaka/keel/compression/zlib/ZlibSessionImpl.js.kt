@@ -84,6 +84,20 @@ private class JsZlibEncoderSession(
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
     private val pending = ByteAccumulator()
+
+    /**
+     * The compressed bytes Node returned from the last sync compress call,
+     * held across [flush] / [finish] re-entries so the caller can drain it
+     * piecewise into its [IoBuf] (the SPI emits at most one chunk per call
+     * via `NEED_OUTPUT`). **Not a materialisation copy** — the assignment
+     * `resultDyn.unsafeCast<Uint8Array>().toByteArray()` aliases the same
+     * `ArrayBuffer` Node returned (Kotlin/JS represents `ByteArray` as a
+     * backing `Int8Array`, so the cast costs only the typed-array header,
+     * #674). The contiguous `Uint8Array` itself is Node's own allocation
+     * for the return value of `deflateSync` / `gzipSync` / `deflateRawSync`,
+     * which the sync API requires us to receive — there is no codec-side
+     * allocation here to remove.
+     */
     private var compressedOutput: ByteArray? = null
     private var compressedOffset: Int = 0
     private var closed: Boolean = false
