@@ -46,15 +46,16 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * (identity) rather than rewritten as 406. Applications that need strict
  * RFC compliance should layer their own 406 check upstream of this handler.
  *
- * **Per-channel scratch buffer**: a single output [IoBuf] of
- * [SCRATCH_CAPACITY] bytes is allocated once per channel attach and
- * reused across every emit. When the buffer fills, the handler copies
- * its readable bytes into a freshly allocated `IoBuf` (sized to the
- * exact emit size) and propagates that downstream as `HttpBody`. The
- * scratch is then cleared and refilled. This keeps the handler's
- * steady-state allocation rate at "one IoBuf per emitted chunk" rather
- * than "one IoBuf per `update` call regardless of output size", and
- * caps memory peak at `SCRATCH_CAPACITY` per pending response.
+ * **Per-channel working buffer**: the encoder drains into a pooled
+ * [IoBuf] of [SCRATCH_CAPACITY] bytes. On every emit that buffer is
+ * handed *straight downstream* as the `HttpBody` payload — ownership
+ * transfers to the transport, which recycles it into the pool after the
+ * `writev` — and a fresh pooled buffer is acquired for the next codec
+ * step. There is no `copyTo` into an exact-size buffer: every emitted
+ * chunk, full or partial, is a pooled buffer, so a streamed response
+ * mints no fresh `DirectByteBuffer` / `Cleaner` per chunk (the previous
+ * exact-size `allocate(n)` missed the pool on every non-full chunk).
+ * Memory peak stays at `SCRATCH_CAPACITY` per in-flight chunk.
  *
  * **Pipelining**: this handler tracks one in-flight response at a time
  * (request → response is strictly sequential on HTTP/1.1). The
@@ -64,7 +65,8 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *
  * **Mid-stream failure recovery**: if a response aborts mid-stream (a
  * downstream write throws, or an emit allocation fails), the handler
- * closes the in-flight [EncoderSession] and clears the scratch buffer
+ * closes the in-flight [EncoderSession] and releases the working buffer
+ * (only if still held — an already-emitted buffer is the transport's)
  * before re-throwing, and also discards any such leftover state at the
  * start of every new response. This keeps a keep-alive connection from
  * leaking the aborted response's session or bleeding its partial output
@@ -76,7 +78,7 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *
  * @param registry encoder registry — caller pre-registers the codecs
  *   they want to support (`registry.register(GzipCodec)` etc.)
- * @param allocator output allocator for emitted body chunks + scratch
+ * @param allocator output allocator for the pooled working / emit buffers
  * @param condition optional predicate per response. Default = always
  *   compress when the client accepts. Common condition: skip
  *   pre-compressed MIME types (`image/`, `video/`, `application/zip`)
@@ -84,9 +86,11 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * @param defaultEncoderOptions options forwarded to every
  *   [Encoder.newSession] call. Keep [EncoderOptions.flushMode] as
  *   `Sync` (default) for HTTP streaming.
- * @param scratchCapacity per-channel scratch IoBuf size. Higher =
- *   fewer emit cycles + larger emit size, lower = bounded peak.
- *   Default 8 KiB matches Netty `JdkZlibEncoder`'s emit chunk size
+ * @param scratchCapacity per-chunk working IoBuf size. Higher = fewer
+ *   emit cycles + larger emit size, lower = bounded peak. Default 8 KiB
+ *   matches Netty `JdkZlibEncoder`'s emit chunk size and is a registered
+ *   pool class, so the working buffers recycle; a non-pool-class size
+ *   still works but allocates fresh per emit.
  */
 public class CompressionHandler(
     private val registry: CompressionRegistry,
@@ -102,8 +106,31 @@ public class CompressionHandler(
     /** Active encoder session for the in-flight response, or `null`. */
     private var activeSession: EncoderSession? = null
 
-    /** Per-channel reusable output scratch — allocated lazily on first compressed response. */
-    private var scratch: IoBuf? = null
+    /**
+     * The pooled buffer the encoder currently drains into. Allocated lazily
+     * at [scratchCapacity] (a registered pool size when left at the 8 KiB
+     * default). On every emit it is handed straight downstream as the
+     * `HttpBody` payload — ownership transfers to the transport, which
+     * recycles it into the pool after the `writev` — and a fresh pooled
+     * buffer is acquired for the next codec step. When the encoder produces
+     * no output for a body (the codec buffered the input internally) the
+     * still-empty buffer is kept for reuse rather than re-allocated.
+     *
+     * `null` means "not currently held" — either never allocated, or just
+     * handed off and not yet re-acquired. The handler owns it whenever it is
+     * non-null; [discardPendingResponse] / [handlerRemoved] release it only
+     * then (releasing after a hand-off would double-free a buffer the
+     * transport already owns).
+     *
+     * This replaces the previous "persistent scratch + `copyTo` into a fresh
+     * exact-size `IoBuf` per emit" shape. That exact-size allocation missed
+     * the pool on every partial (non-full) chunk — `allocate(n)` only pools
+     * when `n` matches a registered class — so each trailing chunk minted a
+     * fresh `DirectByteBuffer` + `Cleaner` + `Deallocator`. Handing off the
+     * pooled buffer directly recycles every chunk and drops the per-chunk
+     * `memcpy`.
+     */
+    private var working: IoBuf? = null
 
     // ---- Inbound: capture Accept-Encoding ----
 
@@ -115,8 +142,8 @@ public class CompressionHandler(
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
-        scratch?.release()
-        scratch = null
+        working?.release()
+        working = null
         activeSession?.close()
         activeSession = null
     }
@@ -136,20 +163,24 @@ public class CompressionHandler(
     /**
      * Discard any state left over from a previous response before starting a
      * new one. A response that aborted mid-stream — a downstream write threw,
-     * or an emit allocation failed — can leave [activeSession] open and
-     * [scratch] holding partially compressed bytes. Because one handler
+     * or an emit allocation failed — can leave [activeSession] open and the
+     * [working] buffer holding partially compressed bytes. Because one handler
      * instance serves every response on a keep-alive connection, starting the
      * next response without discarding them would leak the encoder session and
      * bleed the leftover bytes into the head of the new response.
      *
      * [EncoderSession.close] is idempotent, so calling this after a response
-     * that ended cleanly (session already closed and nulled, scratch already
-     * cleared) is a no-op.
+     * that ended cleanly (session already closed and nulled, working buffer
+     * either reused-empty or already handed off) is a no-op.
      */
     private fun discardPendingResponse() {
         activeSession?.close()
         activeSession = null
-        scratch?.clear()
+        // Release the working buffer only if the handler still holds it. After
+        // an emit it is null (the transport owns it), so this neither leaks a
+        // held buffer nor double-frees a handed-off one.
+        working?.release()
+        working = null
     }
 
     private fun handleAggregatedResponse(ctx: PipelineHandlerContext, response: HttpResponse) {
@@ -185,7 +216,7 @@ public class CompressionHandler(
         // head (Transfer-Encoding: chunked), then drive the encoder over the body
         // emitting HttpBody chunks *as they are produced*, then HttpBodyEnd. This
         // never buffers the whole compressed output (no contiguous ByteArray) —
-        // memory is bounded to one scratch buffer — and matches how nginx / Netty
+        // memory is bounded to one working buffer — and matches how nginx / Netty
         // / Ktor compress dynamically. Content-Length is replaced by chunked
         // since the compressed size is no longer materialised (RFC 9112 §6.1
         // forbids both). The head + body + end reuse the streaming handlers.
@@ -195,13 +226,13 @@ public class CompressionHandler(
             rewriteHeaders(response.headers, encoder.name, fixedLength = null),
         )
         // From here on the handler owns an EncoderSession and (after
-        // ensureScratch) a scratch IoBuf. Any throw before handleBody /
+        // ensureWorking) a pooled working IoBuf. Any throw before handleBody /
         // handleBodyEnd reach their own discardPendingResponse() catch would
-        // orphan the session and bleed scratch bytes into the next response,
+        // orphan the session and bleed leftover bytes into the next response,
         // so we own the cleanup ourselves until the streaming handlers do.
         activeSession = encoder.newSession(allocator, defaultEncoderOptions)
         try {
-            ensureScratch()
+            ensureWorking()
             ctx.propagateWrite(mutatedHead)
 
             // Feed the body to the encoder as a zero-copy view where the
@@ -243,13 +274,13 @@ public class CompressionHandler(
 
         val mutated = head.copy(headers = rewriteHeaders(head.headers, encoder.name, fixedLength = null))
         // Same ownership window as handleAggregatedResponse: once newSession
-        // ran, an exception from ensureScratch() or the downstream
+        // ran, an exception from ensureWorking() or the downstream
         // propagateWrite (a later handler in the pipeline rejecting the
         // head) would otherwise leak the session and the next response would
         // get a fresh one on top of it.
         activeSession = encoder.newSession(allocator, defaultEncoderOptions)
         try {
-            ensureScratch()
+            ensureWorking()
             ctx.propagateWrite(mutated)
         } catch (t: Throwable) {
             discardPendingResponse()
@@ -264,22 +295,24 @@ public class CompressionHandler(
             return
         }
         val src = body.content
-        val out = scratch!!
         try {
             // Drive update until input fully consumed; emit chunks on NEED_OUTPUT.
+            // Each emit hands off the working buffer and the next iteration
+            // re-acquires a fresh pooled one.
             while (true) {
-                when (session.update(src, out)) {
-                    CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
+                when (session.update(src, acquireWorking())) {
+                    CodecStatus.NEED_OUTPUT -> emitWorking(ctx)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
                 }
             }
-            // Emit any pending output bytes from this update.
-            if (out.readableBytes > 0) emitChunk(ctx, out)
+            // Emit any pending output bytes from this update (no-op if the
+            // codec buffered everything; the empty buffer is kept for reuse).
+            emitWorking(ctx)
         } catch (e: Throwable) {
-            // The response aborted mid-stream — close the session and clear
-            // scratch now so the next response on this connection starts clean
-            // (no leaked session, no bled-over bytes), then re-throw.
+            // The response aborted mid-stream — close the session and release
+            // the working buffer now so the next response on this connection
+            // starts clean (no leaked session, no bled-over bytes), then re-throw.
             discardPendingResponse()
             throw e
         } finally {
@@ -293,27 +326,26 @@ public class CompressionHandler(
             ctx.propagateWrite(end)
             return
         }
-        val out = scratch!!
         try {
             // Drain any trailing input from the terminal HttpBody first.
             if (end.content.readableBytes > 0) {
                 while (true) {
-                    when (session.update(end.content, out)) {
-                        CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
+                    when (session.update(end.content, acquireWorking())) {
+                        CodecStatus.NEED_OUTPUT -> emitWorking(ctx)
                         CodecStatus.NEED_INPUT -> break
                         CodecStatus.FINISHED -> error("update should not return FINISHED")
                     }
                 }
-                if (out.readableBytes > 0) emitChunk(ctx, out)
+                emitWorking(ctx)
             }
 
             // Drive finish to emit the format trailer.
             var finishing = true
             while (finishing) {
-                when (session.finish(out)) {
-                    CodecStatus.NEED_OUTPUT -> emitChunk(ctx, out)
+                when (session.finish(acquireWorking())) {
+                    CodecStatus.NEED_OUTPUT -> emitWorking(ctx)
                     CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                        if (out.readableBytes > 0) emitChunk(ctx, out)
+                        emitWorking(ctx)
                         finishing = false
                     }
                 }
@@ -322,9 +354,9 @@ public class CompressionHandler(
             session.close()
             activeSession = null
         } catch (e: Throwable) {
-            // The response aborted mid-finish — close the session and clear
-            // scratch now so the next response on this connection starts clean,
-            // then re-throw.
+            // The response aborted mid-finish — close the session and release
+            // the working buffer now so the next response on this connection
+            // starts clean, then re-throw.
             discardPendingResponse()
             throw e
         } finally {
@@ -334,27 +366,36 @@ public class CompressionHandler(
     }
 
     /**
-     * Emit the readable bytes of [scratch] as a fresh [HttpBody]
-     * downstream, then clear the scratch for reuse.
-     *
-     * Uses `IoBuf.copyTo` to skip the intermediate `ByteArray` that
-     * a `readByteArray + writeByteArray` round-trip would force —
-     * `copyTo` delegates to platform-optimized `memcpy` on JVM
-     * (DirectByteBuffer.put) and Native (`memcpy` via cinterop).
+     * Returns the working buffer the encoder should drain into, allocating a
+     * fresh pooled one (at [scratchCapacity]) when none is currently held.
      */
-    private fun emitChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
-        val n = scratchBuf.readableBytes
-        if (n == 0) return
-        val emit = allocator.allocate(n)
-        scratchBuf.copyTo(emit, n)
-        scratchBuf.clear()
-        ctx.propagateWrite(HttpBody(emit))
+    private fun acquireWorking(): IoBuf =
+        working ?: allocator.allocate(scratchCapacity).also { working = it }
+
+    /** Pre-allocates the working buffer so an allocation failure surfaces
+     * inside the response's ownership window (before any bytes are emitted). */
+    private fun ensureWorking() {
+        if (working == null) working = allocator.allocate(scratchCapacity)
     }
 
-    private fun ensureScratch() {
-        if (scratch == null) {
-            scratch = allocator.allocate(scratchCapacity)
-        }
+    /**
+     * Hands the working buffer's readable bytes straight downstream as an
+     * [HttpBody] and relinquishes ownership — the transport recycles the
+     * pooled buffer into its pool after the `writev`. The next codec step
+     * re-acquires a fresh pooled buffer via [acquireWorking].
+     *
+     * A no-op when the buffer holds nothing (the codec buffered the input
+     * internally): the empty buffer is kept for reuse rather than emitted as
+     * a zero-length chunk. Unlike the previous `copyTo`-into-exact-size shape,
+     * no per-chunk `memcpy` runs and every emitted chunk — full or partial —
+     * is a pooled buffer (the old exact-size `allocate(n)` missed the pool on
+     * every non-full chunk).
+     */
+    private fun emitWorking(ctx: PipelineHandlerContext) {
+        val buf = working ?: return
+        if (buf.readableBytes == 0) return
+        working = null
+        ctx.propagateWrite(HttpBody(buf))
     }
 
     /**
