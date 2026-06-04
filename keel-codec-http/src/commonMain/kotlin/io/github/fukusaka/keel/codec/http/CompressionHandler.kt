@@ -395,7 +395,18 @@ public class CompressionHandler(
         val buf = working ?: return
         if (buf.readableBytes == 0) return
         working = null
-        ctx.propagateWrite(HttpBody(buf))
+        // Pipeline ownership semantics: `propagateWrite` accepts the message
+        // only when it returns normally. A synchronous throw from a
+        // downstream handler leaves `buf` orphaned — `working` is already
+        // null so `discardPendingResponse` cannot find it. Symmetric to
+        // `HttpRequestDecompressionHandler.emitDecodedChunk`'s inbound-side
+        // fix.
+        try {
+            ctx.propagateWrite(HttpBody(buf))
+        } catch (t: Throwable) {
+            buf.release()
+            throw t
+        }
     }
 
     /**

@@ -315,6 +315,39 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `emitWorking releases the working buffer when propagateWrite throws`() {
+        // M2 (4-th deep-review): `emitWorking` hands the pooled working
+        // buffer downstream via `ctx.propagateWrite(HttpBody(buf))`. The
+        // pipeline contract is that ownership transfers only when the call
+        // returns normally; a synchronous throw from a downstream handler
+        // leaves `buf` orphaned — `working` is already null so
+        // `discardPendingResponse` cannot find it. Before the fix the
+        // propagateWrite call was outside any try, leaking one pooled
+        // buffer per aborted chunk. Pinned by Red-Green:
+        // TrackingAllocator.outstandingCount reports nonzero on the
+        // pre-fix handler and zero after the wrap.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val registry = CompressionRegistry().apply { registerEncoder(UpperEncoder) }
+        val handler = CompressionHandler(registry, tracker)
+        val ctx = ctxAbortingFirstBodyKeepingOwnership(ChainState(), allocator = tracker)
+
+        handler.onRead(ctx, reqUpper("/a"))
+        handler.onWrite(ctx, head200())
+        var aborted = false
+        try {
+            handler.onWrite(ctx, HttpBody(bufOf("hello")))
+        } catch (e: IllegalStateException) {
+            aborted = true
+        }
+        assertTrue(aborted, "expected the propagateWrite throw to surface from onWrite")
+        // handlerRemoved releases any state the handler still owns; the
+        // only outstanding allocation that could remain is the working
+        // buffer if the fix were absent.
+        handler.handlerRemoved(ctx)
+        tracker.assertNoLeaks("working buffer leaked on propagateWrite throw")
+    }
+
+    @Test
     fun `a mid-stream failure does not bleed leftover bytes into the next response`() {
         // When a response aborts mid-stream the handler must not carry any
         // partially-compressed bytes into the next response on the same
@@ -797,6 +830,28 @@ class CompressionHandlerTest {
                 throw IllegalStateException("simulated downstream rejection of body chunk")
             }
         })
+    }
+
+    /**
+     * Builds a [TestCtx] that throws once on the first [HttpBody] (non-end)
+     * write **without releasing the buffer first**.
+     *
+     * The pipeline contract is "ownership transfers only when propagate
+     * returns normally", so a downstream throw leaves the buffer with the
+     * source. Releasing here would mask the very leak the test is
+     * designed to catch (M2: `emitWorking` ownership-on-throw).
+     */
+    private fun ctxAbortingFirstBodyKeepingOwnership(
+        state: ChainState,
+        allocator: io.github.fukusaka.keel.buf.BufferAllocator,
+    ): TestCtx {
+        var thrown = false
+        return TestCtx(state, beforeWrite = { msg ->
+            if (!thrown && msg is HttpBody && msg !is HttpBodyEnd) {
+                thrown = true
+                throw IllegalStateException("simulated downstream rejection of body chunk")
+            }
+        }, allocator = allocator)
     }
 
     private fun bufOf(text: String): IoBuf {
