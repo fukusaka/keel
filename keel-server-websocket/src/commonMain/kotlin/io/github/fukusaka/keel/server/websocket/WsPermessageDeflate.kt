@@ -300,7 +300,11 @@ internal class WsPermessageDeflate(
             output.clear()
         }
 
-        fun toByteArray(): ByteArray = buf.copyOf(len)
+        // Skip the right-size copy when the backing array is already exactly
+        // full (the growth heuristic happened to land on the decompressed
+        // size). The sink is single-use per decompress() call, so returning
+        // `buf` directly cannot alias a future message.
+        fun toByteArray(): ByteArray = if (len == buf.size) buf else buf.copyOf(len)
     }
 
     /**
