@@ -113,13 +113,22 @@ internal object HttpHeadersPool {
      */
     fun borrow(): HttpHeaders {
         if (bypassPool) {
-            return HttpHeaders().also { it.markPooled() }
+            return HttpHeaders().also {
+                it.markPooled()
+                it.markCheckedOut()
+            }
         }
         val stack = headersPoolStack()
         return if (stack.isEmpty()) {
-            HttpHeaders().also { it.markPooled() }
+            HttpHeaders().also {
+                it.markPooled()
+                it.markCheckedOut()
+            }
         } else {
-            stack.removeLast()
+            // A recycled instance keeps `pooled = true` from its first
+            // construction; mark it checked out again for this borrow so
+            // the double-release guard arms for the new lifecycle.
+            stack.removeLast().also { it.markCheckedOut() }
         }
     }
 

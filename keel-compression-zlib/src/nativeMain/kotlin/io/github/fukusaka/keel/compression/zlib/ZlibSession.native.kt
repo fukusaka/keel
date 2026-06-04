@@ -108,6 +108,18 @@ private class NativeZlibEncoderSession(
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
+
+    // The native z_stream pointer. After [close] frees it (keel_zstream_free
+    // + arena.clear) this becomes a dangling pointer that is still readable
+    // from Kotlin. It is deliberately NOT nullified-on-close: every public
+    // method guards with `check(!closed)` before dereferencing `z`, so a
+    // post-close call throws IllegalStateException and never touches the
+    // freed pointer. Nullifying `z` (to convert a hypothetical stale-deref
+    // SEGV into an NPE) would require a per-access null check on the hottest
+    // compression loop (step() dereferences `z` many times per message) to
+    // guard a bug that cannot occur while the close-guard invariant holds.
+    // **Invariant for maintainers**: any new method that dereferences `z`
+    // MUST begin with `check(!closed)`.
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
 
     // Per-session arena hosting the consumed/produced out-params handed to
@@ -312,6 +324,18 @@ private class NativeZlibDecoderSession(
 
     private val wrap: WrapFormat = options.wrapFormat.takeUnless { it == WrapFormat.Default } ?: defaultWrap
     private val tuning: DeflateTuning? = options.tuning as? DeflateTuning
+
+    // The native z_stream pointer. After [close] frees it (keel_zstream_free
+    // + arena.clear) this becomes a dangling pointer that is still readable
+    // from Kotlin. It is deliberately NOT nullified-on-close: every public
+    // method guards with `check(!closed)` before dereferencing `z`, so a
+    // post-close call throws IllegalStateException and never touches the
+    // freed pointer. Nullifying `z` (to convert a hypothetical stale-deref
+    // SEGV into an NPE) would require a per-access null check on the hottest
+    // compression loop (step() dereferences `z` many times per message) to
+    // guard a bug that cannot occur while the close-guard invariant holds.
+    // **Invariant for maintainers**: any new method that dereferences `z`
+    // MUST begin with `check(!closed)`.
     private val z = keel_zstream_alloc() ?: error("zstream alloc failed")
 
     // Per-session arena hosting the consumed/produced out-params handed to
