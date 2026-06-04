@@ -129,19 +129,32 @@ public suspend fun runWebSocketUpgrade(
         headers = responseHeaders,
     )
     val frameBridge = SuspendMessageBridge(WsFrame::class)
-    withContext(channel.ioDispatcher) {
-        // (2) 101 head + bodyless terminator through the HttpResponseEncoder.
-        channel.pipeline.requestWrite(responseHead)
-        channel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
-        channel.pipeline.requestFlush()
-        // (3) Swap codec under the EventLoop so pipeline mutation is
-        // single-threaded. allowRsv1 is on only when compression is
-        // negotiated — RFC 7692 §7.2 compressed frames carry RSV1=1.
-        for (name in HTTP_CODEC_HANDLER_NAMES) {
-            runCatching { channel.pipeline.remove(name) }
+    // The deflate engine owns native zlib state (an encoder + decoder
+    // session) from the moment it is constructed; the inner finally at
+    // (5) releases it, but that finally only runs once WsSessionImpl is
+    // constructed at (4). Anything that throws between here and (4) —
+    // the 101 write, the cancellation of `withContext`, a pipeline
+    // mutation rejecting the swap — leaves the engine orphaned, leaking
+    // the native zlib state for the rest of the process life. Guard the
+    // pre-session region explicitly.
+    try {
+        withContext(channel.ioDispatcher) {
+            // (2) 101 head + bodyless terminator through the HttpResponseEncoder.
+            channel.pipeline.requestWrite(responseHead)
+            channel.pipeline.requestWrite(HttpBodyEnd.EMPTY)
+            channel.pipeline.requestFlush()
+            // (3) Swap codec under the EventLoop so pipeline mutation is
+            // single-threaded. allowRsv1 is on only when compression is
+            // negotiated — RFC 7692 §7.2 compressed frames carry RSV1=1.
+            for (name in HTTP_CODEC_HANDLER_NAMES) {
+                runCatching { channel.pipeline.remove(name) }
+            }
+            channel.addWsServerCodec(allowRsv1 = compressionActive)
+            channel.pipeline.addLast(WS_BRIDGE_NAME, frameBridge)
         }
-        channel.addWsServerCodec(allowRsv1 = compressionActive)
-        channel.pipeline.addLast(WS_BRIDGE_NAME, frameBridge)
+    } catch (t: Throwable) {
+        deflateEngine?.close()
+        throw t
     }
 
     // (4) Run the handler; the control-frame pump runs concurrently as a

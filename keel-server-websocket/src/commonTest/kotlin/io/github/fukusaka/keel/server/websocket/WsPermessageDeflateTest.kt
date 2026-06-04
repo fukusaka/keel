@@ -1,6 +1,17 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.compression.CodecStatus
+import io.github.fukusaka.keel.compression.CompressionCapabilities
+import io.github.fukusaka.keel.compression.CompressionCodec
+import io.github.fukusaka.keel.compression.Decoder
+import io.github.fukusaka.keel.compression.DecoderOptions
+import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.compression.DeflateCapabilities
+import io.github.fukusaka.keel.compression.Encoder
+import io.github.fukusaka.keel.compression.EncoderOptions
+import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import kotlin.test.Test
@@ -457,5 +468,78 @@ class WsPermessageDeflateTest {
         )
         val deflate = assertIs<WsExtensionResult.Deflate>(result)
         assertEquals(15, deflate.serverMaxWindowBits)
+    }
+
+    // --- close idempotency (4th deep-review S9, gates the M3 upgrade leak fix) ---
+
+    @Test
+    fun `close is idempotent and does not call backend close twice`() {
+        // M3 fix wraps the WebSocketUpgrade pre-session region in a
+        // try / catch that closes the deflate engine on a pipeline mutation
+        // throw — but the existing post-handler `releaseDeflate` in the
+        // inner finally already closes it on the success path. With both
+        // paths potentially running, the engine's `close()` is called
+        // twice in the upgrade-then-immediate-failure window, so the
+        // engine must guard against a double close instead of relying on
+        // every backend honouring the SPI's per-session idempotency.
+        //
+        // Red-Green: a counting codec records each `close()` it receives.
+        // Pre-fix `WsPermessageDeflate.close()` is unguarded — a second
+        // call reaches both encoder and decoder, the counter reports 2.
+        // Post-fix the `closed` guard skips the second call, the counter
+        // stays at 1.
+        val codec = CountingCloseCodec(DeflateCodec)
+        val engine = WsPermessageDeflate(
+            codec,
+            WsDeflateOptions.Default,
+            serverMaxWindowBits = null,
+            clientMaxWindowBits = null,
+        )
+        engine.close()
+        engine.close()
+        assertEquals(1, codec.encoderCloseCalls, "encoder.close must run exactly once across two engine.close()")
+        assertEquals(1, codec.decoderCloseCalls, "decoder.close must run exactly once across two engine.close()")
+    }
+
+    /**
+     * Delegating [CompressionCodec] that records how many times each side's
+     * `close()` is invoked. Wraps an inner real codec so the streaming
+     * encode / decode paths still produce valid bytes — only the close
+     * counter is observed.
+     */
+    private class CountingCloseCodec(private val inner: CompressionCodec) : CompressionCodec {
+        override val name: String = inner.name
+        var encoderCloseCalls: Int = 0
+            private set
+        var decoderCloseCalls: Int = 0
+            private set
+        override val encoder: Encoder = object : Encoder {
+            override val name: String = inner.encoder.name
+            override val capabilities: CompressionCapabilities? = inner.encoder.capabilities
+            override fun newSession(allocator: BufferAllocator, options: EncoderOptions): EncoderSession {
+                val delegate = inner.encoder.newSession(allocator, options)
+                return object : EncoderSession {
+                    override fun update(input: IoBuf, output: IoBuf): CodecStatus = delegate.update(input, output)
+                    override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
+                    override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
+                    override fun reset() = delegate.reset()
+                    override fun close() { encoderCloseCalls++; delegate.close() }
+                }
+            }
+        }
+        override val decoder: Decoder = object : Decoder {
+            override val name: String = inner.decoder.name
+            override val capabilities: CompressionCapabilities? = inner.decoder.capabilities
+            override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession {
+                val delegate = inner.decoder.newSession(allocator, options)
+                return object : DecoderSession {
+                    override fun update(input: IoBuf, output: IoBuf): CodecStatus = delegate.update(input, output)
+                    override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
+                    override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
+                    override fun reset() = delegate.reset()
+                    override fun close() { decoderCloseCalls++; delegate.close() }
+                }
+            }
+        }
     }
 }

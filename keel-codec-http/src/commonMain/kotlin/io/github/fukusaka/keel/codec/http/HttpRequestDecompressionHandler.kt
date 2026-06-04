@@ -510,6 +510,12 @@ public class HttpRequestDecompressionHandler(
         }
     }
 
+    // Three release-on-throw rethrow sites guard distinct ownership
+    // transitions (scratch→emit copy, limit check after counter update,
+    // and the propagateRead hand-off). Each one re-uses the same `emit`
+    // reference so a shared catch helper would obscure the read order;
+    // collapse is not safe.
+    @Suppress("ThrowsCount")
     private fun emitDecodedChunk(ctx: PipelineHandlerContext, scratchBuf: IoBuf) {
         val n = scratchBuf.readableBytes
         if (n == 0) return
@@ -533,7 +539,19 @@ public class HttpRequestDecompressionHandler(
             emit.release()
             throw t
         }
-        ctx.propagateRead(HttpBody(emit))
+        // Pipeline ownership semantics: `propagateRead` accepts the message
+        // only when it returns normally. A synchronous throw from a
+        // downstream handler leaves `emit` orphaned — the outer
+        // `handleBody` catch (line ~427) only releases scratch / session /
+        // pendingRequestHeaders and does not know about this in-flight
+        // buffer. Symmetric to `CompressionHandler.emitWorking`'s
+        // outbound-side fix.
+        try {
+            ctx.propagateRead(HttpBody(emit))
+        } catch (t: Throwable) {
+            emit.release()
+            throw t
+        }
     }
 
     // ---- Common ----

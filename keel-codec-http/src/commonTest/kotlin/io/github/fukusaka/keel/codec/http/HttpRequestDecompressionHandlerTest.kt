@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.codec.http
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionRegistry
 import io.github.fukusaka.keel.compression.Decoder
@@ -1151,6 +1152,47 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals(0, multiply.openSessions, "request A's aborted decoder session must be closed, not leaked")
     }
 
+    @Test
+    fun `emitDecodedChunk releases the emit IoBuf when propagateRead throws`() {
+        // M1 (4-th deep-review): `emitDecodedChunk` allocates a fresh `emit`
+        // IoBuf and hands it downstream via `ctx.propagateRead(HttpBody(emit))`.
+        // The pipeline contract is that ownership transfers only when the
+        // call returns normally; a synchronous throw from a downstream
+        // handler leaves `emit` orphaned. Before the fix the propagateRead
+        // call was outside any try, so a throw at that point leaked the
+        // pooled buffer per aborted chunk (TrackingAllocator outstandingCount
+        // surfaces it). Pinned by Red-Green: this test fails (outstandingCount > 0)
+        // on the pre-fix handler and passes after the propagateRead is
+        // wrapped in try / catch / release.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val registry = CompressionRegistry().apply { registerDecoder(LowerDecoder) }
+        val handler = HttpRequestDecompressionHandler(registry, tracker)
+        val state = ChainState()
+        val ctx = ctxAbortingFirstDecodedBody(state, allocator = tracker)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/upload",
+                headers = HttpHeaders().apply { add("Content-Encoding", "lower") },
+            ),
+        )
+        // First decoded body chunk: ctx.propagateRead throws, the handler
+        // must release `emit` and rethrow rather than orphan the buffer.
+        var aborted = false
+        try {
+            handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        } catch (e: IllegalStateException) {
+            aborted = true
+        }
+        assertTrue(aborted, "expected the propagateRead throw to surface from onRead")
+        // handlerRemoved releases the scratch + any held session resources;
+        // the only outstanding allocation that could remain is the emit
+        // buffer if the fix were absent.
+        handler.handlerRemoved(ctx)
+        tracker.assertNoLeaks("emit IoBuf leaked on propagateRead throw")
+    }
+
     /**
      * Counts open sessions for the multiplier decoder so a leak across
      * requests is observable.
@@ -1205,13 +1247,24 @@ class HttpRequestDecompressionHandlerTest {
         val reads: MutableList<Any> = mutableListOf()
     }
 
-    private class TestCtx(val state: ChainState) : PipelineHandlerContext {
+    private class TestCtx(
+        val state: ChainState,
+        // Injects a synchronous failure: invoked before each inbound message
+        // is recorded, so returning normally records the read and throwing
+        // aborts it (simulating a downstream handler rejecting a decoded
+        // chunk). Used to pin the propagateRead ownership-on-throw contract
+        // — if `emit` is not released on throw it leaks per aborted chunk.
+        private val beforeRead: ((Any) -> Unit)? = null,
+        override val allocator: io.github.fukusaka.keel.buf.BufferAllocator = DefaultAllocator,
+    ) : PipelineHandlerContext {
         override val name: String get() = "test"
         override val pipeline: PipelineType get() = error("not used")
         override val channel: PipelinedChannel get() = error("not used")
         override val handler: PipelineHandler get() = error("not used")
-        override val allocator: io.github.fukusaka.keel.buf.BufferAllocator = DefaultAllocator
-        override fun propagateRead(msg: Any) { state.reads.add(msg) }
+        override fun propagateRead(msg: Any) {
+            beforeRead?.invoke(msg)
+            state.reads.add(msg)
+        }
         override fun propagateActive() {}
         override fun propagateInactive() {}
         override fun propagateReadComplete() {}
@@ -1221,6 +1274,30 @@ class HttpRequestDecompressionHandlerTest {
         override fun propagateWrite(msg: Any) { state.writes.add(msg) }
         override fun propagateFlush() {}
         override fun propagateClose() {}
+    }
+
+    /**
+     * Builds a [TestCtx] that throws once on the first decoded [HttpBody]
+     * (non-end) read — aborting at the moment `emitDecodedChunk` hands the
+     * freshly allocated emit IoBuf downstream.
+     *
+     * Crucially this does NOT release the buffer before throwing: in
+     * production the pipeline contract is "ownership transfers only when
+     * propagate returns normally", so a downstream throw leaves the
+     * buffer with the source. Releasing here would mask the very leak
+     * the test is designed to catch.
+     */
+    private fun ctxAbortingFirstDecodedBody(
+        state: ChainState,
+        allocator: io.github.fukusaka.keel.buf.BufferAllocator = DefaultAllocator,
+    ): TestCtx {
+        var thrown = false
+        return TestCtx(state, beforeRead = { msg ->
+            if (!thrown && msg is HttpBody && msg !is HttpBodyEnd) {
+                thrown = true
+                throw IllegalStateException("simulated downstream rejection of decoded body chunk")
+            }
+        }, allocator = allocator)
     }
 
     private fun bufOf(text: String): IoBuf {
