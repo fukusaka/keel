@@ -533,7 +533,19 @@ public class HttpRequestDecompressionHandler(
             emit.release()
             throw t
         }
-        ctx.propagateRead(HttpBody(emit))
+        // Pipeline ownership semantics: `propagateRead` accepts the message
+        // only when it returns normally. A synchronous throw from a
+        // downstream handler leaves `emit` orphaned — the outer
+        // `handleBody` catch (line ~427) only releases scratch / session /
+        // pendingRequestHeaders and does not know about this in-flight
+        // buffer. Symmetric to `CompressionHandler.emitWorking`'s
+        // outbound-side fix.
+        try {
+            ctx.propagateRead(HttpBody(emit))
+        } catch (t: Throwable) {
+            emit.release()
+            throw t
+        }
     }
 
     // ---- Common ----
