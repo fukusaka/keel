@@ -89,11 +89,31 @@ fun parseFrame(source: Source, allowRsv1: Boolean = false): WsFrame {
     )
 }
 
+/**
+ * Unmasks [data] **in place** (RFC 6455 §5.3) and returns the same array.
+ *
+ * [data] is the payload [parseFrame] just read from the source via
+ * `readByteArray` — a freshly allocated array that nothing else references
+ * after this call. XOR-ing it in place avoids allocating a second
+ * payload-sized `ByteArray` (and the 4-byte key array) per inbound masked
+ * frame. Every client→server data frame is masked (§5.1), so this is the
+ * hottest inbound payload allocation after the codec output itself: the
+ * previous `ByteArray(data.size) { … }` doubled the per-frame payload
+ * allocation on the receive path.
+ */
 private fun unmask(data: ByteArray, maskKey: Int): ByteArray {
-    val key = ByteArray(4)
-    key[0] = (maskKey shr 24).toByte()
-    key[1] = (maskKey shr 16).toByte()
-    key[2] = (maskKey shr 8).toByte()
-    key[3] = maskKey.toByte()
-    return ByteArray(data.size) { i -> (data[i].toInt() xor key[i % 4].toInt()).toByte() }
+    val k0 = (maskKey shr 24) and 0xFF
+    val k1 = (maskKey shr 16) and 0xFF
+    val k2 = (maskKey shr 8) and 0xFF
+    val k3 = maskKey and 0xFF
+    for (i in data.indices) {
+        val k = when (i and 3) {
+            0 -> k0
+            1 -> k1
+            2 -> k2
+            else -> k3
+        }
+        data[i] = (data[i].toInt() xor k).toByte()
+    }
+    return data
 }
