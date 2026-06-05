@@ -154,6 +154,10 @@ public class CompressionBuilder internal constructor() {
         if (encoderCount == 0 && requestDecompressionBuilder == null) {
             return null
         }
+        // Setup→runtime boundary: no more codecs are registered after the
+        // pipeline config is built, so seal the registry to fail fast on a
+        // stray late register() (which would race per-request lookups).
+        registry.seal()
         return CompressionPipelineConfig(
             registry = registry,
             hasResponseEncoder = encoderCount > 0,

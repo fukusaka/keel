@@ -61,6 +61,32 @@ class HttpHeadersPoolTest {
     }
 
     @Test
+    fun `double release does not return the same instance to the pool twice`() {
+        // S-C1 (4th deep-review): release() guarded only on `pooled`, which
+        // stays true across recycle, so a second release() pushed the same
+        // instance onto the per-thread stack again. Two later borrowers
+        // would then receive the same object and silently corrupt each
+        // other's headers. The `checkedOut` sentinel makes the second
+        // release a no-op. Red-Green: pre-fix the pool size doubles to 2.
+        val h = HttpHeaders.borrow()
+        h.add("Host", "localhost")
+        h.release()
+        assertEquals(1, HttpHeadersPool.size(), "first release pools the instance once")
+
+        h.release() // double release — must be a no-op
+        assertEquals(1, HttpHeadersPool.size(), "double release must not duplicate the instance in the pool")
+
+        // The pool must hold the instance exactly once: borrow it back,
+        // then a second borrow must NOT return the same object.
+        val a = HttpHeaders.borrow()
+        assertSame(h, a, "the single pooled instance comes back on the next borrow")
+        val b = HttpHeaders.borrow()
+        assertNotSame(a, b, "the second borrow must be a fresh instance, not the duplicated one")
+        a.release()
+        b.release()
+    }
+
+    @Test
     fun `pooled instance forgets previous values across reuse`() {
         val first = HttpHeaders.borrow()
         first.add("Host", "first.example.com")

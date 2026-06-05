@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.compression
 import io.github.fukusaka.keel.buf.BufferAllocator
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -112,5 +113,30 @@ class CompressionRegistryContractTest {
         assertEquals(2, byName.size)
         assertEquals(1, byName["gzip"]?.priority)
         assertEquals(10, byName["br"]?.priority)
+    }
+
+    @Test
+    fun `register after seal throws and lookups stay open`() {
+        // S-D1 (4th deep-review): the backing maps are unsynchronized, so a
+        // late register() racing per-request lookups would corrupt them.
+        // seal() makes that misuse fail fast — register* throws, lookups
+        // keep working.
+        val r = CompressionRegistry()
+        r.registerEncoder(StubEncoder("gzip"))
+        r.registerDecoder(StubDecoder("gzip"))
+        r.seal()
+
+        // Lookups remain open after seal.
+        assertNotNull(r.findEncoder("gzip"))
+        assertNotNull(r.findDecoder("gzip"))
+        assertEquals(1, r.registeredEncoders().size)
+
+        // Any registration after seal throws.
+        assertFailsWith<IllegalStateException> { r.registerEncoder(StubEncoder("br")) }
+        assertFailsWith<IllegalStateException> { r.registerDecoder(StubDecoder("br")) }
+
+        // seal() is idempotent.
+        r.seal()
+        assertNull(r.findEncoder("br"), "the rejected registration left no entry")
     }
 }

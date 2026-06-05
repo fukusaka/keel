@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.compression.EncoderSession
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -231,6 +232,30 @@ class CompressionHandlerTest {
 
         val emittedHead = state.writes.filterIsInstance<HttpResponseHead>().single()
         assertNull(emittedHead.headers.getString("Content-Encoding"))
+    }
+
+    @Test
+    fun `pipelined requests beyond the pending cap fail the connection`() {
+        // S-C2 (4th deep-review): acceptQueue grew without limit, so a
+        // client pipelining request heads without reading responses was a
+        // slowloris-style resource-exhaustion vector. The handler now caps
+        // pending responses; the head that would exceed the cap throws.
+        val state = ChainState()
+        val cap = 3
+        val handler = CompressionHandler(registry, DefaultAllocator, maxPendingResponses = cap)
+        val ctx = TestCtx(state)
+        fun req() = HttpRequestHead(
+            HttpMethod.GET, "/", HttpVersion.HTTP_1_1,
+            HttpHeaders().apply { add("Accept-Encoding", "upper") },
+        )
+        // `cap` heads with no responses fill the queue exactly.
+        repeat(cap) { handler.onRead(ctx, req()) }
+        // The next head exceeds the cap → fail-fast.
+        val ex = assertFailsWith<IllegalStateException> { handler.onRead(ctx, req()) }
+        assertTrue(
+            ex.message?.contains("too many pipelined requests") == true,
+            "expected pending-cap message, got: ${ex.message}",
+        )
     }
 
     @Test

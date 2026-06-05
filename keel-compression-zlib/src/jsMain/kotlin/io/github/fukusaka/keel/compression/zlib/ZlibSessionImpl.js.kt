@@ -103,6 +103,14 @@ private class JsZlibEncoderSession(
     private var closed: Boolean = false
     private var finishedReturned: Boolean = false
 
+    // True once finish() has produced its trailer output (draining via
+    // NEED_OUTPUT) but FINISHED has not yet been returned. flush() and
+    // finish() share [compressedOutput]; without this guard a flush()
+    // issued mid-trailer would drain the finish() bytes but report the
+    // stream as still open (NEED_INPUT) instead of FINISHED — corrupting
+    // the message boundary. Symmetric to the JVM / native backends.
+    private var finishStarted: Boolean = false
+
     /**
      * Builds the Node `zlib` options object for one sync compress call,
      * forwarding the configured [EncoderOptions.level] and
@@ -144,6 +152,12 @@ private class JsZlibEncoderSession(
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Reject a flush issued mid-trailer (symmetric to the JVM / native
+        // backends): finish() and flush() share [compressedOutput], so a
+        // flush() while a finish() trailer is still draining would emit the
+        // finish bytes but report the stream open. Drive finish() to
+        // FINISHED (or reset()) first.
+        check(!finishStarted) { "session is finishing — drive finish() to FINISHED before flush()" }
         // Compress everything buffered so far with Z_SYNC_FLUSH (boundary,
         // stream stays open). Correct for the WebSocket permessage-deflate
         // case this PR targets: WrapFormat.Raw, one update + one flush per
@@ -197,6 +211,7 @@ private class JsZlibEncoderSession(
     override fun finish(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         if (finishedReturned) return CodecStatus.FINISHED
+        finishStarted = true
 
         // First invocation: run sync compress.
         if (compressedOutput == null) {
@@ -222,6 +237,7 @@ private class JsZlibEncoderSession(
         compressedOutput = null
         compressedOffset = 0
         finishedReturned = false
+        finishStarted = false
     }
 
     override fun close() {

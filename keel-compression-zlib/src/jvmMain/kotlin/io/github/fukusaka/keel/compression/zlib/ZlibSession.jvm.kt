@@ -50,6 +50,18 @@ import java.util.zip.Inflater
  *   - one `GzipHeaderParser` for decode (gzip mode only, existing)
  *   - the caller-provided input / output IoBufs (no internal alloc)
  */
+/**
+ * Shared empty direct `ByteBuffer` used to detach a `Deflater` / `Inflater`
+ * from the caller's input view when a context-takeover [reset] keeps the
+ * codec object alive. `setInput(ByteBuffer)` makes the JDK retain a
+ * reference to that buffer until the next `setInput` / `end`; without this
+ * detach a session that kept its `Deflater` across `reset` would hold a
+ * stale reference to a caller `IoBuf` the caller already released (and
+ * whose backing direct buffer the pool may have recycled). Zero-capacity,
+ * so it carries no recyclable backing memory of its own.
+ */
+private val EMPTY_BB: ByteBuffer = ByteBuffer.allocateDirect(0)
+
 internal actual fun newZlibEncoderSession(
     allocator: BufferAllocator,
     options: EncoderOptions,
@@ -139,6 +151,13 @@ private class JvmZlibEncoderSession(
     override fun flush(output: IoBuf): CodecStatus {
         check(!closed) { "session closed" }
         check(!finishedReturned) { "session finished — call reset() before flush()" }
+        // Reject a flush issued mid-trailer: once finish() has called
+        // deflater.finish() (finish returned NEED_OUTPUT and is draining the
+        // Z_FINISH trailer), the stream is terminating and the JDK silently
+        // ignores the SYNC_FLUSH flag — flush() would be a no-op that returns
+        // misleading status. The caller must drive finish() to FINISHED (or
+        // reset()) before a boundary flush makes sense again.
+        check(!deflaterFinishStarted) { "session is finishing — drive finish() to FINISHED before flush()" }
         // Emit a Z_SYNC_FLUSH boundary (raw DEFLATE ends in 00 00 FF FF) and
         // keep the stream open. A gzip stream still needs its header before
         // the first bytes, even when flushed before any update().
@@ -204,6 +223,12 @@ private class JvmZlibEncoderSession(
             // so it falls through to the re-init branch. bytesRead is NOT zeroed
             // (no reset), so sync the delta-tracking watermark to the live counter.
             deflaterBytesReadAtLastUpdate = deflater.bytesRead
+            // Detach the kept Deflater from the previous message's input view:
+            // the JDK retains the ByteBuffer passed to setInput() until the next
+            // setInput/end, and the caller may have released that IoBuf (whose
+            // direct buffer the pool can recycle) before resetting. setInput does
+            // not touch the LZ77 window, so context takeover is preserved.
+            deflater.setInput(EMPTY_BB)
         } else {
             deflater.end()
             deflater = newDeflater()
@@ -418,6 +443,9 @@ private class JvmZlibDecoderSession(
             // falls through to the re-init branch. bytesRead is NOT zeroed (no
             // reset), so sync the watermark to the live counter.
             inflaterBytesReadAtLastUpdate = inflater.bytesRead
+            // Detach the kept Inflater from the previous message's input view —
+            // same stale-reference hazard as the encoder keep-branch above.
+            inflater.setInput(EMPTY_BB)
         } else {
             inflater.reset()
             // See init: `Inflater.reset()` drops the dictionary, so a

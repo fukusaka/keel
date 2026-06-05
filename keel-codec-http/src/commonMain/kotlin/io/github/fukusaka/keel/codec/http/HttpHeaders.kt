@@ -86,6 +86,16 @@ class HttpHeaders {
 
     private var pooled: Boolean = false
 
+    // Sentinel guarding against a double [release]. Set true when the pool
+    // hands the instance out ([markCheckedOut]) and cleared on the first
+    // [release]; a second release sees false and no-ops. Without it a
+    // double release would `giveBack` the same instance twice, leaving it
+    // on the per-thread stack at two positions so two later borrowers
+    // receive the same object and silently corrupt each other's headers.
+    // Distinct from [pooled] (which means "participates in pooling" and
+    // stays true across recycle) — this tracks the borrow/return cycle.
+    private var checkedOut: Boolean = false
+
     // --- Access ---
 
     /**
@@ -622,7 +632,8 @@ class HttpHeaders {
     }
 
     fun release() {
-        if (!pooled) return
+        if (!pooled || !checkedOut) return
+        checkedOut = false
         resetForReuse()
         HttpHeadersPool.giveBack(this)
     }
@@ -683,6 +694,16 @@ class HttpHeaders {
 
     internal fun markPooled() {
         pooled = true
+    }
+
+    /**
+     * Marks the instance as checked out of the pool (borrowed, not yet
+     * released). Called by [HttpHeadersPool.borrow] on every hand-out so
+     * the first [release] returns it exactly once and a double release
+     * no-ops. See [checkedOut].
+     */
+    internal fun markCheckedOut() {
+        checkedOut = true
     }
 
     companion object {

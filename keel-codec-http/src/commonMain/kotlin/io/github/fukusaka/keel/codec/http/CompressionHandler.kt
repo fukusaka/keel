@@ -98,9 +98,21 @@ public class CompressionHandler(
     private val condition: CompressionCondition = CompressionCondition.Default,
     private val defaultEncoderOptions: EncoderOptions = EncoderOptions(),
     private val scratchCapacity: Int = SCRATCH_CAPACITY,
+    private val maxPendingResponses: Int = DEFAULT_MAX_PENDING_RESPONSES,
 ) : DuplexHandler {
 
-    /** Pending Accept-Encoding values, FIFO per pipelined request. */
+    /**
+     * Pending Accept-Encoding values, FIFO per pipelined request.
+     *
+     * Bounded by [maxPendingResponses]: each inbound [HttpRequestHead]
+     * enqueues one entry, dequeued when the matching response head goes
+     * out. A client that pipelines request heads without ever reading
+     * the responses would otherwise grow this queue without limit — a
+     * slowloris-style resource-exhaustion vector. Reaching the cap means
+     * that many requests are in flight with no response written, which
+     * is abnormal for HTTP/1.1, so the handler fails the connection
+     * rather than accumulate unbounded state.
+     */
     private val acceptQueue: ArrayDeque<String?> = ArrayDeque()
 
     /** Active encoder session for the in-flight response, or `null`. */
@@ -136,6 +148,10 @@ public class CompressionHandler(
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is HttpRequestHead) {
+            check(acceptQueue.size < maxPendingResponses) {
+                "too many pipelined requests without responses " +
+                    "(${acceptQueue.size} >= $maxPendingResponses); failing the connection"
+            }
             acceptQueue.addLast(msg.headers.getCombined(HttpHeaderName.ACCEPT_ENCODING))
         }
         ctx.propagateRead(msg)
@@ -466,6 +482,17 @@ public class CompressionHandler(
 
     public companion object {
         public const val SCRATCH_CAPACITY: Int = 8 * 1024
+
+        /**
+         * Default cap on un-responded pipelined requests held in
+         * [acceptQueue]. 1024 is far above any legitimate HTTP/1.1
+         * pipeline depth (browsers cap at ~6 connections and rarely
+         * pipeline; even aggressive clients stay in the low tens), so a
+         * client hitting it is pipelining heads without reading
+         * responses — an abuse pattern the handler refuses by failing
+         * the connection.
+         */
+        public const val DEFAULT_MAX_PENDING_RESPONSES: Int = 1024
     }
 }
 
