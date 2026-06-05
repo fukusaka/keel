@@ -278,6 +278,32 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `handlerRemoved mid-response releases the working buffer and closes the session`() {
+        // I-2 (4th deep-review): the connection can be torn down mid-response
+        // (peer reset before HttpBodyEnd), firing handlerRemoved while
+        // activeSession != null and the pooled working buffer is still held
+        // (handleResponseHead allocates both: newSession + ensureWorking).
+        // handlerRemoved must release the working buffer and close the open
+        // session — otherwise a peer that resets mid-response leaks one pooled
+        // buffer + one EncoderSession per connection. Characterization: the
+        // existing cleanup already does this; this pins it (no prior test
+        // exercised the mid-stream handlerRemoved path).
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val encoder = CountingUpperEncoder()
+        val registry = CompressionRegistry().apply { registerEncoder(encoder) }
+        val handler = CompressionHandler(registry, tracker)
+        val ctx = TestCtx(ChainState())
+
+        handler.onRead(ctx, reqUpper("/a"))
+        handler.onWrite(ctx, head200()) // streaming head → newSession + ensureWorking (both live)
+        // No HttpBodyEnd — the connection is torn down here.
+        handler.handlerRemoved(ctx)
+
+        tracker.assertNoLeaks("working buffer leaked on mid-response handlerRemoved")
+        assertEquals(0, encoder.openSessions, "encoder session must be closed on mid-response handlerRemoved")
+    }
+
+    @Test
     fun `a mid-stream failure does not leak the encoder session into the next response`() {
         // A response that aborts mid-stream (here: an emit allocation fails)
         // must not leak its EncoderSession. The handler is per-connection and
