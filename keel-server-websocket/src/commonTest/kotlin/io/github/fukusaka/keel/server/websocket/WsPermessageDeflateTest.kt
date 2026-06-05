@@ -17,6 +17,7 @@ import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -499,6 +500,69 @@ class WsPermessageDeflateTest {
         engine.close()
         assertEquals(1, codec.encoderCloseCalls, "encoder.close must run exactly once across two engine.close()")
         assertEquals(1, codec.decoderCloseCalls, "decoder.close must run exactly once across two engine.close()")
+    }
+
+    // --- encoder-fault poison (4th deep-review S-D3) ---
+
+    @Test
+    fun `an encoder fault poisons the engine so the next compress fails fast`() {
+        // S-D3: when the encoder throws mid-message the DEFLATE stream is in
+        // an undefined state (context takeover carries the window across
+        // messages). Industry norm (Netty / ws / gorilla / tungstenite) is to
+        // treat a codec fault as fatal — never reset-and-continue. The engine
+        // poisons itself so a caller that catches the failed send and retries
+        // does not run the dirty encoder (which could emit a corrupt DEFLATE
+        // stream the peer silently rejects).
+        //
+        // Red-Green: the encoder throws on every update. Pre-fix the second
+        // compress() re-runs the dirty encoder and throws the backend's
+        // RuntimeException again (not IllegalStateException). Post-fix the
+        // `encoderBroken` guard makes the second compress() fail fast with
+        // IllegalStateException without touching the encoder.
+        val engine = WsPermessageDeflate(
+            ThrowOnEncodeCodec(DeflateCodec),
+            WsDeflateOptions(threshold = 0),
+            serverMaxWindowBits = null,
+            clientMaxWindowBits = null,
+        )
+        val payload = ByteArray(64) { it.toByte() }
+        try {
+            // First compress drives the encoder, which throws — poisons.
+            assertFailsWith<RuntimeException> { engine.compress(payload) }
+            // Second compress must fail fast with the poison, not re-run the encoder.
+            val ex = assertFailsWith<IllegalStateException> { engine.compress(payload) }
+            assertTrue(
+                ex.message?.contains("broken") == true,
+                "expected the encoder-broken poison message, got: ${ex.message}",
+            )
+        } finally {
+            engine.close()
+        }
+    }
+
+    /**
+     * Delegating [CompressionCodec] whose encoder's `update` always throws,
+     * simulating a mid-message backend fault. The decoder side delegates
+     * normally (unused by the encoder-fault test).
+     */
+    private class ThrowOnEncodeCodec(private val inner: CompressionCodec) : CompressionCodec {
+        override val name: String = inner.name
+        override val encoder: Encoder = object : Encoder {
+            override val name: String = inner.encoder.name
+            override val capabilities: CompressionCapabilities? = inner.encoder.capabilities
+            override fun newSession(allocator: BufferAllocator, options: EncoderOptions): EncoderSession {
+                val delegate = inner.encoder.newSession(allocator, options)
+                return object : EncoderSession {
+                    override fun update(input: IoBuf, output: IoBuf): CodecStatus =
+                        throw RuntimeException("simulated encoder backend fault")
+                    override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
+                    override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
+                    override fun reset() = delegate.reset()
+                    override fun close() = delegate.close()
+                }
+            }
+        }
+        override val decoder: Decoder = inner.decoder
     }
 
     /**

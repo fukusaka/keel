@@ -140,12 +140,37 @@ internal class WsPermessageDeflate(
      * encoder into pooled [IoBufChunks], strips the `00 00 FF FF` sync tail,
      * and returns [CompressResult.Compressed] — the compressed bytes never
      * materialise as a contiguous `ByteArray`.
+     *
+     * **Encoder fault is terminal.** If the encoder throws mid-message the
+     * DEFLATE stream is left in an undefined state (context takeover means
+     * the LZ77 window carries across messages, so a half-encoded message
+     * cannot be cleanly recovered). The exception propagates — failing the
+     * outbound send — and the engine is **poisoned**: any subsequent
+     * [compress] throws [IllegalStateException] rather than running the
+     * dirty encoder, which could emit a malformed DEFLATE stream the peer
+     * silently rejects. This matches every surveyed WebSocket library
+     * (Netty, ws, gorilla, tungstenite): a codec fault is fatal to the
+     * connection, never reset-and-continued mid-stream. The decode
+     * direction needs no such poison — a decode fault already fails the
+     * connection through [WsFrameAggregator]'s close-code dispatch.
+     *
+     * @throws IllegalStateException if a prior [compress] left the encoder
+     *   broken (poisoned), or via the rethrow of an encoder-side fault.
      */
     fun compress(payload: ByteArray): CompressResult {
+        check(!encoderBroken) { "permessage-deflate encoder is broken by a prior compression fault" }
         if (payload.size < options.threshold) {
             return CompressResult.Uncompressed(payload)
         }
-        val chunks = runEncoderChunks(payload)
+        val chunks = try {
+            runEncoderChunks(payload)
+        } catch (t: Throwable) {
+            // Poison the engine before propagating: the encoder is now in an
+            // undefined mid-message state, so the next compress() must not
+            // reuse it (it could emit a corrupt stream). Fail fast instead.
+            encoderBroken = true
+            throw t
+        }
         // After the Z_SYNC_FLUSH boundary the stream stays open; reset()
         // per message decides (via contextTakeover) whether the LZ77 window
         // carries over (RFC 7692 §7.1.1).
@@ -185,6 +210,14 @@ internal class WsPermessageDeflate(
      * `kotlin.concurrent.Volatile`.
      */
     private var closed: Boolean = false
+
+    /**
+     * Set true when [compress] catches an encoder-side fault, poisoning the
+     * engine so subsequent [compress] calls fail fast instead of running the
+     * dirty (undefined-state) encoder. Single-owner like [closed]; no
+     * [@Volatile] for the same reason.
+     */
+    private var encoderBroken: Boolean = false
 
     /**
      * Releases the encoder and decoder sessions. Idempotent — a second
