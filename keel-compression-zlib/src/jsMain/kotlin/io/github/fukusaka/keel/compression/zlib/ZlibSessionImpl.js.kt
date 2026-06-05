@@ -323,7 +323,7 @@ private class JsZlibDecoderSession(
                     WrapFormat.Raw -> inflateRawSync(u8, opts)
                 }
             } catch (e: Throwable) {
-                throw DecompressionException("inflate failed: ${e.message}", e)
+                throw DecompressionException("inflate failed: ${nodeZlibError(e)}", e)
             }
             val out = decoded.unsafeCast<Uint8Array>().toByteArray()
             options.maxOutputSize?.let { cap ->
@@ -383,7 +383,7 @@ private class JsZlibDecoderSession(
                     WrapFormat.Raw -> inflateRawSync(u8, opts)
                 }
             } catch (e: Throwable) {
-                throw DecompressionException("inflate failed: ${e.message}", e)
+                throw DecompressionException("inflate failed: ${nodeZlibError(e)}", e)
             }
             val out = decoded.unsafeCast<Uint8Array>().toByteArray()
             options.maxOutputSize?.let { cap ->
@@ -479,6 +479,22 @@ private fun ByteArray.toUint8Array(): Uint8Array {
  */
 private fun Uint8Array.toByteArray(): ByteArray =
     Int8Array(buffer, byteOffset, length).unsafeCast<ByteArray>()
+
+/**
+ * Renders a Node zlib error with its structured `code` / `errno` when present.
+ *
+ * Node's `zlib` synchronous functions throw an `Error` carrying a stable
+ * `code` (e.g. `Z_DATA_ERROR`, `Z_BUF_ERROR`) and numeric `errno` in addition
+ * to a terse `message`. Surfacing only `message` loses the stable code an
+ * operator can match across backends, so include `code` / `errno` when the
+ * thrown value exposes them. (`!= null` covers both `null` and JS `undefined`.)
+ */
+private fun nodeZlibError(e: Throwable): String {
+    val dyn = e.asDynamic()
+    val code = dyn.code
+    val base = e.message ?: "unknown error"
+    return if (code != null) "$base (code=$code, errno=${dyn.errno})" else base
+}
 
 /**
  * Append-only byte buffer that grows its backing array by doubling, so

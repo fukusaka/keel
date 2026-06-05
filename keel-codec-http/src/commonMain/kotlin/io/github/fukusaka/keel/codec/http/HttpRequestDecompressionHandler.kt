@@ -193,6 +193,11 @@ public class HttpRequestDecompressionHandler(
     private var bytesOut: Long = 0
     private var ratioBurstRemaining: Int = 0
 
+    // The Content-Encoding token being decoded for the in-flight request, so a
+    // limit fired in checkLimits() can name the responsible codec (the header
+    // is stripped before the request reaches a downstream exception mapper).
+    private var pendingEncoding: String? = null
+
     // ---- Inbound: decode request body ----
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -228,6 +233,7 @@ public class HttpRequestDecompressionHandler(
             ctx.propagateRead(request)
             return
         }
+        pendingEncoding = encoding
         // L1: reject on advertised compressed size before any decoder runs.
         // `decodeAggregated` would also enforce L2 / L3 on cumulative output,
         // but doing that costs an inflate pass; this short-circuit doesn't.
@@ -369,6 +375,7 @@ public class HttpRequestDecompressionHandler(
             ctx.propagateRead(head)
             return
         }
+        pendingEncoding = encoding
         // L1: reject on advertised compressed size before opening a session
         // (same rationale as the aggregated path; symmetry matters because
         // chunked transfer-encoding requests with no Content-Length will
@@ -406,6 +413,7 @@ public class HttpRequestDecompressionHandler(
         scratch?.clear()
         pendingRequestHeaders?.release()
         pendingRequestHeaders = null
+        pendingEncoding = null
     }
 
     /**
@@ -612,6 +620,7 @@ public class HttpRequestDecompressionHandler(
                 RequestDecompressionLimitException.Reason.CompressedSizeExceeded,
                 bytesDecoded = 0,
                 bytesIn = advertised,
+                encoding = pendingEncoding,
             )
         }
     }
@@ -630,6 +639,7 @@ public class HttpRequestDecompressionHandler(
                 RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded,
                 bytesDecoded = bytesOut,
                 bytesIn = bytesIn,
+                encoding = pendingEncoding,
             )
         }
         if (ratioLimit != Int.MAX_VALUE && bytesIn > 0) {
@@ -641,6 +651,7 @@ public class HttpRequestDecompressionHandler(
                         RequestDecompressionLimitException.Reason.RatioExceeded,
                         bytesDecoded = bytesOut,
                         bytesIn = bytesIn,
+                        encoding = pendingEncoding,
                     )
                 }
             }
