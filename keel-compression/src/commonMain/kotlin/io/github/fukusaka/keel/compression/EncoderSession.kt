@@ -114,6 +114,15 @@ public interface EncoderSession : AutoCloseable {
      * stream). For [EncoderOptions.contextTakeover] = `false` this
      * fully resets internal state, matching gRPC per-message and
      * WebSocket `*_no_context_takeover` semantics.
+     *
+     * **Always safe after FINISHED, including mid-finish.** Calling
+     * [reset] is valid whether or not the caller fully drained the
+     * previous [finish] / [flush] output: any bytes the session still
+     * had buffered for the prior message are discarded. A caller that
+     * abandons a [finish] loop early (e.g. a downstream write threw
+     * after one [CodecStatus.NEED_OUTPUT]) may [reset] directly to
+     * recycle the session for the next message — it need not drive the
+     * old stream to completion first.
      */
     public fun reset()
 
