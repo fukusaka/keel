@@ -4,6 +4,8 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.io.BufferedSuspendSource
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.withContext
 
 /**
@@ -27,6 +29,16 @@ interface PipelinedChannel : Channel {
 
     /** The pipeline processing I/O events for this channel. */
     val pipeline: Pipeline
+
+    /**
+     * The per-connection [Logger] (typically tagged with the channel /
+     * engine name). Components that operate on this channel but are not
+     * pipeline handlers — e.g. the WebSocket session core — use it to log
+     * connection-scoped diagnostics. Defaults to a no-op so external
+     * implementations and lightweight test doubles need not provide one;
+     * [AbstractPipelinedChannel] supplies the engine's real logger.
+     */
+    val logger: Logger get() = NoopLoggerFactory.logger("")
 
     /** True if the outbound buffer has capacity for more writes. */
     val isWritable: Boolean
