@@ -365,6 +365,29 @@ private class JvmZlibDecoderSession(
     private var closed: Boolean = false
     private var finishedReturned: Boolean = false
 
+    /**
+     * Running CRC32 of the *decoded* output and a buffer for the RFC 1952
+     * §2.3.1 gzip trailer (CRC32 + ISIZE), used to verify integrity at
+     * [finish]. Non-null only for the gzip wrap: `Inflater(nowrap = true)`
+     * processes the raw DEFLATE body but never sees the gzip header or the
+     * 8-byte trailer, so without this the JVM backend would silently accept a
+     * gzip body with a corrupt / truncated trailer that `libz` (native) and
+     * Node (JS) reject. [gzipTrailerFilled] accumulates the trailer across
+     * `update` calls because it can arrive split from the body.
+     */
+    private val decodeCrc: CRC32? = if (wrap == WrapFormat.Gzip) CRC32() else null
+    private val gzipTrailer: ByteArray? = if (wrap == WrapFormat.Gzip) ByteArray(GZIP_TRAILER_SIZE) else null
+    private var gzipTrailerFilled: Int = 0
+
+    /**
+     * The [ByteBuffer] the inflater is currently consuming from. After the
+     * DEFLATE body finishes, its leftover bytes ([ByteBuffer.remaining]) are
+     * the start of the gzip trailer (the trailer follows the body in the same
+     * input chunk, and on the header-parse path that chunk was copied out of
+     * the source IoBuf, so the trailer is only reachable here).
+     */
+    private var inflaterInput: ByteBuffer? = null
+
     init {
         // A raw / gzip stream carries no preset-dictionary signal, so the
         // dictionary must be primed before the first inflate. A zlib stream
@@ -396,7 +419,13 @@ private class JvmZlibDecoderSession(
                 val tail = parser.consume(scratch, n)
                 if (tail == null) return CodecStatus.NEED_INPUT
                 if (tail.isNotEmpty()) {
-                    inflater.setInput(ByteBuffer.wrap(tail))
+                    // The tail (DEFLATE body + gzip trailer) was copied out of the
+                    // source IoBuf into `scratch`, so the trailer no longer lives
+                    // in `input`. Keep the buffer the inflater consumes from so
+                    // the trailer can be read from its leftover after the body.
+                    val tailBuf = ByteBuffer.wrap(tail)
+                    inflater.setInput(tailBuf)
+                    inflaterInput = tailBuf
                     inflaterBytesReadAtLastUpdate = inflater.bytesRead - tail.size.toLong()
                 }
             }
@@ -407,6 +436,13 @@ private class JvmZlibDecoderSession(
             val view = sliceForReader(input)
             totalInput += view.remaining()
             inflater.setInput(view)
+            // Do NOT record this view as the trailer source: it is a slice of
+            // `input`, so any byte the inflater leaves unconsumed (the trailer)
+            // still sits in `input` with its readerIndex un-advanced and is
+            // read back via collectGzipTrailer's path 2. Recording the view too
+            // would double-count that byte. Only the header-path `tail` buffer
+            // (copied out of `input`) needs the leftover path.
+            inflaterInput = null
         }
 
         return drainDecode(input, output)
@@ -426,6 +462,7 @@ private class JvmZlibDecoderSession(
         val s = drainDecode(input = null, output = output)
         if (s == CodecStatus.NEED_OUTPUT) return s
         if (inflater.finished() || (s == CodecStatus.NEED_INPUT && inflater.needsInput())) {
+            verifyGzipTrailer()
             finishedReturned = true
             return CodecStatus.FINISHED
         }
@@ -458,6 +495,9 @@ private class JvmZlibDecoderSession(
             inflaterBytesReadAtLastUpdate = 0
         }
         gzipHeaderParser = if (wrap == WrapFormat.Gzip) GzipHeaderParser() else null
+        decodeCrc?.reset()
+        gzipTrailerFilled = 0
+        inflaterInput = null
         totalDecoded = 0
         totalInput = 0
         finishedReturned = false
@@ -478,12 +518,14 @@ private class JvmZlibDecoderSession(
                 val produced = outBuf.position() - before
                 if (produced > 0) {
                     enforceLimits(produced)
+                    updateDecodeCrc(outBuf, before, produced)
                     output.writerIndex += produced
                     totalDecoded += produced
                     continue
                 }
                 if (inflater.finished()) {
                     advanceInputReaderIndex(input)
+                    collectGzipTrailer(input)
                     return CodecStatus.NEED_INPUT
                 }
                 if (inflater.needsInput()) {
@@ -528,6 +570,76 @@ private class JvmZlibDecoderSession(
             input.readerIndex += delta
             inflaterBytesReadAtLastUpdate = inflater.bytesRead
         }
+    }
+
+    /**
+     * Updates [decodeCrc] with the freshly decoded region `[from, from+length)`
+     * of [outBuf], via a duplicate so the buffer's own position is untouched.
+     * No-op for non-gzip wraps. Kept out of the [drainDecode] loop body to bound
+     * its nesting depth.
+     */
+    private fun updateDecodeCrc(outBuf: ByteBuffer, from: Int, length: Int) {
+        val crc = decodeCrc ?: return
+        val region = outBuf.duplicate()
+        region.position(from)
+        region.limit(from + length)
+        crc.update(region)
+    }
+
+    /**
+     * Pulls up to the remaining gzip-trailer bytes out of [input] once the
+     * DEFLATE body has finished. The 8-byte trailer follows the body and may
+     * span more than one `update` call, so bytes are accumulated into
+     * [gzipTrailer] across calls. No-op for non-gzip wraps.
+     */
+    private fun collectGzipTrailer(input: IoBuf?) {
+        val trailer = gzipTrailer ?: return
+        // 1. Leftover of the buffer the inflater just consumed the body from —
+        //    the trailer follows the body in the same chunk.
+        inflaterInput?.let { leftover ->
+            while (gzipTrailerFilled < trailer.size && leftover.hasRemaining()) {
+                trailer[gzipTrailerFilled] = leftover.get()
+                gzipTrailerFilled++
+            }
+        }
+        // 2. Bytes still unread in the source IoBuf — the trailer arrived split
+        //    into a later update() chunk after the body had already finished.
+        if (input != null) {
+            val want = (trailer.size - gzipTrailerFilled).coerceAtMost(input.readableBytes)
+            if (want > 0) {
+                input.readByteArray(trailer, gzipTrailerFilled, want)
+                gzipTrailerFilled += want
+            }
+        }
+    }
+
+    /**
+     * Verifies the RFC 1952 §2.3.1 gzip trailer against the decoded output:
+     * the stored CRC32 must match the CRC of everything decoded and the stored
+     * ISIZE must match the decoded length mod 2^32. A short trailer means the
+     * stream was truncated. No-op for non-gzip wraps.
+     *
+     * @throws DecompressionException if the trailer is short, or the CRC32 /
+     *   ISIZE does not match the decoded output.
+     */
+    private fun verifyGzipTrailer() {
+        val crc = decodeCrc ?: return
+        val trailer = gzipTrailer ?: return
+        if (gzipTrailerFilled < trailer.size) {
+            throw DecompressionException(
+                "truncated gzip stream: trailer is $gzipTrailerFilled of ${trailer.size} bytes",
+            )
+        }
+        val expectedCrc = readLeUInt32(trailer, 0)
+        val expectedIsize = readLeUInt32(trailer, 4)
+        val actualCrc = crc.value and 0xFFFFFFFFL
+        val actualIsize = totalDecoded and 0xFFFFFFFFL
+        val mismatch = when {
+            actualCrc != expectedCrc -> "CRC32 mismatch: expected $expectedCrc, computed $actualCrc"
+            actualIsize != expectedIsize -> "ISIZE mismatch: expected $expectedIsize, decoded $actualIsize"
+            else -> return
+        }
+        throw DecompressionException("gzip $mismatch")
     }
 
     private fun enforceLimits(produced: Int) {
@@ -596,8 +708,18 @@ private fun writeGzipHeader(out: IoBuf) {
     out.writeByte(0xFF.toByte())
 }
 
+/** RFC 1952 §2.3.1 gzip trailer: CRC32 (4 bytes LE) + ISIZE (4 bytes LE). */
+internal const val GZIP_TRAILER_SIZE: Int = 8
+
+/** Reads a little-endian unsigned 32-bit value from [b] at [off] as a `Long`. */
+private fun readLeUInt32(b: ByteArray, off: Int): Long =
+    (b[off].toLong() and 0xFF) or
+        ((b[off + 1].toLong() and 0xFF) shl 8) or
+        ((b[off + 2].toLong() and 0xFF) shl 16) or
+        ((b[off + 3].toLong() and 0xFF) shl 24)
+
 private fun buildGzipTrailer(crcValue: Long, isize: Long): ByteArray {
-    val tb = ByteArray(8)
+    val tb = ByteArray(GZIP_TRAILER_SIZE)
     val crc = crcValue.toInt()
     tb[0] = (crc and 0xFF).toByte()
     tb[1] = ((crc shr 8) and 0xFF).toByte()
