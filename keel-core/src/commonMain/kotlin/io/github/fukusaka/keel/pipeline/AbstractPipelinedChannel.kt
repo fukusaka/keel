@@ -31,7 +31,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  */
 abstract class AbstractPipelinedChannel(
     val transport: IoTransport,
-    protected val logger: Logger,
+    override val logger: Logger,
     override val remoteAddress: SocketAddress? = null,
     override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {

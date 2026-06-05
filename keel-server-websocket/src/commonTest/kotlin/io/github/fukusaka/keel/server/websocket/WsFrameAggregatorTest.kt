@@ -3,10 +3,14 @@ package io.github.fukusaka.keel.server.websocket
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -308,6 +312,42 @@ class WsFrameAggregatorTest {
             assertEquals(WsFrameAggregator.PROTOCOL_ERROR_CODE, error.closeCode)
         } finally {
             engine.close()
+        }
+    }
+
+    @Test
+    fun `a malformed compressed message logs the inflate cause with the message ordinal`() {
+        // M1/M2: the peer only ever sees a generic 1002 close (the wire reason
+        // must not leak codec internals), so the actual cause and which message
+        // failed are recorded on the connection logger for the operator.
+        val log = CapturingLogger()
+        val boom = RuntimeException("simulated Z_DATA_ERROR")
+        val aggregator = WsFrameAggregator(
+            inflater = WsMessageInflater { throw boom },
+            logger = log,
+        )
+        val result = aggregator.feed(
+            WsFrame(fin = true, rsv1 = true, opcode = WsOpcode.BINARY, payload = byteArrayOf(1, 2, 3)),
+        )
+        val error = assertIs<WsAggregateResult.ProtocolError>(result)
+        assertEquals(WsFrameAggregator.PROTOCOL_ERROR_CODE, error.closeCode)
+        // Wire reason stays generic — the cause does not leak to the peer.
+        assertFalse(error.reason.contains("Z_DATA_ERROR"), "wire reason must not leak the cause: ${error.reason}")
+        // Operator-facing log carries the cause (M1) and the failing ordinal (M2).
+        val warn = log.entries.single { it.level == LogLevel.WARN }
+        assertSame(boom, warn.throwable, "the inflate cause must be logged, not swallowed")
+        assertTrue(warn.message?.toString()?.contains("#1") == true, "log must name the message ordinal: ${warn.message}")
+    }
+
+    private class CapturingLogger : Logger {
+        data class Entry(val level: LogLevel, val throwable: Throwable?, val message: Any?)
+
+        val entries: MutableList<Entry> = mutableListOf()
+
+        override fun isLoggable(level: LogLevel): Boolean = true
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            entries.add(Entry(level, throwable, message))
         }
     }
 }
