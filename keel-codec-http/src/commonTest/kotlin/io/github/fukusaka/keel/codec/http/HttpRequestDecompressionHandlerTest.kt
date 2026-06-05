@@ -37,6 +37,47 @@ class HttpRequestDecompressionHandlerTest {
 
     // -------------------------------------------------------------- passthrough
 
+    // --- config validation (5th deep-review, lens G) ---
+
+    @Test
+    fun `rejects a non-positive decompressionLimit at construction`() {
+        // Pre-fix: a value < 1 (other than the Long.MAX_VALUE opt-out) trips the
+        // size gate on the first decoded byte, silently rejecting every
+        // compressed body. Post-fix: fails loudly at construction.
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionLimit = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionLimit = -1)
+        }
+        // The documented opt-out stays valid.
+        HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionLimit = Long.MAX_VALUE)
+    }
+
+    @Test
+    fun `rejects a non-positive ratioLimit at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioLimit = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioLimit = -5)
+        }
+        // The documented opt-out stays valid.
+        HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioLimit = Int.MAX_VALUE)
+    }
+
+    @Test
+    fun `rejects a negative ratioBurst and non-positive scratchCapacity at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioBurst = -1)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, scratchCapacity = 0)
+        }
+        // Zero burst (single-shot trip) is the documented safe default.
+        HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioBurst = 0)
+    }
+
     @Test
     fun `no Content-Encoding header passes through`() {
         val state = ChainState()

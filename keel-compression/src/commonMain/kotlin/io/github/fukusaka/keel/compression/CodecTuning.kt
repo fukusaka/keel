@@ -45,8 +45,21 @@ public sealed interface CodecTuning
  *   that does not support the requested strategy falls back to
  *   [Strategy.Default] (see [DeflateCapabilities.supportedStrategies]).
  *   Most callers leave it at [Strategy.Default].
+ * @throws IllegalArgumentException if [windowBits] is set to a value outside
+ *   the zlib-legal forms `-15..-8` (raw deflate), `8..15` (zlib wrapper), or
+ *   `24..31` (gzip wrapper = `8..15 + 16`). Rejected at config time so an
+ *   out-of-range value fails loudly here instead of reaching `deflateInit2` /
+ *   `inflateInit2` (the native `WrapFormat.Default` path forwards the value
+ *   unclamped, where zlib would otherwise return an opaque `Z_STREAM_ERROR`)
+ *   or being silently clamped on a different backend (JS `coerceIn`).
  */
 public class DeflateTuning(
     public val windowBits: Int? = null,
     public val strategy: Strategy = Strategy.Default,
-) : CodecTuning
+) : CodecTuning {
+    init {
+        require(windowBits == null || windowBits in -15..-8 || windowBits in 8..15 || windowBits in 24..31) {
+            "DeflateTuning.windowBits must be -15..-8 (raw), 8..15 (zlib), or 24..31 (gzip) if set (got $windowBits)"
+        }
+    }
+}

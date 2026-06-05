@@ -91,6 +91,10 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *   matches Netty `JdkZlibEncoder`'s emit chunk size and is a registered
  *   pool class, so the working buffers recycle; a non-pool-class size
  *   still works but allocates fresh per emit.
+ * @param maxPendingResponses upper bound on the pipelined Accept-Encoding
+ *   queue before the connection is failed (slowloris guard). Default 1024.
+ * @throws IllegalArgumentException if [scratchCapacity] or
+ *   [maxPendingResponses] is not positive.
  */
 public class CompressionHandler(
     private val registry: CompressionRegistry,
@@ -100,6 +104,18 @@ public class CompressionHandler(
     private val scratchCapacity: Int = SCRATCH_CAPACITY,
     private val maxPendingResponses: Int = DEFAULT_MAX_PENDING_RESPONSES,
 ) : DuplexHandler {
+
+    init {
+        require(scratchCapacity > 0) {
+            "CompressionHandler.scratchCapacity must be > 0 (got $scratchCapacity)"
+        }
+        // A non-positive cap makes the `acceptQueue.size < maxPendingResponses`
+        // gate fail on the very first request (`0 < 0` is false), bricking the
+        // connection. Reject at construction rather than per-request.
+        require(maxPendingResponses > 0) {
+            "CompressionHandler.maxPendingResponses must be > 0 (got $maxPendingResponses)"
+        }
+    }
 
     /**
      * Pending Accept-Encoding values, FIFO per pipelined request.

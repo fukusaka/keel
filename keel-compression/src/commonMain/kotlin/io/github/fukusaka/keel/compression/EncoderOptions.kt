@@ -32,6 +32,12 @@ package io.github.fukusaka.keel.compression
  *   Knobs that have no cross-format equivalent live here rather than on
  *   this generic type, so adding a zstd / brotli backend stays
  *   non-breaking. See [CodecTuning]
+ * @throws IllegalArgumentException if [level] is outside `-1..9` (`-1` =
+ *   backend default, `0..9` = zlib-family levels). Rejected at config
+ *   time so a typo (e.g. `level = 15`) fails loudly here rather than
+ *   being silently clamped by one backend (JVM / native `coerceIn(0, 9)`)
+ *   and throwing an opaque error on another (Node). Mirrors the identical
+ *   guard on [io.github.fukusaka.keel.server.websocket.WsDeflateOptions].
  */
 public class EncoderOptions(
     public val level: Int = -1,
@@ -41,6 +47,12 @@ public class EncoderOptions(
     public val dictionary: ByteArray? = null,
     public val tuning: CodecTuning? = null,
 ) {
+    init {
+        require(level == -1 || level in 0..9) {
+            "EncoderOptions.level must be -1 (backend default) or 0..9 (got $level)"
+        }
+    }
+
     public companion object {
         public val Default: EncoderOptions = EncoderOptions()
     }

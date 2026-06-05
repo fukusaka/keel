@@ -258,6 +258,31 @@ class CompressionHandlerTest {
         )
     }
 
+    // --- config validation (5th deep-review, lens G) ---
+
+    @Test
+    fun `rejects a non-positive maxPendingResponses at construction`() {
+        // Pre-fix: maxPendingResponses = 0 makes `acceptQueue.size < 0` fail on
+        // the very first request, bricking every connection. Post-fix: rejected
+        // loudly at construction.
+        assertFailsWith<IllegalArgumentException> {
+            CompressionHandler(registry, DefaultAllocator, maxPendingResponses = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CompressionHandler(registry, DefaultAllocator, maxPendingResponses = -1)
+        }
+    }
+
+    @Test
+    fun `rejects a non-positive scratchCapacity at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            CompressionHandler(registry, DefaultAllocator, scratchCapacity = 0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CompressionHandler(registry, DefaultAllocator, scratchCapacity = -8)
+        }
+    }
+
     @Test
     fun `skips compression for already-encoded response`() {
         val state = ChainState()
