@@ -1153,6 +1153,51 @@ class HttpRequestDecompressionHandlerTest {
     }
 
     @Test
+    fun `a second request head without an intervening body closes the prior session`() {
+        // I-2 (4th deep-review): a pipelined client can send request head A
+        // (with Content-Encoding, opening a decoder session) and then head B
+        // before any body / HttpBodyEnd for A — e.g. two Content-Length: 0
+        // POSTs back to back. handleRequestHead calls discardPendingRequestState
+        // at the top, so head B must close A's still-open session rather than
+        // overwrite (leak) it. Characterization: the discard already does this;
+        // no prior test exercised the head-without-body sequence.
+        val multiply = CountingMultiplyDecoder(factor = 200)
+        val registry = CompressionRegistry().apply { registerDecoder(multiply) }
+        val state = ChainState()
+        val handler = HttpRequestDecompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        // Head A opens a session (Content-Encoding present, no body follows).
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/a",
+                headers = HttpHeaders().apply {
+                    add("Content-Encoding", "x200")
+                    add("Content-Length", "0")
+                },
+            ),
+        )
+        // Head B arrives before any body / HttpBodyEnd for A.
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.POST, "/b",
+                headers = HttpHeaders().apply {
+                    add("Content-Encoding", "x200")
+                    add("Content-Length", "0")
+                },
+            ),
+        )
+        // A's session must have been closed by head B's discard; only B's is open.
+        assertEquals(1, multiply.openSessions, "head B must close head A's open session, not leak it")
+
+        // Drain B normally so the test leaves no open session.
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+        assertEquals(0, multiply.openSessions, "head B's session must close on its body end")
+    }
+
+    @Test
     fun `emitDecodedChunk releases the emit IoBuf when propagateRead throws`() {
         // M1 (4-th deep-review): `emitDecodedChunk` allocates a fresh `emit`
         // IoBuf and hands it downstream via `ctx.propagateRead(HttpBody(emit))`.
