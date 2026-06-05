@@ -157,7 +157,7 @@ private class NativeZlibEncoderSession(
             // Free the C-allocated z_stream before the constructor aborts —
             // close() (which frees it) is never reached when init throws.
             keel_zstream_free(z)
-            error("deflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+            error("deflateInit2 rc=$rc msg=${zlibMessage(keel_zlib_msg(z)?.toKString())}")
         }
         try {
             options.dictionary?.takeIf { it.isNotEmpty() }?.let { applyDictionary(it) }
@@ -173,7 +173,7 @@ private class NativeZlibEncoderSession(
             keel_deflate_set_dictionary(z, pinned.addressOf(0).reinterpret(), dict.size)
         }
         if (rc != keel_zlib_status_ok()) {
-            error("deflateSetDictionary failed (rc=$rc): ${keel_zlib_msg(z)?.toKString()}")
+            error("deflateSetDictionary failed (rc=$rc): ${zlibMessage(keel_zlib_msg(z)?.toKString())}")
         }
     }
 
@@ -286,7 +286,7 @@ private class NativeZlibEncoderSession(
                     }
                     if (produced == 0 && consumed == 0) break
                 }
-                else -> error("deflate rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+                else -> error("deflate rc=$rc msg=${zlibMessage(keel_zlib_msg(z)?.toKString())}")
             }
         }
         return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
@@ -368,7 +368,7 @@ private class NativeZlibDecoderSession(
             // Free the C-allocated z_stream before the constructor aborts —
             // close() (which frees it) is never reached when init throws.
             keel_zstream_free(z)
-            error("inflateInit2 rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+            error("inflateInit2 rc=$rc msg=${zlibMessage(keel_zlib_msg(z)?.toKString())}")
         }
         // A raw stream carries no header, so inflate never signals
         // Z_NEED_DICT; the dictionary must be primed before the first
@@ -451,7 +451,7 @@ private class NativeZlibDecoderSession(
         // loop, hanging forever. Surface it as a clean DecompressionException.
         if (rc != keel_zlib_status_ok()) {
             throw DecompressionException(
-                "inflateSetDictionary failed (rc=$rc — wrong dictionary?): ${keel_zlib_msg(z)?.toKString()}",
+                "inflateSetDictionary failed (rc=$rc — wrong dictionary?): ${zlibMessage(keel_zlib_msg(z)?.toKString())}",
             )
         }
     }
@@ -482,7 +482,7 @@ private class NativeZlibDecoderSession(
             when (rc) {
                 keel_zlib_status_stream_end() -> return CodecStatus.NEED_INPUT
                 keel_zlib_status_data_error() ->
-                    throw DecompressionException("inflate data error: ${keel_zlib_msg(z)?.toKString()}")
+                    throw DecompressionException("inflate data error (rc=$rc): ${zlibMessage(keel_zlib_msg(z)?.toKString())}")
                 keel_zlib_status_need_dict() -> {
                     // A zlib stream that used a preset dictionary signals
                     // Z_NEED_DICT once the header's Adler-32 is read; apply the
@@ -505,7 +505,7 @@ private class NativeZlibDecoderSession(
                     if (input == null || input.readableBytes == 0) return CodecStatus.NEED_INPUT
                     if (produced == 0 && consumed == 0) break
                 }
-                else -> error("inflate rc=$rc msg=${keel_zlib_msg(z)?.toKString()}")
+                else -> error("inflate rc=$rc msg=${zlibMessage(keel_zlib_msg(z)?.toKString())}")
             }
         }
         return if (output.writableBytes == 0) CodecStatus.NEED_OUTPUT else CodecStatus.NEED_INPUT
@@ -585,3 +585,12 @@ private fun strategy(s: Strategy): Int = when (s) {
     Strategy.RunLength -> 3
     Strategy.Fixed -> 4
 }
+
+/**
+ * Human-readable zlib status message. `z->msg` is frequently unset (the C
+ * wrapper returns `""` for that case), which would otherwise surface as an
+ * empty, undiagnosable error string; fall back to a placeholder so the error
+ * always carries something an operator can act on (the numeric `rc` is included
+ * separately at the call site).
+ */
+private fun zlibMessage(raw: String?): String = raw?.takeIf { it.isNotEmpty() } ?: "(no zlib message)"
