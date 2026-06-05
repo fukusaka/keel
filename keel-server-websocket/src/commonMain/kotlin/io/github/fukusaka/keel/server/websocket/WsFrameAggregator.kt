@@ -3,6 +3,10 @@ package io.github.fukusaka.keel.server.websocket
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.compression.DecompressionLimitException
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.warn
 
 /**
  * Upper bound on a reassembled WebSocket message, in bytes (16 MiB).
@@ -88,13 +92,28 @@ internal fun interface WsMessageInflater {
  *
  * @param inflater decompressor for `permessage-deflate` messages, or
  *   null when the connection negotiated no extension.
+ * @param logger connection-scoped logger used to record the **cause** of a
+ *   decompression failure. The failure itself is surfaced to the peer as a
+ *   generic close frame (the wire `reason` must not leak internal codec
+ *   detail), so the actual exception — which is the only thing that tells an
+ *   operator whether it was a corrupt back-reference, a context-takeover /
+ *   windowBits negotiation bug, or genuine wire corruption — is logged here
+ *   instead. Defaults to no-op for seam tests.
  */
 internal class WsFrameAggregator(
     private val inflater: WsMessageInflater? = null,
+    private val logger: Logger = NoopLoggerFactory.logger(""),
 ) {
 
     /** Opcode of the message in progress, or null when none is open. */
     private var messageOpcode: WsOpcode? = null
+
+    /**
+     * 1-based ordinal of the message currently being completed, used only to
+     * identify *which* message failed in a decompression-fault log line on a
+     * long-lived connection (M2). Incremented per completed message.
+     */
+    private var messageOrdinal: Long = 0
 
     /**
      * Fragments of the message in progress, kept as separate chunks and
@@ -195,6 +214,7 @@ internal class WsFrameAggregator(
      * error (RFC 6455 §8.1) rather than a lossy decode.
      */
     private fun completeMessage(opcode: WsOpcode, payload: ByteArray, compressed: Boolean): WsAggregateResult {
+        messageOrdinal++
         val bytes = if (compressed) {
             when (val r = inflate(payload)) {
                 is InflateResult.Ok -> {
@@ -250,19 +270,21 @@ internal class WsFrameAggregator(
      * [feedDataStart] rejects an RSV1 frame upfront when no inflater is
      * configured.
      */
-    @Suppress("SwallowedException")
     private fun inflate(payload: ByteArray): InflateResult {
         val decompressor = inflater ?: return InflateResult.Malformed
-        // We only need to map a throw to a WebSocket close code; the
-        // exception cause is not propagated to the peer over the wire.
-        // Logging / preserving the cause is the caller's responsibility
-        // (the aggregator surfaces a `ProtocolError` result with a static
-        // reason string).
+        // The peer only ever receives a generic close frame (the wire `reason`
+        // must not leak internal codec detail), so the cause is logged here —
+        // it is the only signal that tells an operator whether this was a
+        // corrupt back-reference, a context-takeover / windowBits negotiation
+        // bug, or genuine wire corruption, and on a long-lived connection the
+        // message ordinal says which message failed.
         return try {
             InflateResult.Ok(decompressor.inflate(payload))
         } catch (e: DecompressionLimitException) {
+            logger.debug { "permessage-deflate message #$messageOrdinal exceeded the decompression cap: ${e.message}" }
             InflateResult.TooBig
         } catch (e: Throwable) {
+            logger.warn(e) { "permessage-deflate inflate failed on message #$messageOrdinal: ${e.message}" }
             InflateResult.Malformed
         }
     }

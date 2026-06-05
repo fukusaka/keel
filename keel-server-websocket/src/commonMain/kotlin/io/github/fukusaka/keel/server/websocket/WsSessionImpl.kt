@@ -49,6 +49,7 @@ internal class WsSessionImpl(
      */
     private val aggregator = WsFrameAggregator(
         inflater = deflate?.let { engine -> WsMessageInflater { engine.decompress(it) } },
+        logger = channel.logger,
     )
 
     @Volatile
