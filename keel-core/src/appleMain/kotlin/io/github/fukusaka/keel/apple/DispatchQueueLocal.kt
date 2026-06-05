@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.apple
 
+import io.github.fukusaka.keel.scope.ScopeLocal
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -115,11 +116,14 @@ import platform.darwin.dispatch_queue_t
  *
  * **Layering.** Pure Apple-platform utility — uses only `platform.darwin`
  * `dispatch_*` symbols. Available in `appleMain`, the keel-platform-Apple
- * source set common to macOS / iOS / tvOS / watchOS targets. There is no
- * cross-platform projection because no other platform has the same problem
- * shape (JVM's `ThreadLocal` and K/N's `@ThreadLocal` both already preserve
- * per-pthread isolation, which is enough for keel's pthread-pinned engines:
- * kqueue / epoll / io_uring / nio / netty).
+ * source set common to macOS / iOS / tvOS / watchOS targets. This is the
+ * Apple actual of the cross-platform [ScopeLocal] interface (obtained via
+ * `scopeLocal { ... }`); the per-pthread platforms bind their own scope
+ * primitive (a Kotlin/Native `@ThreadLocal` slot on Linux,
+ * `java.lang.ThreadLocal` on JVM, a singleton on JS). The Apple binding is the
+ * only one that binds to a GCD
+ * queue rather than an OS thread, because GCD is the only execution model
+ * that migrates a logical scope's work across worker pthreads.
  *
  * **Type safety.** The `T` parameter is enforced at [install] / [current]
  * call sites by the Kotlin compiler, but a single instance must always be
@@ -145,7 +149,7 @@ import platform.darwin.dispatch_queue_t
 @OptIn(ExperimentalForeignApi::class)
 class DispatchQueueLocal<T : Any>(
     private val fallback: () -> T,
-) {
+) : ScopeLocal<T> {
 
     /**
      * Per-instance unique key pointer used as `dispatch_queue_specific_key`.
@@ -191,7 +195,7 @@ class DispatchQueueLocal<T : Any>(
      * [fallback]; performance therefore depends on the supplied lambda.
      */
     @Suppress("UNCHECKED_CAST")
-    fun current(): T {
+    override fun current(): T {
         val specific = dispatch_get_specific(key)
         if (specific != null) {
             return specific.asStableRef<Any>().get() as T
@@ -205,7 +209,7 @@ class DispatchQueueLocal<T : Any>(
      * Useful for diagnostics, assertions, or hot-path fast-checks that
      * want to avoid the [fallback] cost entirely.
      */
-    fun isScopedHere(): Boolean = dispatch_get_specific(key) != null
+    override fun isScopedHere(): Boolean = dispatch_get_specific(key) != null
 
     private companion object {
         /**
