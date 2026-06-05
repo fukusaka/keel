@@ -130,6 +130,9 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *   limit checks. Higher = fewer emit cycles + larger emit size, lower
  *   = tighter per-call cap. Default 8 KiB matches `CompressionHandler` /
  *   Netty `JdkZlibEncoder` emit chunk size.
+ * @throws IllegalArgumentException if [decompressionLimit] or [ratioLimit]
+ *   is below 1 (their opt-outs are [Long.MAX_VALUE] / [Int.MAX_VALUE]), if
+ *   [ratioBurst] is negative, or if [scratchCapacity] is not positive.
  */
 public class HttpRequestDecompressionHandler(
     private val registry: CompressionRegistry,
@@ -140,6 +143,28 @@ public class HttpRequestDecompressionHandler(
     private val unknownEncodingPolicy: UnknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType,
     private val scratchCapacity: Int = SCRATCH_CAPACITY,
 ) : DuplexHandler {
+
+    init {
+        // Validate the zip-bomb defence knobs at construction. A non-positive
+        // value silently turns a defence into either an outage or a weakened
+        // gate: ratioLimit/decompressionLimit <= 0 trip on the first decoded
+        // byte (rejecting all compressed bodies), scratchCapacity <= 0 stalls
+        // the decode loop. Int/Long.MAX_VALUE remain the documented opt-outs.
+        require(decompressionLimit >= 1) {
+            "HttpRequestDecompressionHandler.decompressionLimit must be >= 1 " +
+                "(use Long.MAX_VALUE to opt out; got $decompressionLimit)"
+        }
+        require(ratioLimit >= 1) {
+            "HttpRequestDecompressionHandler.ratioLimit must be >= 1 " +
+                "(use Int.MAX_VALUE to opt out; got $ratioLimit)"
+        }
+        require(ratioBurst >= 0) {
+            "HttpRequestDecompressionHandler.ratioBurst must be >= 0 (got $ratioBurst)"
+        }
+        require(scratchCapacity > 0) {
+            "HttpRequestDecompressionHandler.scratchCapacity must be > 0 (got $scratchCapacity)"
+        }
+    }
 
     /** Active decoder session for the in-flight request body, or `null`. */
     private var activeSession: DecoderSession? = null
