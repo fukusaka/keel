@@ -20,12 +20,19 @@ import io.github.fukusaka.keel.compression.DecompressionException
  *   this request at the moment the limit fired
  * @property bytesIn cumulative compressed bytes the decoder has
  *   consumed for this request at the moment the limit fired
+ * @property encoding the `Content-Encoding` token whose decoder tripped
+ *   the limit, or `null` if unknown. Carried because the handler strips
+ *   `Content-Encoding` before the request reaches a downstream exception
+ *   mapper, so without it the operator cannot tell which codec was
+ *   responsible (the request method / URI, by contrast, stay recoverable
+ *   from the mapper's own request context).
  */
 public class RequestDecompressionLimitException(
     public val reason: Reason,
     public val bytesDecoded: Long,
     public val bytesIn: Long,
-) : DecompressionException(buildMessage(reason, bytesDecoded, bytesIn)) {
+    public val encoding: String? = null,
+) : DecompressionException(buildMessage(reason, bytesDecoded, bytesIn, encoding)) {
 
     public enum class Reason {
         /**
@@ -53,9 +60,11 @@ public class RequestDecompressionLimitException(
     }
 
     public companion object {
-        private fun buildMessage(reason: Reason, bytesDecoded: Long, bytesIn: Long): String =
-            "request decompression limit exceeded: $reason " +
+        private fun buildMessage(reason: Reason, bytesDecoded: Long, bytesIn: Long, encoding: String?): String {
+            val codec = if (encoding != null) " encoding=$encoding" else ""
+            return "request decompression limit exceeded: $reason$codec " +
                 "(decoded=$bytesDecoded compressed=$bytesIn)"
+        }
     }
 }
 

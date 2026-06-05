@@ -533,6 +533,10 @@ class HttpRequestDecompressionHandlerTest {
         assertEquals(RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded, ex.reason)
         assertEquals(16L, ex.bytesDecoded)
         assertEquals(4L, ex.bytesIn)
+        // 5th deep-review S1: the tripped codec is named, since the handler
+        // strips Content-Encoding before a downstream mapper sees it.
+        assertEquals("x4", ex.encoding)
+        assertTrue(ex.message?.contains("encoding=x4") == true, "message must name the codec: ${ex.message}")
     }
 
     @Test
