@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.compression
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -167,6 +168,48 @@ class EncoderOptionsTest {
         // Three values exactly — this is the SPI state-machine alphabet.
         val names = CodecStatus.entries.map { it.name }.toSet()
         assertEquals(setOf("NEED_OUTPUT", "NEED_INPUT", "FINISHED"), names)
+    }
+
+    // --- config validation (5th deep-review, lens G) ---
+
+    @Test
+    fun `EncoderOptions rejects a level above 9`() {
+        // Pre-fix: silently clamped to 9 on JVM/native, opaque throw on Node.
+        // Post-fix: fails loudly at config time. Mirrors WsDeflateOptions.
+        assertFailsWith<IllegalArgumentException> { EncoderOptions(level = 15) }
+    }
+
+    @Test
+    fun `EncoderOptions rejects a level below -1`() {
+        assertFailsWith<IllegalArgumentException> { EncoderOptions(level = -2) }
+    }
+
+    @Test
+    fun `EncoderOptions accepts the -1 default-sentinel and 0 to 9`() {
+        // Boundary values must stay valid (no false rejection).
+        for (lvl in -1..9) {
+            assertEquals(lvl, EncoderOptions(level = lvl).level)
+        }
+    }
+
+    @Test
+    fun `DeflateTuning rejects an out-of-range windowBits`() {
+        // 3 is not a zlib-legal window magnitude; the native Default-wrap
+        // path would otherwise forward it unclamped to deflateInit2.
+        assertFailsWith<IllegalArgumentException> { DeflateTuning(windowBits = 3) }
+        assertFailsWith<IllegalArgumentException> { DeflateTuning(windowBits = 0) }
+        assertFailsWith<IllegalArgumentException> { DeflateTuning(windowBits = 16) }
+        assertFailsWith<IllegalArgumentException> { DeflateTuning(windowBits = 99) }
+        assertFailsWith<IllegalArgumentException> { DeflateTuning(windowBits = -100) }
+    }
+
+    @Test
+    fun `DeflateTuning accepts raw zlib and gzip windowBits forms`() {
+        // -15..-8 raw, 8..15 zlib, 24..31 gzip, null = default.
+        for (wb in (-15..-8) + (8..15) + (24..31)) {
+            assertEquals(wb, DeflateTuning(windowBits = wb).windowBits)
+        }
+        assertNull(DeflateTuning(windowBits = null).windowBits)
     }
 
     @Test
