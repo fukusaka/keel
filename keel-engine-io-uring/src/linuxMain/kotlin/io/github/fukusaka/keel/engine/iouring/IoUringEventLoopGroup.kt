@@ -74,23 +74,26 @@ internal class IoUringEventLoopGroup(
     } else {
         arrayOfNulls(size)
     }
-    private val bufferTables: Array<RegisteredBufferTable?> = if (capabilities.registeredBuffers) {
-        // Warmup pool, then prepare pooled buffer addresses for kernel registration.
-        // Requires SlabAllocator (Native pool). Custom allocators silently skip
-        // registration — SEND_ZC falls back to per-send page pinning.
-        Array(size) { i ->
-            val alloc = allocators[i]
-            warmupPool(alloc)
-            val pooled = (alloc as? io.github.fukusaka.keel.buf.SlabAllocator)?.nativePooledBuffers()
-            if (pooled != null && pooled.isNotEmpty()) {
-                RegisteredBufferTable(loops[i], pooled, logger)
-            } else {
-                null
-            }
-        }
-    } else {
-        arrayOfNulls(size)
-    }
+    // Whether the kernel supports registered buffers (SEND_ZC_FIXED). Captured as a
+    // field because the per-EventLoop warmup + enumeration + table construction is
+    // deferred to the EventLoop pthread in start(), where `capabilities` (a
+    // constructor parameter, not a field) is no longer in scope.
+    private val registeredBuffersEnabled = capabilities.registeredBuffers
+
+    // Per-EventLoop SEND_ZC_FIXED registered-buffer tables. Populated on each
+    // EventLoop's own pthread during start() (warmup -> nativePooledBuffers()
+    // enumeration -> table construction), not on the construction thread. Keeping the
+    // enumerated pool addresses resident on the thread that hands them out is a
+    // prerequisite for confining the allocator onto a per-EventLoop scope.
+    //
+    // Behaviour-neutral under instance-handout: SlabAllocator pools live in the
+    // process-global native heap, so the enumerated pointers are identical regardless
+    // of which thread warms and enumerates them. Custom allocators (non-SlabAllocator)
+    // leave the entry null and SEND_ZC falls back to per-send page pinning. The kernel
+    // io_uring_register_buffers syscall already ran on the EventLoop pthread
+    // (RegisteredBufferTable.initOnEventLoop); only warmup + enumeration + table
+    // construction move here.
+    private val bufferTables: Array<RegisteredBufferTable?> = arrayOfNulls(size)
     private val index = AtomicInt(0)
 
     /**
@@ -118,6 +121,13 @@ internal class IoUringEventLoopGroup(
      * that `io_uring_register_*` calls run from the submitter task — required
      * for `IORING_SETUP_SINGLE_ISSUER` and by the register classes' own
      * thread-affinity invariants.
+     *
+     * The per-EventLoop registered-buffer warmup (pool fill + [warmupPool]),
+     * pooled-address enumeration, and [RegisteredBufferTable] construction also run
+     * inside this dispatch — on the owning pthread, immediately before the kernel
+     * registration — so the enumerated pool addresses are resident on the thread that
+     * will hand them out. This is behaviour-neutral under instance-handout but is the
+     * groundwork for confining the allocator onto a per-EventLoop scope.
      *
      * Also wires [IoUringEventLoop.onExitHook] for each loop so register-class
      * teardown runs on the EventLoop pthread before the ring is destroyed.
@@ -155,6 +165,19 @@ internal class IoUringEventLoopGroup(
             val pending = AtomicInt(size)
             for (i in 0 until size) {
                 loops[i].dispatch(EmptyCoroutineContext, Runnable {
+                    // Warm the per-EventLoop pool and build its registered-buffer table
+                    // on the owning pthread, before the kernel registration below. Runs
+                    // here (not in the constructor) so the enumerated pool addresses are
+                    // resident on the thread that owns them. Behaviour-neutral under
+                    // instance-handout (process-global SlabAllocator pools).
+                    if (registeredBuffersEnabled) {
+                        val alloc = allocators[i]
+                        warmupPool(alloc)
+                        val pooled = (alloc as? io.github.fukusaka.keel.buf.SlabAllocator)?.nativePooledBuffers()
+                        if (pooled != null && pooled.isNotEmpty()) {
+                            bufferTables[i] = RegisteredBufferTable(loops[i], pooled, logger)
+                        }
+                    }
                     bufferRings[i]?.initOnEventLoop()
                     fileRegistries[i]?.initOnEventLoop()
                     bufferTables[i]?.initOnEventLoop()
