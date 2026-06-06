@@ -96,6 +96,17 @@ class HttpHeaders {
     // stays true across recycle) — this tracks the borrow/return cycle.
     private var checkedOut: Boolean = false
 
+    // Caller-cache handle (Netty-Recycler style): the pool stack this instance
+    // was borrowed from, recorded by [HttpHeadersPool.borrowFrom] so [release]
+    // returns it without a per-call [headersPoolScope] lookup. Null when the
+    // instance came from the plain [HttpHeadersPool.borrow] path, in which case
+    // [HttpHeadersPool.giveBack] falls back to a lookup-at-release (the current
+    // execution scope's stack) — always correct, used for the decoder's
+    // construction-time borrow which may run off the EventLoop thread. Set only
+    // for borrows taken on the connection's EventLoop scope, where capture-at-
+    // borrow and lookup-at-release resolve to the same stack.
+    internal var poolStack: ArrayDeque<HttpHeaders>? = null
+
     // --- Access ---
 
     /**
