@@ -154,4 +154,25 @@ class HttpHeadersPoolTest {
         a.release()
         b.release()
     }
+
+    @Test
+    fun `borrowFrom routes release to the recorded stack rather than the current-scope stack`() {
+        // The caller-cache path: borrow from an explicitly-held stack so the
+        // instance records it as its pool handle, and release returns there
+        // without a current-scope lookup. Using a stack distinct from the
+        // thread-local one proves the handle (not a lookup) decides the target.
+        val scoped = ArrayDeque<HttpHeaders>()
+        val h = HttpHeadersPool.borrowFrom(scoped)
+        assertEquals(0, scoped.size, "borrow from an empty stack mints a fresh instance")
+        assertEquals(0, HttpHeadersPool.size(), "the current-scope pool is untouched by borrowFrom")
+
+        h.release()
+        assertEquals(1, scoped.size, "release returns the instance to the recorded stack")
+        assertEquals(0, HttpHeadersPool.size(), "the current-scope pool stays empty")
+
+        val again = HttpHeadersPool.borrowFrom(scoped)
+        assertSame(h, again, "the recorded-stack instance is recycled on the next borrowFrom")
+        assertEquals(0, scoped.size)
+        again.release()
+    }
 }
