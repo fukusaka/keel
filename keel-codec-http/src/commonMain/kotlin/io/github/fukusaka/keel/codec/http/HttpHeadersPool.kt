@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.scope.ScopeLocal
+import io.github.fukusaka.keel.scope.scopeLocal
 import kotlin.concurrent.Volatile
 
 /**
@@ -21,9 +23,12 @@ import kotlin.concurrent.Volatile
  * a `kotlin.collections.ArrayDeque` corrupts under the resulting
  * concurrent `borrow` / `release` (the `ArrayDeque` is not thread-safe;
  * the symptom was `ArrayIndexOutOfBoundsException` killing worker
- * threads). The pool is therefore backed by a per-thread stack via
- * [headersPoolStack] (`java.lang.ThreadLocal` on JVM, `@ThreadLocal`
- * on Native, a plain singleton on single-threaded JS).
+ * threads). The pool is therefore backed by a per-scope stack via
+ * [headersPoolScope] / [headersPoolStack] — a [ScopeLocal] whose binding is
+ * `java.lang.ThreadLocal` on JVM, a `@ThreadLocal` slot on Native, a plain
+ * singleton on single-threaded JS, and a per-queue `DispatchQueueLocal` over a
+ * `@ThreadLocal` fallback on Apple (NWConnection installs a per-connection-queue
+ * stack via [installScopedHeadersPool]; other engines use the per-pthread slot).
  *
  * Per-thread is equivalent to per-EventLoop here (keel confines each
  * EventLoop to one thread), so the recycling benefit is preserved:
@@ -111,25 +116,36 @@ internal object HttpHeadersPool {
      * is empty. When [bypassPool] is set, always returns a fresh
      * construction regardless of the per-thread stack.
      */
-    fun borrow(): HttpHeaders {
-        if (bypassPool) {
-            return HttpHeaders().also {
-                it.markPooled()
-                it.markCheckedOut()
-            }
-        }
-        val stack = headersPoolStack()
-        return if (stack.isEmpty()) {
-            HttpHeaders().also {
-                it.markPooled()
-                it.markCheckedOut()
-            }
+    fun borrow(): HttpHeaders =
+        // Plain path: resolve the current scope's stack to pop from, but record
+        // no caller-cache handle — [giveBack] looks up the stack again at
+        // release. Used for the decoder's construction-time borrow, which may
+        // run off the EventLoop thread (so capture-at-borrow would be unsafe).
+        borrowImpl(if (bypassPool) null else headersPoolStack(), handle = null)
+
+    /**
+     * Borrows from [stack] directly and records it as the instance's caller-cache
+     * handle, so [giveBack] (from [HttpHeaders.release]) returns it without a
+     * per-call [headersPoolScope] lookup. The caller must have resolved [stack]
+     * on the same execution scope where the instance will be released — i.e. the
+     * connection's EventLoop scope. Used for per-request re-borrows on the read
+     * path; the decoder resolves [stack] once per connection and reuses it.
+     */
+    fun borrowFrom(stack: ArrayDeque<HttpHeaders>): HttpHeaders =
+        borrowImpl(if (bypassPool) null else stack, handle = stack)
+
+    private fun borrowImpl(stack: ArrayDeque<HttpHeaders>?, handle: ArrayDeque<HttpHeaders>?): HttpHeaders {
+        val instance = if (stack == null || stack.isEmpty()) {
+            HttpHeaders().also { it.markPooled() }
         } else {
             // A recycled instance keeps `pooled = true` from its first
-            // construction; mark it checked out again for this borrow so
+            // construction; mark it checked out again below for this borrow so
             // the double-release guard arms for the new lifecycle.
-            stack.removeLast().also { it.markCheckedOut() }
+            stack.removeLast()
         }
+        instance.markCheckedOut()
+        instance.poolStack = if (bypassPool) null else handle
+        return instance
     }
 
     /**
@@ -156,8 +172,11 @@ internal object HttpHeadersPool {
      */
     fun giveBack(headers: HttpHeaders) {
         if (bypassPool) return
+        // Prefer the caller-cache handle recorded at borrow (no lookup); fall
+        // back to resolving the current scope's stack for the plain borrow path.
+        val stack = headers.poolStack ?: headersPoolStack()
+        headers.poolStack = null
         if (headers.slotCapacity > SHRINK_CAPACITY_THRESHOLD) return
-        val stack = headersPoolStack()
         if (stack.size < MAX_POOLED) stack.addLast(headers)
     }
 
@@ -196,13 +215,20 @@ internal object HttpHeadersPool {
 }
 
 /**
- * Returns the calling thread's own [HttpHeaders] pool stack. The
- * returned deque is confined to the calling thread, so [HttpHeadersPool]
- * operates on it without any locking. Implemented per platform:
- * `java.lang.ThreadLocal` (JVM), a `@ThreadLocal` top-level value
- * (Native, per pthread), and a plain singleton (single-threaded JS).
+ * Per-scope [HttpHeaders] pool stack, bound to the calling execution scope by
+ * [ScopeLocal]. The returned deque is confined to the current scope, so
+ * [HttpHeadersPool] operates on it without any locking. The platform binding
+ * (via [scopeLocal]) is `java.lang.ThreadLocal` on JVM, a `@ThreadLocal` slot
+ * on Linux, a singleton on JS, and a `DispatchQueueLocal`-over-`@ThreadLocal`
+ * composite on Apple — so an NWConnection per-connection serial queue gets a
+ * private stack via [installScopedHeadersPool], while kqueue / epoll / io_uring
+ * / nio / netty pthreads fall back to a per-thread slot (each is pthread-pinned,
+ * so per-thread is per-EventLoop).
  */
-internal expect fun headersPoolStack(): ArrayDeque<HttpHeaders>
+internal val headersPoolScope: ScopeLocal<ArrayDeque<HttpHeaders>> = scopeLocal { ArrayDeque() }
+
+/** Returns the [HttpHeaders] pool stack for the current execution scope. */
+internal fun headersPoolStack(): ArrayDeque<HttpHeaders> = headersPoolScope.current()
 
 /**
  * Reads `KEEL_BENCH_HTTP_HEADERS_POOL_BYPASS` from the platform's

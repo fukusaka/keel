@@ -134,6 +134,20 @@ class HttpRequestDecoder(
     private var headers = HttpHeaders.borrow()
     private var bodyBytesRemaining: Long = 0L
 
+    // Caller-cache for the per-request header-pool stack. The construction-time
+    // borrow above uses the plain [HttpHeaders.borrow] (lookup-at-release, safe
+    // off the EventLoop thread). Every subsequent re-borrow runs on this
+    // connection's EventLoop scope (from [onReadTyped]), so we resolve the
+    // scope's stack once here and reuse it via [HttpHeadersPool.borrowFrom],
+    // dropping the per-request [headersPoolScope] lookup on both borrow and
+    // release. Confined to one connection (one EventLoop scope for its lifetime).
+    private var pooledStack: ArrayDeque<HttpHeaders>? = null
+
+    private fun reborrowHeaders(): HttpHeaders {
+        val stack = pooledStack ?: headersPoolStack().also { pooledStack = it }
+        return HttpHeadersPool.borrowFrom(stack)
+    }
+
     /**
      * Cumulative byte total `(nameLen + valueLen)` of every header
      * (and trailer) field admitted so far for the in-progress
@@ -855,7 +869,7 @@ class HttpRequestDecoder(
         method = null
         uri = null
         version = null
-        headers = HttpHeaders.borrow()
+        headers = reborrowHeaders()
         // [headerByteCount] is **not** reset here — trailer bytes
         // accumulate on top of the header bytes for the same request
         // (a malicious peer cannot bypass the cumulative cap by
@@ -893,7 +907,7 @@ class HttpRequestDecoder(
         // reached `emitHead`, so the decoder still owns it. Return it
         // to the pool before borrowing a fresh one.
         headers.release()
-        headers = HttpHeaders.borrow()
+        headers = reborrowHeaders()
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0
