@@ -221,7 +221,7 @@ class EpollEngine(
 
         logger.debug { "Connected to $address" }
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
+        val transport = EpollIoTransport(fd, workerLoop, nativeSocket, rbs)
         return EpollPipelinedChannel(transport, logger, address, null)
     }
 
@@ -268,7 +268,7 @@ class EpollEngine(
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
+        val transport = EpollIoTransport(fd, workerLoop, nativeSocket, rbs)
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

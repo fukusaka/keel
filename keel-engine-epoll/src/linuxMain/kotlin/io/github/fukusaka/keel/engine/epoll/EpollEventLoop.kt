@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
+import io.github.fukusaka.keel.scope.ScopeLocal
+import io.github.fukusaka.keel.scope.scopeLocal
 import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
@@ -98,15 +100,13 @@ import kotlin.coroutines.resumeWithException
 internal class EpollEventLoop(
     internal val logger: Logger,
     /**
-     * Per-EventLoop [BufferAllocator] instance. Co-located with the loop
-     * (rather than tracked separately in [EpollEventLoopGroup]) so callers
-     * receive the allocator-loop pair as a single object — eliminating the
-     * `Pair<EventLoop, BufferAllocator>` allocation that the previous
-     * `EventLoopGroup.next()` API created on every accept. Default is
-     * [DefaultAllocator] for boss / test loops that do not perform reads
-     * and therefore never invoke the allocator.
+     * Scope that confines the per-EventLoop [BufferAllocator]. The shared
+     * group scope ([EpollEventLoopGroup]) lazily resolves one child allocator
+     * per EventLoop thread via [ScopeLocal.current]; the [allocator] property
+     * exposes it. Default wraps [DefaultAllocator] for boss / test loops that
+     * do not perform reads and therefore never invoke the allocator.
      */
-    val allocator: BufferAllocator = DefaultAllocator,
+    private val allocatorScope: ScopeLocal<BufferAllocator> = scopeLocal { DefaultAllocator },
     /**
      * Engine-wide default read buffer size
      * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
@@ -118,6 +118,16 @@ internal class EpollEventLoop(
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
 ) : CoroutineDispatcher(), EpollSuspendRegister {
+
+    /**
+     * The per-EventLoop [BufferAllocator], resolved from [allocatorScope] via
+     * [ScopeLocal.current]. **Must be accessed on this EventLoop's thread** —
+     * the native [ScopeLocal] is thread-confined, so a call from another thread
+     * would resolve a different thread's child. The transport caller-caches the
+     * resolved instance on its first read (on the EventLoop thread), keeping the
+     * read hot path at a single field dereference.
+     */
+    val allocator: BufferAllocator get() = allocatorScope.current()
 
     /**
      * The epoll file descriptor, created at construction.

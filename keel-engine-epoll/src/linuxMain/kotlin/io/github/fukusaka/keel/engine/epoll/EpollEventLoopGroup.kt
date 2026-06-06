@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.scope.ScopeLocal
+import io.github.fukusaka.keel.scope.scopeLocal
 import kotlin.concurrent.AtomicInt
 
 /**
@@ -29,7 +31,15 @@ internal class EpollEventLoopGroup(
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) {
 
-    private val loops = Array(size) { EpollEventLoop(logger, allocator.createForEventLoop(), readBufferSize) }
+    // Per-EventLoop allocator confinement on a single shared scope. Each worker
+    // EventLoop thread resolves its own per-EL child via current() — the native
+    // ThreadLocalScopeLocal lazily creates and caches one child per thread — so
+    // confinement flows through the unified ScopeLocal primitive instead of
+    // constructor-time instance handout. createForEventLoop() runs on the EL thread
+    // (first read) rather than here; SlabAllocator pools are process-global native
+    // heap so the child is equivalent to the previously eager instance.
+    private val allocatorScope: ScopeLocal<BufferAllocator> = scopeLocal { allocator.createForEventLoop() }
+    private val loops = Array(size) { EpollEventLoop(logger, allocatorScope, readBufferSize) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */

@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -96,7 +95,7 @@ class EpollOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Bytes(3), ReadResult.WouldBlock)
         }
-        val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(readFd, eventLoop, fake)
 
         val firstRead = CompletableDeferred<Int>()
         transport.onRead = { buf ->
@@ -120,7 +119,7 @@ class EpollOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Eof)
         }
-        val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(readFd, eventLoop, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
@@ -145,7 +144,7 @@ class EpollOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.WouldBlock, ReadResult.Eof)
         }
-        val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(readFd, eventLoop, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
@@ -169,7 +168,7 @@ class EpollOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Failed(platform.posix.ECONNRESET))
         }
-        val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(readFd, eventLoop, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0

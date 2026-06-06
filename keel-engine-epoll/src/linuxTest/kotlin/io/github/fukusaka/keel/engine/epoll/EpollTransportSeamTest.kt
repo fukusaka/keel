@@ -66,7 +66,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         transport.shutdownOutput()
 
@@ -79,7 +79,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         transport.shutdownOutput()
         transport.shutdownOutput()
@@ -98,7 +98,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         transport.shutdownOutput()
 
@@ -112,7 +112,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Written(5))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -139,7 +139,7 @@ class EpollTransportSeamTest {
                 WriteResult.Written(2),
             )
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -170,7 +170,7 @@ class EpollTransportSeamTest {
                 WriteResult.Written(2),
             )
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -193,7 +193,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Failed(ECONNRESET))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -212,7 +212,7 @@ class EpollTransportSeamTest {
     @Test
     fun `flush with no pending writes returns true without syscall`() {
         val fake = FakeNativeSocket()
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val done = transport.flush()
 
@@ -228,7 +228,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Written(7))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
@@ -253,7 +253,7 @@ class EpollTransportSeamTest {
             enqueueWritev(fd, WriteResult.Written(4))
             enqueueWrite(fd, WriteResult.Written(6))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 7 }
@@ -280,7 +280,7 @@ class EpollTransportSeamTest {
                 WriteResult.Written(7),
             )
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
@@ -298,7 +298,7 @@ class EpollTransportSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Failed(EPIPE))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
@@ -340,7 +340,7 @@ class EpollTransportSeamTest {
             // EAGAIN on the first write — flush returns false, awaitPendingFlush suspends.
             enqueueWrite(fd, WriteResult.WouldBlock)
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
@@ -377,7 +377,7 @@ class EpollTransportSeamTest {
         eventLoop.start()
 
         val fake = FakeNativeSocket()
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         withTimeout(500) {
             transport.awaitPendingFlush()
@@ -422,7 +422,7 @@ class EpollTransportSeamTest {
             enqueueWrite(fd, WriteResult.WouldBlock)
             enqueueWrite(fd, WriteResult.Written(4))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = EpollIoTransport(fd, eventLoop, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)

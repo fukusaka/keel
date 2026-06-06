@@ -25,10 +25,13 @@ import kotlin.concurrent.Volatile
  * Engine implementations extend this class and override platform-specific
  * members: [readEnabled] setter, [flush], [shutdownOutput], [close].
  *
- * @param allocator Buffer allocator for read operations.
+ * @param allocator Buffer allocator for read operations. Engines that confine
+ *   the per-EventLoop allocator on a scope (resolving it lazily on the EventLoop
+ *   thread) may override [allocator] with a caller-cached getter; instance-handout
+ *   engines use the value passed here directly.
  */
 abstract class AbstractIoTransport(
-    override val allocator: BufferAllocator,
+    open override val allocator: BufferAllocator,
 ) : IoTransport {
 
     // --- Open state ---

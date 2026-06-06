@@ -3,6 +3,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
@@ -42,7 +43,6 @@ import kotlin.coroutines.resume
 internal class EpollIoTransport(
     private val fd: Int,
     private val eventLoop: EpollEventLoop,
-    allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     /**
      * Effective per-connection read buffer size (the bind / connect override
@@ -53,7 +53,17 @@ internal class EpollIoTransport(
      * thread, where the allocator is owned) so a non-default size is pooled.
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
-) : AbstractIoTransport(allocator), EpollEventLoop.FdReadyListener {
+) : AbstractIoTransport(DefaultAllocator), EpollEventLoop.FdReadyListener {
+
+    // Per-EventLoop allocator, resolved lazily from [eventLoop]'s confinement
+    // scope on the first read (EventLoop thread) and caller-cached. The
+    // [DefaultAllocator] passed to [AbstractIoTransport] is never observed — this
+    // override shadows it. Resolving here (EventLoop thread) rather than at
+    // construction (boss thread, at accept) binds the child to the worker thread
+    // that owns it; the cache keeps the read hot path at one field dereference.
+    private var cachedAllocator: BufferAllocator? = null
+    override val allocator: BufferAllocator
+        get() = cachedAllocator ?: eventLoop.allocator.also { cachedAllocator = it }
 
     // One-time guard for lazy pool-class registration (see [readBufferSize]).
     // Touched only on the EventLoop thread (the read path).
