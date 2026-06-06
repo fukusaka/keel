@@ -17,31 +17,38 @@ import kotlin.native.concurrent.ThreadLocal
  * `NativeConcurrencyProbeTest`) and the runtime handles teardown cleanup.
  *
  * **Cost, and why this is a HashMap rather than something faster.** Each
- * [current] is a `HashMap.getOrPut` keyed by the slot's identity — measured at
- * ~6.7 ns/call on Linux (release, raw pthread), versus ~0.6 ns for a dedicated
- * *static* `@ThreadLocal` val. That ~6 ns is the price of one static
- * `@ThreadLocal` declaration backing arbitrarily many [scopeLocal] instances:
- * K/N `@ThreadLocal` must annotate a compile-time top-level declaration, so
- * there is no fast *per-instance* thread-local slot to allocate dynamically.
- * The alternatives were prototyped and measured, and are all worse or unusable:
- * - `pthread_setspecific` (a per-instance `PthreadLocal`) is **slower still**,
- *   ~9.7 ns/call — a C extern call plus a `StableRef` dereference. K/N has no
- *   equivalent of `java.lang.ThreadLocal` (the JVM `ThreadLocal.get` ~1.5 ns
- *   intuition does not carry over). And its only clean teardown — a
- *   `pthread_key_create` destructor disposing the value's `StableRef` on thread
- *   exit — crashes the K/N runtime: the destructor fires after the runtime has
- *   deinitialized the exiting thread, forcing an illegal runtime re-init
- *   mid-teardown (`initRuntimeIfNeeded` is an error in the new memory model).
+ * [current] is a `HashMap.getOrPut` keyed by the slot's identity. That is
+ * roughly an **order of magnitude slower than a dedicated *static* `@ThreadLocal`
+ * val** — the price of one static `@ThreadLocal` declaration backing arbitrarily
+ * many [scopeLocal] instances: K/N `@ThreadLocal` must annotate a compile-time
+ * top-level declaration, so there is no fast *per-instance* thread-local slot to
+ * allocate dynamically. The alternatives were prototyped and measured, and are
+ * all worse or unusable:
+ * - `pthread_setspecific` (a per-instance `PthreadLocal`) is **slower still than
+ *   the HashMap** — a C extern call plus a `StableRef` dereference. K/N has no
+ *   equivalent of a fast per-instance `java.lang.ThreadLocal` (the JVM
+ *   `ThreadLocal.get` intuition does not carry over). And its only clean
+ *   teardown — a `pthread_key_create` destructor disposing the value's
+ *   `StableRef` on thread exit — crashes the K/N runtime: the destructor fires
+ *   after the runtime has deinitialized the exiting thread, forcing an illegal
+ *   runtime re-init mid-teardown (`initRuntimeIfNeeded` is an error in the new
+ *   memory model).
  * - A 1-entry `@ThreadLocal` fast-path cache of the last-accessed `(key,value)`
- *   reaches ~2.5 ns, but degrades to the HashMap once two slots are hot on the
- *   same thread.
+ *   roughly halves the gap to the static val, but degrades to the HashMap once
+ *   two slots are hot on the same thread.
  *
  * **Mitigation for hot per-request consumers.** Resolve [current] **once per
  * execution scope** (per connection / per EventLoop) and hold the returned
- * value, instead of calling [current] per operation — a caller-side cache
- * reaches ~0.17 ns. `HttpHeadersPool` / `HttpRequestDecoder` do exactly this:
- * the decoder resolves its pool stack once per connection on the EventLoop
- * scope and reuses it for every per-request borrow / release.
+ * value, instead of calling [current] per operation — a caller-side cache costs
+ * **less than the original static val**. `HttpHeadersPool` / `HttpRequestDecoder`
+ * do exactly this: the decoder resolves its pool stack once per connection on
+ * the EventLoop scope and reuses it for every per-request borrow / release.
+ *
+ * Indicative figures (Kotlin/Native 2.3.20 release, raw pthread, AMD Ryzen
+ * 32-core / Linux 6.14): HashMap ~6.7 ns, static `@ThreadLocal` val ~0.6 ns,
+ * `pthread_setspecific` ~9.7 ns, fast-path cache ~2.5 ns, caller-cached
+ * ~0.17 ns/call. Hardware- and version-dependent; the ratios are the durable
+ * part. Full method and per-platform numbers are in the project's research log.
  */
 @ThreadLocal
 private val perThreadStore: HashMap<Any, Any> = HashMap()
