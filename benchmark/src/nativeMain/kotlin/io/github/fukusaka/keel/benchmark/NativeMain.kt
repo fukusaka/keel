@@ -47,6 +47,13 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.any { it == "--bench=scopelocal-cost" }) {
+        if (!runScopeLocalCostBench()) {
+            printErr("--bench=scopelocal-cost is macOS-only (composite + GCD path is Apple)")
+            benchmarkExit(1)
+        }
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)
