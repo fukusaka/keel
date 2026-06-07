@@ -46,7 +46,7 @@ fun runContendedFreelistBench() {
     println("variant|threads|ns/op|Mops/sec|correctness")
 
     val threadCounts = intArrayOf(2, 4, 8)
-    val labels = listOf("ArrayDequeSpinLock", "IntrusiveTreiber", "VersionedIndexTreiber")
+    val labels = listOf("ArrayDequeSpinLock", "ArrayDequeMutex", "IntrusiveTreiber", "VersionedIndexTreiber")
 
     for (label in labels) {
         for (n in threadCounts) {

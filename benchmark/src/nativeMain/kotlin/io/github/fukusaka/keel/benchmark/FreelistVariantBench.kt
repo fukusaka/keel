@@ -1,10 +1,18 @@
 package io.github.fukusaka.keel.benchmark
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.nativeHeap
+import kotlinx.cinterop.ptr
 import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 import kotlin.time.measureTime
+import platform.posix.pthread_mutex_init
+import platform.posix.pthread_mutex_lock
+import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_unlock
 
 /**
  * Variant bench for the per-size-class **freelist** used by `SlabAllocator`
@@ -44,7 +52,7 @@ fun runFreelistVariantBench() {
     println("variant|depth|ns/op|ops/sec")
 
     val depths = intArrayOf(1, 8)
-    val labels = listOf("ArrayDequeNoLock", "ArrayDequeSpinLock", "IntrusiveTreiber", "VersionedIndexTreiber")
+    val labels = listOf("ArrayDequeNoLock", "ArrayDequeSpinLock", "ArrayDequeMutex", "IntrusiveTreiber", "VersionedIndexTreiber")
 
     for (depth in depths) {
         for (label in labels) {
@@ -108,6 +116,7 @@ private fun execTrial(freelist: Freelist, depth: Int): Double {
 internal fun freelistFactory(label: String): Freelist = when (label) {
     "ArrayDequeNoLock" -> ArrayDequeNoLockFreelist()
     "ArrayDequeSpinLock" -> ArrayDequeSpinLockFreelist()
+    "ArrayDequeMutex" -> ArrayDequeMutexFreelist()
     "IntrusiveTreiber" -> IntrusiveTreiberFreelist()
     "VersionedIndexTreiber" -> VersionedIndexTreiberFreelist()
     else -> error("unknown $label")
@@ -164,6 +173,40 @@ internal class ArrayDequeSpinLockFreelist : Freelist {
 
     override fun push(node: Node) = withSpinLock { list.addLast(node) }
     override fun pop(): Node? = withSpinLock { if (list.isEmpty()) null else list.removeLast() }
+}
+
+/**
+ * ArrayDeque + blocking `pthread_mutex` — parks the waiter on contention instead
+ * of busy-waiting, avoiding the userspace-spinlock preemption pathology on Linux
+ * (a preempted lock holder does not make waiters burn CPU). Uncontended,
+ * `pthread_mutex_lock` takes a CAS fast-path comparable to the spin lock.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal class ArrayDequeMutexFreelist : Freelist {
+    private val list = ArrayDeque<Node>(16)
+    private val mutex = nativeHeap.alloc<pthread_mutex_t>()
+
+    init {
+        pthread_mutex_init(mutex.ptr, null)
+    }
+
+    override fun push(node: Node) {
+        pthread_mutex_lock(mutex.ptr)
+        try {
+            list.addLast(node)
+        } finally {
+            pthread_mutex_unlock(mutex.ptr)
+        }
+    }
+
+    override fun pop(): Node? {
+        pthread_mutex_lock(mutex.ptr)
+        try {
+            return if (list.isEmpty()) null else list.removeLast()
+        } finally {
+            pthread_mutex_unlock(mutex.ptr)
+        }
+    }
 }
 
 /** Lock-free intrusive Treiber stack via [Node.nextLink] — the JVM shape. */
