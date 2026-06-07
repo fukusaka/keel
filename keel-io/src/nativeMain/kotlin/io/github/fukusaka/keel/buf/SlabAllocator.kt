@@ -13,23 +13,22 @@ import kotlin.concurrent.AtomicReference
  * Native [BufferAllocator] backed by [PooledAllocator] with a spin-lock
  * `ArrayDeque` freelist per size class.
  *
- * The default 8 KiB class is registered at construction for backward
- * compatibility. Per-class freelist concurrency is the
- * [SpinLockFreelist] — measured ABA-immune and correct under the genuine
+ * The full Netty-style size-class ladder is installed at construction (see
+ * [PooledAllocator] for the round-up scheme). Per-class freelist concurrency is
+ * the [SpinLockFreelist] — measured ABA-immune and correct under the genuine
  * cross-thread release patterns NWConnection produces (kqueue / epoll engines
  * are EL-pinned and access the freelist uncontended, where the spin lock is
  * essentially free; see `benchmark --bench=freelist-variants` /
  * `--bench=freelist-contended`).
  *
- * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh sibling with
- * the parent's size classes propagated but per-pool capacity capped at
- * `LOCAL_POOL_SLOTS`, so each EventLoop owns its own pool confined to a single
- * thread. The parent allocator (the instance passed to `IoEngineConfig`) is used
- * only for size-class registration at startup; the per-EL children perform the
+ * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh sibling that
+ * installs the same ladder, so each EventLoop owns its own pool confined to a
+ * single thread. The parent allocator (the instance passed to `IoEngineConfig`)
+ * is used only for size-class setup at startup; the per-EL children perform the
  * actual allocations.
  *
- * @param maxTotalBytes Maximum total bytes across all pool classes. Safety
- *   valve. Default: 256 KiB.
+ * @param maxTotalBytes Worst-case cache-byte safety valve. Default:
+ *   [DEFAULT_MAX_TOTAL_BYTES].
  * @param freelistFactory Optional [FreelistFactory]. `null` (default) selects
  *   `SpinLockFreelist` per size class. Pass `::MutexFreelist` or any other
  *   `FreelistFactory` to swap the strategy — see [PooledAllocator] for the
@@ -41,7 +40,7 @@ class SlabAllocator(
 ) : PooledAllocator(maxTotalBytes, freelistFactory) {
 
     init {
-        registerPoolSize(SEGMENT_SIZE, DEFAULT_POOL_SLOTS)
+        installDefaultLadder()
     }
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
