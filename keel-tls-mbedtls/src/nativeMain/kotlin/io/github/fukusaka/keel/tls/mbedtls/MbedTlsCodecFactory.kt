@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.tls.mbedtls
 
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -92,7 +93,8 @@ class MbedTlsCodecFactory : TlsCodecFactory {
 
     private val arena = Arena()
     private val constructMutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
 
     override fun createServerCodec(config: TlsConfig): TlsCodec =
