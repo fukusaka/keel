@@ -124,6 +124,13 @@ data class BenchmarkConfig(
      * isolates the validation overhead on the parse hot path.
      */
     val dosHardening: Boolean = false,
+    /**
+     * When true (`--profile-alloc`), the engine allocator is wrapped with a
+     * shared profiling decorator that records the allocation-size histogram,
+     * and the entry point dumps it periodically. Phase 0 measurement only;
+     * off (and zero-overhead) for normal runs.
+     */
+    val profileAlloc: Boolean = false,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -135,6 +142,7 @@ data class BenchmarkConfig(
 
             for (arg in args) {
                 if (arg == "--show-config") { config = config.copy(showConfig = true); continue }
+                if (arg == "--profile-alloc") { config = config.copy(profileAlloc = true); continue }
                 val (key, value) = if ("=" in arg) {
                     arg.substringBefore("=").removePrefix("--") to arg.substringAfter("=")
                 } else continue
