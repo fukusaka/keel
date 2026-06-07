@@ -100,10 +100,22 @@ fun main(args: Array<String>) {
     signal(SIGINT, handler)
 
     // Block main thread. The signal handler terminates the process.
+    // Under --profile-alloc, dump the allocation-size histogram every few
+    // seconds so the accumulated profile is visible in the bench log before
+    // the signal handler _exit(0)s (there is no clean-shutdown dump point).
+    if (config.profileAlloc) {
+        while (true) {
+            platform.posix.sleep(PROFILE_DUMP_INTERVAL_SECONDS)
+            println(benchmarkAllocationProfile.format())
+        }
+    }
     while (true) {
         platform.posix.sleep(60u)
     }
 }
+
+// Seconds between `--profile-alloc` histogram dumps.
+private const val PROFILE_DUMP_INTERVAL_SECONDS = 3u
 
 @OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
 private fun applyGcTuning(args: Array<String>) {

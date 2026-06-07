@@ -23,6 +23,7 @@ object PipelineHttpEpollBenchmark : EngineBenchmark {
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = benchmarkLoggerFactory(),
+                allocator = benchmarkAllocator(config),
             ),
         )
 
