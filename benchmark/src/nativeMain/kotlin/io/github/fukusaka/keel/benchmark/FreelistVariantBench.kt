@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.benchmark
 
+import kotlin.concurrent.AtomicLong
 import kotlin.concurrent.AtomicReference
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
@@ -43,7 +44,7 @@ fun runFreelistVariantBench() {
     println("variant|depth|ns/op|ops/sec")
 
     val depths = intArrayOf(1, 8)
-    val labels = listOf("ArrayDequeNoLock", "ArrayDequeSpinLock", "IntrusiveTreiber")
+    val labels = listOf("ArrayDequeNoLock", "ArrayDequeSpinLock", "IntrusiveTreiber", "VersionedIndexTreiber")
 
     for (depth in depths) {
         for (label in labels) {
@@ -68,7 +69,7 @@ private const val FREELIST_TRIAL_MS = 3_000L
  * pushes it back, keeping the depth constant.
  */
 private fun execTrial(freelist: Freelist, depth: Int): Double {
-    val nodes = Array(depth) { Node() }
+    val nodes = Array(depth) { Node(it) }
     for (n in nodes) freelist.push(n)
 
     val warmupMark = TimeSource.Monotonic.markNow()
@@ -108,8 +109,12 @@ internal fun freelistFactory(label: String): Freelist = when (label) {
     "ArrayDequeNoLock" -> ArrayDequeNoLockFreelist()
     "ArrayDequeSpinLock" -> ArrayDequeSpinLockFreelist()
     "IntrusiveTreiber" -> IntrusiveTreiberFreelist()
+    "VersionedIndexTreiber" -> VersionedIndexTreiberFreelist()
     else -> error("unknown $label")
 }
+
+/** Max distinct node id the [VersionedIndexTreiberFreelist] handles (covers both benches). */
+internal const val MAX_INDEX_CAPACITY = 256
 
 private fun fmt2(v: Double): String = (kotlin.math.round(v * 100.0) / 100.0).toString()
 
@@ -181,5 +186,60 @@ internal class IntrusiveTreiberFreelist : Freelist {
                 return cur
             }
         }
+    }
+}
+
+/**
+ * ABA-safe lock-free freelist: a Treiber stack keyed by node **index** with a
+ * version tag, packed into a single `AtomicLong` head as `(index:32 | version:32)`.
+ *
+ * Defeats ABA without a lock: every successful pop/push increments the version,
+ * so a thread's CAS succeeds only if no operation touched the head since it read
+ * it — making the `nextIdx[idx]` it read provably current. The classic Treiber
+ * "pointer-identity" CAS cannot tell A-removed-and-returned from A-unchanged;
+ * the version can. (The 32-bit version wraps after 2^32 ops between one thread's
+ * read and CAS — astronomically unlikely.)
+ *
+ * Index-based because Kotlin/Native cannot tag an object reference (an
+ * `AtomicReference<Node>` CAS compares identity, no room for a version), so the
+ * pool is addressed by a fixed `Int` id and links live in an `IntArray`.
+ *
+ * Requires `node.id in 0 until capacity`. This is a bench-only candidate for the
+ * "reinforced Treiber" escalation path; production wiring would need to reconcile
+ * the index representation with io_uring pooled-buffer enumeration and the
+ * NativeIoBuf lifecycle.
+ */
+internal class VersionedIndexTreiberFreelist(private val capacity: Int = MAX_INDEX_CAPACITY) : Freelist {
+    private val nextIdx = IntArray(capacity) { EMPTY }
+    private val slots = arrayOfNulls<Node>(capacity)
+    private val head = AtomicLong(pack(EMPTY, 0))
+
+    override fun push(node: Node) {
+        val idx = node.id
+        require(idx in 0 until capacity) { "node id $idx out of range [0,$capacity)" }
+        slots[idx] = node
+        while (true) {
+            val h = head.value
+            nextIdx[idx] = indexOf(h)
+            if (head.compareAndSet(h, pack(idx, versionOf(h) + 1))) return
+        }
+    }
+
+    override fun pop(): Node? {
+        while (true) {
+            val h = head.value
+            val idx = indexOf(h)
+            if (idx == EMPTY) return null
+            val next = nextIdx[idx]
+            if (head.compareAndSet(h, pack(next, versionOf(h) + 1))) return slots[idx]
+        }
+    }
+
+    private companion object {
+        const val EMPTY = -1
+        fun pack(index: Int, version: Int): Long =
+            (index.toLong() and 0xFFFF_FFFFL) or (version.toLong() shl 32)
+        fun indexOf(packed: Long): Int = (packed and 0xFFFF_FFFFL).toInt()
+        fun versionOf(packed: Long): Int = (packed ushr 32).toInt()
     }
 }
