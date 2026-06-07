@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.buf
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -39,29 +40,34 @@ class PoolAllocatorTest {
     }
 
     @Test
-    fun nonMatchingSizeFallsBackToFreshAllocation() {
+    fun roundsUpToASizeClassAndPools() {
+        if (!isPoolAllocator()) return
         val allocator = createPoolAllocator()
-        val buf = allocator.allocate(1024) // not 8192
+        // 1024 is its own Netty size class, so it pools with exact capacity.
+        val buf = allocator.allocate(1024)
         assertEquals(1024, buf.capacity)
         buf.release()
+        val reused = allocator.allocate(1024)
+        assertSame(buf, reused, "released buffer should be reused from its size class")
+        reused.release()
     }
 
     @Test
-    fun poolDoesNotExceedMaxSize() {
+    fun poolDoesNotExceedClassCap() {
         if (!isPoolAllocator()) return
-        val allocator = createPoolAllocator(maxPoolSize = 2)
-        val bufs = (0 until 5).map { allocator.allocate(8192) }
-        bufs.forEach { it.release() }
+        val allocator = createPoolAllocator()
+        // The page-tier classes (incl. the 8 KiB read class) cap at PAGE_CLASS_SLOTS.
+        val cap = PooledAllocator.PAGE_CLASS_SLOTS
+        val bufs = (0 until cap + 4).map { allocator.allocate(8192) }
+        bufs.forEach { it.release() } // only `cap` are retained; the rest are freed
 
-        val reused1 = allocator.allocate(8192)
-        val reused2 = allocator.allocate(8192)
+        // Re-allocating up to `cap` returns the retained (reference-identical) buffers...
+        val reused = (0 until cap).map { allocator.allocate(8192) }
+        reused.forEach { assertTrue(bufs.contains(it), "expected a pooled buffer") }
+        // ...and the pool is now empty, so the next allocate is a brand-new buffer.
         val fresh = allocator.allocate(8192)
-        assertTrue(bufs.contains(reused1))
-        assertTrue(bufs.contains(reused2))
-        assertEquals(8192, fresh.capacity)
-        reused1.release()
-        reused2.release()
-        fresh.release()
+        assertFalse(bufs.contains(fresh), "pool retained more than its cap")
+        (reused + fresh).forEach { it.release() }
     }
 
     @Test
@@ -152,13 +158,10 @@ class PoolAllocatorTest {
 }
 
 /**
- * Creates the platform-specific pool allocator.
+ * Creates the platform-specific pool allocator with its default size-class ladder.
  * Native: [SlabAllocator], JVM: [PooledDirectAllocator], JS: [DefaultAllocator].
  */
-expect fun createPoolAllocator(
-    bufferSize: Int = 8192,
-    maxPoolSize: Int = 256,
-): BufferAllocator
+expect fun createPoolAllocator(): BufferAllocator
 
 /** Returns true if the platform has a real pool allocator (Native/JVM). */
 expect fun isPoolAllocator(): Boolean

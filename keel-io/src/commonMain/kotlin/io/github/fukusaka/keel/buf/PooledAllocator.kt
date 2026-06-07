@@ -262,7 +262,9 @@ abstract class PooledAllocator(
         // an allocation profile at the chunk-back-end checkpoint.
         private const val TINY_CLASS_MAX = 512
         private const val TINY_CLASS_SLOTS = 16
-        private const val PAGE_CLASS_SLOTS = 8
+
+        /** Default slot cap for the page tier (≤ [PAGE_SIZE]), including the 8 KiB read-buffer class. */
+        internal const val PAGE_CLASS_SLOTS = 8
         private const val LARGE_CLASS_SLOTS = 4
 
         /**

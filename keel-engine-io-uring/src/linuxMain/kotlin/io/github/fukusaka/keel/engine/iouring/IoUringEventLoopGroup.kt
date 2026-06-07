@@ -261,8 +261,8 @@ internal class IoUringEventLoopGroup(
     }
 
     companion object {
-        // Number of buffers to allocate during warmup per size class.
-        // Matches the per-EventLoop pool slot count (LOCAL_POOL_SLOTS in PooledAllocator).
+        // Number of buffers to allocate during warmup for the 8 KiB read class.
+        // Matches that class's default slot cap (PAGE_CLASS_SLOTS in PooledAllocator).
         private const val LOCAL_WARMUP_COUNT = 8
     }
 }
