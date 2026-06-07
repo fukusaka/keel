@@ -28,6 +28,10 @@ fun main(args: Array<String>) {
         runLongMapVariantBench()
         return
     }
+    if (args.any { it == "--bench=poolmap-variants" }) {
+        runPoolMapVariantBench()
+        return
+    }
     if (args.any { it == "--bench=segment-access" }) {
         runSegmentAccessBench()
         return
