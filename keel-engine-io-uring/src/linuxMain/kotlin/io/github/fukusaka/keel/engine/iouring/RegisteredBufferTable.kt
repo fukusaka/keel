@@ -29,7 +29,7 @@ import kotlinx.cinterop.toLong
  * owning EventLoop pthread.
  *
  * @param eventLoop Owning EventLoop. Provides ring pointer and thread-affinity assertion target.
- * @param buffers Pairs of (native pointer, capacity) from [io.github.fukusaka.keel.buf.SlabAllocator.nativePooledBuffers].
+ * @param buffers Pairs of (native pointer, capacity) from [io.github.fukusaka.keel.buf.enumerateNativePooledBuffers].
  * @param logger Logger for warn-level diagnostics.
  * @param bufferOps Registered-buffer syscall seam. Defaults to
  *                  [PosixIoUringRegisteredBufferOps]; tests inject a fake to

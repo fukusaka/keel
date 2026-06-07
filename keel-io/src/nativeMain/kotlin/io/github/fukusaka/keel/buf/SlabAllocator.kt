@@ -60,18 +60,39 @@ class SlabAllocator(
      * Used by io_uring to register buffers with the kernel for SEND_ZC_FIXED.
      * Each pair is `(CPointer<ByteVar>, capacity)`. Returns empty list if no
      * buffers are currently pooled.
+     *
+     * Retained for backward compatibility with callers that hold a
+     * [SlabAllocator]-typed reference. New engine code should downcast to the
+     * common [PooledAllocator] and extract pointers via the
+     * [enumerateNativePooledBuffers] helper, so an out-of-tree
+     * [PooledAllocator] subclass is supported too.
      */
     @OptIn(ExperimentalForeignApi::class)
-    fun nativePooledBuffers(): List<Pair<CPointer<ByteVar>, Int>> {
-        val snapshot = pooledBuffersSnapshot()
-        if (snapshot.isEmpty()) return emptyList()
-        val out = ArrayList<Pair<CPointer<ByteVar>, Int>>(snapshot.size)
-        for (buf in snapshot) {
-            val nb = buf as NativeIoBuf
-            out.add(nb.unsafePointer to nb.capacity)
-        }
-        return out
+    fun nativePooledBuffers(): List<Pair<CPointer<ByteVar>, Int>> =
+        enumerateNativePooledBuffers(this)
+}
+
+/**
+ * Enumerates the native (pointer, capacity) pairs for every pooled buffer in
+ * [allocator] that carries a Native-resident pointer. Buffers whose backing is
+ * not a `NativePointerAccess` (e.g. an out-of-tree [PooledAllocator] subclass
+ * returning a non-native carrier) are silently skipped.
+ *
+ * The common entry point Linux engines (e.g. io_uring fixed-buffer registration)
+ * use to enumerate any [PooledAllocator] without hard-coding [SlabAllocator].
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun enumerateNativePooledBuffers(
+    allocator: PooledAllocator,
+): List<Pair<CPointer<ByteVar>, Int>> {
+    val snapshot = allocator.pooledBuffers()
+    if (snapshot.isEmpty()) return emptyList()
+    val out = ArrayList<Pair<CPointer<ByteVar>, Int>>(snapshot.size)
+    for (buf in snapshot) {
+        val ptrAccess = buf as? NativePointerAccess ?: continue
+        out.add(ptrAccess.unsafePointer to buf.capacity)
     }
+    return out
 }
 
 /**
