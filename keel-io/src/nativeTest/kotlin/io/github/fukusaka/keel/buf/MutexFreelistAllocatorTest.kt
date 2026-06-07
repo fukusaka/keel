@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.buf
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -14,10 +15,7 @@ import kotlin.test.assertTrue
  */
 class MutexFreelistAllocatorTest {
 
-    private fun allocator(): SlabAllocator =
-        SlabAllocator(freelistFactory = ::MutexFreelist).also {
-            it.registerPoolSize(8192, 256)
-        }
+    private fun allocator(): SlabAllocator = SlabAllocator(freelistFactory = ::MutexFreelist)
 
     @Test
     fun allocateReturnsBufferWithCorrectCapacity() {
@@ -40,32 +38,26 @@ class MutexFreelistAllocatorTest {
     }
 
     @Test
-    fun nonMatchingSizeFallsBackToFreshAllocation() {
+    fun roundsUpToASizeClassAndPools() {
         val a = allocator()
-        val buf = a.allocate(1024)
+        val buf = a.allocate(1024) // 1024 is its own size class
         assertEquals(1024, buf.capacity)
         buf.release()
+        assertSame(buf, a.allocate(1024).also { it.release() }, "released buffer is reused")
     }
 
     @Test
-    fun poolDoesNotExceedMaxSize() {
-        // Use a size class distinct from the default 8 KiB so registerPoolSize
-        // installs our maxSlots without being shadowed by the init-time
-        // 8 KiB / DEFAULT_POOL_SLOTS registration.
-        val a = SlabAllocator(freelistFactory = ::MutexFreelist)
-        a.registerPoolSize(4096, 2)
-        val bufs = (0 until 5).map { a.allocate(4096) }
-        bufs.forEach { it.release() }
+    fun poolDoesNotExceedClassCap() {
+        val a = allocator()
+        val cap = PooledAllocator.PAGE_CLASS_SLOTS
+        val bufs = (0 until cap + 4).map { a.allocate(8192) }
+        bufs.forEach { it.release() } // only `cap` retained; rest freed
 
-        val reused1 = a.allocate(4096)
-        val reused2 = a.allocate(4096)
-        val fresh = a.allocate(4096)
-        assertTrue(bufs.contains(reused1))
-        assertTrue(bufs.contains(reused2))
-        assertEquals(4096, fresh.capacity)
-        reused1.release()
-        reused2.release()
-        fresh.release()
+        val reused = (0 until cap).map { a.allocate(8192) }
+        reused.forEach { assertTrue(bufs.contains(it), "expected a pooled buffer") }
+        val fresh = a.allocate(8192)
+        assertFalse(bufs.contains(fresh), "pool retained more than its cap")
+        (reused + fresh).forEach { it.release() }
     }
 
     @Test
