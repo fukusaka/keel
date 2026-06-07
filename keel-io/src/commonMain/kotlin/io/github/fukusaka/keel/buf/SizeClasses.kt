@@ -4,9 +4,15 @@ package io.github.fukusaka.keel.buf
  * Size-class table: maps an arbitrary requested size to the smallest pooled
  * size class that can satisfy it (round-up), and back.
  *
- * This is a faithful Kotlin port of Netty 4.2.12.Final's
- * `io.netty.buffer.SizeClasses` (Apache-2.0). It is **pure and stateless** — the
- * table is built once from `(pageSize, pageShifts, chunkSize, alignment)` at
+ * The size-class scheme originates with **jemalloc**: sizes are generated from
+ * the `(lg_grp, lg_delta, ndelta)` triple as `(1 << lg_grp) + (ndelta << lg_delta)`,
+ * with a 16-byte quantum (`LG_QUANTUM`) and 4 classes per doubling
+ * (`SC_NGROUP = 1 << LG_SIZE_CLASS_GROUP`). **Netty** adapted that scheme in
+ * `io.netty.buffer.SizeClasses`; this class is a faithful Kotlin port of Netty's
+ * implementation (Netty 4.2.12.Final, Apache-2.0), so the generated table is
+ * identical to both — only the names differ (`log2Group` = `lg_grp`,
+ * `nDelta` = `ndelta`, `log2Delta` = `lg_delta`). It is **pure and stateless** —
+ * the table is built once from `(pageSize, pageShifts, chunkSize, alignment)` at
  * construction and never mutates afterwards, so a single instance is safe to
  * share read-only across threads.
  *
@@ -18,8 +24,9 @@ package io.github.fukusaka.keel.buf
  * are therefore `16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, ...`,
  * giving a bounded internal-fragmentation worst case of ~20–25 % (one quantum
  * over the request at the very smallest sizes, ~1/4 of a doubling at larger
- * sizes). This is the established answer Netty/jemalloc converged on; keel
- * adopts it rather than an ad-hoc ladder.
+ * sizes — jemalloc's man page quotes "approximately 20%"). The ~4-per-octave
+ * layout is the established knee that jemalloc, tcmalloc and mimalloc all
+ * converge on; keel adopts it rather than an ad-hoc ladder.
  *
  * The table splits into two regions:
  * - **subpage region** (`isSubpage`): classes below `pageSize << LOG2_SIZE_CLASS_GROUP`,
