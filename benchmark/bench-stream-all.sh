@@ -117,10 +117,16 @@ build_engine_list() {
     # JVM servers
     JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
     if [ -f "$JVM_CP_FILE" ]; then
-        JVM_CP=$(cat "$JVM_CP_FILE")
-        for engine in ktor-keel-nio pipeline-http-nio server-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty server-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
-            engines+=("jvm:${engine}|java -cp ${JVM_CP} io.github.fukusaka.keel.benchmark.JvmMainKt --engine=${engine} --port=${PORT}")
-        done
+        # Resolve writeClasspath placeholders against this host before
+        # launching any JVM engine — see benchmark/bench-jvm-cp.sh.
+        if JVM_CP=$(./benchmark/bench-jvm-cp.sh resolve 2>/dev/null); then
+            for engine in ktor-keel-nio pipeline-http-nio server-http-nio ktor-cio-keel-nio ktor-keel-netty ktor-cio-keel-netty pipeline-http-netty server-http-netty ktor-cio ktor-netty netty-raw spring vertx; do
+                engines+=("jvm:${engine}|java -cp ${JVM_CP} io.github.fukusaka.keel.benchmark.JvmMainKt --engine=${engine} --port=${PORT}")
+            done
+        else
+            echo "JVM_CP_INVALID: skipping JVM engines" >&2
+            echo "  hint: rebuild on this host: ./gradlew -Pbenchmark :benchmark:writeClasspath" >&2
+        fi
     fi
 
     # JS (Node.js) server is appended at the top of build_engine_list above
