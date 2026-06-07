@@ -144,7 +144,7 @@ class SlabAllocator(
     }
 
     companion object {
-        /** Standard pooled buffer size served through `standardMemorySource`. */
+        /** Default pooled buffer size class (8 KiB), used as the default allocation size. */
         private const val SEGMENT_SIZE = 8192
         private const val DEFAULT_BUFFER_SIZE = SEGMENT_SIZE
         private const val DEFAULT_POOL_SLOTS = 16
