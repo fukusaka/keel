@@ -65,6 +65,97 @@ fun runFreelistVariantBench() {
     println("blackhole=$freelistBlackhole")
 }
 
+/**
+ * Quantifies the cost of making the freelist a runtime-pluggable strategy: the
+ * per-op dispatch overhead of calling through the `Freelist` interface (vtable)
+ * versus a concrete final type (inlinable). On Kotlin/Native a call whose static
+ * type is the interface is a virtual dispatch regardless of how many impls
+ * exist, while a concrete-typed call is a direct/inlinable call — so this is the
+ * conservative worst case for "pluggable" overhead.
+ *
+ * Invocation: `benchmark.kexe --bench=freelist-dispatch`
+ */
+fun runFreelistDispatchBench() {
+    println("Freelist dispatch overhead (Kotlin/Native): concrete (inlinable) vs interface (vtable)")
+    println("===================================================================================")
+    println("ns per pop+push roundtrip, depth 1")
+    println("impl|concrete ns|interface ns|delta ns")
+    val spinC = measureSpinConcrete()
+    val spinI = measureIface(ArrayDequeSpinLockFreelist())
+    val treiberC = measureTreiberConcrete()
+    val treiberI = measureIface(IntrusiveTreiberFreelist())
+    println("SpinLock|${fmt2(spinC)}|${fmt2(spinI)}|${fmt2(spinI - spinC)}")
+    println("Treiber|${fmt2(treiberC)}|${fmt2(treiberI)}|${fmt2(treiberI - treiberC)}")
+    println()
+    println("blackhole=$freelistBlackhole")
+}
+
+private fun measureSpinConcrete(): Double {
+    val fl = ArrayDequeSpinLockFreelist() // concrete static type -> direct/inlinable
+    fl.push(Node(0))
+    val warm = TimeSource.Monotonic.markNow()
+    while (warm.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_WARMUP_MS) {
+        repeat(1_000) { val n = fl.pop(); if (n != null) fl.push(n) }
+    }
+    val ns = DoubleArray(3)
+    for (t in 0 until 3) {
+        var cnt = 0L
+        val e = measureTime {
+            val d = TimeSource.Monotonic.markNow()
+            while (d.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_TRIAL_MS) {
+                repeat(10_000) { val n = fl.pop(); if (n != null) { fl.push(n); freelistBlackhole += 1 }; cnt++ }
+            }
+        }
+        ns[t] = e.toDouble(DurationUnit.NANOSECONDS) / cnt.toDouble()
+    }
+    ns.sort()
+    return ns[1]
+}
+
+private fun measureTreiberConcrete(): Double {
+    val fl = IntrusiveTreiberFreelist() // concrete static type -> direct/inlinable
+    fl.push(Node(0))
+    val warm = TimeSource.Monotonic.markNow()
+    while (warm.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_WARMUP_MS) {
+        repeat(1_000) { val n = fl.pop(); if (n != null) fl.push(n) }
+    }
+    val ns = DoubleArray(3)
+    for (t in 0 until 3) {
+        var cnt = 0L
+        val e = measureTime {
+            val d = TimeSource.Monotonic.markNow()
+            while (d.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_TRIAL_MS) {
+                repeat(10_000) { val n = fl.pop(); if (n != null) { fl.push(n); freelistBlackhole += 1 }; cnt++ }
+            }
+        }
+        ns[t] = e.toDouble(DurationUnit.NANOSECONDS) / cnt.toDouble()
+    }
+    ns.sort()
+    return ns[1]
+}
+
+private fun measureIface(fl: Freelist): Double {
+    // static type is Freelist -> virtual dispatch per pop/push
+    fl.push(Node(0))
+    val warm = TimeSource.Monotonic.markNow()
+    while (warm.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_WARMUP_MS) {
+        repeat(1_000) { val n = fl.pop(); if (n != null) fl.push(n) }
+    }
+    val ns = DoubleArray(3)
+    for (t in 0 until 3) {
+        var cnt = 0L
+        val e = measureTime {
+            val d = TimeSource.Monotonic.markNow()
+            while (d.elapsedNow().toDouble(DurationUnit.MILLISECONDS) < FREELIST_TRIAL_MS) {
+                repeat(10_000) { val n = fl.pop(); if (n != null) { fl.push(n); freelistBlackhole += 1 }; cnt++ }
+            }
+        }
+        ns[t] = e.toDouble(DurationUnit.NANOSECONDS) / cnt.toDouble()
+    }
+    ns.sort()
+    return ns[1]
+}
+
 @kotlin.concurrent.Volatile
 private var freelistBlackhole: Long = 0
 
