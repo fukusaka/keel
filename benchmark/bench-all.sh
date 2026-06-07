@@ -439,7 +439,16 @@ printf "  %-24s %12s        %-10s  %-10s\n" "------------------------" "--------
 JVM_CP_FILE="benchmark/build/benchmark-classpath.txt"
 JVM_CP=""
 if [ -f "$JVM_CP_FILE" ]; then
-    JVM_CP=$(cat "$JVM_CP_FILE")
+    # Resolve writeClasspath placeholders (${REPO_ROOT}/${GRADLE_USER_HOME})
+    # against this host's layout and bail out before launching any JVM engine
+    # if an entry is missing — see benchmark/bench-jvm-cp.sh.
+    if JVM_CP_RESOLVED=$(./benchmark/bench-jvm-cp.sh resolve 2>/dev/null); then
+        JVM_CP="$JVM_CP_RESOLVED"
+    else
+        printf '  %-24s %12s        %-10s  %-10s\n' "JVM_CP_INVALID" "SKIP" "-" "-" >&2
+        printf '  hint: rebuild on this host: ./gradlew -Pbenchmark :benchmark:writeClasspath\n' >&2
+        JVM_CP=""
+    fi
 fi
 
 PROFILE_ARGS=""

@@ -170,12 +170,13 @@ build_engine_list() {
     printf '%s\n' "${engines[@]}"
 }
 
-# Read the JVM classpath from the REMOTE host. The local file at the
-# same path is invalid on the remote because it embeds absolute paths
-# from the local checkout; the remote `:benchmark:writeClasspath` task
-# produces paths valid under `$WORKDIR`.
+# Resolve the JVM classpath on the REMOTE host. The classpath file is anchored
+# to ${REPO_ROOT} / ${GRADLE_USER_HOME} placeholders by :benchmark:writeClasspath
+# so the file itself is portable, but the substitution must happen on the host
+# whose paths it should resolve to. We invoke benchmark/bench-jvm-cp.sh remotely
+# (cd'd to $WORKDIR), which both substitutes and sanity-probes the entries.
 remote_jvm_classpath() {
-    ssh -n "$REMOTE_HOST" "cat ${WORKDIR}/benchmark/build/benchmark-classpath.txt 2>/dev/null" || true
+    ssh -n "$REMOTE_HOST" "cd ${WORKDIR} && bash benchmark/bench-jvm-cp.sh resolve 2>/dev/null" || true
 }
 
 # --- Main ---
