@@ -32,6 +32,18 @@ fun main(args: Array<String>) {
         runPoolMapVariantBench()
         return
     }
+    if (args.any { it == "--bench=freelist-variants" }) {
+        runFreelistVariantBench()
+        return
+    }
+    if (args.any { it == "--bench=freelist-contended" }) {
+        runContendedFreelistBench()
+        return
+    }
+    if (args.any { it == "--bench=freelist-dispatch" }) {
+        runFreelistDispatchBench()
+        return
+    }
     if (args.any { it == "--bench=segment-access" }) {
         runSegmentAccessBench()
         return
