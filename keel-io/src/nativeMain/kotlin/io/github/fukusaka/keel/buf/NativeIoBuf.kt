@@ -40,9 +40,11 @@ class NativeIoBuf private constructor(
     override val unsafePointer: CPointer<ByteVar> get() = base
 
     /**
-     * Intrusive freelist link used by [SlabAllocator]'s per-size-class
-     * `ArrayDeque`. Non-null only while this buffer resides in the
-     * pool; cleared on pop.
+     * Intrusive freelist link reserved for an intrusive [Freelist] implementation
+     * (e.g. a versioned-index Treiber escalation). Unused by the default Native
+     * [SpinLockFreelist] (whose `ArrayDeque` backing array links nodes itself);
+     * kept here so a swap-in lock-free freelist can avoid wrapper-node alloc.
+     * Always cleared on [resetForReuse].
      */
     internal var nextLink: NativeIoBuf? = null
 
