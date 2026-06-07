@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
@@ -68,7 +69,8 @@ internal class EpollStreamServer(
     // @Volatile on [_active] lets [isActive] read without taking the mutex.
     private val arena = Arena()
     private val mutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
 
     @Volatile
@@ -167,7 +169,10 @@ internal class EpollStreamServer(
         if (!shouldClose) return
         bossLoop.cancelAll(serverFd, EpollEventLoop.Interest.READ, CancellationException("StreamServer closed"))
         closeFdSafely(serverFd, logger, "server close")
-        pthread_mutex_destroy(mutex.ptr)
+        val destroyRet = pthread_mutex_destroy(mutex.ptr)
+        if (destroyRet != 0) {
+            logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+        }
         arena.clear()
     }
 
