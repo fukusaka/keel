@@ -21,8 +21,9 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *
  * @property allocator Buffer allocator for all channels created by this engine.
  *                     Defaults to the platform's pooled allocator via
- *                     [defaultAllocator] (Native: SlabAllocator, JVM:
- *                     PooledDirectAllocator, JS: DefaultAllocator).
+ *                     [defaultAllocator] (Native: `SlabAllocator`, JVM:
+ *                     `PooledDirectAllocator` — both `PooledAllocator`
+ *                     subclasses; JS: `DefaultAllocator`).
  * @property threads   Number of worker EventLoop threads. 0 (default) means
  *                     auto-detect based on available CPU cores. Each engine
  *                     resolves 0 to `availableProcessors()` at construction.
