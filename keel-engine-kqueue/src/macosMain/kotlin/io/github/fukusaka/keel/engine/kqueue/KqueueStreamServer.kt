@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.Arena
@@ -67,7 +68,8 @@ internal class KqueueStreamServer(
     // @Volatile on [_active] lets [isActive] read without taking the mutex.
     private val arena = Arena()
     private val mutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
 
     @Volatile
@@ -173,7 +175,10 @@ internal class KqueueStreamServer(
         if (!shouldClose) return
         bossLoop.cancelAll(serverFd, KqueueEventLoop.Interest.READ, CancellationException("StreamServer closed"))
         closeFdSafely(serverFd, logger, "server close")
-        pthread_mutex_destroy(mutex.ptr)
+        val destroyRet = pthread_mutex_destroy(mutex.ptr)
+        if (destroyRet != 0) {
+            logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+        }
         arena.clear()
     }
 

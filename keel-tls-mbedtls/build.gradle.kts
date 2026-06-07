@@ -44,6 +44,11 @@ kotlin {
                 implementation(project(":keel-tls"))
             }
         }
+        val nativeMain by getting {
+            dependencies {
+                implementation(project(":keel-native-posix"))
+            }
+        }
         val nativeTest by getting {
             dependencies {
                 implementation(kotlin("test"))

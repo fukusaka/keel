@@ -134,7 +134,8 @@ internal class EpollEventLoop(
     // Task queue uses lock-free MPSC queue — CAS-based enqueue (~5-10ns)
     // replaces mutex lock/unlock (~50-100ns) on the dispatch hot path.
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
     private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
@@ -707,7 +708,10 @@ internal class EpollEventLoop(
             }
             closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             closeFdSafely(epFd, logger, "event loop teardown (epFd)")
-            pthread_mutex_destroy(regMutex.ptr)
+            val destroyRet = pthread_mutex_destroy(regMutex.ptr)
+            if (destroyRet != 0) {
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+            }
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
         }
