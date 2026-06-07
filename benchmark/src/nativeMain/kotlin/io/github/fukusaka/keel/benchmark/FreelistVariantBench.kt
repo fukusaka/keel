@@ -104,7 +104,7 @@ private fun execTrial(freelist: Freelist, depth: Int): Double {
     return nsPerOp[1]
 }
 
-private fun freelistFactory(label: String): Freelist = when (label) {
+internal fun freelistFactory(label: String): Freelist = when (label) {
     "ArrayDequeNoLock" -> ArrayDequeNoLockFreelist()
     "ArrayDequeSpinLock" -> ArrayDequeSpinLockFreelist()
     "IntrusiveTreiber" -> IntrusiveTreiberFreelist()
@@ -127,24 +127,24 @@ private fun fmtE2(v: Double): String {
 // Pooled element with an intrusive freelist link (mirrors NativeIoBuf.nextLink).
 // -------------------------------------------------------------------------
 
-private class Node {
+internal class Node(val id: Int = -1) {
     var nextLink: Node? = null
 }
 
-private interface Freelist {
+internal interface Freelist {
     fun push(node: Node)
     fun pop(): Node?
 }
 
 /** ArrayDeque, no lock. Floor; kqueue/epoll-only (not NWConnection-safe). */
-private class ArrayDequeNoLockFreelist : Freelist {
+internal class ArrayDequeNoLockFreelist : Freelist {
     private val list = ArrayDeque<Node>(16)
     override fun push(node: Node) { list.addLast(node) }
     override fun pop(): Node? = if (list.isEmpty()) null else list.removeLast()
 }
 
 /** ArrayDeque + spin lock — current SlabAllocator freelist shape. */
-private class ArrayDequeSpinLockFreelist : Freelist {
+internal class ArrayDequeSpinLockFreelist : Freelist {
     private val list = ArrayDeque<Node>(16)
     private val lock = AtomicReference(false)
 
@@ -162,7 +162,7 @@ private class ArrayDequeSpinLockFreelist : Freelist {
 }
 
 /** Lock-free intrusive Treiber stack via [Node.nextLink] — the JVM shape. */
-private class IntrusiveTreiberFreelist : Freelist {
+internal class IntrusiveTreiberFreelist : Freelist {
     private val head = AtomicReference<Node?>(null)
 
     override fun push(node: Node) {

@@ -36,6 +36,10 @@ fun main(args: Array<String>) {
         runFreelistVariantBench()
         return
     }
+    if (args.any { it == "--bench=freelist-contended" }) {
+        runContendedFreelistBench()
+        return
+    }
     if (args.any { it == "--bench=segment-access" }) {
         runSegmentAccessBench()
         return
