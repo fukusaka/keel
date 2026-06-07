@@ -29,6 +29,7 @@ kotlin {
         }
         val macosMain by getting {
             dependencies {
+                implementation(project(":keel-native-posix"))
                 implementation(project(":keel-tls"))
                 implementation(project(":keel-server"))
                 // `keel-codec-http` provides `installScopedHeadersPool`

@@ -8,6 +8,8 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -74,9 +76,11 @@ internal class NwStreamServer(
     private val idleReadPolicy: IdleReadPolicy,
 ) : StreamServer {
 
+    private val logger = loggerFactory.logger("NwStreamServer")
     private val arena = Arena()
     private val mutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
     private val pendingConnections = ArrayDeque<nw_connection_t>()
 
@@ -176,9 +180,9 @@ internal class NwStreamServer(
         check(rc == 0) { "keel_nw_start_conn_async failed" }
 
         val remoteAddr = extractAddress(conn)
-        val logger = loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, allocator, idleReadPolicy, logger)
-        val channel = NwPipelinedChannel(transport, logger, remoteAddr, localAddress)
+        val connLogger = loggerFactory.logger("NwPipelinedChannel")
+        val transport = NwIoTransport(conn, connQueue, allocator, idleReadPolicy, connLogger)
+        val channel = NwPipelinedChannel(transport, connLogger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel
     }
@@ -206,7 +210,10 @@ internal class NwStreamServer(
             }
         }
         nw_listener_cancel(listener)
-        pthread_mutex_destroy(mutex.ptr)
+        val destroyRet = pthread_mutex_destroy(mutex.ptr)
+        if (destroyRet != 0) {
+            logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+        }
         arena.clear()
     }
 
