@@ -7,6 +7,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -61,11 +62,20 @@ class IoUringEngineConnectTest {
         // nothing listens on — so the refusal is deterministic (see the
         // REFUSED_PORT KDoc for why a freed ephemeral port is unsafe here).
         val ex = assertFailsWith<IllegalStateException> {
-            withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
+            withTimeout(IO_OP_TIMEOUT_MS) {
                 engine.connect("127.0.0.1", REFUSED_PORT)
             }
         }
-        assertTrue(ex.message?.contains("connect") == true)
+        // A real refusal is a plain IllegalStateException("connect() failed: …").
+        // If the hang guard fires instead, withTimeout throws a
+        // TimeoutCancellationException — a CancellationException, and on
+        // Kotlin/Native a subtype of IllegalStateException, so the
+        // assertFailsWith above does NOT screen it out. Rethrow it so a
+        // starved-CI hang fails loudly as a timeout instead of slipping
+        // through to the message check below with a "Timed out…" string
+        // (the same intermittent linuxX64 CI failure seen on the epoll engine).
+        if (ex is CancellationException) throw ex
+        assertTrue(ex.message?.contains("connect") == true, "got: ${ex.message}")
 
         engine.close()
     }
