@@ -141,15 +141,41 @@ tasks.register<JavaExec>("run") {
 }
 
 // Write classpath file for running JVM benchmark without Gradle process tree.
-// Usage: java -cp @benchmark/build/benchmark-classpath.txt io.github.fukusaka.keel.benchmark.JvmMainKt
+//
+// Output is anchored to two stable placeholders so the file is portable across
+// hosts that share a repo layout and a Gradle user home:
+//
+//   ${REPO_ROOT}/...        — paths inside the rootProject's projectDir.
+//   ${GRADLE_USER_HOME}/... — paths inside the Gradle user home (the dep cache).
+//   /absolute/path          — anything else (rare; e.g. system Java extension jars).
+//
+// Bench scripts (see benchmark/bench-jvm-cp.sh) substitute these placeholders
+// against the running host's $PWD and $GRADLE_USER_HOME / ~/.gradle and verify
+// the resolved entries exist on disk before launching the JVM — so an operator
+// who copies the file to a host whose layout differs gets a clear
+// `JVM_CP_INVALID` failure instead of a confusing `READY_TIMEOUT_7`.
+//
+// Usage: bash benchmark/bench-jvm-cp.sh resolve   # echoes resolved CP
+//        bash benchmark/bench-jvm-cp.sh check     # exits 0 / nonzero
 tasks.register("writeClasspath") {
     val jvmCompilation = kotlin.jvm().compilations["main"]
     dependsOn(jvmCompilation.compileTaskProvider)
     val outputFile = layout.buildDirectory.file("benchmark-classpath.txt")
     outputs.file(outputFile)
+    val repoRoot = rootProject.projectDir.absolutePath
+    val gradleUserHome = gradle.gradleUserHomeDir.absolutePath
     doLast {
-        val cp = (jvmCompilation.output.allOutputs + jvmCompilation.runtimeDependencyFiles)
-            .joinToString(File.pathSeparator)
+        val entries = jvmCompilation.output.allOutputs + jvmCompilation.runtimeDependencyFiles
+        val cp = entries.joinToString(File.pathSeparator) { f ->
+            val p = f.absolutePath
+            when {
+                p.startsWith("$repoRoot/") || p == repoRoot ->
+                    "\${REPO_ROOT}" + p.removePrefix(repoRoot)
+                p.startsWith("$gradleUserHome/") || p == gradleUserHome ->
+                    "\${GRADLE_USER_HOME}" + p.removePrefix(gradleUserHome)
+                else -> p
+            }
+        }
         outputFile.get().asFile.writeText(cp)
     }
 }
