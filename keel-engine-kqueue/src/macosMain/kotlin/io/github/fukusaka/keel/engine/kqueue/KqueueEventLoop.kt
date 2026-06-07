@@ -132,7 +132,8 @@ internal class KqueueEventLoop(
     // contention: dispatch() (any thread) and register() (coroutine thread)
     // are independent hot paths that should not block each other.
     private val regMutex = arena.alloc<pthread_mutex_t>().apply {
-        pthread_mutex_init(ptr, null)
+        val initRet = pthread_mutex_init(ptr, null)
+        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
     private val registrations = LongObjectMap<Registration>()
     // Callback registrations for pipeline (non-suspend) I/O.
@@ -809,7 +810,10 @@ internal class KqueueEventLoop(
             closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
             closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
             closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
-            pthread_mutex_destroy(regMutex.ptr)
+            val destroyRet = pthread_mutex_destroy(regMutex.ptr)
+            if (destroyRet != 0) {
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+            }
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
         }
