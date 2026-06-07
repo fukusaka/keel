@@ -30,9 +30,22 @@ package io.github.fukusaka.keel.buf
  * thread, never on the hot path.
  *
  * @param maxTotalBytes Safety valve: maximum total bytes across all pool classes.
+ * @param freelistFactory Optional override for the per-size-class [Freelist] strategy.
+ *   When `null` (default), each subclass selects its own platform-tuned strategy
+ *   (`SpinLockFreelist` on Native, intrusive Treiber on JVM). Pass a non-null
+ *   [FreelistFactory] to swap in a different `Freelist` implementation — for
+ *   example `::MutexFreelist` for an arbitrary-concurrency public allocator, or
+ *   a custom strategy. The factory is invoked once per registered size class
+ *   with that class's `maxSlots`, and is forwarded to every per-EventLoop child
+ *   produced by [createForEventLoop].
  */
 abstract class PooledAllocator(
     private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
+    /**
+     * Exposed `protected` so subclasses can forward the same factory to
+     * per-EventLoop children produced by [createChild]. Treat as read-only.
+     */
+    protected val freelistFactory: FreelistFactory? = null,
 ) : BufferAllocator {
 
     /** Immutable size-class snapshot; replaced wholesale on [registerPoolSize] (COW). */
@@ -46,10 +59,23 @@ abstract class PooledAllocator(
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
 
-    /** Constructs the per-size-class freelist (platform / pluggable strategy seam). */
-    protected abstract fun newFreelist(maxSlots: Int): Freelist
+    /**
+     * Constructs the per-size-class freelist. The default implementation honours
+     * the [freelistFactory] passed to the constructor and falls back to
+     * [defaultFreelist] when no factory is set, so subclasses normally only need
+     * to override [defaultFreelist] to declare their platform-tuned strategy.
+     */
+    protected open fun newFreelist(maxSlots: Int): Freelist =
+        freelistFactory?.create(maxSlots) ?: defaultFreelist(maxSlots)
 
-    /** Constructs a sibling instance for a single EventLoop (platform seam). */
+    /** Platform-tuned default `Freelist` strategy (subclass seam). */
+    protected abstract fun defaultFreelist(maxSlots: Int): Freelist
+
+    /**
+     * Constructs a sibling instance for a single EventLoop (platform seam).
+     * Subclasses must propagate the same [freelistFactory] so per-EL children
+     * inherit the user-selected strategy.
+     */
     protected abstract fun createChild(maxTotalBytes: Long): PooledAllocator
 
     final override fun registerPoolSize(size: Int, maxSlots: Int) {
