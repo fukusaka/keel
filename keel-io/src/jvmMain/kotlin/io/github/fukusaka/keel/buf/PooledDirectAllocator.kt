@@ -29,10 +29,15 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * @param maxTotalBytes Maximum total bytes across all pool classes. Safety
  *   valve. Default: 256 KiB.
+ * @param freelistFactory Optional [FreelistFactory]. `null` (default) selects
+ *   the intrusive `TreiberStackFreelist` per size class. Pass `::MutexFreelist`
+ *   or any other `FreelistFactory` to swap the strategy — see [PooledAllocator]
+ *   for the selection trade-offs.
  */
 class PooledDirectAllocator(
     maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
-) : PooledAllocator(maxTotalBytes) {
+    freelistFactory: FreelistFactory? = null,
+) : PooledAllocator(maxTotalBytes, freelistFactory) {
 
     init {
         registerPoolSize(SEGMENT_SIZE, DEFAULT_POOL_SLOTS)
@@ -41,9 +46,10 @@ class PooledDirectAllocator(
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun newBuffer(capacity: Int): IoBuf = DirectIoBuf(capacity)
 
-    override fun newFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
+    override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
-    override fun createChild(maxTotalBytes: Long): PooledAllocator = PooledDirectAllocator(maxTotalBytes)
+    override fun createChild(maxTotalBytes: Long): PooledAllocator =
+        PooledDirectAllocator(maxTotalBytes, freelistFactory)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null

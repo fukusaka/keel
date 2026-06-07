@@ -30,10 +30,15 @@ import kotlin.concurrent.AtomicReference
  *
  * @param maxTotalBytes Maximum total bytes across all pool classes. Safety
  *   valve. Default: 256 KiB.
+ * @param freelistFactory Optional [FreelistFactory]. `null` (default) selects
+ *   `SpinLockFreelist` per size class. Pass `::MutexFreelist` or any other
+ *   `FreelistFactory` to swap the strategy — see [PooledAllocator] for the
+ *   selection trade-offs.
  */
 class SlabAllocator(
     maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
-) : PooledAllocator(maxTotalBytes) {
+    freelistFactory: FreelistFactory? = null,
+) : PooledAllocator(maxTotalBytes, freelistFactory) {
 
     init {
         registerPoolSize(SEGMENT_SIZE, DEFAULT_POOL_SLOTS)
@@ -42,9 +47,10 @@ class SlabAllocator(
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun newBuffer(capacity: Int): IoBuf = NativeIoBuf(capacity)
 
-    override fun newFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
+    override fun defaultFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
 
-    override fun createChild(maxTotalBytes: Long): PooledAllocator = SlabAllocator(maxTotalBytes)
+    override fun createChild(maxTotalBytes: Long): PooledAllocator =
+        SlabAllocator(maxTotalBytes, freelistFactory)
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
