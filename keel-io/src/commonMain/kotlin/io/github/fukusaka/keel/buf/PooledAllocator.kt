@@ -130,10 +130,19 @@ abstract class PooledAllocator(
 
     /**
      * Snapshot of every pooled buffer currently held across all size classes,
-     * without removing them. Used by Native subclasses to expose pooled
-     * pointers to io_uring for fixed-buffer registration. Not a hot-path call.
+     * without removing them.
+     *
+     * Used by engines that need to enumerate the pool's resident buffers — most
+     * notably io_uring, which registers each Native-backed pooled buffer with
+     * the kernel for `SEND_ZC_FIXED` once at startup. Engines downcast to
+     * [PooledAllocator] (the common shape) and filter the returned list for the
+     * platform-specific carrier they need (e.g. on Linux, `NativeIoBuf` /
+     * `NativePointerAccess`), so an out-of-tree [PooledAllocator] subclass is
+     * automatically supported as long as it returns buffers of that carrier.
+     *
+     * Not a hot-path call — only invoked at engine bind / per-EventLoop setup.
      */
-    protected fun pooledBuffersSnapshot(): List<IoBuf> {
+    fun pooledBuffers(): List<IoBuf> {
         val result = mutableListOf<IoBuf>()
         val t = table
         for (i in t.pools.indices) t.pools[i].snapshotInto(result)
