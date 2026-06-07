@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.buf
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.test.Test
 
 /**
@@ -24,13 +26,52 @@ import kotlin.test.Test
 class FreelistContendedBenchmark {
 
     @Test
+    fun freelistUncontended() {
+        println("Uncontended single-thread freelist (JVM); ns per pop+push roundtrip")
+        println("variant|depth|ns/op")
+        val depths = intArrayOf(1, 8)
+        val labels = listOf("SpinLock", "ReentrantLock", "PlainTreiber", "VersionedIndexTreiber")
+        for (depth in depths) {
+            for (label in labels) {
+                val ns = uncontendedTrial(label, depth)
+                println("$label|$depth|${"%.2f".format(ns)}")
+            }
+        }
+        println("blackhole=$blackhole")
+    }
+
+    private fun uncontendedTrial(label: String, depth: Int): Double {
+        val freelist = factory(label, POOL_NODES)
+        val nodes = Array(depth) { Node(it) }
+        for (n in nodes) freelist.push(n)
+        repeat(WARMUP_CYCLES) {
+            val n = freelist.pop()
+            if (n != null) freelist.push(n)
+        }
+        val ns = DoubleArray(3)
+        for (t in 0 until 3) {
+            val start = System.nanoTime()
+            repeat(TRIAL_CYCLES) {
+                val n = freelist.pop()
+                if (n != null) {
+                    freelist.push(n)
+                    blackhole += 1
+                }
+            }
+            ns[t] = (System.nanoTime() - start).toDouble() / TRIAL_CYCLES
+        }
+        ns.sort()
+        return ns[1]
+    }
+
+    @Test
     fun freelistContended() {
         println("Contended MPMC freelist bench (JVM, java threads)")
         println("=================================================")
         println("variant|threads|ns/op|Mops/sec|correctness")
 
         val threadCounts = intArrayOf(2, 4, 8)
-        val labels = listOf("SpinLock", "PlainTreiber", "VersionedIndexTreiber")
+        val labels = listOf("SpinLock", "ReentrantLock", "PlainTreiber", "VersionedIndexTreiber")
 
         for (label in labels) {
             for (n in threadCounts) {
@@ -98,9 +139,18 @@ class FreelistContendedBenchmark {
 
     private fun factory(label: String, capacity: Int): Freelist = when (label) {
         "SpinLock" -> SpinLockFreelist()
+        "ReentrantLock" -> ReentrantLockFreelist()
         "PlainTreiber" -> PlainTreiberFreelist()
         "VersionedIndexTreiber" -> VersionedIndexTreiberFreelist(capacity)
         else -> error("unknown $label")
+    }
+
+    /** ArrayDeque + blocking ReentrantLock — parks the waiter on contention. */
+    private class ReentrantLockFreelist : Freelist {
+        private val list = ArrayDeque<Node>()
+        private val lock = ReentrantLock()
+        override fun push(node: Node) = lock.withLock { list.addLast(node) }
+        override fun pop(): Node? = lock.withLock { if (list.isEmpty()) null else list.removeLast() }
     }
 
     private class Node(val id: Int) {
@@ -192,5 +242,7 @@ class FreelistContendedBenchmark {
         var blackhole: Long = 0
         const val POOL_NODES = 64
         const val ITERS_PER_THREAD = 10_000_000
+        const val WARMUP_CYCLES = 5_000_000
+        const val TRIAL_CYCLES = 20_000_000
     }
 }
