@@ -254,6 +254,7 @@ internal class EpollIoTransport(
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
         cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
@@ -372,6 +373,10 @@ internal class EpollIoTransport(
 
     /** Registers EPOLLOUT callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
+        // A stalled write (EPOLLOUT re-arm) means the peer is not draining its
+        // receive window — start the write-idle (slow-read) clock. Drain progress
+        // refreshes it and a full drain cancels it, both via updatePendingBytes.
+        armWriteIdleTimeout()
         eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE, this)
     }
 
