@@ -13,6 +13,7 @@ import platform.posix.close
 import platform.posix.usleep
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -101,20 +102,30 @@ class KqueueEngineIdleTimeoutTest {
             }
             usleep(SERVER_START_US)
             val clientFd = connectRawClient(SLOW_READ_PORT)
-            // Trigger a large response, then NEVER read it: the server's write stalls
+            // Trigger a large response, then never read it: the server's write stalls
             // and arms the write-idle timer. Trickle a byte every TRICKLE_US (< IDLE_MS)
-            // so the *read* side keeps being refreshed — only the write-idle timer can
-            // fire. Four trickles span past IDLE_MS, so read-idle is alive throughout.
+            // to keep the *read* side refreshed, so only the write-idle timer can fire.
+            // The trickle tolerates the server closing mid-loop (a loaded runner may fire
+            // write-idle before the loop ends).
             repeat(4) {
-                rawWrite(clientFd, "x")
+                runCatching { rawWrite(clientFd, "x") }
                 usleep(TRICKLE_US)
             }
-            // By now (~4×160ms = 640ms > IDLE_MS) the write-idle timer has fired and the
-            // server force-closed, even though the read side was kept active. Drain the
-            // buffered partial, then a final read must observe EOF.
-            PosixRawClient.rawReadUpTo(clientFd, DRAIN_BYTES)
-            val tail = PosixRawClient.rawReadOnce(clientFd, 64, 5.seconds)
-            assertEquals(ReadResult.Eof, tail, "write-idle should close a non-reading peer; got $tail")
+            // write-idle must reclaim the connection: draining observes a close — either
+            // EOF or a reset (force-closing with buffered data sends RST). Had write-idle
+            // not fired, the server would keep producing data as we drain and we would
+            // never reach a close within the bounded window.
+            var closed = false
+            var reads = 0
+            while (!closed && reads < MAX_DRAIN_READS) {
+                reads++
+                when (PosixRawClient.rawReadOnce(clientFd, DRAIN_CHUNK, 2.seconds)) {
+                    ReadResult.Eof, is ReadResult.Failed -> closed = true
+                    is ReadResult.Bytes -> Unit // buffered partial — keep draining
+                    ReadResult.WouldBlock -> break
+                }
+            }
+            assertTrue(closed, "write-idle should close (EOF/RST) a non-reading peer while reads stay active")
             close(clientFd)
             server.close()
             engine.close()
@@ -127,7 +138,8 @@ class KqueueEngineIdleTimeoutTest {
         const val GAP_US: UInt = 300_000u // 300 ms < IDLE_MS (500 ms)
         const val TRICKLE_US: UInt = 160_000u // 160 ms < IDLE_MS keeps read-idle alive
         const val CHUNK_BYTES = 1 shl 20 // 1 MiB per response — exceeds the socket buffer
-        const val DRAIN_BYTES = 4 shl 20
+        const val DRAIN_CHUNK = 1 shl 16 // 64 KiB per drain read
+        const val MAX_DRAIN_READS = 200 // bounded drain so a non-closing bug fails, not hangs
         const val SILENT_PORT = 19891
         const val ACTIVE_PORT = 19892
         const val SLOW_READ_PORT = 19895
