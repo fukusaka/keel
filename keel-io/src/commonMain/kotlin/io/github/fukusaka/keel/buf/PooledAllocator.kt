@@ -80,6 +80,17 @@ abstract class PooledAllocator(
     @kotlin.concurrent.Volatile
     private var ladder: Ladder = Ladder(arrayOfNulls(sizeClasses.nSizes), IntArray(sizeClasses.nSizes), 0L)
 
+    // Cache-trim bookkeeping (per-EventLoop, single-thread — same writer contract as
+    // registerPoolSize). Kept off the COW Ladder because they mutate on the hot path.
+    /** Cached entries per size class (push ++ / pop --), tracking each freelist's size. */
+    private val cachedCount = IntArray(sizeClasses.nSizes)
+
+    /** Cache hits per size class since the last trim — the working set the trim keeps. */
+    private val allocsSinceTrim = IntArray(sizeClasses.nSizes)
+
+    /** Allocations remaining until the next trim pass. */
+    private var trimCountdown = TRIM_INTERVAL
+
     private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf) }
 
     /**
@@ -197,8 +208,11 @@ abstract class PooledAllocator(
                 val pool = l.pools[idx]
                 val recycled = pool?.pop()
                 if (recycled != null) {
+                    allocsSinceTrim[idx]++ // working-set signal: this class served from cache
+                    cachedCount[idx]--
                     (recycled as AbstractIoBuf).resetForReuse()
                     recycled.owner = poolOwner
+                    maybeTrim()
                     return recycled
                 }
                 // Pool miss: carve a class-sized view from a chunk (not a per-buffer
@@ -207,6 +221,7 @@ abstract class PooledAllocator(
                 // the run to the chunk when the pool is full.
                 val fresh = chunkArena.carve(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
+                maybeTrim()
                 return fresh
             }
         }
@@ -226,12 +241,54 @@ abstract class PooledAllocator(
             // through to freeBacking.
             if (idx < sizeClasses.nSizes && sizeClasses.sizeIdx2size(idx) == cap) {
                 val pool = l.pools[idx]
-                if (pool != null && pool.push(buf)) return
+                if (pool != null && pool.push(buf)) {
+                    cachedCount[idx]++
+                    return
+                }
             }
         }
         // No class for this size, pool full, or above the cache cap: free the
         // backing directly. refCount is already zero (we are inside PoolOwner.release).
         (buf as AbstractIoBuf).freeBacking()
+    }
+
+    /** Runs a [trim] pass once every [TRIM_INTERVAL] allocations of a cached class. */
+    private fun maybeTrim() {
+        if (--trimCountdown <= 0) trim()
+    }
+
+    /** Resident chunk count (test/diagnostic observability). */
+    internal val chunkCount: Int get() = chunkArena.chunkCount
+
+    /** Cached entry count for [capacity]'s size class (test/diagnostic observability). */
+    internal fun cachedCountOf(capacity: Int): Int = cachedCount[sizeClasses.size2SizeIdx(capacity)]
+
+    /** Forces a [trim] pass immediately (test hook; production trims via [maybeTrim]). */
+    internal fun trimNow() = trim()
+
+    /**
+     * Cache-trim pass: for each size class, evict the cached entries beyond its
+     * recent working set (`cachedCount - hits since last trim`), returning their
+     * runs to their chunks, then reclaim now-idle chunks (keeping [WARM_RESERVE]).
+     * Hot classes keep their entries (hits ≥ cached → nothing evicted); cold
+     * classes drain. Without this, cached views pin chunks forever and the
+     * footprint never shrinks.
+     */
+    private fun trim() {
+        trimCountdown = TRIM_INTERVAL
+        val l = ladder
+        for (idx in 0 until sizeClasses.nSizes) {
+            val pool = l.pools[idx] ?: continue
+            var evict = cachedCount[idx] - allocsSinceTrim[idx]
+            allocsSinceTrim[idx] = 0
+            while (evict > 0) {
+                val buf = pool.pop() ?: break
+                cachedCount[idx]--
+                (buf as AbstractIoBuf).freeBacking() // chunk-carved view → returns its run
+                evict--
+            }
+        }
+        chunkArena.reclaim(WARM_RESERVE)
     }
 
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
@@ -303,5 +360,11 @@ abstract class PooledAllocator(
          * (a typical HTTP EventLoop holds mostly the 8 KiB class).
          */
         internal const val DEFAULT_MAX_TOTAL_BYTES = 2L * 1024 * 1024
+
+        /** Allocations between cache-trim passes (Netty's `freeSweepAllocationThreshold`). */
+        internal const val TRIM_INTERVAL = 8192
+
+        /** Idle chunks kept resident after a trim to avoid alloc/free thrashing. */
+        internal const val WARM_RESERVE = 1
     }
 }
