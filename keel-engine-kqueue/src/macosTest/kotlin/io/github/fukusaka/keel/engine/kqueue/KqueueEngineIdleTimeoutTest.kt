@@ -38,9 +38,10 @@ class KqueueEngineIdleTimeoutTest {
     fun `a silent client is closed after the idle timeout`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
-            val server = engine.bindPipeline("127.0.0.1", SILENT_PORT) { channel ->
-                channel.pipeline.addLast("echo", EchoHandler())
-            }
+            // Empty pipeline: reads are still enabled, and the idle timeout must
+            // force-close even with no handler / bridge (it reclaims the fd in every
+            // channel mode, unlike a cooperative peer-FIN).
+            val server = engine.bindPipeline("127.0.0.1", SILENT_PORT) { }
             usleep(SERVER_START_US)
             val clientFd = connectRawClient(SILENT_PORT)
             // Send nothing. The server must idle-close within ~IDLE_MS, so a single

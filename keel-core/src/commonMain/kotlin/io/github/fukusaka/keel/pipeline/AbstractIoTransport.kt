@@ -148,11 +148,15 @@ abstract class AbstractIoTransport(
 
     private fun onIdleTimeout() {
         idleHandle = null // already fired and removed by the scheduler
-        // Mirror the fatal-read path: notify the pipeline so it tears the channel
-        // down (notifyInactive + close); fall back to a direct close for a raw
-        // transport that has no pipeline wired.
-        val cb = onReadClosed
-        if (cb != null) cb() else close()
+        // Notify the pipeline / caller of inactivity, then force the connection
+        // closed. Unlike a cooperative peer-FIN — which `onReadClosed` deliberately
+        // leaves open for a Coroutine-mode caller or an empty pipeline (half-close
+        // support, caller owns the resource) — an idle timeout exists to *reclaim*
+        // the connection from a non-cooperating peer, so it must release the fd in
+        // every mode. `close()` is idempotent, so this is a no-op when the channel
+        // already closed itself in pipeline mode.
+        onReadClosed?.invoke()
+        close()
     }
 
     // --- Write path callbacks ---
