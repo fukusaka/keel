@@ -259,6 +259,7 @@ internal class KqueueIoTransport(
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
         cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
@@ -377,6 +378,10 @@ internal class KqueueIoTransport(
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     private fun registerWriteCallback() {
+        // A stalled write (EVFILT_WRITE re-arm) means the peer is not draining its
+        // receive window — start the write-idle (slow-read) clock. Drain progress
+        // refreshes it and a full drain cancels it, both via updatePendingBytes.
+        armWriteIdleTimeout()
         eventLoop.registerCallback(fd, KqueueEventLoop.Interest.WRITE, this)
     }
 

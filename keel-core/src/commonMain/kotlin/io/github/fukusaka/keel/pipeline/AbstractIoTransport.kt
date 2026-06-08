@@ -159,6 +159,41 @@ abstract class AbstractIoTransport(
         close()
     }
 
+    private var writeIdleHandle: TimerHandle? = null
+
+    /**
+     * Arms the write-side idle timeout — the slow-read defence. Engine subclasses
+     * call this when a flush leaves data unsent (the peer's receive window is full,
+     * so the write made no progress), the only point a write actually stalls. Arming
+     * here rather than on every enqueue keeps the fast path — a write that flushes
+     * immediately — free of a per-write timer allocation. Shares [idleTimeoutMillis]
+     * with the read side: one knob, two independent timers. Idempotent; a no-op if
+     * already armed, disabled, or unsupported. **EventLoop thread.**
+     */
+    protected fun armWriteIdleTimeout() {
+        if (writeIdleHandle != null) return
+        val timer = eventLoopTimer ?: return
+        val millis = idleTimeoutMillis
+        if (millis <= 0) return
+        writeIdleHandle = timer.schedule(millis) { onWriteIdleTimeout() }
+    }
+
+    /** Cancels and clears the write-side idle timeout (writes drained / teardown). Idempotent. */
+    protected fun cancelWriteIdleTimeout() {
+        writeIdleHandle?.cancel()
+        writeIdleHandle = null
+    }
+
+    private fun onWriteIdleTimeout() {
+        writeIdleHandle = null // already fired and removed by the scheduler
+        // Pending writes have not drained for the whole timeout: the peer is not
+        // reading (slow-read / stalled receive window), holding the connection and
+        // its buffered response. Reclaim it exactly like the read idle timeout —
+        // notify inactivity, then force-close in every channel mode.
+        onReadClosed?.invoke()
+        close()
+    }
+
     // --- Write path callbacks ---
 
     override var onFlushComplete: (() -> Unit)? = null
@@ -246,6 +281,13 @@ abstract class AbstractIoTransport(
      */
     protected fun updatePendingBytes(delta: Int) {
         pendingBytes += delta
+        // Write-idle (slow-read) timer: a negative delta is flush progress, so a
+        // partial drain that leaves data refreshes the deadline and a full drain
+        // cancels it. Arming is the engine's job (only when a flush stalls), so a
+        // `touch` before the timer is armed is a harmless no-op.
+        if (delta < 0) {
+            if (pendingBytes == 0) cancelWriteIdleTimeout() else writeIdleHandle?.touch()
+        }
         if (writable && pendingBytes >= IoTransport.DEFAULT_HIGH_WATER_MARK) {
             writable = false
             onWritabilityChanged?.invoke(false)
