@@ -38,15 +38,21 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   Honoured by the pull-model POSIX / NIO engines (epoll / kqueue / nio);
  *   io_uring uses a per-EventLoop shared buffer ring and falls back to the
  *   engine-wide value; push-model engines ignore it.
+ * @param idleTimeoutMillis Per-server override of the idle (no-progress) timeout
+ *   for accepted connections (see [IoEngineConfig.idleTimeoutMillis]). `null`
+ *   (default) inherits the engine-wide value; `0` disables it for this server.
+ *   If non-null, must be `>= 0`. Currently honoured by the epoll / kqueue engines.
  */
 open class BindConfig(
     val backlog: Int = DEFAULT_BACKLOG,
     val childSocketOptions: SocketOptions = SocketOptions.DEFAULT,
     val readBufferSize: Int? = null,
+    val idleTimeoutMillis: Long? = null,
 ) {
 
     init {
         readBufferSize?.let { IoEngineConfig.requireValidReadBufferSize(it) }
+        idleTimeoutMillis?.let { IoEngineConfig.requireValidIdleTimeout(it) }
     }
 
     /**
