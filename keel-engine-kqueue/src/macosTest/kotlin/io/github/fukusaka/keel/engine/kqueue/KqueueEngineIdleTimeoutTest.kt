@@ -1,12 +1,10 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
-import io.github.fukusaka.keel.codec.http.HttpResponse
-import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
-import io.github.fukusaka.keel.codec.http.RoutingHandler
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -14,7 +12,6 @@ import platform.posix.close
 import platform.posix.usleep
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -23,18 +20,26 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Real sockets and real wall-clock timing, so each test is wrapped in a
  * `withTimeout` envelope (15 s) per the testing standard. The idle timeout itself
- * is small ([IDLE_MS]) so the closing case resolves well inside the envelope.
+ * is small ([IDLE_MS]) so the closing case resolves well inside the envelope. Uses
+ * a minimal echo handler rather than the HTTP codec to keep the dependency surface
+ * small.
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngineIdleTimeoutTest {
+
+    /** Writes every inbound buffer straight back to the peer. */
+    private class EchoHandler : InboundHandler {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            ctx.propagateWriteAndFlush(msg)
+        }
+    }
 
     @Test
     fun `a silent client is closed after the idle timeout`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
             val server = engine.bindPipeline("127.0.0.1", SILENT_PORT) { channel ->
-                // Decoder enables reads; the client never sends, so nothing is decoded.
-                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("echo", EchoHandler())
             }
             usleep(SERVER_START_US)
             val clientFd = connectRawClient(SILENT_PORT)
@@ -51,25 +56,20 @@ class KqueueEngineIdleTimeoutTest {
     @Test
     fun `a client active within the idle window is not closed`() = runBlocking {
         withTimeout(15.seconds) {
-            val response = HttpResponse.ok("Hi", contentType = "text/plain")
-            response.headers.size // warm the flat-entries cache
             val engine = KqueueEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
             val server = engine.bindPipeline("127.0.0.1", ACTIVE_PORT) { channel ->
-                channel.pipeline.addLast("encoder", HttpResponseEncoder())
-                channel.pipeline.addLast("decoder", HttpRequestDecoder())
-                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))
+                channel.pipeline.addLast("echo", EchoHandler())
             }
             usleep(SERVER_START_US)
             val clientFd = connectRawClient(ACTIVE_PORT)
-            // Send the request in two pieces separated by a gap shorter than IDLE_MS.
-            // Each piece refreshes the deadline, so the connection survives the gap
-            // and still produces a response (the timeout never fires on a progressing
-            // connection).
-            rawWrite(clientFd, "GET /hello HTTP/1.1\r\n")
+            // Send two halves separated by a gap shorter than IDLE_MS. Each half
+            // refreshes the deadline, so the connection survives the gap and echoes
+            // both back; reading the full 4 bytes proves it was never idle-closed.
+            rawWrite(clientFd, "PI")
             usleep(GAP_US) // < IDLE_MS
-            rawWrite(clientFd, "Host: localhost\r\n\r\n")
-            val result = PosixRawClient.rawReadUpTo(clientFd, 4096)
-            assertTrue(result.startsWith("HTTP/1.1 200 OK"), "active client should get a response; got: $result")
+            rawWrite(clientFd, "NG")
+            val echo = PosixRawClient.rawRead(clientFd, 4)
+            assertEquals("PING", echo, "active client should be echoed, not idle-closed")
             close(clientFd)
             server.close()
             engine.close()
