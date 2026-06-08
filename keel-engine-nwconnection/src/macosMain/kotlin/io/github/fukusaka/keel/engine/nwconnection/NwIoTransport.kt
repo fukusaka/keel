@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -127,7 +128,18 @@ internal class NwIoTransport(
     allocator: BufferAllocator,
     private val idleReadPolicy: IdleReadPolicy,
     private val logger: Logger,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator) {
+
+    /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /**
+     * Backed by [connQueue] via [NwEventLoopTimer]. The timer fires in FIFO order
+     * with this connection's read / write completion callbacks on the same serial
+     * queue, so no cross-thread hand-off is needed to close an idle connection.
+     */
+    override val eventLoopTimer: EventLoopTimer = NwEventLoopTimer(connQueue)
 
     /**
      * [IdleReadPolicy.DETECT_PEER_CLOSE]: arm an NWConnection receive
@@ -210,8 +222,14 @@ internal class NwIoTransport(
             // of the transport — flipping `readEnabled` only controls
             // whether [onReadComplete] delivers bytes through [onRead]
             // or releases them silently.
-            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
-                armRead()
+            if (value && opened) {
+                // The connection is now waiting to read → the read-side idle timeout
+                // applies (covers accept-to-first-byte, slowloris-silent, keep-alive
+                // idle); policy-independent.
+                armIdleTimeout()
+                if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE) armRead()
+            } else if (!value) {
+                cancelIdleTimeout() // back-pressure: pause the read-idle timeout
             }
         }
 
@@ -294,6 +312,11 @@ internal class NwIoTransport(
                 keel_nw_dispatch_data_release(outcome.handle)
             }
             return
+        }
+        // Any successful receive (zero-copy or copied) is read progress — refresh
+        // the read-idle deadline before delivery. A no-op when not armed.
+        if (outcome is NwReceiveOutcome.ZeroCopy || outcome is NwReceiveOutcome.Copied) {
+            touchIdleTimeout()
         }
         when (outcome) {
             is NwReceiveOutcome.ZeroCopy -> {
@@ -425,6 +448,13 @@ internal class NwIoTransport(
                 keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
             }
         }
+        // The write is outstanding until its completion callback drains it. NWConnection
+        // applies the peer's flow control to that completion (it is delayed while the
+        // peer's receive window is full), so arming the write-idle timer here closes a
+        // slow-read peer that never drains the response. The completion's
+        // updatePendingBytes refreshes the timer on partial drain and cancels it once
+        // pendingBytes reaches 0 (a fast peer therefore never trips it).
+        armWriteIdleTimeout()
         return false // Always async.
     }
 
@@ -455,6 +485,8 @@ internal class NwIoTransport(
     private fun teardownOnConnQueue() {
         assertOnConnQueue("NwIoTransport.teardownOnConnQueue")
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
