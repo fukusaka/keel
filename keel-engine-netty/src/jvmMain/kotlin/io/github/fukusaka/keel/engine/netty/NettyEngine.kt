@@ -152,6 +152,14 @@ class NettyEngine(
      */
     private val eventLoopAllocators = ConcurrentHashMap<EventLoop, BufferAllocator>()
 
+    /**
+     * Effective per-connection idle (no-progress) timeout: the per-server
+     * ([BindConfig.idleTimeoutMillis]) / per-client ([ConnectConfig.idleTimeoutMillis])
+     * override when present, otherwise the engine-wide
+     * [IoEngineConfig.idleTimeoutMillis]. `0` disables it.
+     */
+    private fun effectiveIdleTimeout(override: Long?): Long = override ?: config.idleTimeoutMillis
+
     private fun allocatorFor(ch: NettyNativeChannel): BufferAllocator =
         eventLoopAllocators.computeIfAbsent(ch.eventLoop()) {
             // Route write-path buffers through Netty's pooled ByteBuf arena
@@ -183,7 +191,10 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
+                    val transport = NettyIoTransport(
+                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
+                        effectiveIdleTimeout(bindConfig.idleTimeoutMillis),
+                    )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -247,7 +258,10 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
+                    val transport = NettyIoTransport(
+                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
+                        effectiveIdleTimeout(bindConfig.idleTimeoutMillis),
+                    )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -293,11 +307,15 @@ class NettyEngine(
     override suspend fun connect(address: SocketAddress): KeelChannel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): KeelChannel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.idleTimeoutMillis)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.idleTimeoutMillis)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): KeelChannel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): KeelChannel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
             "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
@@ -329,7 +347,10 @@ class NettyEngine(
         val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress()) ?: address
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
-        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy)
+        val transport = NettyIoTransport(
+            nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy,
+            effectiveIdleTimeout(idleTimeoutOverride),
+        )
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,
         )
@@ -339,14 +360,23 @@ class NettyEngine(
         return keelChannel
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): KeelChannel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): KeelChannel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port, socketOptions)
+            connectToIp(ip.toCanonicalString(), address.port, socketOptions, idleTimeoutOverride)
         }
     }
 
-    private suspend fun connectToIp(host: String, port: Int, socketOptions: SocketOptions): KeelChannel {
+    private suspend fun connectToIp(
+        host: String,
+        port: Int,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): KeelChannel {
         val bootstrap = Bootstrap()
             .group(workerGroup)
             .channel(nettyTransport.socketChannelClass())
@@ -374,7 +404,10 @@ class NettyEngine(
         val remoteAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.remoteAddress())
         val localAddr = NettyPipelinedChannel.toSocketAddress(nettyChannel.localAddress())
 
-        val transport = NettyIoTransport(nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy)
+        val transport = NettyIoTransport(
+            nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy,
+            effectiveIdleTimeout(idleTimeoutOverride),
+        )
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,
         )
@@ -439,7 +472,10 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
+                    val transport = NettyIoTransport(
+                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
+                        effectiveIdleTimeout(config.idleTimeoutMillis),
+                    )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
@@ -483,7 +519,10 @@ class NettyEngine(
                     ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
                     val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
                     val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(ch, allocatorFor(ch), effectiveIdleReadPolicy)
+                    val transport = NettyIoTransport(
+                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
+                        effectiveIdleTimeout(config.idleTimeoutMillis),
+                    )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )
