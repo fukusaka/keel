@@ -126,6 +126,23 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         insertAvailRun(runOffset(finalRun), runPages(finalRun), finalRun)
     }
 
+    /**
+     * Byte offset of [handle]'s allocation within the chunk's backing — the
+     * wiring layer (Phase 4) adds this to the chunk's base pointer to carve a
+     * view. For a run it is `runOffset << pageShifts`; for a subpage element it
+     * adds `bitmapIdx * elemSize`.
+     */
+    fun byteOffset(handle: Long): Int {
+        val runByteOffset = runOffset(handle) shl pageShifts
+        if (!isSubpage(handle)) return runByteOffset
+        val subpage = checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }
+        return runByteOffset + bitmapIdx(handle) * subpage.elemSize
+    }
+
+    /** Size-class index of the subpage [handle] points into (subpage handles only). */
+    fun subpageSizeIdx(handle: Long): Int =
+        checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }.sizeIdx
+
     // --- run carving ---------------------------------------------------------
 
     private fun splitLargeRun(handle: Long, needPages: Int): Long {
