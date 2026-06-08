@@ -263,7 +263,13 @@ class NioEngine(
     ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port, socketOptions, readBufferSizeOverride, idleTimeoutOverride)
+            connectToIp(
+                ip.toCanonicalString(),
+                address.port,
+                socketOptions,
+                readBufferSizeOverride,
+                idleTimeoutOverride,
+            )
         }
     }
 
