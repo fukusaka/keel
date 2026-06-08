@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -31,6 +32,20 @@ class KqueueEngineIdleTimeoutTest {
     private class EchoHandler : InboundHandler {
         override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             ctx.propagateWriteAndFlush(msg)
+        }
+    }
+
+    /**
+     * On every inbound message, writes a large chunk back — big enough that a peer
+     * which stops reading fills its receive window and stalls the server's write
+     * (arming the write-idle timer). Content is irrelevant for the timing test.
+     */
+    private class BigChunkWriter : InboundHandler {
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            if (msg is IoBuf) msg.release()
+            val out = ctx.allocator.allocate(CHUNK_BYTES)
+            out.writerIndex = CHUNK_BYTES // expose CHUNK_BYTES readable bytes (content unset)
+            ctx.propagateWriteAndFlush(out)
         }
     }
 
@@ -77,11 +92,44 @@ class KqueueEngineIdleTimeoutTest {
         }
     }
 
+    @Test
+    fun `a slow-read client is closed by the write idle timeout while reads stay active`() = runBlocking {
+        withTimeout(15.seconds) {
+            val engine = KqueueEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
+            val server = engine.bindPipeline("127.0.0.1", SLOW_READ_PORT) { channel ->
+                channel.pipeline.addLast("big", BigChunkWriter())
+            }
+            usleep(SERVER_START_US)
+            val clientFd = connectRawClient(SLOW_READ_PORT)
+            // Trigger a large response, then NEVER read it: the server's write stalls
+            // and arms the write-idle timer. Trickle a byte every TRICKLE_US (< IDLE_MS)
+            // so the *read* side keeps being refreshed — only the write-idle timer can
+            // fire. Four trickles span past IDLE_MS, so read-idle is alive throughout.
+            repeat(4) {
+                rawWrite(clientFd, "x")
+                usleep(TRICKLE_US)
+            }
+            // By now (~4×160ms = 640ms > IDLE_MS) the write-idle timer has fired and the
+            // server force-closed, even though the read side was kept active. Drain the
+            // buffered partial, then a final read must observe EOF.
+            PosixRawClient.rawReadUpTo(clientFd, DRAIN_BYTES)
+            val tail = PosixRawClient.rawReadOnce(clientFd, 64, 5.seconds)
+            assertEquals(ReadResult.Eof, tail, "write-idle should close a non-reading peer; got $tail")
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
     private companion object {
         const val IDLE_MS = 500L
         const val SERVER_START_US: UInt = 100_000u
         const val GAP_US: UInt = 300_000u // 300 ms < IDLE_MS (500 ms)
+        const val TRICKLE_US: UInt = 160_000u // 160 ms < IDLE_MS keeps read-idle alive
+        const val CHUNK_BYTES = 1 shl 20 // 1 MiB per response — exceeds the socket buffer
+        const val DRAIN_BYTES = 4 shl 20
         const val SILENT_PORT = 19891
         const val ACTIVE_PORT = 19892
+        const val SLOW_READ_PORT = 19895
     }
 }
