@@ -146,6 +146,15 @@ internal class FakeIoUringRing : IoUringRing {
         return submitAndWaitResults.removeFirstOrNull() ?: 0
     }
 
+    /** Records the last relative timeout passed to [submitAndWaitTimeout] (seconds, nanos). */
+    var lastTimeoutArgs: Pair<Long, Long>? = null
+
+    override fun submitAndWaitTimeout(ring: CPointer<io_uring>, minComplete: Int, seconds: Long, nanos: Long): Int {
+        submitAndWaitCalls++
+        lastTimeoutArgs = seconds to nanos
+        return submitAndWaitResults.removeFirstOrNull() ?: 0
+    }
+
     override fun nextCqe(ring: CPointer<io_uring>, out: Cqe): Boolean {
         val c = cqeQueue.removeFirstOrNull() ?: return false
         out.userData = c.userData

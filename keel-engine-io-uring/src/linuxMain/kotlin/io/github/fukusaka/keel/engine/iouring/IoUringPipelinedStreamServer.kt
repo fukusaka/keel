@@ -208,6 +208,7 @@ internal class IoUringPipelinedStreamServer(
                 registeredBufferTable = bufferTable,
                 preAllocatedIndex = acceptRes,
                 nativeSocket = nativeSocket,
+                idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
@@ -221,6 +222,7 @@ internal class IoUringPipelinedStreamServer(
                 fixedFileRegistry = fileRegistry,
                 registeredBufferTable = bufferTable,
                 nativeSocket = nativeSocket,
+                idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
             )
         }
         val channel = IoUringPipelinedChannel(transport, logger)

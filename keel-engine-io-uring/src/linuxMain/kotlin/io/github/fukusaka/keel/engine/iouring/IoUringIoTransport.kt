@@ -19,6 +19,7 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -88,9 +89,16 @@ internal class IoUringIoTransport(
      */
     preAllocatedIndex: Int = -1,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /** Backed by this EventLoop's per-loop [DeadlineScheduler] (EventLoop-confined). */
+    override val eventLoopTimer: EventLoopTimer get() = eventLoop.deadlineScheduler
 
     /**
      * True when the kernel allocated the fixed-file slot itself
@@ -283,7 +291,14 @@ internal class IoUringIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            if (value && opened) armRecv()
+            if (value && opened) {
+                // The connection is now waiting to read → the read-side idle timeout
+                // applies (covers accept-to-first-byte, slowloris-silent, keep-alive idle).
+                armIdleTimeout()
+                armRecv()
+            } else if (!value) {
+                cancelIdleTimeout() // back-pressure: pause the read-idle timeout
+            }
         }
 
     private fun armRecv() {
@@ -302,6 +317,7 @@ internal class IoUringIoTransport(
                         // One buffer left the ring for this CQE; record it so
                         // the ring's `hasAvailable` reflects current occupancy.
                         ring.onConsumed()
+                        touchIdleTimeout() // progress: refresh the read-idle deadline
                         val bufId = keel_cqe_get_buf_id(flags).toInt()
                         val buf = wrappers!![bufId]
                         buf.reset()
@@ -418,8 +434,8 @@ internal class IoUringIoTransport(
 
         flushHadEagain = false
         flushBytesWritten = 0L
-        try {
-            return when (mode) {
+        val done = try {
+            when (mode) {
                 IoMode.FALLBACK_CQE -> flushDirectSend()
                 IoMode.CQE -> { flushCqe(); false }
                 IoMode.SEND_ZC -> { flushSendZc(); false }
@@ -429,6 +445,12 @@ internal class IoUringIoTransport(
             stats.recordFlush(flushHadEagain, flushBytesWritten)
             pendingWrites.clear()
         }
+        // A flush that did not complete synchronously means data is buffered for a
+        // peer whose receive window is full (slow-read) — start the write-idle clock.
+        // Drain progress refreshes it and a full drain cancels it, both via
+        // updatePendingBytes on the async send completion(s).
+        if (!done) armWriteIdleTimeout()
+        return done
     }
 
     // --- FALLBACK_CQE: direct send → EAGAIN → async SEND SQE ---
@@ -995,6 +1017,8 @@ internal class IoUringIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         if (multishotSlot >= 0) {
             eventLoop.cancelSqe(multishotSlot)
             multishotSlot = -1

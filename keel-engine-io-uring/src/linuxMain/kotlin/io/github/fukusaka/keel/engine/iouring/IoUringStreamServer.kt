@@ -130,7 +130,11 @@ internal class IoUringStreamServer(
             val bufferTable = workerGroup.bufferTableAt(wi)
             // Construct on the worker EventLoop pthread — same reason as IoUringEngine.connect.
             val transport = withContext(workerLoop) {
-                IoUringIoTransport(clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+                IoUringIoTransport(
+                    clientFd, workerLoop, capabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable,
+                    nativeSocket = nativeSocket,
+                    idleTimeoutMillis = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis,
+                )
             }
             val channel = IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
             bindConfig.initializeConnection(channel)

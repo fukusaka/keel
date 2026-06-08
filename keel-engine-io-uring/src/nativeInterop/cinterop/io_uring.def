@@ -565,3 +565,40 @@ static int keel_register_iowq_max_workers(struct io_uring *ring,
     vals[1] = unbounded;
     return io_uring_register_iowq_max_workers(ring, vals);
 }
+
+/* ====================================================================
+ * submit-and-wait with a relative timeout (deadline-driven wait)
+ *
+ * Submits all queued SQEs and waits for up to wait_nr completions or
+ * until the relative timeout (sec + nsec from now) elapses, whichever
+ * comes first. Backs the per-EventLoop idle-timeout mechanism: the loop
+ * computes the next connection deadline and bounds its io_uring_enter
+ * wait by it, so an idle connection's timer fires without an external
+ * wakeup.
+ *
+ * On kernels advertising IORING_FEAT_EXT_ARG (5.11+, always true for the
+ * kernels keel's io_uring features require) liburing passes the timeout
+ * via io_uring_enter's GETEVENTS arg — no timeout SQE is consumed and no
+ * sentinel CQE surfaces, so the caller drains real CQEs with
+ * io_uring_peek_cqe / io_uring_cqe_seen exactly as after a plain
+ * io_uring_submit_and_wait.
+ *
+ * Wrapper rationale: stack-allocates the `struct __kernel_timespec`
+ * (cinterop cannot pass it conveniently) and discards the `cqe_ptr`
+ * output (the CQEs stay in the ring for the existing drain loop) and the
+ * unused `sigmask`.
+ *
+ * Returns the io_uring_submit_and_wait_timeout result: the number of SQEs
+ * submitted on success, -ETIME if the timeout elapsed with no completion,
+ * or -errno on error.
+ * ==================================================================== */
+
+static int keel_submit_and_wait_timeout(struct io_uring *ring,
+                                        unsigned int wait_nr,
+                                        long sec, long nsec) {
+    struct io_uring_cqe *cqe = NULL;
+    struct __kernel_timespec ts;
+    ts.tv_sec = sec;
+    ts.tv_nsec = nsec;
+    return io_uring_submit_and_wait_timeout(ring, &cqe, wait_nr, &ts, NULL);
+}

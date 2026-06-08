@@ -40,12 +40,15 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.time.TimeSource
 import platform.posix.EAGAIN
 import platform.posix.EINTR
+import platform.posix.ETIME
 import platform.posix.errno
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
@@ -141,6 +144,13 @@ internal class IoUringEventLoop(
     private val ringSize: Int = DEFAULT_RING_SIZE,
     private val syscallOps: IoUringSyscallOps = PosixIoUringSyscallOps,
     private val ioUringRing: IoUringRing = PosixIoUringRing,
+    /**
+     * Engine-wide default idle (no-progress) timeout in milliseconds applied to
+     * connections on this EventLoop when a per-server [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis]
+     * / per-client [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis]
+     * override is `null`. `0` (default) disables it.
+     */
+    val idleTimeoutMillis: Long = 0,
 ) : CoroutineDispatcher() {
 
     // Arena for long-lived native allocations.
@@ -170,6 +180,22 @@ internal class IoUringEventLoop(
     // Lock-free MPSC queue for cross-thread task dispatch.
     // CAS-based enqueue (~5-10ns) vs mutex lock/unlock (~50-100ns).
     private val taskQueue = MpscQueue<Runnable>()
+
+    // Monotonic millisecond clock for connection deadlines. A relative origin
+    // (markNow at construction) keeps the values small and immune to wall-clock
+    // jumps.
+    private val timeOrigin = TimeSource.Monotonic.markNow()
+
+    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
+
+    /**
+     * Per-EventLoop deadline timer backing the idle-timeout seam. Transports on
+     * this loop arm / refresh / cancel idle deadlines through it ([eventLoopTimer]);
+     * [runIteration] bounds its `io_uring_submit_and_wait` wait by
+     * [DeadlineScheduler.nextDeadlineMillis] and fires due timers via
+     * [DeadlineScheduler.expireDue] after each wake. EventLoop-confined.
+     */
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
 
     // Pre-allocated drain buffer — reused every loop iteration to avoid
     // per-iteration heap allocation on the hot path.
@@ -991,10 +1017,20 @@ internal class IoUringEventLoop(
         // single io_uring_enter syscall. This halves the per-iteration
         // kernel entry count compared to separate submit + wait calls,
         // following the pattern used by tokio-uring and monoio.
-        val ret = ioUringRing.submitAndWait(ring.ptr, 1)
+        //
+        // When a connection deadline is pending, bound the wait by it so an
+        // idle connection's timer fires without an external wakeup; otherwise
+        // wait indefinitely (the permanent wakeup SQE still unblocks on dispatch).
+        val ret = submitAndWaitBoundedByDeadline()
         if (ret < 0) {
             val err = -ret
-            if (err == EINTR) return true
+            // EINTR (signal) and ETIME (deadline elapsed with no completion) are
+            // both non-fatal: fall through to drain (possibly nothing) and let
+            // expireDue() below service the due timers.
+            if (err == EINTR || err == ETIME) {
+                deadlineScheduler.expireDue(nowMillis())
+                return true
+            }
             logger.error { "io_uring_submit_and_wait() fatal error: errno=$err" }
             return false
         }
@@ -1093,7 +1129,29 @@ internal class IoUringEventLoop(
             releaseSlot(slot)
             cont.resume(res)
         }
+
+        // Service any connection deadline that came due while we waited or
+        // processed CQEs. Idempotent for already-fired / cancelled timers.
+        deadlineScheduler.expireDue(nowMillis())
         return true
+    }
+
+    /**
+     * Submits queued SQEs and waits for the next CQE, bounding the wait by the
+     * nearest pending connection deadline ([DeadlineScheduler.nextDeadlineMillis]).
+     * With no deadline the wait is unbounded ([IoUringRing.submitAndWait]); with
+     * one, it is capped so the idle timer fires on time even with no I/O event
+     * ([IoUringRing.submitAndWaitTimeout], which returns `-ETIME` on expiry).
+     */
+    private fun submitAndWaitBoundedByDeadline(): Int {
+        val nextDeadline = deadlineScheduler.nextDeadlineMillis()
+        if (nextDeadline == Long.MAX_VALUE) return ioUringRing.submitAndWait(ring.ptr, 1)
+        // Clamp to >= 0: a deadline already in the past polls without blocking
+        // (the expireDue() after the wake services it immediately).
+        val remainingMs = (nextDeadline - nowMillis()).coerceAtLeast(0)
+        val seconds = remainingMs / MILLIS_PER_SECOND
+        val nanos = (remainingMs % MILLIS_PER_SECOND) * NANOS_PER_MILLI
+        return ioUringRing.submitAndWaitTimeout(ring.ptr, 1, seconds, nanos)
     }
 
     private fun drainTasks() {
@@ -1167,6 +1225,10 @@ internal class IoUringEventLoop(
          * result (which is a byte count or negative errno).
          */
         private const val SEND_ZC_UNUSED = Int.MIN_VALUE
+
+        /** Conversion factors for splitting a millisecond deadline into the wrapper's (sec, nsec). */
+        private const val MILLIS_PER_SECOND = 1_000L
+        private const val NANOS_PER_MILLI = 1_000_000L
     }
 }
 
