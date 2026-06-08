@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 class DirectIoBuf private constructor(
     private val base: ByteBuffer,
     capacity: Int,
-) : AbstractIoBuf(capacity), NioByteBufferBacking {
+) : AbstractIoBuf(capacity), NioByteBufferBacking, ChunkBackedIoBuf {
 
     constructor(capacity: Int) : this(ByteBuffer.allocateDirect(capacity), capacity)
 
@@ -29,6 +29,15 @@ class DirectIoBuf private constructor(
      * stack. Non-null only while this buffer resides in the pool.
      */
     internal var nextLink: DirectIoBuf? = null
+
+    /**
+     * Chunk run-binding (pool-back-end state, alongside [nextLink]). Non-null
+     * when this buffer is a view carved from a [PooledChunk]; its [freeBacking]
+     * then returns the run instead of being a no-op. Fixed for the buffer's life
+     * and deliberately preserved across [resetForReuse].
+     */
+    override var chunkPool: PooledChunk? = null
+    override var chunkHandle: Long = 0L
 
     override fun writeByte(value: Byte) {
         base.put(writerIndex++, value)
@@ -94,9 +103,13 @@ class DirectIoBuf private constructor(
         base.limit(capacity)
     }
 
-    /** No-op: the direct [ByteBuffer] is GC-managed. */
+    /** Returns the run to the chunk when chunk-backed; otherwise a no-op (GC-managed). */
     override fun freeBacking() {
-        // ByteBuffer is GC-managed; nothing to free.
+        if (chunkPool != null) {
+            returnChunkRun()
+            return
+        }
+        // Plain direct ByteBuffer is GC-managed; nothing to free.
     }
 
     override fun resetForReuse() {
@@ -136,6 +149,29 @@ class DirectIoBuf private constructor(
         ): DirectIoBuf = DirectIoBuf(buffer, buffer.capacity()).also {
             it.owner = owner
             it.writerIndex = bytesWritten
+        }
+
+        /**
+         * Builds a `slice()` view over [backing] at [byteOffset] (length [length])
+         * carrying the chunk run-binding `(pooledChunk, handle)`. On final release
+         * [freeBacking] returns the run to [pooledChunk].
+         */
+        @OptIn(UnsafeIoBufApi::class)
+        internal fun chunkView(
+            backing: IoBuf,
+            byteOffset: Int,
+            length: Int,
+            pooledChunk: PooledChunk,
+            handle: Long,
+        ): DirectIoBuf {
+            val view = (backing as NioByteBufferBacking).unsafeNioByteBuffer.duplicate().apply {
+                position(byteOffset)
+                limit(byteOffset + length)
+            }.slice()
+            return DirectIoBuf(view, length).also {
+                it.chunkPool = pooledChunk
+                it.chunkHandle = handle
+            }
         }
     }
 }

@@ -45,6 +45,15 @@ class PooledDirectAllocator(
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun newBuffer(capacity: Int): IoBuf = DirectIoBuf(capacity)
 
+    @Suppress("IoBufLeak") // Carved view returns ownership to caller
+    override fun newChunkView(
+        backing: IoBuf,
+        byteOffset: Int,
+        length: Int,
+        pooledChunk: PooledChunk,
+        handle: Long,
+    ): IoBuf = DirectIoBuf.chunkView(backing, byteOffset, length, pooledChunk, handle)
+
     override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
     override fun createChild(maxTotalBytes: Long): PooledAllocator =
