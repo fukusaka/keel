@@ -151,6 +151,7 @@ class NwEngine(
             // assigned port is known.
             val serverChannel = NwStreamServer(
                 lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory, config.idleReadPolicy,
+                config.idleTimeoutMillis,
             )
 
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -304,7 +305,10 @@ class NwEngine(
                     // internally until the connection reaches the ready state.
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger)
+                    val transport = NwIoTransport(
+                        conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                    )
                     val channel = NwPipelinedChannel(transport, logger)
                     // Listener-level TLS: connections arrive already TLS-encrypted,
                     // so skip per-connection TLS initialization.
@@ -367,11 +371,21 @@ class NwEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.idleTimeoutMillis)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.idleTimeoutMillis)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
+    /**
+     * Effective per-connection idle timeout: the per-server / per-client override
+     * when present, else the engine-wide [IoEngineConfig.idleTimeoutMillis].
+     */
+    private fun effectiveIdleTimeout(override: Long?): Long = override ?: config.idleTimeoutMillis
+
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
@@ -404,7 +418,10 @@ class NwEngine(
 
         logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger)
+        val transport = NwIoTransport(
+            conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+        )
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
@@ -442,6 +459,7 @@ class NwEngine(
             )
             val serverChannel = NwStreamServer(
                 lsnr, address, config.allocator, bindConfig, config.loggerFactory, this@NwEngine.config.idleReadPolicy,
+                this@NwEngine.config.idleTimeoutMillis,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
 
@@ -478,7 +496,11 @@ class NwEngine(
     /**
      * Creates a client connection to a filesystem Unix-domain socket path.
      */
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
         validateUnixPath(address.path)
@@ -503,7 +525,10 @@ class NwEngine(
 
         logger.debug { "Connected to UDS ${address.path}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
-        val transport = NwIoTransport(conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger)
+        val transport = NwIoTransport(
+            conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+        )
         return NwPipelinedChannel(transport, channelLogger, address, address)
     }
 
@@ -556,7 +581,10 @@ class NwEngine(
                     nw_connection_set_queue(conn, connQueue)
                     nw_connection_start(conn)
 
-                    val transport = NwIoTransport(conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger)
+                    val transport = NwIoTransport(
+                        conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                    )
                     val channel = NwPipelinedChannel(transport, logger)
                     config.initializeConnection(channel)
                     pipelineInitializer(channel)
