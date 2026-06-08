@@ -4,7 +4,16 @@ plugins {
 
 kotlin {
     js(IR) {
-        nodejs()
+        nodejs {
+            testTask {
+                useMocha {
+                    // Default Mocha per-test timeout is 2 s. The real-socket idle-timeout
+                    // integration tests measure real wall-clock intervals (a connection is
+                    // force-closed only after its idle timeout elapses), which exceeds 2 s.
+                    timeout = "30s"
+                }
+            }
+        }
     }
 
     sourceSets {
