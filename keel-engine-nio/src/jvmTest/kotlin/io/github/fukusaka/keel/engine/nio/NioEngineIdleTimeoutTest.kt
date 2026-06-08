@@ -45,16 +45,19 @@ class NioEngineIdleTimeoutTest {
 
     @Test
     fun `a client active within the idle window is not closed`() = runTest {
-        val engine = NioEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
+        // A generous timeout vs. a small trickle gap (≈13×) so a slow CI runner's
+        // scheduling / GC jitter cannot stretch a single inter-write gap past the
+        // timeout and produce a spurious idle close.
+        val engine = NioEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = ACTIVE_IDLE_MS))
         val server = engine.bindPipeline("127.0.0.1", 0) { } // reads absorb the trickle
         val port = (server.localAddress as InetSocketAddress).port
         val client = connectRawClient(port)
-        // Trickle a byte every GAP_MS (< IDLE_MS) for longer than IDLE_MS. Each read
-        // refreshes the deadline, so the connection must NOT be idle-closed even though
-        // the activity spans past IDLE_MS.
-        repeat(6) { // 6 × 160 ms = 960 ms > IDLE_MS (500 ms)
+        // Trickle a byte every ACTIVE_GAP_MS (<< ACTIVE_IDLE_MS) for longer than the
+        // timeout. Each read refreshes the deadline, so the connection must NOT be
+        // idle-closed even though the activity spans past ACTIVE_IDLE_MS.
+        repeat(16) { // 16 × 150 ms = 2400 ms > ACTIVE_IDLE_MS (2000 ms)
             rawWrite(client, "x")
-            Thread.sleep(GAP_MS)
+            Thread.sleep(ACTIVE_GAP_MS)
         }
         // Still open: a short read times out (no data on the empty pipeline) rather
         // than returning EOF (which would mean idle-closed despite the read activity).
@@ -115,6 +118,8 @@ class NioEngineIdleTimeoutTest {
     private companion object {
         const val IDLE_MS = 500L
         const val GAP_MS = 160L // < IDLE_MS keeps the read-idle deadline alive
+        const val ACTIVE_IDLE_MS = 2_000L // generous vs. ACTIVE_GAP_MS for CI jitter tolerance
+        const val ACTIVE_GAP_MS = 150L // ≈13× under ACTIVE_IDLE_MS
         const val CHUNK_BYTES = 1 shl 20 // 1 MiB per response — exceeds the socket buffer
         const val DRAIN_CHUNK = 1 shl 16 // 64 KiB per drain read
         const val MAX_DRAIN_READS = 200 // bounded drain so a non-closing bug fails, not hangs
