@@ -116,6 +116,14 @@ internal class KqueueEventLoop(
      * the effective size is captured per connection on the transport.
      */
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    /**
+     * Engine-wide default idle (no-progress) timeout in milliseconds
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]) for
+     * connections on this loop (`0` = disabled). Fallback when a connection's
+     * [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis] /
+     * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
+     */
+    val idleTimeoutMillis: Long = 0,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
 ) : CoroutineDispatcher(), KqueueSuspendRegister {
 

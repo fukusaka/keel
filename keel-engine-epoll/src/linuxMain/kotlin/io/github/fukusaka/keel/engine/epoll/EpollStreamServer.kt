@@ -103,7 +103,8 @@ internal class EpollStreamServer(
                     val localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     val workerLoop = workerGroup.next()
                     val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
-                    val transport = EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
+                    val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
+                    val transport = EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
                     val channel = EpollPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
                     )

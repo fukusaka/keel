@@ -103,6 +103,7 @@ class KqueueEngine(
         config.loggerFactory.logger("KqueueEventLoop"),
         config.allocator,
         config.readBufferSize,
+        config.idleTimeoutMillis,
     )
     private var closed = false
 
@@ -208,14 +209,17 @@ class KqueueEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions, config.readBufferSize)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.readBufferSize)
+        is InetSocketAddress ->
+            connectInet(address, config.socketOptions, config.readBufferSize, config.idleTimeoutMillis)
+        is UnixSocketAddress ->
+            connectUnix(address, config.socketOptions, config.readBufferSize, config.idleTimeoutMillis)
     }
 
     private suspend fun connectUnix(
         address: UnixSocketAddress,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
@@ -242,7 +246,8 @@ class KqueueEngine(
 
         logger.debug { "Connected to $address" }
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
+        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
@@ -250,10 +255,11 @@ class KqueueEngine(
         address: InetSocketAddress,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip, address.port, socketOptions, readBufferSizeOverride)
+            connectToIp(ip, address.port, socketOptions, readBufferSizeOverride, idleTimeoutOverride)
         }
     }
 
@@ -262,6 +268,7 @@ class KqueueEngine(
         port: Int,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
@@ -289,7 +296,8 @@ class KqueueEngine(
         val localAddr = nativeSocketOps.getLocalAddress(fd)
         logger.debug { "Connected to $remoteAddr" }
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs)
+        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

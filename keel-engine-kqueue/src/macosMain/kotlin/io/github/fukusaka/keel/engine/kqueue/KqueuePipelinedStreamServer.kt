@@ -122,7 +122,8 @@ internal class KqueuePipelinedStreamServer(
 
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop) {
         val rbs = config.readBufferSize ?: loop.readBufferSize
-        val transport = KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs)
+        val ito = config.idleTimeoutMillis ?: loop.idleTimeoutMillis
+        val transport = KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
         val channel = KqueuePipelinedChannel(transport, logger)
         config.initializeConnection(channel)
         pipelineInitializer(channel)

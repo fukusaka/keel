@@ -24,15 +24,19 @@ import kotlin.concurrent.AtomicInt
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
  * @param readBufferSize Per-read buffer size propagated to each EventLoop
  *   (see [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
+ * @param idleTimeoutMillis Engine-wide idle (no-progress) timeout propagated to
+ *   each EventLoop (see [io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]).
  */
 internal class KqueueEventLoopGroup(
     size: Int,
     logger: Logger,
     allocator: BufferAllocator,
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    idleTimeoutMillis: Long = 0,
 ) {
 
-    private val loops = Array(size) { KqueueEventLoop(logger, allocator.createForEventLoop(), readBufferSize) }
+    private val loops =
+        Array(size) { KqueueEventLoop(logger, allocator.createForEventLoop(), readBufferSize, idleTimeoutMillis) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */
