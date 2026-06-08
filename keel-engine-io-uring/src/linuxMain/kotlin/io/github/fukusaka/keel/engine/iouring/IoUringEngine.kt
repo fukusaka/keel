@@ -139,6 +139,7 @@ class IoUringEngine(
             allocator = config.allocator,
             capabilities = resolvedCapabilities,
             readBufferSize = config.readBufferSize,
+            idleTimeoutMillis = config.idleTimeoutMillis,
         )
 
         bossLoop.start()
@@ -202,11 +203,15 @@ class IoUringEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.idleTimeoutMillis)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.idleTimeoutMillis)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
@@ -246,20 +251,33 @@ class IoUringEngine(
         val fileRegistry = workerGroup.fileRegistryAt(wi)
         val bufferTable = workerGroup.bufferTableAt(wi)
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+            IoUringIoTransport(
+                fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable,
+                nativeSocket = nativeSocket,
+                idleTimeoutMillis = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
+            )
         }
         logger.debug { "Connected to $address" }
         return IoUringPipelinedChannel(transport, logger, address, null)
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): Channel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip, address.port, socketOptions)
+            connectToIp(ip, address.port, socketOptions, idleTimeoutOverride)
         }
     }
 
-    private suspend fun connectToIp(ip: IpAddress, port: Int, socketOptions: SocketOptions): Channel {
+    private suspend fun connectToIp(
+        ip: IpAddress,
+        port: Int,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
         nativeSocketOps.applySocketOptions(fd, socketOptions)
         val wi = workerGroup.nextIndex()
@@ -317,7 +335,11 @@ class IoUringEngine(
         // `FixedFileRegistry.register(fd)` (invoked from the transport
         // constructor's property initialiser) runs on the submitter task.
         val transport = withContext(workerLoop) {
-            IoUringIoTransport(fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable, nativeSocket = nativeSocket)
+            IoUringIoTransport(
+                fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable,
+                nativeSocket = nativeSocket,
+                idleTimeoutMillis = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
+            )
         }
         logger.debug { "Connected to $remoteAddr" }
         return IoUringPipelinedChannel(transport, logger, remoteAddr, localAddr)
