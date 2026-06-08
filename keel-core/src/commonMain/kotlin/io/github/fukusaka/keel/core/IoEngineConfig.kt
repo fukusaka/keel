@@ -95,6 +95,24 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          which the codec layer relies on to address bytes
  *                          across a chain of equal-sized receive segments
  *                          without per-segment bookkeeping.
+ * @property idleTimeoutMillis Per-connection idle (no-progress) timeout in
+ *                          milliseconds: if no bytes are read from a connection
+ *                          for this long, the connection is closed. This is the
+ *                          transport-level, protocol-agnostic time-axis defence
+ *                          against slowloris / stalled peers — a peer that
+ *                          connects then sends nothing (or trickles bytes below
+ *                          any size cap) is otherwise held indefinitely. The
+ *                          deadline is refreshed on every successful read, so an
+ *                          actively progressing connection never trips it. `0`
+ *                          (default) disables it. [BindConfig.idleTimeoutMillis]
+ *                          (per-server) and [ConnectConfig.idleTimeoutMillis]
+ *                          (per-client) override it; captured per connection at
+ *                          accept / connect and fixed for that connection's life.
+ *
+ *                          **Currently honoured by the epoll and kqueue engines.
+ *                          The other engines (io_uring / nio / netty / nodejs /
+ *                          nwconnection) ignore it for now; it is wired into them
+ *                          in follow-up changes.**
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
@@ -103,9 +121,11 @@ data class IoEngineConfig(
     val resolver: DnsResolver = DnsResolver.SYSTEM,
     val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.DETECT_PEER_CLOSE,
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    val idleTimeoutMillis: Long = 0,
 ) {
     init {
         requireValidReadBufferSize(readBufferSize)
+        requireValidIdleTimeout(idleTimeoutMillis)
     }
 
     companion object {
@@ -130,6 +150,14 @@ data class IoEngineConfig(
             require(size and (size - 1) == 0) {
                 "readBufferSize must be a power of two, was $size"
             }
+        }
+
+        /**
+         * Validates an idle timeout in milliseconds: non-negative, where `0` means
+         * disabled. Shared by [IoEngineConfig], [BindConfig], and [ConnectConfig].
+         */
+        internal fun requireValidIdleTimeout(millis: Long) {
+            require(millis >= 0) { "idleTimeoutMillis must be >= 0 (0 disables), was $millis" }
         }
     }
 }
