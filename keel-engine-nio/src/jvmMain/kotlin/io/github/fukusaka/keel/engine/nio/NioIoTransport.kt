@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -80,9 +81,16 @@ internal class NioIoTransport(
      * thread, where the allocator is owned) so a non-default size is pooled.
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
+
+    /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /** Backed by this EventLoop's per-loop [DeadlineScheduler] (EventLoop-confined). */
+    override val eventLoopTimer: EventLoopTimer get() = eventLoop.deadlineScheduler
 
     // One-time guard for lazy pool-class registration (see [readBufferSize]).
     // Touched only on the EventLoop thread (the read path).
@@ -115,8 +123,14 @@ internal class NioIoTransport(
             // lifetime of the transport — flipping `readEnabled` only
             // controls whether [onReadable] delivers the bytes or
             // releases them silently.
-            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
-                armRead()
+            if (value && opened) {
+                // The connection is now waiting to read → the read-side idle timeout
+                // applies (covers accept-to-first-byte, slowloris, keep-alive idle);
+                // policy-independent.
+                armIdleTimeout()
+                if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE) armRead()
+            } else if (!value) {
+                cancelIdleTimeout() // back-pressure: pause the read-idle timeout
             }
         }
 
@@ -146,6 +160,7 @@ internal class NioIoTransport(
         when {
             n > 0 -> {
                 buf.writerIndex += n
+                touchIdleTimeout() // progress: refresh the read-idle deadline
                 // Always deliver via [onRead] in both modes. In
                 // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
                 // only reachable when `readEnabled = true` (otherwise
@@ -218,6 +233,8 @@ internal class NioIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
@@ -300,6 +317,10 @@ internal class NioIoTransport(
 
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
+        // A stalled write (OP_WRITE re-arm) means the peer is not draining its receive
+        // window — start the write-idle (slow-read) clock. Drain progress refreshes it
+        // and a full drain cancels it, both via updatePendingBytes.
+        armWriteIdleTimeout()
         eventLoop.setInterestCallback(
             selectionKey,
             SelectionKey.OP_WRITE,

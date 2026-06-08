@@ -91,6 +91,7 @@ class NioEngine(
             eventLoopLogger,
             config.allocator,
             config.readBufferSize,
+            config.idleTimeoutMillis,
         )
     private var closed = false
 
@@ -187,14 +188,17 @@ class NioEngine(
     override suspend fun connect(address: SocketAddress): Channel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): Channel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions, config.readBufferSize)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.readBufferSize)
+        is InetSocketAddress ->
+            connectInet(address, config.socketOptions, config.readBufferSize, config.idleTimeoutMillis)
+        is UnixSocketAddress ->
+            connectUnix(address, config.socketOptions, config.readBufferSize, config.idleTimeoutMillis)
     }
 
     private suspend fun connectUnix(
         address: UnixSocketAddress,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         check(!closed) { "Engine is closed" }
         address.requireFilesystemOnly(
@@ -246,6 +250,7 @@ class NioEngine(
             workerLoop.allocator,
             config.idleReadPolicy,
             readBufferSizeOverride ?: workerLoop.readBufferSize,
+            idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
         )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
@@ -254,10 +259,17 @@ class NioEngine(
         address: InetSocketAddress,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         check(!closed) { "Engine is closed" }
         return address.connectWithFallback(config.resolver) { ip ->
-            connectToIp(ip.toCanonicalString(), address.port, socketOptions, readBufferSizeOverride)
+            connectToIp(
+                ip.toCanonicalString(),
+                address.port,
+                socketOptions,
+                readBufferSizeOverride,
+                idleTimeoutOverride,
+            )
         }
     }
 
@@ -266,6 +278,7 @@ class NioEngine(
         port: Int,
         socketOptions: SocketOptions,
         readBufferSizeOverride: Int?,
+        idleTimeoutOverride: Long?,
     ): Channel {
         val socketChannel = SocketChannel.open()
         socketChannel.configureBlocking(false)
@@ -320,6 +333,7 @@ class NioEngine(
             workerLoop.allocator,
             config.idleReadPolicy,
             readBufferSizeOverride ?: workerLoop.readBufferSize,
+            idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
         )
         return NioPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }

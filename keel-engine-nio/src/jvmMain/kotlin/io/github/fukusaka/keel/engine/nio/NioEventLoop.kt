@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
@@ -67,12 +68,30 @@ internal class NioEventLoop(
      * the effective size is captured per connection on the transport.
      */
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    /**
+     * Engine-wide default idle (no-progress) timeout in milliseconds
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]) for
+     * connections on this loop (`0` = disabled). Fallback when a connection's
+     * [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis] /
+     * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
+     */
+    val idleTimeoutMillis: Long = 0,
 ) : CoroutineDispatcher() {
 
     internal val selector: Selector = Selector.open()
     private val regLock = Any()
     private val pendingRegistrations = mutableListOf<ChannelRegistration>()
     private val taskQueue = ConcurrentLinkedQueue<Runnable>()
+
+    /**
+     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
+     * Declared before the EventLoop thread starts so [loop] never observes it null.
+     * Confined to this EventLoop thread: transports schedule / touch / cancel through
+     * it, [loop] drives the `Selector.select` timeout from
+     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
+     * [DeadlineScheduler.expireDue] after each wake.
+     */
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
 
     @Volatile
     private var running = true
@@ -311,13 +330,24 @@ internal class NioEventLoop(
             val n = if (taskQueue.isNotEmpty()) {
                 selector.selectNow()
             } else {
-                selector.select()
+                // Block until events / wakeup / the next connection deadline.
+                val next = deadlineScheduler.nextDeadlineMillis()
+                if (next == Long.MAX_VALUE) {
+                    selector.select()
+                } else {
+                    val remaining = next - nowMillis()
+                    if (remaining <= 0L) selector.selectNow() else selector.select(remaining)
+                }
             }
             if (n > 0) {
                 processSelectedKeys()
             }
+            // Fire any connection idle/read deadlines that elapsed during the wait.
+            deadlineScheduler.expireDue(nowMillis())
         }
     }
+
+    private fun nowMillis(): Long = System.nanoTime() / 1_000_000L
 
     /** Runs all queued coroutine continuations on this thread. */
     private fun drainTasks() {
@@ -489,9 +519,10 @@ internal class NioEventLoopGroup(
     logger: Logger,
     allocator: BufferAllocator,
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    idleTimeoutMillis: Long = 0,
 ) {
     private val loops = Array(size) { i ->
-        NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop(), readBufferSize)
+        NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop(), readBufferSize, idleTimeoutMillis)
     }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 
