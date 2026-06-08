@@ -26,6 +26,24 @@ class PooledChunk internal constructor(
 ) {
     private val subpageHeads = arrayOfNulls<PoolSubpage>(poolChunk.sizeClasses.nSubpages)
 
+    /**
+     * Outstanding carves (live + cached views) referencing this chunk. Mirrors the
+     * extra references on [backing] beyond the arena's own hold, so `liveCarves == 0`
+     * means the chunk is fully idle and reclaimable. Maintained on the single
+     * owning thread (per-EventLoop), like the rest of the allocator's bookkeeping.
+     */
+    internal var liveCarves: Int = 0
+        private set
+
+    /** True when no view references this chunk — safe to reclaim. */
+    internal val isIdle: Boolean get() = liveCarves == 0
+
+    /** Retains the backing for a freshly carved view and counts the carve. */
+    internal fun retainForCarve() {
+        backing.retain()
+        liveCarves++
+    }
+
     /** Allocates a run of [classSize] bytes; returns the handle or [PoolChunk.NO_HANDLE]. */
     internal fun carveRun(classSize: Int): Long = poolChunk.allocateRun(classSize)
 
@@ -56,6 +74,7 @@ class PooledChunk internal constructor(
             poolChunk.free(handle, head = null)
         }
         backing.release()
+        liveCarves--
     }
 
     private fun subpageHead(sizeIdx: Int): PoolSubpage =

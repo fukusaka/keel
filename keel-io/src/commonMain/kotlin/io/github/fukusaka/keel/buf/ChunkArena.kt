@@ -39,6 +39,9 @@ internal class ChunkArena(
 ) {
     private val chunks = ArrayList<PooledChunk>()
 
+    /** Number of resident chunks (test/diagnostic observability). */
+    internal val chunkCount: Int get() = chunks.size
+
     /**
      * Carves a buffer of size class [sizeIdx] from a chunk and returns it as a
      * view. Small classes (`sizeIdx <= smallMaxSizeIdx`) come from a subpage
@@ -61,7 +64,41 @@ internal class ChunkArena(
 
     private fun makeView(pc: PooledChunk, handle: Long, classSize: Int): IoBuf {
         val byteOffset = pc.poolChunk.byteOffset(handle)
-        pc.backing.retain()
+        pc.retainForCarve()
         return newChunkView(pc.backing, byteOffset, classSize, pc, handle)
+    }
+
+    /**
+     * Frees the backing of fully-idle chunks (no live or cached carve), keeping at
+     * most [warmReserve] idle chunks resident to avoid alloc/free thrashing. Called
+     * from the per-EventLoop trim pass after cached views have returned their runs.
+     *
+     * This is a keel simplification, **not** Netty's chunk lifecycle. Netty has no
+     * count-based reserve: its `PoolChunkList` ring (`qInit`/`q000`..`q100`) destroys
+     * a chunk the moment it becomes fully free in `q000` (`prevList == null`), while
+     * `qInit`'s self-loop keeps low-peak-usage chunks resident — an emergent, not
+     * fixed-count, warm set. The flat "free idle beyond [warmReserve]" rule here
+     * approximates that without a usage-threshold ring; porting the ring is a later
+     * phase.
+     */
+    fun reclaim(warmReserve: Int) {
+        var idleKept = 0
+        var i = 0
+        while (i < chunks.size) {
+            val pc = chunks[i]
+            if (pc.isIdle) {
+                if (idleKept < warmReserve) {
+                    idleKept++
+                    i++
+                } else {
+                    // Drop the arena's own reference: refCount 1 -> 0 -> freeBacking
+                    // releases the chunk's memory. Safe because no view references it.
+                    pc.backing.release()
+                    chunks.removeAt(i)
+                }
+            } else {
+                i++
+            }
+        }
     }
 }
