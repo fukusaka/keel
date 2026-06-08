@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.suspendCancellableCoroutine
 import io.netty.buffer.ByteBuf
@@ -79,9 +80,20 @@ internal class NettyIoTransport(
     internal val nettyChannel: NettyNativeChannel,
     allocator: BufferAllocator,
     private val idleReadPolicy: IdleReadPolicy,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
+
+    /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /**
+     * Backed by this channel's Netty [EventLoop] via [NettyEventLoopTimer]. The
+     * timer fires inline on the same EventLoop thread that drives [channelRead] /
+     * [flush], so no cross-thread hand-off is needed to close an idle connection.
+     */
+    override val eventLoopTimer: EventLoopTimer = NettyEventLoopTimer(nettyChannel.eventLoop())
 
     // --- Read path ---
 
@@ -127,8 +139,14 @@ internal class NettyIoTransport(
             // of the transport — flipping `readEnabled` only controls
             // whether [channelRead] delivers bytes to [onRead] or
             // releases them silently.
-            if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE && value && opened) {
-                armRead()
+            if (value && opened) {
+                // The connection is now waiting to read → the read-side idle timeout
+                // applies (covers accept-to-first-byte, slowloris-silent, keep-alive
+                // idle); policy-independent.
+                armIdleTimeout()
+                if (idleReadPolicy == IdleReadPolicy.PRESERVE_BACKPRESSURE) armRead()
+            } else if (!value) {
+                cancelIdleTimeout() // back-pressure: pause the read-idle timeout
             }
         }
 
@@ -186,6 +204,7 @@ internal class NettyIoTransport(
             // DETECT_PEER_CLOSE previously documented.
 
             val readable = byteBuf.readableBytes()
+            touchIdleTimeout() // progress: refresh the read-idle deadline
             if (byteBuf.nioBufferCount() == 1) {
                 // Engine-direct zero-copy wrap: ownership of byteBuf
                 // transfers to the wrapper; refcount-zero release frees
@@ -346,6 +365,13 @@ internal class NettyIoTransport(
 
             if (lastFuture != null) {
                 lastFlushFuture = lastFuture
+                // If the writeAndFlush did not complete synchronously, the bytes are
+                // sitting in Netty's outbound buffer because the peer's receive window
+                // is full (slow-read) — start the write-idle clock. The listener's
+                // updatePendingBytes drains it: a full drain (pendingBytes == 0)
+                // cancels the timer, a partial drain refreshes it. A synchronously
+                // completed write (fast peer) skips arming entirely.
+                if (!lastFuture.isDone) armWriteIdleTimeout()
                 lastFuture.addListener {
                     for (pw in writes) pw.buf.release()
                     updatePendingBytes(-totalBytes)
@@ -406,6 +432,8 @@ internal class NettyIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
