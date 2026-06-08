@@ -9,6 +9,7 @@ import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
+import io_uring.keel_submit_and_wait_timeout
 import io_uring.keel_peek_cqe
 import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_setup_defer_taskrun
@@ -45,6 +46,9 @@ internal object PosixIoUringRing : IoUringRing {
 
     override fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int =
         io_uring_submit_and_wait(ring, minComplete.toUInt())
+
+    override fun submitAndWaitTimeout(ring: CPointer<io_uring>, minComplete: Int, seconds: Long, nanos: Long): Int =
+        keel_submit_and_wait_timeout(ring, minComplete.toUInt(), seconds, nanos)
 
     override fun nextCqe(ring: CPointer<io_uring>, out: Cqe): Boolean {
         val cqe = keel_peek_cqe(ring) ?: return false

@@ -109,6 +109,23 @@ internal interface IoUringRing {
     fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int
 
     /**
+     * Like [submitAndWait], but bounds the wait by a relative timeout of
+     * [seconds] + [nanos] from now (`io_uring_submit_and_wait_timeout`). Backs
+     * the deadline-driven idle-timeout wait: the loop computes the next
+     * connection deadline and passes it here so an idle connection's timer can
+     * fire without an external wakeup. On modern kernels the timeout travels via
+     * `io_uring_enter`'s GETEVENTS arg (no timeout SQE consumed, no sentinel CQE
+     * surfaced), so the caller drains real CQEs with [nextCqe] exactly as after
+     * [submitAndWait].
+     *
+     * @return the number of SQEs submitted (`>= 0`) on success; `-ETIME` if the
+     *   timeout elapsed with no completion (non-fatal — the caller services due
+     *   deadlines and continues); `-EINTR` on signal interruption (retry); any
+     *   other negative `-errno` is fatal.
+     */
+    fun submitAndWaitTimeout(ring: CPointer<io_uring>, minComplete: Int, seconds: Long, nanos: Long): Int
+
+    /**
      * Drains the next available completion queue entry into [out] and
      * marks it consumed (`io_uring_peek_cqe` + `io_uring_cqe_seen`).
      * [out] is a caller-owned carrier reused across calls so the drain
