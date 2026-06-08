@@ -82,8 +82,35 @@ abstract class PooledAllocator(
 
     private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf) }
 
+    /**
+     * Per-EventLoop chunk back-end. A cache miss for a pooled class carves a
+     * run/subpage view out of a large chunk instead of a per-buffer system
+     * allocation. The size-class freelist sits in front, so [ChunkArena.carve]
+     * only runs on misses (off the hot path). Each allocator instance — and each
+     * per-EventLoop child from [createChild] — owns its own arena.
+     */
+    private val chunkArena: ChunkArena = ChunkArena(
+        sizeClasses = sizeClasses,
+        newChunkBacking = { newBuffer(CHUNK_SIZE) },
+        newChunkView = ::newChunkView,
+    )
+
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
+
+    /**
+     * Builds a chunk-backed view (platform seam): a non-owning view over
+     * [backing] at [byteOffset] of [length] bytes carrying the run-binding
+     * `(pooledChunk, handle)`. Its `freeBacking` returns the run to the chunk
+     * (see [ChunkBackedIoBuf]). Native = a pointer view; JVM = a `slice()`.
+     */
+    protected abstract fun newChunkView(
+        backing: IoBuf,
+        byteOffset: Int,
+        length: Int,
+        pooledChunk: PooledChunk,
+        handle: Long,
+    ): IoBuf
 
     /**
      * Constructs the per-size-class freelist. The default implementation honours
@@ -174,8 +201,11 @@ abstract class PooledAllocator(
                     recycled.owner = poolOwner
                     return recycled
                 }
-                // Pool miss: allocate at the class size so it can be pooled on release.
-                val fresh = newBuffer(classSize)
+                // Pool miss: carve a class-sized view from a chunk (not a per-buffer
+                // system allocation). The view's capacity is the class size, so it
+                // pools on release like any cached buffer; its freeBacking returns
+                // the run to the chunk when the pool is full.
+                val fresh = chunkArena.carve(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
                 return fresh
             }

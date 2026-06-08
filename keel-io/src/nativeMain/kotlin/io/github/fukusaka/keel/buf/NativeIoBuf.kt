@@ -28,7 +28,7 @@ class NativeIoBuf private constructor(
     private val base: CPointer<ByteVar>,
     capacity: Int,
     private val ownsMemory: Boolean,
-) : AbstractIoBuf(capacity), NativePointerAccess {
+) : AbstractIoBuf(capacity), NativePointerAccess, ChunkBackedIoBuf {
 
     constructor(capacity: Int) : this(
         nativeHeap.allocArray<ByteVar>(capacity),
@@ -47,6 +47,15 @@ class NativeIoBuf private constructor(
      * Always cleared on [resetForReuse].
      */
     internal var nextLink: NativeIoBuf? = null
+
+    /**
+     * Chunk run-binding (pool-back-end state, alongside [nextLink]). Non-null
+     * when this buffer is a view carved from a [PooledChunk]; its [freeBacking]
+     * then returns the run instead of freeing memory. Fixed for the buffer's
+     * life and deliberately preserved across [resetForReuse].
+     */
+    override var chunkPool: PooledChunk? = null
+    override var chunkHandle: Long = 0L
 
     private var freed: Boolean = false
 
@@ -95,6 +104,10 @@ class NativeIoBuf private constructor(
     override fun getByte(index: Int): Byte = base[index]
 
     override fun freeBacking() {
+        if (chunkPool != null) {
+            returnChunkRun()
+            return
+        }
         if (ownsMemory && !freed) {
             freed = true
             nativeHeap.free(base.rawValue)
@@ -130,6 +143,27 @@ class NativeIoBuf private constructor(
         ): NativeIoBuf = NativeIoBuf(ptr, capacity, ownsMemory = false).also {
             it.owner = owner
             it.writerIndex = bytesWritten
+        }
+
+        /**
+         * Builds a view over [backing] at [byteOffset] (length [length]) carrying
+         * the chunk run-binding `(pooledChunk, handle)`. The view does not own its
+         * memory; on final release [freeBacking] returns the run to [pooledChunk].
+         */
+        @OptIn(ExperimentalForeignApi::class)
+        internal fun chunkView(
+            backing: IoBuf,
+            byteOffset: Int,
+            length: Int,
+            pooledChunk: PooledChunk,
+            handle: Long,
+        ): NativeIoBuf {
+            @Suppress("UnsafeCallOnNullableType")
+            val ptr = ((backing as NativePointerAccess).unsafePointer + byteOffset)!!
+            return NativeIoBuf(ptr, length, ownsMemory = false).also {
+                it.chunkPool = pooledChunk
+                it.chunkHandle = handle
+            }
         }
     }
 }
