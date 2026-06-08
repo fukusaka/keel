@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -53,7 +54,14 @@ internal class KqueueIoTransport(
      * thread, where the allocator is owned) so a non-default size is pooled.
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator), KqueueEventLoop.FdReadyListener {
+
+    /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /** Backed by this EventLoop's per-loop [DeadlineScheduler] (EventLoop-confined). */
+    override val eventLoopTimer: EventLoopTimer get() = eventLoop.deadlineScheduler
 
     // One-time guard for lazy pool-class registration (see [readBufferSize]).
     // Touched only on the EventLoop thread (the read path).
@@ -117,7 +125,17 @@ internal class KqueueIoTransport(
             // [init]). The setter only needs to re-arm if the dispatch path
             // stopped re-registering due to back-pressure (data arrived while
             // readEnabled was false).
-            if (value && opened) armRead()
+            if (value && opened) {
+                // Connection is now waiting to read → the read-side idle timeout
+                // applies (accept-to-first-byte, slowloris, keep-alive idle). A
+                // write-only client that never enables reads is never idle-timed.
+                armIdleTimeout()
+                armRead()
+            } else if (!value) {
+                // Back-pressure: pause the idle timeout while the app deliberately
+                // stops reading, rather than close a connection we asked to go quiet.
+                cancelIdleTimeout()
+            }
         }
 
     init {
@@ -166,6 +184,7 @@ internal class KqueueIoTransport(
         when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
                 buf.writerIndex += result.bytes
+                touchIdleTimeout() // progress: refresh the idle deadline
                 onRead?.invoke(buf) ?: buf.release()
                 armRead()
             }
@@ -239,6 +258,7 @@ internal class KqueueIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

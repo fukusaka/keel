@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.plus
@@ -53,7 +54,14 @@ internal class EpollIoTransport(
      * thread, where the allocator is owned) so a non-default size is pooled.
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator), EpollEventLoop.FdReadyListener {
+
+    /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /** Backed by this EventLoop's per-loop [DeadlineScheduler] (EventLoop-confined). */
+    override val eventLoopTimer: EventLoopTimer get() = eventLoop.deadlineScheduler
 
     // One-time guard for lazy pool-class registration (see [readBufferSize]).
     // Touched only on the EventLoop thread (the read path).
@@ -114,7 +122,18 @@ internal class EpollIoTransport(
             // Read is armed at construction for EOF detection. The setter
             // only re-arms if the dispatch path stopped re-registering due to
             // back-pressure (data arrived while readEnabled was false).
-            if (value && opened) armRead()
+            if (value && opened) {
+                // The connection is now waiting to read, so the read-side idle
+                // timeout applies (covers accept-to-first-byte, slowloris, and
+                // keep-alive idle). A write-only client that never enables reads
+                // is never idle-timed.
+                armIdleTimeout()
+                armRead()
+            } else if (!value) {
+                // Back-pressure: the app stopped reading deliberately, so pause the
+                // idle timeout rather than close a connection we asked to go quiet.
+                cancelIdleTimeout()
+            }
         }
 
     init {
@@ -164,6 +183,7 @@ internal class EpollIoTransport(
         when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
             is ReadResult.Bytes -> {
                 buf.writerIndex += result.bytes
+                touchIdleTimeout() // progress: refresh the idle deadline
                 onRead?.invoke(buf) ?: buf.release()
                 armRead()
             }
@@ -233,6 +253,7 @@ internal class EpollIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        cancelIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0

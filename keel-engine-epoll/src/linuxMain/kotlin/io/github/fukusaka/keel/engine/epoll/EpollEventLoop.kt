@@ -10,7 +10,9 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.time.TimeSource
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -592,15 +594,29 @@ internal class EpollEventLoop(
      *    tasks are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
+    // --- Idle/read deadline timer (progress-bound mechanism) ---
+
+    private val timeOrigin = TimeSource.Monotonic.markNow()
+
+    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
+
+    /**
+     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
+     * Confined to this EventLoop thread: transports on this loop schedule / touch /
+     * cancel idle deadlines through it, [loop] drives the `epoll_wait` timeout from
+     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
+     * [DeadlineScheduler.expireDue] after each wake.
+     */
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
+
     internal fun loop() {
         eventLoopThread = pthread_self()
         while (running.value != 0) {
             drainTasks()
 
-            // Non-blocking poll if tasks arrived during drainTasks(),
-            // otherwise block until events or wakeup.
-            // epoll_wait timeout: 0 = immediate, -1 = indefinite block.
-            val timeout = if (hasTasksPending()) 0 else EpollSyscallOps.TIMEOUT_BLOCK
+            // Non-blocking poll if tasks arrived during drainTasks(), else block
+            // until events / wakeup / the next connection deadline (whichever first).
+            val timeout = computeWaitTimeout()
             val n = syscallOps.waitEvents(epFd, eventBuffer, timeout)
             if (n < 0) {
                 // Negative return encodes -errno per EpollSyscallOps contract.
@@ -654,6 +670,27 @@ internal class EpollEventLoop(
                     dispatchReady(fd, Interest.WRITE, eofFlag)
                 }
             }
+            // Fire any connection idle/read deadlines that elapsed during the wait.
+            deadlineScheduler.expireDue(nowMillis())
+        }
+    }
+
+    /**
+     * Computes the `epoll_wait` timeout (ms): `0` if tasks are pending (non-blocking
+     * poll), otherwise the time until the nearest connection deadline, or
+     * [EpollSyscallOps.TIMEOUT_BLOCK] (-1) to block indefinitely when no deadline is
+     * scheduled. A non-positive remaining time clamps to `0` so an already-elapsed
+     * deadline is serviced on the next [DeadlineScheduler.expireDue] without blocking.
+     */
+    private fun computeWaitTimeout(): Int {
+        if (hasTasksPending()) return 0
+        val next = deadlineScheduler.nextDeadlineMillis()
+        if (next == Long.MAX_VALUE) return EpollSyscallOps.TIMEOUT_BLOCK
+        val remaining = next - nowMillis()
+        return when {
+            remaining <= 0L -> 0
+            remaining > Int.MAX_VALUE.toLong() -> Int.MAX_VALUE
+            else -> remaining.toInt()
         }
     }
 

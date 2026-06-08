@@ -10,7 +10,9 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.time.TimeSource
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -612,14 +614,29 @@ internal class KqueueEventLoop(
      *    are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
+    // --- Idle/read deadline timer (progress-bound mechanism) ---
+
+    private val timeOrigin = TimeSource.Monotonic.markNow()
+
+    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
+
+    /**
+     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
+     * Confined to this EventLoop thread: transports on this loop schedule / touch /
+     * cancel idle deadlines through it, [loop] drives the `kevent` timeout from
+     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
+     * [DeadlineScheduler.expireDue] after each wake.
+     */
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
+
     internal fun loop() {
         eventLoopThread = pthread_self()
         while (running.value != 0) {
             drainTasks()
 
-            // Non-blocking poll if tasks arrived during drainTasks(),
-            // otherwise block until events or wakeup.
-            val timeout = if (hasTasksPending()) 0L else KqueueSyscallOps.TIMEOUT_BLOCK
+            // Non-blocking poll if tasks arrived during drainTasks(), else block
+            // until events / wakeup / the next connection deadline (whichever first).
+            val timeout = computeWaitTimeout()
             val n = syscallOps.waitEvents(kqFd, eventBuffer, timeout)
             if (n < 0) {
                 // Negative return encodes -errno per KqueueSyscallOps contract.
@@ -654,7 +671,23 @@ internal class KqueueEventLoop(
                 val eofFlag = (ev.flags and EV_EOF) != 0
                 dispatchReady(fd, interest, eofFlag)
             }
+            // Fire any connection idle/read deadlines that elapsed during the wait.
+            deadlineScheduler.expireDue(nowMillis())
         }
+    }
+
+    /**
+     * Computes the `kevent` timeout (ms): `0` if tasks are pending (non-blocking
+     * poll), otherwise the time until the nearest connection deadline, or
+     * [KqueueSyscallOps.TIMEOUT_BLOCK] to block indefinitely when none is scheduled.
+     * A non-positive remaining time clamps to `0` so an already-elapsed deadline is
+     * serviced on the next [DeadlineScheduler.expireDue] without blocking.
+     */
+    private fun computeWaitTimeout(): Long {
+        if (hasTasksPending()) return 0L
+        val next = deadlineScheduler.nextDeadlineMillis()
+        if (next == Long.MAX_VALUE) return KqueueSyscallOps.TIMEOUT_BLOCK
+        return (next - nowMillis()).coerceAtLeast(0L)
     }
 
     /**

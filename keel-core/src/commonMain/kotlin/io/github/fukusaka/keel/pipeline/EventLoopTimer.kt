@@ -20,7 +20,7 @@ package io.github.fukusaka.keel.pipeline
  *
  * **Thread safety**: none — confined to the owning EventLoop thread.
  */
-internal interface EventLoopTimer {
+interface EventLoopTimer {
     /**
      * Schedules [task] to run once, [delayMillis] from now, on the owning
      * EventLoop. Returns a [TimerHandle] for refreshing ([TimerHandle.touch]) or
@@ -37,7 +37,7 @@ internal interface EventLoopTimer {
  * A handle to a timer scheduled via [EventLoopTimer.schedule]. EventLoop-confined,
  * like the scheduler that produced it.
  */
-internal interface TimerHandle {
+interface TimerHandle {
     /**
      * Pushes the deadline back to `now + delayMillis`, restarting the countdown.
      * Called on every progress event (e.g. each successful read) so an actively

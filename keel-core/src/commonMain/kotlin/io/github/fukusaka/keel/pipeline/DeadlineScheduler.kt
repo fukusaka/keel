@@ -27,7 +27,7 @@ package io.github.fukusaka.keel.pipeline
  *
  * @param nowMillis monotonic current-time source in milliseconds.
  */
-internal class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
+class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
     /** Intrusive timer node; also the public [TimerHandle]. */
     private class Node(val delayMillis: Long, val task: () -> Unit) : TimerHandle {
         var deadline: Long = 0

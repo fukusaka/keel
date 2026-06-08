@@ -95,6 +95,66 @@ abstract class AbstractIoTransport(
     override var onRead: ((IoBuf) -> Unit)? = null
     override var onReadClosed: (() -> Unit)? = null
 
+    // --- Idle (no-progress) timeout — time-axis defence (see EventLoopTimer) ---
+
+    /**
+     * The owning EventLoop's timer, or `null` if this engine does not yet support
+     * deadline timeouts. Engine subclasses that own a [DeadlineScheduler] (or wrap
+     * a native scheduler) override this; the default leaves idle timeouts inert, so
+     * an unwired engine silently ignores [idleTimeoutMillis] rather than failing.
+     */
+    protected open val eventLoopTimer: EventLoopTimer? get() = null
+
+    /**
+     * Effective idle (no-progress) read timeout in milliseconds for this
+     * connection (`0` = disabled). Engine subclasses override it from the resolved
+     * per-connection config value.
+     */
+    protected open val idleTimeoutMillis: Long get() = 0
+
+    private var idleHandle: TimerHandle? = null
+
+    /**
+     * Arms the read-side idle timeout if configured (> 0) and supported (the engine
+     * provides an [eventLoopTimer]). Idempotent — a no-op if already armed, disabled,
+     * or unsupported. Engine subclasses call this when the connection starts waiting
+     * to read (so the accept-to-first-byte window is covered). **EventLoop thread.**
+     */
+    protected fun armIdleTimeout() {
+        if (idleHandle != null) return
+        val timer = eventLoopTimer ?: return
+        val millis = idleTimeoutMillis
+        if (millis <= 0) return
+        idleHandle = timer.schedule(millis) { onIdleTimeout() }
+    }
+
+    /**
+     * Refreshes the idle deadline — called by engine subclasses on every read that
+     * delivers bytes, so an actively progressing connection never fires. No-op when
+     * the timeout is not armed. **EventLoop thread.**
+     */
+    protected fun touchIdleTimeout() {
+        idleHandle?.touch()
+    }
+
+    /**
+     * Cancels and clears the idle timeout. Called when the connection stops waiting
+     * to read (back-pressure) and on close/teardown. Idempotent. **EventLoop thread.**
+     */
+    protected fun cancelIdleTimeout() {
+        idleHandle?.cancel()
+        idleHandle = null
+    }
+
+    private fun onIdleTimeout() {
+        idleHandle = null // already fired and removed by the scheduler
+        // Mirror the fatal-read path: notify the pipeline so it tears the channel
+        // down (notifyInactive + close); fall back to a direct close for a raw
+        // transport that has no pipeline wired.
+        val cb = onReadClosed
+        if (cb != null) cb() else close()
+    }
+
     // --- Write path callbacks ---
 
     override var onFlushComplete: (() -> Unit)? = null
