@@ -72,6 +72,14 @@ internal class ChunkArena(
      * Frees the backing of fully-idle chunks (no live or cached carve), keeping at
      * most [warmReserve] idle chunks resident to avoid alloc/free thrashing. Called
      * from the per-EventLoop trim pass after cached views have returned their runs.
+     *
+     * This is a keel simplification, **not** Netty's chunk lifecycle. Netty has no
+     * count-based reserve: its `PoolChunkList` ring (`qInit`/`q000`..`q100`) destroys
+     * a chunk the moment it becomes fully free in `q000` (`prevList == null`), while
+     * `qInit`'s self-loop keeps low-peak-usage chunks resident — an emergent, not
+     * fixed-count, warm set. The flat "free idle beyond [warmReserve]" rule here
+     * approximates that without a usage-threshold ring; porting the ring is a later
+     * phase.
      */
     fun reclaim(warmReserve: Int) {
         var idleKept = 0

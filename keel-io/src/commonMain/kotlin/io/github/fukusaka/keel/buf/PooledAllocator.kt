@@ -82,10 +82,13 @@ abstract class PooledAllocator(
 
     // Cache-trim bookkeeping (per-EventLoop, single-thread — same writer contract as
     // registerPoolSize). Kept off the COW Ladder because they mutate on the hot path.
-    /** Cached entries per size class (push ++ / pop --), tracking each freelist's size. */
+    /** Cached entries per size class (push ++ / pop --); exposed for test/diagnostics. */
     private val cachedCount = IntArray(sizeClasses.nSizes)
 
-    /** Cache hits per size class since the last trim — the working set the trim keeps. */
+    /**
+     * Cache hits per size class since the last trim — Netty's per-cache `allocations`
+     * counter. The trim budget keeps `slotCap - this` (see [trim]).
+     */
     private val allocsSinceTrim = IntArray(sizeClasses.nSizes)
 
     /** Allocations remaining until the next trim pass. */
@@ -267,22 +270,31 @@ abstract class PooledAllocator(
     internal fun trimNow() = trim()
 
     /**
-     * Cache-trim pass: for each size class, evict the cached entries beyond its
-     * recent working set (`cachedCount - hits since last trim`), returning their
-     * runs to their chunks, then reclaim now-idle chunks (keeping [WARM_RESERVE]).
-     * Hot classes keep their entries (hits ≥ cached → nothing evicted); cold
-     * classes drain. Without this, cached views pin chunks forever and the
-     * footprint never shrinks.
+     * Cache-trim pass: for each size class, evict the entries its recent activity
+     * does not justify keeping, returning their runs to their chunks, then reclaim
+     * now-idle chunks (keeping [WARM_RESERVE]).
+     *
+     * The per-class budget is Netty `PoolThreadCache.MemoryRegionCache.trim`'s
+     * formula verbatim: `free = capacity - allocationsSinceTrim` (here
+     * `slotCap[idx] - allocsSinceTrim[idx]`), then poll up to `free` entries until
+     * the freelist is empty. A hot class (hits ≥ its slot capacity) keeps every
+     * entry; a cold class (few/no hits) drains toward empty. Keying the budget on
+     * the *capacity* — not the current cached count — is what matches Netty: a
+     * partially-filled cold cache is drained fully rather than retained.
+     *
+     * Without this, cached views pin their chunks forever and the footprint only
+     * grows.
      */
     private fun trim() {
         trimCountdown = TRIM_INTERVAL
         val l = ladder
         for (idx in 0 until sizeClasses.nSizes) {
             val pool = l.pools[idx] ?: continue
-            var evict = cachedCount[idx] - allocsSinceTrim[idx]
+            // Netty MemoryRegionCache.trim: free = size (capacity) - allocations.
+            var evict = l.slotCap[idx] - allocsSinceTrim[idx]
             allocsSinceTrim[idx] = 0
             while (evict > 0) {
-                val buf = pool.pop() ?: break
+                val buf = pool.pop() ?: break // freelist empty → stop, like Netty's free()
                 cachedCount[idx]--
                 (buf as AbstractIoBuf).freeBacking() // chunk-carved view → returns its run
                 evict--
