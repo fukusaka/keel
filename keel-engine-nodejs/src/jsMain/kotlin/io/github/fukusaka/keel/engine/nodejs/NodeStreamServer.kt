@@ -34,6 +34,8 @@ internal class NodeStreamServer(
     private val allocator: BufferAllocator,
     private val bindConfig: BindConfig,
     private val channelLogger: Logger,
+    /** Engine-wide default idle timeout; the per-server [BindConfig.idleTimeoutMillis] overrides it. */
+    private val idleTimeoutMillis: Long,
 ) : KeelStreamServer {
 
     private var _active = true
@@ -89,7 +91,11 @@ internal class NodeStreamServer(
             socket.remotePort?.let { port -> InetSocketAddress(host, port) }
         }
 
-        val transport = NodeIoTransport(socket, allocator)
+        val transport = NodeIoTransport(
+            socket,
+            allocator,
+            idleTimeoutMillis = bindConfig.idleTimeoutMillis ?: idleTimeoutMillis,
+        )
         val channel = NodePipelinedChannel(transport, channelLogger, remoteAddr, localAddress)
         bindConfig.initializeConnection(channel)
         return channel

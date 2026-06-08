@@ -101,6 +101,7 @@ class NodeEngine(
                     config.allocator,
                     bindConfig,
                     channelLogger,
+                    config.idleTimeoutMillis,
                 )
                 srv.on("connection") { socket: dynamic ->
                     serverChannel.onConnection(socket as Socket)
@@ -138,6 +139,7 @@ class NodeEngine(
                     config.allocator,
                     bindConfig,
                     channelLogger,
+                    config.idleTimeoutMillis,
                 )
 
                 // Wire connection events to the StreamServer's accept queue
@@ -214,7 +216,11 @@ class NodeEngine(
             val typedSocket = socket.unsafeCast<Socket>()
             applySocketOptions(typedSocket, config.childSocketOptions)
             val channelLogger = this.channelLogger
-            val transport = NodeIoTransport(typedSocket, this.config.allocator)
+            val transport = NodeIoTransport(
+                typedSocket,
+                this.config.allocator,
+                idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+            )
             val channel = NodePipelinedChannel(
                 transport,
                 channelLogger,
@@ -261,7 +267,11 @@ class NodeEngine(
                 typedSocket.remotePort?.let { p -> InetSocketAddress(h, p) }
             }
             val channelLogger = this.channelLogger
-            val transport = NodeIoTransport(typedSocket, this.config.allocator)
+            val transport = NodeIoTransport(
+                typedSocket,
+                this.config.allocator,
+                idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+            )
             val channel = NodePipelinedChannel(
                 transport,
                 channelLogger,
@@ -294,11 +304,21 @@ class NodeEngine(
     override suspend fun connect(address: SocketAddress): KeelChannel = connect(address, ConnectConfig.DEFAULT)
 
     override suspend fun connect(address: SocketAddress, config: ConnectConfig): KeelChannel = when (address) {
-        is InetSocketAddress -> connectInet(address, config.socketOptions)
-        is UnixSocketAddress -> connectUnix(address, config.socketOptions)
+        is InetSocketAddress -> connectInet(address, config.socketOptions, config.idleTimeoutMillis)
+        is UnixSocketAddress -> connectUnix(address, config.socketOptions, config.idleTimeoutMillis)
     }
 
-    private suspend fun connectUnix(address: UnixSocketAddress, socketOptions: SocketOptions): KeelChannel {
+    /**
+     * Effective per-connection idle timeout: the per-server / per-client override
+     * when present, else the engine-wide [IoEngineConfig.idleTimeoutMillis].
+     */
+    private fun effectiveIdleTimeout(override: Long?): Long = override ?: config.idleTimeoutMillis
+
+    private suspend fun connectUnix(
+        address: UnixSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): KeelChannel {
         check(!closed) { "Engine is closed" }
         rejectAbstractOnNonLinux(address)
 
@@ -310,7 +330,11 @@ class NodeEngine(
 
             socket.once("connect") { _: dynamic ->
                 val channelLogger = this@NodeEngine.channelLogger
-                val transport = NodeIoTransport(socket, config.allocator)
+                val transport = NodeIoTransport(
+                    socket,
+                    config.allocator,
+                    idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+                )
                 val channel = NodePipelinedChannel(
                     transport,
                     channelLogger,
@@ -346,7 +370,11 @@ class NodeEngine(
         }
     }
 
-    private suspend fun connectInet(address: InetSocketAddress, socketOptions: SocketOptions): KeelChannel {
+    private suspend fun connectInet(
+        address: InetSocketAddress,
+        socketOptions: SocketOptions,
+        idleTimeoutOverride: Long?,
+    ): KeelChannel {
         check(!closed) { "Engine is closed" }
 
         val host = address.resolveFirst(config.resolver).toCanonicalString()
@@ -361,7 +389,11 @@ class NodeEngine(
                     socket.localPort?.let { p -> InetSocketAddress(h, p) }
                 }
                 val channelLogger = this@NodeEngine.channelLogger
-                val transport = NodeIoTransport(socket, config.allocator)
+                val transport = NodeIoTransport(
+                    socket,
+                    config.allocator,
+                    idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+                )
                 val channel = NodePipelinedChannel(
                     transport,
                     channelLogger,
