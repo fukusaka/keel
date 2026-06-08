@@ -85,6 +85,9 @@ class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
      * EventLoop blocks indefinitely (no idle wake-ups).
      */
     fun nextDeadlineMillis(): Long {
+        // Fast path for the common "no timeouts configured" case: avoid allocating
+        // a values iterator on every EventLoop iteration (this runs in the hot loop).
+        if (buckets.isEmpty()) return Long.MAX_VALUE
         var min = Long.MAX_VALUE
         for (bucket in buckets.values) {
             val head = bucket.head ?: continue
@@ -99,6 +102,9 @@ class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
      * propagates to the EventLoop after the node has already been unlinked.
      */
     fun expireDue(now: Long) {
+        // Fast path: nothing scheduled — avoid the values-iterator allocation that
+        // would otherwise occur on every EventLoop wake (this runs in the hot loop).
+        if (buckets.isEmpty()) return
         for (bucket in buckets.values) {
             while (true) {
                 val head = bucket.head ?: break
