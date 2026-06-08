@@ -266,21 +266,22 @@ internal class SizeClasses(
         return intArrayOf(index, log2Group, log2Delta, nDelta, isMultiPageSize, isSubpage, log2DeltaLookup)
     }
 
-    private companion object {
+    companion object {
+        /** log2 of the 16-byte quantum (smallest size-class delta). Also used by [PoolChunk]. */
         const val LOG2_QUANTUM = 4
-        const val LOG2_SIZE_CLASS_GROUP = 2
-        const val LOG2_MAX_LOOKUP_SIZE = 12
+        private const val LOG2_SIZE_CLASS_GROUP = 2
+        private const val LOG2_MAX_LOOKUP_SIZE = 12
 
-        const val NUM_COLUMNS = 7
-        const val LOG2GROUP_IDX = 1
-        const val LOG2DELTA_IDX = 2
-        const val NDELTA_IDX = 3
-        const val PAGESIZE_IDX = 4
-        const val SUBPAGE_IDX = 5
-        const val LOG2_DELTA_LOOKUP_IDX = 6
+        private const val NUM_COLUMNS = 7
+        private const val LOG2GROUP_IDX = 1
+        private const val LOG2DELTA_IDX = 2
+        private const val NDELTA_IDX = 3
+        private const val PAGESIZE_IDX = 4
+        private const val SUBPAGE_IDX = 5
+        private const val LOG2_DELTA_LOOKUP_IDX = 6
 
-        const val NO = 0
-        const val YES = 1
+        private const val NO = 0
+        private const val YES = 1
 
         fun newIdx2SizeTab(sizeClasses: Array<IntArray>, nSizes: Int, directMemoryCacheAlignment: Int): IntArray {
             val table = IntArray(nSizes)
