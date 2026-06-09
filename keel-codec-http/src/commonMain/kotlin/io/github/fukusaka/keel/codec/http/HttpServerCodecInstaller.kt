@@ -34,19 +34,24 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   installed [HttpRequestDecoder]; defaults to
  *   [HttpHeaderLimitsConfig.DEFAULT] (100-header cap).
  * @param headerTimeoutMillis time budget from the first request byte to the
- *   complete request head. When `> 0`, a [RequestDeadlineHandler] is inserted
- *   right after the decoder to force-close a slow-header (slowloris) peer — the
- *   codec-layer completion-deadline the transport idle timeout cannot enforce.
- *   `0` (default) disables it.
+ *   complete request head. When `> 0` (with [requestTimeoutMillis]), a
+ *   [RequestDeadlineHandler] is inserted right after the decoder to force-close a
+ *   slow-header (slowloris) peer — the codec-layer completion-deadline the transport
+ *   idle timeout cannot enforce. `0` (default) disables it.
+ * @param requestTimeoutMillis time budget from the first request byte to the
+ *   complete request (head + body) — an absolute ceiling that force-closes a
+ *   slow-body peer. `0` (default) disables it. Installed via the same
+ *   [RequestDeadlineHandler].
  */
 public fun PipelinedChannel.addHttp1ServerCodec(
     aggregateBody: Boolean = true,
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
     headerTimeoutMillis: Long = 0,
+    requestTimeoutMillis: Long = 0,
 ) {
     pipeline.addLast("decoder", HttpRequestDecoder(headerLimits))
-    if (headerTimeoutMillis > 0) {
-        pipeline.addLast("request-deadline", RequestDeadlineHandler(headerTimeoutMillis))
+    if (headerTimeoutMillis > 0 || requestTimeoutMillis > 0) {
+        pipeline.addLast("request-deadline", RequestDeadlineHandler(headerTimeoutMillis, requestTimeoutMillis))
     }
     pipeline.addLast("encoder", HttpResponseEncoder())
     if (aggregateBody) {

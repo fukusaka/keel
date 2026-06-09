@@ -13,76 +13,77 @@ import io.github.fukusaka.keel.pipeline.TimerHandle
  * emits [HttpRequestHead] (head complete) and [HttpBodyEnd] (request complete) as
  * downstream messages, but "request started" is only visible at the raw-read level
  * inside the decoder. A downstream [RequestDeadlineHandler] consumes this event to
- * arm the header-complete deadline. Handlers that do not care propagate it
- * unchanged (the default `onUserEvent` behaviour).
+ * arm its deadlines. Handlers that do not care propagate it unchanged (the default
+ * `onUserEvent` behaviour).
  */
 object HttpRequestStarted
 
 /**
- * Enforces the **header-complete deadline** — the codec-layer defence against
- * slow-header (classic slowloris) trickle attacks that the transport idle timeout
- * cannot stop (each trickled byte refreshes an inactivity timer, but not an
+ * Enforces absolute **completion deadlines** on the request — the codec-layer
+ * defence against trickle attacks (slow-header / slow-body) that the transport idle
+ * timeout cannot stop (each trickled byte refreshes an inactivity timer, but not an
  * absolute completion deadline).
  *
- * Placed downstream of [HttpRequestDecoder], it observes the request lifecycle:
- * - [HttpRequestStarted] (user-event) → **arm** a [headerTimeoutMillis] deadline;
- * - [HttpRequestHead] (message) → the head arrived in time → **disarm**;
- * - the deadline elapsing → the head never completed → **force-close** the channel.
+ * Placed downstream of [HttpRequestDecoder], it observes the request lifecycle and
+ * arms two independent deadlines, both starting at [HttpRequestStarted]:
+ * - **header-complete** ([headerTimeoutMillis]) — disarmed by [HttpRequestHead];
+ *   bounds first-byte → complete head (classic slowloris).
+ * - **request-total** ([requestTimeoutMillis]) — disarmed by [HttpBodyEnd]; a hard
+ *   ceiling on first-byte → complete request (slow-body). It is a generous absolute
+ *   bound; the fine-grained body defence (a minimum-throughput rate floor that
+ *   distinguishes a legitimate slow upload from an attack) is a separate concern.
  *
- * The deadline is *absolute* (scheduled via [io.github.fukusaka.keel.pipeline.PipelinedChannel.scheduleDeadline],
- * not refreshed by reads), so a 1-byte-per-second header trickle still trips it.
- * The timer is backed by the same per-EventLoop scheduler as the idle timeout and
- * fires on the EventLoop thread, where this handler also runs.
+ * Either deadline elapsing **force-closes** the channel. The deadlines are
+ * *absolute* (scheduled via [io.github.fukusaka.keel.pipeline.PipelinedChannel.scheduleDeadline],
+ * not refreshed by reads), so a 1-byte-per-second trickle still trips them. The
+ * timers are backed by the same per-EventLoop scheduler as the idle timeout and
+ * fire on the EventLoop thread, where this handler also runs.
  *
- * **Stateful, per-connection**: holds the in-flight deadline handle and must not be
- * shared between channels. `0` (or any non-positive) [headerTimeoutMillis] disables
- * it — the handler then propagates every event untouched.
+ * **Stateful, per-connection**: holds the in-flight deadline handles and must not be
+ * shared between channels. A `<= 0` budget disables that deadline; with both
+ * disabled the handler propagates every event untouched.
  *
- * @param headerTimeoutMillis time budget from the first request byte to the
- *   complete request head; `<= 0` disables enforcement.
+ * @param headerTimeoutMillis budget from the first request byte to the complete
+ *   request head; `<= 0` disables the header deadline.
+ * @param requestTimeoutMillis budget from the first request byte to the complete
+ *   request (head + body); `<= 0` disables the request-total deadline.
  */
-class RequestDeadlineHandler(private val headerTimeoutMillis: Long) : InboundHandler {
+class RequestDeadlineHandler(
+    private val headerTimeoutMillis: Long,
+    private val requestTimeoutMillis: Long = 0,
+) : InboundHandler {
 
-    // In-flight header deadline, or null when no request head is pending. Touched
-    // only on the EventLoop thread (onUserEvent / onRead / onInactive / the timer
-    // task all run there).
+    // In-flight deadlines, or null when not armed. Touched only on the EventLoop
+    // thread (onUserEvent / onRead / onInactive / the timer tasks all run there).
     private var headerDeadline: TimerHandle? = null
+    private var requestDeadline: TimerHandle? = null
 
     // Guards the "deadline not enforceable" warning to once per connection.
     private var noTimerWarned = false
 
     override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
-        if (event === HttpRequestStarted && headerTimeoutMillis > 0) {
-            // Re-arm defensively: a prior deadline should already be cancelled by the
-            // matching HttpRequestHead, but cancel any stale one before replacing it.
+        if (event === HttpRequestStarted) {
+            // Both deadlines start when the request begins. A prior handle should be
+            // cancelled already by its disarm message, but cancel defensively.
             headerDeadline?.cancel()
-            headerDeadline = ctx.channel.scheduleDeadline(headerTimeoutMillis) {
-                // The request head did not complete within the budget — a slow-header
-                // peer holding the connection open. Reclaim it (force-close), the same
-                // active-reclaim policy as the idle timeout.
-                headerDeadline = null
-                ctx.channel.close()
-            }
-            // A configured deadline that cannot be scheduled (the engine wires no
-            // EventLoop timer) leaves the connection unprotected. Surface that once
-            // rather than silently disabling a security control.
-            if (headerDeadline == null && !noTimerWarned) {
-                noTimerWarned = true
-                ctx.channel.logger.warn {
-                    "header-complete deadline (${headerTimeoutMillis}ms) is configured but not enforced: " +
-                        "this channel's engine provides no EventLoop timer"
-                }
-            }
+            requestDeadline?.cancel()
+            headerDeadline = arm(ctx, headerTimeoutMillis, "header-complete") { headerDeadline = null }
+            requestDeadline = arm(ctx, requestTimeoutMillis, "request-total") { requestDeadline = null }
         }
         ctx.propagateUserEvent(event)
     }
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-        // The head arrived within the budget — disarm. (Body / request-total
-        // deadlines are a later phase; this handler bounds only the head.)
-        if (msg is HttpRequestHead) {
-            headerDeadline?.cancel()
-            headerDeadline = null
+        // Disarm each deadline when its phase completes in time.
+        when (msg) {
+            is HttpRequestHead -> {
+                headerDeadline?.cancel()
+                headerDeadline = null
+            }
+            is HttpBodyEnd -> {
+                requestDeadline?.cancel()
+                requestDeadline = null
+            }
         }
         ctx.propagateRead(msg)
     }
@@ -90,6 +91,36 @@ class RequestDeadlineHandler(private val headerTimeoutMillis: Long) : InboundHan
     override fun onInactive(ctx: PipelineHandlerContext) {
         headerDeadline?.cancel()
         headerDeadline = null
+        requestDeadline?.cancel()
+        requestDeadline = null
         ctx.propagateInactive()
+    }
+
+    /**
+     * Schedules a [millis] deadline that force-closes the channel on elapse (the same
+     * active-reclaim policy as the idle timeout); [clearField] nulls the stored handle
+     * before the close. Returns `null` (deadline disabled) when [millis] `<= 0`, and
+     * warns once if a positive budget cannot be scheduled (the engine wires no
+     * EventLoop timer) rather than silently disabling a security control.
+     */
+    private inline fun arm(
+        ctx: PipelineHandlerContext,
+        millis: Long,
+        label: String,
+        crossinline clearField: () -> Unit,
+    ): TimerHandle? {
+        if (millis <= 0) return null
+        val handle = ctx.channel.scheduleDeadline(millis) {
+            clearField()
+            ctx.channel.close()
+        }
+        if (handle == null && !noTimerWarned) {
+            noTimerWarned = true
+            ctx.channel.logger.warn {
+                "$label deadline (${millis}ms) is configured but not enforced: " +
+                    "this channel's engine provides no EventLoop timer"
+            }
+        }
+        return handle
     }
 }
