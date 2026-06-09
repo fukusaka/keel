@@ -9,6 +9,8 @@ import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Server-side HTTP request body decompression handler (`Content-Encoding`).
@@ -27,7 +29,7 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *    request head — the downstream handler sees the request as if the
  *    client had sent it uncompressed (decoded length is unknown until
  *    [DecoderSession.finish] reports `FINISHED`).
- * 4. **Enforces** layered zip-bomb defence — five independent gates,
+ * 4. **Enforces** layered zip-bomb defence — six independent gates,
  *    each cheap and each closing a different escape:
  *
  *    - **L1: `Content-Length` pre-reject** at handler entry. If the
@@ -58,11 +60,22 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *      the *Multi-token* note below). Closes: multi-stage decompression
  *      bombs whose small outer body, after the first inflate, expands
  *      into a body the second inflate then makes massive.
+ *    - **L6: per-request CPU-burn time cap** ([decompressionTimeBudgetMillis],
+ *      default 0 = off): `TimeBudgetExceeded` once the cumulative wall-clock
+ *      spent inside the decoder for one request passes the budget. Closes:
+ *      the *time* escape the size / ratio gates leave open — a crafted
+ *      stream (e.g. a flood of empty / sync-flush deflate blocks delivered
+ *      chunked) keeps decoded output small and the ratio low (so L2 / L3
+ *      never fire) while burning CPU on the EventLoop thread. The decoder
+ *      runs synchronously there, so a `scheduleDeadline` timer cannot
+ *      interrupt an in-progress `update`; the budget is instead checked
+ *      *between* decoder calls, bounding overrun to one bounded call.
  *
  *    The gates are independent: L1 fires on header parse only, L2 / L3
  *    fire on every drain, L4 is a property of the buffer the decoder is
- *    handed, L5 is a property of the codec-lookup step. A defender does
- *    not need to know which one will trip to be safe.
+ *    handed, L5 is a property of the codec-lookup step, L6 bounds the
+ *    decoder's cumulative time. A defender does not need to know which one
+ *    will trip to be safe.
  * 5. **Applies** [unknownEncodingPolicy] when the encoding is not
  *    registered in [registry] — default
  *    [UnknownEncodingPolicy.UnsupportedMediaType] (HTTP 415).
@@ -130,9 +143,18 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *   limit checks. Higher = fewer emit cycles + larger emit size, lower
  *   = tighter per-call cap. Default 8 KiB matches `CompressionHandler` /
  *   Netty `JdkZlibEncoder` emit chunk size.
+ * @param decompressionTimeBudgetMillis cumulative wall-clock cap (ms) on
+ *   the time spent inside the decoder per request — the CPU-burn defence
+ *   (L6 in the table above). Default 0 ([DEFAULT_TIME_BUDGET_MILLIS],
+ *   disabled): unlike the size / ratio caps, a sensible value depends on
+ *   the host CPU and the largest legitimate decompression, so it is
+ *   opt-in. A positive value force-aborts with `TimeBudgetExceeded` once
+ *   exceeded; `0` skips the clock read entirely (off-path requests pay
+ *   nothing).
  * @throws IllegalArgumentException if [decompressionLimit] or [ratioLimit]
  *   is below 1 (their opt-outs are [Long.MAX_VALUE] / [Int.MAX_VALUE]), if
- *   [ratioBurst] is negative, or if [scratchCapacity] is not positive.
+ *   [ratioBurst] or [decompressionTimeBudgetMillis] is negative, or if
+ *   [scratchCapacity] is not positive.
  */
 public class HttpRequestDecompressionHandler(
     private val registry: CompressionRegistry,
@@ -142,6 +164,7 @@ public class HttpRequestDecompressionHandler(
     private val ratioBurst: Int = DEFAULT_RATIO_BURST,
     private val unknownEncodingPolicy: UnknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType,
     private val scratchCapacity: Int = SCRATCH_CAPACITY,
+    private val decompressionTimeBudgetMillis: Long = DEFAULT_TIME_BUDGET_MILLIS,
 ) : DuplexHandler {
 
     init {
@@ -163,6 +186,10 @@ public class HttpRequestDecompressionHandler(
         }
         require(scratchCapacity > 0) {
             "HttpRequestDecompressionHandler.scratchCapacity must be > 0 (got $scratchCapacity)"
+        }
+        require(decompressionTimeBudgetMillis >= 0) {
+            "HttpRequestDecompressionHandler.decompressionTimeBudgetMillis must be >= 0 " +
+                "(0 disables the CPU-burn time cap; got $decompressionTimeBudgetMillis)"
         }
     }
 
@@ -192,6 +219,15 @@ public class HttpRequestDecompressionHandler(
     private var bytesIn: Long = 0
     private var bytesOut: Long = 0
     private var ratioBurstRemaining: Int = 0
+
+    // L6 CPU-burn defence: cumulative wall-clock spent inside the decoder for the
+    // in-flight request. Reset on each request head / aggregated request. Only
+    // accumulated when the budget is enabled (decompressionTimeBudgetMillis > 0).
+    private var decompressElapsed: Duration = Duration.ZERO
+
+    // Clock backing the L6 time budget. Production uses the monotonic clock;
+    // a same-module test swaps in a TestTimeSource for deterministic timing.
+    internal var timeSource: TimeSource = TimeSource.Monotonic
 
     // The Content-Encoding token being decoded for the in-flight request, so a
     // limit fired in checkLimits() can name the responsible codec (the header
@@ -274,6 +310,7 @@ public class HttpRequestDecompressionHandler(
         bytesIn = 0
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
+        decompressElapsed = Duration.ZERO
         // Mutable holder so `drainTo` updates `buf` / `len` in place
         // instead of returning a `Pair<ByteArray, Int>` per drain. A
         // long compressed body produces many NEED_OUTPUT rounds; the
@@ -286,7 +323,7 @@ public class HttpRequestDecompressionHandler(
             bytesIn = src.size.toLong()
             // Drain update loop.
             while (true) {
-                when (session.update(input, out)) {
+                when (timedUpdate(session, input, out)) {
                     CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
@@ -296,7 +333,7 @@ public class HttpRequestDecompressionHandler(
             // Drive finish.
             var finishing = true
             while (finishing) {
-                when (session.finish(out)) {
+                when (timedFinish(session, out)) {
                     CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
                     CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
                         if (out.readableBytes > 0) drainTo(out, sink)
@@ -391,6 +428,7 @@ public class HttpRequestDecompressionHandler(
         bytesIn = 0
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
+        decompressElapsed = Duration.ZERO
         ensureScratch()
         // Stash the original headers (which retain the recv buffer) and release
         // them at HttpBodyEnd — see [pendingRequestHeaders].
@@ -450,7 +488,7 @@ public class HttpRequestDecompressionHandler(
         try {
             bytesIn += src.readableBytes
             while (true) {
-                when (session.update(src, out)) {
+                when (timedUpdate(session, src, out)) {
                     CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
@@ -514,7 +552,7 @@ public class HttpRequestDecompressionHandler(
         try {
             bytesIn += end.content.readableBytes
             while (true) {
-                when (session.update(end.content, out)) {
+                when (timedUpdate(session, end.content, out)) {
                     CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
@@ -533,7 +571,7 @@ public class HttpRequestDecompressionHandler(
      */
     private fun driveFinish(ctx: PipelineHandlerContext, session: DecoderSession, out: IoBuf) {
         while (true) {
-            when (session.finish(out)) {
+            when (timedFinish(session, out)) {
                 CodecStatus.NEED_OUTPUT -> emitDecodedChunk(ctx, out)
                 CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
                     if (out.readableBytes > 0) emitDecodedChunk(ctx, out)
@@ -658,6 +696,48 @@ public class HttpRequestDecompressionHandler(
         }
     }
 
+    /**
+     * L6 (CPU-burn defence): run one decoder `update`, charging its wall-clock to
+     * the per-request budget. The decoder runs synchronously on the EventLoop
+     * thread, so a `scheduleDeadline` timer (which also runs there) cannot
+     * interrupt an in-progress call — the budget is instead checked *between*
+     * calls, after each one returns. When the budget is disabled (`0`) this is a
+     * plain `update` with no clock read, so off-path requests pay nothing.
+     */
+    private fun timedUpdate(session: DecoderSession, input: IoBuf, output: IoBuf): CodecStatus {
+        if (decompressionTimeBudgetMillis == 0L) return session.update(input, output)
+        val mark = timeSource.markNow()
+        val status = session.update(input, output)
+        accountDecompressTime(mark.elapsedNow())
+        return status
+    }
+
+    /** L6 counterpart of [timedUpdate] for `finish` (see its KDoc). */
+    private fun timedFinish(session: DecoderSession, output: IoBuf): CodecStatus {
+        if (decompressionTimeBudgetMillis == 0L) return session.finish(output)
+        val mark = timeSource.markNow()
+        val status = session.finish(output)
+        accountDecompressTime(mark.elapsedNow())
+        return status
+    }
+
+    /**
+     * Accumulate [elapsed] into the per-request decoder time and trip the CPU-burn
+     * cap once it passes [decompressionTimeBudgetMillis]. Only called when the
+     * budget is enabled.
+     */
+    private fun accountDecompressTime(elapsed: Duration) {
+        decompressElapsed += elapsed
+        if (decompressElapsed.inWholeMilliseconds > decompressionTimeBudgetMillis) {
+            throw RequestDecompressionLimitException(
+                RequestDecompressionLimitException.Reason.TimeBudgetExceeded,
+                bytesDecoded = bytesOut,
+                bytesIn = bytesIn,
+                encoding = pendingEncoding,
+            )
+        }
+    }
+
     private fun applyUnknownEncodingPolicy(ctx: PipelineHandlerContext, msg: Any, encoding: String) {
         when (unknownEncodingPolicy) {
             UnknownEncodingPolicy.Passthrough -> ctx.propagateRead(msg)
@@ -731,6 +811,16 @@ public class HttpRequestDecompressionHandler(
          * when you actively need it.
          */
         public const val DEFAULT_RATIO_BURST: Int = 0
+
+        /**
+         * Default CPU-burn time budget — **0** (disabled). Unlike the
+         * size / ratio caps, a sensible wall-clock cap depends on the host
+         * CPU and the largest legitimate decompression, so it ships off
+         * and is opt-in (matching the request / header / rate-floor
+         * time-axis knobs). Set [decompressionTimeBudgetMillis] to a
+         * positive value to cap the cumulative decoder time per request.
+         */
+        public const val DEFAULT_TIME_BUDGET_MILLIS: Long = 0
 
         /** `Content-Encoding: identity` (RFC 9110 §8.4.1) — no transformation. */
         private const val ENCODING_IDENTITY: String = "identity"

@@ -57,6 +57,19 @@ public class RequestDecompressionLimitException(
          * cumulative violations.
          */
         RatioExceeded,
+
+        /**
+         * Cumulative wall-clock time spent inside the decoder for this
+         * request exceeded `decompressionTimeBudgetMillis` — the CPU-burn
+         * defence (L6). The size / ratio caps bound the decoder's *output*,
+         * but a crafted stream (e.g. a flood of empty / sync-flush deflate
+         * blocks delivered chunked) can keep output small and ratio low
+         * while burning CPU on the EventLoop thread. Because the decoder
+         * runs synchronously on that thread, no timer can interrupt an
+         * in-progress `update()`; the budget is therefore checked between
+         * decoder calls and trips once the accumulated time passes the cap.
+         */
+        TimeBudgetExceeded,
     }
 
     public companion object {

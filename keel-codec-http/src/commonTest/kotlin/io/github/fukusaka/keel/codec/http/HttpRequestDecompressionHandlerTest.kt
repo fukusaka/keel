@@ -13,6 +13,9 @@ import io.github.fukusaka.keel.pipeline.PipelineHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.Pipeline as PipelineType
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import kotlin.time.Duration
+import kotlin.time.TestTimeSource
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -1403,5 +1406,186 @@ class HttpRequestDecompressionHandlerTest {
         val tmp = ByteArray(n)
         buf.readByteArray(tmp, 0, n)
         return tmp.decodeToString()
+    }
+
+    // ------------------------------------------------------------- L6: CPU-burn time budget
+
+    /**
+     * Echo decoder (1:1, so it never trips the ratio / size gates) that advances an
+     * injected [TestTimeSource] by [perCall] on every `update` / `finish`. Driving the
+     * clock from inside the decoder makes the L6 wall-clock check fully deterministic:
+     * the handler's `timedUpdate` reads the same source around each call, so the measured
+     * elapsed is exactly [perCall].
+     */
+    private class SlowEchoDecoder(
+        private val clock: TestTimeSource,
+        private val perCall: Duration,
+    ) : Decoder {
+        override val name: String = "slow"
+        override fun newSession(allocator: BufferAllocator, options: DecoderOptions): DecoderSession =
+            object : DecoderSession {
+                private var pending: ByteArray = ByteArray(0)
+                override fun update(input: IoBuf, output: IoBuf): CodecStatus {
+                    val n = input.readableBytes
+                    if (n > 0) {
+                        val tmp = ByteArray(n)
+                        input.readByteArray(tmp, 0, n)
+                        pending += tmp
+                    }
+                    clock += perCall
+                    return drain(output)
+                }
+
+                override fun finish(output: IoBuf): CodecStatus {
+                    clock += perCall
+                    return if (pending.isEmpty()) CodecStatus.FINISHED else drain(output)
+                }
+
+                override fun reset() { pending = ByteArray(0) }
+                override fun close() { pending = ByteArray(0) }
+
+                private fun drain(output: IoBuf): CodecStatus {
+                    if (pending.isEmpty()) return CodecStatus.NEED_INPUT
+                    val take = minOf(output.writableBytes, pending.size)
+                    output.writeByteArray(pending, 0, take)
+                    pending = pending.copyOfRange(take, pending.size)
+                    return if (pending.isEmpty()) CodecStatus.NEED_INPUT else CodecStatus.NEED_OUTPUT
+                }
+            }
+    }
+
+    private fun slowHandler(clock: TestTimeSource, perCall: Duration, budgetMillis: Long): HttpRequestDecompressionHandler {
+        val registry = CompressionRegistry().apply { registerDecoder(SlowEchoDecoder(clock, perCall)) }
+        return HttpRequestDecompressionHandler(
+            registry, DefaultAllocator,
+            decompressionLimit = Long.MAX_VALUE,
+            ratioLimit = Int.MAX_VALUE,
+            decompressionTimeBudgetMillis = budgetMillis,
+        ).apply { timeSource = clock }
+    }
+
+    private fun slowHead(): HttpRequestHead =
+        HttpRequestHead(HttpMethod.POST, "/u", headers = HttpHeaders().apply { add("Content-Encoding", "slow") })
+
+    @Test
+    fun `rejects a negative decompression time budget at construction`() {
+        assertFailsWith<IllegalArgumentException> {
+            HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionTimeBudgetMillis = -1)
+        }
+        // Zero (the disabled default) and positive values are valid.
+        HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionTimeBudgetMillis = 0)
+        HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, decompressionTimeBudgetMillis = 100)
+    }
+
+    @Test
+    fun `a request within the decoder time budget is decoded normally`() {
+        val clock = TestTimeSource()
+        val handler = slowHandler(clock, perCall = 5.milliseconds, budgetMillis = 1_000)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, slowHead())
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        val decoded = state.reads.filterIsInstance<HttpBody>()
+            .filter { it !is HttpBodyEnd }
+            .joinToString("") { ioBufAsString(it.content) }
+        assertEquals("HELLO", decoded, "a request under the time budget must decode normally")
+    }
+
+    @Test
+    fun `cumulative decoder time past the budget aborts with TimeBudgetExceeded`() {
+        val clock = TestTimeSource()
+        // perCall 60ms, budget 100ms: the first chunk's update (60) is under, the
+        // second (cumulative 120) trips.
+        val handler = slowHandler(clock, perCall = 60.milliseconds, budgetMillis = 100)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, slowHead())
+        handler.onRead(ctx, HttpBody(bufOf("a")))
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, HttpBody(bufOf("b")))
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.TimeBudgetExceeded, ex.reason)
+    }
+
+    @Test
+    fun `the time budget trips even when decoded output and ratio stay tiny`() {
+        // The CPU-burn case the size / ratio gates cannot see: a 1-byte body (1:1 echo,
+        // so L2 / L3 never fire) whose single decoder call burns past the budget.
+        val clock = TestTimeSource()
+        val handler = slowHandler(clock, perCall = 150.milliseconds, budgetMillis = 100)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, slowHead())
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, HttpBody(bufOf("a")))
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.TimeBudgetExceeded, ex.reason)
+    }
+
+    @Test
+    fun `a zero time budget disables the CPU-burn cap`() {
+        val clock = TestTimeSource()
+        // A decoder that would burn far past any budget, but the cap is disabled.
+        val handler = slowHandler(clock, perCall = 10_000.milliseconds, budgetMillis = 0)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, slowHead())
+        handler.onRead(ctx, HttpBody(bufOf("HELLO")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        val decoded = state.reads.filterIsInstance<HttpBody>()
+            .filter { it !is HttpBodyEnd }
+            .joinToString("") { ioBufAsString(it.content) }
+        assertEquals("HELLO", decoded, "a zero budget must not cap the decoder")
+    }
+
+    @Test
+    fun `the time budget resets between requests on a keep-alive connection`() {
+        val clock = TestTimeSource()
+        // perCall 30ms, budget 100ms: each request spends update(30) + finish(30) = 60ms,
+        // under the budget. Without a per-request reset the second request would start at
+        // the first's 60ms and trip; the reset keeps each request judged on its own.
+        val handler = slowHandler(clock, perCall = 30.milliseconds, budgetMillis = 100)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        handler.onRead(ctx, slowHead())
+        handler.onRead(ctx, HttpBody(bufOf("A")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        state.reads.clear()
+        // Second request on the same handler (keep-alive). Must not inherit request A's time.
+        handler.onRead(ctx, slowHead())
+        handler.onRead(ctx, HttpBody(bufOf("B")))
+        handler.onRead(ctx, HttpBodyEnd.EMPTY)
+
+        val decoded = state.reads.filterIsInstance<HttpBody>()
+            .filter { it !is HttpBodyEnd }
+            .joinToString("") { ioBufAsString(it.content) }
+        assertEquals("B", decoded, "the second keep-alive request must get a fresh time budget")
+    }
+
+    @Test
+    fun `the aggregated decode path also enforces the time budget`() {
+        val clock = TestTimeSource()
+        val handler = slowHandler(clock, perCall = 150.milliseconds, budgetMillis = 100)
+        val state = ChainState()
+        val ctx = TestCtx(state)
+
+        val request = HttpRequest(
+            HttpMethod.POST, "/u",
+            headers = HttpHeaders().apply { add("Content-Encoding", "slow") },
+            body = "payload".encodeToByteArray(),
+        )
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, request)
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.TimeBudgetExceeded, ex.reason)
     }
 }
