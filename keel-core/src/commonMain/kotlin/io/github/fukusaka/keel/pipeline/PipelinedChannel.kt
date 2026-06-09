@@ -44,6 +44,20 @@ interface PipelinedChannel : Channel {
     val isWritable: Boolean
 
     /**
+     * Schedules an absolute completion deadline on this channel's EventLoop, for
+     * codec/server-level time bounds (e.g. the header-complete timeout that defends
+     * against slow-header trickle attacks). Returns a [TimerHandle] to cancel when
+     * the phase completes in time, or `null` if the engine has no timer wired.
+     *
+     * Unlike the transport idle timeout, the deadline is **absolute** — it is not
+     * refreshed by I/O progress, so a trickle of bytes cannot defeat it. Backed by
+     * the same per-EventLoop scheduler as the idle timeout. **Call on the pipeline
+     * (EventLoop) thread.** Default returns `null` so test doubles need not implement
+     * it; [AbstractPipelinedChannel] delegates to the transport.
+     */
+    fun scheduleDeadline(delayMillis: Long, task: () -> Unit): TimerHandle? = null
+
+    /**
      * Enables or disables the read loop on the underlying transport.
      *
      * When `true`, the transport registers for read events and delivers
