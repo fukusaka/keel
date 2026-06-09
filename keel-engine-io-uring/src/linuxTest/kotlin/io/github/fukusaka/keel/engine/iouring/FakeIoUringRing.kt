@@ -115,6 +115,28 @@ internal class FakeIoUringRing : IoUringRing {
      */
     fun lastSqeUserData(): ULong = scratchSqe.user_data
 
+    /**
+     * Returns the `opcode` field of the scratch SQE — the value the most
+     * recent `io_uring_prep_*` call wrote when preparing the submission.
+     * Lets a test distinguish multishot recv vs multishot accept vs poll
+     * (and any other op kind), which the slot/user_data does not capture.
+     *
+     * **Narrow exception to the Option-A invariant** ([scratchSqe] is
+     * otherwise treated as a black box that the fake never inspects).
+     * Reading the single byte `opcode` field is allowed because (a) it
+     * is the only field that uniquely identifies the operation kind,
+     * (b) every `io_uring_prep_*` wrapper writes it as its first step
+     * (`sqe->opcode = IORING_OP_*`), and (c) the test contract still
+     * does not depend on any other SQE field. Other fields (`fd`,
+     * `addr`, `len`, `off`, flags, etc.) remain unobserved.
+     *
+     * The scratch SQE is reused across submissions, so this returns the
+     * opcode of the **most recent** prep call — sufficient for the
+     * common case of one prep per submit. Tests that batch multiple
+     * preps per submit cycle must inspect immediately after each prep.
+     */
+    fun lastSqeOp(): UByte = scratchSqe.opcode
+
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
         lastSetupFlagsArgs = SetupFlagsArgs(coopTaskrun, singleIssuer, deferTaskrun)
         var flags = 0u
