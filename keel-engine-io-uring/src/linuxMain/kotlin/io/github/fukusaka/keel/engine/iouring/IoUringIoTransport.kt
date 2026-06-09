@@ -295,7 +295,13 @@ internal class IoUringIoTransport(
                 // The connection is now waiting to read → the read-side idle timeout
                 // applies (covers accept-to-first-byte, slowloris-silent, keep-alive idle).
                 armIdleTimeout()
-                armRecv()
+                // Arm only when no live multishot recv is in flight and we are not
+                // already waiting on starvation (the `rearmRecvAfterStarvation`
+                // callback registered with the buffer ring will fire on the next
+                // `returnBuffer` and arm there — racing it here would submit a
+                // second multishot recv SQE that orphans the slot of the first
+                // and double-delivers CQEs into the shared `wrappers[bufId]`).
+                if (multishotSlot < 0 && !recvStarved) armRecv()
             } else if (!value) {
                 cancelIdleTimeout() // back-pressure: pause the read-idle timeout
             }
