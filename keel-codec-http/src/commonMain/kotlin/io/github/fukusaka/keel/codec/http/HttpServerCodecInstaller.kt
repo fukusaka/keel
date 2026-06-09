@@ -42,16 +42,24 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *   complete request (head + body) — an absolute ceiling that force-closes a
  *   slow-body peer. `0` (default) disables it. Installed via the same
  *   [RequestDeadlineHandler].
+ * @param minBodyRateBytesPerSec minimum sustained request-body throughput in bytes
+ *   per second. When `> 0`, a [BodyRateFloorHandler] is inserted after the decoder to
+ *   force-close a slow-body peer that stalls below the floor — the fine-grained
+ *   complement to the absolute [requestTimeoutMillis] ceiling. `0` (default) disables it.
  */
 public fun PipelinedChannel.addHttp1ServerCodec(
     aggregateBody: Boolean = true,
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
     headerTimeoutMillis: Long = 0,
     requestTimeoutMillis: Long = 0,
+    minBodyRateBytesPerSec: Long = 0,
 ) {
     pipeline.addLast("decoder", HttpRequestDecoder(headerLimits))
     if (headerTimeoutMillis > 0 || requestTimeoutMillis > 0) {
         pipeline.addLast("request-deadline", RequestDeadlineHandler(headerTimeoutMillis, requestTimeoutMillis))
+    }
+    if (minBodyRateBytesPerSec > 0) {
+        pipeline.addLast("body-rate-floor", BodyRateFloorHandler(minBodyRateBytesPerSec))
     }
     pipeline.addLast("encoder", HttpResponseEncoder())
     if (aggregateBody) {
