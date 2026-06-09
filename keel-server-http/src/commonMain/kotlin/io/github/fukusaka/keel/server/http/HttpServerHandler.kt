@@ -64,9 +64,10 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     scope: CoroutineScope,
     connections: ServerConnections = ServerConnections(),
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+    headerTimeoutMillis: Long = 0,
     compression: io.github.fukusaka.keel.server.http.dsl.CompressionPipelineConfig? = null,
 ) {
-    addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits)
+    addHttp1ServerCodec(aggregateBody = false, headerLimits = headerLimits, headerTimeoutMillis = headerTimeoutMillis)
     // Compression handlers sit between the codec (decoder/encoder) and
     // HttpServerHandler so they can intercept HttpRequestHead / HttpBody
     // (inbound, for `Content-Encoding`) and HttpResponseHead / HttpBody
