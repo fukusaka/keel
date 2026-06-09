@@ -60,6 +60,16 @@ public class HttpConnectorBuilder internal constructor() {
      */
     public var requestTimeoutMillis: Long = 0
 
+    /**
+     * Minimum sustained request-body throughput in bytes per second. `0` (default)
+     * disables it. When set, a slow-body peer whose body stalls below this floor is
+     * force-closed even while it stays under the absolute [requestTimeoutMillis] ceiling —
+     * the fine-grained slow-vs-attack discrimination that a single generous deadline
+     * cannot make. A legitimate slow upload that keeps steady progress passes. Analogous
+     * to Apache `RequestReadTimeout body=…,MinRate=…`.
+     */
+    public var minBodyRateBytesPerSec: Long = 0
+
     private var tlsConfigure: (ServerTlsBuilder.() -> Unit)? = null
     private var queryConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private var headerLimitsConfig: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
@@ -121,4 +131,7 @@ public class HttpConnectorBuilder internal constructor() {
 
     /** The request-total deadline ([requestTimeoutMillis]); `0` disables it. */
     internal fun buildRequestTimeout(): Long = requestTimeoutMillis
+
+    /** The minimum body throughput floor ([minBodyRateBytesPerSec]); `0` disables it. */
+    internal fun buildMinBodyRate(): Long = minBodyRateBytesPerSec
 }

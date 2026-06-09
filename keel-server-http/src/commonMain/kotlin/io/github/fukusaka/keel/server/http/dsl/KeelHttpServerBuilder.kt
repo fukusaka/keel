@@ -43,6 +43,7 @@ public class KeelHttpServerBuilder internal constructor() {
     private var headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
     private var headerTimeoutMillis: Long = 0
     private var requestTimeoutMillis: Long = 0
+    private var minBodyRateBytesPerSec: Long = 0
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
@@ -71,6 +72,7 @@ public class KeelHttpServerBuilder internal constructor() {
         headerLimits = builder.buildHeaderLimits()
         headerTimeoutMillis = builder.buildHeaderTimeout()
         requestTimeoutMillis = builder.buildRequestTimeout()
+        minBodyRateBytesPerSec = builder.buildMinBodyRate()
     }
 
     /**
@@ -341,6 +343,7 @@ public class KeelHttpServerBuilder internal constructor() {
             headerLimits,
             headerTimeoutMillis,
             requestTimeoutMillis,
+            minBodyRateBytesPerSec,
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
