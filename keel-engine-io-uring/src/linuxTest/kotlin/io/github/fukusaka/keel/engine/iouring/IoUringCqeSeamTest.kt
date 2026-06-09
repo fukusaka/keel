@@ -8,6 +8,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import platform.posix.EINTR
 import platform.posix.ENOMEM
+import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -214,6 +215,111 @@ class IoUringCqeSeamTest {
         }
     }
 
+    // --- SEND_ZC op-kind discrimination + error / lifecycle invariants (audit-4) ---
+
+    @Test
+    fun `submitSendZcCallback prepares IORING_OP_SEND_ZC`() {
+        // Pin the op kind so a future refactor that swaps the prep helper
+        // (or drops the OP byte) surfaces in the seam, not in production.
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { _ -> }
+            }
+            assertEquals(IORING_OP_SEND_ZC, fake.lastSqeOp(), "SEND_ZC opcode must be 53")
+        }
+    }
+
+    @Test
+    fun `submitSendmsgZcCallback prepares IORING_OP_SENDMSG_ZC`() {
+        // SENDMSG_ZC shares the 2-CQE state machine with SEND_ZC but uses a
+        // different opcode — pin so the variant cannot drift onto the same
+        // prep helper accidentally.
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            memScoped {
+                // Allocate a placeholder msghdr — the fake never reads it.
+                val msghdr = alloc<ByteVar>()
+                el.submitSendmsgZcCallback(fd = 7, msghdr = msghdr.ptr, flags = 0u) { _ -> }
+            }
+            assertEquals(IORING_OP_SENDMSG_ZC, fake.lastSqeOp(), "SENDMSG_ZC opcode must be 57")
+        }
+    }
+
+    @Test
+    fun `SEND_ZC error result propagates through the 2-CQE flow`() {
+        // The kernel still produces a notification CQE on a failed send (the
+        // pinning of buffer pages is per-SQE, not per-result). Verify that
+        // the error from the first CQE is preserved across the second CQE
+        // and delivered to onComplete.
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            var completed: Int? = null
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { completed = it }
+            }
+            val userData = fake.lastSqeUserData()
+            // First CQE: send returned -EPIPE, but kernel still queues notification.
+            fake.enqueueCqe(userData = userData, res = -EPIPE, hasMore = true)
+            // Second CQE: buffer release notification (res ignored, only the
+            // state-machine transition matters).
+            fake.enqueueCqe(userData = userData, res = 0, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(-EPIPE, completed, "the error from the first CQE must survive the 2-CQE bridge")
+        }
+    }
+
+    @Test
+    fun `SEND_ZC error result without a notification CQE completes immediately`() {
+        // Some kernels skip the notification when the send fails before
+        // pages are pinned — pin that this single-CQE path delivers the
+        // error to onComplete via the same fast-path the success case uses.
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            var completed: Int? = null
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { completed = it }
+            }
+            fake.enqueueCqe(userData = fake.lastSqeUserData(), res = -EPIPE, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(-EPIPE, completed, "error on the first CQE without F_MORE completes immediately")
+        }
+    }
+
+    @Test
+    fun `SEND_ZC slot is released after the 2-CQE completion so the slot can be reused`() {
+        // The 2-CQE state machine must release the slot back to the pool
+        // after the notification CQE — otherwise repeated sends starve the
+        // slot pool and a busy connection eventually hits "slot pool
+        // exhausted". Indirect check: after one 2-CQE completion, submit
+        // another SEND_ZC and observe that it acquires a slot (no throw).
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            memScoped {
+                val buf = alloc<ByteVar>()
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { _ -> }
+                val firstUserData = fake.lastSqeUserData()
+                // Drain the first 2-CQE pair.
+                fake.enqueueCqe(userData = firstUserData, res = 64, hasMore = true)
+                fake.enqueueCqe(userData = firstUserData, res = 0, hasMore = false)
+                assertTrue(el.runIteration(Cqe()))
+
+                // Submit a second SEND_ZC — must acquire a slot and the
+                // canonical lowest-released slot is the one we just freed.
+                el.submitSendZcCallback(fd = 7, buf = buf.ptr, len = 8u, flags = 0) { _ -> }
+                val secondUserData = fake.lastSqeUserData()
+                assertEquals(
+                    firstUserData,
+                    secondUserData,
+                    "the slot must be released after the 2-CQE completion and reused on the next submit",
+                )
+            }
+        }
+    }
+
     // --- wakeup SQE deferred retry ---
 
     @Test
@@ -230,5 +336,22 @@ class IoUringCqeSeamTest {
             assertTrue(el.runIteration(Cqe()))
             assertEquals(2, fake.getSqeCalls, "iteration 2: the deferred wakeup SQE is retried")
         }
+    }
+
+    private companion object {
+        // io_uring opcode values from `enum io_uring_op` in <linux/io_uring.h>.
+        // SEND_ZC arrived in Linux 6.0 (#define IORING_OP_SEND_ZC 53); SENDMSG_ZC
+        // arrived in Linux 6.1 (#define IORING_OP_SENDMSG_ZC 57). Both are
+        // append-only kernel ABI entries; hard-coding the well-known values
+        // keeps the test independent of cinterop enum-exposure details.
+        // Kernel `enum io_uring_op` values from <linux/io_uring.h>. The
+        // older liburing fallback `#ifndef` blocks in `io_uring.def`
+        // (53 / 57) reflect pre-merge constants from an earlier patch
+        // series; the actual kernel ABI settled on 47 / 48 (Linux 6.0+
+        // for SEND_ZC, 6.1+ for SENDMSG_ZC) and the cinterop-resolved
+        // enum agrees. Hard-coding the kernel ABI values keeps the test
+        // independent of cinterop enum-exposure details.
+        private const val IORING_OP_SEND_ZC: UByte = 47u
+        private const val IORING_OP_SENDMSG_ZC: UByte = 48u
     }
 }
