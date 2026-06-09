@@ -41,6 +41,7 @@ public class KeelHttpServerBuilder internal constructor() {
     private var connector: ServerConnector? = null
     private var queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private var headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
+    private var headerTimeoutMillis: Long = 0
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
@@ -67,6 +68,7 @@ public class KeelHttpServerBuilder internal constructor() {
         connector = builder.buildConnector()
         queryParameterConfig = builder.buildQueryConfig()
         headerLimits = builder.buildHeaderLimits()
+        headerTimeoutMillis = builder.buildHeaderTimeout()
     }
 
     /**
@@ -335,6 +337,7 @@ public class KeelHttpServerBuilder internal constructor() {
             connector ?: ServerConnector(),
             queryParameterConfig,
             headerLimits,
+            headerTimeoutMillis,
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),

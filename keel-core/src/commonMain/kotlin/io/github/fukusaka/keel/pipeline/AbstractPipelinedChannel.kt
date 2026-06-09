@@ -43,6 +43,10 @@ abstract class AbstractPipelinedChannel(
     override val isWritable: Boolean get() = transport.isOpen && transport.isWritable
     override val ioDispatcher: CoroutineDispatcher get() = transport.ioDispatcher
 
+    /** Delegates to the transport's EventLoop timer (the idle-timeout scheduler). */
+    override fun scheduleDeadline(delayMillis: Long, task: () -> Unit): TimerHandle? =
+        transport.scheduleDeadline(delayMillis, task)
+
     override var readEnabled: Boolean
         get() = transport.readEnabled
         set(value) { transport.readEnabled = value }

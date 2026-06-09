@@ -38,6 +38,17 @@ public class HttpConnectorBuilder internal constructor() {
     /** Socket options applied to every accepted client fd. */
     public var socketOptions: SocketOptions = SocketOptions.DEFAULT
 
+    /**
+     * Header-complete deadline in milliseconds: the time budget from the first byte
+     * of a request to its complete request head. `0` (default) disables it. When set,
+     * a slow-header (classic slowloris) peer that trickles the request head is
+     * force-closed once the budget elapses — the codec-layer completion-deadline that
+     * the transport idle timeout cannot enforce (a byte trickle keeps refreshing an
+     * inactivity timer, but not this absolute deadline). Analogous to nginx
+     * `client_header_timeout` / Apache `RequestReadTimeout header=…`.
+     */
+    public var headerTimeoutMillis: Long = 0
+
     private var tlsConfigure: (ServerTlsBuilder.() -> Unit)? = null
     private var queryConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private var headerLimitsConfig: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
@@ -93,4 +104,7 @@ public class HttpConnectorBuilder internal constructor() {
 
     /** The header-limits configuration set by [headerLimits], or the default. */
     internal fun buildHeaderLimits(): HttpHeaderLimitsConfig = headerLimitsConfig
+
+    /** The header-complete deadline ([headerTimeoutMillis]); `0` disables it. */
+    internal fun buildHeaderTimeout(): Long = headerTimeoutMillis
 }

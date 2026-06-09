@@ -106,6 +106,16 @@ abstract class AbstractIoTransport(
     protected open val eventLoopTimer: EventLoopTimer? get() = null
 
     /**
+     * Schedules an absolute completion deadline on this transport's EventLoop timer
+     * (the same per-EventLoop scheduler that backs the idle timeout). Returns `null`
+     * when the engine has no timer wired. Used by codec/server handlers (via
+     * [io.github.fukusaka.keel.pipeline.PipelinedChannel.scheduleDeadline]) for
+     * header / request / handshake completion bounds. **EventLoop thread.**
+     */
+    override fun scheduleDeadline(delayMillis: Long, task: () -> Unit): TimerHandle? =
+        eventLoopTimer?.schedule(delayMillis, task)
+
+    /**
      * Effective idle (no-progress) read timeout in milliseconds for this
      * connection (`0` = disabled). Engine subclasses override it from the resolved
      * per-connection config value.

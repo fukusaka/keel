@@ -195,6 +195,22 @@ interface IoTransport {
      */
     suspend fun awaitClosed()
 
+    /**
+     * Schedules [task] to run once after [delayMillis] on the owning EventLoop, for
+     * codec/server-level completion deadlines (e.g. the header-complete timeout).
+     * Returns a [TimerHandle] for cancellation when the phase completes in time, or
+     * `null` if this transport has no EventLoop timer (test doubles, unwired engines).
+     * Reuses the same per-EventLoop timer that backs the idle timeout.
+     *
+     * Unlike the idle timeout, this deadline is **absolute** — it is not refreshed by
+     * I/O progress, so a trickle of bytes cannot defeat it (that is the point: it
+     * bounds the time to *complete* a protocol phase, not the gap between bytes).
+     *
+     * **Thread safety**: must be called on the EventLoop thread (the pipeline handler
+     * thread), like the idle-timeout arm/cancel calls.
+     */
+    fun scheduleDeadline(delayMillis: Long, task: () -> Unit): TimerHandle? = null
+
     // === Properties ===
 
     /** Buffer allocator for read buffer allocation. */
