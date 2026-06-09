@@ -43,12 +43,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  * shuts down gracefully — see its documentation. The engine itself is
  * owned by the caller and is never closed by [stop].
  */
+// Param count grows by one per new config knob (header / request deadline, …). The
+// constructor is `internal` and called from exactly one site (the DSL `build()`), so
+// suppressing is bounded; the planned config-bundle redesign will collapse these.
+@Suppress("LongParameterList")
 public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
     private val connector: ServerConnector,
     private val queryParameterConfig: QueryParameterConfig,
     private val headerLimits: HttpHeaderLimitsConfig,
     private val headerTimeoutMillis: Long,
+    private val requestTimeoutMillis: Long,
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
@@ -96,6 +101,7 @@ public class KeelHttpServer internal constructor(
                 queryParameterConfig = queryParameterConfig,
                 headerLimits = headerLimits,
                 headerTimeoutMillis = headerTimeoutMillis,
+                requestTimeoutMillis = requestTimeoutMillis,
                 scope = scope,
                 connections = connections,
                 compression = compressionConfig,

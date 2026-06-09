@@ -49,6 +49,17 @@ public class HttpConnectorBuilder internal constructor() {
      */
     public var headerTimeoutMillis: Long = 0
 
+    /**
+     * Request-total deadline in milliseconds: an absolute ceiling on the time from
+     * the first byte of a request to its complete body. `0` (default) disables it.
+     * When set, a slow-body peer that trickles the request body past the budget is
+     * force-closed. It is a generous hard ceiling — set it above the largest
+     * legitimate upload's expected duration; fine-grained slow-vs-attack
+     * discrimination (a minimum-throughput rate floor) is a separate control.
+     * Analogous to (but stricter than) nginx `client_body_timeout`.
+     */
+    public var requestTimeoutMillis: Long = 0
+
     private var tlsConfigure: (ServerTlsBuilder.() -> Unit)? = null
     private var queryConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private var headerLimitsConfig: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
@@ -107,4 +118,7 @@ public class HttpConnectorBuilder internal constructor() {
 
     /** The header-complete deadline ([headerTimeoutMillis]); `0` disables it. */
     internal fun buildHeaderTimeout(): Long = headerTimeoutMillis
+
+    /** The request-total deadline ([requestTimeoutMillis]); `0` disables it. */
+    internal fun buildRequestTimeout(): Long = requestTimeoutMillis
 }
