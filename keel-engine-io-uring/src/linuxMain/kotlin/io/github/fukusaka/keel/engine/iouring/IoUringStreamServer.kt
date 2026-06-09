@@ -149,8 +149,15 @@ internal class IoUringStreamServer(
      * Arms (or rearms) the multishot accept SQE on [bossLoop].
      * Must be called on the bossLoop thread.
      */
-    /** Multishot accept: arms one SQE, receives multiple CQEs. */
-    private suspend fun acceptMultishot(): Int = suspendCancellableCoroutine { cont ->
+    /**
+     * Multishot accept: arms one SQE, receives multiple CQEs.
+     *
+     * Visibility `internal` (not `private`) so the seam tests can drive
+     * the multishot accept state machine in isolation, without booting a
+     * worker [IoUringEventLoopGroup]. Production callers reach this
+     * function only via [accept].
+     */
+    internal suspend fun acceptMultishot(): Int = suspendCancellableCoroutine { cont ->
         bossLoop.dispatch(cont.context) {
             if (!cont.isActive) return@dispatch
             if (multishotSlot == -1) armMultishotAccept()
@@ -186,13 +193,34 @@ internal class IoUringStreamServer(
                     if (res >= 0) closeFdSafely(res, logger, "post-close accept drain")
                     return@submitMultishot
                 }
-                if (res >= 0) {
-                    val cont = pendingAcceptConts.removeFirstOrNull()
-                    if (cont != null) {
-                        cont.resume(res)
-                    } else {
-                        pendingFds.addLast(res)
+                if (res < 0) {
+                    // Multishot terminated by the kernel with an error: `-EBADF`
+                    // (the listener fd was closed mid-flight or revoked by
+                    // container shutdown), `-EINVAL` (the kernel rejected the
+                    // multishot accept request the capability probe accepted),
+                    // or any other negative errno. The multishot SQE is gone
+                    // (`hasMore = 0` on every such CQE). Do NOT rearm — the
+                    // same broken listener fd would produce the same error
+                    // indefinitely, starving the EventLoop. Mark the server
+                    // unhealthy, fail every queued waiter with the errno so
+                    // callers can surface the failure instead of hanging, and
+                    // stop. `close()` (if not yet invoked) will still drain
+                    // any [pendingFds] that arrived before the error.
+                    multishotSlot = -1
+                    _active = false
+                    val errno = -res
+                    val cause = CancellationException("multishot accept failed: errno=$errno")
+                    while (pendingAcceptConts.isNotEmpty()) {
+                        pendingAcceptConts.removeFirst().resumeWithException(cause)
                     }
+                    return@submitMultishot
+                }
+                // res >= 0 — a new connection.
+                val cont = pendingAcceptConts.removeFirstOrNull()
+                if (cont != null) {
+                    cont.resume(res)
+                } else {
+                    pendingFds.addLast(res)
                 }
                 // Rearm if the kernel terminated the multishot SQE.
                 if (keel_cqe_has_more(flags) == 0 && _active) {
