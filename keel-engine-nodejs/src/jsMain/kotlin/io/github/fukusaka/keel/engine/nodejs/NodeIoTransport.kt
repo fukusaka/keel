@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.unsafeArray
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
+import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 
@@ -43,9 +44,16 @@ import kotlinx.coroutines.Dispatchers
 internal class NodeIoTransport(
     private val socket: Socket,
     allocator: BufferAllocator,
+    idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
+
+    /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
+    override val idleTimeoutMillis: Long = idleTimeoutMillis
+
+    /** Backed by Node.js `setTimeout` on the single libuv event-loop thread. */
+    override val eventLoopTimer: EventLoopTimer get() = NodeEventLoopTimer
 
     // --- Read path ---
 
@@ -61,6 +69,7 @@ internal class NodeIoTransport(
         if (opened) {
             val dataLength = data.length as Int
             if (dataLength > 0) {
+                touchIdleTimeout() // progress: refresh the read-idle deadline
                 val buf = allocator.allocate(dataLength)
                 // Copy Node.js Buffer (Uint8Array subclass) to IoBuf's
                 // Int8Array. Int8Array and Uint8Array share the same byte
@@ -81,10 +90,14 @@ internal class NodeIoTransport(
             field = value
             if (!opened) return
             if (value) {
+                // The connection is now waiting to read → the read-side idle timeout
+                // applies (covers accept-to-first-byte, slowloris-silent, keep-alive idle).
+                armIdleTimeout()
                 // Attach 'data' listener — Node.js transitions the stream
                 // into flowing mode and starts emitting 'data' events.
                 socket.on("data", dataListener)
             } else {
+                cancelIdleTimeout() // back-pressure: pause the read-idle timeout
                 // Detach 'data' listener — Node.js drops back to paused
                 // mode when no 'data' listeners remain. Kernel `rcvbuf`
                 // retains the bytes for genuine TCP back-pressure. The
@@ -112,6 +125,13 @@ internal class NodeIoTransport(
         }
         socket.on("error") { _: dynamic ->
             if (opened) onReadClosed?.invoke()
+        }
+        // 'drain' fires when Node's internal write buffer has emptied into the
+        // kernel — the peer has been draining, so a stalled write recovered. Cancel
+        // the write-idle timer that [flush] arms on back-pressure. A no-op when not
+        // armed (no timeout configured or the write never stalled).
+        socket.on("drain") { _: dynamic ->
+            if (opened) cancelWriteIdleTimeout()
         }
     }
 
@@ -144,6 +164,7 @@ internal class NodeIoTransport(
      */
     override fun flush(): Boolean {
         var totalFlushed = 0
+        var backpressured = false
         for (pw in pendingWrites) {
             val src = pw.buf.unsafeArray
             // Int8Array.subarray shares the same underlying ArrayBuffer (zero-copy view).
@@ -151,13 +172,24 @@ internal class NodeIoTransport(
             // This replaces the previous byte-by-byte jsArray.push loop (O(n) per byte).
             val slice = src.subarray(pw.offset, pw.offset + pw.length)
             val nodeBuf = nodeBuffer.from(slice)
-            socket.write(nodeBuf)
+            // socket.write returns false once Node's internal buffer exceeds its high
+            // water mark — i.e. the kernel send buffer is full because the peer is not
+            // draining (slow-read). The data is still queued, but the connection is
+            // back-pressured until the 'drain' event.
+            if (socket.write(nodeBuf) == false) backpressured = true
             pw.buf.release()
             totalFlushed += pw.length
         }
         pendingWrites.clear()
+        // Node accepts every write into its own buffer synchronously, so keel's
+        // pendingBytes returns to 0 here (this cancels any seam-driven write-idle).
         updatePendingBytes(-totalFlushed)
         onFlushComplete?.invoke()
+        // Drive the write-idle timer from Node's real back-pressure instead: arm it
+        // when a write stalled (peer not draining), to be cancelled by the 'drain'
+        // listener when the buffer empties — or to fire and force-close a peer that
+        // never drains. A fast peer leaves `backpressured` false and trips nothing.
+        if (backpressured) armWriteIdleTimeout()
         return true
     }
 
@@ -174,6 +206,8 @@ internal class NodeIoTransport(
     override fun close() {
         if (!opened) return
         opened = false
+        cancelIdleTimeout()
+        cancelWriteIdleTimeout()
         for (pw in pendingWrites) {
             pw.buf.release()
         }
