@@ -4,8 +4,9 @@ import io.github.fukusaka.keel.compression.DecompressionException
 
 /**
  * Thrown by [HttpRequestDecompressionHandler] when an inbound request
- * body fails the configured zip-bomb defence (absolute byte cap or
- * decoded:input ratio cap with burst tolerance exhausted).
+ * body fails the configured zip-bomb defence (advertised compressed size,
+ * absolute decoded byte cap, decoded:input ratio cap with burst tolerance
+ * exhausted, or the per-request decoder CPU-burn time cap).
  *
  * The handler itself does not write an HTTP response — it propagates
  * this exception up the pipeline. Callers (typically a Ktor plugin or
@@ -14,8 +15,7 @@ import io.github.fukusaka.keel.compression.DecompressionException
  * lets the mapper add a `Reason` extension header or include the
  * specific limit in the body.
  *
- * @property reason which gate fired ([Reason.AbsoluteSizeExceeded] or
- *   [Reason.RatioExceeded])
+ * @property reason which gate fired (see [Reason])
  * @property bytesDecoded cumulative bytes the decoder has produced for
  *   this request at the moment the limit fired
  * @property bytesIn cumulative compressed bytes the decoder has
