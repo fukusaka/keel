@@ -51,6 +51,17 @@ internal class FakeIoUringRing : IoUringRing {
     var submitAndWaitCalls: Int = 0
         private set
 
+    /**
+     * Total number of CQEs successfully drained via [nextCqe] (empty
+     * queue returns do not count). Lets a companion
+     * [FakeIoUringBufferRingOps] correlate an `advance` call with how
+     * far the CQE drain has progressed (e.g. "buffer slot 3 was returned
+     * to the ring after 5 CQEs were consumed") via the optional
+     * `cqeDrainProgress` lambda the buffer-ring fake accepts.
+     */
+    var cqesDrainedCount: Int = 0
+        private set
+
     /** Arguments of the most recent [setupFlags] call, or `null` if never called. */
     var lastSetupFlagsArgs: SetupFlagsArgs? = null
         private set
@@ -108,12 +119,64 @@ internal class FakeIoUringRing : IoUringRing {
     }
 
     /**
+     * Convenience alias for [enqueueCqe] documenting a `POLL_ADD` CQE.
+     * The `revents` mask (e.g. `POLLRDHUP | POLLHUP | POLLERR`) is
+     * delivered in the `res` field — that is the kernel ABI for poll
+     * completions (`res >= 0` carries the matched event bits). Single-shot
+     * `POLL_ADD` always sets `hasMore = false`.
+     */
+    fun scriptPollCqe(userData: ULong, revents: UInt) {
+        enqueueCqe(userData, revents.toInt(), flags = 0u, hasMore = false)
+    }
+
+    /**
      * Returns the `user_data` field of the scratch SQE — the value the
      * most recent `submit*` wrote via `io_uring_sqe_set_data64`. Lets a
      * test recover the slot `user_data` for a submit path that does not
      * return its slot index (e.g. `submitSendZcCallback`).
      */
     fun lastSqeUserData(): ULong = scratchSqe.user_data
+
+    /**
+     * Returns the `poll32_events` field of the scratch SQE — the poll
+     * mask the most recent `io_uring_prep_poll_add` (or its
+     * `keel_prep_poll_add` wrapper) wrote. Lets a test verify that the
+     * engine armed a poll watcher with the expected events (e.g.
+     * `POLLRDHUP | POLLHUP | POLLERR` for peer-FIN detection while
+     * `readEnabled = false`).
+     *
+     * The value is only meaningful immediately after a poll prep — the
+     * scratch SQE's union storage is reused by later non-poll preps,
+     * which may scribble over `poll32_events`. Always pair this check
+     * with [lastSqeOp] `== IORING_OP_POLL_ADD` to confirm the prep was
+     * a poll op.
+     *
+     * Same narrow-exception status as [lastSqeOp]: this reads one field
+     * of the scratch SQE; other fields remain unobserved.
+     */
+    fun lastPollSqeMask(): UInt = scratchSqe.poll32_events
+
+    /**
+     * Returns the `opcode` field of the scratch SQE — the value the most
+     * recent `io_uring_prep_*` call wrote when preparing the submission.
+     * Lets a test distinguish multishot recv vs multishot accept vs poll
+     * (and any other op kind), which the slot/user_data does not capture.
+     *
+     * **Narrow exception to the Option-A invariant** ([scratchSqe] is
+     * otherwise treated as a black box that the fake never inspects).
+     * Reading the single byte `opcode` field is allowed because (a) it
+     * is the only field that uniquely identifies the operation kind,
+     * (b) every `io_uring_prep_*` wrapper writes it as its first step
+     * (`sqe->opcode = IORING_OP_*`), and (c) the test contract still
+     * does not depend on any other SQE field. Other fields (`fd`,
+     * `addr`, `len`, `off`, flags, etc.) remain unobserved.
+     *
+     * The scratch SQE is reused across submissions, so this returns the
+     * opcode of the **most recent** prep call — sufficient for the
+     * common case of one prep per submit. Tests that batch multiple
+     * preps per submit cycle must inspect immediately after each prep.
+     */
+    fun lastSqeOp(): UByte = scratchSqe.opcode
 
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
         lastSetupFlagsArgs = SetupFlagsArgs(coopTaskrun, singleIssuer, deferTaskrun)
@@ -161,6 +224,7 @@ internal class FakeIoUringRing : IoUringRing {
         out.res = c.res
         out.flags = c.flags
         out.hasMore = c.hasMore
+        cqesDrainedCount++
         return true
     }
 

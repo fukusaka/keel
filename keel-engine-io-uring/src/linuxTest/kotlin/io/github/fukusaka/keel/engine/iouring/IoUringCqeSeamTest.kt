@@ -138,6 +138,28 @@ class IoUringCqeSeamTest {
         }
     }
 
+    // --- cqesDrainedCount (CQE drain progress for buffer-release correlation) ---
+
+    @Test
+    fun `cqesDrainedCount increments only on successful nextCqe drains`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            // No CQE enqueued — runIteration drains nothing.
+            assertEquals(0, fake.cqesDrainedCount, "initial drain count is zero")
+            assertTrue(el.runIteration(Cqe()), "empty iteration returns true")
+            assertEquals(0, fake.cqesDrainedCount, "no CQE → counter unchanged")
+
+            // Enqueue three slot CQEs; runIteration drains them all in one pass.
+            val slot = el.submitMultishot(prepare = { }, onCqe = { _, _ -> })
+            val userData = slot.toULong() + IoUringEventLoop.SLOT_BASE
+            fake.enqueueCqe(userData = userData, res = 1, hasMore = true)
+            fake.enqueueCqe(userData = userData, res = 2, hasMore = true)
+            fake.enqueueCqe(userData = userData, res = 3, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(3, fake.cqesDrainedCount, "counter reflects all drained CQEs")
+        }
+    }
+
     // --- callback exception isolation ---
 
     @Test

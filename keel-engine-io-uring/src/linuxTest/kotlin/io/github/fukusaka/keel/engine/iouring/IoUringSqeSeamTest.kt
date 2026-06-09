@@ -1,6 +1,9 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io_uring.io_uring_prep_accept
+import io_uring.keel_prep_poll_add
+import io_uring.keel_prep_recv_multishot
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -94,6 +97,61 @@ class IoUringSqeSeamTest {
 
     // --- cancelSqe ---
 
+    // --- lastSqeOp (op-kind recording) ---
+
+    @Test
+    fun `lastSqeOp returns IORING_OP_ACCEPT after accept prep`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            el.submitCallback(
+                prepare = { sqe -> io_uring_prep_accept(sqe, /* fd */ 3, null, null, /* flags */ 0) },
+                onCqe = { _, _ -> },
+            )
+            assertEquals(IORING_OP_ACCEPT, fake.lastSqeOp(), "opcode after accept prep")
+        }
+    }
+
+    @Test
+    fun `lastSqeOp returns IORING_OP_RECV after multishot recv prep`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            el.submitMultishot(
+                prepare = { sqe -> keel_prep_recv_multishot(sqe, /* fd */ 4, /* bgid */ 1u.toUShort()) },
+                onCqe = { _, _ -> },
+            )
+            assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "opcode after multishot recv prep")
+        }
+    }
+
+    @Test
+    fun `lastSqeOp returns IORING_OP_POLL_ADD after poll prep`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            el.submitCallback(
+                prepare = { sqe -> keel_prep_poll_add(sqe, /* fd */ 5, /* pollMask */ 0x2000u) },
+                onCqe = { _, _ -> },
+            )
+            assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp(), "opcode after poll prep")
+        }
+    }
+
+    // --- lastPollSqeMask (poll mask recording) ---
+
+    @Test
+    fun `lastPollSqeMask returns the mask written by keel_prep_poll_add`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            // Representative peer-FIN watch mask.
+            val mask: UInt = 0x2000u or 0x0010u or 0x0008u // POLLRDHUP | POLLHUP | POLLERR
+            el.submitCallback(
+                prepare = { sqe -> keel_prep_poll_add(sqe, /* fd */ 5, mask) },
+                onCqe = { _, _ -> },
+            )
+            assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp())
+            assertEquals(mask, fake.lastPollSqeMask(), "poll mask after poll prep")
+        }
+    }
+
     @Test
     fun `cancelSqe on a full SQ ring is a silent no-op`() {
         val fake = FakeIoUringRing()
@@ -105,5 +163,15 @@ class IoUringSqeSeamTest {
             fake.scriptSqRingFull()
             el.cancelSqe(slot) // must not throw
         }
+    }
+
+    private companion object {
+        // io_uring opcode values from `enum io_uring_op` in <linux/io_uring.h>.
+        // The kernel ABI freezes these (existing entries are append-only with
+        // stable indices), so hard-coding the well-known values keeps the test
+        // independent of cinterop enum-exposure details.
+        private const val IORING_OP_POLL_ADD: UByte = 6u
+        private const val IORING_OP_ACCEPT: UByte = 13u
+        private const val IORING_OP_RECV: UByte = 27u
     }
 }

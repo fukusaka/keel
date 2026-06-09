@@ -77,6 +77,26 @@ class ProvidedBufferRingSeamTest {
     }
 
     @Test
+    fun `initOnEventLoop records buffer payload addr and len for every bid`() {
+        val fake = FakeIoUringBufferRingOps()
+        val bufferSize = 64
+        withRing(fake, bufferCount = 4, bufferSize = bufferSize) { ring ->
+            ring.initOnEventLoop()
+            // addedBuffers carries the full record (bid, offset, addr, len).
+            assertEquals(4, fake.addedBuffers.size)
+            // Each bid resolves to a non-null pointer with the expected len.
+            for (bid in 0 until 4) {
+                val payload = fake.bufferForBid(bid)
+                assertTrue(payload != null, "bid $bid must be retrievable from bufferForBid")
+                assertEquals(bufferSize, payload!!.second, "bid $bid len")
+            }
+            // Each bid yields a distinct addr (pool slot != pool slot).
+            val distinctAddrs = fake.addedBuffers.map { it.addr }.distinct()
+            assertEquals(4, distinctAddrs.size, "every bid maps to a distinct addr")
+        }
+    }
+
+    @Test
     fun `initOnEventLoop throws when setup_buf_ring fails`() {
         val fake = FakeIoUringBufferRingOps().apply { scriptSetupFailure(ENOMEM) }
         withRing(fake) { ring ->
