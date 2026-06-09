@@ -157,4 +157,70 @@ class RegisteredBufferTableSeamTest {
             assertEquals(0, fake.unregisterBuffersCalls, "nothing was registered — nothing to unregister")
         }
     }
+
+    // --- partial-failure recovery (audit-2 follow-up) ---
+
+    @Test
+    fun `close after a failed init is a silent no-op`() {
+        // The warmup orchestration in IoUringEventLoopGroup wires close() via
+        // onExitHook, which fires unconditionally on EL exit. A failed init
+        // must not cause close() to issue a spurious unregister_buffers call —
+        // the kernel never accepted the registration, so there is nothing to
+        // unregister. A spurious call would error (`-EINVAL` typically) and
+        // produce a noisy warn-log on every shutdown.
+        val fake = FakeIoUringRegisteredBufferOps().apply { scriptRegisterFailure(ENOMEM) }
+        withTable(fake, bufferCount = 3) { table, _ ->
+            table.initOnEventLoop()
+            assertFalse(table.isActive, "init must have failed")
+            table.close()
+            assertEquals(
+                0,
+                fake.unregisterBuffersCalls,
+                "register_buffers never succeeded — close must NOT call unregister_buffers",
+            )
+        }
+    }
+
+    @Test
+    fun `initOnEventLoop after a failed init can be retried and succeeds`() {
+        // Defensive: a transient kernel pressure (-ENOMEM) on first init must
+        // not permanently strand the table. The next initOnEventLoop call has
+        // to retry — `isActive` is still false, so the early-return gate does
+        // not fire. The audit context was the warmup orchestration; this also
+        // covers a manual retry path if a caller chooses to re-attempt.
+        val fake = FakeIoUringRegisteredBufferOps().apply { scriptRegisterFailure(ENOMEM) }
+        withTable(fake, bufferCount = 3) { table, ptrs ->
+            table.initOnEventLoop()
+            assertFalse(table.isActive, "first init failed")
+            assertEquals(1, fake.registerBuffersCalls)
+
+            // Second attempt — the failure queue is empty so the fake returns
+            // the happy-path default (0).
+            table.initOnEventLoop()
+            assertTrue(table.isActive, "second init must succeed when the kernel recovers")
+            assertEquals(2, fake.registerBuffersCalls, "retry must call register_buffers a second time")
+
+            // The pointer→index map was cleared on the first failure but the
+            // second successful init does NOT rebuild it (constructor-time
+            // population only). This is the current contract — pin it so a
+            // future change that touches retry behaviour is forced to surface
+            // the rebuild question explicitly.
+            assertEquals(-1, table.indexOf(ptrs[0]), "ptrToIndex was cleared on first failure and is not rebuilt")
+        }
+    }
+
+    @Test
+    fun `indexOf returns -1 for every registered pointer after a failed init`() {
+        // ptrToIndex.clear() must wipe ALL entries, not just one. A stale
+        // partial-clear would hand a kernel-rejected index to SEND_ZC_FIXED
+        // and the kernel would reject the submit (EFAULT / EINVAL).
+        val fake = FakeIoUringRegisteredBufferOps().apply { scriptRegisterFailure(ENOMEM) }
+        withTable(fake, bufferCount = 3) { table, ptrs ->
+            table.initOnEventLoop()
+            assertFalse(table.isActive)
+            for ((i, ptr) in ptrs.withIndex()) {
+                assertEquals(-1, table.indexOf(ptr), "bid $i must be unresolvable after failed init")
+            }
+        }
+    }
 }
