@@ -91,11 +91,15 @@ internal class IoUringOwnedSource(
             eventLoop.dispatch(cont.context) {
                 if (!cont.isActive) return@dispatch
 
-                // Arm multishot recv lazily on first call.
-                if (multishotSlot == -1 && !closed && !eofQueued) armMultishotRecv()
-
-                // Rearm after buffer exhaustion if buffers have been returned.
-                if (needsRearm && !closed && !eofQueued) {
+                // Single arm gate covering both the first-call (multishotSlot == -1)
+                // and the rearm-after-termination (needsRearm) cases. A previous
+                // split-if formulation submitted two multishot recv SQEs when both
+                // conditions were true (the `-ENOBUFS` + `hasMore = 0` path, which
+                // resets `multishotSlot` to -1 AND sets `needsRearm`), orphaning the
+                // first slot and double-delivering kernel CQEs to wrappers that share
+                // bufId state. Combine into one gate so each dispatch arms at most
+                // once.
+                if (!closed && !eofQueued && (multishotSlot == -1 || needsRearm)) {
                     needsRearm = false
                     armMultishotRecv()
                 }
