@@ -46,6 +46,6 @@ public class TlsCodecServerInstaller(
      */
     override fun install(channel: PipelinedChannel, config: TlsConfig, plaintextBufferSize: Int) {
         val codec = factory.createServerCodec(config)
-        channel.pipeline.addFirst("tls", TlsHandler(codec, plaintextBufferSize))
+        channel.pipeline.addFirst("tls", TlsHandler(codec, plaintextBufferSize, config.handshakeTimeoutMillis))
     }
 }

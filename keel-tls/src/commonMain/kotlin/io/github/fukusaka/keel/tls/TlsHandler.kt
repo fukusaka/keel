@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.tls
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.pipeline.TimerHandle
 
 /**
  * Pipeline handler that applies TLS record protection.
@@ -43,15 +45,35 @@ class TlsHandler(
      * [requireValidPlaintextBufferSize].
      */
     private val plaintextBufferSize: Int = TLS_PLAINTEXT_BUF_SIZE_DEFAULT,
+    /**
+     * Absolute handshake time budget (ms); `0` (default) disables it. When
+     * positive, an absolute deadline is armed on the first inbound TLS record
+     * and disarmed when [TlsCodec.isHandshakeComplete] becomes true. If it
+     * elapses, the channel is force-closed — the time-axis defence against a
+     * peer that starts but never finishes the handshake. A peer that connects
+     * and sends nothing is bounded by the transport idle timeout instead. Set
+     * via [io.github.fukusaka.keel.tls.TlsConfig.handshakeTimeoutMillis].
+     */
+    private val handshakeTimeoutMillis: Long = 0,
 ) : DuplexHandler {
 
     init {
         requireValidPlaintextBufferSize(plaintextBufferSize)
+        require(handshakeTimeoutMillis >= 0) {
+            "handshakeTimeoutMillis ($handshakeTimeoutMillis) must be >= 0 (0 disables the deadline)"
+        }
     }
 
     private var ctx: PipelineHandlerContext? = null
     private var accumulate: IoBuf? = null
     private var handshakeNotified = false
+
+    // Handshake deadline: armed once on the first inbound record, cancelled on
+    // completion. Touched only on the EventLoop thread (onRead /
+    // checkHandshakeComplete / the timer task all run there).
+    private var handshakeDeadline: TimerHandle? = null
+    private var handshakeDeadlineArmed = false
+    private var noTimerWarned = false
 
     override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
@@ -59,6 +81,8 @@ class TlsHandler(
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        handshakeDeadline?.cancel()
+        handshakeDeadline = null
         accumulate?.release()
         accumulate = null
         codec.close()
@@ -72,10 +96,42 @@ class TlsHandler(
             ctx.propagateRead(msg)
             return
         }
+        // Arm the absolute handshake deadline on the first inbound record — the
+        // point a handshake demonstrably begins. A peer that connects but never
+        // sends a byte is bounded by the transport idle timeout instead; this
+        // deadline bounds a handshake that has started but does not complete.
+        // The deadline is absolute (armed once), so trickled records cannot
+        // refresh it the way they refresh an inactivity timer.
+        armHandshakeDeadlineIfNeeded(ctx)
         try {
             processInbound(ctx, msg)
         } finally {
             msg.release()
+        }
+    }
+
+    /**
+     * Arms the absolute handshake deadline once. Force-closes the channel on
+     * elapse (the same active-reclaim policy as the idle timeout). No-op when
+     * the deadline is disabled (`handshakeTimeoutMillis <= 0`), already armed,
+     * or the handshake has already completed. Warns once if a positive budget
+     * cannot be scheduled (the engine wires no EventLoop timer) rather than
+     * silently disabling the defence.
+     */
+    private fun armHandshakeDeadlineIfNeeded(ctx: PipelineHandlerContext) {
+        if (handshakeDeadlineArmed || handshakeTimeoutMillis <= 0 || handshakeNotified) return
+        handshakeDeadlineArmed = true
+        val handle = ctx.channel.scheduleDeadline(handshakeTimeoutMillis) {
+            handshakeDeadline = null
+            ctx.channel.close()
+        }
+        handshakeDeadline = handle
+        if (handle == null && !noTimerWarned) {
+            noTimerWarned = true
+            ctx.channel.logger.warn {
+                "TLS handshake deadline (${handshakeTimeoutMillis}ms) is configured but not enforced: " +
+                    "this channel's engine provides no EventLoop timer"
+            }
         }
     }
 
@@ -410,6 +466,9 @@ class TlsHandler(
     private fun checkHandshakeComplete(ctx: PipelineHandlerContext) {
         if (!handshakeNotified && codec.isHandshakeComplete) {
             handshakeNotified = true
+            // Handshake completed in time — disarm the deadline.
+            handshakeDeadline?.cancel()
+            handshakeDeadline = null
             ctx.propagateUserEvent(
                 TlsHandshakeComplete(
                     negotiatedProtocol = codec.negotiatedProtocol,

@@ -76,12 +76,32 @@ data class TlsConfig(
      * empty range (`minVersion > maxVersion`) is rejected at construction.
      */
     val maxVersion: TlsVersion? = null,
+
+    /**
+     * Absolute time budget (ms) for the TLS handshake to complete, measured
+     * from the first inbound TLS record to [TlsCodec.isHandshakeComplete]. `0`
+     * (default) disables it.
+     *
+     * When set, a peer that starts (or stalls) a handshake but never completes
+     * it is force-closed once the budget elapses — the time-axis defence against
+     * handshake resource holding that the transport idle timeout cannot enforce
+     * (a slow handshake that trickles record bytes keeps refreshing an
+     * inactivity timer, but not this absolute deadline). A peer that connects
+     * and sends nothing is bounded by the transport idle timeout instead.
+     * Enforced by [TlsHandler] via the per-EventLoop scheduler. Applies to
+     * either role; on a server it bounds slow / stalled inbound handshakes.
+     * Analogous to nginx `ssl_handshake_timeout`.
+     */
+    val handshakeTimeoutMillis: Long = 0,
 ) {
     init {
         if (maxVersion != null) {
             require(minVersion <= maxVersion) {
                 "minVersion ($minVersion) must be <= maxVersion ($maxVersion)"
             }
+        }
+        require(handshakeTimeoutMillis >= 0) {
+            "handshakeTimeoutMillis ($handshakeTimeoutMillis) must be >= 0 (0 disables the deadline)"
         }
     }
 }
