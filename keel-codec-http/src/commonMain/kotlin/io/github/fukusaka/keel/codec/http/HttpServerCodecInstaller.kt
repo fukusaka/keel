@@ -33,12 +33,21 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * @param headerLimits per-request header limits enforced by the
  *   installed [HttpRequestDecoder]; defaults to
  *   [HttpHeaderLimitsConfig.DEFAULT] (100-header cap).
+ * @param headerTimeoutMillis time budget from the first request byte to the
+ *   complete request head. When `> 0`, a [RequestDeadlineHandler] is inserted
+ *   right after the decoder to force-close a slow-header (slowloris) peer — the
+ *   codec-layer completion-deadline the transport idle timeout cannot enforce.
+ *   `0` (default) disables it.
  */
 public fun PipelinedChannel.addHttp1ServerCodec(
     aggregateBody: Boolean = true,
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+    headerTimeoutMillis: Long = 0,
 ) {
     pipeline.addLast("decoder", HttpRequestDecoder(headerLimits))
+    if (headerTimeoutMillis > 0) {
+        pipeline.addLast("request-deadline", RequestDeadlineHandler(headerTimeoutMillis))
+    }
     pipeline.addLast("encoder", HttpResponseEncoder())
     if (aggregateBody) {
         pipeline.addLast("aggregator", HttpBodyAggregator())
