@@ -51,6 +51,7 @@ class CompressionDslTest {
                 ratioLimit = 50
                 ratioBurst = 7
                 unknownEncoding = UnknownEncodingPolicy.Passthrough
+                timeBudgetMillis = 250
             }
         }.build()
         assertNotNull(cfg)
@@ -61,6 +62,7 @@ class CompressionDslTest {
         assertEquals(50, req.ratioLimit)
         assertEquals(7, req.ratioBurst)
         assertEquals(UnknownEncodingPolicy.Passthrough, req.unknownEncoding)
+        assertEquals(250, req.timeBudgetMillis)
     }
 
     @Test
@@ -73,6 +75,7 @@ class CompressionDslTest {
         assertEquals(HttpRequestDecompressionHandler.DEFAULT_RATIO_LIMIT, req.ratioLimit)
         assertEquals(HttpRequestDecompressionHandler.DEFAULT_RATIO_BURST, req.ratioBurst)
         assertEquals(UnknownEncodingPolicy.UnsupportedMediaType, req.unknownEncoding)
+        assertEquals(HttpRequestDecompressionHandler.DEFAULT_TIME_BUDGET_MILLIS, req.timeBudgetMillis)
     }
 
     @Test

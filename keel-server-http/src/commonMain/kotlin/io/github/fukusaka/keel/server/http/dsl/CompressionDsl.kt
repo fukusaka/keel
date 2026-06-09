@@ -294,11 +294,26 @@ public class RequestDecompressionBuilder internal constructor() {
      */
     public var unknownEncoding: UnknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType
 
+    /**
+     * Per-request CPU-burn time cap in milliseconds — the cumulative
+     * wall-clock the decoder may spend on one request before it is
+     * force-aborted. Defaults to
+     * [HttpRequestDecompressionHandler.DEFAULT_TIME_BUDGET_MILLIS]
+     * (**0** = disabled). The size / ratio caps bound the decoder's
+     * *output*, but a crafted stream (e.g. chunked empty / sync-flush
+     * deflate blocks) can keep output small and the ratio low while
+     * burning CPU; a positive budget closes that time escape. Opt-in,
+     * because a sensible value depends on the host CPU and the largest
+     * legitimate decompression.
+     */
+    public var timeBudgetMillis: Long = HttpRequestDecompressionHandler.DEFAULT_TIME_BUDGET_MILLIS
+
     internal fun build(): RequestDecompressionConfig = RequestDecompressionConfig(
         limit = limit,
         ratioLimit = ratioLimit,
         ratioBurst = ratioBurst,
         unknownEncoding = unknownEncoding,
+        timeBudgetMillis = timeBudgetMillis,
     )
 }
 
@@ -335,6 +350,7 @@ public class CompressionPipelineConfig internal constructor(
             ratioLimit = req.ratioLimit,
             ratioBurst = req.ratioBurst,
             unknownEncodingPolicy = req.unknownEncoding,
+            decompressionTimeBudgetMillis = req.timeBudgetMillis,
         )
     }
 }
@@ -345,4 +361,5 @@ public data class RequestDecompressionConfig(
     val ratioLimit: Int,
     val ratioBurst: Int,
     val unknownEncoding: UnknownEncodingPolicy,
+    val timeBudgetMillis: Long = HttpRequestDecompressionHandler.DEFAULT_TIME_BUDGET_MILLIS,
 )
