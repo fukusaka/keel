@@ -192,6 +192,64 @@ class IoUringTransportRecvStarvationSeamTest {
         }
     }
 
+    @Test
+    fun `large-frame batch with res greater than zero CQEs filling the ring then ENOBUFS rearms immediately at the transport`() {
+        // Cross-boundary regression for PR #643: a single read delivery
+        // larger than the whole provided-buffer ring (e.g. a ~1 MiB WS frame
+        // vs a 512 KiB ring) makes the kernel fill + report every buffer and
+        // raise -ENOBUFS all within one CQE batch. The application releases
+        // each buffer inside its `onRead` callback (typical pipeline drain),
+        // so the ring is already non-empty when the terminal -ENOBUFS CQE is
+        // processed and the transport re-arms immediately. PR #643's pre-fix
+        // path deferred the re-arm and stalled — `returnBuffer` had already
+        // happened during the batch, so no later `returnBuffer` remained to
+        // fire the rearmRecvAfterStarvation callback.
+        //
+        // ProvidedBufferRingSeamTest pins the ring-level invariant
+        // (`returns within one CQE batch keep the ring non-empty at -ENOBUFS`);
+        // this test pins the transport-level cross-boundary integration of
+        // that invariant with the IoUringIoTransport's -ENOBUFS branch.
+        val bufferCount = 4
+        withTransport(bufferCount = bufferCount) { fake, el, _, transport ->
+            // Release each delivered IoBuf inside onRead — what a typical
+            // pipeline consumer does (the codec processes the bytes
+            // synchronously and the wrapper's reference count drops to zero
+            // at the end of onRead, triggering RingBufferIoBuf.release →
+            // ProvidedBufferRing.returnBuffer).
+            transport.onRead = { buf -> buf.release() }
+
+            val recvUserData = arm(fake, el, transport)
+            val afterArm = fake.getSqeCalls
+
+            // Enqueue bufferCount res > 0 CQEs (one per buffer slot), all
+            // with hasMore = true, followed by the terminal -ENOBUFS CQE.
+            // The single runIteration drain processes them in order; each
+            // res > 0 fires onRead → release → returnBuffer.
+            for (bid in 0 until bufferCount) {
+                fake.enqueueCqe(
+                    userData = recvUserData,
+                    res = 64,
+                    flags = (bid.toUInt() shl 16) or 1u, // F_BUFFER + bid encoded in upper bits
+                    hasMore = true,
+                )
+            }
+            fake.enqueueCqe(userData = recvUserData, res = -ENOBUFS, flags = 0u, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+
+            // The transport must re-arm immediately at the terminal -ENOBUFS
+            // because the in-batch returnBuffer calls left the ring non-empty.
+            // Without PR #643's fix this would have deferred (hasAvailable was
+            // computed once per CQE without the onConsumed/returnBuffer cross
+            // tracking) and the rest of the large frame would never arrive.
+            assertEquals(
+                afterArm + 1,
+                fake.getSqeCalls,
+                "the transport must immediately re-arm when in-batch returnBuffer calls keep the ring non-empty",
+            )
+            assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "the re-arm is another multishot recv")
+        }
+    }
+
     private companion object {
         // io_uring opcode value from `enum io_uring_op` in <linux/io_uring.h>.
         private const val IORING_OP_RECV: UByte = 27u
