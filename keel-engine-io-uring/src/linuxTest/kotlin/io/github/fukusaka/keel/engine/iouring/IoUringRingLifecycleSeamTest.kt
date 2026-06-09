@@ -124,4 +124,26 @@ class IoUringRingLifecycleSeamTest {
             assertEquals(0, fake.queueExitCalls, "a failed queue_init must not arm queue_exit")
         }
     }
+
+    @Test
+    fun `close is idempotent — a second call does not invoke queue_exit again`() {
+        // The teardown is gated on `running.compareAndSet(1, 0)`; subsequent
+        // calls return early. Pin it so a future change to the close path
+        // (e.g. moving wakeupFd cleanup outside the CAS guard) cannot make
+        // teardown double-fire — that would double-close wakeupFd and
+        // potentially queue_exit a destroyed ring. The `withEventLoop`
+        // helper itself calls `close()` in its finally block, so this test
+        // explicitly exercises one in-block close + the implicit finally
+        // close and asserts both together count as one teardown.
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            el.initRing()
+            el.close()
+            assertEquals(1, fake.queueExitCalls, "first close issues queue_exit")
+            el.close()
+            assertEquals(1, fake.queueExitCalls, "second close is a no-op")
+        }
+        // After the implicit finally close() the count must still be 1.
+        assertEquals(1, fake.queueExitCalls, "finally close is also a no-op")
+    }
 }

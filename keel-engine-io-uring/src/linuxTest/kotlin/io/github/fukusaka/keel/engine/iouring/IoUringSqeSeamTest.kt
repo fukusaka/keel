@@ -152,6 +152,27 @@ class IoUringSqeSeamTest {
         }
     }
 
+    // --- submitMultishotRecv SQ-ring-full coverage ---
+
+    @Test
+    fun `submitMultishotRecv throws when the SQ ring is full`() {
+        // Parallel to the submitCallback / submitMultishot SQ-ring-full
+        // tests: the recv-specific multishot variant goes through the same
+        // getSqe ?: error("...") gate. Pin it explicitly so a future
+        // refactor that touches the recv submit cannot drop the gate
+        // without the seam catching it.
+        val fake = FakeIoUringRing().apply { scriptSqRingFull() }
+        withEventLoop(fake) { el ->
+            val ex = assertFailsWith<IllegalStateException> {
+                el.submitMultishotRecv(fd = 5, bgid = 0) { _, _ -> }
+            }
+            assertTrue(
+                ex.message!!.contains("io_uring SQ ring full"),
+                "message should mention the full SQ ring, got: ${ex.message}",
+            )
+        }
+    }
+
     @Test
     fun `cancelSqe on a full SQ ring is a silent no-op`() {
         val fake = FakeIoUringRing()

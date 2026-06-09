@@ -9,6 +9,7 @@ import kotlinx.cinterop.ptr
 import platform.posix.EINTR
 import platform.posix.ENOMEM
 import platform.posix.EPIPE
+import platform.posix.ETIME
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -66,6 +67,20 @@ class IoUringCqeSeamTest {
         val fake = FakeIoUringRing().apply { scriptSubmitAndWait(-EINTR) }
         withEventLoop(fake) { el ->
             assertTrue(el.runIteration(Cqe()), "EINTR is a retryable interrupt — the loop continues")
+        }
+    }
+
+    @Test
+    fun `runIteration returns true on ETIME from submit_and_wait`() {
+        // -ETIME (PR #726) is the deadline-elapsed completion the timed
+        // submit_and_wait variant returns — the loop must continue so the
+        // deadline scheduler's expireDue runs even when no other CQE was
+        // ready. Pinned alongside the EINTR test so a future refactor that
+        // splits the `err == EINTR || err == ETIME` branch cannot break one
+        // without the seam catching it.
+        val fake = FakeIoUringRing().apply { scriptSubmitAndWait(-ETIME) }
+        withEventLoop(fake) { el ->
+            assertTrue(el.runIteration(Cqe()), "ETIME is a non-fatal deadline elapse — the loop continues")
         }
     }
 
