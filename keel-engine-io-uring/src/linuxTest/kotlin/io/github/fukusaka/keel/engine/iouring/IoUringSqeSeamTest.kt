@@ -135,6 +135,23 @@ class IoUringSqeSeamTest {
         }
     }
 
+    // --- lastPollSqeMask (poll mask recording) ---
+
+    @Test
+    fun `lastPollSqeMask returns the mask written by keel_prep_poll_add`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake) { el ->
+            // Representative peer-FIN watch mask.
+            val mask: UInt = 0x2000u or 0x0010u or 0x0008u // POLLRDHUP | POLLHUP | POLLERR
+            el.submitCallback(
+                prepare = { sqe -> keel_prep_poll_add(sqe, /* fd */ 5, mask) },
+                onCqe = { _, _ -> },
+            )
+            assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp())
+            assertEquals(mask, fake.lastPollSqeMask(), "poll mask after poll prep")
+        }
+    }
+
     @Test
     fun `cancelSqe on a full SQ ring is a silent no-op`() {
         val fake = FakeIoUringRing()
