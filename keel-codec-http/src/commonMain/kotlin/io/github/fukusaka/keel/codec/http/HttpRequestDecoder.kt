@@ -171,6 +171,14 @@ class HttpRequestDecoder(
     // partial reads.
     private var chunkCrlfSeen: Int = 0
 
+    // True once [HttpRequestStarted] has been emitted for the request currently
+    // being parsed. Reset whenever the parser leaves READ_REQUEST_LINE, so the next
+    // entry into a request line (a new request, after the previous one's
+    // HttpBodyEnd) re-announces. Powers the header-complete deadline: the downstream
+    // RequestDeadlineHandler arms its timer on HttpRequestStarted and disarms on the
+    // HttpRequestHead. See processBuffer.
+    private var requestStartAnnounced: Boolean = false
+
     override fun onInactive(ctx: PipelineHandlerContext) {
         // The decoder's current accumulator is borrowed from
         // [HttpHeadersPool]. On connection close it has not been
@@ -196,6 +204,19 @@ class HttpRequestDecoder(
 
     private fun processBuffer(ctx: PipelineHandlerContext, buf: IoBuf) {
         while (buf.readableBytes > 0) {
+            // Announce the start of a request exactly once, on the first byte of its
+            // request line. Detecting the transition into READ_REQUEST_LINE (rather
+            // than flagging every `state = READ_REQUEST_LINE` site) also covers the
+            // HTTP-pipelining case where a second request's line begins in the same
+            // buffer right after the first request's HttpBodyEnd.
+            if (state == State.READ_REQUEST_LINE) {
+                if (!requestStartAnnounced) {
+                    requestStartAnnounced = true
+                    ctx.propagateUserEvent(HttpRequestStarted)
+                }
+            } else {
+                requestStartAnnounced = false
+            }
             when (state) {
                 State.READ_FIXED_BODY -> {
                     val avail = buf.readableBytes
@@ -911,6 +932,9 @@ class HttpRequestDecoder(
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0
+        // After an aborted parse the next inbound byte begins a fresh request line
+        // (if the connection survives), so re-announce it.
+        requestStartAnnounced = false
         headerByteCount = 0
     }
 
