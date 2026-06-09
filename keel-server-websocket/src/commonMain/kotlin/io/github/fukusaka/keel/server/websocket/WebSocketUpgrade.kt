@@ -13,16 +13,73 @@ import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.codec.websocket.addWsServerCodec
 import io.github.fukusaka.keel.codec.websocket.computeAcceptKey
 import io.github.fukusaka.keel.compression.CompressionCodec
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.server.http.HttpCall
 import io.github.fukusaka.keel.server.http.UpgradeProtocol
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Pipeline handler name of the WebSocket frame bridge installed by [runWebSocketUpgrade]. */
 private const val WS_BRIDGE_NAME = "ws-bridge"
+
+/**
+ * Upper bound on draining the WebSocket read pump during session teardown
+ * ([drainPumpThenRelease]).
+ *
+ * The drain normally completes in well under a millisecond — the pump is either
+ * parked awaiting the next frame (where cancellation is immediate) or finishing a
+ * single synchronous inflate. This is only a backstop against a pump wedged in a
+ * non-cancellable call, so teardown cannot hang; it is generous on purpose.
+ */
+private const val PUMP_DRAIN_TIMEOUT_MILLIS: Long = 5_000
+
+/**
+ * Cancels and **drains** the read [pump], then runs [release] (the
+ * permessage-deflate teardown) — never the other way round.
+ *
+ * The pump may be mid-inflate (`decoder.update` / `flush` on native zlib state)
+ * when teardown begins, and the synchronous inflate is not a cancellation point,
+ * so a bare `cancel()` does not stop it. Releasing the decoder out from under an
+ * in-flight inflate is a use-after-free / double-free. Joining first guarantees
+ * the in-flight inflate has finished before [release] closes the decoder.
+ *
+ * The join runs under [NonCancellable] because this teardown executes from a
+ * `finally` that can itself be running while shutdown cancels the enclosing scope
+ * — where a plain join would throw `CancellationException` and skip the drain,
+ * exactly the case the race bites. It is bounded by [timeoutMillis] so a pump
+ * wedged in a non-cancellable call cannot hang teardown; on timeout the pump
+ * could not be drained, so [release] runs without a clean join (bounded teardown
+ * is preferred over an unbounded wait) and a warning is logged rather than the
+ * failure passing silently.
+ */
+internal suspend fun drainPumpThenRelease(
+    pump: Job,
+    logger: Logger,
+    timeoutMillis: Long = PUMP_DRAIN_TIMEOUT_MILLIS,
+    release: () -> Unit,
+) {
+    val drained = withContext(NonCancellable) {
+        withTimeoutOrNull(timeoutMillis) {
+            pump.cancelAndJoin()
+            true
+        }
+    }
+    if (drained == null) {
+        logger.warn {
+            "WebSocket read pump did not drain within ${timeoutMillis}ms; " +
+                "releasing permessage-deflate without a clean join"
+        }
+    }
+    release()
+}
 
 /**
  * Pipeline handler names of every HTTP/1.1 codec stage any keel HTTP
@@ -176,9 +233,10 @@ public suspend fun runWebSocketUpgrade(
                         session.close(WsCloseCode.NORMAL_CLOSURE)
                     }
                 }
-                pump.cancel()
-                // Release the permessage-deflate engine's native state.
-                session.releaseDeflate()
+                // Drain the pump before releasing the permessage-deflate decoder:
+                // releasing native zlib state under an in-flight inflate is a
+                // use-after-free. See [drainPumpThenRelease].
+                drainPumpThenRelease(pump, channel.logger) { session.releaseDeflate() }
             }
         }
     } finally {
