@@ -9,6 +9,7 @@ import io_uring.iovec
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.keel_prep_msg_ring
+import io_uring.keel_prep_recv
 import io_uring.keel_prep_recv_buf_select
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
@@ -22,6 +23,7 @@ import io_uring.keel_sqe_set_fixed_file
 import io_uring.keel_unregister_napi
 import io_uring.keel_unregister_ring_fd
 import kotlinx.cinterop.Arena
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -789,6 +791,29 @@ internal class IoUringEventLoop(
     }
 
     /**
+     * Like [cancelSqe], but keeps the registered callback alive so the
+     * cancelled operation's terminal CQE (`-ECANCELED`, or a late
+     * completion that beat the cancellation) still reaches its owner.
+     *
+     * Required when the in-flight operation owns a resource that only its
+     * completion may safely release — e.g. the allocator-buffer recv
+     * fallback's destination buffer: the kernel may still write into it
+     * until the terminal CQE, so the owner must release it from the
+     * callback rather than at teardown time, and the no-op replacement
+     * [cancelSqe] performs would leak it. The drain loop still frees the
+     * slot itself once the terminal CQE arrives (`F_MORE` clear).
+     *
+     * The kept callback must tolerate post-teardown invocation (typically
+     * an `!opened` branch that only releases resources).
+     */
+    internal fun cancelSqeKeepCallback(slot: Int) {
+        val sqe = ioUringRing.getSqe(ring.ptr) ?: return
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_prep_cancel64(sqe, userData, 0)
+        io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
+    }
+
+    /**
      * Submits a multishot recv SQE with provided buffer selection.
      *
      * Combines `IORING_RECV_MULTISHOT` and `IOSQE_BUFFER_SELECT` in a single
@@ -854,6 +879,45 @@ internal class IoUringEventLoop(
         val sqe = ioUringRing.getSqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_recv_buf_select(sqe, fd, len.toUInt(), bgid.toUShort())
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
+        val slot = acquireSlot()
+        callbackSlots[slot] = onCqe
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+        return slot
+    }
+
+    /**
+     * Submits a plain single-shot recv SQE into a caller-owned buffer —
+     * the fallback shape of [submitMultishotRecv] / [submitRecvBufSelect]
+     * for kernels without a provided buffer ring (< 5.19, see
+     * [IoUringCapabilities.providedBufferRing]).
+     *
+     * No kernel-side buffer selection: the destination [buf] is fixed at
+     * submit time and **must stay valid until the CQE arrives** — the
+     * caller owns its lifetime (typically an allocator-owned IoBuf held
+     * by the transport until completion). Each SQE produces exactly one
+     * CQE; the caller re-arms with a fresh buffer after every completion.
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param fd   The connected socket file descriptor.
+     * @param buf  Destination memory; valid until the CQE.
+     * @param len  Capacity of [buf] in bytes.
+     * @param onCqe Callback invoked on the EventLoop thread for the CQE.
+     * @return The slot index, needed for [cancelSqe].
+     * @throws IllegalStateException if the SQ ring is full.
+     */
+    internal fun submitRecv(
+        fd: Int,
+        buf: CPointer<ByteVar>,
+        len: Int,
+        fixedFile: Boolean = false,
+        onCqe: (res: Int, flags: UInt) -> Unit,
+    ): Int {
+        val sqe = ioUringRing.getSqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_recv(sqe, fd, buf, len.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         callbackSlots[slot] = onCqe
