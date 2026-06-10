@@ -78,7 +78,7 @@ internal class IoUringIoTransport(
     allocator: BufferAllocator,
     private val bufferRing: ProvidedBufferRing? = null,
     private val fixedFileRegistry: FixedFileRegistry? = null,
-    private val registeredBufferTable: IoUringFixedBufferRegistry? = null,
+    private val registeredBufferTable: IoUringFixedBufferRegistry = DisabledRegisteredBufferRegistry,
     /**
      * Kernel-allocated fixed-file index for direct-allocated multishot accept.
      * When >= 0, the kernel has already placed the fd into the registered
@@ -885,8 +885,8 @@ internal class IoUringIoTransport(
         buf: IoBuf, offset: Int, length: Int, onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
-        val bufIndex = registeredBufferTable?.indexOf(buf.unsafePointer)
-        if (bufIndex != null && bufIndex >= 0) {
+        val bufIndex = registeredBufferTable.indexOf(buf.unsafePointer)
+        if (bufIndex >= 0) {
             // Registered buffer: use SEND_ZC_FIXED (no per-send page pinning).
             eventLoop.submitSendZcFixedCallback(
                 sqeFd, ptr, length.convert(), MSG_NOSIGNAL,

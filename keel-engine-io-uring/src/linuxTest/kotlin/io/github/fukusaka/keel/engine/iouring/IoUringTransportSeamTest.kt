@@ -69,7 +69,7 @@ class IoUringTransportSeamTest {
             allocator = DefaultAllocator,
             bufferRing = null,
             fixedFileRegistry = null,
-            registeredBufferTable = null,
+            registeredBufferTable = DisabledRegisteredBufferRegistry,
             preAllocatedIndex = -1,
             nativeSocket = fake,
         )
