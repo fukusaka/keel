@@ -58,6 +58,15 @@ internal class IoUringEventLoopGroup(
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
+    /**
+     * Per-EventLoop Fixed Buffer registry strategy. Resolved against
+     * `capabilities.registeredBuffers`: `STATIC` falls back to `DISABLED`
+     * with a warn log when the kernel lacks `IORING_REGISTER_BUFFERS`;
+     * `DYNAMIC` (not yet implemented) is rejected with an early
+     * `IllegalStateException`. See [RegisteredBufferStrategy] for the
+     * per-value semantics.
+     */
+    private val registeredBufferStrategy: RegisteredBufferStrategy = RegisteredBufferStrategy.STATIC,
 ) {
 
     /** Number of EventLoop threads in this group. */
@@ -79,7 +88,10 @@ internal class IoUringEventLoopGroup(
     // field because the per-EventLoop warmup + enumeration + table construction is
     // deferred to the EventLoop pthread in start(), where `capabilities` (a
     // constructor parameter, not a field) is no longer in scope.
-    private val registeredBuffersEnabled = capabilities.registeredBuffers
+    // Derived from both the requested strategy and the kernel capability.
+    // DISABLED short-circuits warmup + enumeration + registration entirely.
+    private val registeredBuffersEnabled = capabilities.registeredBuffers &&
+        registeredBufferStrategy == RegisteredBufferStrategy.STATIC
 
     // Per-EventLoop SEND_ZC_FIXED registered-buffer tables. Populated on each
     // EventLoop's own pthread during start() (warmup -> pool enumeration ->
@@ -92,10 +104,30 @@ internal class IoUringEventLoopGroup(
     // of which thread warms and enumerates them. Allocators that are not a
     // PooledAllocator subclass leave the entry null and SEND_ZC falls back to per-send
     // page pinning. The kernel io_uring_register_buffers syscall already ran on the
-    // EventLoop pthread (RegisteredBufferTable.initOnEventLoop); only warmup +
-    // enumeration + table construction move here.
-    private val bufferTables: Array<RegisteredBufferTable?> = arrayOfNulls(size)
+    // EventLoop pthread (StaticRegisteredBufferRegistry.initOnEventLoop); only
+    // warmup + enumeration + registry construction move here.
+    private val bufferTables: Array<IoUringFixedBufferRegistry?> = arrayOfNulls(size)
     private val index = AtomicInt(0)
+
+    init {
+        // Resolve the requested strategy against kernel capabilities.
+        // DYNAMIC is not yet implemented — surface a clear error at engine
+        // construction so a deployment that requested it does not silently
+        // get the STATIC fallback.
+        check(registeredBufferStrategy != RegisteredBufferStrategy.DYNAMIC) {
+            "RegisteredBufferStrategy.DYNAMIC is not yet implemented. " +
+                "Use STATIC (default) or DISABLED."
+        }
+        // STATIC + kernel < 5.6 (no IORING_REGISTER_BUFFERS) → auto-fall back
+        // to DISABLED with a warn log. The engine still starts; every send
+        // goes through regular SEND_ZC with per-send page pinning.
+        if (registeredBufferStrategy == RegisteredBufferStrategy.STATIC && !capabilities.registeredBuffers) {
+            logger.warn {
+                "RegisteredBufferStrategy.STATIC requested but the kernel does not support " +
+                    "IORING_REGISTER_BUFFERS (requires Linux ≥ 5.6); falling back to DISABLED."
+            }
+        }
+    }
 
     /**
      * Warms up the allocator pool by allocating and releasing buffers
@@ -124,7 +156,7 @@ internal class IoUringEventLoopGroup(
      * thread-affinity invariants.
      *
      * The per-EventLoop registered-buffer warmup (pool fill + [warmupPool]),
-     * pooled-address enumeration, and [RegisteredBufferTable] construction also run
+     * pooled-address enumeration, and [StaticRegisteredBufferRegistry] construction also run
      * inside this dispatch — on the owning pthread, immediately before the kernel
      * registration — so the enumerated pool addresses are resident on the thread that
      * will hand them out. This is behaviour-neutral under instance-handout but is the
@@ -179,8 +211,16 @@ internal class IoUringEventLoopGroup(
                             io.github.fukusaka.keel.buf.enumerateNativePooledBuffers(it)
                         }
                         if (pooled != null && pooled.isNotEmpty()) {
-                            bufferTables[i] = RegisteredBufferTable(loops[i], pooled, logger)
+                            bufferTables[i] = StaticRegisteredBufferRegistry(loops[i], pooled, logger)
                         }
+                    }
+                    // Every non-STATIC outcome (strategy DISABLED, kernel-capability
+                    // fallback, non-pooled allocator, empty pool enumeration) gets the
+                    // null-object registry, so bufferTableAt never hands out null once
+                    // the group has started and downstream plumbing can drop its
+                    // nullable handling as it migrates to the interface.
+                    if (bufferTables[i] == null) {
+                        bufferTables[i] = DisabledRegisteredBufferRegistry
                     }
                     bufferRings[i]?.initOnEventLoop()
                     fileRegistries[i]?.initOnEventLoop()
@@ -246,8 +286,8 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop [FixedFileRegistry] at [i], or null if not supported. */
     fun fileRegistryAt(i: Int): FixedFileRegistry? = fileRegistries[i]
 
-    /** Returns the per-EventLoop [RegisteredBufferTable] at [i], or null if not enabled. */
-    fun bufferTableAt(i: Int): RegisteredBufferTable? = bufferTables[i]
+    /** Returns the per-EventLoop [IoUringFixedBufferRegistry] at [i], or null if not enabled. */
+    fun bufferTableAt(i: Int): IoUringFixedBufferRegistry? = bufferTables[i]
 
     /**
      * Stops all EventLoop threads and releases resources.

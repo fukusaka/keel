@@ -78,7 +78,7 @@ internal class IoUringIoTransport(
     allocator: BufferAllocator,
     private val bufferRing: ProvidedBufferRing? = null,
     private val fixedFileRegistry: FixedFileRegistry? = null,
-    private val registeredBufferTable: RegisteredBufferTable? = null,
+    private val registeredBufferTable: IoUringFixedBufferRegistry? = null,
     /**
      * Kernel-allocated fixed-file index for direct-allocated multishot accept.
      * When >= 0, the kernel has already placed the fd into the registered

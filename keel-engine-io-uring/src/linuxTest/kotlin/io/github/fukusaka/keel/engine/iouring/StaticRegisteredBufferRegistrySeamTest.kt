@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Seam-level unit tests for [RegisteredBufferTable] via
+ * Seam-level unit tests for [StaticRegisteredBufferRegistry] via
  * [FakeIoUringRegisteredBufferOps] injection. Covers the
  * `io_uring_register_buffers` / `unregister_buffers` failure branches —
  * only reachable under real kernel pressure (`ENOMEM` when the kernel
@@ -25,29 +25,29 @@ import kotlin.test.assertTrue
  * the tests run synchronously on the test thread — no timeout needed.
  */
 @OptIn(ExperimentalForeignApi::class)
-class RegisteredBufferTableSeamTest {
+class StaticRegisteredBufferRegistrySeamTest {
 
-    private val logger = NoopLoggerFactory.logger("RegisteredBufferTableSeamTest")
+    private val logger = NoopLoggerFactory.logger("StaticRegisteredBufferRegistrySeamTest")
 
     private companion object {
         const val BUF_CAP = 64
     }
 
     /**
-     * Builds a [RegisteredBufferTable] backed by [fake] over [bufferCount]
+     * Builds a [StaticRegisteredBufferRegistry] backed by [fake] over [bufferCount]
      * freshly-allocated native buffers, runs [block] with the table and the
      * buffer pointer list, then frees everything.
      */
     private fun withTable(
         fake: FakeIoUringRegisteredBufferOps,
         bufferCount: Int = 3,
-        block: (RegisteredBufferTable, List<CPointer<ByteVar>>) -> Unit,
+        block: (StaticRegisteredBufferRegistry, List<CPointer<ByteVar>>) -> Unit,
     ) {
         val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps())
         val ptrs = List(bufferCount) { nativeHeap.allocArray<ByteVar>(BUF_CAP) }
         val buffers = ptrs.map { it to BUF_CAP }
         try {
-            block(RegisteredBufferTable(el, buffers, logger, fake), ptrs)
+            block(StaticRegisteredBufferRegistry(el, buffers, logger, fake), ptrs)
         } finally {
             ptrs.forEach { nativeHeap.free(it.rawValue) }
             el.close()
