@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.benchmark
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.engine.iouring.IoModeSelectors
 import io.github.fukusaka.keel.engine.iouring.IoUringEngine
+import io.github.fukusaka.keel.engine.iouring.RegisteredBufferStrategy
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.runBlocking
@@ -71,6 +72,14 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
         } else {
             null
         }
+        // A/B axis for the STATIC-vs-DISABLED registered-buffer comparison:
+        // BENCH_REGISTERED_BUFFER_STRATEGY=disabled turns registration off
+        // while keeping the same capability set, so the only delta is the
+        // SEND_ZC_FIXED-vs-regular dispatch.
+        val bufferStrategy = when (getenv("BENCH_REGISTERED_BUFFER_STRATEGY")?.toKString()) {
+            "disabled" -> RegisteredBufferStrategy.DISABLED
+            else -> RegisteredBufferStrategy.STATIC
+        }
         val engine = IoUringEngine(
             config = IoEngineConfig(
                 threads = threads,
@@ -78,6 +87,7 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             ),
             writeModeSelector = modeSelector,
             capabilities = caps,
+            registeredBufferStrategy = bufferStrategy,
         )
 
         // Pre-built responses: headers and body are computed once at startup.
