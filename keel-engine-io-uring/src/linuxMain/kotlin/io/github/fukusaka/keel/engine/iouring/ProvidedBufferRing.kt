@@ -150,7 +150,19 @@ internal class ProvidedBufferRing(
         if (pendingRearm.isNotEmpty()) {
             val toRearm = pendingRearm.toTypedArray()
             pendingRearm.clear()
-            for (rearm in toRearm) rearm()
+            for (rearm in toRearm) {
+                // Per-callback guard: the ring is shared by every connection
+                // on this EventLoop, so one transport's throwing re-arm
+                // (e.g. an SQ-ring-full error) must not skip the remaining
+                // starved transports — they would otherwise never re-arm
+                // and starve forever (no later returnBuffer is obligated
+                // to come from THEIR buffers).
+                try {
+                    rearm()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "deferred recv re-arm threw; remaining re-arms continue" }
+                }
+            }
         }
     }
 
