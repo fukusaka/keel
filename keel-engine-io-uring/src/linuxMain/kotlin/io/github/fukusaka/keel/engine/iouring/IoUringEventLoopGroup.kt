@@ -326,6 +326,16 @@ internal class IoUringEventLoopGroup(
         for (loop in loops) loop.close()
     }
 
+    /**
+     * Sums [IoUringEventLoop.sendZcFixedCount] across all loops. Only safe
+     * after [close] has joined every EventLoop pthread (the per-EL counters
+     * are plain unsynchronised `Long`s).
+     */
+    fun totalSendZcFixedCount(): Long = loops.sumOf { it.sendZcFixedCount }
+
+    /** Counterpart of [totalSendZcFixedCount] for the regular `SEND_ZC` dispatches. */
+    fun totalSendZcRegularCount(): Long = loops.sumOf { it.sendZcRegularCount }
+
     companion object {
         /**
          * Default per-EventLoop warmup count for the STATIC registered-buffer

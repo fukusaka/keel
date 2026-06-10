@@ -820,6 +820,26 @@ internal class IoUringEventLoop(
         return slot
     }
 
+    // --- Zero-copy send dispatch counters ---
+
+    /**
+     * Number of zero-copy sends dispatched as `SEND_ZC_FIXED` (buffer found
+     * in the registered set) on this EventLoop. Plain `Long`, EL-confined —
+     * incremented from the transport's SEND_ZC dispatch which always runs on
+     * this pthread, read for diagnostics after the loop has stopped.
+     *
+     * Together with [sendZcRegularCount] this exposes the Fixed-vs-regular
+     * dispatch ratio: a high regular share under
+     * [RegisteredBufferStrategy.STATIC] means sends are missing the
+     * registered set (pool exhaustion under load, oversized payloads, or a
+     * `registeredBufferSlotCount` below the working set) and the
+     * registration is not paying for its `RLIMIT_MEMLOCK` pin.
+     */
+    internal var sendZcFixedCount: Long = 0
+
+    /** Counterpart of [sendZcFixedCount]: sends that fell back to regular `SEND_ZC`. */
+    internal var sendZcRegularCount: Long = 0
+
     // --- Wakeup ---
 
     private fun wakeup() {

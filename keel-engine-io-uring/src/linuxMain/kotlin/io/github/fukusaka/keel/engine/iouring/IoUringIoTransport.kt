@@ -888,6 +888,7 @@ internal class IoUringIoTransport(
         val bufIndex = registeredBufferTable.indexOf(buf.unsafePointer)
         if (bufIndex >= 0) {
             // Registered buffer: use SEND_ZC_FIXED (no per-send page pinning).
+            eventLoop.sendZcFixedCount++
             eventLoop.submitSendZcFixedCallback(
                 sqeFd, ptr, length.convert(), MSG_NOSIGNAL,
                 bufIndex = bufIndex, fixedFile = useFixedFile,
@@ -912,6 +913,7 @@ internal class IoUringIoTransport(
             }
         } else {
             // Unregistered buffer: use regular SEND_ZC (per-send page pinning).
+            eventLoop.sendZcRegularCount++
             eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
                 if (res < 0) {
                     eventLoop.logger.warn {

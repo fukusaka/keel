@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.info
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -466,6 +467,14 @@ class IoUringEngine(
             coroutineContext.job.cancelAndJoin()
             bossLoop.close()
             workerGroup.close()
+            // Surface the zero-copy dispatch split for diagnostics / bench runs.
+            // Reading the per-EL counters is safe here: close() above joined
+            // every EventLoop pthread, so the plain Longs are quiescent.
+            val fixed = workerGroup.totalSendZcFixedCount()
+            val regular = workerGroup.totalSendZcRegularCount()
+            if (fixed + regular > 0) {
+                logger.info { "SEND_ZC dispatch: fixed=$fixed regular=$regular" }
+            }
             logger.debug { "Engine closed" }
         }
     }

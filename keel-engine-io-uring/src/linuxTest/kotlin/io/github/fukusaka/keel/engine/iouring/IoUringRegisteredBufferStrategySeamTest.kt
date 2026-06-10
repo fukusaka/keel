@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.defaultAllocator
+import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -34,7 +36,7 @@ import kotlin.test.assertTrue
  * on a real kernel) and close it before the test exits — close() joins the
  * pthread, so no timeout is needed beyond the test framework's own bound.
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, UnsafeIoBufApi::class)
 class IoUringRegisteredBufferStrategySeamTest {
 
     private val logger = NoopLoggerFactory.logger("IoUringRegisteredBufferStrategySeamTest")
@@ -145,6 +147,74 @@ class IoUringRegisteredBufferStrategySeamTest {
             assertIs<DisabledRegisteredBufferRegistry>(group.bufferTableAt(0))
         } finally {
             group.close()
+        }
+    }
+
+    // --- SEND_ZC dispatch counters (fixed vs regular split) ---
+
+    @Test
+    fun `regular SEND_ZC dispatch increments sendZcRegularCount`() {
+        val fake = FakeIoUringRing()
+        val el = IoUringEventLoop(
+            NoopLoggerFactory.logger("counter-test"),
+            syscallOps = FakeIoUringSyscallOps(),
+            ioUringRing = fake,
+        )
+        val transport = IoUringIoTransport(
+            fd = 999,
+            eventLoop = el,
+            capabilities = IoUringCapabilities(sendZc = true),
+            writeModeSelector = IoModeSelectors.SEND_ZC,
+            allocator = DefaultAllocator,
+            // Disabled registry → every dispatch takes the regular branch.
+            registeredBufferTable = DisabledRegisteredBufferRegistry,
+        )
+        try {
+            val buf = DefaultAllocator.allocate(16)
+            for (i in 0 until 16) buf.writeByte(i.toByte())
+            transport.write(buf)
+            transport.flush()
+
+            assertEquals(0, el.sendZcFixedCount, "no registered buffers — fixed count stays 0")
+            assertEquals(1, el.sendZcRegularCount, "the dispatch must count as a regular SEND_ZC")
+        } finally {
+            el.close()
+        }
+    }
+
+    @Test
+    fun `fixed SEND_ZC dispatch increments sendZcFixedCount`() {
+        val fake = FakeIoUringRing()
+        val logger = NoopLoggerFactory.logger("counter-test")
+        val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = fake)
+        // Register the exact buffer the test writes, so indexOf hits.
+        val buf = DefaultAllocator.allocate(16)
+        for (i in 0 until 16) buf.writeByte(i.toByte())
+        val registry = StaticRegisteredBufferRegistry(
+            el,
+            listOf(buf.unsafePointer to 16),
+            logger,
+            FakeIoUringRegisteredBufferOps(),
+        )
+        registry.initOnEventLoop()
+        assertTrue(registry.isActive, "fake-backed registration succeeds")
+        val transport = IoUringIoTransport(
+            fd = 999,
+            eventLoop = el,
+            capabilities = IoUringCapabilities(sendZc = true),
+            writeModeSelector = IoModeSelectors.SEND_ZC,
+            allocator = DefaultAllocator,
+            registeredBufferTable = registry,
+        )
+        try {
+            transport.write(buf)
+            transport.flush()
+
+            assertEquals(1, el.sendZcFixedCount, "the dispatch must count as SEND_ZC_FIXED")
+            assertEquals(0, el.sendZcRegularCount, "registered buffer — regular count stays 0")
+        } finally {
+            registry.close()
+            el.close()
         }
     }
 
