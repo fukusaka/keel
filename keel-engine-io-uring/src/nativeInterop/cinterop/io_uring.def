@@ -138,6 +138,23 @@ static void keel_prep_recv_multishot(struct io_uring_sqe *sqe, int sockfd, unsig
 }
 
 /*
+ * Prepare a single-shot recv SQE with provided buffer selection.
+ *
+ * The fallback shape of keel_prep_recv_multishot for kernels with a
+ * provided buffer ring (5.19+) but without IORING_RECV_MULTISHOT (6.0+):
+ * the same kernel-side buffer selection, but one CQE per SQE — the caller
+ * re-arms after each completion. `len` caps the read; pass the ring's
+ * buffer size (multishot uses len = 0, but a single-shot recv treats 0 as
+ * a zero-length read and would complete immediately with res = 0).
+ */
+static void keel_prep_recv_buf_select(struct io_uring_sqe *sqe, int sockfd,
+                                      unsigned len, unsigned short bgid) {
+    io_uring_prep_recv(sqe, sockfd, NULL, len, 0);
+    sqe->flags |= IOSQE_BUFFER_SELECT;
+    sqe->buf_group = bgid;
+}
+
+/*
  * Prepare a zero-copy send SQE (IORING_OP_SEND_ZC, Linux 6.0+).
  *
  * Unlike regular IORING_OP_SEND, the kernel sends data directly from the
