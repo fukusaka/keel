@@ -20,6 +20,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
+import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
@@ -89,6 +90,23 @@ import kotlin.coroutines.CoroutineContext
  *                       NOT routed through this seam because io_uring
  *                       uses `IORING_OP_CONNECT` (native async) instead
  *                       of `connect(2)`.
+ * @param registeredBufferStrategy How (and whether) per-EventLoop buffer
+ *                       pools are pre-registered with the kernel for
+ *                       `SEND_ZC_FIXED`. Defaults to
+ *                       [RegisteredBufferStrategy.STATIC]; see the enum's
+ *                       per-value documentation for trade-offs and the
+ *                       kernel fallback behaviour.
+ * @param registeredBufferSlotCount Per-EventLoop upper bound on the number
+ *                       of buffers the STATIC warmup touches. The effective
+ *                       registered count is clamped by the allocator pool's
+ *                       own slot capacity. The total `RLIMIT_MEMLOCK`
+ *                       footprint is `slotCount × bufferSize × workerThreads`.
+ *                       Consulted by STATIC only.
+ * @param registeredBufferSize Size in bytes of each buffer the STATIC
+ *                       warmup allocates. Should match the allocator's
+ *                       pooled read-buffer class (the default) — other
+ *                       sizes miss the pool and contribute nothing to the
+ *                       registered set. Consulted by STATIC only.
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngine(
@@ -97,6 +115,9 @@ class IoUringEngine(
     capabilities: IoUringCapabilities? = null,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     nativeSocketOps: NativeSocketOps? = null,
+    registeredBufferStrategy: RegisteredBufferStrategy = RegisteredBufferStrategy.STATIC,
+    registeredBufferSlotCount: Int = IoUringEventLoopGroup.DEFAULT_REGISTERED_BUFFER_SLOT_COUNT,
+    registeredBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -140,6 +161,9 @@ class IoUringEngine(
             capabilities = resolvedCapabilities,
             readBufferSize = config.readBufferSize,
             idleTimeoutMillis = config.idleTimeoutMillis,
+            registeredBufferStrategy = registeredBufferStrategy,
+            registeredBufferSlotCount = registeredBufferSlotCount,
+            registeredBufferSize = registeredBufferSize,
         )
 
         bossLoop.start()

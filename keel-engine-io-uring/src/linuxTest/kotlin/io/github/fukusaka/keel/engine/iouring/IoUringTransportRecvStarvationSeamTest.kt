@@ -73,7 +73,7 @@ class IoUringTransportRecvStarvationSeamTest {
             allocator = DefaultAllocator,
             bufferRing = bufRing,
             fixedFileRegistry = null,
-            registeredBufferTable = null,
+            registeredBufferTable = DisabledRegisteredBufferRegistry,
             preAllocatedIndex = -1,
         )
         try {

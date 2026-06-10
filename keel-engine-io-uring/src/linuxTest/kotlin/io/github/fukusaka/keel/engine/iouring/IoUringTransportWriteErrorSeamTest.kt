@@ -66,7 +66,7 @@ class IoUringTransportWriteErrorSeamTest {
             allocator = DefaultAllocator,
             bufferRing = bufRing,
             fixedFileRegistry = null,
-            registeredBufferTable = null,
+            registeredBufferTable = DisabledRegisteredBufferRegistry,
             preAllocatedIndex = -1,
         )
         try {
@@ -191,7 +191,7 @@ class IoUringTransportWriteErrorSeamTest {
             allocator = DefaultAllocator,
             bufferRing = bufRing,
             fixedFileRegistry = null,
-            registeredBufferTable = null,
+            registeredBufferTable = DisabledRegisteredBufferRegistry,
             preAllocatedIndex = -1,
         )
         try {

@@ -17,13 +17,12 @@ package io.github.fukusaka.keel.engine.iouring
  * `IoUringRegisteredBufferOps` types) and "Fixed Buffer" in narrative
  * documentation (matching the `IORING_OP_SEND_ZC_FIXED` opcode).
  *
- * `internal` until the engine constructor exposes a strategy parameter —
- * publishing the enum before anything can consume it would put dead API
- * into the published surface. The visibility flips to `public` in the
- * wiring PR together with the `IoUringEngine` configuration parameter
- * and a CHANGELOG entry.
+ * Configured per engine via the `IoUringEngine` constructor's
+ * `registeredBufferStrategy` parameter, together with
+ * `registeredBufferSlotCount` and `registeredBufferSize` (both consulted
+ * by [STATIC] only).
  */
-internal enum class RegisteredBufferStrategy {
+public enum class RegisteredBufferStrategy {
 
     /**
      * Fixed Buffer support is disabled. Every zero-copy send goes through

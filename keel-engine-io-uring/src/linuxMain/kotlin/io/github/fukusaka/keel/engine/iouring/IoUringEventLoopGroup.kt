@@ -67,6 +67,21 @@ internal class IoUringEventLoopGroup(
      * per-value semantics.
      */
     private val registeredBufferStrategy: RegisteredBufferStrategy = RegisteredBufferStrategy.STATIC,
+    /**
+     * Per-EventLoop upper bound on the number of buffers the STATIC warmup
+     * touches before enumeration. The registered set is whatever the
+     * allocator's pool holds after warmup, so the effective count is
+     * clamped by the pool's own slot capacity — values above it register
+     * the pool capacity, not more. Consulted by STATIC only.
+     */
+    private val registeredBufferSlotCount: Int = DEFAULT_REGISTERED_BUFFER_SLOT_COUNT,
+    /**
+     * Size in bytes of each buffer the STATIC warmup allocates. Should
+     * match the allocator's pooled size class (the read-buffer class by
+     * default) — other sizes miss the pool and contribute nothing to the
+     * registered set. Consulted by STATIC only.
+     */
+    private val registeredBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) {
 
     /** Number of EventLoop threads in this group. */
@@ -139,9 +154,10 @@ internal class IoUringEventLoopGroup(
         // Allocate enough buffers to fill the pool, then release them back.
         // This ensures all pool slots have been touched and addresses are stable.
         val bufs = mutableListOf<io.github.fukusaka.keel.buf.IoBuf>()
-        // Allocate default size class (8 KiB) up to local pool slots.
-        repeat(LOCAL_WARMUP_COUNT) {
-            bufs.add(alloc.allocate(io.github.fukusaka.keel.pipeline.IoTransport.DEFAULT_READ_BUFFER_SIZE))
+        // Allocate the configured size class up to the configured slot count;
+        // the pool's own capacity clamps the effective registered set.
+        repeat(registeredBufferSlotCount) {
+            bufs.add(alloc.allocate(registeredBufferSize))
         }
         bufs.forEach { it.release() }
     }
@@ -286,8 +302,17 @@ internal class IoUringEventLoopGroup(
     /** Returns the per-EventLoop [FixedFileRegistry] at [i], or null if not supported. */
     fun fileRegistryAt(i: Int): FixedFileRegistry? = fileRegistries[i]
 
-    /** Returns the per-EventLoop [IoUringFixedBufferRegistry] at [i], or null if not enabled. */
-    fun bufferTableAt(i: Int): IoUringFixedBufferRegistry? = bufferTables[i]
+    /**
+     * Returns the per-EventLoop [IoUringFixedBufferRegistry] at [i].
+     *
+     * Non-null once [start] has run: every non-STATIC outcome was populated
+     * with [DisabledRegisteredBufferRegistry] during the init dispatch.
+     * Before [start] (or for a group that never starts) the slot is empty
+     * and the null-object is substituted here, preserving the same
+     * "every lookup answers -1" semantics.
+     */
+    fun bufferTableAt(i: Int): IoUringFixedBufferRegistry =
+        bufferTables[i] ?: DisabledRegisteredBufferRegistry
 
     /**
      * Stops all EventLoop threads and releases resources.
@@ -302,8 +327,12 @@ internal class IoUringEventLoopGroup(
     }
 
     companion object {
-        // Number of buffers to allocate during warmup for the 8 KiB read class.
-        // Matches that class's default slot cap (PAGE_CLASS_SLOTS in PooledAllocator).
-        private const val LOCAL_WARMUP_COUNT = 8
+        /**
+         * Default per-EventLoop warmup count for the STATIC registered-buffer
+         * strategy. Matches the read class's default slot cap
+         * (PAGE_CLASS_SLOTS in PooledAllocator) so the default registers
+         * exactly the pool's capacity.
+         */
+        internal const val DEFAULT_REGISTERED_BUFFER_SLOT_COUNT = 8
     }
 }
