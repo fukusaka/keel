@@ -10,7 +10,14 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toLong
 
 /**
- * Manages registered buffers for io_uring SEND_ZC_FIXED operations.
+ * [IoUringFixedBufferRegistry] for [RegisteredBufferStrategy.STATIC]: a
+ * one-shot kernel registration of N buffer slots that stays valid for the
+ * lifetime of the owning EventLoop. The registered set is the per-EL
+ * allocator's pre-warmed pool, enumerated once at startup; subsequent
+ * allocations either hit a pooled buffer (in the registered set and
+ * therefore eligible for `SEND_ZC_FIXED`) or miss to a fresh
+ * `nativeHeap.allocArray` (outside the set and therefore routed to
+ * regular `SEND_ZC` by [indexOf] returning `-1`).
  *
  * Pre-registers pooled buffer addresses with the kernel via
  * `io_uring_register_buffers`. SEND_ZC_FIXED references buffers by
@@ -28,6 +35,9 @@ import kotlinx.cinterop.toLong
  * **Thread safety**: all methods except the constructor must run on the
  * owning EventLoop pthread.
  *
+ * Renamed from `RegisteredBufferTable` in the PR introducing
+ * [RegisteredBufferStrategy]; behaviour is unchanged.
+ *
  * @param eventLoop Owning EventLoop. Provides ring pointer and thread-affinity assertion target.
  * @param buffers Pairs of (native pointer, capacity) from [io.github.fukusaka.keel.buf.enumerateNativePooledBuffers].
  * @param logger Logger for warn-level diagnostics.
@@ -36,12 +46,12 @@ import kotlinx.cinterop.toLong
  *                  exercise the kernel registration failure branch.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class RegisteredBufferTable(
+internal class StaticRegisteredBufferRegistry(
     private val eventLoop: IoUringEventLoop,
     private val buffers: List<Pair<CPointer<ByteVar>, Int>>,
     private val logger: Logger,
     private val bufferOps: IoUringRegisteredBufferOps = PosixIoUringRegisteredBufferOps,
-) {
+) : IoUringFixedBufferRegistry {
     private val ring get() = eventLoop.ringPtr
 
     // Native pointer rawValue (Long) → registered buffer index.
@@ -57,15 +67,15 @@ internal class RegisteredBufferTable(
     }
 
     /** Whether kernel registration succeeded. Set by [initOnEventLoop]. */
-    var isActive: Boolean = false
+    override var isActive: Boolean = false
         private set
 
     /**
      * Registers the buffers with the kernel on the owning EventLoop pthread.
      * Silently no-ops if [buffers] is empty (no pooled buffers to register).
      */
-    fun initOnEventLoop() {
-        eventLoop.assertInEventLoop("RegisteredBufferTable.initOnEventLoop")
+    override fun initOnEventLoop() {
+        eventLoop.assertInEventLoop("StaticRegisteredBufferRegistry.initOnEventLoop")
         if (isActive || buffers.isEmpty()) return
         val ret = bufferOps.registerBuffers(ring, buffers)
         isActive = ret >= 0
@@ -78,14 +88,14 @@ internal class RegisteredBufferTable(
      * @return the buffer index (>= 0) for use with SEND_ZC_FIXED,
      *         or -1 if the pointer is not registered.
      */
-    fun indexOf(ptr: CPointer<ByteVar>): Int = ptrToIndex[ptr.rawValue.toLong()] ?: -1
+    override fun indexOf(ptr: CPointer<ByteVar>): Int = ptrToIndex[ptr.rawValue.toLong()] ?: -1
 
     /**
      * Unregisters all buffers from the kernel. Called on EventLoop shutdown
      * via [IoUringEventLoop.onExitHook] so the call runs on the submitter task.
      */
-    fun close() {
-        eventLoop.assertInEventLoop("RegisteredBufferTable.close")
+    override fun close() {
+        eventLoop.assertInEventLoop("StaticRegisteredBufferRegistry.close")
         if (isActive) {
             val ret = bufferOps.unregisterBuffers(ring)
             if (ret < 0) {

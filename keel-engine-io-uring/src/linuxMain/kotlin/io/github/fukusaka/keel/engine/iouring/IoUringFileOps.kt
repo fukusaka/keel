@@ -15,7 +15,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * for the eventfd-wakeup counterpart). The interface is deliberately
  * scoped to the fixed-file family rather than a single mega-interface
  * over all `io_uring_register_*` calls — each register class
- * ([FixedFileRegistry], `ProvidedBufferRing`, `RegisteredBufferTable`)
+ * ([FixedFileRegistry], `ProvidedBufferRing`, `StaticRegisteredBufferRegistry`)
  * gets its own focused seam so its fake never has to stub methods it
  * does not use.
  *

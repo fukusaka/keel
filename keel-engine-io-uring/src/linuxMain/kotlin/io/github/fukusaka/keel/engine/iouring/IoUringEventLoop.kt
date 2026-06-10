@@ -384,7 +384,7 @@ internal class IoUringEventLoop(
     /**
      * Throws [IllegalStateException] if called from a thread other than this
      * EventLoop's pthread. Used by per-EventLoop resources ([FixedFileRegistry],
-     * [ProvidedBufferRing], [RegisteredBufferTable]) to assert thread-affinity
+     * [ProvidedBufferRing], [StaticRegisteredBufferRegistry]) to assert thread-affinity
      * preconditions: their internal state is not synchronised and
      * `IORING_SETUP_SINGLE_ISSUER` additionally requires `io_uring_register_*`
      * to run on the submitter task.
@@ -577,7 +577,7 @@ internal class IoUringEventLoop(
      *
      * Like [submitSendZcCallback] but uses a pre-registered buffer index
      * to avoid per-send page pinning. The buffer must have been registered
-     * via [RegisteredBufferTable].
+     * via [StaticRegisteredBufferRegistry].
      */
     internal fun submitSendZcFixedCallback(
         fd: Int, buf: COpaquePointer, len: ULong, flags: Int,

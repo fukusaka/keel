@@ -19,7 +19,7 @@ import kotlinx.cinterop.set
  * / `keel_unregister_buffers` C wrappers in `io_uring.def`. Stateless singleton.
  *
  * The `memScoped` / `allocArray` dance that builds the parallel base /
- * length arrays for the kernel lives here so [RegisteredBufferTable]
+ * length arrays for the kernel lives here so [StaticRegisteredBufferRegistry]
  * (and its seam tests) deal only in `(pointer, capacity)` pairs.
  */
 @OptIn(ExperimentalForeignApi::class)

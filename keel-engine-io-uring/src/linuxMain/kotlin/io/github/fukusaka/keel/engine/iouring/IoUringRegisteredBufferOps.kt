@@ -8,7 +8,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 /**
  * Semantic abstraction over the io_uring registered-buffer syscalls
  * (`io_uring_register_buffers` / `unregister_buffers`) used by
- * [RegisteredBufferTable]. Introduced so the table's kernel registration
+ * [StaticRegisteredBufferRegistry]. Introduced so the table's kernel registration
  * error branch is reachable from seam tests without a real Linux kernel.
  *
  * Part of the io_uring native API seam effort (sibling of
@@ -18,7 +18,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  *
  * **Convention**: both methods return the native liburing encoding
  * directly — non-negative on success, negative `-errno` on failure.
- * [RegisteredBufferTable] already consumes this dialect via
+ * [StaticRegisteredBufferRegistry] already consumes this dialect via
  * `errnoMessage(-ret)`.
  *
  * **Native-pointer boundary**: the `memScoped` / `allocArray` boilerplate
