@@ -4,7 +4,11 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.AF_INET
 import platform.posix.EPIPE
+import platform.posix.SOCK_STREAM
+import platform.posix.close
+import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -151,6 +155,63 @@ class IoUringTransportWriteErrorSeamTest {
             assertTrue(el.runIteration(Cqe()))
 
             assertEquals(1, onReadClosedFires, "SENDMSG_ZC -EPIPE must fire onReadClosed via fireReadClosedOnce")
+        }
+    }
+
+    @Test
+    fun `direct gather writev unrecoverable error fires onReadClosed via fireReadClosedOnce`() {
+        // Deep-audit follow-up (F-1): `flushDirectSendGather` (the FALLBACK_CQE
+        // synchronous direct-writev path) previously released buffers and
+        // returned `true` to the pipeline on an unrecoverable -EBADF / -EPIPE /
+        // -ECONNRESET, leaving the orphaned transport alive — same shape as
+        // the four async callbacks fixed in PR #746 (writev / SEND_ZC / SEND_ZC
+        // Fixed / SENDMSG_ZC).
+        //
+        // The `flushDirectSendGather` body calls `keel_writev(fd, ...)` directly
+        // (bypassing NativeSocket so FakeNativeSocket cannot intercept it).
+        // Drive the error path with a real-but-closed fd: writev(closedFd,
+        // iovec, count) returns -1 / EBADF, hitting the unrecoverable branch.
+        val ring = FakeIoUringRing()
+        val bufRingFake = FakeIoUringBufferRingOps()
+        val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = ring)
+        val bufRing = ProvidedBufferRing(el, logger, 4, 64, 0, bufRingFake)
+        bufRing.initOnEventLoop()
+
+        // Open a real socket fd so the transport's init doesn't trip on -1;
+        // close it immediately so the subsequent writev returns -EBADF.
+        val closedFd = socket(AF_INET, SOCK_STREAM, 0)
+        check(closedFd >= 0) { "socket() failed in test setUp" }
+        close(closedFd)
+
+        val transport = IoUringIoTransport(
+            fd = closedFd,
+            eventLoop = el,
+            capabilities = IoUringCapabilities(),
+            writeModeSelector = IoModeSelectors.FALLBACK_CQE,
+            allocator = DefaultAllocator,
+            bufferRing = bufRing,
+            fixedFileRegistry = null,
+            registeredBufferTable = null,
+            preAllocatedIndex = -1,
+        )
+        try {
+            var onReadClosedFires = 0
+            transport.onReadClosed = { onReadClosedFires++ }
+
+            // Queue two writes so flushDirectSend routes through flushDirectSendGather
+            // (single-write flushes go through flushDirectSendSingle).
+            transport.write(smallFilledBuf())
+            transport.write(smallFilledBuf())
+            transport.flush()
+
+            assertEquals(
+                1,
+                onReadClosedFires,
+                "direct gather writev unrecoverable error must fire onReadClosed via fireReadClosedOnce",
+            )
+        } finally {
+            bufRing.close()
+            el.close()
         }
     }
 }

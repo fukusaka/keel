@@ -234,6 +234,15 @@ internal class IoUringIoTransport(
      * single-shot path is the longer-standing implementation).
      */
     private fun armPollAddForFin() {
+        // Idempotency gate. `onChannelAttached` is normally called exactly
+        // once per channel lifetime, but defensive: a second call (e.g.
+        // pipeline re-attach scenarios, an external thread racing the
+        // bossLoop dispatch) would otherwise overwrite `pollAddFinSlot`,
+        // orphaning the first SQE's slot in `callbackSlots[]` until the
+        // kernel delivers its CQE. Same canonical pattern as the double-arm
+        // gates in PR #737 (IoUringOwnedSource) and PR #741
+        // (IoUringIoTransport.readEnabled).
+        if (pollAddFinSlot >= 0) return
         // POLL_ADD does not support the registered file table (fd must be
         // a raw POSIX fd), so direct-allocated transports skip this path.
         // Direct-allocated multishot accept is gated behind the
@@ -508,9 +517,20 @@ internal class IoUringIoTransport(
                     submitAsyncSendChain(0)
                     return false
                 }
-                // Unrecoverable error — release all and report sync completion.
+                // Unrecoverable error (EPIPE after peer RST, ECONNRESET, EBADF,
+                // etc.). Surface to the pipeline via fireReadClosedOnce so the
+                // channel tears down — the previous "release and return true"
+                // path was silent from the pipeline's perspective, leaving the
+                // orphaned transport alive and the upstream codec convinced
+                // its bytes had landed. Same canonical pattern as
+                // flushDirectSendSingle's `if (fatalError) fireReadClosedOnce()`
+                // and the four async write callbacks fixed in PR #746.
+                eventLoop.logger.warn {
+                    "writev() failed: fd=$fd ${errnoMessage(err)} (totalBytes=$totalBytes)"
+                }
                 for (pw in pendingWrites) pw.buf.release()
                 updatePendingBytes(-totalBytes)
+                fireReadClosedOnce()
                 return true
             }
             writtenBytes = n.toInt()

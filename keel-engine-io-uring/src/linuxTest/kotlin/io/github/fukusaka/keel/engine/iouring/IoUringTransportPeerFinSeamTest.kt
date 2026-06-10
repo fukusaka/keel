@@ -169,6 +169,39 @@ class IoUringTransportPeerFinSeamTest {
         }
     }
 
+    @Test
+    fun `onChannelAttached called twice does not double-arm POLL_ADD`() {
+        // Deep-audit follow-up (F-2): defensive guard against double-arming the
+        // peer-FIN POLL_ADD. The previous body had no `if (pollAddFinSlot >= 0)
+        // gate, so a second `onChannelAttached` call would overwrite
+        // `pollAddFinSlot` and orphan the first SQE's callback slot in
+        // `callbackSlots[]` until the kernel delivers its CQE — the same
+        // double-arm shape as the gates added in PR #737 (IoUringOwnedSource)
+        // and PR #741 (IoUringIoTransport.readEnabled). The fix wraps the
+        // arm body in a `pollAddFinSlot >= 0` short-circuit; pin it by
+        // calling onChannelAttached twice in a row and asserting exactly one
+        // POLL_ADD SQE was submitted.
+        withTransport { fake, el, _, transport ->
+            // First attach: the dispatched arm-block lands on the EL task
+            // queue; runIteration drains it and submits the POLL_ADD SQE.
+            transport.onChannelAttached()
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp())
+            val afterFirstAttach = fake.getSqeCalls
+
+            // Second attach: dispatches another arm-block. After drain the
+            // guard short-circuits, so no second POLL_ADD SQE is submitted.
+            transport.onChannelAttached()
+            assertTrue(el.runIteration(Cqe()))
+
+            assertEquals(
+                afterFirstAttach,
+                fake.getSqeCalls,
+                "second onChannelAttached must NOT submit a second POLL_ADD SQE",
+            )
+        }
+    }
+
     private companion object {
         // io_uring opcode values from `enum io_uring_op` in <linux/io_uring.h>.
         private const val IORING_OP_POLL_ADD: UByte = 6u
