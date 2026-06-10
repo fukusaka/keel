@@ -742,7 +742,22 @@ internal class IoUringIoTransport(
 
         eventLoop.submitWritevCallback(sqeFd, iovecs, count.toUInt(), fixedFile = useFixedFile) { res ->
             io_uring.keel_free_iovec(iovecs)
-            val writtenBytes = if (res > 0) res else 0
+            // Surface writev errors (EPIPE / ECONNRESET / etc.) — without
+            // this the partial-write fall-through would treat a negative
+            // res as `writtenBytes = 0` and either resubmit the same
+            // payload (eventual cancel / orphan) or fall into the
+            // "all buffers fully written" guard. Same shape as the
+            // submitAsyncSendSequential fix below.
+            if (res < 0) {
+                eventLoop.logger.warn {
+                    "async writev CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
+                }
+                for (pw in writes) pw.buf.release()
+                onAsyncFlushDone()
+                fireReadClosedOnce()
+                return@submitWritevCallback
+            }
+            val writtenBytes = res
             if (writtenBytes >= totalBytes) {
                 for (pw in writes) pw.buf.release()
                 onAsyncFlushDone()
@@ -857,9 +872,18 @@ internal class IoUringIoTransport(
                 sqeFd, ptr, length.convert(), MSG_NOSIGNAL,
                 bufIndex = bufIndex, fixedFile = useFixedFile,
             ) { res ->
-                val sent = if (res > 0) res else 0
+                if (res < 0) {
+                    eventLoop.logger.warn {
+                        "async SEND_ZC_FIXED CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
+                    }
+                    buf.release()
+                    onComplete()
+                    fireReadClosedOnce()
+                    return@submitSendZcFixedCallback
+                }
+                val sent = res
                 val remaining = length - sent
-                if (remaining > 0 && res > 0) {
+                if (remaining > 0) {
                     submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     buf.release()
@@ -869,9 +893,18 @@ internal class IoUringIoTransport(
         } else {
             // Unregistered buffer: use regular SEND_ZC (per-send page pinning).
             eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
-                val sent = if (res > 0) res else 0
+                if (res < 0) {
+                    eventLoop.logger.warn {
+                        "async SEND_ZC CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
+                    }
+                    buf.release()
+                    onComplete()
+                    fireReadClosedOnce()
+                    return@submitSendZcCallback
+                }
+                val sent = res
                 val remaining = length - sent
-                if (remaining > 0 && res > 0) {
+                if (remaining > 0) {
                     submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     buf.release()
@@ -926,6 +959,18 @@ internal class IoUringIoTransport(
                 io_uring.keel_free_msghdr(msghdr)
                 io_uring.keel_free_iovec(iovecs)
                 for (pw in writes) pw.buf.release()
+                // Surface SENDMSG_ZC errors (EPIPE / ECONNRESET / etc.) — without
+                // this, a broken stream silently completed the flush from the
+                // pipeline's perspective, leaving the orphaned transport alive
+                // and the upstream codec convinced its bytes landed.
+                if (res < 0) {
+                    eventLoop.logger.warn {
+                        "async SENDMSG_ZC CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
+                    }
+                    onAsyncFlushDone()
+                    fireReadClosedOnce()
+                    return@submitSendmsgZcCallback
+                }
                 // Partial sendmsg is not retried — TCP guarantees in-order delivery,
                 // and partial sendmsg on a stream socket is uncommon (only under
                 // extreme memory pressure). If it occurs, the connection will be
