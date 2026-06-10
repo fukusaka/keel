@@ -45,6 +45,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * @param serverFds        One server socket fd per worker (SO_REUSEPORT).
  * @param pipelineInitializer Called for each accepted connection to add handlers.
  * @param capabilities     Runtime kernel feature flags.
+ * @param writeModeSelector Engine-wide write-mode selector, forwarded to every
+ *   accepted connection's transport. This server previously constructed its
+ *   transports without it, so bindPipeline connections silently wrote in the
+ *   transport's default mode regardless of the engine configuration (the
+ *   Coroutine-mode bind/connect paths did forward it).
  * @param logger           Logger for pipeline error reporting.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -55,6 +60,7 @@ internal class IoUringPipelinedStreamServer(
     private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
+    private val writeModeSelector: IoModeSelector,
     private val logger: Logger,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
@@ -202,6 +208,7 @@ internal class IoUringPipelinedStreamServer(
                 fd = -1,
                 eventLoop = loop,
                 capabilities = capabilities,
+                writeModeSelector = writeModeSelector,
                 allocator = allocator,
                 bufferRing = bufferRing,
                 fixedFileRegistry = fileRegistry,
@@ -217,6 +224,7 @@ internal class IoUringPipelinedStreamServer(
                 fd = acceptRes,
                 eventLoop = loop,
                 capabilities = capabilities,
+                writeModeSelector = writeModeSelector,
                 allocator = allocator,
                 bufferRing = bufferRing,
                 fixedFileRegistry = fileRegistry,
