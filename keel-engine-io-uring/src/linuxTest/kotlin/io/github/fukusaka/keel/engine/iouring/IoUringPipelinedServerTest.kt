@@ -198,6 +198,81 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `pipelined echo works with multishotAccept disabled - single-shot accept fallback`() {
+        // Exercises the single-shot accept fallback (the accept mode used on
+        // a kernel without IORING_ACCEPT_MULTISHOT, < 5.19) against the real
+        // kernel: plain IORING_OP_ACCEPT is valid on modern kernels too, so
+        // the capability override keeps the fallback permanently testable.
+        // Two SEQUENTIAL CONNECTIONS pin the per-CQE re-arm — the second
+        // connection is only accepted if the first CQE re-armed a fresh
+        // accept SQE.
+        val caps = detectCaps().copy(multishotAccept = false)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        try {
+            repeat(2) { i ->
+                val clientFd = rawConnect(port)
+                try {
+                    rawWrite(clientFd, "msg-$i")
+                    assertEquals(
+                        "msg-$i",
+                        rawRead(clientFd, 5),
+                        "connection ${i + 1} requires the per-CQE accept re-arm",
+                    )
+                } finally {
+                    close(clientFd)
+                }
+            }
+        } finally {
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
+    fun `pipelined echo works with the full pre-5_19 capability profile`() {
+        // End-to-end smoke of the oldest supported tier (a 5.6-era kernel):
+        // single-shot accept + allocator-buffer single-shot recv + no
+        // zero-copy send + none of the 5.18+/6.0+ setup flags. Every
+        // individual fallback has its own test above; this pins that the
+        // tiers compose.
+        val caps = detectCaps().copy(
+            multishotAccept = false,
+            multishotRecv = false,
+            providedBufferRing = false,
+            sendZc = false,
+            sendmsgZc = false,
+            coopTaskrun = false,
+            singleIssuer = false,
+            registerRingFd = false,
+        )
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        try {
+            repeat(2) { i ->
+                val clientFd = rawConnect(port)
+                try {
+                    rawWrite(clientFd, "msg-$i")
+                    assertEquals("msg-$i", rawRead(clientFd, 5))
+                } finally {
+                    close(clientFd)
+                }
+            }
+        } finally {
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
     fun `pipelined echo works with iowqMaxWorkers set`() {
         // Smoke test: set small IO_WQ limits and verify the engine still
         // runs the happy path. The limits don't affect keel's hot path

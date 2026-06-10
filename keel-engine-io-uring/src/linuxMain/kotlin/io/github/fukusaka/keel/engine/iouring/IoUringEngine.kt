@@ -70,8 +70,11 @@ import kotlin.coroutines.CoroutineContext
  * [CoroutineDispatcher][kotlinx.coroutines.CoroutineDispatcher], so all
  * I/O + request processing for a channel runs on a single thread.
  *
- * **Minimum kernel requirement**: Linux 5.1+ for io_uring basic support.
- * Optimal performance requires 5.19+ (multishot accept, provided buffer ring).
+ * **Minimum kernel requirement**: Linux 5.6 (`IORING_OP_SEND` / `IORING_OP_RECV`;
+ * enforced at construction — older kernels should use the epoll engine).
+ * Features degrade per capability tier: 5.6–5.18 uses single-shot accept and
+ * single-shot recv into allocator-owned buffers; 5.19 adds multishot accept and
+ * the provided buffer ring; 6.0+ adds multishot recv and `SEND_ZC` (optimal).
  *
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
@@ -132,11 +135,25 @@ class IoUringEngine(
     private var closed = false
 
     init {
+        // Hard kernel floor: IORING_OP_SEND / IORING_OP_RECV (the engine's
+        // unconditional read/write opcodes) appeared in Linux 5.6. Below
+        // that, every connection would fail at its first I/O regardless of
+        // capability fallbacks, so refuse to start with a clear message
+        // instead of failing per-connection. Checked against the real
+        // kernel even when capabilities are injected — an override cannot
+        // change which opcodes the running kernel implements.
+        val runningKernel = KernelVersion.current()
+        check(runningKernel >= MIN_KERNEL_VERSION) {
+            "io_uring engine requires Linux >= ${MIN_KERNEL_VERSION.major}.${MIN_KERNEL_VERSION.minor} " +
+                "(IORING_OP_SEND / IORING_OP_RECV); detected " +
+                "${runningKernel.major}.${runningKernel.minor}. Use the epoll engine on older kernels."
+        }
+
         // Detect capabilities using kernel version. Opcode probe (SEND_ZC)
         // requires a ring, so create boss loop first with default capabilities,
         // then probe from its ring.
         val defaultCaps = capabilities ?: run {
-            val kv = KernelVersion.current()
+            val kv = runningKernel
             IoUringCapabilities(
                 multishotAccept = kv >= KernelVersion(5, 19),
                 multishotRecv = kv >= KernelVersion(6, 0),
@@ -515,6 +532,14 @@ class IoUringEngine(
         workerGroup.totalSendZcFixedCount() + workerGroup.totalSendZcRegularCount()
 
     companion object {
+        /**
+         * Hard kernel floor of this engine: `IORING_OP_SEND` /
+         * `IORING_OP_RECV` (Linux 5.6) are the unconditional read/write
+         * opcodes every capability tier bottoms out on. Older kernels are
+         * rejected at engine construction; the epoll engine covers them.
+         */
+        internal val MIN_KERNEL_VERSION = KernelVersion(5, 6)
+
         /** Resolves threads=0 to available CPU cores. */
         @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
         private fun resolveThreads(config: IoEngineConfig): Int =
