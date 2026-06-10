@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.info
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -148,11 +149,29 @@ class IoUringEngine(
         bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"), defaultCaps)
 
         // Refine sendZc via opcode probe if auto-detecting.
-        resolvedCapabilities = if (capabilities != null) {
+        val refinedCaps = if (capabilities != null) {
             defaultCaps
         } else {
             val probed = IoUringCapabilities.detect(bossLoop.ringPtr)
             defaultCaps.copy(sendZc = probed.sendZc)
+        }
+
+        // Normalize the kernel-invalid recv capability cell: multishot recv
+        // requires buffer selection (IOSQE_BUFFER_SELECT), so "multishot
+        // without a provided buffer ring" cannot be honoured. Version
+        // detection never produces it (6.0 implies 5.19); only a manual
+        // capabilities override can. Downgrade with a warn — the same
+        // pattern as STATIC registered buffers on a kernel without
+        // IORING_REGISTER_BUFFERS.
+        resolvedCapabilities = if (refinedCaps.multishotRecv && !refinedCaps.providedBufferRing) {
+            logger.warn {
+                "IoUringCapabilities(multishotRecv = true, providedBufferRing = false) is not a " +
+                    "valid kernel combination (multishot recv requires kernel-side buffer " +
+                    "selection); treating multishotRecv as false."
+            }
+            refinedCaps.copy(multishotRecv = false)
+        } else {
+            refinedCaps
         }
 
         workerGroup = IoUringEventLoopGroup(
@@ -280,6 +299,7 @@ class IoUringEngine(
                 fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable,
                 nativeSocket = nativeSocket,
                 idleTimeoutMillis = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
+                readBufferSize = workerGroup.readBufferSize,
             )
         }
         logger.debug { "Connected to $address" }
@@ -364,6 +384,7 @@ class IoUringEngine(
                 fd, workerLoop, resolvedCapabilities, writeModeSelector, allocator, bufferRing, fileRegistry, bufferTable,
                 nativeSocket = nativeSocket,
                 idleTimeoutMillis = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis,
+                readBufferSize = workerGroup.readBufferSize,
             )
         }
         logger.debug { "Connected to $remoteAddr" }

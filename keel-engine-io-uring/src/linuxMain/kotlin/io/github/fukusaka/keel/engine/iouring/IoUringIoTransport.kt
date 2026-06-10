@@ -19,6 +19,7 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -94,6 +95,14 @@ internal class IoUringIoTransport(
     preAllocatedIndex: Int = -1,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     idleTimeoutMillis: Long = 0,
+    /**
+     * Per-recv allocation size of the allocator-buffer read fallback
+     * ([armRecvSingleShotAlloc], kernels without a provided buffer ring).
+     * Ring-capable kernels ignore it — their recv buffer size is the
+     * ring's own `bufferSize`. Defaults to the engine-wide read buffer
+     * size via [IoUringEventLoopGroup.readBufferSize] at the call sites.
+     */
+    private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -154,6 +163,15 @@ internal class IoUringIoTransport(
      * the [readEnabled] setter and the single-shot re-arm both rely on it.
      */
     private var recvSlot = -1
+
+    /**
+     * The allocator-owned buffer of the in-flight plain single-shot recv
+     * ([armRecvSingleShotAlloc]), or null when no such recv is armed or
+     * the ring modes are active. Released exclusively by the recv CQE
+     * callback — see the ownership note on [armRecvSingleShotAlloc] for
+     * why teardown must not release it early. EventLoop-thread only.
+     */
+    private var pendingRecvBuf: IoBuf? = null
 
     /**
      * True when the last multishot recv terminated with `-ENOBUFS` (the
@@ -328,16 +346,28 @@ internal class IoUringIoTransport(
         }
 
     /**
-     * Arms the inbound read for this transport, dispatching on
-     * [IoUringCapabilities.multishotRecv]: kernels 6.0+ get a multishot
-     * recv (one SQE, many CQEs), a ring-capable kernel without multishot
-     * (5.19) gets a single-shot buffer-select recv re-armed per CQE. Both
-     * modes share the buffer ring, the `wrappers[bufId]` delivery, and the
-     * `-ENOBUFS` deferred re-arm ([onRecvEnobufs]).
+     * Arms the inbound read for this transport, dispatching on the
+     * kernel's recv capabilities:
+     *
+     * - ring + [IoUringCapabilities.multishotRecv] (6.0+): multishot recv —
+     *   one SQE, many CQEs ([armRecvMultishot])
+     * - ring without multishot (5.19): single-shot buffer-select recv
+     *   re-armed per CQE ([armRecvSingleShot])
+     * - no ring (< 5.19): plain single-shot recv into an allocator-owned
+     *   buffer ([armRecvSingleShotAlloc])
+     *
+     * The ring modes share the `wrappers[bufId]` delivery ([deliverRecv])
+     * and the `-ENOBUFS` deferred re-arm ([onRecvEnobufs]); the allocator
+     * mode has neither concern (the destination buffer is fixed at submit
+     * time, so no kernel-side selection can starve).
      */
     private fun armRecv() {
-        val ring = bufferRing ?: error("armRecv requires provided buffer ring")
-        if (capabilities.multishotRecv) armRecvMultishot(ring) else armRecvSingleShot(ring)
+        val ring = bufferRing
+        when {
+            ring == null -> armRecvSingleShotAlloc()
+            capabilities.multishotRecv -> armRecvMultishot(ring)
+            else -> armRecvSingleShot(ring)
+        }
     }
 
     private fun armRecvMultishot(ring: ProvidedBufferRing) {
@@ -411,6 +441,72 @@ internal class IoUringIoTransport(
         )
         eventLoop.logger.debug {
             "armRecv submitted (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile recvSlot=$recvSlot"
+        }
+    }
+
+    /**
+     * Allocator-buffer fallback for kernels without a provided buffer ring
+     * (< 5.19): a plain single-shot `IORING_OP_RECV` into an allocator-owned
+     * [IoBuf]. No kernel-side buffer selection — the destination is fixed at
+     * submit time — so no `-ENOBUFS` class exists; like [armRecvSingleShot],
+     * backpressure is inherent (no re-arm while [readEnabled] is false).
+     *
+     * **Buffer ownership**: the in-flight buffer is held in [pendingRecvBuf]
+     * until its CQE. On data the buffer is handed to [onRead] (ownership
+     * transfers to the handler, identical to the ring-wrapper contract); on
+     * EOF, error, or `-ECANCELED` it is released here. The buffer is NEVER
+     * released at teardown time: `IORING_OP_ASYNC_CANCEL` is asynchronous and
+     * the kernel may still complete the recv (writing into the memory) before
+     * the cancellation lands — releasing early would return pooled memory the
+     * kernel can still write into. Teardown cancels the SQE and the resulting
+     * CQE (data or -ECANCELED) performs the release through this callback.
+     */
+    private fun armRecvSingleShotAlloc() {
+        val buf = allocator.allocate(readBufferSize)
+        pendingRecvBuf = buf
+        recvSlot = eventLoop.submitRecv(
+            fd = sqeFd,
+            fixedFile = useFixedFile,
+            buf = buf.unsafePointer,
+            len = readBufferSize,
+            onCqe = { res, _ ->
+                // Single-shot: this CQE terminates the SQE (same slot
+                // lifecycle as the buffer-select variant above).
+                recvSlot = -1
+                val pending = pendingRecvBuf
+                pendingRecvBuf = null
+                eventLoop.logger.debug {
+                    "recv CQE (alloc single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile res=$res"
+                }
+                when {
+                    pending == null -> {
+                        // Defensive: a CQE with no in-flight buffer recorded
+                        // would indicate a double-delivery; nothing to release.
+                        eventLoop.logger.warn {
+                            "recv CQE with no pending buffer: sqeFd=$sqeFd res=$res"
+                        }
+                    }
+                    !opened || res <= 0 -> {
+                        // Teardown raced the CQE (-ECANCELED or late data),
+                        // EOF (res = 0), or a receive error: the buffer never
+                        // reaches the handler, so release it here.
+                        pending.release()
+                        if (opened) fireReadClosedOnce()
+                    }
+                    else -> {
+                        touchIdleTimeout() // progress: refresh the read-idle deadline
+                        pending.writerIndex = res
+                        onRead?.invoke(pending)
+                        // Re-arm with a fresh buffer; same gates as the
+                        // buffer-select single-shot mode (recvStarved is
+                        // always false here — no ring, no starvation).
+                        if (opened && readEnabled && recvSlot < 0) armRecv()
+                    }
+                }
+            },
+        )
+        eventLoop.logger.debug {
+            "armRecv submitted (alloc single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile recvSlot=$recvSlot"
         }
     }
 
@@ -1158,7 +1254,14 @@ internal class IoUringIoTransport(
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
         if (recvSlot >= 0) {
-            eventLoop.cancelSqe(recvSlot)
+            // Keep the recv callback alive across the cancel: the
+            // allocator-buffer fallback's in-flight buffer may only be
+            // released by its terminal CQE (the kernel can still complete
+            // the recv with data before the cancellation lands), and that
+            // release lives in the kept callback's `!opened` branch. The
+            // ring modes' callbacks are post-teardown-safe too (they
+            // early-return on `!opened`).
+            eventLoop.cancelSqeKeepCallback(recvSlot)
             recvSlot = -1
         }
         // Cancel the peer-FIN-watching POLL_ADD before closing the fd.

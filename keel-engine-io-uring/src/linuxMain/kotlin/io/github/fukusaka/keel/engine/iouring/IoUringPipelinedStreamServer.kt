@@ -192,8 +192,11 @@ internal class IoUringPipelinedStreamServer(
      */
     private fun onAccept(acceptRes: Int, workerIndex: Int, directAlloc: Boolean) {
         val loop = workerGroup.loopAt(workerIndex)
+        // Null on kernels without IORING_REGISTER_PBUF_RING (< 5.19): the
+        // transport's read dispatch falls back to plain single-shot recv
+        // into allocator-owned buffers, so a missing ring is a supported
+        // configuration, not an error.
         val bufferRing = workerGroup.bufferRingAt(workerIndex)
-            ?: error("Pipeline requires provided buffer ring (kernel 5.19+)")
         val allocator = workerGroup.allocatorAt(workerIndex)
         val fileRegistry = workerGroup.fileRegistryAt(workerIndex)
         val bufferTable = workerGroup.bufferTableAt(workerIndex)
@@ -216,6 +219,7 @@ internal class IoUringPipelinedStreamServer(
                 preAllocatedIndex = acceptRes,
                 nativeSocket = nativeSocket,
                 idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
+                readBufferSize = workerGroup.readBufferSize,
             )
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
@@ -231,6 +235,7 @@ internal class IoUringPipelinedStreamServer(
                 registeredBufferTable = bufferTable,
                 nativeSocket = nativeSocket,
                 idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
+                readBufferSize = workerGroup.readBufferSize,
             )
         }
         val channel = IoUringPipelinedChannel(transport, logger)
