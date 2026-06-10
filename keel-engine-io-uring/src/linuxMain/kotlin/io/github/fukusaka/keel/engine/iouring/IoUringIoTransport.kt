@@ -8,7 +8,6 @@ import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -240,8 +239,8 @@ internal class IoUringIoTransport(
         // bossLoop dispatch) would otherwise overwrite `pollAddFinSlot`,
         // orphaning the first SQE's slot in `callbackSlots[]` until the
         // kernel delivers its CQE. Same canonical pattern as the double-arm
-        // gates in PR #737 (IoUringOwnedSource) and PR #741
-        // (IoUringIoTransport.readEnabled).
+        // gates fixed in PR #737 (the since-removed owned-source read path)
+        // and PR #741 (IoUringIoTransport.readEnabled).
         if (pollAddFinSlot >= 0) return
         // POLL_ADD does not support the registered file table (fd must be
         // a raw POSIX fd), so direct-allocated transports skip this path.
@@ -1047,24 +1046,6 @@ internal class IoUringIoTransport(
             if (eventLoop.inEventLoop()) register.run()
             else eventLoop.dispatch(EmptyCoroutineContext, register)
         }
-    }
-
-    /**
-     * Creates a push-model [OwnedSuspendSource] backed by multishot recv.
-     * Bypasses the Pipeline — retained for future evaluation.
-     */
-    internal fun createOwnedSuspendSource(): OwnedSuspendSource {
-        val ring = bufferRing
-            ?: error("Owned source requires provided buffer ring (kernel 5.19+)")
-        // OwnedSuspendSource is reached via asSource() on the Channel-mode
-        // API. The direct-alloc path is pipeline-only and does not call
-        // asSource() — document the incompatibility instead of silently
-        // passing a -1 fd down.
-        check(!useDirectAlloc) {
-            "createOwnedSuspendSource is not supported with direct-allocated accept " +
-                "(no raw fd available; pipeline path should not call asSource())"
-        }
-        return IoUringOwnedSource(fd, eventLoop, ring)
     }
 
     override fun close() {
