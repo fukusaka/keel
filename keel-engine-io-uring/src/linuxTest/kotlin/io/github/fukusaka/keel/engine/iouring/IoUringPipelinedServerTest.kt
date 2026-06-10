@@ -72,6 +72,46 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `bindPipeline transports honour the engine writeModeSelector`() {
+        // Regression test: the pipelined server previously constructed its
+        // transports without forwarding the engine's writeModeSelector, so
+        // every bindPipeline connection silently wrote in the transport's
+        // default FALLBACK_CQE mode regardless of the engine configuration
+        // (the Coroutine-mode bind/connect paths did forward it). Pin the
+        // contract through the SEND_ZC dispatch counters: with the SEND_ZC
+        // selector, an echoed response must produce at least one zero-copy
+        // dispatch — zero means the selector never reached the transport.
+        val caps = detectCaps()
+        if (!caps.sendZc) return
+        val engine = IoUringEngine(
+            config = testConfig(),
+            writeModeSelector = IoModeSelectors.SEND_ZC,
+            capabilities = caps,
+        )
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+        // The per-EL counters are EL-confined; reading them is safe after
+        // engine.close() has joined the EventLoop pthreads.
+        assertTrue(
+            engine.totalSendZcDispatchCount() > 0,
+            "writeModeSelector = SEND_ZC must reach bindPipeline transports " +
+                "(0 zero-copy dispatches means the engine selector was ignored)",
+        )
+    }
+
+    @Test
     fun `pipelined echo works with multishotRecv disabled - single-shot buffer-select fallback`() {
         // Exercises the single-shot recv fallback (the read mode used on a
         // kernel with a provided buffer ring but no IORING_RECV_MULTISHOT)
@@ -251,18 +291,23 @@ class IoUringPipelinedServerTest {
 /**
  * Echoes each received [IoBuf] back down the pipeline.
  *
- * `transport.write` retains the buffer for its own async-send lifecycle;
- * this handler releases the inbound reference so the ring buffer slot is
- * returned once the send CQE fires. Without the release, the provided
- * buffer ring accumulated leaked slots per connection (previously the
- * code also called `retain()` with no matching release).
+ * Ownership: `propagateWrite` transfers the inbound reference to the
+ * transport (`IoTransport.write` takes over the caller's reference and
+ * the flush path releases it) — the handler must NOT release after
+ * writing. The previous body did call `msg.release()` here, a
+ * double-release that went unnoticed because on the synchronous
+ * FALLBACK_CQE flush path the resulting `IllegalStateException` was
+ * thrown inside the recv-CQE callback, where the EventLoop's
+ * catch-and-warn guard swallowed it after the echo bytes had already
+ * left. The asynchronous SEND_ZC path surfaced it fatally: the handler's
+ * release ran while the zero-copy send was still in flight, and the send
+ * completion's own release then threw from an unguarded callback.
  */
 private class EchoHandler : InboundHandler {
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is IoBuf) {
             ctx.propagateWrite(msg)
             ctx.propagateFlush()
-            msg.release()
         } else {
             ctx.propagateRead(msg)
         }
