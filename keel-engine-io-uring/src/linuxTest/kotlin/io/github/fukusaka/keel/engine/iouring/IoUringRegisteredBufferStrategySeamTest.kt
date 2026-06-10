@@ -3,7 +3,10 @@ package io.github.fukusaka.keel.engine.iouring
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.interpretCPointer
+import kotlinx.cinterop.nativeNullPtr
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -149,8 +152,6 @@ class IoUringRegisteredBufferStrategySeamTest {
         // Synthetic non-null pointer for indexOf checks against the null
         // object — never dereferenced.
         @OptIn(ExperimentalForeignApi::class)
-        private val DUMMY_PTR = kotlinx.cinterop.interpretCPointer<kotlinx.cinterop.ByteVar>(
-            kotlinx.cinterop.nativeNullPtr + 1L,
-        )!!
+        private val DUMMY_PTR = interpretCPointer<ByteVar>(nativeNullPtr + 1L)!!
     }
 }
