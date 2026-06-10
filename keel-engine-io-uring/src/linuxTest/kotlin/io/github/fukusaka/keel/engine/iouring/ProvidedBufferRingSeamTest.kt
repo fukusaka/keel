@@ -198,6 +198,55 @@ class ProvidedBufferRingSeamTest {
         }
     }
 
+    @Test
+    fun `mixed re-arm batch drains the non-registering rearms while the re-registering one defers`() {
+        // Pins the snapshot + available-count invariants together against a
+        // mixed batch: one re-registering rearm (still-starved transport)
+        // alongside two settled rearms whose transports rearmed cleanly.
+        // The settled rearms fire exactly once; the re-registering one fires
+        // in this drain and a second time on the next return. Inside each
+        // rearm body, `hasAvailable` reads true because `available++` runs
+        // BEFORE the snapshot drain — the production order matters because
+        // a starved transport that calls back into its own `armRecv` inside
+        // the rearm checks `hasAvailable` for the immediate-rearm vs defer
+        // decision.
+        withRing(FakeIoUringBufferRingOps(), bufferCount = 2) { ring ->
+            ring.initOnEventLoop()
+            // Drain the ring so hasAvailable would read false until returnBuffer
+            // increments back up.
+            repeat(2) { ring.onConsumed() }
+            assertFalse(ring.hasAvailable, "ring is drained before the return")
+
+            var settledA = 0
+            var settledB = 0
+            var resub = 0
+            lateinit var resubRearm: () -> Unit
+            resubRearm = {
+                resub++
+                // Pin the visibility invariant: hasAvailable reflects the
+                // post-`available++` state inside the rearm body.
+                assertTrue(ring.hasAvailable, "available++ must run before the rearm drain")
+                ring.requestRearmOnAvailable(resubRearm)
+            }
+
+            ring.requestRearmOnAvailable { settledA++ }
+            ring.requestRearmOnAvailable(resubRearm)
+            ring.requestRearmOnAvailable { settledB++ }
+
+            ring.returnBuffer(bufId = 0)
+            assertEquals(1, settledA, "settled rearm fires once on the first return")
+            assertEquals(1, resub, "re-registering rearm fires once and defers the next cycle")
+            assertEquals(1, settledB, "settled rearm fires once on the first return")
+
+            // Drain available so the second returnBuffer increments visibly.
+            ring.onConsumed()
+            ring.returnBuffer(bufId = 1)
+            assertEquals(1, settledA, "settled rearms do NOT refire on the next return")
+            assertEquals(2, resub, "re-registering rearm fires again on the next return")
+            assertEquals(1, settledB, "settled rearms do NOT refire on the next return")
+        }
+    }
+
     // --- buffer availability tracking (large-frame re-arm) ---
 
     @Test
