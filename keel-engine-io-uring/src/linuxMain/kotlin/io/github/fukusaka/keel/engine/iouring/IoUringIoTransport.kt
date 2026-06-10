@@ -55,10 +55,15 @@ import posix_socket.keel_writev
 /**
  * io_uring [IoTransport] implementation for Linux.
  *
- * **Read path**: submits multishot RECV with a provided buffer ring
- * via [IoUringEventLoop.submitMultishotRecv]. The kernel fills a pre-registered
- * buffer slot on data arrival; the CQE callback delivers it via [onRead].
- * ENOBUFS (all slots consumed) triggers automatic re-arm.
+ * **Read path**: submits RECV with a provided buffer ring. On kernels with
+ * `IORING_RECV_MULTISHOT` ([IoUringCapabilities.multishotRecv], 6.0+) a
+ * single multishot SQE delivers one CQE per data segment via
+ * [IoUringEventLoop.submitMultishotRecv]; on older ring-capable kernels
+ * (5.19) a single-shot SQE is re-armed per CQE via
+ * [IoUringEventLoop.submitRecvBufSelect]. Either way the kernel fills a
+ * pre-registered buffer slot on data arrival and the CQE callback delivers
+ * it via [onRead]; `-ENOBUFS` (all slots consumed) defers the re-arm until
+ * a buffer is returned.
  *
  * **Write path**: buffers outbound [IoBuf] writes and flushes via
  * [IoModeSelector]-driven strategy:
@@ -141,7 +146,14 @@ internal class IoUringIoTransport(
         }
     }
 
-    private var multishotSlot = -1
+    /**
+     * Callback slot of the in-flight recv SQE (multishot on 6.0+ kernels,
+     * single-shot buffer-select on 5.19), or -1 when no recv is armed.
+     * The single live-recv invariant — at most one armed recv per
+     * transport — is shared by both modes; the `recvSlot < 0` gates in
+     * the [readEnabled] setter and the single-shot re-arm both rely on it.
+     */
+    private var recvSlot = -1
 
     /**
      * True when the last multishot recv terminated with `-ENOBUFS` (the
@@ -303,21 +315,33 @@ internal class IoUringIoTransport(
                 // The connection is now waiting to read → the read-side idle timeout
                 // applies (covers accept-to-first-byte, slowloris-silent, keep-alive idle).
                 armIdleTimeout()
-                // Arm only when no live multishot recv is in flight and we are not
+                // Arm only when no live recv is in flight and we are not
                 // already waiting on starvation (the `rearmRecvAfterStarvation`
                 // callback registered with the buffer ring will fire on the next
                 // `returnBuffer` and arm there — racing it here would submit a
-                // second multishot recv SQE that orphans the slot of the first
-                // and double-delivers CQEs into the shared `wrappers[bufId]`).
-                if (multishotSlot < 0 && !recvStarved) armRecv()
+                // second recv SQE that orphans the slot of the first and
+                // double-delivers CQEs into the shared `wrappers[bufId]`).
+                if (recvSlot < 0 && !recvStarved) armRecv()
             } else if (!value) {
                 cancelIdleTimeout() // back-pressure: pause the read-idle timeout
             }
         }
 
+    /**
+     * Arms the inbound read for this transport, dispatching on
+     * [IoUringCapabilities.multishotRecv]: kernels 6.0+ get a multishot
+     * recv (one SQE, many CQEs), a ring-capable kernel without multishot
+     * (5.19) gets a single-shot buffer-select recv re-armed per CQE. Both
+     * modes share the buffer ring, the `wrappers[bufId]` delivery, and the
+     * `-ENOBUFS` deferred re-arm ([onRecvEnobufs]).
+     */
     private fun armRecv() {
         val ring = bufferRing ?: error("armRecv requires provided buffer ring")
-        multishotSlot = eventLoop.submitMultishotRecv(
+        if (capabilities.multishotRecv) armRecvMultishot(ring) else armRecvSingleShot(ring)
+    }
+
+    private fun armRecvMultishot(ring: ProvidedBufferRing) {
+        recvSlot = eventLoop.submitMultishotRecv(
             fd = sqeFd,
             fixedFile = useFixedFile,
             bgid = ring.bgid,
@@ -327,48 +351,108 @@ internal class IoUringIoTransport(
                     "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
                 }
                 when {
-                    res > 0 -> {
-                        // One buffer left the ring for this CQE; record it so
-                        // the ring's `hasAvailable` reflects current occupancy.
-                        ring.onConsumed()
-                        touchIdleTimeout() // progress: refresh the read-idle deadline
-                        val bufId = keel_cqe_get_buf_id(flags).toInt()
-                        val buf = wrappers!![bufId]
-                        buf.reset()
-                        buf.writerIndex = res
-                        onRead?.invoke(buf)
-                    }
+                    res > 0 -> deliverRecv(ring, res, flags)
                     res == -ENOBUFS -> {
                         // Shared provided-buffer ring ran out. The kernel drops
                         // IORING_CQE_F_MORE on -ENOBUFS so the CQE drain already
                         // released the slot.
-                        multishotSlot = -1
-                        if (ring.hasAvailable) {
-                            // Buffers are already back in the ring — typically
-                            // within this same CQE batch, when a single read
-                            // delivery exceeds the whole ring (e.g. a ~1 MiB WS
-                            // frame vs a 512 KiB ring): the kernel fills + reports
-                            // every buffer and raises -ENOBUFS, and the app returns
-                            // them before this CQE is processed. Re-arm now;
-                            // deferring would stall forever (no later returnBuffer
-                            // to fire the re-arm).
-                            recvStarved = false
-                            armRecv()
-                        } else if (!recvStarved) {
-                            // Ring genuinely empty (buffers still held downstream).
-                            // Defer the re-arm to the next returnBuffer instead of
-                            // busy-looping (the -ENOBUFS busy-loop). The recvStarved guard collapses
-                            // repeat -ENOBUFS into one registration.
-                            recvStarved = true
-                            ring.requestRearmOnAvailable(rearmRecvAfterStarvation)
-                        }
+                        recvSlot = -1
+                        onRecvEnobufs(ring)
                     }
                     else -> fireReadClosedOnce()
                 }
             },
         )
         eventLoop.logger.debug {
-            "armRecv submitted: sqeFd=$sqeFd fixedFile=$useFixedFile multishotSlot=$multishotSlot"
+            "armRecv submitted: sqeFd=$sqeFd fixedFile=$useFixedFile recvSlot=$recvSlot"
+        }
+    }
+
+    /**
+     * Single-shot fallback of [armRecvMultishot] for ring-capable kernels
+     * without `IORING_RECV_MULTISHOT` (5.19): the same kernel-side buffer
+     * selection, but every CQE terminates its SQE, so delivery re-arms
+     * explicitly. Backpressure is inherent in this mode — when
+     * [readEnabled] is false the re-arm simply does not happen (the
+     * epoll/kqueue semantics), unlike multishot where the SQE stays armed
+     * and flow control relies on `-ENOBUFS`.
+     */
+    private fun armRecvSingleShot(ring: ProvidedBufferRing) {
+        recvSlot = eventLoop.submitRecvBufSelect(
+            fd = sqeFd,
+            fixedFile = useFixedFile,
+            bgid = ring.bgid,
+            len = ring.bufferSize,
+            onCqe = { res, flags ->
+                // Single-shot: this CQE terminates the SQE. The drain frees
+                // this callback's slot after the callback returns (hasMore
+                // = false), so a re-arm below acquires a fresh slot; clear
+                // the in-flight marker first so the re-arm gates see
+                // recvSlot < 0.
+                recvSlot = -1
+                if (!opened) return@submitRecvBufSelect
+                eventLoop.logger.debug {
+                    "recv CQE (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
+                }
+                when {
+                    res > 0 -> {
+                        deliverRecv(ring, res, flags)
+                        // Re-arm only if the handler left the transport open
+                        // and reading. `onRead` may have flipped readEnabled
+                        // (whose setter re-arms on the false→true edge and
+                        // sees recvSlot >= 0 once it has) — the recvSlot
+                        // guard keeps the single-live-recv invariant.
+                        if (opened && readEnabled && !recvStarved && recvSlot < 0) armRecv()
+                    }
+                    res == -ENOBUFS -> onRecvEnobufs(ring)
+                    else -> fireReadClosedOnce()
+                }
+            },
+        )
+        eventLoop.logger.debug {
+            "armRecv submitted (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile recvSlot=$recvSlot"
+        }
+    }
+
+    /**
+     * Delivers one recv CQE's bytes to [onRead] through the pre-allocated
+     * ring-buffer wrapper. Shared by the multishot and single-shot recv
+     * modes — the CQE encodes the selected buffer the same way in both.
+     */
+    private fun deliverRecv(ring: ProvidedBufferRing, res: Int, flags: UInt) {
+        // One buffer left the ring for this CQE; record it so the ring's
+        // `hasAvailable` reflects current occupancy.
+        ring.onConsumed()
+        touchIdleTimeout() // progress: refresh the read-idle deadline
+        val bufId = keel_cqe_get_buf_id(flags).toInt()
+        val buf = wrappers!![bufId]
+        buf.reset()
+        buf.writerIndex = res
+        onRead?.invoke(buf)
+    }
+
+    /**
+     * Handles a recv `-ENOBUFS` CQE (shared provided-buffer ring empty).
+     * Shared by both recv modes; the caller has already cleared [recvSlot].
+     */
+    private fun onRecvEnobufs(ring: ProvidedBufferRing) {
+        if (ring.hasAvailable) {
+            // Buffers are already back in the ring — typically within this
+            // same CQE batch, when a single read delivery exceeds the whole
+            // ring (e.g. a ~1 MiB WS frame vs a 512 KiB ring): the kernel
+            // fills + reports every buffer and raises -ENOBUFS, and the app
+            // returns them before this CQE is processed. Re-arm now;
+            // deferring would stall forever (no later returnBuffer to fire
+            // the re-arm).
+            recvStarved = false
+            armRecv()
+        } else if (!recvStarved) {
+            // Ring genuinely empty (buffers still held downstream). Defer
+            // the re-arm to the next returnBuffer instead of busy-looping
+            // (the -ENOBUFS busy-loop). The recvStarved guard collapses
+            // repeat -ENOBUFS into one registration.
+            recvStarved = true
+            ring.requestRearmOnAvailable(rearmRecvAfterStarvation)
         }
     }
 
@@ -1073,9 +1157,9 @@ internal class IoUringIoTransport(
         if (!markTeardownStarted()) return
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
-        if (multishotSlot >= 0) {
-            eventLoop.cancelSqe(multishotSlot)
-            multishotSlot = -1
+        if (recvSlot >= 0) {
+            eventLoop.cancelSqe(recvSlot)
+            recvSlot = -1
         }
         // Cancel the peer-FIN-watching POLL_ADD before closing the fd.
         // An in-flight POLL_ADD SQE holds a kernel-side `struct file`
