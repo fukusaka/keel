@@ -165,15 +165,19 @@ via `IoModeSelectors.eagainThreshold()`.
 
 ## Kernel Version Requirements
 
-| Feature | Kernel | Used by |
-|---------|--------|---------|
-| io_uring basic | 5.1+ | All operations |
-| Multishot accept | 5.19+ | `IoUringStreamServer`, `IoUringPipelinedStreamServer` |
-| Provided buffer ring | 5.19+ | `ProvidedBufferRing` for multishot recv |
-| Multishot recv | 6.0+ | `armRecv()` in `IoUringPipelinedChannel` |
-| SEND_ZC | 6.0+ | `IoMode.SEND_ZC` (optional, auto-detected) |
+**Hard floor: Linux 5.6** (`IORING_OP_SEND` / `IORING_OP_RECV`) — enforced at
+engine construction; older kernels should use the epoll engine. Every feature
+above the floor degrades behind its own capability gate:
 
-`IoUringCapabilities` probes the running kernel and enables features gracefully.
+| Feature | Kernel | Fallback below it |
+|---------|--------|-------------------|
+| Single-shot accept / recv / send | 5.6+ (floor) | — (construction fails fast below 5.6) |
+| Multishot accept | 5.19+ | single-shot accept re-armed per connection (both server modes) |
+| Provided buffer ring | 5.19+ | single-shot recv into an allocator-owned buffer, re-armed per CQE |
+| Multishot recv | 6.0+ | single-shot buffer-select recv re-armed per CQE (ring still used) |
+| SEND_ZC | 6.0+ | regular send (opcode-probed; `IoMode.SEND_ZC` is optional) |
+
+`IoUringCapabilities` probes the running kernel and selects the appropriate tier.
 
 # Package io.github.fukusaka.keel.engine.iouring
 
