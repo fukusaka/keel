@@ -30,6 +30,7 @@ import io_uring.KEEL_POLLHUP
 import io_uring.KEEL_POLLRDHUP
 import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
+import io_uring.keel_cqe_has_more
 import io_uring.keel_prep_poll_add
 import platform.posix.ENOBUFS
 import platform.posix.SHUT_WR
@@ -144,6 +145,48 @@ internal class IoUringIoTransport(
 
     /** Whether this transport uses fixed file descriptors. */
     internal val useFixedFile: Boolean get() = fixedFileIndex >= 0
+
+    /**
+     * Number of in-flight SQEs that reference the registered file table
+     * slot [fixedFileIndex] — recv (all three modes), the async send /
+     * writev / zero-copy sends, and the direct-alloc shutdown (POLL_ADD
+     * uses the raw fd and is excluded). The slot may not be unregistered
+     * — and thereby freed for the NEXT connection to reuse — while any
+     * of them is in flight: `IORING_OP_ASYNC_CANCEL` is asynchronous and
+     * a poll-armed request re-resolves its slot index on wakeup, so a
+     * stale request on a reused slot reads from the next connection's
+     * socket (observed as cross-connection data theft on CPU-starved
+     * hosts, where the cancel's terminal CQE loses the race to slot
+     * reuse). Teardown defers the unregister to the last terminal CQE
+     * via [fixedSlotReleasePending]. EventLoop-thread only.
+     */
+    private var inflightFixedOps = 0
+
+    /**
+     * Set by [teardownOnEventLoop] when the transport closed while
+     * fixed-slot-referencing SQEs were still in flight; the last
+     * [fixedOpCompleted] performs the deferred unregister.
+     */
+    private var fixedSlotReleasePending = false
+
+    /** Records one fixed-slot-referencing SQE submission. */
+    private fun fixedOpSubmitted() {
+        if (useFixedFile) inflightFixedOps++
+    }
+
+    /**
+     * Records one fixed-slot-referencing SQE reaching its terminal CQE,
+     * and performs the teardown-deferred slot unregister once the last
+     * one lands.
+     */
+    private fun fixedOpCompleted() {
+        if (!useFixedFile) return
+        inflightFixedOps--
+        if (fixedSlotReleasePending && inflightFixedOps == 0) {
+            fixedSlotReleasePending = false
+            fixedFileRegistry?.unregister(fixedFileIndex)
+        }
+    }
 
     // --- Read path (multishot recv with provided buffer ring) ---
 
@@ -371,11 +414,16 @@ internal class IoUringIoTransport(
     }
 
     private fun armRecvMultishot(ring: ProvidedBufferRing) {
+        fixedOpSubmitted()
         recvSlot = eventLoop.submitMultishotRecv(
             fd = sqeFd,
             fixedFile = useFixedFile,
             bgid = ring.bgid,
             onCqe = { res, flags ->
+                // Terminal CQE bookkeeping must run even post-teardown
+                // (the deferred slot unregister depends on it), so it
+                // precedes the opened check.
+                if (keel_cqe_has_more(flags) == 0) fixedOpCompleted()
                 if (!opened) return@submitMultishotRecv
                 eventLoop.logger.debug {
                     "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
@@ -408,6 +456,7 @@ internal class IoUringIoTransport(
      * and flow control relies on `-ENOBUFS`.
      */
     private fun armRecvSingleShot(ring: ProvidedBufferRing) {
+        fixedOpSubmitted()
         recvSlot = eventLoop.submitRecvBufSelect(
             fd = sqeFd,
             fixedFile = useFixedFile,
@@ -418,8 +467,11 @@ internal class IoUringIoTransport(
                 // this callback's slot after the callback returns (hasMore
                 // = false), so a re-arm below acquires a fresh slot; clear
                 // the in-flight marker first so the re-arm gates see
-                // recvSlot < 0.
+                // recvSlot < 0. The fixed-op bookkeeping must run even
+                // post-teardown (deferred slot unregister), so it precedes
+                // the opened check.
                 recvSlot = -1
+                fixedOpCompleted()
                 if (!opened) return@submitRecvBufSelect
                 eventLoop.logger.debug {
                     "recv CQE (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
@@ -464,6 +516,7 @@ internal class IoUringIoTransport(
     private fun armRecvSingleShotAlloc() {
         val buf = allocator.allocate(readBufferSize)
         pendingRecvBuf = buf
+        fixedOpSubmitted()
         recvSlot = eventLoop.submitRecv(
             fd = sqeFd,
             fixedFile = useFixedFile,
@@ -471,8 +524,10 @@ internal class IoUringIoTransport(
             len = readBufferSize,
             onCqe = { res, _ ->
                 // Single-shot: this CQE terminates the SQE (same slot
-                // lifecycle as the buffer-select variant above).
+                // lifecycle as the buffer-select variant above). Fixed-op
+                // bookkeeping runs even post-teardown (deferred unregister).
                 recvSlot = -1
+                fixedOpCompleted()
                 val pending = pendingRecvBuf
                 pendingRecvBuf = null
                 eventLoop.logger.debug {
@@ -563,12 +618,14 @@ internal class IoUringIoTransport(
                 // Direct-allocated slots do not expose the raw fd; route
                 // through IORING_OP_SHUTDOWN + IOSQE_FIXED_FILE. Fire and
                 // forget — the CQE result is logged on failure only.
+                fixedOpSubmitted()
                 eventLoop.submitCallback(
                     prepare = { sqe ->
                         keel_prep_shutdown(sqe, sqeFd, SHUT_WR)
                         keel_sqe_set_fixed_file(sqe)
                     },
                     onCqe = { res, _ ->
+                        fixedOpCompleted()
                         if (res < 0) {
                             eventLoop.logger.warn {
                                 "io_uring shutdown(SHUT_WR) failed: index=$sqeFd ${errnoMessage(-res)}"
@@ -857,12 +914,14 @@ internal class IoUringIoTransport(
         onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
+        fixedOpSubmitted()
         eventLoop.submitCallback(
             prepare = { sqe ->
                 io_uring_prep_send(sqe, sqeFd, ptr, length.convert(), MSG_NOSIGNAL)
                 if (useFixedFile) keel_sqe_set_fixed_file(sqe)
             },
             onCqe = { res, _ ->
+                fixedOpCompleted()
                 val sent = if (res > 0) res else 0
                 val remaining = length - sent
                 if (remaining > 0 && res > 0) {
@@ -939,7 +998,9 @@ internal class IoUringIoTransport(
                 ?: error("keel_alloc_iovec failed (OOM)")
         }
 
+        fixedOpSubmitted()
         eventLoop.submitWritevCallback(sqeFd, iovecs, count.toUInt(), fixedFile = useFixedFile) { res ->
+            fixedOpCompleted()
             io_uring.keel_free_iovec(iovecs)
             // Surface writev errors (EPIPE / ECONNRESET / etc.) — without
             // this the partial-write fall-through would treat a negative
@@ -1068,10 +1129,12 @@ internal class IoUringIoTransport(
         if (bufIndex >= 0) {
             // Registered buffer: use SEND_ZC_FIXED (no per-send page pinning).
             eventLoop.sendZcFixedCount++
+            fixedOpSubmitted()
             eventLoop.submitSendZcFixedCallback(
                 sqeFd, ptr, length.convert(), MSG_NOSIGNAL,
                 bufIndex = bufIndex, fixedFile = useFixedFile,
             ) { res ->
+                fixedOpCompleted()
                 if (res < 0) {
                     eventLoop.logger.warn {
                         "async SEND_ZC_FIXED CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
@@ -1093,7 +1156,9 @@ internal class IoUringIoTransport(
         } else {
             // Unregistered buffer: use regular SEND_ZC (per-send page pinning).
             eventLoop.sendZcRegularCount++
+            fixedOpSubmitted()
             eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
+                fixedOpCompleted()
                 if (res < 0) {
                     eventLoop.logger.warn {
                         "async SEND_ZC CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
@@ -1156,7 +1221,9 @@ internal class IoUringIoTransport(
             val msghdr = io_uring.keel_alloc_msghdr(iovecs, count)
                 ?: run { io_uring.keel_free_iovec(iovecs); error("keel_alloc_msghdr failed (OOM)") }
 
+            fixedOpSubmitted()
             eventLoop.submitSendmsgZcCallback(sqeFd, msghdr, MSG_NOSIGNAL.convert(), fixedFile = useFixedFile) { res ->
+                fixedOpCompleted()
                 io_uring.keel_free_msghdr(msghdr)
                 io_uring.keel_free_iovec(iovecs)
                 for (pw in writes) pw.buf.release()
@@ -1287,7 +1354,18 @@ internal class IoUringIoTransport(
             flushContinuation = null
             cont.cancel()
         }
-        if (fixedFileIndex >= 0) fixedFileRegistry?.unregister(fixedFileIndex)
+        if (fixedFileIndex >= 0) {
+            if (inflightFixedOps == 0) {
+                fixedFileRegistry?.unregister(fixedFileIndex)
+            } else {
+                // SQEs referencing the slot are still in flight (e.g. the
+                // just-cancelled recv whose terminal CQE has not landed).
+                // Unregistering now would free the slot for the next
+                // connection while the kernel can still resolve the stale
+                // request against it — defer to the last terminal CQE.
+                fixedSlotReleasePending = true
+            }
+        }
         // Direct-allocated slots: unregister() above issues
         // register_files_update(slot, -1) which closes the kernel-held fd.
         // There is no userspace fd to close via POSIX close().
