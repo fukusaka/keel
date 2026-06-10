@@ -142,6 +142,62 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `pipelined echo works without a provided buffer ring - allocator recv fallback`() {
+        // Exercises the allocator-buffer recv fallback (the read mode used
+        // on a kernel without IORING_REGISTER_PBUF_RING) against the real
+        // kernel: plain single-shot IORING_OP_RECV into a caller-owned
+        // buffer is valid on modern kernels too, so the capability override
+        // makes the pre-ring tier permanently testable here. The matrix
+        // matches a real pre-5.19 kernel (no ring implies no multishot
+        // recv). Two sequential round-trips pin the per-CQE re-arm with a
+        // fresh allocation per recv.
+        val caps = detectCaps().copy(providedBufferRing = false, multishotRecv = false)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+            rawWrite(clientFd, "world")
+            assertEquals("world", rawRead(clientFd, 5), "second echo requires the per-CQE re-arm")
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
+    fun `invalid capability cell - multishot recv without a ring - is normalized and still echoes`() {
+        // multishot recv requires kernel-side buffer selection, so the cell
+        // (multishotRecv = true, providedBufferRing = false) cannot occur
+        // from version detection — only a manual override can produce it.
+        // The engine normalizes it (warn + effective multishotRecv = false)
+        // instead of letting the kernel reject every recv with -EINVAL.
+        val caps = detectCaps().copy(providedBufferRing = false)
+        if (!caps.multishotRecv) return // kernel too old to form the invalid cell
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
     fun `pipelined echo works with iowqMaxWorkers set`() {
         // Smoke test: set small IO_WQ limits and verify the engine still
         // runs the happy path. The limits don't affect keel's hot path

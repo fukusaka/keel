@@ -155,6 +155,20 @@ static void keel_prep_recv_buf_select(struct io_uring_sqe *sqe, int sockfd,
 }
 
 /*
+ * Prepare a plain single-shot recv SQE into a caller-owned buffer.
+ *
+ * The fallback shape for kernels without a provided buffer ring (< 5.19):
+ * no kernel-side buffer selection — the destination buffer is fixed at
+ * submit time and must stay valid until the CQE arrives. Wrapper needed
+ * because io_uring_prep_recv is an inline function in liburing.h that
+ * cinterop cannot bind directly.
+ */
+static void keel_prep_recv(struct io_uring_sqe *sqe, int sockfd,
+                           void *buf, unsigned len) {
+    io_uring_prep_recv(sqe, sockfd, buf, len, 0);
+}
+
+/*
  * Prepare a zero-copy send SQE (IORING_OP_SEND_ZC, Linux 6.0+).
  *
  * Unlike regular IORING_OP_SEND, the kernel sends data directly from the

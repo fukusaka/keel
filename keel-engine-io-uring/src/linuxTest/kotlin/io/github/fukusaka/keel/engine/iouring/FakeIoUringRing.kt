@@ -193,6 +193,20 @@ internal class FakeIoUringRing : IoUringRing {
      */
     fun lastSqeIoprio(): UShort = scratchSqe.ioprio
 
+    /**
+     * Returns the `flags` field of the scratch SQE — the `IOSQE_*` bits
+     * the most recent prep wrote (e.g. `IOSQE_BUFFER_SELECT`,
+     * `IOSQE_FIXED_FILE`). Lets a test distinguish a buffer-select recv
+     * (kernel picks the buffer from a provided ring) from a plain recv
+     * into a caller-owned buffer — both prep `IORING_OP_RECV` with the
+     * multishot ioprio bit clear, so neither [lastSqeOp] nor
+     * [lastSqeIoprio] can tell them apart.
+     *
+     * Same narrow-exception status as the other field probes: one field,
+     * only meaningful immediately after the prep under test.
+     */
+    fun lastSqeFlags(): UByte = scratchSqe.flags
+
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
         lastSetupFlagsArgs = SetupFlagsArgs(coopTaskrun, singleIssuer, deferTaskrun)
         var flags = 0u

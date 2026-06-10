@@ -43,9 +43,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
  * @param capabilities Runtime-detected io_uring kernel capabilities.
  * @param ringSize SQE ring size per EventLoop. See [IoUringEventLoop.DEFAULT_RING_SIZE].
- * @param readBufferSize Per-buffer size of each EventLoop's provided buffer
- *   ring — the recv buffer size for the multishot RECV path (see
- *   [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]). Does not
+ * @param readBufferSize Per-read receive buffer size (see
+ *   [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]): the
+ *   per-buffer size of each EventLoop's provided buffer ring on
+ *   ring-capable kernels, and the per-recv allocation size of the
+ *   allocator-buffer fallback when no ring exists (< 5.19). Does not
  *   affect the SEND-side registered buffers / warmup, which stay at the
  *   allocator segment size.
  */
@@ -56,7 +58,7 @@ internal class IoUringEventLoopGroup(
     allocator: BufferAllocator,
     capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
-    readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
     /**
      * Per-EventLoop Fixed Buffer registry strategy. Resolved against
