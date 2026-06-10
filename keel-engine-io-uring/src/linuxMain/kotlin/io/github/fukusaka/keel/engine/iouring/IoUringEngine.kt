@@ -410,7 +410,7 @@ class IoUringEngine(
         val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog))
         try {
             val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
             logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
@@ -444,7 +444,7 @@ class IoUringEngine(
             // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
             val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
             val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
             )
             server.start()
             logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
@@ -479,6 +479,19 @@ class IoUringEngine(
         }
     }
 
+    /**
+     * Total zero-copy send dispatches (`SEND_ZC_FIXED` + regular `SEND_ZC`)
+     * across the worker EventLoops. Only meaningful after [close] — the
+     * per-loop counters are EL-confined plain `Long`s and are read here
+     * without synchronization, which is safe once `close()` has joined
+     * every EventLoop pthread.
+     *
+     * Test-facing: lets an integration test assert which write mode the
+     * engine actually used (e.g. that `bindPipeline` transports honour
+     * the engine's `writeModeSelector`).
+     */
+    internal fun totalSendZcDispatchCount(): Long =
+        workerGroup.totalSendZcFixedCount() + workerGroup.totalSendZcRegularCount()
 
     companion object {
         /** Resolves threads=0 to available CPU cores. */
