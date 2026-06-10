@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.io.OwnedSuspendSource
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 
@@ -18,19 +17,4 @@ internal class IoUringPipelinedChannel(
     logger: Logger,
     remoteAddress: SocketAddress? = null,
     localAddress: SocketAddress? = null,
-) : AbstractPipelinedChannel(ioUringTransport, logger, remoteAddress, localAddress) {
-
-    /**
-     * Returns a push-model [OwnedSuspendSource] backed by multishot recv with provided buffers.
-     *
-     * **Note**: this bypasses the Pipeline and is incompatible with Pipeline handlers
-     * (TLS, HTTP). Retained for future evaluation as a zero-copy fast path for
-     * raw-socket consumers; the Pipeline-mode read path remains the supported way to
-     * drive most workloads.
-     *
-     * @throws IllegalStateException if provided buffer ring is not available.
-     */
-    fun asOwnedSuspendSource(): OwnedSuspendSource {
-        return ioUringTransport.createOwnedSuspendSource()
-    }
-}
+) : AbstractPipelinedChannel(ioUringTransport, logger, remoteAddress, localAddress)

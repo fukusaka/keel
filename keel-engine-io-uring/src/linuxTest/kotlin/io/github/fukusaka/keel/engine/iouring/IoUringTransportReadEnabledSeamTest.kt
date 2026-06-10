@@ -25,8 +25,8 @@ import kotlin.test.assertEquals
  * submitted with a fresh slot, while the first multishot recv stayed
  * registered in `callbackSlots[oldSlot]`. The kernel then routed CQEs
  * to both, double-delivering the same `bufId` into the shared
- * wrappers — the same shape as the [IoUringOwnedSource] `-ENOBUFS`
- * double-arm fixed in PR #737.
+ * wrappers — the same shape as the `-ENOBUFS` double-arm fixed in
+ * PR #737 (in the since-removed owned-source read path).
  *
  * The fix gates `armRecv()` on `multishotSlot < 0` — the setter only
  * arms when there is no live multishot recv. `recvStarved` is treated

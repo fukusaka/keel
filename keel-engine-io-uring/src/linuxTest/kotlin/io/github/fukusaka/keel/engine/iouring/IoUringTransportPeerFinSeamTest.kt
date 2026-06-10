@@ -176,8 +176,9 @@ class IoUringTransportPeerFinSeamTest {
         // gate, so a second `onChannelAttached` call would overwrite
         // `pollAddFinSlot` and orphan the first SQE's callback slot in
         // `callbackSlots[]` until the kernel delivers its CQE — the same
-        // double-arm shape as the gates added in PR #737 (IoUringOwnedSource)
-        // and PR #741 (IoUringIoTransport.readEnabled). The fix wraps the
+        // double-arm shape as the gates added in PR #737 (the since-removed
+        // owned-source read path) and PR #741
+        // (IoUringIoTransport.readEnabled). The fix wraps the
         // arm body in a `pollAddFinSlot >= 0` short-circuit; pin it by
         // calling onChannelAttached twice in a row and asserting exactly one
         // POLL_ADD SQE was submitted.
