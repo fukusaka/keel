@@ -251,12 +251,25 @@ internal class IoUringEventLoop(
         if (cont != null) {
             contSlots[slot] = null
             releaseSlot(slot)
+            // No guard needed: resuming from the EventLoop thread goes
+            // through this dispatcher (dispatch → taskQueue), so the
+            // coroutine body runs under drainTasks' guard and its
+            // exceptions are routed to the coroutine's Job, not thrown
+            // here.
             cont.resume(result)
         } else {
             val cb = sendZcCallbacks[slot]
             sendZcCallbacks[slot] = null
             releaseSlot(slot)
-            cb?.invoke(result)
+            // Same catch-and-warn guard as the multishot CQE callbacks: a
+            // throwing completion (e.g. a release-contract violation in a
+            // handler) must not kill the EventLoop pthread — every other
+            // connection on this loop dies with it.
+            try {
+                cb?.invoke(result)
+            } catch (t: Throwable) {
+                logger.warn(t) { "SEND_ZC completion callback threw: slot=$slot result=$result" }
+            }
         }
     }
 
@@ -1286,7 +1299,20 @@ internal class IoUringEventLoop(
             taskQueue.drain(drainBatch)
             if (drainBatch.isEmpty()) return
             // Index-based iteration avoids Iterator allocation on every drain cycle.
-            for (i in 0 until drainBatch.size) drainBatch[i].run()
+            for (i in 0 until drainBatch.size) {
+                // Same catch-and-warn guard as the CQE callbacks: a raw
+                // dispatched Runnable that throws (engine-internal teardown
+                // / arming tasks, or a coroutine task whose machinery is
+                // not the thrower) must not kill the EventLoop pthread or
+                // skip the remaining tasks in this batch. Coroutine tasks
+                // route their body exceptions to their Job before reaching
+                // here; this guard is the backstop for everything else.
+                try {
+                    drainBatch[i].run()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "dispatched task threw on the EventLoop" }
+                }
+            }
         }
     }
 
