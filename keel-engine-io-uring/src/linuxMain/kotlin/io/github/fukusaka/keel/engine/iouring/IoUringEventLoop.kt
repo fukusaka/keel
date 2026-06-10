@@ -9,6 +9,7 @@ import io_uring.iovec
 import io_uring.io_uring_sqe
 import io_uring.io_uring_sqe_set_data64
 import io_uring.keel_prep_msg_ring
+import io_uring.keel_prep_recv_buf_select
 import io_uring.keel_prep_recv_multishot
 import io_uring.keel_prep_send_zc
 import io_uring.keel_prep_sendmsg_zc
@@ -812,6 +813,47 @@ internal class IoUringEventLoop(
         val sqe = ioUringRing.getSqe(ring.ptr)
             ?: error("io_uring SQ ring full (size=$ringSize)")
         keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
+        if (fixedFile) keel_sqe_set_fixed_file(sqe)
+        val slot = acquireSlot()
+        callbackSlots[slot] = onCqe
+        val userData = slot.toULong() + SLOT_BASE
+        io_uring_sqe_set_data64(sqe, userData)
+        return slot
+    }
+
+    /**
+     * Submits a single-shot recv SQE with provided buffer selection — the
+     * fallback shape of [submitMultishotRecv] for kernels with a provided
+     * buffer ring (5.19+) but without `IORING_RECV_MULTISHOT` (6.0+, see
+     * [IoUringCapabilities.multishotRecv]).
+     *
+     * The kernel still selects the destination buffer from the ring
+     * identified by [bgid] (the CQE carries the buffer ID in its flags),
+     * but each SQE produces exactly one CQE — the caller re-arms after
+     * every completion. [len] caps the read and must be the ring's buffer
+     * size: a multishot recv passes 0 (the kernel sizes each read to the
+     * selected buffer), but a single-shot recv treats 0 as a zero-length
+     * read and would complete immediately with `res = 0`.
+     *
+     * Must be called on the EventLoop thread only.
+     *
+     * @param fd   The connected socket file descriptor.
+     * @param bgid Buffer group ID for the provided buffer ring.
+     * @param len  Maximum bytes to read; pass the ring's buffer size.
+     * @param onCqe Callback invoked on the EventLoop thread for the CQE.
+     * @return The slot index, needed for [cancelSqe].
+     * @throws IllegalStateException if the SQ ring is full.
+     */
+    internal fun submitRecvBufSelect(
+        fd: Int,
+        bgid: Int,
+        len: Int,
+        fixedFile: Boolean = false,
+        onCqe: (res: Int, flags: UInt) -> Unit,
+    ): Int {
+        val sqe = ioUringRing.getSqe(ring.ptr)
+            ?: error("io_uring SQ ring full (size=$ringSize)")
+        keel_prep_recv_buf_select(sqe, fd, len.toUInt(), bgid.toUShort())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
         callbackSlots[slot] = onCqe
