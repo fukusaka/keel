@@ -72,6 +72,36 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `pipelined echo works with multishotRecv disabled - single-shot buffer-select fallback`() {
+        // Exercises the single-shot recv fallback (the read mode used on a
+        // kernel with a provided buffer ring but no IORING_RECV_MULTISHOT)
+        // against the real kernel: the single-shot IORING_OP_RECV +
+        // IOSQE_BUFFER_SELECT shape is valid on modern kernels too, so the
+        // capability override makes the fallback path permanently testable
+        // here without an actual 5.19 host. Two sequential round-trips pin
+        // the per-CQE re-arm (the second echo only works if delivery
+        // re-armed a fresh recv SQE).
+        val caps = detectCaps().copy(multishotRecv = false)
+        val engine = IoUringEngine(config = testConfig(), capabilities = caps)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+            rawWrite(clientFd, "world")
+            assertEquals("world", rawRead(clientFd, 5), "second echo requires the per-CQE re-arm")
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
     fun `pipelined echo works with iowqMaxWorkers set`() {
         // Smoke test: set small IO_WQ limits and verify the engine still
         // runs the happy path. The limits don't affect keel's hot path

@@ -178,6 +178,21 @@ internal class FakeIoUringRing : IoUringRing {
      */
     fun lastSqeOp(): UByte = scratchSqe.opcode
 
+    /**
+     * Returns the `ioprio` field of the scratch SQE — for recv ops this
+     * carries the `IORING_RECV*` flag bits (e.g. `IORING_RECV_MULTISHOT`,
+     * bit 1). Lets a test distinguish a multishot recv from a single-shot
+     * buffer-select recv: both prep `IORING_OP_RECV`, so [lastSqeOp]
+     * alone cannot tell them apart — the multishot-ness lives in
+     * `ioprio`, not the opcode.
+     *
+     * Same narrow-exception status as [lastSqeOp] / [lastPollSqeMask]:
+     * one field of the scratch SQE, only meaningful immediately after a
+     * recv prep (the union storage is reused by later preps). Always
+     * pair with [lastSqeOp] `== IORING_OP_RECV`.
+     */
+    fun lastSqeIoprio(): UShort = scratchSqe.ioprio
+
     override fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt {
         lastSetupFlagsArgs = SetupFlagsArgs(coopTaskrun, singleIssuer, deferTaskrun)
         var flags = 0u
