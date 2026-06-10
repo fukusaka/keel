@@ -41,6 +41,17 @@ object IoModeSelectors {
      *
      * Manual selection only — not included in adaptive strategies.
      * See [IoMode.SEND_ZC] for limitations and applicable scenarios.
+     *
+     * **Pair with [RegisteredBufferStrategy.STATIC]** (the engine default).
+     * Measured on a 32-core Linux host at peak load (loopback, 100 KB
+     * responses): SEND_ZC with the registered-buffer set beats the default
+     * adaptive selector's throughput by a small margin and its p50 by ~2%,
+     * but SEND_ZC with [RegisteredBufferStrategy.DISABLED] (per-send page
+     * pinning on every send) is ~2% *slower* than the default selector —
+     * the pinning cost exceeds the copy it avoids. On real NICs the
+     * zero-copy benefit is expected to be larger (loopback degenerates to
+     * a memcpy and cannot show the DMA win), but that remains to be
+     * measured.
      */
     val SEND_ZC = IoModeSelector { IoMode.SEND_ZC }
 
