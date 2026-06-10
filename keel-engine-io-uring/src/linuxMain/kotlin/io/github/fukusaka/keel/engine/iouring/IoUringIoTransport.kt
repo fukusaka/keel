@@ -384,9 +384,11 @@ internal class IoUringIoTransport(
             bgid = ring.bgid,
             len = ring.bufferSize,
             onCqe = { res, flags ->
-                // Single-shot: this CQE terminates the SQE (the drain has
-                // already released the callback slot), so the in-flight
-                // marker is cleared before any branch below can re-arm.
+                // Single-shot: this CQE terminates the SQE. The drain frees
+                // this callback's slot after the callback returns (hasMore
+                // = false), so a re-arm below acquires a fresh slot; clear
+                // the in-flight marker first so the re-arm gates see
+                // recvSlot < 0.
                 recvSlot = -1
                 if (!opened) return@submitRecvBufSelect
                 eventLoop.logger.debug {
