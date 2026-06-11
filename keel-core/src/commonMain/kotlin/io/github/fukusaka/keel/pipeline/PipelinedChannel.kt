@@ -110,7 +110,12 @@ interface PipelinedChannel : Channel {
         check(isOpen) { "Channel is closed" }
         return withContext(ioDispatcher) {
             val bridge = ensureBridge()
-            if (!readEnabled) readEnabled = true
+            // First-read arming only: while the bridge has suspended reads
+            // at its high watermark, re-arming is the bridge's dequeue
+            // path's job (at the low watermark) — arming here would defeat
+            // the hysteresis and flap the engine's read registration on
+            // every call.
+            if (!readEnabled && !bridge.readSuspendedByWatermark) readEnabled = true
             bridge.read(buf)
         }
     }
