@@ -587,6 +587,7 @@ internal class IoUringIoTransport(
      * Shared by both recv modes; the caller has already cleared [recvSlot].
      */
     private fun onRecvEnobufs(ring: ProvidedBufferRing) {
+        ring.onRecvEnobufs() // occupancy observability: count every starvation CQE
         if (ring.hasAvailable) {
             // Buffers are already back in the ring — typically within this
             // same CQE batch, when a single read delivery exceeds the whole
