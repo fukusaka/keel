@@ -265,7 +265,29 @@ internal class NwIoTransport(
      * with a [ReadContext], and passes it to the C wrapper. The read
      * callback re-arms automatically on each successful read.
      */
+    // Flow-control pause ([pauseReads]): when set, [armRead] becomes a
+    // no-op, so the receive loop stops re-arming after the in-flight
+    // receive (at most one delivery of overshoot) and the NWConnection
+    // framework receive buffer retains further bytes — TCP back-pressure
+    // reaches the peer regardless of [idleReadPolicy]. Connection-queue
+    // confined like the rest of the read bookkeeping.
+    private var readPaused = false
+
+    override fun pauseReads() {
+        readPaused = true
+    }
+
+    override fun resumeReads() {
+        readPaused = false
+        // Restore the policy's steady state: DETECT keeps a receive armed
+        // at all times; PRESERVE arms only while reads are enabled.
+        if (opened && (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE || readEnabled)) {
+            armRead()
+        }
+    }
+
     private fun armRead() {
+        if (readPaused) return
         if (!opened) return
         if (pendingReadBuf != null) return
         val buf = spareFallbackBuf
