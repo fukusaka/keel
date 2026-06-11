@@ -137,7 +137,31 @@ internal class NioIoTransport(
             }
         }
 
+    // Flow-control pause ([pauseReads]): when set, [armRead] becomes a
+    // no-op and [onReadable] returns without consuming, so OP_READ stays
+    // deregistered (interest is one-shot), kernel `rcvbuf` retains the
+    // bytes, and the peer's TCP window stalls — regardless of
+    // [idleReadPolicy]. EventLoop-thread confined like the rest of the
+    // read bookkeeping.
+    private var readPaused = false
+
+    override fun pauseReads() {
+        readPaused = true
+    }
+
+    override fun resumeReads() {
+        readPaused = false
+        // Restore the policy's steady state: DETECT keeps the primitive
+        // armed at all times; PRESERVE arms only while reads are enabled.
+        if (socketChannel.isOpen &&
+            (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE || readEnabled)
+        ) {
+            armRead()
+        }
+    }
+
     private fun armRead() {
+        if (readPaused) return
         if (!socketChannel.isOpen) return
         eventLoop.setInterestCallback(
             selectionKey,
@@ -148,6 +172,13 @@ internal class NioIoTransport(
 
     private fun onReadable() {
         if (!socketChannel.isOpen) return
+        if (readPaused) {
+            // Paused after the interest was registered: do not consume and
+            // do not re-arm. The one-shot interest is already cleared by
+            // the selector loop, rcvbuf retains the data, and
+            // [resumeReads] re-arms.
+            return
+        }
         if (!readPoolRegistered) {
             // Idempotent; on the EventLoop thread that owns the allocator.
             // No-op for the engine-default size already pooled by the

@@ -96,6 +96,23 @@ class SuspendBridgeHandlerTest {
     }
 
     @Test
+    fun `the watermark flips route through the channel's pause and resume`() {
+        runTest {
+            val (pipeline, bridge) = createPipelineWithBridge()
+            transport.readEnabled = true
+
+            pipeline.notifyRead(allocFilled(64 * 1024))
+            assertEquals(1, transport.pauseReadsCount, "the high watermark must call pauseReads, not raw readEnabled")
+            assertEquals(0, transport.resumeReadsCount)
+
+            // The single 64 KiB delivery drains in one dequeue, crossing
+            // the low watermark immediately.
+            bridge.readOwned()!!.release()
+            assertEquals(1, transport.resumeReadsCount, "draining to the low watermark must call resumeReads")
+        }
+    }
+
+    @Test
     fun `partial consumption through read accounts only the consumed bytes`() {
         runTest {
             val (pipeline, bridge) = createPipelineWithBridge()

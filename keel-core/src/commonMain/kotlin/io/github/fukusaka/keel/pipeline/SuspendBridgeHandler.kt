@@ -49,20 +49,16 @@ import kotlin.coroutines.resume
  * [LOW_WATERMARK_BYTES] re-arms it. Without the bound, a consumer slower
  * than its peer accumulated the peer's entire send stream in this queue
  * (the engine kept reading, so the kernel's receive window never closed).
- * The flip is per-connection — `readEnabled` is a per-transport knob — and
- * the bound is soft. **Engine caveat**: how soft depends on what
- * `readEnabled = false` actually stops. epoll / kqueue / nodejs and the
- * io_uring single-shot recv tiers stop consuming (true TCP back-pressure,
- * overshoot at most one in-flight delivery). Engines whose
- * `IdleReadPolicy.DETECT_PEER_CLOSE` keeps the read primitive armed
- * (nio / netty / nwconnection under the default policy) keep delivering,
- * so there the watermark currently does not bound the queue (no data is
- * lost — deliveries keep queueing); the same holds for io_uring multishot
- * recv, whose in-flight SQE ignores `readEnabled`. A dedicated
- * pause-reads transport seam that stops consumption on every engine is
- * the planned tightening. While the bridge has suspended reads it owns
- * the channel's `readEnabled`; a consumer that manages `readEnabled`
- * manually should not also read through this bridge.
+ * The flip is per-connection, via [PipelinedChannel.pauseReads] /
+ * [PipelinedChannel.resumeReads] — the flow-control knob every engine
+ * implements as "stop consuming within a bounded overshoot, no data
+ * loss" regardless of its `IdleReadPolicy`. Remaining engine caveat:
+ * io_uring multishot recv's in-flight SQE keeps delivering until it is
+ * cancelled (its pause currently falls back to the no-re-arm semantics),
+ * so on that tier the bound stays soft pending the multishot-cancel
+ * work. While the bridge has suspended reads it owns the channel's
+ * pause state; a consumer that manages `readEnabled` / pause manually
+ * should not also read through this bridge.
  */
 class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 
@@ -109,7 +105,7 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
             // watermark (hysteresis avoids flapping on every delivery).
             if (!readSuspendedByWatermark && queuedBytes >= HIGH_WATERMARK_BYTES) {
                 readSuspendedByWatermark = true
-                ctx.channel.readEnabled = false
+                ctx.channel.pauseReads()
             }
             // Resume the single waiting reader, if any.
             // Safe: onRead runs on EventLoop thread, same as read().
@@ -134,7 +130,7 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         queuedBytes -= n
         if (readSuspendedByWatermark && queuedBytes <= LOW_WATERMARK_BYTES) {
             readSuspendedByWatermark = false
-            ctx.channel.readEnabled = true
+            ctx.channel.resumeReads()
         }
     }
 

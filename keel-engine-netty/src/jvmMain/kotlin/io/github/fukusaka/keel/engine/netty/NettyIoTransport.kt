@@ -152,13 +152,39 @@ internal class NettyIoTransport(
             }
         }
 
+    // Flow-control pause ([pauseReads]): turning auto-read off stops
+    // Netty's read loop at the next iteration regardless of
+    // [idleReadPolicy], so the kernel `rcvbuf` fills and the peer's TCP
+    // window stalls. Deliveries already read by Netty when the pause
+    // lands still reach [channelRead] — the bounded overshoot the
+    // contract allows. EventLoop-thread confined.
+    private var readPaused = false
+
+    override fun pauseReads() {
+        readPaused = true
+        if (nettyChannel.isOpen) nettyChannel.config().isAutoRead = false
+    }
+
+    override fun resumeReads() {
+        readPaused = false
+        // Restore the policy's steady state: DETECT keeps auto-read on at
+        // all times; PRESERVE arms only while reads are enabled.
+        if (nettyChannel.isOpen &&
+            (idleReadPolicy == IdleReadPolicy.DETECT_PEER_CLOSE || readEnabled)
+        ) {
+            armRead()
+        }
+    }
+
     /**
      * Enables auto-read on the Netty channel to start the read loop.
      *
      * Once enabled, Netty continuously delivers data via [channelRead]
-     * callbacks in the [handler].
+     * callbacks in the [handler]. A no-op while [readPaused] — the
+     * flow-control pause owns auto-read until [resumeReads].
      */
     private fun armRead() {
+        if (readPaused) return
         if (!nettyChannel.isOpen) return
         nettyChannel.config().isAutoRead = true
         // Trigger initial read in case data arrived before auto-read was enabled.
