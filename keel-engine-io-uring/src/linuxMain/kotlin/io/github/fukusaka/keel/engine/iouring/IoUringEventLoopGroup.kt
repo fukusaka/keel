@@ -84,6 +84,13 @@ internal class IoUringEventLoopGroup(
      * registered set. Consulted by STATIC only.
      */
     private val registeredBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    /**
+     * Number of recv buffers in each EventLoop's [ProvidedBufferRing]
+     * (kernel requirement: a power of two — validated at ring construction).
+     * Shared by every connection on the loop; bounds in-flight deliveries
+     * before copy-on-pressure kicks in.
+     */
+    bufferRingSlotCount: Int = ProvidedBufferRing.DEFAULT_BUFFER_COUNT,
 ) {
 
     /** Number of EventLoop threads in this group. */
@@ -92,7 +99,9 @@ internal class IoUringEventLoopGroup(
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize, idleTimeoutMillis = idleTimeoutMillis) }
     private val allocators = Array(size) { allocator.createForEventLoop() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
-        Array(size) { i -> ProvidedBufferRing(loops[i], logger, bufferSize = readBufferSize, bgid = i) }
+        Array(size) { i ->
+            ProvidedBufferRing(loops[i], logger, bufferCount = bufferRingSlotCount, bufferSize = readBufferSize, bgid = i)
+        }
     } else {
         arrayOfNulls(size)
     }
