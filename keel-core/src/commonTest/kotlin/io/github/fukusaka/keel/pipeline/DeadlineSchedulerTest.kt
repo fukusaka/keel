@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  */
 class DeadlineSchedulerTest {
     private var now = 0L
-    private val scheduler = DeadlineScheduler { now }
+    private val scheduler = DeadlineScheduler(nowMillis = { now })
 
     @Test
     fun `a timer fires only at or after its deadline`() {
@@ -152,5 +152,20 @@ class DeadlineSchedulerTest {
     fun `no scheduled timers reports no deadline`() {
         assertEquals(Long.MAX_VALUE, scheduler.nextDeadlineMillis())
         scheduler.expireDue(1_000) // must be a no-op, not throw
+    }
+
+    @Test
+    fun `a throwing timer task neither propagates nor skips the remaining due timers`() {
+        // Timers on one scheduler belong to many connections: one
+        // connection's throwing deadline task must not kill the EventLoop
+        // thread (expireDue is called from the engine wait loop) and must
+        // not skip the other connections' due timers in the same sweep.
+        var secondFired = false
+        scheduler.schedule(50) { error("first task throws") }
+        scheduler.schedule(50) { secondFired = true }
+        now = 100
+        scheduler.expireDue(now) // must not throw
+        assertTrue(secondFired, "the second due timer must still fire after the first threw")
+        assertEquals(Long.MAX_VALUE, scheduler.nextDeadlineMillis())
     }
 }
