@@ -198,7 +198,7 @@ internal class IoUringEventLoop(
      * [DeadlineScheduler.nextDeadlineMillis] and fires due timers via
      * [DeadlineScheduler.expireDue] after each wake. EventLoop-confined.
      */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
 
     // Pre-allocated drain buffer — reused every loop iteration to avoid
     // per-iteration heap allocation on the hot path.
