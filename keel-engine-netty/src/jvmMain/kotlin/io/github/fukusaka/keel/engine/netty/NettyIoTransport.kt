@@ -136,9 +136,11 @@ internal class NettyIoTransport(
             field = value
             // [IdleReadPolicy.DETECT_PEER_CLOSE]: auto-read is already
             // armed from construction and stays armed for the lifetime
-            // of the transport — flipping `readEnabled` only controls
-            // whether [channelRead] delivers bytes to [onRead] or
-            // releases them silently.
+            // of the transport. [channelRead] always delivers to [onRead]
+            // in both modes (pre-attach journal closed the old data-drop
+            // caveat), so under this policy flipping `readEnabled = false`
+            // does NOT stop inbound delivery — kernel back-pressure needs
+            // [IdleReadPolicy.PRESERVE_BACKPRESSURE].
             if (value && opened) {
                 // The connection is now waiting to read → the read-side idle timeout
                 // applies (covers accept-to-first-byte, slowloris-silent, keep-alive

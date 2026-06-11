@@ -50,11 +50,19 @@ import kotlin.coroutines.resume
  * than its peer accumulated the peer's entire send stream in this queue
  * (the engine kept reading, so the kernel's receive window never closed).
  * The flip is per-connection — `readEnabled` is a per-transport knob — and
- * the bound is soft: an engine whose in-flight receive keeps delivering
- * after `readEnabled = false` (io_uring multishot recv) may briefly
- * overshoot, confined to this connection. While the bridge has suspended
- * reads it owns the channel's `readEnabled`; a consumer that manages
- * `readEnabled` manually should not also read through this bridge.
+ * the bound is soft. **Engine caveat**: how soft depends on what
+ * `readEnabled = false` actually stops. epoll / kqueue / nodejs and the
+ * io_uring single-shot recv tiers stop consuming (true TCP back-pressure,
+ * overshoot at most one in-flight delivery). Engines whose
+ * `IdleReadPolicy.DETECT_PEER_CLOSE` keeps the read primitive armed
+ * (nio / netty / nwconnection under the default policy) keep delivering,
+ * so there the watermark currently does not bound the queue (no data is
+ * lost — deliveries keep queueing); the same holds for io_uring multishot
+ * recv, whose in-flight SQE ignores `readEnabled`. A dedicated
+ * pause-reads transport seam that stops consumption on every engine is
+ * the planned tightening. While the bridge has suspended reads it owns
+ * the channel's `readEnabled`; a consumer that manages `readEnabled`
+ * manually should not also read through this bridge.
  */
 class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 

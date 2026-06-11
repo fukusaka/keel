@@ -33,9 +33,12 @@ import kotlin.coroutines.resume
  * selected [IdleReadPolicy] picks which side of the trade-off is
  * preserved while [readEnabled] is `false`:
  * - [IdleReadPolicy.DETECT_PEER_CLOSE]: arm `OP_READ` at construction;
- *   reads always run when the selector fires; bytes received while
- *   `readEnabled = false` are released without being delivered through
- *   [onRead]; `read = -1` always surfaces through [onReadClosed].
+ *   reads always run when the selector fires and are always delivered
+ *   through [onRead] in both `readEnabled` states (the pre-attach event
+ *   journal absorbs bytes that arrive before the first user handler, so
+ *   nothing is dropped); `read = -1` always surfaces through
+ *   [onReadClosed]. Flipping `readEnabled = false` does NOT stop inbound
+ *   delivery under this policy.
  * - [IdleReadPolicy.PRESERVE_BACKPRESSURE]: arm `OP_READ` only when
  *   `readEnabled` flips to `true`; data sits in `rcvbuf` and the peer's
  *   TCP window stalls; peer FIN is not surfaced until `readEnabled`
