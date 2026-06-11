@@ -359,6 +359,87 @@ class IoUringPipelinedServerTest {
         }
     }
 
+    @Test
+    fun `a handler that retains every recv buffer does not stall the loop's receives`() {
+        // Regression for the cross-connection ring-pinning stall: a consumer
+        // that retains delivered ring buffers (the codec does, for header
+        // views) used to drain a small ring after `slotCount` messages — the
+        // recv died with -ENOBUFS and the deferred re-arm never fired
+        // because the pinned buffers were never returned. Copy-on-pressure
+        // bounds the pinning: once the ring is low, deliveries are
+        // allocator-owned copies and the slots return immediately, so all
+        // messages keep flowing. With a 4-slot ring, the pre-fix server
+        // stalls after at most 4 messages; 8 sent + echo of the last one
+        // proves the receive path outlived the pinning.
+        val retained = ArrayList<IoBuf>()
+        val engine = IoUringEngine(
+            config = testConfig(),
+            capabilities = detectCaps(),
+            bufferRingSlotCount = 4,
+        )
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast(
+                "retainer",
+                object : InboundHandler {
+                    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                        if (msg !is IoBuf) return ctx.propagateRead(msg)
+                        if (retained.size < RETAINED_MESSAGES) {
+                            // Pin the delivered buffer like a codec holding
+                            // header views: keep the reference, no release.
+                            retained.add(msg)
+                        } else {
+                            // Final message: release every pinned buffer (on
+                            // the EventLoop thread, as the codec would) and
+                            // echo it so the client observes liveness.
+                            for (buf in retained) buf.release()
+                            retained.clear()
+                            ctx.propagateWrite(msg)
+                            ctx.propagateFlush()
+                        }
+                    }
+                },
+            )
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+        val clientFd = rawConnect(port)
+        try {
+            // Distinct sends with a small gap so each arrives as its own
+            // recv delivery (TCP coalescing would under-count the pins and
+            // weaken the scenario, not break it).
+            repeat(RETAINED_MESSAGES) {
+                rawWrite(clientFd, "pinme")
+                platform.posix.usleep(50_000u)
+            }
+            rawWrite(clientFd, "final")
+            val received = rawRead(clientFd, 5)
+            assertEquals("final", received, "receives must outlive $RETAINED_MESSAGES pinned deliveries on a 4-slot ring")
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
+    fun `pipelined echo works with a non-default buffer ring size`() {
+        // Config plumbing: a power-of-two override reaches the per-EventLoop
+        // rings (a non-power-of-two would fail ring construction).
+        val engine = IoUringEngine(config = testConfig(), capabilities = detectCaps(), bufferRingSlotCount = 8)
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
     // --- Helpers ---
 
     /**
@@ -417,6 +498,16 @@ class IoUringPipelinedServerTest {
     private fun rawWrite(fd: Int, data: String): Unit = PosixRawClient.rawWrite(fd, data)
 
     private fun rawRead(fd: Int, size: Int): String = PosixRawClient.rawRead(fd, size)
+
+    private companion object {
+        /**
+         * Pinned deliveries before the final, echoed message — double the
+         * 4-slot ring so the pre-fix stall (at most 4 deliveries) is
+         * unambiguous while keeping the inter-send pacing total around half
+         * a second.
+         */
+        private const val RETAINED_MESSAGES = 8
+    }
 }
 
 /**

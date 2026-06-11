@@ -112,6 +112,14 @@ import kotlin.coroutines.CoroutineContext
  *                       pooled read-buffer class (the default) — other
  *                       sizes miss the pool and contribute nothing to the
  *                       registered set. Consulted by STATIC only.
+ * @param bufferRingSlotCount Number of recv buffers in each EventLoop's
+ *                       provided buffer ring (kernel requirement: a power
+ *                       of two). The ring is shared by every connection on
+ *                       the loop and a slot stays out of the ring while the
+ *                       delivered buffer is referenced downstream, so this
+ *                       bounds how many in-flight deliveries the loop
+ *                       sustains before pressure handling kicks in. Memory
+ *                       footprint is `slotCount × readBufferSize × workerThreads`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngine(
@@ -123,6 +131,7 @@ class IoUringEngine(
     registeredBufferStrategy: RegisteredBufferStrategy = RegisteredBufferStrategy.STATIC,
     registeredBufferSlotCount: Int = IoUringEventLoopGroup.DEFAULT_REGISTERED_BUFFER_SLOT_COUNT,
     registeredBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    bufferRingSlotCount: Int = ProvidedBufferRing.DEFAULT_BUFFER_COUNT,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -201,6 +210,7 @@ class IoUringEngine(
             registeredBufferStrategy = registeredBufferStrategy,
             registeredBufferSlotCount = registeredBufferSlotCount,
             registeredBufferSize = registeredBufferSize,
+            bufferRingSlotCount = bufferRingSlotCount,
         )
 
         bossLoop.start()

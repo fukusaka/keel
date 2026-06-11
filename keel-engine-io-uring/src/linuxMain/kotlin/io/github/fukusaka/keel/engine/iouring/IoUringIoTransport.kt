@@ -579,7 +579,21 @@ internal class IoUringIoTransport(
         val buf = wrappers!![bufId]
         buf.reset()
         buf.writerIndex = res
-        onRead?.invoke(buf)
+        if (ring.underPressure) {
+            // Copy-on-pressure: the shared ring is close to empty, so hand
+            // the consumer an allocator-owned copy and return the slot now —
+            // a delivered slot is otherwise pinned for as long as downstream
+            // references it (the request's whole latency when the codec
+            // retains it for header views), and enough pinned slots stall
+            // every connection on this loop. See [ProvidedBufferRing.underPressure].
+            val copy = allocator.allocate(res)
+            buf.copyTo(copy, res)
+            buf.release() // refCount 1 -> 0: returns the slot to the ring
+            ring.onCopyOnPressure()
+            onRead?.invoke(copy)
+        } else {
+            onRead?.invoke(buf)
+        }
     }
 
     /**
