@@ -1,5 +1,9 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.logging.warn
+
 /**
  * EventLoop-confined deadline timer backing [EventLoopTimer] for the wait-loop
  * engines (epoll / kqueue / io_uring / nio). The EventLoop drives its
@@ -26,8 +30,15 @@ package io.github.fukusaka.keel.pipeline
  * of the allocator/transport bookkeeping. [nowMillis] must be a monotonic clock.
  *
  * @param nowMillis monotonic current-time source in milliseconds.
+ * @param logger sink for the warn emitted when a timer task throws (see
+ *   [expireDue]). Defaults to a no-op logger for source compatibility;
+ *   engines should pass their EventLoop logger so a throwing task is
+ *   traceable.
  */
-class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
+class DeadlineScheduler(
+    private val nowMillis: () -> Long,
+    private val logger: Logger = NoopLoggerFactory.logger("DeadlineScheduler"),
+) : EventLoopTimer {
     /** Intrusive timer node; also the public [TimerHandle]. */
     private class Node(val delayMillis: Long, val task: () -> Unit) : TimerHandle {
         var deadline: Long = 0
@@ -98,8 +109,12 @@ class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
 
     /**
      * Fires every timer whose deadline is at or before [now], in deadline order,
-     * removing it first so its [task] may re-[schedule]. A task that throws
-     * propagates to the EventLoop after the node has already been unlinked.
+     * removing it first so its [task] may re-[schedule]. A throwing task is
+     * caught and warn-logged: timers on one scheduler belong to many
+     * connections, so one connection's throwing deadline task must neither
+     * kill the EventLoop thread nor skip the remaining due timers of the
+     * same sweep (the same per-item isolation rule as the engine-side
+     * callback guards).
      */
     fun expireDue(now: Long) {
         // Fast path: nothing scheduled — avoid the values-iterator allocation that
@@ -111,7 +126,11 @@ class DeadlineScheduler(private val nowMillis: () -> Long) : EventLoopTimer {
                 if (head.deadline > now) break
                 unlink(bucket, head)
                 head.owner = null
-                head.task()
+                try {
+                    head.task()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "deadline timer task threw; remaining due timers continue" }
+                }
             }
         }
     }

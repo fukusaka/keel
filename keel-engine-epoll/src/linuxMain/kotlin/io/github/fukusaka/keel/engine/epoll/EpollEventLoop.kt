@@ -615,7 +615,7 @@ internal class EpollEventLoop(
      * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
      * [DeadlineScheduler.expireDue] after each wake.
      */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
 
     internal fun loop() {
         eventLoopThread = pthread_self()

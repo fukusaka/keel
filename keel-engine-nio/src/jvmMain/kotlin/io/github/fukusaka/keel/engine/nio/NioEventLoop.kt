@@ -91,7 +91,7 @@ internal class NioEventLoop(
      * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
      * [DeadlineScheduler.expireDue] after each wake.
      */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis)
+    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
 
     @Volatile
     private var running = true
