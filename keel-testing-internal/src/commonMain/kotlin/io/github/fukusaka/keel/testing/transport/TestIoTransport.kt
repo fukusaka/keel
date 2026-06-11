@@ -100,6 +100,24 @@ public open class TestIoTransport(
 
     override var readEnabled: Boolean = false
 
+    /** Number of [pauseReads] calls observed; pins flow-control wiring in tests. */
+    public var pauseReadsCount: Int = 0
+        private set
+
+    /** Number of [resumeReads] calls observed; pins flow-control wiring in tests. */
+    public var resumeReadsCount: Int = 0
+        private set
+
+    override fun pauseReads() {
+        pauseReadsCount++
+        readEnabled = false
+    }
+
+    override fun resumeReads() {
+        resumeReadsCount++
+        readEnabled = true
+    }
+
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
 
     override fun write(buf: IoBuf) {
