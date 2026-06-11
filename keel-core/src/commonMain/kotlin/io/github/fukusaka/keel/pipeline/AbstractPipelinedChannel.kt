@@ -51,6 +51,10 @@ abstract class AbstractPipelinedChannel(
         get() = transport.readEnabled
         set(value) { transport.readEnabled = value }
 
+    override fun pauseReads() = transport.pauseReads()
+
+    override fun resumeReads() = transport.resumeReads()
+
     private var bridge: SuspendBridgeHandler? = null
 
     init {

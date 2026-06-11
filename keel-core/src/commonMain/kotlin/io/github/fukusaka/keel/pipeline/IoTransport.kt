@@ -63,6 +63,36 @@ interface IoTransport {
     var onRead: ((IoBuf) -> Unit)?
 
     /**
+     * Pauses inbound consumption for flow control (read-side
+     * back-pressure). Contract for every engine: stop consuming new
+     * bytes from the underlying source within a bounded overshoot (at
+     * most the in-flight delivery), so the kernel/framework receive
+     * buffer fills and TCP flow control reaches the peer. No data may
+     * be dropped. Peer-FIN detection may be delayed while paused.
+     *
+     * Distinct from [readEnabled], which expresses read *interest* and
+     * is mediated by [io.github.fukusaka.keel.core.IdleReadPolicy]
+     * (under `DETECT_PEER_CLOSE` the read primitive stays armed when
+     * `readEnabled = false`); [pauseReads] must stop consumption
+     * regardless of the policy. The default delegates to
+     * `readEnabled = false`, which is the correct pause on engines
+     * whose disabled read already stops consuming; engines where it
+     * does not (policy-armed push engines) override with a real
+     * disarm. Must be called on the transport's I/O thread.
+     */
+    fun pauseReads() {
+        readEnabled = false
+    }
+
+    /**
+     * Resumes inbound consumption after [pauseReads]. Must be called on
+     * the transport's I/O thread.
+     */
+    fun resumeReads() {
+        readEnabled = true
+    }
+
+    /**
      * Callback invoked when the read side is closed (EOF, error, or
      * connection reset).
      *

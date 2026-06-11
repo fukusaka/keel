@@ -67,6 +67,22 @@ interface PipelinedChannel : Channel {
      */
     var readEnabled: Boolean
 
+    /**
+     * Pauses inbound consumption for flow control; see
+     * [IoTransport.pauseReads] for the engine contract (stop consuming
+     * within a bounded overshoot, no data loss, FIN detection may be
+     * delayed). The default delegates to [readEnabled]; the abstract
+     * implementation routes to the transport's real pause.
+     */
+    fun pauseReads() {
+        readEnabled = false
+    }
+
+    /** Resumes inbound consumption after [pauseReads]. */
+    fun resumeReads() {
+        readEnabled = true
+    }
+
     override val remoteAddress: SocketAddress? get() = null
     override val localAddress: SocketAddress? get() = null
 
