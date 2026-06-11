@@ -140,7 +140,9 @@ class IoUringEngine(
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val resolvedCapabilities: IoUringCapabilities
     private val bossLoop: IoUringEventLoop
-    private val workerGroup: IoUringEventLoopGroup
+    // Internal for the in-tree occupancy measure (linuxTest), which reads
+    // the per-EventLoop buffer-ring counters after a graceful close.
+    internal val workerGroup: IoUringEventLoopGroup
     private var closed = false
 
     init {
