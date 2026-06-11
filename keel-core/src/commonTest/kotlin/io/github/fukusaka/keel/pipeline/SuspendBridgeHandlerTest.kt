@@ -8,7 +8,9 @@ import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class SuspendBridgeHandlerTest {
 
@@ -53,6 +55,84 @@ class SuspendBridgeHandlerTest {
 
             val owned = bridge.readOwned()
             assertNull(owned)
+        }
+    }
+
+    /** Allocates a buffer carrying [size] readable bytes (content irrelevant). */
+    private fun allocFilled(size: Int): IoBuf {
+        val buf = allocator.allocate(size)
+        repeat(size) { buf.writeByte(0x55) }
+        return buf
+    }
+
+    @Test
+    fun `crossing the high watermark suspends the channel read and draining to the low watermark re-arms it`() {
+        runTest {
+            val (pipeline, bridge) = createPipelineWithBridge()
+            transport.readEnabled = true
+
+            // 8 KiB deliveries up to just below the 64 KiB high watermark:
+            // read stays enabled.
+            val chunk = 8 * 1024
+            repeat(7) { pipeline.notifyRead(allocFilled(chunk)) } // 56 KiB
+            assertTrue(transport.readEnabled, "below the high watermark the read stays armed")
+            assertFalse(bridge.readSuspendedByWatermark)
+
+            // The 8th delivery reaches 64 KiB: the bridge suspends the read.
+            pipeline.notifyRead(allocFilled(chunk))
+            assertFalse(transport.readEnabled, "reaching the high watermark must suspend the channel read")
+            assertTrue(bridge.readSuspendedByWatermark)
+
+            // Draining to 40 KiB (> 32 KiB low watermark): still suspended —
+            // hysteresis, not an immediate re-arm.
+            repeat(3) { bridge.readOwned()!!.release() } // 64 -> 40 KiB
+            assertFalse(transport.readEnabled, "above the low watermark the read stays suspended")
+
+            // One more dequeue lands exactly on the 32 KiB low watermark: re-armed.
+            bridge.readOwned()!!.release() // 40 -> 32 KiB
+            assertTrue(transport.readEnabled, "draining to the low watermark must re-arm the read")
+            assertFalse(bridge.readSuspendedByWatermark)
+        }
+    }
+
+    @Test
+    fun `partial consumption through read accounts only the consumed bytes`() {
+        runTest {
+            val (pipeline, bridge) = createPipelineWithBridge()
+            transport.readEnabled = true
+
+            // One 64 KiB delivery suspends the read.
+            pipeline.notifyRead(allocFilled(64 * 1024))
+            assertFalse(transport.readEnabled)
+
+            // Consuming 16 KiB leaves 48 KiB queued (> 32 KiB): still suspended.
+            val small = allocator.allocate(16 * 1024)
+            assertEquals(16 * 1024, bridge.read(small))
+            assertFalse(transport.readEnabled, "48 KiB backlog is still above the low watermark")
+
+            // Consuming another 16 KiB reaches the 32 KiB low watermark: re-armed.
+            small.clear()
+            assertEquals(16 * 1024, bridge.read(small))
+            assertTrue(transport.readEnabled, "32 KiB backlog re-arms the read")
+            small.release()
+        }
+    }
+
+    @Test
+    fun `inactivation while suspended resets the watermark state without re-arming`() {
+        runTest {
+            val (pipeline, bridge) = createPipelineWithBridge()
+            transport.readEnabled = true
+
+            pipeline.notifyRead(allocFilled(64 * 1024))
+            assertFalse(transport.readEnabled, "suspended at the high watermark")
+
+            // EOF drains the queue: the channel is going away, so the
+            // bridge must not re-arm a dead transport's read.
+            pipeline.notifyInactive()
+            assertFalse(transport.readEnabled, "inactivation must not re-arm the read")
+            assertFalse(bridge.readSuspendedByWatermark, "watermark state resets on EOF")
+            assertNull(bridge.readOwned())
         }
     }
 
