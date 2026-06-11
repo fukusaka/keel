@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.info
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ByteVar
@@ -81,6 +82,27 @@ internal class ProvidedBufferRing(
     // no synchronisation is needed.
     private val pendingRearm = ArrayList<() -> Unit>()
 
+    // ---- Occupancy observability (EventLoop-thread only, plain counters) ----
+    // Surfaced through [minAvailableLowWatermark] / [recvEnobufsCount] /
+    // [deferredRearmCount] and logged once at [close]. Motivation: ring slots
+    // are pinned for a request's whole latency when the codec retains the recv
+    // buffer (header byte-range views), so the low watermark tells how close a
+    // workload comes to the cross-connection -ENOBUFS stall, and grounds the
+    // copy-on-pressure threshold before it is wired in.
+
+    // Lowest [available] ever observed after a consume. Starts at bufferCount
+    // (set in [initOnEventLoop]); 0 means the ring was fully drained at least once.
+    private var minAvailable = 0
+
+    // Total recv `-ENOBUFS` CQEs reported against this ring (both the
+    // immediate-re-arm and the deferred-re-arm branches).
+    private var recvEnobufs = 0L
+
+    // Total deferred re-arm registrations ([requestRearmOnAvailable]) — each is
+    // one starvation episode where a transport's recv stayed down until the
+    // next buffer return.
+    private var deferredRearms = 0L
+
     // Best-effort count of buffers currently sitting in the kernel ring (i.e.
     // returned and not yet handed to a recv CQE). Used to decide, on `-ENOBUFS`,
     // whether a re-arm can succeed *now*: when a single read delivery is larger
@@ -122,6 +144,7 @@ internal class ProvidedBufferRing(
         }
         bufferRingOps.advance(handle, bufferCount)
         available = bufferCount
+        minAvailable = bufferCount
     }
 
     /**
@@ -181,6 +204,7 @@ internal class ProvidedBufferRing(
      * Must be called on the owning EventLoop pthread.
      */
     fun requestRearmOnAvailable(rearm: () -> Unit) {
+        deferredRearms++
         pendingRearm.add(rearm)
     }
 
@@ -193,7 +217,31 @@ internal class ProvidedBufferRing(
      */
     fun onConsumed() {
         if (available > 0) available--
+        if (available < minAvailable) minAvailable = available
     }
+
+    /**
+     * Records one recv `-ENOBUFS` CQE against this ring. Called by the
+     * transport for every starvation CQE, whether the re-arm happens
+     * immediately ([hasAvailable] true within the same CQE batch) or is
+     * deferred to [requestRearmOnAvailable].
+     */
+    fun onRecvEnobufs() {
+        recvEnobufs++
+    }
+
+    /**
+     * Lowest ring occupancy ever observed after a recv consume, in buffers.
+     * `0` means the ring was fully drained at least once. Quiescent reads
+     * only (EventLoop joined or fake-backed tests).
+     */
+    fun minAvailableLowWatermark(): Int = minAvailable
+
+    /** Total recv `-ENOBUFS` CQEs recorded via [onRecvEnobufs]. */
+    fun recvEnobufsCount(): Long = recvEnobufs
+
+    /** Total deferred re-arm registrations ([requestRearmOnAvailable]). */
+    fun deferredRearmCount(): Long = deferredRearms
 
     /**
      * True when at least one buffer currently sits in the ring (returned and
@@ -216,6 +264,14 @@ internal class ProvidedBufferRing(
         if (closed) return
         closed = true
         bufRing?.let { handle ->
+            // Surface the occupancy profile for diagnostics / bench runs —
+            // the same shape as the engine-close SEND_ZC dispatch log. A
+            // min-available near zero (or any enobufs) means this workload
+            // approaches the cross-connection recv stall.
+            logger.info {
+                "buffer ring occupancy: bgid=$bgid min-available=$minAvailable/$bufferCount " +
+                    "enobufs=$recvEnobufs deferred-rearms=$deferredRearms"
+            }
             val ret = bufferRingOps.freeBufRing(uring, handle, bufferCount, bgid)
             if (ret < 0) {
                 logger.warn { "io_uring_free_buf_ring() failed: bgid=$bgid ${errnoMessage(-ret)}" }

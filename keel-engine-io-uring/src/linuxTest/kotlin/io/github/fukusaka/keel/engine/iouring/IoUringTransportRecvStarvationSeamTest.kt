@@ -250,6 +250,27 @@ class IoUringTransportRecvStarvationSeamTest {
         }
     }
 
+    @Test
+    fun `every ENOBUFS CQE is recorded on the ring's occupancy counters regardless of branch`() {
+        withTransport { fake, el, bufRing, transport ->
+            // Branch 1 (immediate re-arm): ring still has buffers.
+            val recvUserData = arm(fake, el, transport)
+            fake.enqueueCqe(userData = recvUserData, res = -ENOBUFS, flags = 0u, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(1L, bufRing.recvEnobufsCount(), "the immediate-re-arm branch must count the CQE")
+            assertEquals(0L, bufRing.deferredRearmCount(), "no deferral happened yet")
+
+            // Branch 2 (deferred re-arm): drain the ring, then starve again.
+            val bufferCount = 4
+            repeat(bufferCount) { bufRing.onConsumed() }
+            val secondUserData = fake.lastSqeUserData()
+            fake.enqueueCqe(userData = secondUserData, res = -ENOBUFS, flags = 0u, hasMore = false)
+            assertTrue(el.runIteration(Cqe()))
+            assertEquals(2L, bufRing.recvEnobufsCount(), "the deferred branch must count the CQE too")
+            assertEquals(1L, bufRing.deferredRearmCount(), "the deferred branch registers one re-arm")
+        }
+    }
+
     private companion object {
         // io_uring opcode value from `enum io_uring_op` in <linux/io_uring.h>.
         private const val IORING_OP_RECV: UByte = 27u
