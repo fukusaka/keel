@@ -81,6 +81,24 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
     internal var readSuspendedByWatermark = false
         private set
 
+    // ---- Watermark observability (I/O-thread only, plain counters) ----
+    // Grounding data for the 64 KiB / 32 KiB initial values: how often a
+    // real workload hits the watermark (flapping shows up as a high pause
+    // count) and how deep the backlog actually gets. Read after the
+    // connection quiesces (tests / future diagnostics).
+
+    /** Times the high watermark suspended this connection's read. */
+    internal var pauseCount = 0L
+        private set
+
+    /** Times the low watermark re-armed it. */
+    internal var resumeCount = 0L
+        private set
+
+    /** Highest backlog ever observed, in bytes. */
+    internal var maxQueuedBytes = 0L
+        private set
+
     /**
      * Whether the bridge has observed pipeline inactivation. Exposed for
      * unit tests of [AbstractPipelinedChannel]'s deferred-close path; user
@@ -99,12 +117,14 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         if (msg is IoBuf) {
             readQueue.addLast(msg)
             queuedBytes += msg.readableBytes
+            if (queuedBytes > maxQueuedBytes) maxQueuedBytes = queuedBytes
             // High watermark: stop the engine's socket drain so TCP flow
             // control reaches the peer instead of this queue growing
             // unboundedly. Re-armed by the dequeue path at the low
             // watermark (hysteresis avoids flapping on every delivery).
             if (!readSuspendedByWatermark && queuedBytes >= HIGH_WATERMARK_BYTES) {
                 readSuspendedByWatermark = true
+                pauseCount++
                 ctx.channel.pauseReads()
             }
             // Resume the single waiting reader, if any.
@@ -130,6 +150,7 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         queuedBytes -= n
         if (readSuspendedByWatermark && queuedBytes <= LOW_WATERMARK_BYTES) {
             readSuspendedByWatermark = false
+            resumeCount++
             ctx.channel.resumeReads()
         }
     }
