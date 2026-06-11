@@ -103,6 +103,18 @@ internal class ProvidedBufferRing(
     // next buffer return.
     private var deferredRearms = 0L
 
+    // Total deliveries the transport switched to copy mode because the ring
+    // was under pressure (see [underPressure]). Each is one slot that would
+    // otherwise have been pinned for a request's whole latency.
+    private var copyOnPressure = 0L
+
+    // Copy-on-pressure threshold in buffers: deliveries switch to copy mode
+    // while fewer than this many buffers remain in the ring. bufferCount is a
+    // power of two, so the shift is exact. The 25% fraction is the initial
+    // value pending occupancy measurements (the shutdown log's min-available
+    // watermark); revisit once real profiles exist.
+    private val pressureWatermark = bufferCount shr PRESSURE_WATERMARK_SHIFT
+
     // Best-effort count of buffers currently sitting in the kernel ring (i.e.
     // returned and not yet handed to a recv CQE). Used to decide, on `-ENOBUFS`,
     // whether a re-arm can succeed *now*: when a single read delivery is larger
@@ -243,6 +255,29 @@ internal class ProvidedBufferRing(
     /** Total deferred re-arm registrations ([requestRearmOnAvailable]). */
     fun deferredRearmCount(): Long = deferredRearms
 
+    /** Records one copy-mode delivery; see [underPressure]. */
+    fun onCopyOnPressure() {
+        copyOnPressure++
+    }
+
+    /** Total copy-mode deliveries recorded via [onCopyOnPressure]. */
+    fun copyOnPressureCount(): Long = copyOnPressure
+
+    /**
+     * True while the ring is under pressure: fewer than [pressureWatermark]
+     * buffers remain. The transport then delivers a recv by copying into an
+     * allocator buffer and returning the slot immediately, instead of
+     * handing out the slot-backed wrapper — a delivered slot is otherwise
+     * pinned for as long as the consumer references it (with the HTTP codec
+     * retaining recv buffers for header views, the request's whole latency),
+     * and enough simultaneously pinned slots stall every connection on the
+     * loop (`-ENOBUFS`). Zero-copy delivery is an optimization for when the
+     * shared ring has headroom, not a correctness assumption; under pressure
+     * the loop degrades to the allocator-recv shape, which is the normal
+     * mode on pre-ring kernels.
+     */
+    val underPressure: Boolean get() = available < pressureWatermark
+
     /**
      * True when at least one buffer currently sits in the ring (returned and
      * not yet selected by the kernel). A transport whose multishot recv hit
@@ -270,7 +305,7 @@ internal class ProvidedBufferRing(
             // approaches the cross-connection recv stall.
             logger.info {
                 "buffer ring occupancy: bgid=$bgid min-available=$minAvailable/$bufferCount " +
-                    "enobufs=$recvEnobufs deferred-rearms=$deferredRearms"
+                    "enobufs=$recvEnobufs deferred-rearms=$deferredRearms copy-on-pressure=$copyOnPressure"
             }
             val ret = bufferRingOps.freeBufRing(uring, handle, bufferCount, bgid)
             if (ret < 0) {
@@ -284,6 +319,12 @@ internal class ProvidedBufferRing(
     companion object {
         /** Default number of buffers per ring. Must be a power of 2. */
         const val DEFAULT_BUFFER_COUNT = 64
+
+        /**
+         * [pressureWatermark] as a right-shift of [bufferCount]: 2 = 25%.
+         * Initial value pending real occupancy profiles (see [underPressure]).
+         */
+        private const val PRESSURE_WATERMARK_SHIFT = 2
 
         /** Default buffer size in bytes. Matches BufferedSuspendSource.BUFFER_SIZE. */
         const val DEFAULT_BUFFER_SIZE = 8192
