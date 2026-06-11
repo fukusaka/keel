@@ -32,6 +32,7 @@ import io_uring.io_uring_prep_send
 import io_uring.keel_cqe_get_buf_id
 import io_uring.keel_cqe_has_more
 import io_uring.keel_prep_poll_add
+import platform.posix.ECANCELED
 import platform.posix.ENOBUFS
 import platform.posix.SHUT_WR
 import io_uring.iovec
@@ -240,6 +241,58 @@ internal class IoUringIoTransport(
         if (opened && readEnabled) armRecv()
     }
 
+    // ---- Flow-control pause (pauseReads / resumeReads) ----
+
+    /**
+     * True while [pauseReads] has suspended inbound consumption. [armRecv]
+     * is a no-op while set, so no recv SQE exists beyond the in-flight
+     * one being cancelled — the kernel socket buffer retains further
+     * bytes and TCP back-pressure reaches the peer. Peer FIN stays
+     * observable through the lifetime POLL_ADD. EventLoop-thread only.
+     */
+    private var readPaused = false
+
+    /**
+     * True while a pause-initiated `IORING_OP_ASYNC_CANCEL` against the
+     * in-flight recv is outstanding. Distinguishes the cancel's benign
+     * `-ECANCELED` terminal CQE (clear state, maybe re-arm) from a
+     * genuine connection error (which must still fire
+     * [fireReadClosedOnce]); teardown's own cancels are already filtered
+     * by the not-opened gate. Cleared on every recv terminal and on
+     * [armRecv]. EventLoop-thread only.
+     */
+    private var recvCancelPending = false
+
+    override fun pauseReads() {
+        if (readPaused) return // idempotent: a second cancel would be a wasted SQE
+        readPaused = true
+        cancelIdleTimeout() // back-pressure: pause the read-idle timeout
+        // Cancel the in-flight recv on the multishot tier only: a
+        // multishot SQE keeps delivering for as long as the ring has
+        // buffers (and copy-on-pressure keeps it fed), so without the
+        // cancel the pause would never take effect there. The cancel is
+        // asynchronous: data CQEs already completed remain the bounded
+        // overshoot, and the terminal CQE performs the deferred state
+        // reset. The single-shot tiers need no cancel — their in-flight
+        // recv delivers at most once and the re-arm is already gated on
+        // the pause (the epoll-shaped overshoot of one delivery).
+        if (recvSlot >= 0 && capabilities.multishotRecv && bufferRing != null) {
+            recvCancelPending = true
+            eventLoop.cancelSqeKeepCallback(recvSlot)
+        }
+    }
+
+    override fun resumeReads() {
+        readPaused = false
+        if (!opened || !readEnabled) return
+        armIdleTimeout()
+        // recvSlot >= 0: the pause-cancel's terminal CQE has not drained
+        // yet — it re-arms on arrival now that readPaused is false
+        // (arming here would double-arm, the #741 shape). recvStarved:
+        // the ring's deferred re-arm callback owns the recovery.
+        if (recvSlot < 0 && !recvStarved) armRecv()
+    }
+
     /**
      * Slot tracking the single-shot `IORING_OP_POLL_ADD` SQE that watches
      * for peer FIN / hangup / error events. Negative when no POLL_ADD is
@@ -405,6 +458,8 @@ internal class IoUringIoTransport(
      * time, so no kernel-side selection can starve).
      */
     private fun armRecv() {
+        if (readPaused) return // flow-control pause: no new recv until resumeReads
+        recvCancelPending = false // a fresh SQE has no outstanding pause-cancel
         val ring = bufferRing
         when {
             ring == null -> armRecvSingleShotAlloc()
@@ -433,9 +488,22 @@ internal class IoUringIoTransport(
                     res == -ENOBUFS -> {
                         // Shared provided-buffer ring ran out. The kernel drops
                         // IORING_CQE_F_MORE on -ENOBUFS so the CQE drain already
-                        // released the slot.
+                        // released the slot. A pause-cancel that raced this
+                        // natural termination has nothing left to cancel —
+                        // clear its flag so it cannot mask a later genuine
+                        // -ECANCELED.
+                        recvCancelPending = false
                         recvSlot = -1
                         onRecvEnobufs(ring)
+                    }
+                    res == -ECANCELED && recvCancelPending -> {
+                        // Benign terminal of the pauseReads cancel — not a
+                        // connection error, so no fireReadClosedOnce. If the
+                        // pause was already resumed, this CQE is the agreed
+                        // re-arm point (arming earlier would double-arm).
+                        recvCancelPending = false
+                        recvSlot = -1
+                        if (readEnabled && !readPaused && !recvStarved) armRecv()
                     }
                     else -> fireReadClosedOnce()
                 }
