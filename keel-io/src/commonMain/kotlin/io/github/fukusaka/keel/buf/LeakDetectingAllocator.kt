@@ -30,7 +30,7 @@ package io.github.fukusaka.keel.buf
  *
  * | Platform | Trigger | Latency |
  * |----------|---------|---------|
- * | Native   | GC collects the buffer → Cleaner fires | Next GC cycle |
+ * | Native   | GC collects the buffer → its anchored Cleaner is reclaimed → block fires | Up to two GC cycles |
  * | JVM      | GC collects → PhantomRef enqueued → [drainLeakQueue] | Next `allocate()` call after GC |
  * | JS       | N/A (no-op) | — |
  *
