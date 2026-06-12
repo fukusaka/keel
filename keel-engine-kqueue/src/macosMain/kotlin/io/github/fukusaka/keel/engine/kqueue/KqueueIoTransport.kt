@@ -286,9 +286,11 @@ internal class KqueueIoTransport(
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
                     if (written > 0) partialWriteCount++
-                    // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
-                    val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                    pendingWrites.addFirst(remainder)
+                    // Defer remainder: mutate the entry in place (no
+                    // remainder allocation) and register WRITE interest.
+                    pw.offset += written
+                    pw.length -= written
+                    pendingWrites.addFirst(pw)
                     updatePendingBytes(-written)
                     registerWriteCallback()
                     return false
@@ -298,12 +300,14 @@ internal class KqueueIoTransport(
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
+                    recyclePendingWrite(pw)
                     return true
                 }
             }
         }
         pw.buf.release()
         updatePendingBytes(-pw.length)
+        recyclePendingWrite(pw)
         return true
     }
 
@@ -332,7 +336,10 @@ internal class KqueueIoTransport(
             is WriteResult.Failed -> {
                 // Other error — log, release all and return.
                 eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                for (pw in pendingWrites) pw.buf.release()
+                for (pw in pendingWrites) {
+                    pw.buf.release()
+                    recyclePendingWrite(pw)
+                }
                 pendingWrites.clear()
                 updatePendingBytes(-totalBytes)
                 return true
@@ -341,7 +348,10 @@ internal class KqueueIoTransport(
         }
 
         if (writtenBytes >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
+            for (pw in pendingWrites) {
+                pw.buf.release()
+                recyclePendingWrite(pw)
+            }
             pendingWrites.clear()
             updatePendingBytes(-totalBytes)
             return true
@@ -350,10 +360,8 @@ internal class KqueueIoTransport(
         // Partial writev: release fully-written buffers, adjust the split buffer.
         // Drain fully-written entries from the head of the deque, mutate
         // the partially-written entry in place at the head, leave the rest.
-        // Eliminates the per-partial-write `mutableListOf<PendingWrite>()`
-        // + Iterator allocations that the old rebuild-and-replace path
-        // required, and reduces the `PendingWrite` allocations to one
-        // (only the partial entry — trailing untouched entries stay as-is).
+        // No temp container and no remainder allocation — retired entries
+        // go back to the free list.
         partialWriteCount++
         var consumed = 0
         while (pendingWrites.isNotEmpty()) {
@@ -362,9 +370,11 @@ internal class KqueueIoTransport(
                 consumed += pw.length
                 pw.buf.release()
                 pendingWrites.removeFirst()
+                recyclePendingWrite(pw)
             } else {
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                pw.offset += alreadyWritten
+                pw.length -= alreadyWritten
                 break
             }
         }
