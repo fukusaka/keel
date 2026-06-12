@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -348,17 +349,23 @@ class KqueueEngineLifecycleTest {
     @Test
     fun `connect to refused port throws`() = runBlocking {
         val engine = KqueueEngine()
-        // Bind to get a port, then close the server so the port is refused
-        val server = engine.bind("127.0.0.1", 0)
-        val port = (server.localAddress as InetSocketAddress).port
-        server.close()
-
+        // Connect straight to REFUSED_PORT — a fixed non-ephemeral port
+        // nothing listens on — so the refusal is deterministic (see the
+        // REFUSED_PORT KDoc for why a freed ephemeral port is unsafe here).
         val ex = assertFailsWith<IllegalStateException> {
             withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
-                engine.connect("127.0.0.1", port)
+                engine.connect("127.0.0.1", REFUSED_PORT)
             }
         }
-        assertTrue(ex.message!!.contains("connect"))
+        // A real refusal is a plain IllegalStateException("connect() failed: …").
+        // If the hang guard fires instead, withTimeout throws a
+        // TimeoutCancellationException — a CancellationException, and on
+        // Kotlin/Native a subtype of IllegalStateException, so the
+        // assertFailsWith above does NOT screen it out. Rethrow it so a
+        // starved-CI hang fails loudly as a timeout instead of slipping
+        // through to the message check below.
+        if (ex is CancellationException) throw ex
+        assertTrue(ex.message?.contains("connect") == true, "got: ${ex.message}")
 
         engine.close()
     }
