@@ -63,7 +63,8 @@
 #   Default + multi-run: <name>|<median_rps>|<p50>|<p99>|[<all_rps>]
 #   With GC capture    : <name>|<rps>|<p50>|<p99>|GC:<alloc_MB/s>|<ygc>|<ygc_ms>|<fgc>|<fgc_ms>|<gc_pct>
 #   GC + multi-run     : <name>|<median_rps>|<p50>|<p99>|[<all_rps>]|GC:<alloc_MB/s>|<ygc>|<ygc_ms>|<fgc>|<fgc_ms>|<gc_pct>
-#   With temp capture  : ...|temp=srv:<S>-><E>C(d<N>)/cli:<S>-><E>C(d<N>)   (appended after any GC field)
+#   With CPU capture   : ...|cpu=srv:<median>%[<all_pct>]   (per-run server CPU%% of one core; appended after any GC field)
+#   With temp capture  : ...|temp=srv:<S>-><E>C(d<N>)/cli:<S>-><E>C(d<N>)   (appended last)
 #   (GC counters report the last run's deltas; multi-run medians of the
 #    GC counters are not computed because the sample size is small.)
 #
@@ -110,6 +111,17 @@ COOLDOWN=${BENCH_COOLDOWN:-2}
 WARMUP_DURATION=${BENCH_WARMUP:-3s}
 SCHEME=${BENCH_SCHEME:-http}
 GC_CAPTURE=${BENCH_GC_CAPTURE:-0}
+# Optional server-CPU capture (BENCH_CPU_CAPTURE=1): samples the server
+# process's cumulative CPU (utime+stime from /proc/<pid>/stat, all threads)
+# just before and after each timed wrk run and appends per-run CPU%% (of one
+# core; can exceed 100 on multi-threaded engines) plus the median as
+# `cpu=srv:<median>%%[r1 r2 ...]`. Dependency-free (no sysstat) and works for
+# native and JVM servers alike — the complement of the JVM-only GC capture
+# for workloads where the NIC saturates and throughput ties by construction
+# (e.g. 100 KB responses on a LAN): the verdict metric becomes how cheaply
+# the same line rate is served. Linux servers only (/proc); other servers
+# report n/a.
+CPU_CAPTURE=${BENCH_CPU_CAPTURE:-0}
 # Optional CPU-temperature capture (BENCH_TEMP_CAPTURE=1) for the server host
 # and the wrk client host — see bench-temp.sh. Sourced after SCRIPT_DIR below.
 TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
@@ -355,6 +367,24 @@ duration_to_seconds() {
     esac
 }
 
+# Reads "<utime+stime ticks> <clk_tck>" for PID on the server host, or "".
+cpu_sample() {
+    local pid="$1"
+    ssh -n "$REMOTE_HOST" "awk '{print \$14+\$15}' /proc/${pid}/stat 2>/dev/null && getconf CLK_TCK" 2>/dev/null | tr '\n' ' '
+}
+
+# Computes CPU%% of one core from pre/post "ticks clk" samples + seconds.
+cpu_pct() {
+    local pre="$1" post="$2" secs="$3"
+    awk -v pre="$pre" -v post="$post" -v secs="$secs" 'BEGIN {
+        split(pre, a, " "); split(post, b, " ")
+        if (a[2] == "" || b[1] == "" || a[2] == 0 || secs == 0) { exit 1 }
+        printf "%.1f", (b[1] - a[1]) * 100.0 / a[2] / secs
+    }' 2>/dev/null
+}
+
+ALL_CPU=()
+
 for run in $(seq 1 "$RUNS"); do
     kill_server
     start_server "$@"
@@ -390,8 +420,23 @@ for run in $(seq 1 "$RUNS"); do
         fi
     fi
 
+    # CPU capture: cumulative CPU snapshot just before the timed run.
+    CPU_PRE=""
+    CPU_PID=""
+    if [ "$CPU_CAPTURE" = 1 ]; then
+        CPU_PID=$(find_server_pid)
+        [ -n "$CPU_PID" ] && CPU_PRE=$(cpu_sample "$CPU_PID")
+    fi
+
     # Benchmark
     RESULT=$(run_wrk "-t${WRK_THREADS}" "-c${WRK_CONNS}" "-d${WRK_DURATION}" --latency "${WRK_EXTRA_ARR[@]}" "${URL}" 2>&1)
+
+    # CPU capture: post snapshot + per-run percentage.
+    if [ "$CPU_CAPTURE" = 1 ] && [ -n "$CPU_PRE" ] && [ -n "$CPU_PID" ]; then
+        CPU_POST=$(cpu_sample "$CPU_PID")
+        run_cpu=$(cpu_pct "$CPU_PRE" "$CPU_POST" "$(duration_to_seconds "$WRK_DURATION")") || run_cpu=""
+        [ -n "$run_cpu" ] && ALL_CPU+=("$run_cpu")
+    fi
 
     # GC capture: post-wrk sample + delta summary for this run.
     LAST_GC_SUMMARY=""
@@ -457,9 +502,19 @@ if [ "$TEMP_CAPTURE" = 1 ]; then
     fi
 fi
 
+# Per-run server CPU%% (of one core) with the median first. Unlike the GC
+# counters this IS captured per run — the verdict metric for NIC-saturated
+# cells needs the same median treatment as throughput.
+CPU_SUFFIX=""
+if [ "$CPU_CAPTURE" = 1 ] && [ "${#ALL_CPU[@]}" -gt 0 ]; then
+    CPU_SUFFIX="|cpu=srv:$(median "${ALL_CPU[@]}")%[${ALL_CPU[*]}]"
+elif [ "$CPU_CAPTURE" = 1 ]; then
+    CPU_SUFFIX="|cpu=srv:n/a"
+fi
+
 if [ "$RUNS" -gt 1 ]; then
     MEDIAN_RPS=$(median "${ALL_RPS[@]}")
-    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]${GC_SUFFIX}${TEMP_SUFFIX}"
+    echo "$NAME|$MEDIAN_RPS|$BEST_P50|$BEST_P99|[${ALL_RPS[*]}]${GC_SUFFIX}${CPU_SUFFIX}${TEMP_SUFFIX}"
 else
-    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99${GC_SUFFIX}${TEMP_SUFFIX}"
+    echo "$NAME|${ALL_RPS[0]}|$BEST_P50|$BEST_P99${GC_SUFFIX}${CPU_SUFFIX}${TEMP_SUFFIX}"
 fi
