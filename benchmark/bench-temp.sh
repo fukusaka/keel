@@ -59,7 +59,10 @@ fi
 # read_temp_c [host] — echo current CPU temperature in C (one decimal), or "".
 read_temp_c() {
     if [ -n "${1:-}" ]; then
-        ssh "$1" "$BENCH_TEMP_SNIPPET" 2>/dev/null
+        # -n: don't let ssh consume the caller's stdin — bench-remote-keel.sh
+        # feeds its engine loop from a process substitution, and a bare ssh
+        # here silently drains the remaining engine list.
+        ssh -n "$1" "$BENCH_TEMP_SNIPPET" 2>/dev/null
     else
         sh -c "$BENCH_TEMP_SNIPPET" 2>/dev/null
     fi
