@@ -182,6 +182,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # A Kotlin/Native test binary that dies (SIGSEGV / SIGABRT) surfaces in
+      # Gradle as only "Test running process exited unexpectedly" with an
+      # "Unknown" failure and empty XML — the crash report on the runner is
+      # the sole diagnostic. Upload it so a rare crash flake is root-causable
+      # from the run instead of being unreproducible after the fact.
+      - name: Upload crash reports (macos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-reports-macos
+          path: |
+            ~/Library/Logs/DiagnosticReports/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # JS / Node.js is intentionally NOT re-run here: Node.js behavior
       # is platform-neutral and the Linux job's `jsNodeTest` already covers
       # it. Running it twice would just burn CI minutes.
