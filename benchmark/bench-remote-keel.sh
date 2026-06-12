@@ -41,8 +41,9 @@
 #
 # Engine list:
 #   Native (only when BENCH_REMOTE_OS = Linux): ktor-keel-epoll,
-#     pipeline-http-epoll, ktor-cio-keel-epoll, ktor-keel-io-uring,
-#     pipeline-http-io-uring, ktor-cio-keel-io-uring, ktor-cio.
+#     pipeline-http-epoll, server-http-epoll, ktor-cio-keel-epoll,
+#     ktor-keel-io-uring, pipeline-http-io-uring, server-http-io-uring,
+#     ktor-cio-keel-io-uring, ktor-cio.
 #   JVM (always): ktor-keel-nio, pipeline-http-nio, server-http-nio, ktor-cio-keel-nio,
 #     ktor-keel-netty, ktor-cio-keel-netty, pipeline-http-netty, server-http-netty, ktor-cio.
 #   JS (Node.js): pipeline-http-nodejs, only when
@@ -107,9 +108,11 @@ build_engine_list() {
                 for engine in \
                     ktor-keel-epoll \
                     pipeline-http-epoll \
+                    server-http-epoll \
                     ktor-cio-keel-epoll \
                     ktor-keel-io-uring \
                     pipeline-http-io-uring \
+                    server-http-io-uring \
                     ktor-cio-keel-io-uring \
                     ktor-cio; do
                     engines+=("kn-engine:native:${engine}:${nbin}")
