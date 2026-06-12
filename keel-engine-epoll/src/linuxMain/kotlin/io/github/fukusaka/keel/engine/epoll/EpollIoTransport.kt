@@ -282,8 +282,11 @@ internal class EpollIoTransport(
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
                     if (written > 0) partialWriteCount++
-                    val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                    pendingWrites.addFirst(remainder)
+                    // Mutate the entry into the remainder in place and
+                    // re-enqueue it — no remainder allocation.
+                    pw.offset += written
+                    pw.length -= written
+                    pendingWrites.addFirst(pw)
                     updatePendingBytes(-written)
                     registerWriteCallback()
                     return false
@@ -292,12 +295,14 @@ internal class EpollIoTransport(
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
+                    recyclePendingWrite(pw)
                     return true
                 }
             }
         }
         pw.buf.release()
         updatePendingBytes(-pw.length)
+        recyclePendingWrite(pw)
         return true
     }
 
@@ -328,7 +333,10 @@ internal class EpollIoTransport(
             }
             is WriteResult.Failed -> {
                 eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                for (pw in pendingWrites) pw.buf.release()
+                for (pw in pendingWrites) {
+                    pw.buf.release()
+                    recyclePendingWrite(pw)
+                }
                 pendingWrites.clear()
                 updatePendingBytes(-totalBytes)
                 return true
@@ -337,7 +345,10 @@ internal class EpollIoTransport(
         }
 
         if (writtenBytes >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
+            for (pw in pendingWrites) {
+                pw.buf.release()
+                recyclePendingWrite(pw)
+            }
             pendingWrites.clear()
             updatePendingBytes(-totalBytes)
             return true
@@ -346,11 +357,8 @@ internal class EpollIoTransport(
         partialWriteCount++
         // Drain fully-written entries from the head of the deque, mutate
         // the partially-written entry in place at the head, leave the rest.
-        // Eliminates the per-partial-write `mutableListOf<PendingWrite>()`
-        // + Iterator allocations that the old rebuild-and-replace path
-        // required, and reduces the `PendingWrite` allocations to one
-        // (only the partial entry — the trailing untouched entries stay
-        // as-is).
+        // No temp container and no remainder allocation — retired entries
+        // go back to the free list.
         var consumed = 0
         while (pendingWrites.isNotEmpty()) {
             val pw = pendingWrites.first()
@@ -358,9 +366,11 @@ internal class EpollIoTransport(
                 consumed += pw.length
                 pw.buf.release()
                 pendingWrites.removeFirst()
+                recyclePendingWrite(pw)
             } else {
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
-                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                pw.offset += alreadyWritten
+                pw.length -= alreadyWritten
                 break
             }
         }
