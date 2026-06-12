@@ -216,7 +216,10 @@ run_one() {
     shift
     local out
     # bench-remote.sh inherits all BENCH_* env vars so no need to re-pass them.
-    out=$(./benchmark/bench-remote.sh "$label" "$@" 2>&1)
+    # </dev/null: the caller's stdin is the engine-list process substitution;
+    # any stdin-reading child (e.g. a bare ssh) would silently drain the
+    # remaining engines and end the sweep after one entry.
+    out=$(./benchmark/bench-remote.sh "$label" "$@" </dev/null 2>&1)
     local exit_code=$?
     # bench-remote.sh's result line is the LAST line of stdout (it streams
     # ssh / wrk noise to stderr, but ssh sometimes leaks into stdout on
