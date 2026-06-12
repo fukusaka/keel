@@ -28,23 +28,26 @@ internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): 
     // State object that the Cleaner captures. Must not reference buf.
     val state = LeakState(allocationSite, onLeak)
 
-    // Cleaner attached to the buffer. When buf is GC'd, if state.released
-    // is still false, the buffer was leaked.
-    createCleaner(state) { s ->
+    // Native Cleaner semantics: the cleanup block runs when the CLEANER
+    // OBJECT becomes unreachable — not when some watched object does. The
+    // cleaner must therefore live exactly as long as the buffer: the owner
+    // decorator below (reachable through `buf.owner` for the buffer's whole
+    // lifetime) retains it. An unretained cleaner is garbage immediately
+    // and fires on the next GC cycle regardless of the buffer's liveness,
+    // falsely reporting a leak whenever a GC lands between allocate() and
+    // release() (observed as a rare full-suite flake where the allocation
+    // pressure of unrelated tests makes that window real).
+    val cleaner = createCleaner(state) { s ->
         if (!s.released) {
             s.onLeak("Unreleased buffer detected!\n${s.allocationSite}")
         }
     }
 
     // Decorate the owner to flip `state.released` before delegating to the
-    // real release path. Avoids capturing `buf` inside the cleaner.
+    // real release path. Avoids capturing `buf` inside the cleaner, and
+    // anchors the cleaner's lifetime to the buffer's (see above).
     val originalOwner = poolable.owner
-    poolable.owner = object : IoBufOwner {
-        override fun release(buf: IoBuf) {
-            state.released = true
-            originalOwner.release(buf)
-        }
-    }
+    poolable.owner = LeakDetectingOwner(cleaner, state, originalOwner)
 
     return buf
 }
@@ -55,6 +58,22 @@ internal actual fun installLeakDetection(buf: IoBuf, onLeak: (String) -> Unit): 
  * If the Cleaner captured the buffer directly, neither the buffer nor the
  * Cleaner would be GC'd, and the cleanup action would never fire.
  */
+/**
+ * Owner decorator that marks [state] released before the real release path
+ * and — critically — holds the [cleaner] so it stays alive exactly as long
+ * as the buffer that references this owner.
+ */
+private class LeakDetectingOwner(
+    @Suppress("unused") private val cleaner: Any,
+    private val state: LeakState,
+    private val originalOwner: IoBufOwner,
+) : IoBufOwner {
+    override fun release(buf: IoBuf) {
+        state.released = true
+        originalOwner.release(buf)
+    }
+}
+
 private class LeakState(
     val allocationSite: String,
     val onLeak: (String) -> Unit,
