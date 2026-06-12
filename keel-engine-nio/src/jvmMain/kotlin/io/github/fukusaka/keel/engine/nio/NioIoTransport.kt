@@ -289,11 +289,12 @@ internal class NioIoTransport(
         while (bb.hasRemaining()) {
             val n = socketChannel.write(bb)
             if (n == 0) {
-                // Send buffer full — defer via OP_WRITE callback.
+                // Send buffer full — mutate the entry into the remainder in
+                // place (no remainder allocation) and defer via OP_WRITE.
                 val written = bb.position() - pw.offset
-                val remaining = bb.remaining()
-                val newOffset = bb.position()
-                pendingWrites.add(0, PendingWrite(pw.buf, newOffset, remaining))
+                pw.length = bb.remaining()
+                pw.offset = bb.position()
+                pendingWrites.addFirst(pw)
                 updatePendingBytes(-written)
                 registerWriteCallback()
                 return false
@@ -301,6 +302,7 @@ internal class NioIoTransport(
         }
         pw.buf.release()
         updatePendingBytes(-pw.length)
+        recyclePendingWrite(pw)
         return true
     }
 
@@ -322,26 +324,36 @@ internal class NioIoTransport(
         val written = socketChannel.write(bbArray)
 
         if (written >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
+            for (pw in pendingWrites) {
+                pw.buf.release()
+                recyclePendingWrite(pw)
+            }
             pendingWrites.clear()
             updatePendingBytes(-totalBytes.toInt())
             return true
         }
 
-        // Partial write: release fully-written, re-enqueue remainder.
-        val remaining = mutableListOf<PendingWrite>()
-        for (i in pendingWrites.indices) {
-            val pw = pendingWrites[i]
+        // Partial write: a gathering write consumes the array strictly in
+        // order, so fully-written entries form a prefix. Drain them from
+        // the head, mutate the split entry in place, leave the rest — no
+        // temp container and no remainder allocation (same shape as the
+        // epoll / kqueue writev rebuild).
+        var i = 0
+        while (pendingWrites.isNotEmpty()) {
             val bb = bbArray[i]
+            val pw = pendingWrites.first()
             if (!bb.hasRemaining()) {
                 pw.buf.release()
+                pendingWrites.removeFirst()
+                recyclePendingWrite(pw)
+                i++
             } else {
                 val consumed = bb.position() - pw.offset
-                remaining.add(PendingWrite(pw.buf, pw.offset + consumed, pw.length - consumed))
+                pw.offset += consumed
+                pw.length -= consumed
+                break
             }
         }
-        pendingWrites.clear()
-        pendingWrites.addAll(remaining)
         updatePendingBytes(-written.toInt())
         registerWriteCallback()
         return false
