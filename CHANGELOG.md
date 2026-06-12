@@ -53,6 +53,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`, `engine-epoll`, `engine-kqueue`, `engine-nio`: the per-write `PendingWrite` wrapper is now pooled on a per-transport free list and partial-write remainders mutate in place — JFR measured the wrapper at 6.3% of JVM allocation pressure on a saturated keep-alive workload before pooling, and it no longer appears in the allocation profile after. Engines whose flush completes asynchronously keep single-use entries. (#776)
+
 - `ci`: upload macOS crash reports (`DiagnosticReports`) as an artifact when the macOS job fails — a native test binary that dies surfaces in Gradle only as "Test running process exited unexpectedly" with empty results, leaving the runner-side crash report as the sole diagnostic. (#772)
 - `engine-nodejs`: the Node.js engine now honours `IoEngineConfig.idleTimeoutMillis` (read- and write-side idle timeout), completing the time-axis defence across all seven engines (epoll, kqueue, nio, netty, io_uring, nwconnection, nodejs). The timeout runs at the keel transport seam backed by Node `setTimeout` on the libuv event loop; the write side is driven by Node's own back-pressure (`socket.write` returning false, cancelled on the `'drain'` event) since `socket.write` buffers synchronously. (#728)
 - `engine-nwconnection`: the NWConnection engine now honours `IoEngineConfig.idleTimeoutMillis` (read- and write-side idle timeout), joining epoll, kqueue, nio, netty, and io_uring. The timeout runs at the keel transport seam backed by a GCD `dispatch_after` timer on the connection's serial dispatch queue, so it fires in FIFO order with the connection's own read / write callbacks. Only nodejs remains; it is wired in a follow-up. (#727)
