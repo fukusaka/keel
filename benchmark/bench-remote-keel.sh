@@ -239,12 +239,17 @@ run_one() {
     # and/or GC summary); strip the synthetic trailing pipe we added.
     trailing="${trailing%|}"
     if [ "$GC_CAPTURE" = 1 ]; then
-        # Pull just the GC:... block out of the trailing remainder
-        # (it follows an optional `[runs]` token).
+        # Pull the capture blocks (GC:... / cpu=... / temp=...) out of the
+        # trailing remainder, dropping the optional leading `[runs]` token.
+        # GC: is JVM-only, but cpu= / temp= apply to native servers too —
+        # keying on GC: alone used to drop those columns for native rows.
         local gc_block=""
         if [[ "$trailing" == *"GC:"* ]]; then
-            gc_block="${trailing#*GC:}"
-            gc_block="GC:${gc_block}"
+            gc_block="GC:${trailing#*GC:}"
+        elif [[ "$trailing" == *"cpu="* ]]; then
+            gc_block="cpu=${trailing#*cpu=}"
+        elif [[ "$trailing" == *"temp="* ]]; then
+            gc_block="temp=${trailing#*temp=}"
         fi
         printf '   %-32s %12s   %-9s  %-9s   %s\n' "$name" "$rps" "$p50" "$p99" "$gc_block"
     else
