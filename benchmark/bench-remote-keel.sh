@@ -41,8 +41,9 @@
 #
 # Engine list:
 #   Native (only when BENCH_REMOTE_OS = Linux): ktor-keel-epoll,
-#     pipeline-http-epoll, ktor-cio-keel-epoll, ktor-keel-io-uring,
-#     pipeline-http-io-uring, ktor-cio-keel-io-uring, ktor-cio.
+#     pipeline-http-epoll, server-http-epoll, ktor-cio-keel-epoll,
+#     ktor-keel-io-uring, pipeline-http-io-uring, server-http-io-uring,
+#     ktor-cio-keel-io-uring, ktor-cio.
 #   JVM (always): ktor-keel-nio, pipeline-http-nio, server-http-nio, ktor-cio-keel-nio,
 #     ktor-keel-netty, ktor-cio-keel-netty, pipeline-http-netty, server-http-netty, ktor-cio.
 #   JS (Node.js): pipeline-http-nodejs, only when
@@ -107,9 +108,11 @@ build_engine_list() {
                 for engine in \
                     ktor-keel-epoll \
                     pipeline-http-epoll \
+                    server-http-epoll \
                     ktor-cio-keel-epoll \
                     ktor-keel-io-uring \
                     pipeline-http-io-uring \
+                    server-http-io-uring \
                     ktor-cio-keel-io-uring \
                     ktor-cio; do
                     engines+=("kn-engine:native:${engine}:${nbin}")
@@ -213,7 +216,10 @@ run_one() {
     shift
     local out
     # bench-remote.sh inherits all BENCH_* env vars so no need to re-pass them.
-    out=$(./benchmark/bench-remote.sh "$label" "$@" 2>&1)
+    # </dev/null: the caller's stdin is the engine-list process substitution;
+    # any stdin-reading child (e.g. a bare ssh) would silently drain the
+    # remaining engines and end the sweep after one entry.
+    out=$(./benchmark/bench-remote.sh "$label" "$@" </dev/null 2>&1)
     local exit_code=$?
     # bench-remote.sh's result line is the LAST line of stdout (it streams
     # ssh / wrk noise to stderr, but ssh sometimes leaks into stdout on
@@ -233,12 +239,17 @@ run_one() {
     # and/or GC summary); strip the synthetic trailing pipe we added.
     trailing="${trailing%|}"
     if [ "$GC_CAPTURE" = 1 ]; then
-        # Pull just the GC:... block out of the trailing remainder
-        # (it follows an optional `[runs]` token).
+        # Pull the capture blocks (GC:... / cpu=... / temp=...) out of the
+        # trailing remainder, dropping the optional leading `[runs]` token.
+        # GC: is JVM-only, but cpu= / temp= apply to native servers too —
+        # keying on GC: alone used to drop those columns for native rows.
         local gc_block=""
         if [[ "$trailing" == *"GC:"* ]]; then
-            gc_block="${trailing#*GC:}"
-            gc_block="GC:${gc_block}"
+            gc_block="GC:${trailing#*GC:}"
+        elif [[ "$trailing" == *"cpu="* ]]; then
+            gc_block="cpu=${trailing#*cpu=}"
+        elif [[ "$trailing" == *"temp="* ]]; then
+            gc_block="temp=${trailing#*temp=}"
         fi
         printf '   %-32s %12s   %-9s  %-9s   %s\n' "$name" "$rps" "$p50" "$p99" "$gc_block"
     else
