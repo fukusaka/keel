@@ -11,14 +11,17 @@
 #      via --send-buffer=N, which keel POSIX engines wire through
 #      `BindConfig.childSocketOptions` to `setsockopt(SO_SNDBUF)`.
 #
-# With (1) + (2), even a small payload like /hello (13 B) saturates the
-# kernel send buffer almost immediately, and gather writes on
-# back-to-back keep-alive responses observe partial writes
-# (`writev` returns less than total). The
-# `AbstractIoTransport.partialWriteCount` counter then logs a non-zero
-# `ratio_bp` on transport teardown — proof that the bench is actually
-# exercising the path that the deferred slow-path optimisations
-# (pendingWrites ArrayDeque / flushGather mutableListOf) target.
+# The response must be larger than SO_SNDBUF for partial writes to fire:
+# wrk does not pipeline, so each connection has one in-flight response
+# and a small payload like /hello (13 B) never fills the send buffer
+# (measured: flush=46669 partial=0 even with netem + 4 KiB SO_SNDBUF).
+# With BENCH_ENDPOINT=/large (100 KB > SO_SNDBUF) the gather write can
+# only partially drain (`writev` returns less than total) and the
+# `AbstractIoTransport.partialWriteCount` counter logs a non-zero
+# `ratio_bp` on transport teardown (measured: ratio 32.35 % under the
+# defaults below) — proof that the bench is actually exercising the
+# path that the deferred slow-path optimisations (pendingWrites
+# ArrayDeque / flushGather mutableListOf) target.
 #
 # Usage: ./benchmark/bench-remote-slow.sh <name> <command> [args...]
 #
@@ -54,9 +57,9 @@
 #
 # Example:
 #   BENCH_REMOTE_HOST=bench.example BENCH_CLIENT_HOST=client.example \
-#     BENCH_TC_INTERFACE=eth0 \
+#     BENCH_TC_INTERFACE=eth0 BENCH_ENDPOINT=/large \
 #     BENCH_SO_SNDBUF=4096 BENCH_NETEM_DELAY="50ms 10ms" BENCH_NETEM_RATE=10mbit \
-#     BENCH_RUNS=3 \
+#     BENCH_RUNS=3 BENCH_SERVER_ENV="KEEL_BENCH_LOG_LEVEL=debug" \
 #     ./benchmark/bench-remote-slow.sh pipeline-http-epoll-slow \
 #       benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe \
 #       --engine=pipeline-http-epoll --port=18090
