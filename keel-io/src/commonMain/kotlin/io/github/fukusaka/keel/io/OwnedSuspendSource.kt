@@ -18,15 +18,12 @@ import io.github.fukusaka.keel.buf.IoBuf
  *
  * **Integration with codec layer**: Use the push-mode
  * [BufferedSuspendSource] constructor for zero-copy codec integration.
- * Alternatively, [OwnedToSuspendSourceAdapter] provides pull-model
- * compatibility with one [IoBuf.copyTo] per read.
  *
  * **Thread safety**: implementations are typically single-threaded
  * (EventLoop model). [readOwned] dispatches to the EventLoop when
  * called from an external thread.
  *
  * @see SuspendSource for the pull-model counterpart
- * @see OwnedToSuspendSourceAdapter for pull-model compatibility
  * @see BufferedSuspendSource for zero-copy push-mode reading
  */
 interface OwnedSuspendSource : AutoCloseable {
