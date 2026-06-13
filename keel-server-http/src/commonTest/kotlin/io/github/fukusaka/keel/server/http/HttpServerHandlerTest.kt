@@ -587,6 +587,46 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `respondStream sink gate flips with writable state mid-stream`() {
+        // Pins that the gate's per-write `isWritable` check is genuinely
+        // per-call (not a one-shot or memoised decision): writable=true
+        // for the first chunk takes the fast path, writable=false for
+        // the second chunk gates. Flipping just before the second
+        // `sink.write` proves the decision is observed at the call site,
+        // not snapshot at sink construction.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        // First chunk: writable=true (fast path)
+                        sink.write(bufOf("alpha"))
+                        // Flip mid-stream
+                        transport.writableOverride = false
+                        // Second chunk: writable=false (gates)
+                        sink.write(bufOf("beta"))
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        assertEquals(
+            1,
+            transport.awaitPendingFlushCount,
+            "gate must fire exactly once for the chunk written while !isWritable",
+        )
+        val text = responseText()
+        assertTrue(text.contains("alpha"), "first chunk: $text")
+        assertTrue(text.contains("beta"), "second chunk: $text")
+    }
+
+    @Test
     fun `a middleware runs around the handler`() {
         val events = mutableListOf<String>()
         install(
