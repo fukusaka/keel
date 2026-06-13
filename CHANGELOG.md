@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-ktor-cio`: bound the inbound bridge on a bytes watermark — `KtorCioInboundBridge` now tracks the cumulative `readableBytes` of buffers queued in its coroutine `Channel` and flips the underlying transport's read side off via `pauseReads` when more than 64 KiB are queued, re-arming via `resumeReads` once the Ktor pump drains back below 32 KiB. Without the bound a slow handler let the `Channel.UNLIMITED` bridge channel grow without limit and defeated TCP flow control to the peer; the same hysteresis the keel-codec path uses (via `SuspendBridgeHandler`) now also covers the cio-keel path. (#786)
+
 - `server-http`: bound `Http1Call` request-body conduit on a bytes watermark — when buffered inbound body bytes cross 64 KiB without a consumer the conduit calls `pauseReads()` on the underlying channel and resumes once the consumer dequeues below 32 KiB, so a producer that has not yet started receiving the body can no longer let the kernel buffer balloon for slow handlers. Direct hand-off to a pre-suspended waiter bypasses the watermark; `discardUnconsumedBody` resets state silently on connection teardown. (#785)
 
 - `engine-io-uring`: copy-on-pressure recv delivery and a configurable ring size — when fewer than 25% of the shared per-EventLoop recv ring's slots remain, a delivery is handed to the consumer as an allocator-owned copy and the ring slot returns immediately, so connections retaining recv buffers for a request's whole latency can no longer stall every other connection on the loop; zero-copy delivery is unchanged while the ring has headroom. New `IoUringEngine(bufferRingSlotCount)` sizes the ring (default 64, power of two). (#763)
