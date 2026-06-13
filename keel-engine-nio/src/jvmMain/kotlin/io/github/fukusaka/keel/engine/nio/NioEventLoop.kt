@@ -48,7 +48,7 @@ import kotlin.coroutines.resume
  */
 internal class NioEventLoop(
     name: String,
-    private val logger: Logger,
+    internal val logger: Logger,
     /**
      * Per-EventLoop [BufferAllocator] instance. Co-located with the loop
      * (rather than tracked separately in [NioEventLoopGroup]) so callers
