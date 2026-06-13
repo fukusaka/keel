@@ -84,6 +84,87 @@ class KtorCioInboundBridgeTest {
     }
 
     @Test
+    fun `onRead pauses transport reads when pending bytes cross the high watermark`() =
+        runTest(timeout = 15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            // 70 KiB chunk crosses the 64 KiB high watermark — pauseReads
+            // must fire once.
+            val big = allocator.allocate(70_000).also { buf ->
+                repeat(70_000) { buf.writeByte('x'.code.toByte()) }
+            }
+            pipeline.notifyRead(big)
+
+            assertEquals(
+                1,
+                transport.pauseReadsCount,
+                "pending bytes (70 KiB) crossed the high watermark — pauseReads must fire once",
+            )
+            assertEquals(
+                0,
+                transport.resumeReadsCount,
+                "low watermark not yet reached — resumeReads must not fire while the queue is full",
+            )
+
+            // Drain it; receiveCatching decrements pendingBytes back below
+            // the low watermark (32 KiB) so resumeReads fires.
+            val buf = bridge.receiveCatching().getOrThrow()
+            buf.release()
+
+            assertEquals(
+                1,
+                transport.resumeReadsCount,
+                "consumer drained the queue below the low watermark — resumeReads must fire once",
+            )
+        }
+
+    @Test
+    fun `pause and resume fire at most once across the hysteresis band`() =
+        runTest(timeout = 15.seconds) {
+            val (pipeline, bridge) = installBridge()
+            // Push two 40 KiB chunks: the first leaves pendingBytes at
+            // 40 KiB (below high), the second pushes to 80 KiB (above
+            // high) — pauseReads fires exactly once.
+            for (i in 0 until 2) {
+                val buf = allocator.allocate(40_000).also { b ->
+                    repeat(40_000) { b.writeByte(i.toByte()) }
+                }
+                pipeline.notifyRead(buf)
+            }
+            assertEquals(1, transport.pauseReadsCount, "exactly one pause across two pushes that cross high")
+
+            // Draining the first chunk leaves pendingBytes at 40 KiB
+            // (above 32 KiB low) — no resume yet.
+            bridge.receiveCatching().getOrThrow().release()
+            assertEquals(0, transport.resumeReadsCount, "still above low watermark — no resume yet")
+
+            // Draining the second chunk drops to 0 — resume fires once.
+            bridge.receiveCatching().getOrThrow().release()
+            assertEquals(1, transport.resumeReadsCount, "queue drained below low watermark — exactly one resume")
+        }
+
+    @Test
+    fun `close clears watermark state without issuing resume`() = runTest(timeout = 15.seconds) {
+        val (pipeline, bridge) = installBridge()
+        // Push enough to trip pause, then close without draining via the
+        // bridge's receive path.
+        val big = allocator.allocate(70_000).also { buf ->
+            repeat(70_000) { buf.writeByte('z'.code.toByte()) }
+        }
+        pipeline.notifyRead(big)
+        assertEquals(1, transport.pauseReadsCount, "pause must fire after high watermark crossed")
+
+        bridge.close()
+
+        assertEquals(
+            0,
+            transport.resumeReadsCount,
+            "close must reset state silently — never resumeReads on a closing transport",
+        )
+        // The IoBuf was released by close; releasing again throws.
+        assertFailsWith<IllegalStateException> { big.release() }
+    }
+
+    @Test
     fun `close drains and releases queued buffers`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
         val buf1 = allocBuf(0x10)
