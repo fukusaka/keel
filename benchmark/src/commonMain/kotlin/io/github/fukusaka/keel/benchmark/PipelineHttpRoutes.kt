@@ -143,6 +143,34 @@ private class BenchmarkRoutingHandler : InboundHandler {
     private var wsClientKey: String? = null
     private var wsEchoMode: Boolean = false
 
+    // --- Backpressure state ---
+    //
+    // The pipeline-http routes form a *user-facing sample* of the sync-handler
+    // backpressure pattern. The async server-http path (see #784 / #785) is
+    // gated via suspending `awaitFlushComplete` inside the handler; sync
+    // pipeline handlers cannot suspend, so the engine surfaces a callback
+    // (`PipelineHandler.onWritabilityChanged`) and exposes two flow-control
+    // primitives:
+    //
+    // - `ctx.channel.isWritable` — `false` once buffered outbound bytes cross
+    //   the transport's high watermark; producers must stop emitting.
+    // - `ctx.channel.pauseReads()` / `resumeReads()` — flip the engine's
+    //   socket-drain off / on so kernel `rcvbuf` fills and TCP flow control
+    //   reaches the peer.
+    //
+    // Two paths use them:
+    //
+    // 1. *Echo* (HttpBody → propagateWrite → encoder). Each `propagateWrite`
+    //    grows the transport's pending-bytes; once `isWritable` goes false
+    //    we `pauseReads()` so the peer stops sending. `onWritabilityChanged`
+    //    re-arms reads when the drain catches up.
+    // 2. *SSE* (`/sse-stream?count=N`). The emission loop becomes a small
+    //    state machine: `pumpSseStream` emits frames while `isWritable`, then
+    //    parks the remaining count on `pendingSseEmission`. The same
+    //    `onWritabilityChanged` callback resumes the pump.
+    private var readsPausedByBackpressure: Boolean = false
+    private var pendingSseEmission: SseEmissionState? = null
+
     // permessage-deflate state for the /ws-deflate route. `wsDeflateOffered`
     // records whether the upgrade request offered the extension; the
     // [PipelineHttpWsDeflate] engine is created only once the handshake
@@ -293,6 +321,15 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         if (msg.content.readableBytes > 0) {
                             msg.content.retain()
                             ctx.propagateWrite(HttpBody(msg.content))
+                            // Backpressure: same flip as the intermediate
+                            // HttpBody path. A fixed-length body that ends
+                            // in one chunk arrives here (not as HttpBody +
+                            // HttpBodyEnd.EMPTY), so the watermark check
+                            // belongs here too.
+                            if (!readsPausedByBackpressure && !ctx.channel.isWritable) {
+                                readsPausedByBackpressure = true
+                                ctx.channel.pauseReads()
+                            }
                         }
                         ctx.propagateWrite(HttpBodyEnd.EMPTY)
                         ctx.propagateFlush()
@@ -374,6 +411,14 @@ private class BenchmarkRoutingHandler : InboundHandler {
                             }
                             ctx.propagateWrite(outgoing)
                             ctx.propagateFlush()
+                            // Same backpressure flip as the HTTP echo path:
+                            // a fast peer that spams large frames must not
+                            // be allowed to grow the outbound queue without
+                            // limit.
+                            if (!readsPausedByBackpressure && !ctx.channel.isWritable) {
+                                readsPausedByBackpressure = true
+                                ctx.channel.pauseReads()
+                            }
                         }
                     }
                 }
@@ -387,6 +432,14 @@ private class BenchmarkRoutingHandler : InboundHandler {
                         // it is transport-compatible.
                         msg.content.retain()
                         ctx.propagateWrite(HttpBody(msg.content))
+                        // Backpressure: if writing pushed us past the high
+                        // watermark, stop the engine's socket drain so kernel
+                        // `rcvbuf` fills and TCP flow control reaches the
+                        // sender. `onWritabilityChanged` re-arms reads.
+                        if (!readsPausedByBackpressure && !ctx.channel.isWritable) {
+                            readsPausedByBackpressure = true
+                            ctx.channel.pauseReads()
+                        }
                     }
                     uploadStreaming -> {
                         uploadBytes += msg.content.readableBytes
@@ -410,7 +463,36 @@ private class BenchmarkRoutingHandler : InboundHandler {
         // not leaked.
         wsDeflate?.close()
         wsDeflate = null
+        // Drop the SSE emission state (its IoBufs were never allocated;
+        // only `count` / `payload` were retained) and reset the pause flag
+        // silently. The transport is going away — calling resumeReads here
+        // would be incorrect.
+        pendingSseEmission = null
+        readsPausedByBackpressure = false
         ctx.propagateInactive()
+    }
+
+    /**
+     * Engine callback fired when [io.github.fukusaka.keel.pipeline.PipelinedChannel.isWritable]
+     * changes state. Two resumable paths consume this signal:
+     *
+     * 1. **SSE emission** — `pumpSseStream` parked the remaining count when
+     *    the watermark closed; here we drain the remainder.
+     * 2. **Echo / WS-echo reads** — `pauseReads()` was issued when the write
+     *    side filled; re-arm reads now that the drain has caught up.
+     */
+    override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+        if (!isWritable) return
+        // Resume a parked SSE pump first so its newly-emitted frames don't
+        // immediately re-trigger pauseReads via the catchup path below.
+        val parked = pendingSseEmission
+        if (parked != null) {
+            pumpSseStream(ctx, parked)
+        }
+        if (readsPausedByBackpressure) {
+            readsPausedByBackpressure = false
+            ctx.channel.resumeReads()
+        }
     }
 
     private fun emitResponse(ctx: PipelineHandlerContext) {
@@ -525,22 +607,55 @@ private class BenchmarkRoutingHandler : InboundHandler {
             ),
         )
         val payload = "data: ${"x".repeat(size)}\n\n".encodeToByteArray()
-        repeat(count) {
-            // Allocate one IoBuf per frame; the allocator is per-EventLoop and
-            // recycles immediately after the encoder has serialised + flushed.
-            val buf = ctx.channel.allocator.allocate(payload.size)
-            buf.writeByteArray(payload, 0, payload.size)
+        pumpSseStream(ctx, SseEmissionState(count, payload))
+    }
+
+    /**
+     * Emits the remaining SSE frames in [state] while
+     * [io.github.fukusaka.keel.pipeline.PipelinedChannel.isWritable] holds.
+     *
+     * If the watermark closes mid-loop the function returns with
+     * [pendingSseEmission] holding the remainder; [onWritabilityChanged]
+     * resumes the pump when the engine drains. The terminal
+     * [HttpBodyEnd.EMPTY] + flush only fire after the loop has emitted all
+     * `state.total` frames, so a client that disconnects mid-stream sees a
+     * truncated chunked response (the engine close path handles teardown).
+     */
+    private fun pumpSseStream(ctx: PipelineHandlerContext, state: SseEmissionState) {
+        pendingSseEmission = state
+        while (state.emitted < state.total) {
+            if (!ctx.channel.isWritable) {
+                // Park; onWritabilityChanged resumes from here.
+                return
+            }
+            val buf = ctx.channel.allocator.allocate(state.payload.size)
+            buf.writeByteArray(state.payload, 0, state.payload.size)
             ctx.propagateWrite(HttpBody(buf))
             // PR #440 — flush per frame so the bench measures real
             // per-event throughput, not bulk delivery. Removing this turns
             // the `pipeline-http-*` SSE row back into the inflated
             // batching number.
             ctx.propagateFlush()
+            state.emitted++
         }
         ctx.propagateWrite(HttpBodyEnd.EMPTY)
         ctx.propagateFlush()
+        pendingSseEmission = null
+        sseStreaming = false
+        currentPath = null
     }
 
+}
+
+/**
+ * Mutable per-request state for the SSE emission pump. `total` and `payload`
+ * stay constant for the lifetime of the request; `emitted` advances each
+ * time the pump drains a frame so a subsequent re-entry (via
+ * `onWritabilityChanged`) picks up exactly where the watermark interrupted
+ * us.
+ */
+private class SseEmissionState(val total: Int, val payload: ByteArray) {
+    var emitted: Int = 0
 }
 
 private fun String?.equalsIgnoreCase(other: String): Boolean =
