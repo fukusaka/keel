@@ -69,7 +69,7 @@ package io.github.fukusaka.keel.codec.http
  *    in an earlier revision), the combined hash spreads each variant
  *    into a different bucket.
  * 2. **`BUCKET_COUNT = 256`** (vs HttpHeaders' 64). The
- *    `StaticHeaderTableBucketCountAuditTest` measured chain depth at
+ *    `StaticHeaderTableBucketCountAudit` measured chain depth at
  *    32 / 64 / 128 / 256 / 512 on this table's 242 entries and picked
  *    256 as the smallest where max chain walk stops dropping (max =
  *    6 at both 256 and 512). 1 KB `bucketHead` is trivial for a
@@ -629,7 +629,7 @@ internal object StaticHeaderTable {
      * of size [hypotheticalBucketCount] (must be a power of 2) using
      * the same `combinedHash` formula and low-bit mask, and returns the
      * resulting per-bucket chain depths. Used by the
-     * `StaticHeaderTableBucketCountAuditTest` to compare `BUCKET=32 /
+     * `StaticHeaderTableBucketCountAudit` to compare `BUCKET=32 /
      * 64 / 128 / 256 / 512` for this table specifically (rather than
      * relying on the HttpHeaders §46.12 audit which assumed a small
      * per-request name-only-hashed table).
@@ -650,7 +650,7 @@ internal object StaticHeaderTable {
 
     /**
      * Number of hash buckets. Chosen by
-     * `StaticHeaderTableBucketCountAuditTest` which measured chain
+     * `StaticHeaderTableBucketCountAudit` which measured chain
      * depth at 32 / 64 / 128 / 256 / 512 on the current 242-entry
      * table with the `(name, value)` combined hash:
      *
