@@ -37,9 +37,10 @@ internal const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
 internal const val REFUSED_PORT = 1
 
 // UDS path uniqueness counter — incremented per test that needs a
-// unique filesystem path. Single-threaded test execution makes the
-// non-atomic `var` safe; gradle test parallelism is per-class, not
-// per-test, so concurrent increment is not possible.
+// unique filesystem path. Safe as a non-atomic top-level `var` because
+// the Kotlin/Native test runner (kotlin-test on linuxX64) executes
+// tests sequentially in a single thread. Cross-process collision is
+// handled by getpid() in the path.
 private var udsPathSeq = 0
 
 internal fun uniqueUdsPath(): String {
