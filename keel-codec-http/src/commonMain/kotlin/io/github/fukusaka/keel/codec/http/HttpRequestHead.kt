@@ -24,22 +24,24 @@ data class HttpRequestHead(
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
 ) : HttpMessage {
-    // Cached to avoid per-access String allocation on the hot path (RoutingHandler).
-    // Fields outside the primary constructor do not participate in equals/hashCode/copy.
-    // NONE — no synchronization needed; instances are confined to a single EventLoop thread.
+    // Eager-initialised so each request avoids the per-instance UnsafeLazyImpl
+    // allocations the `by lazy(NONE)` form required. Both fields are read on
+    // every request by the routing handler (`path`) and the server's query-
+    // parameter parser (`queryString`), so lazy caching never won — only the
+    // holders themselves dominated the alloc cost (JFR /hello @ 450K req/s:
+    // ~12% of allocation pressure was UnsafeLazyImpl). Eager initialisers in
+    // the class body (not the primary constructor) keep them out of
+    // equals/hashCode/copy.
 
-    /** The path component of [uri], excluding query string and fragment. Cached on first access. */
-    val path: String by lazy(LazyThreadSafetyMode.NONE) {
-        uri.substringBefore('?').substringBefore('#')
-    }
+    /** The path component of [uri], excluding query string and fragment. */
+    val path: String = uri.substringBefore('?').substringBefore('#')
 
     /**
      * The query string component of [uri] (without leading '?'), or null if absent.
-     * Cached on first access.
      *
      * Fragment identifier is excluded.
      */
-    val queryString: String? by lazy(LazyThreadSafetyMode.NONE) {
+    val queryString: String? = run {
         val idx = uri.indexOf('?')
         if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
     }
