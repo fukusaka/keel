@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.buf
 
 import com.sun.management.ThreadMXBean
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -30,6 +31,13 @@ import kotlin.test.Test
  * (`ThreadMXBean.getThreadAllocatedBytes` for alloc, `System.nanoTime`
  * for latency, median over `TRIALS` trials).
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-io:jvmTest --tests "*IoBufAsciiTextBenchmark"
+@Ignore
 class IoBufAsciiTextBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

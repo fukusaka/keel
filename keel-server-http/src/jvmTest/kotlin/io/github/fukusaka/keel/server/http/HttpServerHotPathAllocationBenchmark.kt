@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -70,6 +71,13 @@ import kotlin.test.Test
  * the measurement gate against which future PRs touching the hot path
  * can A/B.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-server-http:jvmTest --tests "*HttpServerHotPathAllocationBenchmark"
+@Ignore
 class HttpServerHotPathAllocationBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

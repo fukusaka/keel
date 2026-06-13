@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -23,6 +24,13 @@ import kotlin.test.Test
  * Not a unit test — runs as `@Test` for `jvmTest`; inspect stdout. Asserts only
  * that the harness ran (no functional assertion on timing).
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-io:jvmTest --tests "*FreelistContendedBenchmark"
+@Ignore
 class FreelistContendedBenchmark {
 
     @Test

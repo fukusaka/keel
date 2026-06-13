@@ -6,6 +6,7 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -42,6 +43,13 @@ import kotlin.test.Test
  *   amortization, zero contention, correct. Retains the benefit iff
  *   each thread cycles enough instances to warm its local deque.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-codec-http:jvmTest --tests "*HttpHeadersPoolStrategyBenchmark"
+@Ignore
 class HttpHeadersPoolStrategyBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

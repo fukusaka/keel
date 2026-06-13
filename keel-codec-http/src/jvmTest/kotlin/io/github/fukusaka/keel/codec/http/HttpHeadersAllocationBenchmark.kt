@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import com.sun.management.ThreadMXBean
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -33,6 +34,13 @@ import kotlin.test.Test
  * other allocation benches in this repo). Not a regression test; the
  * numbers are reported on stdout for PR review.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-codec-http:jvmTest --tests "*HttpHeadersAllocationBenchmark"
+@Ignore
 class HttpHeadersAllocationBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

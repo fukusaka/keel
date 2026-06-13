@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -37,6 +38,13 @@ import kotlin.test.Test
  * Not a unit test — runs as a `@Test` so it executes under the normal
  * `jvmTest` task; inspect stdout for the numbers. Does not assert.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-engine-netty:jvmTest --tests "*NettyReadPathAllocationBenchmark"
+@Ignore
 class NettyReadPathAllocationBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

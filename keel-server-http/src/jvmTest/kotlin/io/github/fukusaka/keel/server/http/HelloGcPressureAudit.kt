@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import java.lang.management.GarbageCollectorMXBean
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -38,6 +39,13 @@ import kotlin.test.Test
  *
  * Output is informational. Does not assert.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-server-http:jvmTest --tests "*HelloGcPressureAudit"
+@Ignore
 class HelloGcPressureAudit {
 
     @Test

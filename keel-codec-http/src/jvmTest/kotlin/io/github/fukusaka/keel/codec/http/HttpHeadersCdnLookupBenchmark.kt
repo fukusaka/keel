@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -13,6 +14,13 @@ import kotlin.test.Test
  * Total time = 5 lookups per request × N iterations. Per-lookup latency
  * is reported as `(total / iter / 5)`.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-codec-http:jvmTest --tests "*HttpHeadersCdnLookupBenchmark"
+@Ignore
 class HttpHeadersCdnLookupBenchmark {
 
     private fun buildCdn(): HttpHeaders = HttpHeaders().apply {
