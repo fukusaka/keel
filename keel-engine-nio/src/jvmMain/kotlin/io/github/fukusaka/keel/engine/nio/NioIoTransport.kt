@@ -258,6 +258,7 @@ internal class NioIoTransport(
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+        flushCount++
         if (pendingWrites.size == 1) {
             return flushSingle(pendingWrites.removeFirst())
         }
@@ -290,6 +291,7 @@ internal class NioIoTransport(
         pendingWrites.clear()
         pendingBytes = 0
         selectionKey.cancel()
+        logTransportStatsOnClose(eventLoop.logger, "channel=$socketChannel")
         if (socketChannel.isOpen) socketChannel.close()
     }
 
@@ -310,6 +312,7 @@ internal class NioIoTransport(
                 val written = bb.position() - pw.offset
                 val remaining = bb.remaining()
                 val newOffset = bb.position()
+                if (written > 0) partialWriteCount++
                 pendingWrites.add(0, PendingWrite(pw.buf, newOffset, remaining))
                 updatePendingBytes(-written)
                 registerWriteCallback()
@@ -362,6 +365,7 @@ internal class NioIoTransport(
             registerWriteCallback()
             return false
         }
+        partialWriteCount++
         var consumed = 0L
         while (pendingWrites.isNotEmpty()) {
             val pw = pendingWrites.first()
