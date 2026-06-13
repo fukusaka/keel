@@ -16,21 +16,19 @@ data class HttpRequest(
     val headers: HttpHeaders = HttpHeaders(),
     val body: ByteArray? = null,
 ) {
-    // Cached to avoid per-access String allocation (same rationale as HttpRequestHead).
-    // NONE — no synchronization needed; instances are confined to a single EventLoop thread.
+    // Eager-initialised for the same reason as HttpRequestHead: routing and
+    // query-parameter parsing read both fields on every request, so the
+    // `by lazy(NONE)` UnsafeLazyImpl holders were pure per-request overhead.
 
-    /** The path component of [uri], excluding query string and fragment. Cached on first access. */
-    val path: String by lazy(LazyThreadSafetyMode.NONE) {
-        uri.substringBefore('?').substringBefore('#')
-    }
+    /** The path component of [uri], excluding query string and fragment. */
+    val path: String = uri.substringBefore('?').substringBefore('#')
 
     /**
      * The query string component of [uri] (without leading '?'), or null if absent.
-     * Cached on first access.
      *
      * Fragment identifier is excluded.
      */
-    val queryString: String? by lazy(LazyThreadSafetyMode.NONE) {
+    val queryString: String? = run {
         val idx = uri.indexOf('?')
         if (idx >= 0) uri.substring(idx + 1).substringBefore('#') else null
     }
