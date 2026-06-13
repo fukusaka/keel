@@ -546,22 +546,52 @@ internal class Http1Call(
     // --- body conduit ---
 
     private var pending: ArrayDeque<IoBuf>? = null
+    private var pendingBytes: Int = 0
+
+    /**
+     * `true` when this conduit asked the transport to stop draining
+     * reads because [pendingBytes] reached the high water mark. Cleared
+     * once the consumer dequeues back below the low water mark.
+     * Guards against double-pause / double-resume and is reset (without
+     * a resume call) by [discardUnconsumedBody] when the connection is
+     * tearing down.
+     */
+    private var readsPausedByBackpressure: Boolean = false
     private var bodyEnded: Boolean = false
     private var bodyWaiter: CancellableContinuation<IoBuf?>? = null
 
     /**
      * Feeds a body chunk into the conduit. Called on the EventLoop thread
      * for every `HttpBody` / `HttpBodyEnd` of this request.
+     *
+     * **Backpressure**: when the chunk lands in the [pending] queue (no
+     * suspended consumer to hand it to directly) and the cumulative
+     * queued bytes cross [INBOUND_BODY_HIGH_WATERMARK_BYTES], the
+     * transport's read side is paused via [PipelinedChannel.pauseReads];
+     * the engine then stops draining the kernel `rcvbuf` and the peer's
+     * TCP window stalls. The dequeue path in [receiveChunk] re-arms reads
+     * once the queue drains back below [INBOUND_BODY_LOW_WATERMARK_BYTES]
+     * (hysteresis avoids flapping on every delivery). Chunks handed
+     * straight to a suspended consumer bypass the queue entirely and do
+     * not contribute to the watermark.
      */
     fun onBodyChunk(content: IoBuf, last: Boolean) {
         if (content.readableBytes > 0) {
             val waiter = bodyWaiter
             if (waiter != null) {
+                // Direct handoff — bypass the queue and the watermark
+                // accounting; the consumer is already waiting, the chunk
+                // never lingers.
                 bodyWaiter = null
                 waiter.resume(content)
             } else {
                 val queue = pending ?: ArrayDeque<IoBuf>().also { pending = it }
                 queue.addLast(content)
+                pendingBytes += content.readableBytes
+                if (!readsPausedByBackpressure && pendingBytes >= INBOUND_BODY_HIGH_WATERMARK_BYTES) {
+                    readsPausedByBackpressure = true
+                    ctx.channel.pauseReads()
+                }
             }
         } else {
             content.release()
@@ -581,11 +611,24 @@ internal class Http1Call(
         pending?.let { queue ->
             while (queue.isNotEmpty()) queue.removeFirst().release()
         }
+        // The transport is being torn down; do NOT call resumeReads here.
+        // Arming a dead transport's read would be a no-op at best and the
+        // close path is responsible for the final cleanup.
+        pendingBytes = 0
+        readsPausedByBackpressure = false
     }
 
     override suspend fun receiveChunk(): IoBuf? {
         val queue = pending
-        if (queue != null && queue.isNotEmpty()) return queue.removeFirst()
+        if (queue != null && queue.isNotEmpty()) {
+            val chunk = queue.removeFirst()
+            pendingBytes -= chunk.readableBytes
+            if (readsPausedByBackpressure && pendingBytes <= INBOUND_BODY_LOW_WATERMARK_BYTES) {
+                readsPausedByBackpressure = false
+                ctx.channel.resumeReads()
+            }
+            return chunk
+        }
         if (bodyEnded) return null
         return suspendCancellableCoroutine { cont ->
             bodyWaiter = cont
@@ -735,6 +778,18 @@ private fun HttpResponseHead.withConnectionClose(): HttpResponseHead =
 
 /** Field name added to / merged into `Vary` for `Accept`-negotiated responses. */
 private const val ACCEPT_FIELD = "Accept"
+
+/**
+ * Inbound body queue high / low watermarks for `Http1Call`'s body
+ * conduit. Crossing high suspends the transport's read side via
+ * `pauseReads`, dropping back below low re-arms it via `resumeReads`.
+ * Hysteresis avoids flapping on every delivery. Values mirror the
+ * `SuspendBridgeHandler` read-side watermarks (64 KiB / 32 KiB) so a
+ * future engine-common consolidation can lift the constants without a
+ * tuning-value reconciliation.
+ */
+private const val INBOUND_BODY_HIGH_WATERMARK_BYTES = 64 * 1024
+private const val INBOUND_BODY_LOW_WATERMARK_BYTES = 32 * 1024
 
 /**
  * Builds a copy of [headers] with `Accept` added to `Vary`, **appending**
