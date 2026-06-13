@@ -679,6 +679,20 @@ internal class Http1Call(
  * [HttpResponseBodySink] backing [HttpCall.respondStream]. Each [write]
  * propagates one `HttpBody` chunk outbound, taking ownership of the
  * caller's [IoBuf].
+ *
+ * **Backpressure**: after propagating the chunk, the sink suspends on
+ * [PipelinedChannel.awaitFlushComplete] whenever
+ * [PipelinedChannel.isWritable] is `false` — i.e. the transport's
+ * pendingBytes have crossed the high-water mark and the EL has not yet
+ * drained back below the low-water mark. Without this gate a chunked /
+ * SSE producer that calls [write] in a tight loop outruns the
+ * EventLoop's write-readiness processing: the EL keeps servicing emit
+ * tasks and never reaches `kevent(2)` / `epoll_wait(2)`, so
+ * write-readiness is observed late and throughput collapses while
+ * pendingWrites grows unbounded. Mirrors the Ktor-adapter path's
+ * `AbstractPipelinedWriteChannel.flush` gate. Honours the
+ * "implementation can apply back-pressure" contract on
+ * [HttpResponseBodySink.write].
  */
 private class Http1ResponseBodySink(
     private val ctx: PipelineHandlerContext,
@@ -687,6 +701,9 @@ private class Http1ResponseBodySink(
     override suspend fun write(chunk: IoBuf) {
         // Runs on the handler coroutine, already on the EventLoop thread.
         ctx.propagateWriteAndFlush(HttpBody(chunk))
+        if (!ctx.channel.isWritable) {
+            ctx.channel.awaitFlushComplete()
+        }
     }
 }
 

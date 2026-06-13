@@ -53,6 +53,27 @@ class HttpServerHandlerTest {
     private var responseAtClose: String? = null
 
     private val transport = object : TestIoTransport() {
+        /**
+         * When non-null, replaces the [isWritable] reading the sealed
+         * `writable` field on [TestIoTransport] / [AbstractIoTransport].
+         * Lets a backpressure test pin the gate open without simulating
+         * a full pendingBytes overflow.
+         */
+        var writableOverride: Boolean? = null
+
+        /** Counts every [awaitPendingFlush] call so a test can assert the
+         *  backpressure gate fired (and how many times). */
+        var awaitPendingFlushCount: Int = 0
+            private set
+
+        override val isWritable: Boolean
+            get() = writableOverride ?: super.isWritable
+
+        override suspend fun awaitPendingFlush() {
+            awaitPendingFlushCount++
+            super.awaitPendingFlush()
+        }
+
         override fun close() {
             if (!closed) {
                 responseAtClose = written.joinToString("") { buf ->
@@ -488,6 +509,119 @@ class HttpServerHandlerTest {
 
         val text = responseText()
         assertTrue(text.startsWith("HTTP/1.1 200"), "status line: $text")
+        assertTrue(text.contains("alpha"), "first chunk: $text")
+        assertTrue(text.contains("beta"), "second chunk: $text")
+    }
+
+    @Test
+    fun `respondStream sink gates writes on isWritable backpressure`() {
+        // Two chunks; the channel is pinned `not writable` for the whole
+        // request. Each `sink.write` call must therefore observe
+        // `!isWritable` and call `awaitFlushComplete` — which delegates
+        // to the transport's `awaitPendingFlush`. The terminal
+        // `HttpBodyEnd.EMPTY` is fired by `respondStream` itself outside
+        // the sink so it is NOT gated, matching the design (single
+        // small frame, scope of this test is the sink contract).
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.write(bufOf("beta"))
+                    }
+                }
+            },
+        )
+
+        transport.writableOverride = false
+        feedGet("/stream")
+
+        assertEquals(
+            2,
+            transport.awaitPendingFlushCount,
+            "sink.write must call awaitFlushComplete once per chunk while !isWritable",
+        )
+        // Body chunks still propagate (the gate suspends after the write,
+        // not before): the wire shows both chunks plus the terminal 0\r\n.
+        val text = responseText()
+        assertTrue(text.contains("alpha"), "first chunk: $text")
+        assertTrue(text.contains("beta"), "second chunk: $text")
+    }
+
+    @Test
+    fun `respondStream sink skips await when transport stays writable`() {
+        // The default `isWritable = true` path takes the fast path: the
+        // sink does not call `awaitFlushComplete`. This pins the cost
+        // model so the gate adds zero suspension on the saturating loop
+        // workload where pendingBytes never crosses the high-water mark.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.write(bufOf("beta"))
+                    }
+                }
+            },
+        )
+
+        // writableOverride defaults to null → falls through to super.isWritable
+        // which starts true (pendingBytes 0). Verify the gate stays closed.
+        feedGet("/stream")
+
+        assertEquals(
+            0,
+            transport.awaitPendingFlushCount,
+            "writable transport must not trigger the backpressure gate",
+        )
+    }
+
+    @Test
+    fun `respondStream sink gate flips with writable state mid-stream`() {
+        // Pins that the gate's per-write `isWritable` check is genuinely
+        // per-call (not a one-shot or memoised decision): writable=true
+        // for the first chunk takes the fast path, writable=false for
+        // the second chunk gates. Flipping just before the second
+        // `sink.write` proves the decision is observed at the call site,
+        // not snapshot at sink construction.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        // First chunk: writable=true (fast path)
+                        sink.write(bufOf("alpha"))
+                        // Flip mid-stream
+                        transport.writableOverride = false
+                        // Second chunk: writable=false (gates)
+                        sink.write(bufOf("beta"))
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        assertEquals(
+            1,
+            transport.awaitPendingFlushCount,
+            "gate must fire exactly once for the chunk written while !isWritable",
+        )
+        val text = responseText()
         assertTrue(text.contains("alpha"), "first chunk: $text")
         assertTrue(text.contains("beta"), "second chunk: $text")
     }
