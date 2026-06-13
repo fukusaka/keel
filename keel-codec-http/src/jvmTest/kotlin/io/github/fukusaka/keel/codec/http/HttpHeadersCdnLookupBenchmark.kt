@@ -8,7 +8,7 @@ import kotlin.test.Test
  * (not synthetic `X-Header-i` strings). Reveals whether `BUCKET_COUNT`
  * tuning that benchmarks well on synthetic names also performs on
  * the actual CDN cluster patterns documented in
- * [HttpHeadersBucketDistributionDiagnostic] (Cookie /
+ * [HttpHeadersBucketDistributionAudit] (Cookie /
  * Upgrade-Insecure-Requests / CF-Visitor / CDN-Loop chain at BUCKET=32).
  *
  * Total time = 5 lookups per request × N iterations. Per-lookup latency
