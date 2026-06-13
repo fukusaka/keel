@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.buf
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -32,6 +33,13 @@ import kotlin.test.Test
  * engines + `NettyByteBufIoBuf` Netty) will fall back to bimorphic /
  * megamorphic and pay closer to the abstract / interface numbers.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-io:jvmTest --tests "*IoBufPerBytePathBenchmark"
+@Ignore
 class IoBufPerBytePathBenchmark {
 
     private val buf = DirectIoBuf(CAPACITY)

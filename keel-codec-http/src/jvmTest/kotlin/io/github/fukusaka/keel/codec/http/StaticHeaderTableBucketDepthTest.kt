@@ -62,7 +62,7 @@ class StaticHeaderTableBucketDepthTest {
             "max bucket depth $max exceeds the 12-entry soft cap; " +
                 "either the (name, value) combined hash spread " +
                 "degraded, or many recently-added entries happen to " +
-                "share a bucket — re-run StaticHeaderTableBucketCountAuditTest " +
+                "share a bucket — re-run StaticHeaderTableBucketCountAudit " +
                 "before adding more.",
         )
     }

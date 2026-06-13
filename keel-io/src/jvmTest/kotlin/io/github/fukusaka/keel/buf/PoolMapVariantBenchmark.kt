@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.buf
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -23,6 +24,13 @@ import kotlin.test.Test
  * Not a unit test — runs as `@Test` for the normal `jvmTest` task; inspect
  * stdout. Does not assert.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-io:jvmTest --tests "*PoolMapVariantBenchmark"
+@Ignore
 class PoolMapVariantBenchmark {
 
     @Test

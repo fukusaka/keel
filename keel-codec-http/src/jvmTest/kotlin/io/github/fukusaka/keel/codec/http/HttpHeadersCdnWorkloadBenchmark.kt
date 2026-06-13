@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import com.sun.management.ThreadMXBean
 import java.lang.management.ManagementFactory
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -27,6 +28,13 @@ import kotlin.test.Test
  * hash-chained) — at N=25, the O(N) vs O(1) lookup gap matters more
  * than for the minimal `/hello` benchmark.
  */
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-codec-http:jvmTest --tests "*HttpHeadersCdnWorkloadBenchmark"
+@Ignore
 class HttpHeadersCdnWorkloadBenchmark {
 
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import kotlin.test.Ignore
 import kotlin.test.Test
 
 /**
@@ -12,7 +13,14 @@ import kotlin.test.Test
  * the C2-v5 design. The hash function is the standard Java
  * `String.hashCode()`-style `31*h + asciiToLower(c)`.
  */
-class HttpHeadersBucketDistributionDiagnostic {
+// @Ignore: one-time measurement (no functional assertion) — a decision
+// aid that caught no regression, so it is not run in the gate / CI; kept
+// for re-verification. The verified content + conclusion is the class
+// KDoc above.
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-codec-http:jvmTest --tests "*HttpHeadersBucketDistributionAudit"
+@Ignore
+class HttpHeadersBucketDistributionAudit {
 
     /**
      * 23 production-typical header names (Cloudflare-mediated edge
