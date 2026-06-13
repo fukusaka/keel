@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.pipeline.internal.ReferenceCountUtil
+import kotlin.jvm.JvmField
 import kotlin.reflect.KClass
 
 /**
@@ -36,23 +37,32 @@ abstract class TypedInboundHandler<I : Any>(
 
     override val acceptedType: KClass<*> get() = type
 
+    // Reusable per-handler scratch wrapper so the read hot path no longer
+    // allocates a fresh PropagateTrackingContext + capture lambda +
+    // Ref$BooleanRef per message. Handlers are per-pipeline by keel
+    // convention (constructed inside each connection's pipeline
+    // initialiser), so the cache is EventLoop-confined and needs no
+    // synchronisation. Allocated lazily on the first message that matches
+    // [type]; refreshed on every call so a handler instance moved between
+    // pipelines still tracks the current delegate.
+    private var trackingCtx: PropagateTrackingContext? = null
+
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (type.isInstance(msg)) {
             @Suppress("UNCHECKED_CAST")
             val castedMsg = msg as I
+            val tracking = trackingCtx ?: PropagateTrackingContext(ctx).also { trackingCtx = it }
+            tracking.delegate = ctx
             // Track whether the ORIGINAL message object was forwarded.
-            // A handler that transforms the input (e.g. IoBuf → WsFrame) sets
-            // propagated=true by propagating the new object, not the original,
-            // so we must compare identity rather than just checking that any
-            // propagateRead call happened.
-            var originalPropagated = false
-            val trackingCtx = PropagateTrackingContext(ctx) { propagatedMsg ->
-                if (propagatedMsg === castedMsg) originalPropagated = true
-            }
+            // A handler that transforms the input (e.g. IoBuf → WsFrame)
+            // propagates a different object; identity (===) on
+            // [PropagateTrackingContext.lastPropagated] distinguishes the
+            // two cases from inside the finally block below.
+            tracking.lastPropagated = null
             try {
-                onReadTyped(trackingCtx, castedMsg)
+                onReadTyped(tracking, castedMsg)
             } finally {
-                if (autoRelease && !originalPropagated) {
+                if (autoRelease && tracking.lastPropagated !== castedMsg) {
                     ReferenceCountUtil.safeRelease(msg)
                 }
             }
@@ -93,19 +103,25 @@ inline fun <reified I : Any> typedHandler(
 }
 
 /**
- * Wrapper around [PipelineHandlerContext] that detects propagation calls.
+ * Reusable wrapper around [PipelineHandlerContext] that records the most
+ * recently propagated `read` message.
  *
  * Used by [TypedInboundHandler] to determine whether the handler forwarded
- * the ORIGINAL input message to the next handler. [onPropagate] receives the
- * message object passed to [propagateRead] so the caller can compare identity
- * against the original — a handler that transforms its input (e.g.
- * [IoBuf] → [WsFrame]) propagates a different object and the original must
- * still be auto-released.
+ * the ORIGINAL input message to the next handler. The caller compares
+ * [lastPropagated] by identity against the original — a handler that
+ * transforms its input (e.g. [IoBuf] → [WsFrame]) propagates a different
+ * object and the original must still be auto-released.
+ *
+ * Both [delegate] and [lastPropagated] are `var` because a single
+ * [TypedInboundHandler] reuses one instance across every read; the
+ * enclosing handler is per-pipeline (EventLoop-confined), so mutating these
+ * fields is safe without synchronisation.
  */
 private class PropagateTrackingContext(
-    private val delegate: PipelineHandlerContext,
-    private val onPropagate: (Any) -> Unit,
+    @JvmField var delegate: PipelineHandlerContext,
 ) : PipelineHandlerContext {
+
+    @JvmField var lastPropagated: Any? = null
 
     override val channel: PipelinedChannel get() = delegate.channel
     override val pipeline: Pipeline get() = delegate.pipeline
@@ -116,7 +132,7 @@ private class PropagateTrackingContext(
     override fun propagateActive() = delegate.propagateActive()
 
     override fun propagateRead(msg: Any) {
-        onPropagate(msg)
+        lastPropagated = msg
         delegate.propagateRead(msg)
     }
 
