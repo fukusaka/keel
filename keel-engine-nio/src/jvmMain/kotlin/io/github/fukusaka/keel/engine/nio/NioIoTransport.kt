@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import kotlin.coroutines.EmptyCoroutineContext
@@ -98,6 +99,22 @@ internal class NioIoTransport(
     // One-time guard for lazy pool-class registration (see [readBufferSize]).
     // Touched only on the EventLoop thread (the read path).
     private var readPoolRegistered = false
+
+    // Reusable scratch array fed to [java.nio.channels.GatheringByteChannel.write]
+    // by [flushGather]. Grown lazily (1.5x) via [ensureBbArrayCapacity] when
+    // `pendingWrites` exceeds the current capacity. Avoids the per-flush
+    // `Array<ByteBuffer>` allocation the old rebuild-per-call path required.
+    // Slots beyond `count` may hold stale ByteBuffer references between flushes;
+    // they are never read (the write call is bounded by `count`) and are
+    // overwritten when needed. Counterpart of [EpollIoTransport]'s
+    // `writevPtrs` / `writevLens` primitive-array cache.
+    private var bbArray: Array<ByteBuffer?> = arrayOfNulls(INITIAL_BB_ARRAY_CAPACITY)
+
+    private fun ensureBbArrayCapacity(n: Int) {
+        if (bbArray.size >= n) return
+        val grown = maxOf(bbArray.size + (bbArray.size shr 1), n)
+        bbArray = arrayOfNulls(grown)
+    }
 
     // --- Read path ---
 
@@ -307,19 +324,28 @@ internal class NioIoTransport(
     /**
      * Writes multiple pending buffers via [java.nio.channels.GatheringByteChannel.write].
      *
-     * On partial write, fully-written buffers are released and the remainder
-     * is re-enqueued with OP_WRITE callback for async retry.
+     * On partial write, fully-written buffers are released and the
+     * partially-written entry is mutated in place at the head of the deque
+     * (the trailing untouched entries stay as-is). Counterpart of
+     * [EpollIoTransport]'s `flushGather` — the cached [bbArray] scratch and
+     * the in-place head-mutation pattern together eliminate the per-flush
+     * `Array<ByteBuffer>` and (on partial) the `mutableListOf<PendingWrite>`
+     * rebuild that the old code required, reducing the `PendingWrite`
+     * allocation to one (only the partial entry).
      */
     private fun flushGather(): Boolean {
-        val bbArray = Array(pendingWrites.size) { i ->
+        val count = pendingWrites.size
+        ensureBbArrayCapacity(count)
+        var totalBytes = 0L
+        for (i in 0 until count) {
             val pw = pendingWrites[i]
-            pw.buf.unsafeBuffer.duplicate().apply {
-                position(pw.offset)
-                limit(pw.offset + pw.length)
-            }
+            val bb = pw.buf.unsafeBuffer.duplicate()
+            bb.position(pw.offset)
+            bb.limit(pw.offset + pw.length)
+            bbArray[i] = bb
+            totalBytes += pw.length.toLong()
         }
-        val totalBytes = bbArray.sumOf { it.remaining().toLong() }
-        val written = socketChannel.write(bbArray)
+        val written = socketChannel.write(bbArray, 0, count)
 
         if (written >= totalBytes) {
             for (pw in pendingWrites) pw.buf.release()
@@ -328,20 +354,27 @@ internal class NioIoTransport(
             return true
         }
 
-        // Partial write: release fully-written, re-enqueue remainder.
-        val remaining = mutableListOf<PendingWrite>()
-        for (i in pendingWrites.indices) {
-            val pw = pendingWrites[i]
-            val bb = bbArray[i]
-            if (!bb.hasRemaining()) {
+        // Send buffer full or partial write. Drain fully-written entries
+        // from the head of the deque, mutate the partially-written entry in
+        // place at the head, leave the rest. Skips the re-enqueue alloc
+        // when `written == 0L` (nothing changed).
+        if (written == 0L) {
+            registerWriteCallback()
+            return false
+        }
+        var consumed = 0L
+        while (pendingWrites.isNotEmpty()) {
+            val pw = pendingWrites.first()
+            if (consumed + pw.length <= written) {
+                consumed += pw.length.toLong()
                 pw.buf.release()
+                pendingWrites.removeFirst()
             } else {
-                val consumed = bb.position() - pw.offset
-                remaining.add(PendingWrite(pw.buf, pw.offset + consumed, pw.length - consumed))
+                val alreadyWritten = (written - consumed).toInt()
+                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                break
             }
         }
-        pendingWrites.clear()
-        pendingWrites.addAll(remaining)
         updatePendingBytes(-written.toInt())
         registerWriteCallback()
         return false
@@ -407,5 +440,13 @@ internal class NioIoTransport(
          * is idempotent so it is a no-op for the already-registered default.
          */
         const val READ_BUFFER_POOL_SLOTS = 16
+
+        /**
+         * Initial size of the reusable `bbArray` scratch. Matches
+         * [EpollIoTransport]'s `INITIAL_WRITEV_CAPACITY` for cross-engine
+         * consistency; covers the steady-state pendingWrites depth without
+         * triggering [ensureBbArrayCapacity] in common workloads.
+         */
+        const val INITIAL_BB_ARRAY_CAPACITY = 8
     }
 }
