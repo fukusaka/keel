@@ -897,11 +897,24 @@ class HttpRequestDecoder(
         // stuffing fields into the trailer block). The counter is
         // reset at the start of the next request line — see
         // [parseRequestLineFast] / [parseRequestLineFallback].
+        // Latch the body-framing decision off [head]'s headers BEFORE
+        // dispatching the head downstream. A downstream handler may
+        // release `head.headers` inside its `onRead` (e.g. the pipeline-
+        // http sample handler does so eagerly to return the recv buffer
+        // to the io-uring provided buffer ring), and the pooled
+        // [HttpHeaders] instance resets `slotCount` to 0 on release —
+        // reading `head.headers.contentLength` / `isChunked` after
+        // `propagateRead` would then collapse to `null` / `false` and
+        // misclassify the request as "no body", parsing the body bytes
+        // as the next request line. Read the values into locals first
+        // and the decoder's framing decision becomes immune to whatever
+        // a handler does with the head.
+        val cl = head.headers.contentLength
+        val chunked = head.headers.isChunked
         ctx.propagateRead(head)
 
-        val cl = head.headers.contentLength
         when {
-            head.headers.isChunked -> {
+            chunked -> {
                 state = State.READ_CHUNK_SIZE
                 bodyBytesRemaining = 0L
             }
