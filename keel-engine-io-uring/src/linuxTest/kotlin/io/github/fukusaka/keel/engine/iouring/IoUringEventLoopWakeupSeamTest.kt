@@ -20,8 +20,10 @@ import kotlin.test.assertTrue
  * kernel pressure (EMFILE / EBADF) or counter saturation (EAGAIN), and
  * therefore not testable in integration without fault injection.
  *
- * Counterpart of `EpollEventLoopSeamTest` on the io_uring side. Per the
- * two-layer test strategy in `.claude/rules/testing.md`.
+ * Counterpart of `EpollEventLoopSeamTest` on the io_uring side, following
+ * the two-layer (seam + integration) test strategy: errno-branch and
+ * fd-lifecycle paths are covered here against the fake, while kernel
+ * wiring is left to the integration tests.
  *
  * ## What this file does NOT cover
  *
