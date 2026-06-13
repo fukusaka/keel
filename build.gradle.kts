@@ -1,3 +1,8 @@
+import org.gradle.api.tasks.testing.AbstractTestTask
+import org.gradle.api.tasks.testing.TestDescriptor
+import org.gradle.api.tasks.testing.TestListener
+import org.gradle.api.tasks.testing.TestResult
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform) apply false
     alias(libs.plugins.kotlin.jvm) apply false
@@ -211,5 +216,51 @@ subprojects {
                 }
             }
         }
+
+        // Slow-test budget guard (test classification forcing function).
+        //
+        // Measurement code (`*Benchmark` / `*Audit`) has no functional
+        // assertion and is `@Ignore`d so it does not run in the gate / CI.
+        // The naming convention
+        // alone cannot catch a measurement that slips in *without* `@Ignore`
+        // (forgotten annotation, or measurement code misnamed `*Test`): it
+        // would silently run and inflate the suite by tens of seconds. This
+        // listener flags any executed test exceeding the budget so the drift
+        // is visible in the build log — a legitimate test never approaches it
+        // (the slowest real / `*Measure` tests are ~2 s; the retired
+        // benchmarks were 50-111 s). Warn-only: CI-runner load can make a
+        // normally-fast test spike, so this must not fail the build.
+        //
+        // `SlowTestWarningListener` is a top-level class capturing no script
+        // / Project reference (it prints to stderr, not the project logger,
+        // and the budget is its own constant) so the task stays
+        // configuration-cache serializable.
+        tasks.withType<AbstractTestTask>().configureEach {
+            addTestListener(SlowTestWarningListener())
+        }
+    }
+}
+
+/**
+ * Warns (to stderr) when an executed test exceeds [SLOW_TEST_BUDGET_SEC].
+ * Holds no reference to the build script or `Project`, so a `Test` task it
+ * is attached to remains serializable for the configuration cache.
+ */
+class SlowTestWarningListener : TestListener {
+    override fun beforeSuite(suite: TestDescriptor) {}
+    override fun beforeTest(testDescriptor: TestDescriptor) {}
+    override fun afterSuite(suite: TestDescriptor, result: TestResult) {}
+    override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
+        val elapsedSec = (result.endTime - result.startTime) / 1000.0
+        if (elapsedSec > SLOW_TEST_BUDGET_SEC) {
+            System.err.println(
+                "SLOW TEST (>%.0fs): %s.%s took %.1fs — if this is measurement code, ".format(
+                    SLOW_TEST_BUDGET_SEC, testDescriptor.className, testDescriptor.name, elapsedSec,
+                ) + "name it *Benchmark/*Audit and add @Ignore so it is not run in CI.",
+            )
+        }
+    }
+    private companion object {
+        private const val SLOW_TEST_BUDGET_SEC = 20.0
     }
 }
