@@ -587,6 +587,121 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `receiveChunk pauses reads when pending bytes cross the high watermark`() {
+        // The handler hangs on a `CompletableDeferred` so it is alive
+        // when the body chunks arrive on the decoder's path: the chunks
+        // land in `Http1Call.pending` (no waiter to hand off to). A
+        // single 70 KiB chunk crosses the 64 KiB high watermark, so
+        // `pauseReads` must fire once. When the test releases the
+        // deferred the handler drains the chunk and `resumeReads` must
+        // fire once.
+        val proceed = CompletableDeferred<Unit>()
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    proceed.await()
+                    while (call.receiveChunk() != null) {
+                        // Drain — releases happen inside receiveBytes-style
+                        // loops; for this test we just discard.
+                    }
+                    call.respondText("ok")
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "x".repeat(70_000))
+
+        assertEquals(
+            1,
+            transport.pauseReadsCount,
+            "pending bytes (70 KiB) crossed the high watermark — pauseReads must fire once",
+        )
+        assertEquals(
+            0,
+            transport.resumeReadsCount,
+            "low watermark not yet reached — resumeReads must not fire while the queue is full",
+        )
+
+        proceed.complete(Unit)
+
+        assertEquals(
+            1,
+            transport.resumeReadsCount,
+            "consumer drained the queue below the low watermark — resumeReads must fire once",
+        )
+    }
+
+    @Test
+    fun `receiveChunk direct handoff bypasses the watermark`() {
+        // The handler suspends on `receiveChunk()` BEFORE any body chunk
+        // arrives, so each incoming chunk is handed straight to the
+        // waiting continuation — `Http1Call.pending` stays empty and
+        // the watermark accounting never sees the bytes. Even a 70 KiB
+        // chunk that would trip the high watermark via the queued path
+        // must not trigger `pauseReads` here.
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    while (call.receiveChunk() != null) {
+                        // Drain inline; each receive matches a waiter slot.
+                    }
+                    call.respondText("ok")
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "x".repeat(70_000))
+
+        assertEquals(
+            0,
+            transport.pauseReadsCount,
+            "direct hand-off path must not trigger the watermark — pending stays empty",
+        )
+        assertEquals(
+            0,
+            transport.resumeReadsCount,
+            "no pause was issued, so no resume should follow either",
+        )
+    }
+
+    @Test
+    fun `discardUnconsumedBody clears watermark state without issuing resume`() {
+        // The handler responds immediately without reading the body, so
+        // the body chunk arrives AFTER the call has finished — by which
+        // point `inFlight === call` is false and the body chunk is
+        // released by the `inFlight?.onBodyChunk(...) ?: release()`
+        // branch. To exercise the path where chunks are queued AND the
+        // handler then exits, we suspend the handler on a deferred,
+        // assert the pause fires, then complete the deferred WITHOUT
+        // draining: the finally block's `discardUnconsumedBody` must
+        // release the queued buffer and reset the watermark flag
+        // silently — never calling resumeReads on a closing transport.
+        val proceed = CompletableDeferred<Unit>()
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    proceed.await()
+                    // Intentionally do NOT call receiveChunk — let the
+                    // finally block clean the queue up.
+                    call.respondText("ok")
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "x".repeat(70_000))
+
+        assertEquals(1, transport.pauseReadsCount, "pause must fire after high watermark crossed")
+
+        proceed.complete(Unit)
+
+        assertEquals(
+            0,
+            transport.resumeReadsCount,
+            "discardUnconsumedBody must reset state silently, never resumeReads on close",
+        )
+    }
+
+    @Test
     fun `respondStream sink gate flips with writable state mid-stream`() {
         // Pins that the gate's per-write `isWritable` check is genuinely
         // per-call (not a one-shot or memoised decision): writable=true
