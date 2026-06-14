@@ -96,7 +96,9 @@ class PooledChunk internal constructor(
                 if (allocator != null && PoolChunk.isSubpage(handle)) {
                     val sub = poolChunk.subpageAtRunOffset(PoolChunk.runOffset(handle))
                     sub?.headIndex?.let { allocator.subpageHeadAt(it) }
-                } else null
+                } else {
+                    null
+                }
             poolChunk.free(handle, head)
             backing.release()
             liveCarves--

@@ -73,9 +73,11 @@ internal class ChunkArena(
         // PooledAllocator.subpageHeads so cross-chunk subpage reuse fires; the
         // transient head here just lets PoolSubpage.create's addToPool target
         // a valid sentinel without polluting any persistent chain.
-        val effectiveHead =
-            if (isSubpage) head ?: PoolSubpage.newHead(sizeClasses.pageShifts, headIndex = sizeIdx)
-            else null
+        val effectiveHead = if (isSubpage) {
+            head ?: PoolSubpage.newHead(sizeClasses.pageShifts, headIndex = sizeIdx)
+        } else {
+            null
+        }
         for (i in chunks.indices) {
             val pc = chunks[i]
             val handle = if (isSubpage) pc.carveNewSubpage(sizeIdx, effectiveHead!!) else pc.carveRun(classSize)
