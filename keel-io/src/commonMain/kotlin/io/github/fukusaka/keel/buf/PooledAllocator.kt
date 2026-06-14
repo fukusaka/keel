@@ -145,7 +145,58 @@ abstract class PooledAllocator(
         sizeClasses = sizeClasses,
         newChunkBacking = { newBuffer(CHUNK_SIZE) },
         newChunkView = ::newChunkView,
+        owningAllocator = this,
     )
+
+    /**
+     * Arena-level per-size-class subpage chain heads (Netty-style
+     * `smallSubpagePools[]` analogue). One sentinel per subpage size class,
+     * spanning **every** chunk this allocator owns. The chain lets the subpage
+     * fast path locate a partially-free subpage without walking [ChunkArena]'s
+     * chunks list — both because that walk would require the arena lock and
+     * because the chain captures cross-chunk partial-fill state for free.
+     *
+     * Each `PoolSubpage` carries `headIndex` (the size class it was placed at)
+     * and `owningChunk` (the [PooledChunk] supplying its run) so the chain
+     * walker can build a view directly from the chain element.
+     */
+    private val subpageHeads: Array<PoolSubpage> = Array(sizeClasses.nSubpages) { idx ->
+        PoolSubpage.newHead(sizeClasses.pageShifts, headIndex = idx)
+    }
+
+    /**
+     * Arena-level lock guarding [ChunkArena.chunks] mutations and the per-chunk
+     * run operations within. Mirrors Netty's `PoolArena.lock`. Acquired on:
+     *
+     * - the subpage slow path (chain empty / all full → carve new subpage's run
+     *   from a chunk) — held while [chunkArena] iterates chunks for free runs,
+     *   created a fresh chunk if needed, and installs the new subpage into the
+     *   chain's head sentinel under the per-class lock.
+     * - the run / normal class allocate path — held while [chunkArena] iterates
+     *   chunks for a free run of the requested page count.
+     * - the release path for a run handle.
+     * - [reclaim] (idle-chunk trim) and [close].
+     *
+     * Held independently of [subpageHeadLocks] on the subpage fast path. Lock
+     * order: arena lock → per-class subpage head lock (nested in the slow path),
+     * never the other way around.
+     */
+    private val arenaLock: PlatformLock = PlatformLock()
+
+    /**
+     * Per-size-class lock guarding [subpageHeads]'s chain + the in-chain
+     * subpages' bitmap. Mirrors Netty's per-class head `lock`. Acquired:
+     *
+     * - on the subpage fast path: walk this class's chain and allocate from a
+     *   free subpage. The arena lock is **not** taken on this path — different
+     *   size classes proceed in parallel here.
+     * - on the subpage slow path, **inside** the arena lock, to install a
+     *   newly-carved subpage in the chain and allocate its first element.
+     * - on the release path for a subpage handle: free the element, possibly
+     *   remove the subpage from the chain; if the subpage's run must be
+     *   reclaimed, the arena lock is acquired separately afterwards.
+     */
+    private val subpageHeadLocks: Array<PlatformLock> = Array(sizeClasses.nSubpages) { PlatformLock() }
 
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
@@ -264,7 +315,7 @@ abstract class PooledAllocator(
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
                 missProfile?.recordMiss(idx)
-                val fresh = chunkArena.carve(idx)
+                val fresh = carveOnMiss(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
                 return fresh
@@ -275,6 +326,51 @@ abstract class PooledAllocator(
         val fresh = newBuffer(capacity)
         (fresh as AbstractIoBuf).owner = poolOwner
         return fresh
+    }
+
+    /**
+     * Carves a buffer of size-class index [idx] on a freelist miss.
+     *
+     * Routes by class type:
+     * - **Subpage class**: try the per-class subpage chain fast path (locked by
+     *   [subpageHeadLocks]`[idx]` only — different size classes proceed in
+     *   parallel). On miss, enter the slow path (locked by [arenaLock] +
+     *   [subpageHeadLocks]`[idx]`) which carves a new subpage's run from a chunk.
+     * - **Run / normal class**: locked by [arenaLock] only.
+     */
+    @Suppress("IoBufLeak") // Returns ownership to caller via allocate().
+    private fun carveOnMiss(idx: Int): IoBuf {
+        if (idx <= sizeClasses.smallMaxSizeIdx) {
+            // Subpage fast path: walk the arena-level chain for this class for
+            // a free element. Different size classes share no lock here.
+            val head = subpageHeads[idx]
+            subpageHeadLocks[idx].withLock {
+                var candidate = head.next
+                while (candidate != null && candidate !== head) {
+                    val handle = candidate.allocate()
+                    if (handle != PoolSubpage.NO_HANDLE) {
+                        val owningChunk = checkNotNull(candidate.owningChunk) {
+                            "non-head subpage missing owningChunk back-pointer"
+                        }
+                        // makeView already retains the chunk's backing internally.
+                        return chunkArena.makeView(owningChunk, handle, sizeClasses.sizeIdx2size(idx))
+                    }
+                    candidate = candidate.next
+                }
+            }
+            // Subpage slow path: chain was empty or every subpage was concurrently
+            // exhausted. Carve a new subpage run under the arena lock, install it
+            // under the per-class lock.
+            return arenaLock.withLock {
+                subpageHeadLocks[idx].withLock {
+                    chunkArena.carve(idx, head)
+                }
+            }
+        }
+        // Run / normal class: arena lock only.
+        return arenaLock.withLock {
+            chunkArena.carve(idx, head = null)
+        }
     }
 
     private fun returnToPool(buf: IoBuf) {
@@ -353,8 +449,42 @@ abstract class PooledAllocator(
                 evict--
             }
         }
-        chunkArena.reclaim(WARM_RESERVE)
+        arenaLock.withLock {
+            chunkArena.reclaim(WARM_RESERVE)
+        }
     }
+
+    /**
+     * Returns the size-class head sentinel at [headIdx]. Exposed `internal` so
+     * [PooledChunk]'s release path can read it after discovering the head
+     * index from a freed subpage's `headIndex`.
+     */
+    internal fun subpageHeadAt(headIdx: Int): PoolSubpage = subpageHeads[headIdx]
+
+    /**
+     * Whether [close] has run. Exposed `internal` so [PooledChunk]'s release
+     * path can detect a post-close release and skip lock acquisition — the
+     * close contract guarantees no concurrent allocate at that point, so the
+     * unsynchronised teardown is safe, and the platform locks have already
+     * been destroyed by then.
+     */
+    internal val isClosed: Boolean get() = closed
+
+    /**
+     * Runs [block] under the arena lock. Exposed `internal` so the
+     * [PooledChunk] release path takes the same lock as the allocate slow path.
+     */
+    internal inline fun <T> withArenaLock(block: () -> T): T = arenaLock.withLock(block)
+
+    /**
+     * Runs [block] under the size-class subpage head lock at [headIdx].
+     * Exposed `internal` so [PooledChunk]'s release path takes the same lock
+     * as the allocate fast path. **Acquire ordering**: callers that hold the
+     * arena lock acquire this lock nested (arena → head); callers that only
+     * touch the chain (subpage fast path) acquire it standalone.
+     */
+    internal inline fun <T> withSubpageHeadLock(headIdx: Int, block: () -> T): T =
+        subpageHeadLocks[headIdx].withLock(block)
 
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
@@ -402,6 +532,14 @@ abstract class PooledAllocator(
             pool.close()
         }
         chunkArena.close()
+        // Release every platform mutex this allocator owns. Idempotent at the
+        // PlatformLock level. Done after chunkArena.close() so any chunk-backed
+        // view that gets released between the freelist drain above and this
+        // line still finds live locks (releases land in the closed-flag branch
+        // of returnToPool which freeBacking()s directly, but freeBacking() can
+        // still call into PooledChunk.freeRun which expects live locks).
+        for (lock in subpageHeadLocks) lock.close()
+        arenaLock.close()
     }
 
     /**

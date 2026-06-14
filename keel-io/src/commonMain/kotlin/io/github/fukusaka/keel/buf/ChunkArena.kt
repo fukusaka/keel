@@ -36,6 +36,14 @@ internal class ChunkArena(
     private val sizeClasses: SizeClasses,
     private val newChunkBacking: () -> IoBuf,
     private val newChunkView: ChunkViewFactory,
+    /**
+     * The owning [PooledAllocator] (used as `PooledChunk.owningAllocator`).
+     * Nullable for direct ChunkArena tests that exercise the chunk back-end
+     * without an allocator (e.g. `ChunkArenaCarveBenchmark`); the release path
+     * then runs unsynchronised, which is correct because those tests pin a
+     * single thread to the arena.
+     */
+    private val owningAllocator: PooledAllocator? = null,
 ) {
     private val chunks = ArrayList<PooledChunk>()
 
@@ -44,25 +52,50 @@ internal class ChunkArena(
 
     /**
      * Carves a buffer of size class [sizeIdx] from a chunk and returns it as a
-     * view. Small classes (`sizeIdx <= smallMaxSizeIdx`) come from a subpage
-     * bitmap, larger ones from a page run.
+     * view.
+     *
+     * - When [head] is non-null (subpage size class slow path): carves a fresh
+     *   subpage run from a chunk and installs a new [PoolSubpage] into [head]'s
+     *   chain (arena-level chain, shared across chunks). Callers walk the chain
+     *   themselves to find a partially-free subpage before reaching this method;
+     *   this method only handles the chain-miss case.
+     * - When [head] is null (run / normal size class): carves a page run.
+     *
+     * On either path, iterates [chunks] looking for one that can satisfy the
+     * request; if none can, allocates a fresh chunk and uses it.
      */
-    fun carve(sizeIdx: Int): IoBuf {
+    fun carve(sizeIdx: Int, head: PoolSubpage? = null): IoBuf {
         val classSize = sizeClasses.sizeIdx2size(sizeIdx)
-        val subpage = sizeIdx <= sizeClasses.smallMaxSizeIdx
+        val isSubpage = sizeIdx <= sizeClasses.smallMaxSizeIdx
+        // For subpage classes called without an explicit head (test / direct
+        // ChunkArena bench paths), allocate a transient sentinel for this single
+        // carve. Production callers always supply the arena-level head from
+        // PooledAllocator.subpageHeads so cross-chunk subpage reuse fires; the
+        // transient head here just lets PoolSubpage.create's addToPool target
+        // a valid sentinel without polluting any persistent chain.
+        val effectiveHead =
+            if (isSubpage) head ?: PoolSubpage.newHead(sizeClasses.pageShifts, headIndex = sizeIdx)
+            else null
         for (i in chunks.indices) {
             val pc = chunks[i]
-            val handle = if (subpage) pc.carveSubpage(sizeIdx) else pc.carveRun(classSize)
+            val handle = if (isSubpage) pc.carveNewSubpage(sizeIdx, effectiveHead!!) else pc.carveRun(classSize)
             if (handle != PoolChunk.NO_HANDLE) return makeView(pc, handle, classSize)
         }
-        val fresh = PooledChunk(newChunkBacking(), PoolChunk(sizeClasses))
+        val fresh = PooledChunk(newChunkBacking(), PoolChunk(sizeClasses), owningAllocator)
         chunks.add(fresh)
-        val handle = if (subpage) fresh.carveSubpage(sizeIdx) else fresh.carveRun(classSize)
+        val handle = if (isSubpage) fresh.carveNewSubpage(sizeIdx, effectiveHead!!) else fresh.carveRun(classSize)
         check(handle != PoolChunk.NO_HANDLE) { "fresh chunk failed to carve size class $sizeIdx ($classSize bytes)" }
         return makeView(fresh, handle, classSize)
     }
 
-    private fun makeView(pc: PooledChunk, handle: Long, classSize: Int): IoBuf {
+    /**
+     * Builds an [IoBuf] view at [handle] in [pc], retaining the chunk's backing
+     * for the new view. Exposed `internal` so [PooledAllocator]'s subpage fast
+     * path can build a view after walking the arena-level chain without going
+     * back through [carve] (which is the slow path).
+     */
+    @Suppress("IoBufLeak") // Returns ownership to caller.
+    internal fun makeView(pc: PooledChunk, handle: Long, classSize: Int): IoBuf {
         val byteOffset = pc.poolChunk.byteOffset(handle)
         pc.retainForCarve()
         return newChunkView(pc.backing, byteOffset, classSize, pc, handle)

@@ -53,6 +53,16 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
     private val runsAvailMap = LongLongHashMap() // pageOffset -> handle (sparse), 0 = absent
     private val subpages = arrayOfNulls<PoolSubpage>(chunkPages)
 
+    /**
+     * Returns the [PoolSubpage] anchored at the run starting at [runOffset], or
+     * `null` if no subpage lives there. Exposed `internal` so [PooledChunk]'s
+     * release path can discover the subpage from a handle and read its
+     * `headIndex` to acquire the right size-class head lock. Read-only; the
+     * subpages array stays private so its mutation paths
+     * (`allocateSubpage` / `free`) keep PoolChunk-internal.
+     */
+    internal fun subpageAtRunOffset(runOffset: Int): PoolSubpage? = subpages[runOffset]
+
     init {
         // The whole chunk starts as one free run at offset 0.
         val initHandle = toRunHandle(0, chunkPages, inUsed = 0)
