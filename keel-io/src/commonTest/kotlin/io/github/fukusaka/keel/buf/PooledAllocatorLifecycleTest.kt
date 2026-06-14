@@ -10,12 +10,12 @@ import kotlin.test.assertTrue
  * Lifecycle-contract tests for [PooledAllocator] (Native [SlabAllocator] /
  * JVM [PooledDirectAllocator] — the shared base class). The contract:
  *
- * - `allocate` / `createForEventLoop` after `close` throw `IllegalStateException`.
+ * - `allocate` / `createChild` after `close` throw `IllegalStateException`.
  * - `close` is idempotent (a second call is a no-op).
  * - `close` drains the pool: every previously-pooled buffer's backing is
  *   freed and the pool becomes empty.
  * - `close` propagates to children: a parent's `close` closes every per-EL
- *   child produced by `createForEventLoop`.
+ *   child produced by `createChild`.
  * - A buffer that was in use at `close` time is not touched; its later
  *   `release` runs the closed-flag branch in `returnToPool` and frees the
  *   backing directly instead of pushing into the drained pool.
@@ -40,17 +40,17 @@ class PooledAllocatorLifecycleTest {
     }
 
     @Test
-    fun `createForEventLoop after close throws ISE`() {
+    fun `createChild after close throws ISE`() {
         val allocator = createPoolAllocator()
         if (!isPoolAllocator()) {
             allocator.close()
-            // DefaultAllocator's createForEventLoop returns `this`; both
+            // DefaultAllocator's createChild returns `this`; both
             // pre- and post-close it is the same object, no ISE expected.
-            assertEquals(allocator, allocator.createForEventLoop())
+            assertEquals(allocator, allocator.createChild())
             return
         }
         allocator.close()
-        assertFailsWith<IllegalStateException> { allocator.createForEventLoop() }
+        assertFailsWith<IllegalStateException> { allocator.createChild() }
     }
 
     @Test
@@ -86,7 +86,7 @@ class PooledAllocatorLifecycleTest {
     fun `close propagates to children`() {
         if (!isPoolAllocator()) return
         val parent = createPoolAllocator()
-        val child = parent.createForEventLoop()
+        val child = parent.createChild()
         assertNotSame(parent, child, "per-EL child must be a fresh instance")
 
         parent.close()

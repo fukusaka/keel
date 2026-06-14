@@ -18,10 +18,15 @@ package io.github.fukusaka.keel.buf
  * io_uring uses its own `ProvidedBufferRing` (in engine-io-uring) for
  * kernel-managed buffer selection, not a [BufferAllocator].
  *
- * **Per-EventLoop support**: engines call [createForEventLoop] once per
- * EventLoop thread. Stateless allocators (e.g. [DefaultAllocator]) return
- * `this`. Pool-based allocators return a new instance with a thread-local
- * pool, eliminating the need for locking.
+ * **Lifecycle-scoped children**: engines call [createChild] to obtain
+ * an owned allocator instance whose lifetime they control. Stateless
+ * allocators return `this`. Pool-based allocators return a new instance
+ * with its own freelist and chunk arena, so the child can hand out
+ * lock-free pool slots and the parent can cascade-close the child on
+ * shutdown. Each engine's convention for how often to call this is its
+ * own threading model (per EventLoop thread for `epoll` / `kqueue` /
+ * `nio` / `io_uring`, once per engine for `NwEngine` / `NodeEngine`
+ * where the engine has no per-thread split).
  */
 interface BufferAllocator {
     /** Allocates a buffer with at least [capacity] bytes. */
@@ -64,7 +69,7 @@ interface BufferAllocator {
      * Pool-less allocators (e.g. [DefaultAllocator]) ignore this call.
      *
      * **Important**: registrations are not propagated retroactively to
-     * child allocators already created by [createForEventLoop]. Callers
+     * child allocators already created by [createChild]. Callers
      * must invoke this on the per-EventLoop allocator instance (typically
      * via `ctx.allocator`) rather than the parent engine-wide allocator.
      *
@@ -75,13 +80,25 @@ interface BufferAllocator {
     fun registerPoolSize(size: Int, maxSlots: Int) {}
 
     /**
-     * Creates an allocator instance for a single EventLoop thread.
+     * Creates a child allocator instance scoped to the caller's
+     * lifecycle.
      *
-     * Stateless allocators return `this`. Pool-based allocators
-     * return a new instance with its own freelist (lock-free).
-     * Engines call this once per EventLoop at construction.
+     * The caller **owns** the returned allocator and is responsible
+     * for invoking [close] on it — pool-based parents track every
+     * child they produce and cascade-close them in [close], so a
+     * parent's close releases every still-open child; calling
+     * [close] on the child directly is the more common pattern
+     * (engines close their per-EventLoop / per-engine children when
+     * the EventLoop or engine tears down).
+     *
+     * Stateless allocators (e.g. [DefaultAllocator]) return `this`,
+     * so they remain reusable. Pool-based allocators return a fresh
+     * instance with its own freelist and chunk arena — a per-thread
+     * pool when the engine is thread-pinned (epoll / kqueue / nio /
+     * io_uring), or a single engine-wide pool when the engine has no
+     * per-thread split (NwEngine, NodeEngine).
      */
-    fun createForEventLoop(): BufferAllocator = this
+    fun createChild(): BufferAllocator = this
 
     /**
      * Releases the allocator's pooled buffers and any platform resources
@@ -98,7 +115,7 @@ interface BufferAllocator {
      * the in-use count.
      *
      * Implementations must be **idempotent** — a second [close] is a
-     * no-op. Calling [allocate] or [createForEventLoop] after [close]
+     * no-op. Calling [allocate] or [createChild] after [close]
      * throws [IllegalStateException]. The default body is a no-op,
      * covering pool-less allocators ([DefaultAllocator], JS).
      *
@@ -128,7 +145,7 @@ fun BufferAllocator.tryWrapBytes(bytes: ByteArray, offset: Int, length: Int): Io
  * environments where pooling is unnecessary. Not recommended for
  * production workloads due to per-allocation overhead.
  *
- * Stateless: [createForEventLoop] returns `this`.
+ * Stateless: [createChild] returns `this`.
  */
 object DefaultAllocator : BufferAllocator {
     @Suppress("IoBufLeak") // Allocator returns ownership to caller

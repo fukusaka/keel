@@ -23,7 +23,7 @@ import kotlin.concurrent.atomics.AtomicLong
  *
  * **Thread safety**: thread-safe via per-bucket [AtomicLong]; a single
  * profile instance may be shared across per-EventLoop allocators (see
- * [ProfilingAllocator.createForEventLoop]) so all EventLoops aggregate into
+ * [ProfilingAllocator.createChild]) so all EventLoops aggregate into
  * one histogram.
  */
 class AllocationProfile {
@@ -101,7 +101,7 @@ class AllocationProfile {
  * is captured at the public [allocate] boundary, so it is engine-agnostic
  * and sees exactly what consumers request (before any pool round-up).
  *
- * [createForEventLoop] shares the **same** [profile] with the per-EventLoop
+ * [createChild] shares the **same** [profile] with the per-EventLoop
  * child, so all EventLoops aggregate into one histogram.
  *
  * **Thread safety**: the shared [profile] is thread-safe; the decorator
@@ -130,8 +130,8 @@ class ProfilingAllocator(
         delegate.registerPoolSize(size, maxSlots)
     }
 
-    override fun createForEventLoop(): BufferAllocator =
-        ProfilingAllocator(delegate.createForEventLoop(), profile)
+    override fun createChild(): BufferAllocator =
+        ProfilingAllocator(delegate.createChild(), profile)
 }
 
 /**

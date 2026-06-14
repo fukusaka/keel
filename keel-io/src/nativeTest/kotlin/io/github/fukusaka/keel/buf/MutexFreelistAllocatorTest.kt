@@ -61,9 +61,9 @@ class MutexFreelistAllocatorTest {
     }
 
     @Test
-    fun createForEventLoopReturnsNewInstance() {
+    fun createChildReturnsNewInstance() {
         val a = allocator()
-        val perEl = a.createForEventLoop()
+        val perEl = a.createChild()
         assertNotSame(a, perEl)
         val buf1 = perEl.allocate(8192)
         buf1.release()

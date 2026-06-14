@@ -71,10 +71,10 @@ class PoolAllocatorTest {
     }
 
     @Test
-    fun createForEventLoopReturnsNewInstance() {
+    fun createChildReturnsNewInstance() {
         if (!isPoolAllocator()) return
         val base = createPoolAllocator()
-        val perEventLoop = base.createForEventLoop()
+        val perEventLoop = base.createChild()
         assertNotSame(base, perEventLoop)
     }
 

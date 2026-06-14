@@ -46,7 +46,7 @@ class KqueueEngineLifecycleTest {
                 ),
             )
             // KqueueEngineGroup creates `threads` worker EventLoops, each
-            // handed a fresh `tracker.createForEventLoop()` child. The
+            // handed a fresh `tracker.createChild()` child. The
             // boss EventLoop uses the default no-op allocator and is
             // tracked separately, so only the workers count here.
             engine.close()
@@ -56,7 +56,7 @@ class KqueueEngineLifecycleTest {
                 "engine.close() must close every per-EventLoop allocator child",
             )
             // The user-passed parent tracker stays open — the engine
-            // borrows it for `createForEventLoop` and never closes the
+            // borrows it for `createChild` and never closes the
             // borrowed allocator.
             assertEquals(
                 0,

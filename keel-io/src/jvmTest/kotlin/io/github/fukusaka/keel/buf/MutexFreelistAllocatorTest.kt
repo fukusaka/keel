@@ -61,9 +61,9 @@ class MutexFreelistAllocatorTest {
     }
 
     @Test
-    fun createForEventLoopReturnsNewInstance() {
+    fun createChildReturnsNewInstance() {
         val a = allocator()
-        val perEl = a.createForEventLoop()
+        val perEl = a.createChild()
         assertNotSame(a, perEl)
         // The child should inherit the same factory; allocating from the child
         // and releasing must still hit the pool reuse path.

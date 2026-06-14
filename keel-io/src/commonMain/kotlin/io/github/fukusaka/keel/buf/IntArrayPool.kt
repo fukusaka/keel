@@ -14,7 +14,7 @@ package io.github.fukusaka.keel.buf
  *
  * - **No synchronization**: per-EventLoop instance, single-thread
  *   confined. Use one [IntArrayPool] per EventLoop (mirrors keel's
- *   existing `PooledDirectAllocator.createForEventLoop()` pattern).
+ *   existing `PooledDirectAllocator.createChild()` pattern).
  * - **Reset on borrow, not on recycle**: borrowing a fresh array gives
  *   a sentinel-filled state, callers can immediately use it without an
  *   explicit reset call.
